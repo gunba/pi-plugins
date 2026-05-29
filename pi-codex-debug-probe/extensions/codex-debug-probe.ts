@@ -12,6 +12,7 @@ type ProbeState = {
   counters: Record<string, number>;
   originalFetch?: typeof fetch;
   patchedFetch?: typeof fetch;
+  sseTimeoutMs: number;
   originalWebSocket?: typeof WebSocket;
   patchedWebSocket?: typeof WebSocket;
 };
@@ -19,12 +20,16 @@ type ProbeState = {
 const GLOBAL_KEY = Symbol.for("pi.codexDebugProbe.state");
 const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
 const EXTENSION_NAME = "codex-debug-probe";
-const FETCH_PATCH_ID = "pi-codex-debug-probe@2";
+const FETCH_PATCH_ID = "pi-codex-debug-probe@3";
 const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-debug-probe");
 const LOG_DIR = process.env.CODEX_DEBUG_PROBE_DIR || DEFAULT_LOG_DIR;
 const LOG_FILE = join(LOG_DIR, "events.ndjson");
 const SUMMARY_FILE = join(LOG_DIR, "latest-summary.json");
+const SSE_TIMEOUT_CONFIG_FILE = join(LOG_DIR, "sse-timeout.json");
 const LOG_RAW_IDS = envFlag("CODEX_DEBUG_PROBE_LOG_RAW_IDS");
+const DEFAULT_SSE_HEADER_TIMEOUT_MS = 120_000;
+const ENV_SSE_TIMEOUT = "PI_CODEX_SSE_HEADER_TIMEOUT_MS";
+const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
 
 function envFlag(name: string): boolean {
   const value = process.env[name];
@@ -32,10 +37,59 @@ function envFlag(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(value);
 }
 
+function parseTimeout(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && /^(off|disable|disabled)$/i.test(value.trim())) return 0;
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+}
+
+function readSseTimeout(): number {
+  const envTimeout = parseTimeout(process.env[ENV_SSE_TIMEOUT]);
+  if (envTimeout !== undefined) return envTimeout;
+  try {
+    const parsed = JSON.parse(readFileSync(SSE_TIMEOUT_CONFIG_FILE, "utf8")) as { timeoutMs?: unknown };
+    return parseTimeout(parsed.timeoutMs) ?? DEFAULT_SSE_HEADER_TIMEOUT_MS;
+  } catch {
+    return DEFAULT_SSE_HEADER_TIMEOUT_MS;
+  }
+}
+
+function writeSseTimeout(timeoutMs: number) {
+  mkdirSync(LOG_DIR, { recursive: true });
+  writeFileSync(SSE_TIMEOUT_CONFIG_FILE, JSON.stringify({ timeoutMs }, null, 2), "utf8");
+}
+
+function isBuiltinHeaderTimeout(reason: unknown): boolean {
+  const message =
+    reason instanceof Error
+      ? reason.message
+      : reason && typeof reason === "object" && "message" in reason
+        ? String((reason as { message?: unknown }).message)
+        : String(reason ?? "");
+  return BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE.test(message);
+}
+
+function configuredTimeoutError(timeoutMs: number): Error {
+  return new Error(`Codex SSE response headers timed out after ${timeoutMs}ms (configured by ${EXTENSION_NAME})`);
+}
+
+function syntheticCodexErrorResponse(message: string, code = "pi_codex_transport_error"): Response {
+  return new Response(`data: ${JSON.stringify({ type: "error", code, message })}\n\n`, {
+    status: 200,
+    statusText: "OK",
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+    },
+  });
+}
+
 function getState(): ProbeState {
   const g = globalThis as typeof globalThis & { [GLOBAL_KEY]?: ProbeState };
   if (!g[GLOBAL_KEY]) {
-    g[GLOBAL_KEY] = { enabled: process.env.CODEX_DEBUG_PROBE !== "0", counters: {} };
+    g[GLOBAL_KEY] = { enabled: process.env.CODEX_DEBUG_PROBE !== "0", counters: {}, sseTimeoutMs: readSseTimeout() };
   }
   return g[GLOBAL_KEY]!;
 }
@@ -458,8 +512,8 @@ function fetchPatchStack(value: unknown): string[] {
 function installGlobalPatches(state: ProbeState) {
   // Pi configures undici after extension load; undici.install() can replace
   // global fetch/WebSocket. Re-apply lazily before provider requests if that
-  // happened. Preserve a shared fetch patch stack so this probe and
-  // pi-sse-timeout do not keep wrapping each other on every request.
+  // happened. Preserve a shared fetch patch stack so repeated installs do not
+  // recursively wrap fetch on every request.
   if (typeof globalThis.fetch === "function" && !fetchPatchStack(globalThis.fetch).includes(FETCH_PATCH_ID)) {
     const downstreamStack = fetchPatchStack(globalThis.fetch);
     state.originalFetch = globalThis.fetch.bind(globalThis) as typeof fetch;
@@ -593,35 +647,112 @@ async function instrumentedFetch(state: ProbeState, input: RequestInfo | URL, in
   const start = performance.now();
   const requestHeaders = headersFromFetch(input, init);
   const method = init?.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET");
-  state.log?.("codex_fetch_start", {
+  const callerSignal = init?.signal;
+  const controller = new AbortController();
+  state.sseTimeoutMs = readSseTimeout();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let suppressedBuiltinTimeout = false;
+  let cleaned = false;
+
+  const onCallerAbort = () => {
+    const reason = callerSignal?.reason;
+    if (isBuiltinHeaderTimeout(reason)) {
+      suppressedBuiltinTimeout = true;
+      state.log?.("sse_builtin_header_timeout_suppressed", {
+        fetchId,
+        elapsedMs: elapsedMs(start),
+        configuredTimeoutMs: state.sseTimeoutMs,
+      });
+      return;
+    }
+    controller.abort(reason ?? new Error("Request was aborted"));
+  };
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (timer) clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  };
+
+  if (callerSignal) {
+    if (callerSignal.aborted) onCallerAbort();
+    else callerSignal.addEventListener("abort", onCallerAbort, { once: false });
+  }
+  if (state.sseTimeoutMs > 0) {
+    timer = setTimeout(() => controller.abort(configuredTimeoutError(state.sseTimeoutMs)), state.sseTimeoutMs);
+  }
+
+  const requestSummary = {
     fetchId,
     method,
     url: urlSummary(input),
     headers: summarizeRequestHeaders(requestHeaders),
     body: summarizeFetchBody(init?.body),
-  });
+  };
+  state.log?.("codex_fetch_start", requestSummary);
+  state.log?.("sse_fetch_start", { ...requestSummary, configuredTimeoutMs: state.sseTimeoutMs });
+
   try {
-    const response = await state.originalFetch!(input, init);
+    const response = await state.originalFetch!(input, { ...init, signal: controller.signal });
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
     const headersMs = elapsedMs(start);
+    const responseHeaders = summarizeResponseHeaders(response.headers);
     state.log?.("codex_fetch_headers", {
       fetchId,
       elapsedMs: headersMs,
       status: response.status,
       statusText: response.statusText,
-      headers: summarizeResponseHeaders(response.headers),
+      headers: responseHeaders,
+    });
+    state.log?.("sse_fetch_headers", {
+      fetchId,
+      elapsedMs: headersMs,
+      status: response.status,
+      suppressedBuiltinTimeout,
+      headers: responseHeaders,
     });
     if (!response.body) {
+      cleanup();
       state.log?.("codex_fetch_no_body", { fetchId, elapsedMs: elapsedMs(start), status: response.status });
       return response;
     }
-    return wrapResponseBody(response, fetchId, start, state);
+    return wrapResponseBody(response, fetchId, start, state, cleanup);
   } catch (error) {
-    state.log?.("codex_fetch_error", { fetchId, elapsedMs: elapsedMs(start), error: safeError(error), aborted: init?.signal?.aborted, abortReason: summarizeAbortReason(init?.signal?.reason) });
-    throw error;
+    cleanup();
+    const reason = controller.signal.reason;
+    const thrown = controller.signal.aborted && reason instanceof Error ? reason : error;
+    const info = safeError(thrown);
+    state.log?.("codex_fetch_error", { fetchId, elapsedMs: elapsedMs(start), error: info, aborted: init?.signal?.aborted, abortReason: summarizeAbortReason(init?.signal?.reason), suppressedBuiltinTimeout });
+    state.log?.("sse_fetch_error", {
+      fetchId,
+      elapsedMs: elapsedMs(start),
+      suppressedBuiltinTimeout,
+      error: info,
+    });
+
+    if (suppressedBuiltinTimeout) {
+      const message =
+        typeof info.message === "string" && info.message.trim()
+          ? info.message
+          : "Codex SSE request failed after Pi's built-in 10s header timeout was suppressed by codex-debug-probe";
+      state.log?.("sse_synthetic_error_response", {
+        fetchId,
+        elapsedMs: elapsedMs(start),
+        configuredTimeoutMs: state.sseTimeoutMs,
+        message,
+      });
+      return syntheticCodexErrorResponse(message);
+    }
+
+    throw thrown;
   }
 }
 
-function wrapResponseBody(response: Response, fetchId: string, start: number, state: ProbeState): Response {
+function wrapResponseBody(response: Response, fetchId: string, start: number, state: ProbeState, cleanup?: () => void): Response {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let bytes = 0;
@@ -635,6 +766,7 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
       try {
         const result = await reader.read();
         if (result.done) {
+          cleanup?.();
           state.log?.("codex_fetch_stream_done", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, eventCounts });
           controller.close();
           return;
@@ -657,11 +789,13 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
         });
         controller.enqueue(result.value);
       } catch (error) {
+        cleanup?.();
         state.log?.("codex_fetch_stream_error", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, error: safeError(error), eventCounts });
         controller.error(error);
       }
     },
     async cancel(reason) {
+      cleanup?.();
       state.log?.("codex_fetch_stream_cancel", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, reason: summarizeAbortReason(reason), eventCounts });
       await reader.cancel(reason).catch(() => undefined);
     },
@@ -741,6 +875,8 @@ export default function (pi: ExtensionAPI) {
       enabled: state.enabled,
       logDir: LOG_DIR,
       logFile: LOG_FILE,
+      sseTimeoutMs: state.sseTimeoutMs,
+      sseTimeoutConfigFile: SSE_TIMEOUT_CONFIG_FILE,
       counters: state.counters,
       session: ctx ? sessionInfo(ctx) : undefined,
     };
@@ -755,6 +891,7 @@ export default function (pi: ExtensionAPI) {
       session: sessionInfo(ctx),
       env: summarizeEnv(),
       settings: summarizeSettings(ctx.cwd),
+      sseTimeoutMs: state.sseTimeoutMs,
       activeTools: pi.getActiveTools(),
     });
     writeSummary(ctx);
@@ -800,6 +937,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_provider_request", async (event, ctx) => {
+    state.sseTimeoutMs = readSseTimeout();
     installGlobalPatches(state);
     let bodyBytes: number | undefined;
     let payloadHash: string | undefined;
@@ -816,6 +954,8 @@ export default function (pi: ExtensionAPI) {
       bodyBytes,
       payloadHash,
       payload: summarizePayload(event.payload),
+      sseTimeoutMs: state.sseTimeoutMs,
+      fetchPatchStack: fetchPatchStack(globalThis.fetch),
       session: sessionInfo(ctx),
     });
   });
@@ -858,6 +998,19 @@ export default function (pi: ExtensionAPI) {
     log("thinking_level_select", { level: event.level, previousLevel: event.previousLevel, session: sessionInfo(ctx) });
   });
 
+  function sseTimeoutStatusText(): string {
+    state.sseTimeoutMs = readSseTimeout();
+    return [
+      `Codex debug probe: ${state.enabled ? "enabled" : "disabled"}`,
+      `Codex SSE response-header timeout: ${state.sseTimeoutMs === 0 ? "disabled" : `${state.sseTimeoutMs}ms`}`,
+      `Timeout config: ${SSE_TIMEOUT_CONFIG_FILE}`,
+      `Env override: ${ENV_SSE_TIMEOUT}`,
+      `Log: ${LOG_FILE}`,
+      `Fetch patch stack: ${fetchPatchStack(globalThis.fetch).join(" > ") || "unmarked"}`,
+      `Counters: ${JSON.stringify(state.counters)}`,
+    ].join("\n");
+  }
+
   pi.registerCommand("codex-debug", {
     description: "Control and inspect Codex transport/session diagnostics",
     handler: async (args, ctx) => {
@@ -885,15 +1038,47 @@ export default function (pi: ExtensionAPI) {
       writeSummary(ctx);
       ctx.ui.notify(
         [
-          `Codex debug probe: ${state.enabled ? "enabled" : "disabled"}`,
-          `Log: ${LOG_FILE}`,
+          sseTimeoutStatusText(),
           `Summary: ${SUMMARY_FILE}`,
           `Session: ${JSON.stringify(sessionInfo(ctx).sessionId)}`,
-          `Counters: ${JSON.stringify(state.counters)}`,
-          "Commands: /codex-debug on | off | status | mark <note>",
+          "Commands: /codex-debug on | off | status | mark <note>; /sse-timeout [status|set <ms>|<ms>|off|on]",
         ].join("\n"),
         "info",
       );
+    },
+  });
+
+  pi.registerCommand("sse-timeout", {
+    description: "Show or set the Codex SSE response-header timeout override",
+    handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      if (!trimmed || trimmed === "status") {
+        ctx.ui.notify(sseTimeoutStatusText(), "info");
+        return;
+      }
+      if (trimmed === "off" || trimmed === "disable") {
+        state.sseTimeoutMs = 0;
+        writeSseTimeout(0);
+        log("sse_timeout_configured", { timeoutMs: 0, session: sessionInfo(ctx) });
+        ctx.ui.notify(sseTimeoutStatusText(), "info");
+        return;
+      }
+      if (trimmed === "on" || trimmed === "enable") {
+        state.sseTimeoutMs = DEFAULT_SSE_HEADER_TIMEOUT_MS;
+        writeSseTimeout(state.sseTimeoutMs);
+        log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, session: sessionInfo(ctx) });
+        ctx.ui.notify(sseTimeoutStatusText(), "info");
+        return;
+      }
+      const match = trimmed.match(/^(?:set\s+)?(\d+)$/i);
+      if (!match) {
+        ctx.ui.notify("Usage: /sse-timeout [status|on|off|set <ms>|<ms>]", "warning");
+        return;
+      }
+      state.sseTimeoutMs = Number(match[1]);
+      writeSseTimeout(state.sseTimeoutMs);
+      log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, session: sessionInfo(ctx) });
+      ctx.ui.notify(sseTimeoutStatusText(), "info");
     },
   });
 }

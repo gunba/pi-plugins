@@ -4,9 +4,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-codex-debug-probe` — safe Codex transport/session diagnostics for SSE/WebSocket stalls.
+- `pi-codex-debug-probe` — Codex transport diagnostics, WebSocket/SSE logging, and SSE response-header timeout control.
 - `pi-nested-skills` — presents Agent Skills as nested categories via portable frontmatter metadata.
-- `pi-sse-timeout` — overrides the hard-coded OpenAI Codex SSE response-header timeout and logs timeout behaviour.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 
 ## Install

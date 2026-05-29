@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -12,7 +12,6 @@
     "extensions": [
       "./pi-codex-debug-probe/extensions/codex-debug-probe.ts",
       "./pi-nested-skills/index.ts",
-      "./pi-sse-timeout/extensions/codex-sse-timeout.ts",
       "./pi-system-context/extensions/system-context.ts"
     ]
   },

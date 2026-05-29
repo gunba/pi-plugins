@@ -1,7 +1,7 @@
 {
   "name": "pi-codex-debug-probe",
-  "version": "0.1.1",
-  "description": "Pi extension for collecting safe Codex transport/session diagnostics around SSE/WebSocket stalls.",
+  "version": "0.2.0",
+  "description": "Pi extension for Codex transport diagnostics and SSE response-header timeout control.",
   "private": true,
   "keywords": ["pi-package", "pi", "codex", "debug", "diagnostics"],
   "type": "module",
