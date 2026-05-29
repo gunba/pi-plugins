@@ -17,7 +17,7 @@ type State = {
 const GLOBAL_KEY = Symbol.for("pi.sseTimeout.state");
 const FETCH_PATCH_KEY = Symbol.for("pi.sseTimeout.fetchPatchVersion");
 const EXTENSION_NAME = "pi-sse-timeout";
-const PATCH_VERSION = 2;
+const PATCH_VERSION = 3;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
 const CONFIG_DIR = process.env.PI_SSE_TIMEOUT_DIR || join(os.homedir(), ".pi", "agent", "pi-sse-timeout");
@@ -171,6 +171,17 @@ function configuredTimeoutError(timeoutMs: number): Error {
   return new Error(`Codex SSE response headers timed out after ${timeoutMs}ms (configured by pi-sse-timeout)`);
 }
 
+function syntheticCodexErrorResponse(message: string, code = "pi_sse_timeout"): Response {
+  return new Response(`data: ${JSON.stringify({ type: "error", code, message })}\n\n`, {
+    status: 200,
+    statusText: "OK",
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+    },
+  });
+}
+
 function cleanupResponseBody(response: Response, cleanup: () => void): Response {
   if (!response.body) {
     cleanup();
@@ -279,12 +290,28 @@ async function fetchWithConfiguredTimeout(
     cleanup();
     const reason = controller.signal.reason;
     const thrown = controller.signal.aborted && reason instanceof Error ? reason : error;
+    const info = errorInfo(thrown);
     log(state, "sse_fetch_error", {
       fetchId,
       elapsedMs: elapsedMs(start),
       suppressedBuiltinTimeout,
-      error: errorInfo(thrown),
+      error: info,
     });
+
+    if (suppressedBuiltinTimeout) {
+      const message =
+        typeof info.message === "string" && info.message.trim()
+          ? info.message
+          : "Codex SSE request failed after Pi's built-in 10s header timeout was suppressed by pi-sse-timeout";
+      log(state, "sse_synthetic_error_response", {
+        fetchId,
+        elapsedMs: elapsedMs(start),
+        configuredTimeoutMs: state.timeoutMs,
+        message,
+      });
+      return syntheticCodexErrorResponse(message);
+    }
+
     throw thrown;
   }
 }
