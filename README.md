@@ -4,7 +4,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-codex-debug-probe` — Codex transport diagnostics, WebSocket/SSE logging, and SSE response-header timeout control.
+- `pi-codex-transport` — Codex WebSocket/SSE transport fixes, timeout control, and diagnostics.
 - `pi-nested-skills` — presents Agent Skills as nested categories via portable frontmatter metadata.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 

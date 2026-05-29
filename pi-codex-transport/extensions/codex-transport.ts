@@ -1,12 +1,12 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type JsonRecord = Record<string, unknown>;
 
-type ProbeState = {
+type TransportState = {
   enabled: boolean;
   log?: (event: string, data?: JsonRecord) => void;
   counters: Record<string, number>;
@@ -17,16 +17,16 @@ type ProbeState = {
   patchedWebSocket?: typeof WebSocket;
 };
 
-const GLOBAL_KEY = Symbol.for("pi.codexDebugProbe.state");
+const GLOBAL_KEY = Symbol.for("pi.codexTransport.state");
 const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
-const EXTENSION_NAME = "codex-debug-probe";
-const FETCH_PATCH_ID = "pi-codex-debug-probe@3";
-const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-debug-probe");
-const LOG_DIR = process.env.CODEX_DEBUG_PROBE_DIR || DEFAULT_LOG_DIR;
+const EXTENSION_NAME = "codex-transport";
+const FETCH_PATCH_ID = "pi-codex-transport@1";
+const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-transport");
+const LOG_DIR = process.env.CODEX_TRANSPORT_DIR || DEFAULT_LOG_DIR;
 const LOG_FILE = join(LOG_DIR, "events.ndjson");
 const SUMMARY_FILE = join(LOG_DIR, "latest-summary.json");
 const SSE_TIMEOUT_CONFIG_FILE = join(LOG_DIR, "sse-timeout.json");
-const LOG_RAW_IDS = envFlag("CODEX_DEBUG_PROBE_LOG_RAW_IDS");
+const LOG_RAW_IDS = envFlag("CODEX_TRANSPORT_LOG_RAW_IDS");
 const DEFAULT_SSE_HEADER_TIMEOUT_MS = 120_000;
 const ENV_SSE_TIMEOUT = "PI_CODEX_SSE_HEADER_TIMEOUT_MS";
 const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
@@ -86,10 +86,10 @@ function syntheticCodexErrorResponse(message: string, code = "pi_codex_transport
   });
 }
 
-function getState(): ProbeState {
-  const g = globalThis as typeof globalThis & { [GLOBAL_KEY]?: ProbeState };
+function getState(): TransportState {
+  const g = globalThis as typeof globalThis & { [GLOBAL_KEY]?: TransportState };
   if (!g[GLOBAL_KEY]) {
-    g[GLOBAL_KEY] = { enabled: process.env.CODEX_DEBUG_PROBE !== "0", counters: {}, sseTimeoutMs: readSseTimeout() };
+    g[GLOBAL_KEY] = { enabled: process.env.CODEX_TRANSPORT_DISABLE !== "1", counters: {}, sseTimeoutMs: readSseTimeout() };
   }
   return g[GLOBAL_KEY]!;
 }
@@ -499,7 +499,7 @@ function summarizeSettings(cwd: string): JsonRecord {
   return { global: pick(globalSettings), project: pick(projectSettings) };
 }
 
-function incrementCounter(state: ProbeState, event: string) {
+function incrementCounter(state: TransportState, event: string) {
   state.counters[event] = (state.counters[event] || 0) + 1;
 }
 
@@ -509,7 +509,7 @@ function fetchPatchStack(value: unknown): string[] {
   return Array.isArray(stack) ? stack.filter((item): item is string => typeof item === "string") : [];
 }
 
-function installGlobalPatches(state: ProbeState) {
+function installGlobalPatches(state: TransportState) {
   // Pi configures undici after extension load; undici.install() can replace
   // global fetch/WebSocket. Re-apply lazily before provider requests if that
   // happened. Preserve a shared fetch patch stack so repeated installs do not
@@ -531,42 +531,42 @@ function installGlobalPatches(state: ProbeState) {
     });
     state.patchedFetch = patchedFetch;
     globalThis.fetch = patchedFetch;
-    state.log?.("probe_patch_fetch_installed", { previousPatchStack: downstreamStack, patchStack: fetchPatchStack(patchedFetch) });
+    state.log?.("transport_patch_fetch_installed", { previousPatchStack: downstreamStack, patchStack: fetchPatchStack(patchedFetch) });
   }
   if (typeof globalThis.WebSocket === "function" && globalThis.WebSocket !== state.patchedWebSocket) {
     state.originalWebSocket = globalThis.WebSocket;
     const OriginalWebSocket = state.originalWebSocket;
-    class ProbeWebSocket extends OriginalWebSocket {
-      private __probeTarget = false;
-      private __probeId = randomUUID();
-      private __probeStart = performance.now();
-      private __probeMessages = 0;
-      private __probeBytes = 0;
+    class TransportWebSocket extends OriginalWebSocket {
+      private __transportTarget = false;
+      private __transportId = randomUUID();
+      private __transportStart = performance.now();
+      private __transportMessages = 0;
+      private __transportBytes = 0;
       constructor(url: string | URL, protocols?: string | string[], options?: unknown) {
         // @ts-expect-error WebSocket constructor differs between runtimes.
         super(url, protocols as never, options as never);
-        this.__probeTarget = isCodexUrl(url);
-        if (!this.__probeTarget) return;
+        this.__transportTarget = isCodexUrl(url);
+        if (!this.__transportTarget) return;
         const headers = typeof protocols === "object" && !Array.isArray(protocols) ? new Headers((protocols as { headers?: HeadersInit }).headers) : new Headers();
         logGlobal("codex_ws_construct", {
-          wsId: this.__probeId,
+          wsId: this.__transportId,
           url: urlSummary(url),
           headers: summarizeRequestHeaders(headers),
         });
-        this.addEventListener("open", () => logGlobal("codex_ws_open", { wsId: this.__probeId, elapsedMs: elapsedMs(this.__probeStart) }));
-        this.addEventListener("error", (event) => logGlobal("codex_ws_error", { wsId: this.__probeId, elapsedMs: elapsedMs(this.__probeStart), error: summarizeWebSocketEvent(event) }));
-        this.addEventListener("close", (event) => logGlobal("codex_ws_close", { wsId: this.__probeId, elapsedMs: elapsedMs(this.__probeStart), messages: this.__probeMessages, bytes: this.__probeBytes, close: summarizeWebSocketEvent(event) }));
+        this.addEventListener("open", () => logGlobal("codex_ws_open", { wsId: this.__transportId, elapsedMs: elapsedMs(this.__transportStart) }));
+        this.addEventListener("error", (event) => logGlobal("codex_ws_error", { wsId: this.__transportId, elapsedMs: elapsedMs(this.__transportStart), error: summarizeWebSocketEvent(event) }));
+        this.addEventListener("close", (event) => logGlobal("codex_ws_close", { wsId: this.__transportId, elapsedMs: elapsedMs(this.__transportStart), messages: this.__transportMessages, bytes: this.__transportBytes, close: summarizeWebSocketEvent(event) }));
         this.addEventListener("message", (event) => {
-          this.__probeMessages++;
+          this.__transportMessages++;
           const data = (event as MessageEvent).data;
           const text = typeof data === "string" ? data : undefined;
           const bytes = typeof text === "string" ? Buffer.byteLength(text, "utf8") : data instanceof ArrayBuffer ? data.byteLength : ArrayBuffer.isView(data) ? data.byteLength : undefined;
-          if (bytes) this.__probeBytes += bytes;
-          if (this.__probeMessages === 1 || isTerminalWsEvent(text)) {
+          if (bytes) this.__transportBytes += bytes;
+          if (this.__transportMessages === 1 || isTerminalWsEvent(text)) {
             logGlobal("codex_ws_message", {
-              wsId: this.__probeId,
-              elapsedMs: elapsedMs(this.__probeStart),
-              ordinal: this.__probeMessages,
+              wsId: this.__transportId,
+              elapsedMs: elapsedMs(this.__transportStart),
+              ordinal: this.__transportMessages,
               bytes,
               event: summarizeWsMessage(text),
             });
@@ -574,11 +574,11 @@ function installGlobalPatches(state: ProbeState) {
         });
       }
       send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-        if (this.__probeTarget) {
+        if (this.__transportTarget) {
           const text = typeof data === "string" ? data : undefined;
           logGlobal("codex_ws_send", {
-            wsId: this.__probeId,
-            elapsedMs: elapsedMs(this.__probeStart),
+            wsId: this.__transportId,
+            elapsedMs: elapsedMs(this.__transportStart),
             bytes: typeof text === "string" ? Buffer.byteLength(text, "utf8") : data instanceof ArrayBuffer ? data.byteLength : ArrayBuffer.isView(data) ? data.byteLength : undefined,
             payload: summarizeWsSend(text),
           });
@@ -587,16 +587,16 @@ function installGlobalPatches(state: ProbeState) {
       }
     }
     try {
-      Object.defineProperty(ProbeWebSocket, "CONNECTING", { value: OriginalWebSocket.CONNECTING });
-      Object.defineProperty(ProbeWebSocket, "OPEN", { value: OriginalWebSocket.OPEN });
-      Object.defineProperty(ProbeWebSocket, "CLOSING", { value: OriginalWebSocket.CLOSING });
-      Object.defineProperty(ProbeWebSocket, "CLOSED", { value: OriginalWebSocket.CLOSED });
+      Object.defineProperty(TransportWebSocket, "CONNECTING", { value: OriginalWebSocket.CONNECTING });
+      Object.defineProperty(TransportWebSocket, "OPEN", { value: OriginalWebSocket.OPEN });
+      Object.defineProperty(TransportWebSocket, "CLOSING", { value: OriginalWebSocket.CLOSING });
+      Object.defineProperty(TransportWebSocket, "CLOSED", { value: OriginalWebSocket.CLOSED });
     } catch {
       // Non-fatal: some runtimes do not allow redefining WebSocket constants.
     }
-    state.patchedWebSocket = ProbeWebSocket as typeof WebSocket;
+    state.patchedWebSocket = TransportWebSocket as typeof WebSocket;
     globalThis.WebSocket = state.patchedWebSocket;
-    state.log?.("probe_patch_websocket_installed", {});
+    state.log?.("transport_patch_websocket_installed", {});
   }
 }
 
@@ -642,7 +642,7 @@ function logGlobal(event: string, data?: JsonRecord) {
   state.log?.(event, data);
 }
 
-async function instrumentedFetch(state: ProbeState, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function instrumentedFetch(state: TransportState, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const fetchId = randomUUID();
   const start = performance.now();
   const requestHeaders = headersFromFetch(input, init);
@@ -738,7 +738,7 @@ async function instrumentedFetch(state: ProbeState, input: RequestInfo | URL, in
       const message =
         typeof info.message === "string" && info.message.trim()
           ? info.message
-          : "Codex SSE request failed after Pi's built-in 10s header timeout was suppressed by codex-debug-probe";
+          : "Codex SSE request failed after Pi's built-in 10s header timeout was suppressed by codex-transport";
       state.log?.("sse_synthetic_error_response", {
         fetchId,
         elapsedMs: elapsedMs(start),
@@ -752,7 +752,7 @@ async function instrumentedFetch(state: ProbeState, input: RequestInfo | URL, in
   }
 }
 
-function wrapResponseBody(response: Response, fetchId: string, start: number, state: ProbeState, cleanup?: () => void): Response {
+function wrapResponseBody(response: Response, fetchId: string, start: number, state: TransportState, cleanup?: () => void): Response {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let bytes = 0;
@@ -844,7 +844,7 @@ export default function (pi: ExtensionAPI) {
   installGlobalPatches(state);
 
   const log = (event: string, data: JsonRecord = {}) => {
-    if (!state.enabled && event !== "probe_disabled") return;
+    if (!state.enabled && event !== "transport_disabled") return;
     incrementCounter(state, event);
     const record = {
       ts: nowIso(),
@@ -895,7 +895,7 @@ export default function (pi: ExtensionAPI) {
       activeTools: pi.getActiveTools(),
     });
     writeSummary(ctx);
-    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex debug:on" : "codex debug:off");
+    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex transport:on" : "codex transport:off");
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
@@ -1001,7 +1001,7 @@ export default function (pi: ExtensionAPI) {
   function sseTimeoutStatusText(): string {
     state.sseTimeoutMs = readSseTimeout();
     return [
-      `Codex debug probe: ${state.enabled ? "enabled" : "disabled"}`,
+      `Codex transport: ${state.enabled ? "enabled" : "disabled"}`,
       `Codex SSE response-header timeout: ${state.sseTimeoutMs === 0 ? "disabled" : `${state.sseTimeoutMs}ms`}`,
       `Timeout config: ${SSE_TIMEOUT_CONFIG_FILE}`,
       `Env override: ${ENV_SSE_TIMEOUT}`,
@@ -1011,28 +1011,28 @@ export default function (pi: ExtensionAPI) {
     ].join("\n");
   }
 
-  pi.registerCommand("codex-debug", {
+  pi.registerCommand("codex-transport", {
     description: "Control and inspect Codex transport/session diagnostics",
     handler: async (args, ctx) => {
       const command = args.trim() || "status";
       if (command === "on") {
         state.enabled = true;
-        log("probe_enabled", { session: sessionInfo(ctx) });
-        ctx.ui.setStatus(EXTENSION_NAME, "codex debug:on");
-        ctx.ui.notify(`Codex debug probe enabled. Log: ${LOG_FILE}`, "info");
+        log("transport_enabled", { session: sessionInfo(ctx) });
+        ctx.ui.setStatus(EXTENSION_NAME, "codex transport:on");
+        ctx.ui.notify(`Codex transport enabled. Log: ${LOG_FILE}`, "info");
         return;
       }
       if (command === "off") {
-        log("probe_disabled", { session: sessionInfo(ctx) });
+        log("transport_disabled", { session: sessionInfo(ctx) });
         state.enabled = false;
-        ctx.ui.setStatus(EXTENSION_NAME, "codex debug:off");
-        ctx.ui.notify("Codex debug probe disabled", "info");
+        ctx.ui.setStatus(EXTENSION_NAME, "codex transport:off");
+        ctx.ui.notify("Codex transport disabled", "info");
         return;
       }
       if (command.startsWith("mark")) {
         const note = command.slice("mark".length).trim();
         log("user_marker", { note: note ? summarizeText(note) : undefined, session: sessionInfo(ctx) });
-        ctx.ui.notify("Codex debug marker written", "info");
+        ctx.ui.notify("Codex transport marker written", "info");
         return;
       }
       writeSummary(ctx);
@@ -1041,7 +1041,7 @@ export default function (pi: ExtensionAPI) {
           sseTimeoutStatusText(),
           `Summary: ${SUMMARY_FILE}`,
           `Session: ${JSON.stringify(sessionInfo(ctx).sessionId)}`,
-          "Commands: /codex-debug on | off | status | mark <note>; /sse-timeout [status|set <ms>|<ms>|off|on]",
+          "Commands: /codex-transport on | off | status | mark <note>; /sse-timeout [status|set <ms>|<ms>|off|on]",
         ].join("\n"),
         "info",
       );
