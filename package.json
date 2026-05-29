@@ -1,0 +1,23 @@
+{
+  "name": "pi-plugins",
+  "version": "0.1.0",
+  "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-codex-debug-probe/extensions/codex-debug-probe.ts",
+      "./pi-nested-skills/index.ts",
+      "./pi-sse-timeout/extensions/codex-sse-timeout.ts",
+      "./pi-system-context/extensions/system-context.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT"
+}

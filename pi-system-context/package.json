@@ -1,0 +1,15 @@
+{
+  "name": "pi-system-context",
+  "version": "0.1.0",
+  "description": "Pi extension that adds compact local environment context to the system prompt.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "context", "environment"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/system-context.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT"
+}
