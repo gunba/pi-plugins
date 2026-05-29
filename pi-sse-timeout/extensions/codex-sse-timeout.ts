@@ -16,8 +16,10 @@ type State = {
 
 const GLOBAL_KEY = Symbol.for("pi.sseTimeout.state");
 const FETCH_PATCH_KEY = Symbol.for("pi.sseTimeout.fetchPatchVersion");
+const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
 const EXTENSION_NAME = "pi-sse-timeout";
-const PATCH_VERSION = 3;
+const PATCH_VERSION = 4;
+const PATCH_ID = `${EXTENSION_NAME}@${PATCH_VERSION}`;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
 const CONFIG_DIR = process.env.PI_SSE_TIMEOUT_DIR || join(os.homedir(), ".pi", "agent", "pi-sse-timeout");
@@ -322,13 +324,19 @@ function fetchPatchVersion(value: unknown): number | undefined {
   return typeof version === "number" ? version : undefined;
 }
 
+function fetchPatchStack(value: unknown): string[] {
+  if (typeof value !== "function") return [];
+  const stack = Reflect.get(value, FETCH_PATCH_STACK_KEY);
+  return Array.isArray(stack) ? stack.filter((item): item is string => typeof item === "string") : [];
+}
+
 function installFetchPatch(state: State) {
   if (typeof globalThis.fetch !== "function") return;
 
   const currentFetch = globalThis.fetch as typeof fetch;
+  const currentStack = fetchPatchStack(currentFetch);
   const currentPatchVersion = fetchPatchVersion(currentFetch);
-  if (currentPatchVersion === PATCH_VERSION) {
-    state.patchedFetch = currentFetch;
+  if (currentStack.includes(PATCH_ID)) {
     return;
   }
 
@@ -340,9 +348,9 @@ function installFetchPatch(state: State) {
     ? "install"
     : replacingLegacyPatch
       ? "replace_legacy"
-      : currentPatchVersion === undefined
-        ? "rewrap_outermost"
-        : "upgrade_patch";
+      : currentStack.some((item) => item.startsWith(`${EXTENSION_NAME}@`))
+        ? "upgrade_patch"
+        : "wrap_stack";
 
   const patchedFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const current = getState();
@@ -355,6 +363,11 @@ function installFetchPatch(state: State) {
     enumerable: false,
     configurable: false,
   });
+  Object.defineProperty(patchedFetch, FETCH_PATCH_STACK_KEY, {
+    value: [...currentStack, PATCH_ID],
+    enumerable: false,
+    configurable: false,
+  });
 
   state.originalFetch = originalFetch;
   state.patchedFetch = patchedFetch;
@@ -363,6 +376,8 @@ function installFetchPatch(state: State) {
     timeoutMs: state.timeoutMs,
     mode,
     previousPatchVersion: currentPatchVersion,
+    previousPatchStack: currentStack,
+    patchStack: fetchPatchStack(patchedFetch),
   });
 }
 
@@ -373,7 +388,7 @@ function statusText(state: State): string {
     `Config: ${CONFIG_FILE}`,
     `Log: ${LOG_FILE}`,
     `Env override: ${ENV_TIMEOUT}`,
-    `Patch: v${PATCH_VERSION}, ${globalThis.fetch === state.patchedFetch ? "outermost" : "not outermost"}`,
+    `Patch: v${PATCH_VERSION}, stack=${fetchPatchStack(globalThis.fetch).join(" > ") || "unmarked"}`,
     `Counters: ${JSON.stringify(state.counters)}`,
   ].join("\n");
 }

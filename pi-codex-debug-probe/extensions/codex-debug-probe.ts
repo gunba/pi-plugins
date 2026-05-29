@@ -17,7 +17,9 @@ type ProbeState = {
 };
 
 const GLOBAL_KEY = Symbol.for("pi.codexDebugProbe.state");
+const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
 const EXTENSION_NAME = "codex-debug-probe";
+const FETCH_PATCH_ID = "pi-codex-debug-probe@2";
 const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-debug-probe");
 const LOG_DIR = process.env.CODEX_DEBUG_PROBE_DIR || DEFAULT_LOG_DIR;
 const LOG_FILE = join(LOG_DIR, "events.ndjson");
@@ -447,11 +449,19 @@ function incrementCounter(state: ProbeState, event: string) {
   state.counters[event] = (state.counters[event] || 0) + 1;
 }
 
+function fetchPatchStack(value: unknown): string[] {
+  if (typeof value !== "function") return [];
+  const stack = Reflect.get(value, FETCH_PATCH_STACK_KEY);
+  return Array.isArray(stack) ? stack.filter((item): item is string => typeof item === "string") : [];
+}
+
 function installGlobalPatches(state: ProbeState) {
   // Pi configures undici after extension load; undici.install() can replace
   // global fetch/WebSocket. Re-apply lazily before provider requests if that
-  // happened, while avoiding stacked wrappers around our own patched functions.
-  if (typeof globalThis.fetch === "function" && globalThis.fetch !== state.patchedFetch) {
+  // happened. Preserve a shared fetch patch stack so this probe and
+  // pi-sse-timeout do not keep wrapping each other on every request.
+  if (typeof globalThis.fetch === "function" && !fetchPatchStack(globalThis.fetch).includes(FETCH_PATCH_ID)) {
+    const downstreamStack = fetchPatchStack(globalThis.fetch);
     state.originalFetch = globalThis.fetch.bind(globalThis) as typeof fetch;
     const patchedFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const current = getState();
@@ -460,9 +470,14 @@ function installGlobalPatches(state: ProbeState) {
       }
       return instrumentedFetch(current, input, init);
     }) as typeof fetch;
+    Object.defineProperty(patchedFetch, FETCH_PATCH_STACK_KEY, {
+      value: [...downstreamStack, FETCH_PATCH_ID],
+      enumerable: false,
+      configurable: false,
+    });
     state.patchedFetch = patchedFetch;
     globalThis.fetch = patchedFetch;
-    state.log?.("probe_patch_fetch_installed", {});
+    state.log?.("probe_patch_fetch_installed", { previousPatchStack: downstreamStack, patchStack: fetchPatchStack(patchedFetch) });
   }
   if (typeof globalThis.WebSocket === "function" && globalThis.WebSocket !== state.patchedWebSocket) {
     state.originalWebSocket = globalThis.WebSocket;

@@ -16,7 +16,7 @@ This extension wraps `globalThis.fetch` for only:
 https://chatgpt.com/backend-api/codex/responses
 ```
 
-It suppresses Pi's internal 10s pre-header abort and applies a configurable replacement timeout. It also re-installs itself immediately before provider requests if Pi or another extension has replaced `globalThis.fetch`, so the override remains the outermost fetch wrapper. If the underlying fetch fails after Pi's built-in 10s abort has been suppressed, it returns a synthetic Codex SSE error event so Pi's provider cannot rewrite the failure back to the original `10000ms` error. It does not alter successful prompts or response bodies.
+It suppresses Pi's internal 10s pre-header abort and applies a configurable replacement timeout. It participates in a shared fetch patch stack with the debug probe so the two extensions do not recursively wrap each other. If the underlying fetch fails after Pi's built-in 10s abort has been suppressed, it returns a synthetic Codex SSE error event so Pi's provider cannot rewrite the failure back to the original `10000ms` error. It does not alter successful prompts or response bodies.
 
 ## Install
 
