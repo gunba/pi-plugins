@@ -9,8 +9,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-sse-timeout` — overrides the hard-coded OpenAI Codex SSE response-header timeout and logs timeout behaviour.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 
-`job-done` was intentionally removed.
-
 ## Install
 
 ```bash
