@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",

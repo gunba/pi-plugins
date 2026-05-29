@@ -20,14 +20,14 @@ type TransportState = {
 const GLOBAL_KEY = Symbol.for("pi.codexTransport.state");
 const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
 const EXTENSION_NAME = "codex-transport";
-const FETCH_PATCH_ID = "pi-codex-transport@1";
+const FETCH_PATCH_ID = "pi-codex-transport@2";
 const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-transport");
 const LOG_DIR = process.env.CODEX_TRANSPORT_DIR || DEFAULT_LOG_DIR;
 const LOG_FILE = join(LOG_DIR, "events.ndjson");
 const SUMMARY_FILE = join(LOG_DIR, "latest-summary.json");
 const SSE_TIMEOUT_CONFIG_FILE = join(LOG_DIR, "sse-timeout.json");
 const LOG_RAW_IDS = envFlag("CODEX_TRANSPORT_LOG_RAW_IDS");
-const DEFAULT_SSE_HEADER_TIMEOUT_MS = 120_000;
+const DEFAULT_SSE_HEADER_TIMEOUT_MS = 300_000;
 const ENV_SSE_TIMEOUT = "PI_CODEX_SSE_HEADER_TIMEOUT_MS";
 const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
 
@@ -761,14 +761,26 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
   let firstSseMs: number | undefined;
   let sseBuffer = "";
   const eventCounts: Record<string, number> = {};
+  let streamSettled = false;
+
+  const settleStream = () => {
+    if (streamSettled) return false;
+    streamSettled = true;
+    cleanup?.();
+    return true;
+  };
+
   const wrapped = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      if (streamSettled) return;
       try {
         const result = await reader.read();
+        if (streamSettled) return;
         if (result.done) {
-          cleanup?.();
-          state.log?.("codex_fetch_stream_done", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, eventCounts });
-          controller.close();
+          if (settleStream()) {
+            state.log?.("codex_fetch_stream_done", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, eventCounts });
+            controller.close();
+          }
           return;
         }
         chunks++;
@@ -787,17 +799,19 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
             state.log?.("codex_fetch_terminal_sse_event", { fetchId, elapsedMs: elapsedMs(start), eventType, event: eventSummary });
           }
         });
-        controller.enqueue(result.value);
+        if (!streamSettled) controller.enqueue(result.value);
       } catch (error) {
-        cleanup?.();
-        state.log?.("codex_fetch_stream_error", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, error: safeError(error), eventCounts });
-        controller.error(error);
+        if (settleStream()) {
+          state.log?.("codex_fetch_stream_error", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, error: safeError(error), eventCounts });
+          controller.error(error);
+        }
       }
     },
     async cancel(reason) {
-      cleanup?.();
-      state.log?.("codex_fetch_stream_cancel", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, reason: summarizeAbortReason(reason), eventCounts });
-      await reader.cancel(reason).catch(() => undefined);
+      if (settleStream()) {
+        state.log?.("codex_fetch_stream_cancel", { fetchId, elapsedMs: elapsedMs(start), chunks, bytes, firstByteMs, firstSseMs, reason: summarizeAbortReason(reason), eventCounts });
+        await reader.cancel(reason).catch(() => undefined);
+      }
     },
   });
 
