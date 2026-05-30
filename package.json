@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -11,6 +11,7 @@
   "pi": {
     "extensions": [
       "./pi-codex-transport/extensions/codex-transport.ts",
+      "./pi-codex-usage/extensions/codex-usage.ts",
       "./pi-nested-skills/index.ts",
       "./pi-system-context/extensions/system-context.ts"
     ]

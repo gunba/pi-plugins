@@ -1,0 +1,15 @@
+{
+  "name": "pi-codex-usage",
+  "version": "0.1.0",
+  "description": "Pi extension for passive Codex 5h/7d usage display and a compact two-line footer.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "codex", "usage", "footer"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/codex-usage.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT"
+}
