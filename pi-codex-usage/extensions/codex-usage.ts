@@ -99,7 +99,7 @@ function labelForWindow(minutes: number | undefined, fallback: string): string {
   return fallback;
 }
 
-function parseWindow(headers: Record<string, string>, prefix: "primary" | "secondary", fallback: string): UsageWindow | undefined {
+function parseWindow(headers: Record<string, string>, prefix: "primary" | "secondary", fallback: string, nowMs: number): UsageWindow | undefined {
   const windowMinutes = numberHeader(headers, `x-codex-${prefix}-window-minutes`);
   const usedPercent = numberHeader(headers, `x-codex-${prefix}-used-percent`);
   const resetAtSeconds = numberHeader(headers, `x-codex-${prefix}-reset-at`);
@@ -111,19 +111,20 @@ function parseWindow(headers: Record<string, string>, prefix: "primary" | "secon
     label: labelForWindow(windowMinutes, fallback),
     windowMinutes,
     usedPercent: clampPercent(usedPercent),
-    resetAtMs: resetAtSeconds === undefined ? undefined : resetAtSeconds * 1000,
+    resetAtMs: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : resetAfterSeconds !== undefined ? nowMs + resetAfterSeconds * 1000 : undefined,
     resetAfterSeconds,
   };
 }
 
 function parseCodexUsageHeaders(headers: HeaderMap | undefined): CodexUsageSnapshot | undefined {
   const h = toHeaderRecord(headers);
-  const primary = parseWindow(h, "primary", "5h");
-  const secondary = parseWindow(h, "secondary", "7d");
+  const nowMs = Date.now();
+  const primary = parseWindow(h, "primary", "5h", nowMs);
+  const secondary = parseWindow(h, "secondary", "7d", nowMs);
   if (!primary && !secondary) return undefined;
 
   return {
-    updatedAtMs: Date.now(),
+    updatedAtMs: nowMs,
     planType: stringHeader(h, "x-codex-plan-type"),
     activeLimit: stringHeader(h, "x-codex-active-limit"),
     primary,
@@ -157,13 +158,11 @@ function persistSnapshot(snapshot: CodexUsageSnapshot): void {
 
 function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): string | undefined {
   if (targetMs === undefined) return undefined;
-  let seconds = Math.max(0, Math.round((targetMs - nowMs) / 1000));
-  if (seconds === 0) return "now";
-  const days = Math.floor(seconds / 86_400);
-  seconds -= days * 86_400;
-  const hours = Math.floor(seconds / 3_600);
-  seconds -= hours * 3_600;
-  const minutes = Math.ceil(seconds / 60);
+  const totalMinutes = Math.max(0, Math.ceil((targetMs - nowMs) / 60_000));
+  if (totalMinutes === 0) return "now";
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
 
   if (days > 0) return hours > 0 ? `${days}d${hours}h` : `${days}d`;
   if (hours > 0) return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
