@@ -239,7 +239,12 @@ function usageFromEntry(entry: unknown): AssistantUsage | undefined {
   return candidate.message.usage;
 }
 
-function buildStatsLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"], width: number): string {
+function buildStatsLine(
+  ctx: ExtensionContext,
+  theme: ExtensionContext["ui"]["theme"],
+  width: number,
+  getThinkingLevel: () => string,
+): string {
   const sessionManager = ctx.sessionManager as unknown as { getEntries?: () => unknown[] };
   let totalInput = 0;
   let totalOutput = 0;
@@ -285,8 +290,10 @@ function buildStatsLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["th
   if (visibleWidth(statsLeft) > width) statsLeft = truncateToWidth(statsLeft, width, "...");
 
   const modelName = ctx.model?.id || "no-model";
-  const thinkingLevel = (ctx as unknown as { thinkingLevel?: string }).thinkingLevel;
-  const rightSide = ctx.model?.reasoning && thinkingLevel ? `${modelName} • ${thinkingLevel}` : modelName;
+  const thinkingLevel = getThinkingLevel();
+  const rightSide = ctx.model?.reasoning
+    ? `${modelName} • ${thinkingLevel === "off" ? "thinking off" : thinkingLevel}`
+    : modelName;
   const rightWidth = visibleWidth(rightSide);
   const leftWidth = visibleWidth(statsLeft);
   const minPadding = 2;
@@ -345,7 +352,10 @@ function buildTopLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["them
   return `${truncateToWidth(left, leftBudget, theme.fg("dim", "..."))} ${compactStatus}`;
 }
 
-function createFooter(ctx: ExtensionContext): (tui: { requestRender: () => void }, theme: ExtensionContext["ui"]["theme"], footerData: FooterData) => FooterComponent {
+function createFooter(
+  ctx: ExtensionContext,
+  getThinkingLevel: () => string,
+): (tui: { requestRender: () => void }, theme: ExtensionContext["ui"]["theme"], footerData: FooterData) => FooterComponent {
   return (tui, theme, footerData) => {
     requestFooterRender = () => tui.requestRender();
     const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender());
@@ -353,7 +363,7 @@ function createFooter(ctx: ExtensionContext): (tui: { requestRender: () => void 
     return {
       invalidate() {},
       render(width: number): string[] {
-        return [buildTopLine(ctx, theme, footerData, width), buildStatsLine(ctx, theme, width)];
+        return [buildTopLine(ctx, theme, footerData, width), buildStatsLine(ctx, theme, width, getThinkingLevel)];
       },
       dispose() {
         unsubscribe?.();
@@ -363,9 +373,9 @@ function createFooter(ctx: ExtensionContext): (tui: { requestRender: () => void 
   };
 }
 
-function installFooter(ctx: ExtensionContext): void {
+function installFooter(ctx: ExtensionContext, pi: ExtensionAPI): void {
   if (!ctx.hasUI || !footerEnabled) return;
-  ctx.ui.setFooter(createFooter(ctx));
+  ctx.ui.setFooter(createFooter(ctx, () => pi.getThinkingLevel()));
   ensureTickTimer();
 }
 
@@ -389,7 +399,15 @@ function recordSnapshot(snapshot: CodexUsageSnapshot): void {
 
 export default function codexUsage(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
-    installFooter(ctx);
+    installFooter(ctx, pi);
+  });
+
+  pi.on("model_select", async () => {
+    requestFooterRender?.();
+  });
+
+  pi.on("thinking_level_select", async () => {
+    requestFooterRender?.();
   });
 
   pi.on("after_provider_response", async (event) => {
@@ -413,7 +431,7 @@ export default function codexUsage(pi: ExtensionAPI): void {
       }
       if (command === "footer on" || command === "on") {
         footerEnabled = true;
-        installFooter(ctx);
+        installFooter(ctx, pi);
         ctx.ui.notify("Codex usage compact footer enabled", "info");
         return;
       }

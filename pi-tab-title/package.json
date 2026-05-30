@@ -1,0 +1,26 @@
+{
+  "name": "pi-tab-title",
+  "version": "0.1.0",
+  "description": "Auto-name Pi terminal tabs from the first user message and keep the tab title in sync with agent state.",
+  "private": true,
+  "keywords": ["pi-package", "pi-extension", "terminal", "tab-title"],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/tab-title.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
