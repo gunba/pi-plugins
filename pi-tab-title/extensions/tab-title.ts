@@ -42,10 +42,21 @@ const STATE_INDICATORS: Record<Exclude<TitleState, "thinking">, string> = {
 };
 
 const TITLE_SYSTEM_PROMPT = [
-  "You name terminal tabs for coding-agent sessions.",
+  "You write terminal tab titles for coding-agent sessions.",
+  "Summarize what the user wants done in concrete verb/noun terms.",
+  "Ignore disclaimers, greetings, and meta-comments; name the useful request.",
+  "Never judge whether the request is a coding task, and never start with phrases like 'This isn't' or 'Not a coding task'.",
   "Return one short plain-text title only: no quotes, no markdown, no emoji, no explanation.",
   `Aim for ${TITLE_MIN_CHARS}-${TITLE_MAX_CHARS} visible characters, usually 3-5 words.`,
-  "Name the user's actual task, not the app, unless the app is the task.",
+  "Examples:",
+  "User: There's a plugin which renames tabs based on the first message from the user. What is the prompt for this plugin?",
+  "Title: Inspect Tab Title Prompt",
+  "User: Can we give it some one shot examples?",
+  "Title: Improve Tab Title Prompt",
+  "User: This isn't a coding task, but help me write a birthday toast.",
+  "Title: Write Birthday Toast",
+  "User: Run the failing auth tests and fix the timeout.",
+  "Title: Fix Auth Test Timeout",
 ].join("\n");
 
 const PROVIDER_PREFERRED_MODELS: Record<string, string[]> = {
