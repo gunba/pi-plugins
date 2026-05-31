@@ -70,12 +70,15 @@ type MemeditStats = {
   contextWindowPercentBefore?: number;
   tokensSaved?: number;
   estimatedRecacheTokens?: number;
-  netTokensSaved?: number;
   contextPercentSaved?: number;
-  netContextPercentSaved?: number;
+  // Cache calculus: the recache penalty is a one-off cost paid on the next turn,
+  // while the saving recurs on every subsequent turn. They are not comparable
+  // as raw token counts, so we carry them as dollar flows plus a break-even.
+  recacheCost?: number; // one-off $ to re-cache the invalidated tail
+  savingPerTurnCost?: number; // $ saved on every subsequent turn
+  breakEvenTurns?: number; // future turns until the recache pays for itself
   pruneTokens?: number;
   pruneCost?: number;
-  estimatedRecacheCost?: number;
   deletedItems?: DeletedItem[];
   error?: string;
 };
@@ -85,10 +88,10 @@ type MemeditTelemetry = {
   contextTokensBefore: number;
   tokensSaved: number;
   estimatedRecacheTokens: number;
-  netTokensSaved: number;
+  recacheCost: number;
+  savingPerTurnCost: number;
   pruneTokens: number;
   pruneCost: number;
-  estimatedRecacheCost: number;
 };
 
 type MemeditSettings = {
@@ -183,10 +186,10 @@ let telemetry: MemeditTelemetry = {
   contextTokensBefore: 0,
   tokensSaved: 0,
   estimatedRecacheTokens: 0,
-  netTokensSaved: 0,
+  recacheCost: 0,
+  savingPerTurnCost: 0,
   pruneTokens: 0,
   pruneCost: 0,
-  estimatedRecacheCost: 0,
 };
 
 function stateSyncSessions(): Set<string> {
@@ -818,12 +821,48 @@ function usageTotalTokens(usage: AnyRecord | undefined): number {
   return (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
 }
 
-function estimateRecacheCost(tokens: number, model: AnyRecord | undefined): number {
-  const cost = model?.cost;
-  if (!cost) return 0;
+// Model cost fields are quoted in dollars per MILLION tokens; convert to $/token.
+const COST_TOKEN_DIVISOR = 1_000_000;
+
+type CachePricing = {
+  inputPerToken: number;
+  cacheReadPerToken: number;
+  cacheWritePerToken: number;
+};
+
+// Resolve per-token cache prices. When a provider omits a cache-read or
+// cache-write price the tokens are billed at the plain input rate, so that is
+// the correct fallback (no cache discount, no separate write surcharge).
+function cachePricing(model: AnyRecord | undefined): CachePricing {
+  const cost = (model?.cost ?? {}) as AnyRecord;
   const input = typeof cost.input === "number" ? cost.input : 0;
-  const cacheRead = typeof cost.cacheRead === "number" ? cost.cacheRead : 0;
-  return Math.max(0, input - cacheRead) * tokens;
+  const cacheRead = typeof cost.cacheRead === "number" && cost.cacheRead > 0 ? cost.cacheRead : input;
+  const cacheWrite = typeof cost.cacheWrite === "number" && cost.cacheWrite > 0 ? cost.cacheWrite : input;
+  return {
+    inputPerToken: input / COST_TOKEN_DIVISOR,
+    cacheReadPerToken: cacheRead / COST_TOKEN_DIVISOR,
+    cacheWritePerToken: cacheWrite / COST_TOKEN_DIVISOR,
+  };
+}
+
+// The cache calculus, expressed as two flows rather than one snapshot:
+//   - One-off recache cost: the tail after the first deletion loses its cache
+//     prefix, so on the NEXT turn those tokens are re-written to cache. Without
+//     the prune they would have been a cache read, so the extra cost is only
+//     (cacheWrite - cacheRead) per token, paid once.
+//   - Ongoing saving: the deleted tokens are no longer re-read from cache on
+//     EVERY subsequent turn, saving cacheRead per token per turn.
+function recacheEconomics(
+  deletedTokens: number,
+  recacheTokens: number,
+  model: AnyRecord | undefined,
+): { recacheCost: number; savingPerTurnCost: number; breakEvenTurns: number | undefined } {
+  const pricing = cachePricing(model);
+  const recachePenaltyPerToken = Math.max(0, pricing.cacheWritePerToken - pricing.cacheReadPerToken);
+  const recacheCost = recacheTokens * recachePenaltyPerToken;
+  const savingPerTurnCost = deletedTokens * pricing.cacheReadPerToken;
+  const breakEvenTurns = savingPerTurnCost > 0 ? Math.ceil(recacheCost / savingPerTurnCost) : undefined;
+  return { recacheCost, savingPerTurnCost, breakEvenTurns };
 }
 
 function updateTelemetry(stats: MemeditStats): void {
@@ -832,10 +871,10 @@ function updateTelemetry(stats: MemeditStats): void {
   telemetry.contextTokensBefore += stats.contextTokensBefore || 0;
   telemetry.tokensSaved += stats.tokensSaved || 0;
   telemetry.estimatedRecacheTokens += stats.estimatedRecacheTokens || 0;
-  telemetry.netTokensSaved += stats.netTokensSaved || 0;
+  telemetry.recacheCost += stats.recacheCost || 0;
+  telemetry.savingPerTurnCost += stats.savingPerTurnCost || 0;
   telemetry.pruneTokens += stats.pruneTokens || 0;
   telemetry.pruneCost += stats.pruneCost || 0;
-  telemetry.estimatedRecacheCost += stats.estimatedRecacheCost || 0;
 }
 
 function formatTokens(value: number | undefined): string {
@@ -853,16 +892,25 @@ function formatPercent(value: number | undefined): string {
 function formatCost(value: number | undefined): string {
   const cost = value || 0;
   if (cost === 0) return "$0";
-  if (Math.abs(cost) < 0.001) return `$${cost.toExponential(2)}`;
+  const abs = Math.abs(cost);
+  if (abs < 0.000001) return `$${cost.toExponential(2)}`;
+  if (abs < 0.01) return `$${cost.toFixed(6)}`;
   return `$${cost.toFixed(4)}`;
+}
+
+function breakEvenText(stats: MemeditStats): string {
+  if (!stats.savingPerTurnCost) return "no ongoing saving";
+  if (!stats.recacheCost) return "net positive immediately";
+  if (stats.breakEvenTurns === undefined) return "break-even unknown";
+  return `pays for itself after ${stats.breakEvenTurns} turn${stats.breakEvenTurns === 1 ? "" : "s"}`;
 }
 
 function cumulativeContextPercent(): number {
   return telemetry.contextTokensBefore > 0 ? (telemetry.tokensSaved / telemetry.contextTokensBefore) * 100 : 0;
 }
 
-function cumulativeNetPercent(): number {
-  return telemetry.contextTokensBefore > 0 ? (telemetry.netTokensSaved / telemetry.contextTokensBefore) * 100 : 0;
+function cumulativeBreakEvenTurns(): number | undefined {
+  return telemetry.savingPerTurnCost > 0 ? Math.ceil(telemetry.recacheCost / telemetry.savingPerTurnCost) : undefined;
 }
 
 function contextUsageFields(ctx: ExtensionContext): Pick<MemeditStats, "contextWindowTokensBefore" | "contextWindowTokensLimit" | "contextWindowPercentBefore"> {
@@ -917,8 +965,8 @@ function statusMessage(stats: MemeditStats) {
   if (stats.status === "applied" || stats.status === "noop") {
     lines.push(
       `Context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
-      `Cache impact: ${formatTokens(stats.netTokensSaved)} cache-adjusted net (${formatTokens(stats.tokensSaved)} deleted - ${formatTokens(stats.estimatedRecacheTokens)} recache est).`,
-      `Overhead: ${formatTokens(stats.pruneTokens)} prune tokens, ${formatCost(stats.pruneCost)} prune cost, ${formatCost(stats.estimatedRecacheCost)} recache-cost est.`,
+      `Cache calculus: re-caches ${formatTokens(stats.estimatedRecacheTokens)} tokens once (${formatCost(stats.recacheCost)}) to save ${formatCost(stats.savingPerTurnCost)}/turn — ${breakEvenText(stats)}.`,
+      `Prune-pass overhead: ${formatTokens(stats.pruneTokens)} tokens, ${formatCost(stats.pruneCost)}.`,
     );
   }
   if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
@@ -1013,10 +1061,12 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries);
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
-    const estimatedRecacheCost = estimateRecacheCost(deleted.estimatedRecacheTokens, model as AnyRecord);
-    const netTokensSaved = deleted.tokensSaved - deleted.estimatedRecacheTokens;
+    const { recacheCost, savingPerTurnCost, breakEvenTurns } = recacheEconomics(
+      deleted.tokensSaved,
+      deleted.estimatedRecacheTokens,
+      model as AnyRecord,
+    );
     const contextPercentSaved = contextTokensBefore > 0 ? (deleted.tokensSaved / contextTokensBefore) * 100 : 0;
-    const netContextPercentSaved = contextTokensBefore > 0 ? (netTokensSaved / contextTokensBefore) * 100 : 0;
     lastStats = {
       at: Date.now(),
       mode,
@@ -1029,12 +1079,12 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       ...contextUsageBefore,
       tokensSaved: deleted.tokensSaved,
       estimatedRecacheTokens: deleted.estimatedRecacheTokens,
-      netTokensSaved,
       contextPercentSaved,
-      netContextPercentSaved,
+      recacheCost,
+      savingPerTurnCost,
+      breakEvenTurns,
       pruneTokens,
       pruneCost,
-      estimatedRecacheCost,
       deletedItems: deleted.deletedItems,
     };
     updateTelemetry(lastStats);
@@ -1103,11 +1153,11 @@ function formatStats(): string {
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
     `Last context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
-    `Last cache-adjusted net: ${formatPercent(lastStats.netContextPercentSaved)} (${formatTokens(lastStats.netTokensSaved)} net = ${formatTokens(lastStats.tokensSaved)} deleted - ${formatTokens(lastStats.estimatedRecacheTokens)} recache est)`,
-    `Last overhead: ${formatTokens(lastStats.pruneTokens)} prune tokens, ${formatCost(lastStats.pruneCost)} prune cost, ${formatCost(lastStats.estimatedRecacheCost)} recache-cost est`,
+    `Last cache calculus: re-cache ${formatTokens(lastStats.estimatedRecacheTokens)} tokens once (${formatCost(lastStats.recacheCost)}) vs ${formatCost(lastStats.savingPerTurnCost)}/turn saved — ${breakEvenText(lastStats)}`,
+    `Last prune-pass overhead: ${formatTokens(lastStats.pruneTokens)} tokens, ${formatCost(lastStats.pruneCost)}`,
     `Cumulative context pruned: ${formatPercent(cumulativeContextPercent())} (${formatTokens(telemetry.tokensSaved)} deleted / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
-    `Cumulative cache-adjusted net: ${formatPercent(cumulativeNetPercent())} (${formatTokens(telemetry.netTokensSaved)} net / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
-    `Cumulative overhead: ${formatTokens(telemetry.pruneTokens)} prune tokens, ${formatCost(telemetry.pruneCost)} prune cost, ${formatCost(telemetry.estimatedRecacheCost)} recache-cost est`,
+    `Cumulative cache calculus: ${formatCost(telemetry.recacheCost)} one-off recache vs ${formatCost(telemetry.savingPerTurnCost)}/turn saved${cumulativeBreakEvenTurns() === undefined ? "" : ` — break-even after ${cumulativeBreakEvenTurns()} turn${cumulativeBreakEvenTurns() === 1 ? "" : "s"}`}`,
+    `Cumulative prune-pass overhead: ${formatTokens(telemetry.pruneTokens)} tokens, ${formatCost(telemetry.pruneCost)}`,
   ];
   if (typeof lastStats.contextWindowPercentBefore === "number") {
     const tokenDetails =
