@@ -3,7 +3,7 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { AgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type AnyRecord = Record<string, any>;
@@ -53,21 +53,25 @@ const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
+const AGENT_SESSION_PATCH_KEY = Symbol.for("pi.memedit.agentSessionPatchInstalled");
+const AGENT_STATE_SYNC_KEY = Symbol.for("pi.memedit.agentStateSyncSessions");
 const PRUNE_SYSTEM_PROMPT = `You are pi-memedit's post-turn memory editor.
 
 The conversation above is a list of entries — messages, tool calls, tool
 results. Entries you may delete are tagged [1], [2], .... Deletion is permanent.
 
 WHAT DELETION MEANS HERE
-Deleting an entry removes everything in it. If a fact, result, or conclusion
-lives in no other surviving entry, that deletion erases it for good. For each
-entry, ask: is this the last place this information lives?
+Deleting an entry removes everything in it, for good. A piece of information
+survives that deletion only if another surviving entry holds it at the same
+fidelity — the literal value, not a mention or recap. The run's closing summary
+is a recap: it preserves nothing, and never justifies deleting the records
+behind it. For each entry, ask: is this the last place this information lives?
 
 THE TEST
 Keep an entry if a future agent resuming this session would need what it holds,
 or would go wrong without it — redoing work, or reopening a settled question.
 Delete an entry only when what it holds is worthless going forward, or already
-fully preserved in a surviving entry.
+held at full fidelity by a surviving entry.
 
 A WRONG TURN IS NOT AUTOMATICALLY DELETABLE
 The flailing toward a result — repeated failed calls, retries, "let me try…" —
@@ -83,20 +87,25 @@ CLEARLY DELETABLE
 - A large retrieval mined for one fact, when that fact already appears in a
   surviving entry. (If it appears nowhere else, this entry is its only copy —
   keep it.)
-- Pure status chatter and intermediate states that a later entry overwrites.
+- Pure status chatter and intermediate reasoning that a later recorded result
+  makes redundant.
 
 CLEARLY KEEP
+- File paths, file and code changes, open questions, and blockers.
+- Command or verification output that establishes current state — what is
+  installed, what a file now holds after an edit, what a check confirmed. A
+  later record of the same thing can supersede it; a sentence mentioning it
+  cannot.
 - Any entry that is the sole record of a result, conclusion, or finding —
   positive or negative.
-- File paths, code changes, command results, errors and their resolutions,
-  open questions, and blockers.
 
 Delete the clear cases with confidence — clearing that bloat is the point of
-this pass. Save caution for real uncertainty: when you can't tell whether an
+this pass. But a finished run is rarely all bloat: the changes it made and the
+state it left behind outlive the reasoning that produced them, and your summary
+mentioning them does not make them safe to drop. When you can't tell whether an
 entry is the last copy of something that matters, keep it — deleting a needed
-entry silently breaks the session, while keeping a stale one costs only a little
-context. If nothing clearly qualifies, return an empty list; that is a valid
-answer.
+entry silently breaks the session, while keeping a stale one costs little. If
+nothing clearly qualifies, return an empty list; that is a valid answer.
 
 Return only JSON of this shape:
 {"delete":[<item numbers>]}`;
@@ -109,6 +118,37 @@ let sessionLogIsAuthoritative = false;
 let activeRunStartLeafId: string | null | undefined;
 let lastCompletedRunStartLeafId: string | null | undefined;
 let lastStats: MemeditStats | undefined;
+
+function stateSyncSessions(): Set<string> {
+  const globalState = globalThis as typeof globalThis & { [AGENT_STATE_SYNC_KEY]?: Set<string> };
+  globalState[AGENT_STATE_SYNC_KEY] ??= new Set<string>();
+  return globalState[AGENT_STATE_SYNC_KEY]!;
+}
+
+function markAgentStateNeedsSync(sessionId: unknown): void {
+  if (typeof sessionId === "string" && sessionId) stateSyncSessions().add(sessionId);
+}
+
+function installAgentSessionPatch(): void {
+  const globalState = globalThis as typeof globalThis & { [AGENT_SESSION_PATCH_KEY]?: boolean };
+  if (globalState[AGENT_SESSION_PATCH_KEY]) return;
+
+  const proto = (AgentSession as unknown as { prototype?: AnyRecord }).prototype;
+  const original = proto?._checkCompaction;
+  if (typeof original !== "function") return;
+
+  proto._checkCompaction = async function patchedCheckCompaction(this: AnyRecord, ...args: unknown[]) {
+    const sessionId = this.sessionManager?.getSessionId?.();
+    if (typeof sessionId === "string" && stateSyncSessions().delete(sessionId)) {
+      const sessionContext = this.sessionManager?.buildSessionContext?.();
+      if (Array.isArray(sessionContext?.messages) && this.agent?.state) {
+        this.agent.state.messages = sessionContext.messages.filter((message: AnyRecord) => !isStatusAgentMessage(message));
+      }
+    }
+    return original.apply(this, args);
+  };
+  globalState[AGENT_SESSION_PATCH_KEY] = true;
+}
 
 function isDisabled(value: string | undefined): boolean {
   return /^(0|false|off|no|disabled)$/i.test((value ?? "").trim());
@@ -524,6 +564,7 @@ function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncounte
   manager.flushed = true;
 
   sessionLogIsAuthoritative = true;
+  markAgentStateNeedsSync(manager.getSessionId?.());
   const removed = entries.filter((entry) => !keptEntries.includes(entry));
   const deletedItems = removed
     .filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id))
@@ -679,6 +720,30 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
   return lastStats;
 }
 
+function unsuccessfulRunReason(messages: unknown[]): string | undefined {
+  for (const message of messages) {
+    const candidate = message as AnyRecord;
+    if (candidate?.role !== "assistant") continue;
+    if (candidate.stopReason === "error" || candidate.stopReason === "aborted" || candidate.stopReason === "length") {
+      return candidate.errorMessage ? `${candidate.stopReason}: ${candidate.errorMessage}` : String(candidate.stopReason);
+    }
+  }
+  return undefined;
+}
+
+function skippedStats(reason: string): MemeditStats {
+  return {
+    at: Date.now(),
+    mode: "auto",
+    status: "skipped",
+    candidates: 0,
+    selected: 0,
+    deleted: 0,
+    ignored: 0,
+    error: reason,
+  };
+}
+
 function formatStats(): string {
   const settingsLines = [
     `pi-memedit: ${enabled ? "enabled" : "disabled"}`,
@@ -704,6 +769,8 @@ function formatStats(): string {
 }
 
 export default function memedit(pi: ExtensionAPI) {
+  installAgentSessionPatch();
+
   pi.on("session_start", async (_event, ctx) => {
     sessionLogIsAuthoritative = false;
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:on" : "memedit:off");
@@ -722,10 +789,19 @@ export default function memedit(pi: ExtensionAPI) {
     activeRunStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
+  pi.on("agent_end", async (event, ctx) => {
     const startLeafId = activeRunStartLeafId;
-    lastCompletedRunStartLeafId = startLeafId;
     activeRunStartLeafId = undefined;
+
+    const unsuccessfulReason = unsuccessfulRunReason(event.messages);
+    if (unsuccessfulReason) {
+      lastStats = skippedStats(`agent run did not complete cleanly (${unsuccessfulReason})`);
+      if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:skipped" : "memedit:off");
+      scheduleChatNotice(pi, lastStats);
+      return;
+    }
+
+    lastCompletedRunStartLeafId = startLeafId;
     const stats = await runMemedit(ctx, "auto", startLeafId);
     if (stats) scheduleChatNotice(pi, stats);
   });
