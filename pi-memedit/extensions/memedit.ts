@@ -53,11 +53,7 @@ const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
-const PRUNE_SYSTEM_PROMPT = [
-  "You are pi-memedit's post-turn memory editor.",
-  "The system prompt is included for continuity and is protected. Never select it for deletion.",
-  "No tools are available in this pass. Return only valid JSON.",
-].join("\n");
+const PRUNE_SYSTEM_PROMPT = "You are pi-memedit's post-turn memory editor. Return only valid JSON.";
 
 let settings = loadSettings();
 let enabled = resolveInitialEnabled(settings.enabled);
@@ -164,8 +160,9 @@ function entryParticipatesInContext(entry: SessionEntry): boolean {
   return entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" || entry.type === "compaction";
 }
 
-function entryIsRemovable(entry: SessionEntry, scopedEntryIds: Set<string>): boolean {
+function entryIsRemovable(entry: SessionEntry, scopedEntryIds: Set<string>, protectedEntryIds: Set<string>): boolean {
   if (!scopedEntryIds.has(entry.id)) return false;
+  if (protectedEntryIds.has(entry.id)) return false;
   // User messages are protected by default: they carry requirements, corrections, and approvals.
   if (entry.type === "message" && entry.message?.role === "user") return false;
   // Compaction summaries are protected: deleting one can accidentally re-expand old history.
@@ -190,14 +187,33 @@ function entryIdsAfter(branch: SessionEntry[], startLeafId: string | null | unde
   return ids;
 }
 
-function collectContextItems(branch: SessionEntry[], scopedEntryIds: Set<string>): ContextItem[] {
+function isAssistantTextResponse(entry: SessionEntry): boolean {
+  if (entry.type !== "message" || entry.message?.role !== "assistant") return false;
+  const content = entry.message.content;
+  return Array.isArray(content) && content.some((part: AnyRecord) => part?.type === "text" && typeof part.text === "string" && part.text.trim());
+}
+
+function protectFinalAssistantTextResponse(branch: SessionEntry[], scopedEntryIds: Set<string>): Set<string> {
+  const protectedIds = new Set<string>();
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (!scopedEntryIds.has(entry.id)) continue;
+    if (isAssistantTextResponse(entry)) {
+      protectedIds.add(entry.id);
+      break;
+    }
+  }
+  return protectedIds;
+}
+
+function collectContextItems(branch: SessionEntry[], scopedEntryIds: Set<string>, protectedEntryIds: Set<string>): ContextItem[] {
   const items: ContextItem[] = [];
   const append = (entry: SessionEntry) => {
     if (!entryParticipatesInContext(entry)) return;
     const agentMessage = entryToAgentMessage(entry);
     if (!agentMessage) return;
     const scoped = scopedEntryIds.has(entry.id);
-    items.push({ entry, agentMessage, scoped, removable: entryIsRemovable(entry, scopedEntryIds) });
+    items.push({ entry, agentMessage, scoped, removable: entryIsRemovable(entry, scopedEntryIds, protectedEntryIds) });
   };
 
   const compactionIndex = getLatestCompactionIndex(branch);
@@ -257,8 +273,7 @@ function buildPruneMessages(items: ContextItem[]): Message[] {
         type: "text",
         text: [
           "You are performing pi-memedit's post-turn memory edit pass.",
-          "Only the just-finished agent run can be pruned, and only removable current-run items are tagged as [1], [2], .... Untagged content is context only and cannot be deleted.",
-          "The current system prompt was included separately and is protected.",
+          "Only the just-finished agent run can be pruned, and only removable current-run items are tagged as [1], [2], .... Untagged content is context only and cannot be deleted. The final assistant text response is intentionally untagged and protected so the conversation remains coherent.",
           "Choose only removable item numbers that can be hard-deleted from both future context and the session log.",
           "Delete items that are redundant, misleading, superseded, dead-end exploration, or ephemeral status with no lasting value.",
           "Keep user requirements, preferences, clarifications, decisions, current goals, unresolved questions, blockers, file paths, code changes, command/test results, errors, and resolutions.",
@@ -539,7 +554,8 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
   const manager = ctx.sessionManager as AnyRecord;
   const branch = (manager.getBranch?.() ?? []) as SessionEntry[];
   const scopedEntryIds = entryIdsAfter(branch, startLeafId);
-  const items = collectContextItems(branch, scopedEntryIds);
+  const protectedEntryIds = protectFinalAssistantTextResponse(branch, scopedEntryIds);
+  const items = collectContextItems(branch, scopedEntryIds, protectedEntryIds);
   const candidates = items.filter((item) => item.removable && item.number !== undefined);
   if (candidates.length === 0) {
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0 };
