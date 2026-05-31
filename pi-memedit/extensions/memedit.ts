@@ -181,6 +181,11 @@ let activeRunStartLeafId: string | null | undefined;
 let pendingRunStartLeafId: string | null | undefined;
 let lastCompletedRunStartLeafId: string | null | undefined;
 let lastStats: MemeditStats | undefined;
+// Realized ongoing saving: the pruned tokens are absent from EVERY provider
+// request after a prune, so the benefit accrues in real time, one API call at a
+// time. We tick it up on each request rather than reporting a single snapshot.
+let realizedSavingsCost = 0;
+let realizedSavingsCalls = 0;
 let telemetry: MemeditTelemetry = {
   runs: 0,
   contextTokensBefore: 0,
@@ -948,6 +953,7 @@ function clearPruningUi(ctx: ExtensionContext): void {
 function footerStatusText(): string {
   if (isSubagentRuntimeBlocked()) return "memedit:off(subagent)";
   if (!enabled) return "memedit:off";
+  if (realizedSavingsCost > 0) return `memedit:${formatCost(realizedSavingsCost)} saved`;
   if (lastStats?.status === "applied") return `memedit:${formatTokens(lastStats.tokensSaved)} pruned`;
   if (lastStats?.status === "noop") return "memedit:noop";
   return `memedit:${lastStats?.status ?? "on"}`;
@@ -1158,6 +1164,7 @@ function formatStats(): string {
     `Cumulative context pruned: ${formatPercent(cumulativeContextPercent())} (${formatTokens(telemetry.tokensSaved)} deleted / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
     `Cumulative cache calculus: ${formatCost(telemetry.recacheCost)} one-off recache vs ${formatCost(telemetry.savingPerTurnCost)}/turn saved${cumulativeBreakEvenTurns() === undefined ? "" : ` — break-even after ${cumulativeBreakEvenTurns()} turn${cumulativeBreakEvenTurns() === 1 ? "" : "s"}`}`,
     `Cumulative prune-pass overhead: ${formatTokens(telemetry.pruneTokens)} tokens, ${formatCost(telemetry.pruneCost)}`,
+    `Realized saving so far: ${formatCost(realizedSavingsCost)} over ${realizedSavingsCalls} API call${realizedSavingsCalls === 1 ? "" : "s"} (${formatCost(telemetry.savingPerTurnCost)}/call active)`,
   ];
   if (typeof lastStats.contextWindowPercentBefore === "number") {
     const tokenDetails =
@@ -1217,6 +1224,18 @@ export default function memedit(pi: ExtensionAPI) {
     activeRunStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
   });
 
+  // Every provider request after a prune omits the deleted tokens, so the
+  // ongoing cache-read saving is realized one API call at a time. Tick it up
+  // live instead of waiting for the next prune or the end of the run.
+  pi.on("before_provider_request", async (_event, ctx) => {
+    if (isSubagentRuntimeBlocked() || !enabled) return;
+    if (running) return; // the prune's own LLM call is overhead, not a saving
+    if (telemetry.savingPerTurnCost <= 0) return;
+    realizedSavingsCost += telemetry.savingPerTurnCost;
+    realizedSavingsCalls += 1;
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     const startLeafId = activeRunStartLeafId;
     activeRunStartLeafId = undefined;
@@ -1231,7 +1250,7 @@ export default function memedit(pi: ExtensionAPI) {
 
     pendingRunStartLeafId = startLeafId;
     lastCompletedRunStartLeafId = startLeafId;
-    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:pending" : "memedit:off");
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
 
   pi.registerCommand("memedit", {
