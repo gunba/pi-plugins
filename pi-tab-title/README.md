@@ -6,7 +6,7 @@ Auto-names the terminal tab for interactive Pi sessions and keeps the tab title 
 
 - On a fresh session, the terminal title starts with `○` and a cwd-based fallback.
 - After the first user message, the extension asks a cheap same-provider model for a 20-30 character title and stores it in the session.
-- While the agent is working, the title pulses through `·`, `•`, and `●`.
+- While the agent is working, the title uses a single-character Braille spinner so the tab text does not shift.
 - After a successful turn, the title switches to `✓`.
 - If a provider, assistant, or tool error is observed, the title switches to `✗` until the next turn starts.
 
