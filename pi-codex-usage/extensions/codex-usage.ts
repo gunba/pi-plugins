@@ -60,7 +60,7 @@ type AssistantUsage = {
 };
 
 const EXTENSION_NAME = "pi-codex-usage";
-const WEBSOCKET_PATCH_ID = "pi-codex-usage@1";
+const WEBSOCKET_PATCH_ID = "pi-codex-usage@2";
 const WEBSOCKET_PATCH_STACK_KEY = Symbol.for("pi.websocketPatchStack");
 const GLOBAL_STATE_KEY = Symbol.for("pi.codexUsage.state");
 const DEFAULT_STATE_DIR = join(os.homedir(), ".pi", "agent", "codex-usage");
@@ -76,6 +76,7 @@ let tickTimer: ReturnType<typeof setInterval> | undefined;
 
 type CodexUsageGlobalState = {
   onSnapshot?: (snapshot: CodexUsageSnapshot) => void;
+  onWebSocketMessage?: (data: unknown) => void;
 };
 
 function getGlobalState(): CodexUsageGlobalState {
@@ -209,7 +210,11 @@ function parseCodexRateLimitEvent(event: JsonRecord): CodexUsageSnapshot | undef
   return {
     updatedAtMs: nowMs,
     planType: stringValue(event.plan_type),
-    activeLimit: stringValue(event.active_limit) ?? stringValue(event.activeLimit),
+    activeLimit:
+      stringValue(event.active_limit) ??
+      stringValue(event.activeLimit) ??
+      stringValue(event.metered_limit_name) ??
+      stringValue(event.limit_name),
     primary,
     secondary,
   };
@@ -281,8 +286,7 @@ function installWebSocketCapture(): void {
       if (!this.__codexUsageTarget) return;
 
       this.addEventListener("message", (event) => {
-        const snapshot = parseCodexWebSocketMessage((event as MessageEvent).data);
-        if (snapshot) getGlobalState().onSnapshot?.(snapshot);
+        getGlobalState().onWebSocketMessage?.((event as MessageEvent).data);
       });
     }
   }
@@ -562,8 +566,13 @@ function recordSnapshot(snapshot: CodexUsageSnapshot): void {
 }
 
 export default function codexUsage(pi: ExtensionAPI): void {
+  const handleWebSocketMessage = (data: unknown) => {
+    const snapshot = parseCodexWebSocketMessage(data);
+    if (snapshot) recordSnapshot(snapshot);
+  };
   installWebSocketCapture();
   getGlobalState().onSnapshot = recordSnapshot;
+  getGlobalState().onWebSocketMessage = handleWebSocketMessage;
 
   pi.on("session_start", async (_event, ctx) => {
     installWebSocketCapture();
@@ -622,7 +631,9 @@ export default function codexUsage(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
-    if (getGlobalState().onSnapshot === recordSnapshot) getGlobalState().onSnapshot = undefined;
+    const state = getGlobalState();
+    if (state.onSnapshot === recordSnapshot) state.onSnapshot = undefined;
+    if (state.onWebSocketMessage === handleWebSocketMessage) state.onWebSocketMessage = undefined;
     footerContext = undefined;
     disposeTickTimer();
   });
@@ -634,6 +645,8 @@ export default function codexUsage(pi: ExtensionAPI): void {
       if (command === "footer off" || command === "off") {
         footerEnabled = false;
         ctx.ui.setFooter(undefined);
+        requestFooterRender = undefined;
+        disposeTickTimer();
         ctx.ui.notify("Codex usage compact footer disabled for this session", "info");
         return;
       }

@@ -19,8 +19,10 @@ type TransportState = {
 
 const GLOBAL_KEY = Symbol.for("pi.codexTransport.state");
 const FETCH_PATCH_STACK_KEY = Symbol.for("pi.fetchPatchStack");
+const WEBSOCKET_PATCH_STACK_KEY = Symbol.for("pi.websocketPatchStack");
 const EXTENSION_NAME = "codex-transport";
 const FETCH_PATCH_ID = "pi-codex-transport@2";
+const WEBSOCKET_PATCH_ID = "pi-codex-transport@1";
 const DEFAULT_LOG_DIR = join(os.homedir(), ".pi", "agent", "codex-transport");
 const LOG_DIR = process.env.CODEX_TRANSPORT_DIR || DEFAULT_LOG_DIR;
 const LOG_FILE = join(LOG_DIR, "events.ndjson");
@@ -509,6 +511,12 @@ function fetchPatchStack(value: unknown): string[] {
   return Array.isArray(stack) ? stack.filter((item): item is string => typeof item === "string") : [];
 }
 
+function websocketPatchStack(value: unknown): string[] {
+  if (typeof value !== "function") return [];
+  const stack = Reflect.get(value, WEBSOCKET_PATCH_STACK_KEY);
+  return Array.isArray(stack) ? stack.filter((item): item is string => typeof item === "string") : [];
+}
+
 function installGlobalPatches(state: TransportState) {
   // Pi configures undici after extension load; undici.install() can replace
   // global fetch/WebSocket. Re-apply lazily before provider requests if that
@@ -533,7 +541,8 @@ function installGlobalPatches(state: TransportState) {
     globalThis.fetch = patchedFetch;
     state.log?.("transport_patch_fetch_installed", { previousPatchStack: downstreamStack, patchStack: fetchPatchStack(patchedFetch) });
   }
-  if (typeof globalThis.WebSocket === "function" && globalThis.WebSocket !== state.patchedWebSocket) {
+  if (typeof globalThis.WebSocket === "function" && !websocketPatchStack(globalThis.WebSocket).includes(WEBSOCKET_PATCH_ID)) {
+    const downstreamStack = websocketPatchStack(globalThis.WebSocket);
     state.originalWebSocket = globalThis.WebSocket;
     const OriginalWebSocket = state.originalWebSocket;
     class TransportWebSocket extends OriginalWebSocket {
@@ -594,9 +603,14 @@ function installGlobalPatches(state: TransportState) {
     } catch {
       // Non-fatal: some runtimes do not allow redefining WebSocket constants.
     }
+    Object.defineProperty(TransportWebSocket, WEBSOCKET_PATCH_STACK_KEY, {
+      value: [...downstreamStack, WEBSOCKET_PATCH_ID],
+      enumerable: false,
+      configurable: false,
+    });
     state.patchedWebSocket = TransportWebSocket as typeof WebSocket;
     globalThis.WebSocket = state.patchedWebSocket;
-    state.log?.("transport_patch_websocket_installed", {});
+    state.log?.("transport_patch_websocket_installed", { previousPatchStack: downstreamStack, patchStack: websocketPatchStack(globalThis.WebSocket) });
   }
 }
 
