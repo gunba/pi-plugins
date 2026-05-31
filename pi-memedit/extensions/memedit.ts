@@ -53,7 +53,53 @@ const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
-const PRUNE_SYSTEM_PROMPT = "Return only valid JSON.";
+const PRUNE_SYSTEM_PROMPT = `You are pi-memedit's post-turn memory editor.
+
+The conversation above is a list of entries — messages, tool calls, tool
+results. Entries you may delete are tagged [1], [2], .... Deletion is permanent.
+
+WHAT DELETION MEANS HERE
+Deleting an entry removes everything in it. If a fact, result, or conclusion
+lives in no other surviving entry, that deletion erases it for good. For each
+entry, ask: is this the last place this information lives?
+
+THE TEST
+Keep an entry if a future agent resuming this session would need what it holds,
+or would go wrong without it — redoing work, or reopening a settled question.
+Delete an entry only when what it holds is worthless going forward, or already
+fully preserved in a surviving entry.
+
+A WRONG TURN IS NOT AUTOMATICALLY DELETABLE
+The flailing toward a result — repeated failed calls, retries, "let me try…" —
+is deletable once a later entry shows the working approach; that route carries
+nothing forward. But a wrong turn that reached a conclusion is a result, not a
+detour: "we evaluated X and ruled it out because Y" is a fact about where the
+work now stands. Lose it, and a future agent may re-explore the same dead end or
+treat a settled matter as open. Keep ruled-out options and negative findings.
+
+CLEARLY DELETABLE
+- Failed or aborted tool calls that a later correct call supersedes, when their
+  only content was getting the mechanics right.
+- A large retrieval mined for one fact, when that fact already appears in a
+  surviving entry. (If it appears nowhere else, this entry is its only copy —
+  keep it.)
+- Pure status chatter and intermediate states that a later entry overwrites.
+
+CLEARLY KEEP
+- Any entry that is the sole record of a result, conclusion, or finding —
+  positive or negative.
+- File paths, code changes, command results, errors and their resolutions,
+  open questions, and blockers.
+
+Delete the clear cases with confidence — clearing that bloat is the point of
+this pass. Save caution for real uncertainty: when you can't tell whether an
+entry is the last copy of something that matters, keep it — deleting a needed
+entry silently breaks the session, while keeping a stale one costs only a little
+context. If nothing clearly qualifies, return an empty list; that is a valid
+answer.
+
+Return only JSON of this shape:
+{"delete":[<item numbers>]}`;
 
 let settings = loadSettings();
 let enabled = resolveInitialEnabled(settings.enabled);
@@ -268,18 +314,7 @@ function buildPruneMessages(items: ContextItem[]): Message[] {
   }
   messages.push({
     role: "user",
-    content: [
-      {
-        type: "text",
-        text: [
-          "Review the tagged items [1], [2], ... and choose any that can be deleted without losing useful context.",
-          "Delete redundant, misleading, superseded, dead-end, or ephemeral items.",
-          "Keep requirements, clarifications, decisions, goals, blockers, file paths, code changes, command/test results, errors, resolutions, and details needed to explain how the task was achieved.",
-          "When uncertain, keep the item.",
-          "Return JSON with this shape: {\"delete\":[1,2],\"rationale\":{\"1\":\"short reason\"}}",
-        ].join("\n"),
-      },
-    ],
+    content: [{ type: "text", text: "Return the deletion JSON now." }],
     timestamp: Date.now(),
   });
   return messages;
@@ -340,8 +375,8 @@ function parseDeleteNumbers(text: string): number[] {
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   const jsonText = start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed;
-  const parsed = JSON.parse(jsonText) as AnyRecord;
-  const raw = parsed.delete ?? parsed.deletions ?? parsed.remove ?? parsed.messages ?? [];
+  const parsed = JSON.parse(jsonText) as { delete?: unknown };
+  const raw = parsed.delete;
   if (!Array.isArray(raw)) return [];
 
   const numbers = new Set<number>();
