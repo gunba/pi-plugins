@@ -53,7 +53,7 @@ const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
-const PRUNE_SYSTEM_PROMPT = "You are pi-memedit's post-turn memory editor. Return only valid JSON.";
+const PRUNE_SYSTEM_PROMPT = "Return only valid JSON.";
 
 let settings = loadSettings();
 let enabled = resolveInitialEnabled(settings.enabled);
@@ -272,14 +272,11 @@ function buildPruneMessages(items: ContextItem[]): Message[] {
       {
         type: "text",
         text: [
-          "You are performing pi-memedit's post-turn memory edit pass.",
-          "Only the just-finished agent run can be pruned, and only removable current-run items are tagged as [1], [2], .... Untagged content is context only and cannot be deleted. The final assistant text response is intentionally untagged and protected so the conversation remains coherent.",
-          "Choose only removable item numbers that can be hard-deleted from both future context and the session log.",
-          "Delete items that are redundant, misleading, superseded, dead-end exploration, or ephemeral status with no lasting value.",
-          "Keep user requirements, preferences, clarifications, decisions, current goals, unresolved questions, blockers, file paths, code changes, command/test results, errors, and resolutions.",
+          "Review the tagged items [1], [2], ... and choose any that can be deleted without losing useful context.",
+          "Delete redundant, misleading, superseded, dead-end, or ephemeral items.",
+          "Keep requirements, clarifications, decisions, goals, blockers, file paths, code changes, command/test results, errors, resolutions, and details needed to explain how the task was achieved.",
           "When uncertain, keep the item.",
-          "Return exactly this JSON shape and nothing else:",
-          "{\"delete\":[1,2],\"rationale\":{\"1\":\"short reason\",\"2\":\"short reason\"}}",
+          "Return JSON with this shape: {\"delete\":[1,2],\"rationale\":{\"1\":\"short reason\"}}",
         ].join("\n"),
       },
     ],
