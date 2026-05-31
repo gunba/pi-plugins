@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { decodeKittyPrintable, Key, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
 
 type SurfaceTool = "pi" | "claude" | "codex" | "mcp" | "subagents" | "generic";
 type FileFormat = "json" | "toml" | "markdown" | "text";
@@ -95,31 +95,6 @@ const PI_SETTINGS: SettingField[] = [
   field("subagents", "Subagents config", "object", "pi-subagents overrides and defaults when that package is installed.", {}),
 ];
 
-const CLAUDE_SETTINGS: SettingField[] = [
-  field("env", "Environment variables", "stringMap", "Environment variables passed to Claude Code.", {}),
-  field("permissions", "Permissions", "object", "Permission rules with allow/deny arrays of tool patterns.", { allow: [], deny: [] }),
-  field("hooks", "Hooks", "object", "Claude Code event hooks configuration.", {}),
-  field("enabledPlugins", "Enabled plugins", "object", "Enabled Claude Code plugin configuration by plugin identifier.", {}),
-  field("includeCoAuthoredBy", "Include co-authored-by", "boolean", "Add Claude co-author trailer to commits when supported.", false),
-  field("statusLine", "Status line", "object", "Custom Claude Code status line command/configuration.", {}),
-  field("model", "Model", "string", "Preferred Claude Code model.", ""),
-];
-
-const CODEX_SETTINGS: SettingField[] = [
-  field("model", "Model", "string", "Preferred Codex model.", ""),
-  field("model_provider", "Model provider", "string", "Provider entry to use from model_providers.", ""),
-  field("approval_policy", "Approval policy", "enum", "When Codex asks for user approval.", "on-request", ["untrusted", "on-failure", "on-request", "never"]),
-  field("sandbox_mode", "Sandbox mode", "enum", "Filesystem/network sandbox policy.", "workspace-write", ["read-only", "workspace-write", "danger-full-access"]),
-  field("disable_response_storage", "Disable response storage", "boolean", "Ask provider not to store responses when supported.", false),
-  field("hide_agent_reasoning", "Hide agent reasoning", "boolean", "Hide reasoning summaries in the UI.", false),
-  field("model_providers", "Model providers", "object", "Custom provider definitions.", {}),
-  field("mcp_servers", "MCP servers", "object", "Codex MCP server definitions.", {}),
-  field("profiles", "Profiles", "object", "Named Codex configuration profiles.", {}),
-  field("shell_environment_policy", "Shell environment policy", "object", "Environment inheritance and explicit env var policy.", { inherit: "all", set: {} }),
-  field("notify", "Notify", "stringArray", "Command argv for desktop notifications.", []),
-  field("preferred_auth_method", "Preferred auth method", "string", "Authentication preference where supported.", ""),
-];
-
 const MCP_SETTINGS: SettingField[] = [
   field("mcpServers", "MCP servers", "object", "Top-level MCP server definitions.", {}),
   field("settings", "Adapter settings", "object", "pi-mcp-adapter global settings.", {}),
@@ -127,8 +102,8 @@ const MCP_SETTINGS: SettingField[] = [
 ];
 
 const ENV_VARS: EnvVarField[] = [
-  env("ANTHROPIC_API_KEY", "Anthropic API key for Claude models.", ["pi", "claude"], "sk-ant-..."),
-  env("OPENAI_API_KEY", "OpenAI API key for OpenAI/Codex models and OpenAI-compatible clients.", ["pi", "codex"], "sk-..."),
+  env("ANTHROPIC_API_KEY", "Anthropic API key for Pi Claude models.", ["pi"], "sk-ant-..."),
+  env("OPENAI_API_KEY", "OpenAI API key for Pi OpenAI-compatible models and clients.", ["pi"], "sk-..."),
   env("GITHUB_TOKEN", "GitHub token used by GitHub APIs and some MCP servers.", ["pi", "mcp", "codex", "claude"]),
   env("GOOGLE_API_KEY", "Google AI API key.", ["pi"], "AIza..."),
   env("GEMINI_API_KEY", "Gemini API key used by several tools.", ["pi"], "AIza..."),
@@ -145,8 +120,6 @@ const ENV_VARS: EnvVarField[] = [
   env("PI_HARDWARE_CURSOR", "Set to 1 to show terminal hardware cursor for IME positioning.", ["pi"], "1"),
   env("PI_ASK_USER_DISPLAY_MODE", "Default pi-ask-user display mode.", ["pi"], "inline"),
   env("PI_MEMEDIT", "Enable/disable pi-memedit if installed.", ["pi"], "off"),
-  env("CODEX_HOME", "Override OpenAI Codex config home in tools that respect it.", ["codex"]),
-  env("CLAUDE_CONFIG_DIR", "Override Claude config directory in tools that respect it.", ["claude"]),
   env("MCP_CONFIG", "Custom MCP config path used by some MCP launchers.", ["mcp"]),
 ];
 
@@ -286,18 +259,8 @@ function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): Config
 
   add({ title: "Pi global settings", group: "Pi settings", kind: "settings", tool: "pi", path: join(agentDir, "settings.json"), format: "json", scope: "global", createTemplate: jsonTemplate, loaded: true });
   add({ title: "Pi project settings", group: "Pi settings", kind: "settings", tool: "pi", path: join(cwd, ".pi", "settings.json"), format: "json", scope: "project", createTemplate: jsonTemplate, loaded: true });
-  add({ title: "Pi custom models", group: "Pi settings", kind: "model", tool: "pi", path: join(agentDir, "models.json"), format: "json", scope: "global", createTemplate: jsonTemplate, loaded: true });
+  add({ title: "Pi user custom models", group: "Pi settings", kind: "model", tool: "pi", path: join(agentDir, "models.json"), format: "json", scope: "global", createTemplate: jsonTemplate, loaded: true });
   add({ title: "Pi project custom models", group: "Pi settings", kind: "model", tool: "pi", path: join(cwd, ".pi", "models.json"), format: "json", scope: "project", createTemplate: jsonTemplate });
-
-  add({ title: "Claude global settings", group: "Claude Code compatibility", kind: "settings", tool: "claude", path: join(homedir(), ".claude", "settings.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
-  add({ title: "Claude project settings", group: "Claude Code compatibility", kind: "settings", tool: "claude", path: join(cwd, ".claude", "settings.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
-  add({ title: "Claude project local settings", group: "Claude Code compatibility", kind: "settings", tool: "claude", path: join(cwd, ".claude", "settings.local.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
-  add({ title: "Claude project hooks", group: "Claude Code compatibility", kind: "hook", tool: "claude", path: join(cwd, ".claude", "hooks.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
-
-  add({ title: "Codex global config", group: "Codex compatibility", kind: "settings", tool: "codex", path: join(homedir(), ".codex", "config.toml"), format: "toml", scope: "compat", createTemplate: tomlTemplate });
-  add({ title: "Codex project config", group: "Codex compatibility", kind: "settings", tool: "codex", path: join(cwd, ".codex", "config.toml"), format: "toml", scope: "compat", createTemplate: tomlTemplate });
-  add({ title: "Codex global hooks", group: "Codex compatibility", kind: "hook", tool: "codex", path: join(homedir(), ".codex", "hooks.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
-  add({ title: "Codex project hooks", group: "Codex compatibility", kind: "hook", tool: "codex", path: join(cwd, ".codex", "hooks.json"), format: "json", scope: "compat", createTemplate: jsonTemplate });
 
   addContextEntries(add, cwd, agentDir);
   addMcpEntries(add, cwd, agentDir, pi);
@@ -314,48 +277,46 @@ function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): Config
   });
 }
 
+function firstPiContextFileInDir(dir: string): string | undefined {
+  for (const fileName of ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]) {
+    const path = join(dir, fileName);
+    if (fileExists(path)) return path;
+  }
+  return undefined;
+}
+
 function addContextEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string): void {
-  add({ title: "Pi global AGENTS.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "AGENTS.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "AGENTS.md")), createTemplate: () => markdownTemplate("Global Instructions") });
-  add({ title: "Pi global SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "SYSTEM.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "SYSTEM.md")), createTemplate: () => markdownTemplate("System Prompt") });
-  add({ title: "Pi global APPEND_SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "APPEND_SYSTEM.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "APPEND_SYSTEM.md")), createTemplate: () => markdownTemplate("Appended System Prompt") });
-  add({ title: "Claude global CLAUDE.md", group: "Context files", kind: "context", tool: "claude", path: join(homedir(), ".claude", "CLAUDE.md"), format: "markdown", scope: "compat", loaded: fileExists(join(homedir(), ".claude", "CLAUDE.md")), createTemplate: () => markdownTemplate("Claude Instructions") });
-  add({ title: "Codex global AGENTS.md", group: "Context files", kind: "context", tool: "codex", path: join(homedir(), ".codex", "AGENTS.md"), format: "markdown", scope: "compat", loaded: fileExists(join(homedir(), ".codex", "AGENTS.md")), createTemplate: () => markdownTemplate("Codex Instructions") });
+  const addLoadedContext = (path: string, title: string, scope: ConfigEntry["scope"]) => add({
+    title,
+    group: "Loaded context files",
+    kind: "context",
+    tool: "pi",
+    path,
+    format: "markdown",
+    scope,
+    loaded: true,
+    createTemplate: () => markdownTemplate("Instructions"),
+  });
+
+  const globalContext = firstPiContextFileInDir(agentDir);
+  if (globalContext) addLoadedContext(globalContext, `Pi user ${basename(globalContext)}`, "global");
 
   for (const dir of ancestorDirs(cwd)) {
+    const contextPath = firstPiContextFileInDir(dir);
+    if (!contextPath || resolve(contextPath) === resolve(globalContext ?? "")) continue;
     const label = displayPath(dir, cwd) || basename(dir);
-    for (const fileName of ["AGENTS.md", "CLAUDE.md"]) {
-      const path = join(dir, fileName);
-      if (fileExists(path) || dir === cwd) {
-        add({
-          title: `${fileName} at ${label}`,
-          group: "Context files",
-          kind: "context",
-          tool: fileName === "CLAUDE.md" ? "claude" : "pi",
-          path,
-          format: "markdown",
-          scope: dir === cwd ? "project" : "workspace",
-          loaded: fileExists(path),
-          createTemplate: () => markdownTemplate(`${fileName.replace(/\.md$/i, "")} Instructions`),
-        });
-      }
-    }
-    for (const fileName of ["SYSTEM.md", "APPEND_SYSTEM.md"]) {
-      const path = join(dir, ".pi", fileName);
-      if (fileExists(path) || dir === cwd) {
-        add({
-          title: `.pi/${fileName} at ${label}`,
-          group: "Context files",
-          kind: "context",
-          tool: "pi",
-          path,
-          format: "markdown",
-          scope: dir === cwd ? "project" : "workspace",
-          loaded: fileExists(path),
-          createTemplate: () => markdownTemplate(fileName.replace(/\.md$/i, "")),
-        });
-      }
-    }
+    addLoadedContext(contextPath, `${basename(contextPath)} at ${label}`, dir === cwd ? "project" : "workspace");
   }
+
+  const projectSystemPath = join(cwd, ".pi", "SYSTEM.md");
+  const globalSystemPath = join(agentDir, "SYSTEM.md");
+  const activeSystemPath = fileExists(projectSystemPath) ? projectSystemPath : fileExists(globalSystemPath) ? globalSystemPath : projectSystemPath;
+  add({ title: fileExists(projectSystemPath) ? "Pi project SYSTEM.md" : fileExists(globalSystemPath) ? "Pi user SYSTEM.md" : "Pi project SYSTEM.md", group: "System prompt files", kind: "context", tool: "pi", path: activeSystemPath, format: "markdown", scope: activeSystemPath === globalSystemPath ? "global" : "project", loaded: fileExists(activeSystemPath), createTemplate: () => markdownTemplate("System Prompt") });
+
+  const projectAppendPath = join(cwd, ".pi", "APPEND_SYSTEM.md");
+  const globalAppendPath = join(agentDir, "APPEND_SYSTEM.md");
+  const activeAppendPath = fileExists(projectAppendPath) ? projectAppendPath : fileExists(globalAppendPath) ? globalAppendPath : projectAppendPath;
+  add({ title: fileExists(projectAppendPath) ? "Pi project APPEND_SYSTEM.md" : fileExists(globalAppendPath) ? "Pi user APPEND_SYSTEM.md" : "Pi project APPEND_SYSTEM.md", group: "System prompt files", kind: "context", tool: "pi", path: activeAppendPath, format: "markdown", scope: activeAppendPath === globalAppendPath ? "global" : "project", loaded: fileExists(activeAppendPath), createTemplate: () => markdownTemplate("Appended System Prompt") });
 }
 
 function addMcpEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string, pi: ExtensionAPI): void {
@@ -364,9 +325,6 @@ function addMcpEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: strin
   add({ title: "Pi global MCP config", group: "MCP configs", kind: "mcp", tool: "mcp", path: join(agentDir, "mcp.json"), format: "json", scope: "global", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n", loaded: mcpLoaded, note: "Pi-owned pi-mcp-adapter config." });
   add({ title: "Project shared MCP config", group: "MCP configs", kind: "mcp", tool: "mcp", path: join(cwd, ".mcp.json"), format: "json", scope: "project", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n", loaded: mcpLoaded });
   add({ title: "Project Pi MCP config", group: "MCP configs", kind: "mcp", tool: "mcp", path: join(cwd, ".pi", "mcp.json"), format: "json", scope: "project", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n", loaded: mcpLoaded });
-  add({ title: "Claude MCP config", group: "MCP configs", kind: "mcp", tool: "claude", path: join(homedir(), ".claude", "mcp.json"), format: "json", scope: "compat", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n" });
-  add({ title: "Claude desktop MCP config", group: "MCP configs", kind: "mcp", tool: "claude", path: join(homedir(), ".claude", "claude_desktop_config.json"), format: "json", scope: "compat", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n" });
-  add({ title: "Codex MCP import config", group: "MCP configs", kind: "mcp", tool: "codex", path: join(homedir(), ".codex", "config.json"), format: "json", scope: "compat", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n" });
 }
 
 function sourceScope(scope: string | undefined): ConfigEntry["scope"] {
@@ -401,8 +359,31 @@ function scopeForResourceRoot(root: string, cwd: string, agentDir: string): Conf
   if (isWithin(root, cwd)) return "project";
   if (isWithin(root, agentDir)) return "global";
   if (isWithin(root, join(home, ".agents"))) return "global";
-  if (isWithin(root, join(home, ".claude")) || isWithin(root, join(home, ".codex"))) return "compat";
   return "workspace";
+}
+
+function gitRepoRoot(startDir: string): string | null {
+  let dir = resolve(startDir);
+  while (true) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function piAgentsSkillRoots(cwd: string): string[] {
+  const roots: string[] = [];
+  const stopAt = gitRepoRoot(cwd);
+  let dir = resolve(cwd);
+  while (true) {
+    roots.push(join(dir, ".agents", "skills"));
+    if (stopAt && dir === stopAt) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return roots;
 }
 
 function addKnownResourceEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string): void {
@@ -411,14 +392,12 @@ function addKnownResourceEntries(add: (entry: Omit<ConfigEntry, "id">) => void, 
     join(agentDir, "skills"),
     join(homedir(), ".agents", "skills"),
     join(cwd, ".pi", "skills"),
-    ...hierarchy.map((dir) => join(dir, ".agents", "skills")),
-    join(homedir(), ".claude", "skills"),
-    join(homedir(), ".codex", "skills"),
+    ...piAgentsSkillRoots(cwd),
   ];
   for (const root of skillRoots) {
     const scope = scopeForResourceRoot(root, cwd, agentDir);
     for (const path of walkNamedFiles(root, (name) => name === "SKILL.md" || name.endsWith(".md"))) {
-      add({ title: `Skill ${basename(dirname(path))}`, group: "Skills", kind: "skill", tool: root.includes(".claude") ? "claude" : root.includes(".codex") ? "codex" : "pi", path, format: "markdown", scope, loaded: false });
+      add({ title: `Skill ${basename(dirname(path))}`, group: "Skills", kind: "skill", tool: "pi", path, format: "markdown", scope, loaded: false });
     }
   }
 
@@ -478,8 +457,8 @@ function matchesFilter(entry: ConfigEntry, filter: string, cwd: string): boolean
   return filter.toLowerCase().split(/\s+/).filter(Boolean).every((token) => haystack.includes(token));
 }
 
-type TabId = "overview" | "settings" | "context" | "skills" | "prompts" | "mcp" | "agents" | "extensions";
-type PickerAction = "open" | "edit" | "addSetting" | "addEnv";
+type TabId = "settings" | "context" | "skills" | "prompts" | "mcp" | "agents" | "extensions";
+type PickerAction = "open" | "edit" | "addSetting" | "addEnv" | "insertSetting";
 
 type TabDef = {
   id: TabId;
@@ -488,21 +467,20 @@ type TabDef = {
 };
 
 const TAB_DEFS: TabDef[] = [
-  { id: "overview", label: "Overview", description: "Live Pi session inventory and currently loaded resources." },
-  { id: "settings", label: "Settings", description: "Pi, Claude, Codex, model, hook, JSON, and TOML settings files." },
-  { id: "context", label: ".MD context", description: "AGENTS.md, CLAUDE.md, SYSTEM.md, APPEND_SYSTEM.md, and other prompt Markdown in context." },
-  { id: "skills", label: "Skills", description: "Loaded and discoverable SKILL.md files." },
-  { id: "prompts", label: "Prompts", description: "Prompt template Markdown files." },
-  { id: "mcp", label: "MCP", description: "MCP server configuration files across Pi, Claude, Codex, and shared locations." },
-  { id: "agents", label: "Agents", description: "pi-subagents agent definitions." },
-  { id: "extensions", label: "Extensions", description: "Pi extension entrypoints and command providers." },
+  { id: "settings", label: "⚙ Settings", description: "Pi user/project settings files plus every supported Pi settings key and value type." },
+  { id: "context", label: "◇ .MD context", description: "Markdown actually loaded by Pi: AGENTS.md/CLAUDE.md plus active SYSTEM and APPEND_SYSTEM files." },
+  { id: "skills", label: "◆ Skills", description: "Skills loaded or discoverable from Pi's skills paths, including .agents/skills compatibility." },
+  { id: "prompts", label: "✎ Prompts", description: "Prompt templates loaded from Pi user/project prompt paths." },
+  { id: "mcp", label: "⛓ MCP", description: "MCP configuration files that Pi MCP adapters can use." },
+  { id: "agents", label: "☉ Agents", description: "pi-subagents definitions in Pi/user/project agent locations." },
+  { id: "extensions", label: "✦ Extensions", description: "Pi extension entrypoints and command providers." },
 ];
 
 type PickerRow =
-  | { kind: "inventory"; title: string; subtitle: string }
-  | { kind: "entry"; entry: ConfigEntry };
+  | { kind: "entry"; entry: ConfigEntry }
+  | { kind: "setting"; field: SettingField };
 
-type PickerResult = { action: "inventory" } | { action: PickerAction; entry: ConfigEntry } | null;
+type PickerResult = { action: PickerAction; entry: ConfigEntry; field?: SettingField } | null;
 
 function fitLine(text: string, width: number): string {
   const clipped = truncateToWidth(text, Math.max(0, width));
@@ -525,20 +503,30 @@ function borderLine(width: number, left: string, fill: string, right: string, co
 }
 
 function rowTitle(row: PickerRow): string {
-  return row.kind === "inventory" ? row.title : row.entry.title;
+  return row.kind === "setting" ? row.field.key : row.entry.title;
+}
+
+function scopeLabel(scope: ConfigEntry["scope"]): string {
+  if (scope === "global") return "USER";
+  if (scope === "project") return "PROJECT";
+  if (scope === "workspace") return "WORKSPACE";
+  if (scope === "package") return "PACKAGE";
+  return "COMPAT";
 }
 
 function rowSubtitle(row: PickerRow, cwd: string): string {
-  if (row.kind === "inventory") return row.subtitle;
+  if (row.kind === "setting") {
+    const choices = row.field.choices?.length ? ` · ${row.field.choices.join(" | ")}` : "";
+    return `PI SETTING · ${row.field.type}${choices} · default ${stringifyReferenceValue(row.field.defaultValue)}`;
+  }
   const entry = row.entry;
   const status = fileExists(entry.path) ? "exists" : "missing";
   const loaded = entry.loaded ? "loaded/current" : "available";
-  return `${entry.group} · ${entry.kind} · ${entry.tool} · ${entry.scope} · ${status} · ${loaded} · ${displayPath(entry.path, cwd)}`;
+  return `${scopeLabel(entry.scope)} · ${entry.group} · ${entry.kind} · ${status} · ${loaded} · ${displayPath(entry.path, cwd)}`;
 }
 
 function entryTabs(entry: ConfigEntry): TabId[] {
   const tabs: TabId[] = [];
-  if (entry.loaded) tabs.push("overview");
   if (entry.kind === "settings" || entry.kind === "model" || entry.kind === "hook") tabs.push("settings");
   if (entry.kind === "context") tabs.push("context");
   if (entry.kind === "skill") tabs.push("skills");
@@ -554,16 +542,14 @@ function tabMatchesEntry(tab: TabId, entry: ConfigEntry): boolean {
 }
 
 function tabCount(tab: TabId, entries: ConfigEntry[]): number {
-  if (tab === "overview") return 1 + entries.filter((entry) => entry.loaded).length;
-  return entries.filter((entry) => tabMatchesEntry(tab, entry)).length;
+  const entryCount = entries.filter((entry) => tabMatchesEntry(tab, entry)).length;
+  return tab === "settings" ? entryCount + PI_SETTINGS.length : entryCount;
 }
 
 function initialTabAndFilter(initialFilter: string): { tab: TabId; filter: string } {
   const trimmed = initialFilter.trim();
   const normalized = trimmed.toLowerCase();
   const aliases: Record<string, TabId> = {
-    all: "overview",
-    inventory: "overview",
     setting: "settings",
     settings: "settings",
     json: "settings",
@@ -587,19 +573,21 @@ function initialTabAndFilter(initialFilter: string): { tab: TabId; filter: strin
   if (byAlias) return { tab: byAlias, filter: "" };
   const byLabel = TAB_DEFS.find((tab) => tab.id === normalized || tab.label.toLowerCase() === normalized);
   if (byLabel) return { tab: byLabel.id, filter: "" };
-  return { tab: "overview", filter: trimmed };
+  return { tab: "settings", filter: trimmed };
 }
 
 function pickerRows(entries: ConfigEntry[], filter: string, cwd: string, tab: TabId): PickerRow[] {
-  const inventory: PickerRow = { kind: "inventory", title: "Current loaded Pi inventory", subtitle: "Active tools, extension/prompt/skill commands, model, cwd, and session" };
-  const tokens = filter.toLowerCase().split(/\s+/).filter(Boolean);
-  const matchesInventory = tokens.length === 0 || tokens.every((token) => [inventory.title, inventory.subtitle].join(" ").toLowerCase().includes(token));
   const rows: PickerRow[] = [];
-  if (tab === "overview" && matchesInventory) rows.push(inventory);
   rows.push(...entries
     .filter((entry) => tabMatchesEntry(tab, entry))
     .filter((entry) => !filter || matchesFilter(entry, filter, cwd))
     .map((entry): PickerRow => ({ kind: "entry", entry })));
+  if (tab === "settings") {
+    const tokens = filter.toLowerCase().split(/\s+/).filter(Boolean);
+    rows.push(...PI_SETTINGS
+      .filter((field) => tokens.every((token) => [field.key, field.label, field.type, field.description, ...(field.choices ?? [])].join(" ").toLowerCase().includes(token)))
+      .map((field): PickerRow => ({ kind: "setting", field })));
+  }
   return rows;
 }
 
@@ -617,19 +605,20 @@ function entryIcon(entry: ConfigEntry): string {
 }
 
 function previewLines(row: PickerRow, cwd: string): string[] {
-  if (row.kind === "inventory") {
+  if (row.kind === "setting") {
+    const choices = row.field.choices?.length ? row.field.choices.join(" | ") : undefined;
     return [
-      "Live Pi session inventory",
+      row.field.key,
       "",
-      "This is not a settings file; it is the runtime surface this extension can see right now.",
+      `Type: ${row.field.type}`,
+      choices ? `Choices: ${choices}` : undefined,
+      `Default: ${stringifyReferenceValue(row.field.defaultValue)}`,
       "",
-      "Includes:",
-      "• active model, cwd, and session file",
-      "• currently registered tools",
-      "• slash commands from extensions, prompts, and skills",
+      row.field.description,
       "",
-      "Enter opens a read-only Markdown inventory.",
-    ];
+      "Enter inserts this Pi setting into project .pi/settings.json.",
+      "Ctrl+G inserts it into user ~/.pi/agent/settings.json.",
+    ].filter((line): line is string => line !== undefined);
   }
 
   const entry = row.entry;
@@ -703,6 +692,10 @@ class PiConfigPicker implements Component {
       this.selectCurrent("addSetting");
       return;
     }
+    if (matchesKey(data, Key.ctrl("g"))) {
+      this.selectCurrent("insertSetting", "global");
+      return;
+    }
     if (matchesKey(data, Key.ctrl("v"))) {
       this.selectCurrent("addEnv");
       return;
@@ -761,7 +754,7 @@ class PiConfigPicker implements Component {
     lines.push(boxedLine(this.theme.fg("muted", ` ${active.description}`), safeWidth, color));
     const filterText = this.filter ? this.theme.fg("text", this.filter) : this.theme.fg("dim", `type to filter ${active.label}`);
     lines.push(boxedLine(` Search: ${filterText}`, safeWidth, color));
-    lines.push(boxedLine(this.theme.fg("dim", " Tab/←→ tabs · ↑↓ rows · Enter edit · Ctrl+A add setting · Ctrl+U clear · Esc close"), safeWidth, color));
+    lines.push(boxedLine(this.theme.fg("dim", " Tab/←→ tabs · ↑↓ rows · Enter edit/insert · Ctrl+G user setting · Ctrl+A reference · Ctrl+U clear · Esc close"), safeWidth, color));
     lines.push(borderLine(safeWidth, "├", "─", "┤", color));
 
     if (rows.length === 0) {
@@ -815,8 +808,9 @@ class PiConfigPicker implements Component {
   private renderRow(row: PickerRow, selected: boolean, width: number): string {
     const marker = selected ? "→ " : "  ";
     const status = row.kind === "entry" ? (fileExists(row.entry.path) ? "●" : "○") : "◆";
-    const icon = row.kind === "entry" ? entryIcon(row.entry) : "◇";
-    const title = `${marker}${status} ${icon} ${rowTitle(row)}`;
+    const icon = row.kind === "entry" ? entryIcon(row.entry) : "⚙";
+    const scope = row.kind === "entry" ? `[${scopeLabel(row.entry.scope)}] ` : "[PI SETTING] ";
+    const title = `${marker}${status} ${icon} ${scope}${rowTitle(row)}`;
     const subtitle = rowSubtitle(row, this.cwd);
     const plain = `${title} — ${subtitle}`;
     return selected ? this.theme.fg("accent", truncateToWidth(plain, width)) : truncateToWidth(plain, width);
@@ -836,7 +830,7 @@ class PiConfigPicker implements Component {
   }
 
   private maxVisibleRows(): number {
-    return 12;
+    return 28;
   }
 
   private cycleTab(delta: number): void {
@@ -847,13 +841,16 @@ class PiConfigPicker implements Component {
     this.requestRender();
   }
 
-  private selectCurrent(action: PickerAction): void {
+  private selectCurrent(action: PickerAction, settingScope: ConfigEntry["scope"] = "project"): void {
     const row = this.rows()[this.selectedIndex];
     if (!row) return;
-    if (row.kind === "inventory") {
-      this.done({ action: "inventory" });
+    if (row.kind === "setting") {
+      const target = this.entries.find((entry) => entry.kind === "settings" && entry.tool === "pi" && entry.scope === settingScope)
+        ?? this.entries.find((entry) => entry.kind === "settings" && entry.tool === "pi" && entry.scope === "project");
+      if (target) this.done({ action: "insertSetting", entry: target, field: row.field });
       return;
     }
+    if (action === "insertSetting") return;
     this.done({ action, entry: row.entry });
   }
 
@@ -872,11 +869,11 @@ async function chooseEntryOverlay(ctx: ExtensionCommandContext, entries: ConfigE
   return ctx.ui.custom<PickerResult>((tui, theme, _keybindings, done) => new PiConfigPicker(entries, filter, ctx.cwd, theme, () => tui.requestRender(), done), {
     overlay: true,
     overlayOptions: {
-      width: "82%",
-      minWidth: 64,
-      maxHeight: "78%",
+      width: "96%",
+      minWidth: 80,
+      maxHeight: "94%",
       anchor: "center",
-      margin: 2,
+      margin: 1,
     },
   });
 }
@@ -1043,11 +1040,11 @@ async function chooseReference<T>(ctx: ExtensionCommandContext, title: string, i
   return ctx.ui.custom<T | undefined>((tui, theme, _keybindings, done) => new ReferencePicker(title, items, initialFilter, theme, () => tui.requestRender(), done), {
     overlay: true,
     overlayOptions: {
-      width: "72%",
-      minWidth: 56,
-      maxHeight: "70%",
+      width: "90%",
+      minWidth: 72,
+      maxHeight: "88%",
       anchor: "center",
-      margin: 2,
+      margin: 1,
     },
   });
 }
@@ -1115,8 +1112,6 @@ async function chooseEnvVarFromReference(ctx: ExtensionCommandContext, catalog: 
 
 function settingCatalogFor(tool: SurfaceTool): SettingField[] {
   if (tool === "pi") return PI_SETTINGS;
-  if (tool === "claude") return CLAUDE_SETTINGS;
-  if (tool === "codex") return CODEX_SETTINGS;
   if (tool === "mcp") return MCP_SETTINGS;
   return [];
 }
@@ -1278,6 +1273,215 @@ function insertTomlEnv(text: string, name: string, value: string): string {
   return ensureTrailingNewline(lines.join("\n"));
 }
 
+
+type SettingsEditorResult = { action: "save"; text: string } | { action: "cancel" };
+
+class SettingsEditorModal implements Component, Focusable {
+  private mode: "editor" | "reference" = "editor";
+  private referenceFilter = "";
+  private referenceIndex = 0;
+  private _focused = false;
+
+  constructor(
+    private readonly entry: ConfigEntry,
+    private readonly cwd: string,
+    private readonly editor: Editor,
+    private readonly theme: Theme,
+    private readonly requestRender: () => void,
+    private readonly done: (result: SettingsEditorResult) => void,
+  ) {}
+
+  get focused(): boolean {
+    return this._focused;
+  }
+
+  set focused(value: boolean) {
+    this._focused = value;
+    this.editor.focused = value && this.mode === "editor";
+  }
+
+  invalidate(): void {
+    this.editor.invalidate();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) {
+      this.done({ action: "cancel" });
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("s"))) {
+      this.done({ action: "save", text: this.editor.getExpandedText() });
+      return;
+    }
+    if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
+      this.mode = this.mode === "editor" ? "reference" : "editor";
+      this.editor.focused = this._focused && this.mode === "editor";
+      this.requestRender();
+      return;
+    }
+
+    if (this.mode === "reference") {
+      this.handleReferenceInput(data);
+      return;
+    }
+
+    this.editor.handleInput(data);
+    this.requestRender();
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const color = (s: string) => this.theme.fg("accent", s);
+    const lines: string[] = [];
+    lines.push(borderLine(safeWidth, "╭", "─", "╮", color, ` edit ${displayPath(this.entry.path, this.cwd)} `));
+    lines.push(boxedLine(this.theme.fg("dim", " Ctrl+S save · Esc cancel · Tab/Ctrl+R focus settings reference · Enter inserts selected reference while reference is focused"), safeWidth, color));
+    lines.push(borderLine(safeWidth, "├", "─", "┤", color));
+
+    if (safeWidth >= 110) this.renderSplit(lines, safeWidth, color);
+    else this.renderStacked(lines, safeWidth, color);
+
+    lines.push(borderLine(safeWidth, "╰", "─", "╯", color, this.mode === "editor" ? " editor " : " settings reference "));
+    return lines;
+  }
+
+  private renderSplit(lines: string[], width: number, color: (s: string) => string): void {
+    const inner = width - 2;
+    const editorWidth = Math.max(54, Math.floor(inner * 0.62));
+    const refWidth = inner - editorWidth - 1;
+    const editorLines = this.editor.render(editorWidth).slice(0, 30);
+    const referenceLines = this.renderReferenceLines(refWidth, 30);
+    const rows = Math.max(editorLines.length, referenceLines.length);
+    for (let i = 0; i < rows; i++) {
+      lines.push(color("│") + fitLine(editorLines[i] ?? "", editorWidth) + color("│") + fitLine(referenceLines[i] ?? "", refWidth) + color("│"));
+    }
+  }
+
+  private renderStacked(lines: string[], width: number, color: (s: string) => string): void {
+    for (const line of this.editor.render(width - 2).slice(0, 18)) {
+      lines.push(boxedLine(line, width, color));
+    }
+    lines.push(borderLine(width, "├", "─", "┤", color, " settings reference "));
+    for (const line of this.renderReferenceLines(width - 2, 8)) {
+      lines.push(boxedLine(line, width, color));
+    }
+  }
+
+  private renderReferenceLines(width: number, maxRows: number): string[] {
+    const rows: string[] = [];
+    const focused = this.mode === "reference";
+    const header = focused ? this.theme.fg("accent", "Settings reference") : this.theme.fg("muted", "Settings reference");
+    rows.push(truncateToWidth(` ${header}`, width));
+    const filterText = this.referenceFilter ? this.theme.fg("text", this.referenceFilter) : this.theme.fg("dim", "type when focused");
+    rows.push(truncateToWidth(` Filter: ${filterText}`, width));
+    rows.push(truncateToWidth(this.theme.fg("dim", " Enter insert · ↑↓ move · Ctrl+U clear"), width));
+    const items = this.filteredReferenceItems();
+    const visible = this.visibleReferenceItems(items, Math.max(1, maxRows - rows.length));
+    for (const { item, index } of visible) {
+      const selected = focused && index === this.referenceIndex;
+      const marker = selected ? "→ " : "  ";
+      const choices = item.choices?.length ? ` · ${item.choices.join("|")}` : "";
+      const text = `${marker}${item.key} · ${item.type}${choices}`;
+      rows.push(selected ? this.theme.fg("accent", truncateToWidth(text, width)) : truncateToWidth(text, width));
+    }
+    return rows;
+  }
+
+  private handleReferenceInput(data: string): void {
+    const items = this.filteredReferenceItems();
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
+      const item = items[this.referenceIndex];
+      if (item) this.insertReference(item);
+      return;
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("k"))) {
+      this.referenceIndex = Math.max(0, this.referenceIndex - 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("j"))) {
+      this.referenceIndex = Math.min(items.length - 1, this.referenceIndex + 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.backspace) || matchesKey(data, Key.delete)) {
+      this.referenceFilter = [...this.referenceFilter].slice(0, -1).join("");
+      this.referenceIndex = 0;
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("u"))) {
+      this.referenceFilter = "";
+      this.referenceIndex = 0;
+      this.requestRender();
+      return;
+    }
+    const printable = decodeKittyPrintable(data) ?? (/^[^\x00-\x1f\x7f]$/.test(data) ? data : undefined);
+    if (printable) {
+      this.referenceFilter += printable;
+      this.referenceIndex = 0;
+      this.requestRender();
+    }
+  }
+
+  private insertReference(field: SettingField): void {
+    const current = this.editor.getExpandedText();
+    const next = this.entry.format === "json"
+      ? insertJsonSetting(current, field.key, field.defaultValue)
+      : insertTomlSetting(current, field, true);
+    if (next) {
+      this.editor.setText(next);
+      this.mode = "editor";
+      this.editor.focused = this._focused;
+      this.requestRender();
+    }
+  }
+
+  private filteredReferenceItems(): SettingField[] {
+    const tokens = this.referenceFilter.toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return PI_SETTINGS;
+    return PI_SETTINGS.filter((field) => tokens.every((token) => [field.key, field.label, field.type, field.description, ...(field.choices ?? [])].join(" ").toLowerCase().includes(token)));
+  }
+
+  private visibleReferenceItems(items: SettingField[], maxRows: number): Array<{ item: SettingField; index: number }> {
+    if (items.length === 0) return [];
+    this.referenceIndex = Math.max(0, Math.min(this.referenceIndex, items.length - 1));
+    const windowSize = Math.min(maxRows, items.length);
+    const half = Math.floor(windowSize / 2);
+    let start = Math.max(0, this.referenceIndex - half);
+    start = Math.min(start, Math.max(0, items.length - windowSize));
+    return items.slice(start, start + windowSize).map((item, offset) => ({ item, index: start + offset }));
+  }
+}
+
+async function editSettingsEntry(ctx: ExtensionCommandContext, entry: ConfigEntry, initialText: string): Promise<string | undefined> {
+  const result = await ctx.ui.custom<SettingsEditorResult>((tui, theme, _keybindings, done) => {
+    const editorTheme: EditorTheme = {
+      borderColor: (s: string) => theme.fg("accent", s),
+      selectList: {
+        selectedPrefix: (t: string) => theme.fg("accent", t),
+        selectedText: (t: string) => theme.fg("accent", t),
+        description: (t: string) => theme.fg("muted", t),
+        scrollInfo: (t: string) => theme.fg("dim", t),
+        noMatch: (t: string) => theme.fg("warning", t),
+      },
+    };
+    const editor = new Editor(tui, editorTheme);
+    editor.disableSubmit = true;
+    editor.setText(initialText);
+    return new SettingsEditorModal(entry, ctx.cwd, editor, theme, () => tui.requestRender(), done);
+  }, {
+    overlay: true,
+    overlayOptions: {
+      width: "96%",
+      minWidth: 90,
+      maxHeight: "94%",
+      anchor: "center",
+      margin: 1,
+    },
+  });
+  return result.action === "save" ? result.text : undefined;
+}
+
 async function editEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
   const exists = fileExists(entry.path);
   if (!exists) {
@@ -1285,13 +1489,41 @@ async function editEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Prom
     if (!create) return false;
   }
   const before = exists ? readText(entry.path) : (entry.createTemplate?.() ?? "");
-  const edited = await ctx.ui.editor(entry.title, before);
+  const edited = entry.tool === "pi" && entry.kind === "settings" && (entry.format === "json" || entry.format === "toml")
+    ? await editSettingsEntry(ctx, entry, before)
+    : await ctx.ui.editor(entry.title, before);
   if (edited === undefined) return false;
   if (edited === before && exists) {
     ctx.ui.notify("No changes", "info");
     return false;
   }
   writeTextAtomic(entry.path, ensureTrailingNewline(edited));
+  ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
+  return true;
+}
+
+async function insertSettingIntoEntry(ctx: ExtensionCommandContext, entry: ConfigEntry, selected: SettingField): Promise<boolean> {
+  if (entry.format !== "json" && entry.format !== "toml") {
+    ctx.ui.notify("Settings can only be inserted into JSON/TOML settings files", "warning");
+    return false;
+  }
+  const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
+  const keys = currentKeys(entry, before);
+  let overwrite = false;
+  if (keys.has(selected.key)) {
+    overwrite = await ctx.ui.confirm("Setting already exists", `${selected.key} is already present in ${displayPath(entry.path, ctx.cwd)}. Replace it with the reference default?`);
+    if (!overwrite) return false;
+  }
+  const after = entry.format === "json"
+    ? insertJsonSetting(before, selected.key, selected.defaultValue)
+    : insertTomlSetting(before, selected, overwrite);
+  if (after === null) {
+    ctx.ui.notify("Could not insert automatically. Open the file and edit manually.", "error");
+    return false;
+  }
+  const reviewed = await ctx.ui.editor(`Review ${selected.key} in ${displayPath(entry.path, ctx.cwd)}`, after);
+  if (reviewed === undefined) return false;
+  writeTextAtomic(entry.path, ensureTrailingNewline(reviewed));
   ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
   return true;
 }
@@ -1303,26 +1535,8 @@ async function addSettingFromReference(ctx: ExtensionCommandContext, entry: Conf
     return false;
   }
   const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
-  const keys = currentKeys(entry, before);
-  const selected = await chooseSettingFromReference(ctx, catalog, keys);
-  if (!selected) return false;
-  let overwrite = false;
-  if (keys.has(selected.key)) {
-    overwrite = await ctx.ui.confirm("Setting already exists", `${selected.key} is already present. Replace it with the reference default?`);
-    if (!overwrite) return false;
-  }
-  const after = entry.format === "json"
-    ? insertJsonSetting(before, selected.key, selected.defaultValue)
-    : insertTomlSetting(before, selected, overwrite);
-  if (after === null) {
-    ctx.ui.notify("Could not insert automatically. Open the file and edit manually.", "error");
-    return false;
-  }
-  const reviewed = await ctx.ui.editor(`Review ${selected.key}`, after);
-  if (reviewed === undefined) return false;
-  writeTextAtomic(entry.path, ensureTrailingNewline(reviewed));
-  ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
-  return true;
+  const selected = await chooseSettingFromReference(ctx, catalog, currentKeys(entry, before));
+  return selected ? insertSettingIntoEntry(ctx, entry, selected) : false;
 }
 
 async function addEnvFromReference(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
@@ -1347,51 +1561,6 @@ async function addEnvFromReference(ctx: ExtensionCommandContext, entry: ConfigEn
   return true;
 }
 
-function inventoryMarkdown(pi: ExtensionAPI, ctx: ExtensionCommandContext): string {
-  const entries = discoverEntries(pi, ctx);
-  const tools = pi.getAllTools().map((tool) => `- ${tool.name}${tool.description ? ` — ${tool.description}` : ""}`).join("\n");
-  const commands = pi.getCommands().map((command) => {
-    const info = command.sourceInfo;
-    return `- /${command.name} [${command.source}]${command.description ? ` — ${command.description}` : ""}${info?.path ? `\n  - ${displayPath(info.path, ctx.cwd)}` : ""}`;
-  }).join("\n");
-  const loadedContext = entries
-    .filter((entry) => entry.kind === "context" && entry.loaded)
-    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
-    .join("\n");
-  const loadedSkills = entries
-    .filter((entry) => entry.kind === "skill" && entry.loaded)
-    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
-    .join("\n");
-  const loadedExtensions = entries
-    .filter((entry) => entry.kind === "extension" && entry.loaded)
-    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
-    .join("\n");
-  const prompt = ctx.getSystemPrompt();
-  return [
-    "# Current Pi inventory",
-    "",
-    `cwd: ${ctx.cwd}`,
-    `session: ${ctx.sessionManager.getSessionFile?.() ?? "unknown"}`,
-    `model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
-    `system prompt chars: ${prompt.length.toLocaleString()}`,
-    "",
-    "## Loaded context Markdown",
-    loadedContext || "(none detected)",
-    "",
-    "## Loaded skills",
-    loadedSkills || "(none detected)",
-    "",
-    "## Loaded extension commands",
-    loadedExtensions || "(none detected)",
-    "",
-    "## Active tools",
-    tools || "(none)",
-    "",
-    "## Slash commands (extension/prompt/skill)",
-    commands || "(none)",
-  ].join("\n");
-}
-
 async function maybeReload(ctx: ExtensionCommandContext): Promise<void> {
   const reload = await ctx.ui.confirm("Reload Pi resources?", "Saved. Run Pi's resource reload now? This reloads extensions, skills, prompts, themes, and context files. Some settings still require a new session or restart.");
   if (!reload) return;
@@ -1407,15 +1576,13 @@ async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
   while (true) {
     const result = await chooseEntryOverlay(ctx, discoverEntries(pi, ctx), initialFilter);
     if (!result) return;
-    if (result.action === "inventory") {
-      await ctx.ui.editor("Current Pi inventory", inventoryMarkdown(pi, ctx));
-      continue;
-    }
     const changed = result.action === "open" || result.action === "edit"
       ? await editEntry(ctx, result.entry)
-      : result.action === "addSetting"
-        ? await addSettingFromReference(ctx, result.entry)
-        : await addEnvFromReference(ctx, result.entry);
+      : result.action === "insertSetting" && result.field
+        ? await insertSettingIntoEntry(ctx, result.entry, result.field)
+        : result.action === "addSetting"
+          ? await addSettingFromReference(ctx, result.entry)
+          : await addEnvFromReference(ctx, result.entry);
     if (changed) await maybeReload(ctx);
   }
 }

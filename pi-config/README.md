@@ -10,21 +10,19 @@ Pi-native configuration navigator for agentic CLI settings and resource files.
 
 ## What it surfaces
 
-- Pi settings: `~/.pi/agent/settings.json`, `.pi/settings.json`, `models.json`, package/resource paths.
-- Pi context files: global and current-workspace `AGENTS.md` / `CLAUDE.md`, plus `.pi/SYSTEM.md` and `.pi/APPEND_SYSTEM.md`.
-- Loaded Pi resources from the current session: skills, prompts, and extension command sources reported by Pi.
-- Compatibility files for Claude Code and Codex: settings, hooks, context, skills/commands, and MCP-related config files.
-- Non-native plugin surfaces when present by convention, including `pi-mcp-adapter` config files and `pi-subagents` agent definitions.
+- Pi settings only: `~/.pi/agent/settings.json`, `.pi/settings.json`, and Pi `models.json` files.
+- All documented Pi settings keys with type/default/choice metadata, insertable into user or project settings.
+- Pi context files using Pi's loading semantics: the first `AGENTS.md` / `CLAUDE.md` found in the user agent dir and each workspace ancestor, plus active `.pi/SYSTEM.md` and `.pi/APPEND_SYSTEM.md` files.
+- Loaded/discoverable Pi resources: skills, prompts, extensions, MCP configs, and pi-subagents definitions from Pi user/project paths plus `.agents/skills` compatibility paths.
 
 ## Editing model
 
 The extension stays inside the Pi terminal. The main navigator is a centered `ctx.ui.custom(..., { overlay: true })` modal with first-class tabs instead of one giant mixed list:
 
-- **Overview** — live Pi inventory: active model/session, tools, slash commands, and loaded resources.
-- **Settings** — Pi/Claude/Codex JSON/TOML settings, model files, and hook files.
-- **.MD context** — all discovered context Markdown including `AGENTS.md`, `CLAUDE.md`, `SYSTEM.md`, and `APPEND_SYSTEM.md` across Pi/Codex/Claude scopes.
-- **Skills**, **Prompts**, **MCP**, **Agents**, and **Extensions** — focused resource views.
+- **Settings** — Pi JSON settings/model files and every supported Pi setting key with type/default metadata.
+- **.MD context** — Markdown files that Pi actually loads (`AGENTS.md`/`CLAUDE.md`, active `SYSTEM.md`, active `APPEND_SYSTEM.md`).
+- **Skills**, **Prompts**, **MCP**, **Agents**, and **Extensions** — focused Pi resource views with scope badges and resource icons.
 
-Use `Tab`/arrow keys to switch tabs, type to filter within the active tab, and `Enter`/`Ctrl+E` to edit the selected file. Wide terminals get a split-pane preview; narrow terminals fall back to a stacked layout without spilling past the terminal width.
+Use `Tab`/arrow keys to switch tabs, type to filter within the active tab, and `Enter`/`Ctrl+E` to edit the selected file. The modal now uses nearly the full terminal (`96%` wide, `94%` high) with many more visible rows, a split-pane preview on wide terminals, and a stacked layout on narrow terminals.
 
-For JSON/TOML settings files, choose **Add setting from reference** (or `Ctrl+A`) to open an in-modal reference catalog that shows setting keys, value type, enum choices, defaults, descriptions, and whether the key already exists. Selecting a setting inserts a sensible default, opens the full-file review editor, and saves atomically only after review. Environment-variable insertion uses the same in-terminal reference flow where supported. After saving, the extension offers to run Pi's resource reload; some settings still require a new session or restart to take effect.
+In the Settings tab, setting-key rows are first-class items: `Enter` inserts the setting into project `.pi/settings.json`, while `Ctrl+G` inserts into user `~/.pi/agent/settings.json`. Editing a Pi settings file opens an in-modal JSON editor with the complete Pi settings reference visible beside it; `Tab`/`Ctrl+R` focuses the reference, `Enter` inserts the highlighted setting into the JSON, and `Ctrl+S` saves. On a settings file row, `Ctrl+A` also opens the standalone in-modal reference catalog with setting keys, value type, enum choices, defaults, descriptions, and whether the key already exists. Saves are atomic and followed by an optional Pi resource reload prompt; some settings still require a new session or restart to take effect.
