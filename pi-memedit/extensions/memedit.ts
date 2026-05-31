@@ -1,4 +1,6 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { dirname, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
@@ -21,6 +23,12 @@ type ContextItem = {
   removable: boolean;
 };
 
+type DeletedItem = {
+  id: string;
+  role: string;
+  text: string;
+};
+
 type MemeditStats = {
   at: number;
   mode: "auto" | "manual";
@@ -29,20 +37,31 @@ type MemeditStats = {
   selected: number;
   deleted: number;
   ignored: number;
+  deletedItems?: DeletedItem[];
   error?: string;
+};
+
+type MemeditSettings = {
+  enabled: boolean;
+  showDeletedItems: boolean;
 };
 
 const EXTENSION_NAME = "pi-memedit";
 const STATUS_MESSAGE_TYPE = "pi-memedit-status";
 const SYSTEM_STATUS_KEY = "pi-memedit";
 const RESPONSE_MAX_TOKENS = 2048;
+const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
+const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
+const PREVIEW_CHARS = 160;
 const PRUNE_SYSTEM_PROMPT = [
   "You are pi-memedit's post-turn memory editor.",
   "The system prompt is included for continuity and is protected. Never select it for deletion.",
   "No tools are available in this pass. Return only valid JSON.",
 ].join("\n");
 
-let enabled = !isDisabled(process.env.PI_MEMEDIT) && !isDisabled(process.env.PI_MEMEDIT_ENABLED) && !isEnabled(process.env.PI_MEMEDIT_DISABLE);
+let settings = loadSettings();
+let enabled = resolveInitialEnabled(settings.enabled);
+let showDeletedItems = settings.showDeletedItems;
 let running = false;
 let sessionLogIsAuthoritative = false;
 let activeRunStartLeafId: string | null | undefined;
@@ -55,6 +74,50 @@ function isDisabled(value: string | undefined): boolean {
 
 function isEnabled(value: string | undefined): boolean {
   return /^(1|true|on|yes|enabled)$/i.test((value ?? "").trim());
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (isEnabled(value)) return true;
+    if (isDisabled(value)) return false;
+  }
+  return fallback;
+}
+
+function loadSettings(): MemeditSettings {
+  try {
+    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as Partial<MemeditSettings>;
+    return {
+      enabled: readBoolean(parsed.enabled, DEFAULT_SETTINGS.enabled),
+      showDeletedItems: readBoolean(parsed.showDeletedItems, DEFAULT_SETTINGS.showDeletedItems),
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(): void {
+  settings = { enabled, showDeletedItems };
+  mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
+  writeFileSync(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+function resolveInitialEnabled(persistedEnabled: boolean): boolean {
+  if (isEnabled(process.env.PI_MEMEDIT_DISABLE)) return false;
+  if (isDisabled(process.env.PI_MEMEDIT) || isDisabled(process.env.PI_MEMEDIT_ENABLED)) return false;
+  if (isEnabled(process.env.PI_MEMEDIT) || isEnabled(process.env.PI_MEMEDIT_ENABLED)) return true;
+  return persistedEnabled;
+}
+
+function setEnabled(value: boolean): void {
+  enabled = value;
+  saveSettings();
+}
+
+function setShowDeletedItems(value: boolean): void {
+  showDeletedItems = value;
+  saveSettings();
 }
 
 function timestampMs(entry: SessionEntry): number {
@@ -218,6 +281,48 @@ function assistantText(message: AssistantMessage): string {
     .trim();
 }
 
+function compactText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxChars = PREVIEW_CHARS): string {
+  const compact = compactText(value);
+  return compact.length > maxChars ? `${compact.slice(0, maxChars - 1)}…` : compact;
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part: AnyRecord) => {
+      if (part?.type === "text" && typeof part.text === "string") return part.text;
+      if (part?.type === "toolCall" && typeof part.name === "string") return `tool call: ${part.name}`;
+      if (part?.type === "thinking" && typeof part.thinking === "string") return part.thinking;
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function previewEntry(entry: SessionEntry): DeletedItem {
+  if (entry.type === "message") {
+    const message = entry.message as AnyRecord;
+    const role = message.role === "toolResult" ? `toolResult:${message.toolName ?? "tool"}` : String(message.role ?? "message");
+    return { id: entry.id, role, text: truncateText(contentText(message.content) || "(no text)") };
+  }
+  if (entry.type === "custom_message") {
+    return { id: entry.id, role: `custom:${entry.customType ?? "message"}`, text: truncateText(contentText(entry.content) || "(no text)") };
+  }
+  if (entry.type === "branch_summary") {
+    return { id: entry.id, role: "branchSummary", text: truncateText(String(entry.summary ?? "")) };
+  }
+  return { id: entry.id, role: entry.type, text: truncateText(JSON.stringify(entry)) };
+}
+
+function formatDeletedItem(item: DeletedItem): string {
+  return `- ${item.role}: ${item.text}`;
+}
+
 function parseDeleteNumbers(text: string): number[] {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   const start = trimmed.indexOf("{");
@@ -326,8 +431,8 @@ function replacementFirstKept(compaction: SessionEntry, keptIds: Set<string>, by
   return undefined;
 }
 
-function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncountedIds = new Set<string>()): { total: number; counted: number } {
-  if (deleteIds.size === 0) return { total: 0, counted: 0 };
+function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncountedIds = new Set<string>()): { total: number; counted: number; deletedItems: DeletedItem[] } {
+  if (deleteIds.size === 0) return { total: 0, counted: 0, deletedItems: [] };
 
   const manager = ctx.sessionManager as AnyRecord;
   const header = manager.getHeader?.();
@@ -373,8 +478,10 @@ function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncounte
 
   sessionLogIsAuthoritative = true;
   const removed = entries.filter((entry) => !keptEntries.includes(entry));
-  const counted = removed.filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id)).length;
-  return { total: removed.length, counted };
+  const deletedItems = removed
+    .filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id))
+    .map(previewEntry);
+  return { total: removed.length, counted: deletedItems.length, deletedItems };
 }
 
 function isStatusAgentMessage(message: AnyRecord): boolean {
@@ -407,11 +514,16 @@ function memeditStatusText(stats: MemeditStats): string {
 }
 
 function scheduleChatNotice(pi: ExtensionAPI, stats: MemeditStats): void {
+  const lines = [`${memeditStatusText(stats)} Candidates: ${stats.candidates}; selected: ${stats.selected}; ignored: ${stats.ignored}.`];
+  if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
+    lines.push("Removed:", ...stats.deletedItems.map(formatDeletedItem));
+  }
+
   setTimeout(() => {
     pi.sendMessage(
       {
         customType: STATUS_MESSAGE_TYPE,
-        content: `${memeditStatusText(stats)} Candidates: ${stats.candidates}; selected: ${stats.selected}; ignored: ${stats.ignored}.`,
+        content: lines.join("\n"),
         display: true,
         details: stats,
       },
@@ -493,6 +605,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       selected: selectedIds.size,
       deleted: deleted.counted,
       ignored,
+      deletedItems: deleted.deletedItems,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -519,9 +632,14 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
 }
 
 function formatStats(): string {
-  if (!lastStats) return "pi-memedit has not run in this session.";
-  const lines = [
+  const settingsLines = [
     `pi-memedit: ${enabled ? "enabled" : "disabled"}`,
+    `Show removed text: ${showDeletedItems ? "on" : "off"}`,
+    `Settings file: ${SETTINGS_FILE}`,
+  ];
+  if (!lastStats) return [...settingsLines, "pi-memedit has not run in this session."].join("\n");
+  const lines = [
+    ...settingsLines,
     `Last run: ${new Date(lastStats.at).toLocaleString()}`,
     `Mode: ${lastStats.mode}`,
     `Status: ${lastStats.status}`,
@@ -530,6 +648,9 @@ function formatStats(): string {
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
   ];
+  if (showDeletedItems && lastStats.deletedItems && lastStats.deletedItems.length > 0) {
+    lines.push("Removed:", ...lastStats.deletedItems.map(formatDeletedItem));
+  }
   if (lastStats.error) lines.push(`Error: ${lastStats.error}`);
   return lines.join("\n");
 }
@@ -566,19 +687,26 @@ export default function memedit(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const command = args.trim().toLowerCase() || "status";
       if (command === "on" || command === "enable") {
-        enabled = true;
+        setEnabled(true);
         if (ctx.hasUI) {
           ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:on");
-          ctx.ui.notify("pi-memedit enabled", "info");
+          ctx.ui.notify(`pi-memedit enabled and persisted to ${SETTINGS_FILE}`, "info");
         }
         return;
       }
       if (command === "off" || command === "disable") {
-        enabled = false;
+        setEnabled(false);
         if (ctx.hasUI) {
           ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:off");
-          ctx.ui.notify("pi-memedit disabled", "info");
+          ctx.ui.notify(`pi-memedit disabled and persisted to ${SETTINGS_FILE}`, "info");
         }
+        return;
+      }
+      const showMatch = command.match(/^(?:show|show-deleted|details|verbose|output|removed|removed-text)\s+(on|off|enable|disable)$/);
+      if (showMatch) {
+        const next = showMatch[1] === "on" || showMatch[1] === "enable";
+        setShowDeletedItems(next);
+        if (ctx.hasUI) ctx.ui.notify(`pi-memedit removed-text output ${next ? "enabled" : "disabled"} and persisted to ${SETTINGS_FILE}`, "info");
         return;
       }
       if (command === "run") {
@@ -587,7 +715,12 @@ export default function memedit(pi: ExtensionAPI) {
         if (ctx.hasUI) ctx.ui.notify(formatStats(), "info");
         return;
       }
-      if (ctx.hasUI) ctx.ui.notify(`${formatStats()}\n\nCommands: /memedit status | run | on | off`, "info");
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `${formatStats()}\n\nCommands: /memedit status | run | on | off | show-deleted on | show-deleted off`,
+          "info",
+        );
+      }
     },
   });
 }
