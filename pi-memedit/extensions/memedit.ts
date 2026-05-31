@@ -462,7 +462,6 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
         apiKey: auth.apiKey,
         headers: auth.headers,
         maxTokens: RESPONSE_MAX_TOKENS,
-        temperature: 0,
         sessionId: manager.getSessionId?.(),
         cacheRetention: "short",
         signal: ctx.signal,
