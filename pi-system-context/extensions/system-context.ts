@@ -58,18 +58,8 @@ function compactPath(value: string): string {
   return normalized.toLowerCase().startsWith(home.toLowerCase()) ? `~${normalized.slice(home.length)}` : normalized;
 }
 
-function formatLocalTime(timeZone: string | undefined): string {
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: "short",
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  };
-  if (timeZone) options.timeZone = timeZone;
-  return new Intl.DateTimeFormat("en-AU", options).format(new Date());
+function formatUtcTimestamp(): string {
+  return new Date().toISOString();
 }
 
 function readSettingsShellPath(settingsPath: string): string | undefined {
@@ -143,7 +133,8 @@ export default function (pi: any) {
 
     const context = [
       "### Local env",
-      `- time: ${formatLocalTime(timeZone)} (${timeZone ?? "unknown TZ"})`,
+      `- time: ${formatUtcTimestamp()} (UTC)`,
+      `- timezone: ${timeZone ?? "unknown"}`,
       `- os: ${os.type()} ${os.release()} (${os.platform()}/${os.arch()})`,
       `- term: ${terminalName()}`,
       `- shell: ${compactPath(shell)}${bashPath ? `; bash: ${compactPath(bashPath)}` : ""}`,

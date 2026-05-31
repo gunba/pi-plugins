@@ -6,7 +6,8 @@ Pi extension that appends a compact local environment summary to the system prom
 
 ```md
 ### Local env
-- time: Fri, 29 May 2026, 10:xx am AWST (Australia/Perth)
+- time: 2026-05-29T02:00:00.000Z (UTC)
+- timezone: Australia/Perth
 - os: Windows_NT 10.0.26100 (win32/x64)
 - term: Windows Terminal
 - shell: C:/WINDOWS/system32/cmd.exe; bash: ~/Desktop/Programs/PortableGit/bin/bash.exe

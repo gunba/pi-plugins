@@ -568,7 +568,7 @@ function installGlobalPatches(state: TransportState) {
               elapsedMs: elapsedMs(this.__transportStart),
               ordinal: this.__transportMessages,
               bytes,
-              event: summarizeWsMessage(text),
+              wsEvent: summarizeWsMessage(text),
             });
           }
         });
@@ -793,10 +793,10 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
           eventCounts[eventType] = (eventCounts[eventType] || 0) + 1;
           if (firstSseMs === undefined) {
             firstSseMs = elapsedMs(start);
-            state.log?.("codex_fetch_first_sse_event", { fetchId, elapsedMs: firstSseMs, eventType, event: eventSummary });
+            state.log?.("codex_fetch_first_sse_event", { fetchId, elapsedMs: firstSseMs, eventType, sseEvent: eventSummary });
           }
           if (/^(error|response\.(completed|failed|incomplete|done))$/.test(eventType)) {
-            state.log?.("codex_fetch_terminal_sse_event", { fetchId, elapsedMs: elapsedMs(start), eventType, event: eventSummary });
+            state.log?.("codex_fetch_terminal_sse_event", { fetchId, elapsedMs: elapsedMs(start), eventType, sseEvent: eventSummary });
           }
         });
         if (!streamSettled) controller.enqueue(result.value);

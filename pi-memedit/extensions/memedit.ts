@@ -1,12 +1,40 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
-import { AgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { AgentSession, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type AnyRecord = Record<string, any>;
+
+type AnthropicTextBlock = {
+  type: "text";
+  text: string;
+  cache_control?: unknown;
+  [key: string]: unknown;
+};
+
+type AnthropicMessageBlock = {
+  type?: string;
+  text?: string;
+  [key: string]: unknown;
+};
+
+type AnthropicMessageParam = {
+  role?: string;
+  content?: string | AnthropicMessageBlock[];
+  [key: string]: unknown;
+};
+
+type AnthropicPayload = {
+  model?: unknown;
+  messages?: unknown;
+  system?: unknown;
+  stream?: unknown;
+  [key: string]: unknown;
+};
 
 type SessionEntry = AnyRecord & {
   type: string;
@@ -18,7 +46,6 @@ type SessionEntry = AnyRecord & {
 type ContextItem = {
   number?: number;
   entry: SessionEntry;
-  agentMessage: AnyRecord;
   scoped: boolean;
   removable: boolean;
 };
@@ -37,8 +64,27 @@ type MemeditStats = {
   selected: number;
   deleted: number;
   ignored: number;
+  contextTokensBefore?: number;
+  tokensSaved?: number;
+  estimatedRecacheTokens?: number;
+  netTokensSaved?: number;
+  netContextPercentSaved?: number;
+  pruneTokens?: number;
+  pruneCost?: number;
+  estimatedRecacheCost?: number;
   deletedItems?: DeletedItem[];
   error?: string;
+};
+
+type MemeditTelemetry = {
+  runs: number;
+  contextTokensBefore: number;
+  tokensSaved: number;
+  estimatedRecacheTokens: number;
+  netTokensSaved: number;
+  pruneTokens: number;
+  pruneCost: number;
+  estimatedRecacheCost: number;
 };
 
 type MemeditSettings = {
@@ -53,6 +99,14 @@ const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
+const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
+const ANTHROPIC_OAUTH_TOKEN_MARKER = "sk-ant-oat";
+const CLAUDE_CODE_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI";
+const ANTHROPIC_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
+const CLAUDE_CODE_VERSION = "2.1.150";
+const CLAUDE_CODE_ENTRYPOINT = "sdk-cli";
+const BILLING_HEADER_SALT = "59cf53e54c78";
+const BILLING_HEADER_POSITIONS = [4, 7, 20] as const;
 const AGENT_SESSION_PATCH_KEY = Symbol.for("pi.memedit.agentSessionPatchInstalled");
 const AGENT_STATE_SYNC_KEY = Symbol.for("pi.memedit.agentStateSyncSessions");
 const PRUNE_SYSTEM_PROMPT = `You are pi-memedit's post-turn memory editor.
@@ -116,8 +170,19 @@ let showDeletedItems = settings.showDeletedItems;
 let running = false;
 let sessionLogIsAuthoritative = false;
 let activeRunStartLeafId: string | null | undefined;
+let pendingRunStartLeafId: string | null | undefined;
 let lastCompletedRunStartLeafId: string | null | undefined;
 let lastStats: MemeditStats | undefined;
+let telemetry: MemeditTelemetry = {
+  runs: 0,
+  contextTokensBefore: 0,
+  tokensSaved: 0,
+  estimatedRecacheTokens: 0,
+  netTokensSaved: 0,
+  pruneTokens: 0,
+  pruneCost: 0,
+  estimatedRecacheCost: 0,
+};
 
 function stateSyncSessions(): Set<string> {
   const globalState = globalThis as typeof globalThis & { [AGENT_STATE_SYNC_KEY]?: Set<string> };
@@ -158,6 +223,18 @@ function isEnabled(value: string | undefined): boolean {
   return /^(1|true|on|yes|enabled)$/i.test((value ?? "").trim());
 }
 
+function isSubagentChildProcess(): boolean {
+  return process.env[SUBAGENT_CHILD_ENV] === "1";
+}
+
+function isSubagentRuntimeBlocked(): boolean {
+  return isSubagentChildProcess();
+}
+
+function subagentDisabledReason(): string {
+  return "disabled in pi-subagents child process";
+}
+
 function readBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -187,6 +264,7 @@ function saveSettings(): void {
 
 function resolveInitialEnabled(persistedEnabled: boolean): boolean {
   if (isEnabled(process.env.PI_MEMEDIT_DISABLE)) return false;
+  if (isSubagentRuntimeBlocked()) return false;
   if (isDisabled(process.env.PI_MEMEDIT) || isDisabled(process.env.PI_MEMEDIT_ENABLED)) return false;
   if (isEnabled(process.env.PI_MEMEDIT) || isEnabled(process.env.PI_MEMEDIT_ENABLED)) return true;
   return persistedEnabled;
@@ -296,10 +374,9 @@ function collectContextItems(branch: SessionEntry[], scopedEntryIds: Set<string>
   const items: ContextItem[] = [];
   const append = (entry: SessionEntry) => {
     if (!entryParticipatesInContext(entry)) return;
-    const agentMessage = entryToAgentMessage(entry);
-    if (!agentMessage) return;
+    if (!entryToAgentMessage(entry)) return;
     const scoped = scopedEntryIds.has(entry.id);
-    items.push({ entry, agentMessage, scoped, removable: entryIsRemovable(entry, scopedEntryIds, protectedEntryIds) });
+    items.push({ entry, scoped, removable: entryIsRemovable(entry, scopedEntryIds, protectedEntryIds) });
   };
 
   const compactionIndex = getLatestCompactionIndex(branch);
@@ -325,39 +402,48 @@ function collectContextItems(branch: SessionEntry[], scopedEntryIds: Set<string>
   return items;
 }
 
-function contentWithPrefix(content: unknown, prefix: string): any[] {
-  if (typeof content === "string") return [{ type: "text", text: `${prefix}\n${content}` }];
-  if (!Array.isArray(content)) return [{ type: "text", text: prefix }];
-
-  const next = content.map((block) => (block && typeof block === "object" ? { ...(block as AnyRecord) } : block));
-  const textIndex = next.findIndex((block) => block && typeof block === "object" && block.type === "text" && typeof block.text === "string");
-  if (textIndex >= 0) {
-    next[textIndex] = { ...next[textIndex], text: `${prefix}\n${next[textIndex].text}` };
-  } else {
-    next.unshift({ type: "text", text: prefix });
+function entryPromptRole(entry: SessionEntry): string {
+  if (entry.type === "message") {
+    const message = entry.message as AnyRecord;
+    if (message.role === "toolResult") return `toolResult:${message.toolName ?? "tool"}`;
+    return String(message.role ?? "message");
   }
-  return next;
+  if (entry.type === "custom_message") return `custom:${entry.customType ?? "message"}`;
+  if (entry.type === "branch_summary") return "branchSummary";
+  if (entry.type === "compaction") return "compactionSummary";
+  return entry.type;
 }
 
-function prefixMessage(message: Message, item: ContextItem): Message {
-  if (!item.number) return structuredClone(message);
-  const clone = structuredClone(message) as AnyRecord;
-  clone.content = contentWithPrefix(clone.content, `[${item.number}]`);
-  return clone as Message;
+function entryPromptText(entry: SessionEntry): string {
+  if (entry.type === "message") return contentText((entry.message as AnyRecord).content);
+  if (entry.type === "custom_message") return contentText(entry.content);
+  if (entry.type === "branch_summary") return String(entry.summary ?? "");
+  if (entry.type === "compaction") return String(entry.summary ?? "");
+  return "";
+}
+
+function formatPruneItem(item: ContextItem): string {
+  const tag = item.number ? `[${item.number}]` : "[context]";
+  const scope = item.scoped ? "current-run" : "earlier-context";
+  const mutability = item.removable ? "removable" : "protected";
+  const text = entryPromptText(item.entry).trim() || "(no text)";
+  return `${tag} ${entryPromptRole(item.entry)} (${scope}; ${mutability}; id=${item.entry.id})\n${text}`;
 }
 
 function buildPruneMessages(items: ContextItem[]): Message[] {
-  const messages: Message[] = [];
-  for (const item of items) {
-    const llmMessages = convertToLlm([item.agentMessage as never]) as Message[];
-    for (const message of llmMessages) messages.push(prefixMessage(message, item));
-  }
-  messages.push({
-    role: "user",
-    content: [{ type: "text", text: "Return the deletion JSON now." }],
-    timestamp: Date.now(),
-  });
-  return messages;
+  const transcript = items.map(formatPruneItem).join("\n\n---\n\n");
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Conversation entries follow. Only entries tagged [N] are deletion candidates; [context] entries are context only and must not be returned.\n\n${transcript}\n\nReturn the deletion JSON now.`,
+        },
+      ],
+      timestamp: Date.now(),
+    },
+  ];
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -366,6 +452,100 @@ function assistantText(message: AssistantMessage): string {
     .map((part) => part.text)
     .join("\n")
     .trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isAnthropicOAuthApiKey(apiKey: string): boolean {
+  return apiKey.includes(ANTHROPIC_OAUTH_TOKEN_MARKER);
+}
+
+function isAnthropicMessagesPayload(payload: unknown): payload is AnthropicPayload {
+  return isRecord(payload) && typeof payload.model === "string" && Array.isArray(payload.messages) && typeof payload.stream === "boolean";
+}
+
+function hasAnthropicOAuthSystemMarker(block: unknown): boolean {
+  if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") return false;
+  return block.text.includes(CLAUDE_CODE_IDENTITY_PREFIX) || block.text.includes(ANTHROPIC_BILLING_HEADER_PREFIX);
+}
+
+function isAnthropicOAuthPayload(payload: AnthropicPayload): boolean {
+  return Array.isArray(payload.system) && payload.system.some(hasAnthropicOAuthSystemMarker);
+}
+
+function getFirstUserText(messages: AnthropicMessageParam[]): string {
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  if (!firstUserMessage) return "";
+  if (typeof firstUserMessage.content === "string") return firstUserMessage.content;
+  if (!Array.isArray(firstUserMessage.content)) return "";
+  const firstTextBlock = firstUserMessage.content.find((block) => block.type === "text" && typeof block.text === "string");
+  return typeof firstTextBlock?.text === "string" ? firstTextBlock.text : "";
+}
+
+function buildBillingHeaderValue(messages: AnthropicMessageParam[]): string | undefined {
+  const messageText = getFirstUserText(messages);
+  if (!messageText) return undefined;
+
+  const cch = createHash("sha256").update(messageText).digest("hex").slice(0, 5);
+  const sampledCharacters = BILLING_HEADER_POSITIONS.map((index) => messageText[index] || "0").join("");
+  const suffix = createHash("sha256").update(`${BILLING_HEADER_SALT}${sampledCharacters}${CLAUDE_CODE_VERSION}`).digest("hex").slice(0, 3);
+
+  return [
+    ANTHROPIC_BILLING_HEADER_PREFIX,
+    `cc_version=${CLAUDE_CODE_VERSION}.${suffix};`,
+    `cc_entrypoint=${CLAUDE_CODE_ENTRYPOINT};`,
+    `cch=${cch};`,
+  ].join(" ");
+}
+
+function normalizeSystemBlock(block: unknown): AnthropicTextBlock {
+  if (typeof block === "string") return { type: "text", text: block };
+  if (isRecord(block) && typeof block.text === "string") return { ...block, type: "text", text: block.text };
+  return { type: "text", text: "" };
+}
+
+function prependBillingHeader(system: unknown, messages: AnthropicMessageParam[]): unknown {
+  const billingHeader = buildBillingHeaderValue(messages);
+  if (!billingHeader) return system;
+
+  const systemBlocks = Array.isArray(system) ? system.map(normalizeSystemBlock) : system == null ? [] : [normalizeSystemBlock(system)];
+  if (systemBlocks.some((block) => block.text.includes(ANTHROPIC_BILLING_HEADER_PREFIX))) return systemBlocks;
+
+  return [{ type: "text", text: billingHeader }, ...systemBlocks];
+}
+
+function splitAssistantToolUseTrailingContent(messages: AnthropicMessageParam[]): AnthropicMessageParam[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return [message];
+
+    const firstToolUseIndex = message.content.findIndex((block) => block.type === "tool_use");
+    if (firstToolUseIndex === -1) return [message];
+
+    const trailingBlocks = message.content.slice(firstToolUseIndex);
+    if (!trailingBlocks.some((block) => block.type !== "tool_use")) return [message];
+
+    return [
+      { ...message, content: message.content.filter((block) => block.type !== "tool_use") },
+      { ...message, content: message.content.filter((block) => block.type === "tool_use") },
+    ];
+  });
+}
+
+function shapeAnthropicOAuthPayload(payload: unknown): unknown {
+  if (!isAnthropicMessagesPayload(payload) || !isAnthropicOAuthPayload(payload)) return payload;
+  const messages = payload.messages as AnthropicMessageParam[];
+  const normalizedMessages = splitAssistantToolUseTrailingContent(messages);
+  return {
+    ...payload,
+    messages: normalizedMessages,
+    system: prependBillingHeader(payload.system, normalizedMessages),
+  };
+}
+
+function shapeMemeditProviderPayload(payload: unknown, apiKey: string): unknown {
+  return isAnthropicOAuthApiKey(apiKey) ? shapeAnthropicOAuthPayload(payload) : payload;
 }
 
 function compactText(value: string): string {
@@ -377,18 +557,36 @@ function truncateText(value: string, maxChars = PREVIEW_CHARS): string {
   return compact.length > maxChars ? `${compact.slice(0, maxChars - 1)}…` : compact;
 }
 
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
     .map((part: AnyRecord) => {
       if (part?.type === "text" && typeof part.text === "string") return part.text;
-      if (part?.type === "toolCall" && typeof part.name === "string") return `tool call: ${part.name}`;
+      if (part?.type === "toolCall" && typeof part.name === "string") return `tool call: ${part.name} ${safeJson(part.arguments ?? {})}`;
       if (part?.type === "thinking" && typeof part.thinking === "string") return part.thinking;
+      if (part?.type === "image") return "[image omitted]";
       return "";
     })
     .filter(Boolean)
     .join(" ");
+}
+
+function estimateEntryTokens(entry: SessionEntry): number {
+  const message = entryToAgentMessage(entry);
+  return message ? estimateTokens(message as never) : 0;
+}
+
+function estimateEntriesTokens(entries: SessionEntry[]): number {
+  return entries.reduce((total, entry) => total + estimateEntryTokens(entry), 0);
 }
 
 function previewEntry(entry: SessionEntry): DeletedItem {
@@ -518,8 +716,12 @@ function replacementFirstKept(compaction: SessionEntry, keptIds: Set<string>, by
   return undefined;
 }
 
-function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncountedIds = new Set<string>()): { total: number; counted: number; deletedItems: DeletedItem[] } {
-  if (deleteIds.size === 0) return { total: 0, counted: 0, deletedItems: [] };
+function applyHardDelete(
+  ctx: ExtensionContext,
+  deleteIds: Set<string>,
+  uncountedIds = new Set<string>(),
+): { total: number; counted: number; tokensSaved: number; estimatedRecacheTokens: number; deletedItems: DeletedItem[] } {
+  if (deleteIds.size === 0) return { total: 0, counted: 0, tokensSaved: 0, estimatedRecacheTokens: 0, deletedItems: [] };
 
   const manager = ctx.sessionManager as AnyRecord;
   const header = manager.getHeader?.();
@@ -529,6 +731,7 @@ function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncounte
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const oldLeafId = manager.getLeafId?.() ?? null;
   const expandedDeleteIds = expandToolDependencies(entries, deleteIds);
+  const firstDeletedIndex = entries.findIndex((entry) => expandedDeleteIds.has(entry.id));
 
   const keptEntries = entries.filter((entry) => {
     if (expandedDeleteIds.has(entry.id)) return false;
@@ -566,10 +769,11 @@ function applyHardDelete(ctx: ExtensionContext, deleteIds: Set<string>, uncounte
   sessionLogIsAuthoritative = true;
   markAgentStateNeedsSync(manager.getSessionId?.());
   const removed = entries.filter((entry) => !keptEntries.includes(entry));
-  const deletedItems = removed
-    .filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id))
-    .map(previewEntry);
-  return { total: removed.length, counted: deletedItems.length, deletedItems };
+  const countedEntries = removed.filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id));
+  const deletedItems = countedEntries.map(previewEntry);
+  const tokensSaved = estimateEntriesTokens(countedEntries);
+  const estimatedRecacheTokens = firstDeletedIndex < 0 ? 0 : estimateEntriesTokens(keptEntries.filter((entry) => entries.indexOf(entry) > firstDeletedIndex));
+  return { total: removed.length, counted: deletedItems.length, tokensSaved, estimatedRecacheTokens, deletedItems };
 }
 
 function isStatusAgentMessage(message: AnyRecord): boolean {
@@ -594,6 +798,64 @@ function isLikelyContextOverflowMessage(message: string | undefined): boolean {
   return /context (window|length|size|limit)|too many tokens|maximum (context|tokens)|prompt too long|input too large|exceeds? .*context/i.test(message ?? "");
 }
 
+function usageTotalTokens(usage: AnyRecord | undefined): number {
+  if (!usage) return 0;
+  if (typeof usage.totalTokens === "number") return usage.totalTokens;
+  return (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
+}
+
+function estimateRecacheCost(tokens: number, model: AnyRecord | undefined): number {
+  const cost = model?.cost;
+  if (!cost) return 0;
+  const input = typeof cost.input === "number" ? cost.input : 0;
+  const cacheRead = typeof cost.cacheRead === "number" ? cost.cacheRead : 0;
+  return Math.max(0, input - cacheRead) * tokens;
+}
+
+function updateTelemetry(stats: MemeditStats): void {
+  if (stats.status !== "applied" && stats.status !== "noop") return;
+  telemetry.runs++;
+  telemetry.contextTokensBefore += stats.contextTokensBefore || 0;
+  telemetry.tokensSaved += stats.tokensSaved || 0;
+  telemetry.estimatedRecacheTokens += stats.estimatedRecacheTokens || 0;
+  telemetry.netTokensSaved += stats.netTokensSaved || 0;
+  telemetry.pruneTokens += stats.pruneTokens || 0;
+  telemetry.pruneCost += stats.pruneCost || 0;
+  telemetry.estimatedRecacheCost += stats.estimatedRecacheCost || 0;
+}
+
+function formatTokens(value: number | undefined): string {
+  const count = Math.round(value || 0);
+  if (Math.abs(count) < 1000) return `${count}`;
+  if (Math.abs(count) < 1_000_000) return `${(count / 1000).toFixed(Math.abs(count) < 10_000 ? 1 : 0)}k`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+function formatPercent(value: number | undefined): string {
+  if (!Number.isFinite(value)) return "0.0%";
+  return `${(value || 0).toFixed(1)}%`;
+}
+
+function formatCost(value: number | undefined): string {
+  const cost = value || 0;
+  if (cost === 0) return "$0";
+  if (Math.abs(cost) < 0.001) return `$${cost.toExponential(2)}`;
+  return `$${cost.toFixed(4)}`;
+}
+
+function cumulativeNetPercent(): number {
+  return telemetry.contextTokensBefore > 0 ? (telemetry.netTokensSaved / telemetry.contextTokensBefore) * 100 : 0;
+}
+
+function footerStatusText(): string {
+  if (isSubagentRuntimeBlocked()) return "memedit:off(subagent)";
+  if (!enabled) return "memedit:off";
+  if (lastStats?.status === "applied" || lastStats?.status === "noop") {
+    return `memedit:${formatPercent(cumulativeNetPercent())} net`;
+  }
+  return `memedit:${lastStats?.status ?? "on"}`;
+}
+
 function memeditStatusText(stats: MemeditStats): string {
   if (stats.status === "applied") return `${EXTENSION_NAME}: deleted ${stats.deleted} context entr${stats.deleted === 1 ? "y" : "ies"}.`;
   if (stats.status === "noop") return `${EXTENSION_NAME}: no context entries deleted.`;
@@ -601,37 +863,44 @@ function memeditStatusText(stats: MemeditStats): string {
   return `${EXTENSION_NAME}: failed${stats.error ? ` (${stats.error})` : ""}.`;
 }
 
-function scheduleChatNotice(pi: ExtensionAPI, stats: MemeditStats): void {
+function statusMessage(stats: MemeditStats) {
   const lines = [`${memeditStatusText(stats)} Candidates: ${stats.candidates}; selected: ${stats.selected}; ignored: ${stats.ignored}.`];
+  if (stats.status === "applied" || stats.status === "noop") {
+    lines.push(
+      `Efficiency: ${formatPercent(stats.netContextPercentSaved)} net context saved (${formatTokens(stats.tokensSaved)} saved - ${formatTokens(stats.estimatedRecacheTokens)} recache est).`,
+      `Overhead: ${formatTokens(stats.pruneTokens)} prune tokens, ${formatCost(stats.pruneCost)} prune cost, ${formatCost(stats.estimatedRecacheCost)} recache-cost est.`,
+    );
+  }
   if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
     lines.push("Removed:", ...stats.deletedItems.map(formatDeletedItem));
   }
 
-  setTimeout(() => {
-    pi.sendMessage(
-      {
-        customType: STATUS_MESSAGE_TYPE,
-        content: lines.join("\n"),
-        display: true,
-        details: stats,
-      },
-    );
-  }, 0);
+  return {
+    customType: STATUS_MESSAGE_TYPE,
+    content: lines.join("\n"),
+    display: true,
+    details: stats,
+  };
 }
 
 async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startLeafId: string | null | undefined): Promise<MemeditStats | undefined> {
+  if (isSubagentRuntimeBlocked()) {
+    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, error: subagentDisabledReason() };
+    return lastStats;
+  }
   if (!enabled || running) return;
   const model = ctx.model;
   if (!model) return;
 
   const manager = ctx.sessionManager as AnyRecord;
   const branch = (manager.getBranch?.() ?? []) as SessionEntry[];
+  const contextTokensBefore = estimateEntriesTokens(branch);
   const scopedEntryIds = entryIdsAfter(branch, startLeafId);
   const protectedEntryIds = protectFinalAssistantTextResponse(branch, scopedEntryIds);
   const items = collectContextItems(branch, scopedEntryIds, protectedEntryIds);
   const candidates = items.filter((item) => item.removable && item.number !== undefined);
   if (candidates.length === 0) {
-    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0 };
+    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, contextTokensBefore };
     return lastStats;
   }
 
@@ -648,6 +917,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
         selected: 0,
         deleted: 0,
         ignored: 0,
+        contextTokensBefore,
         error: auth.ok ? `No API key for ${model.provider}` : auth.error,
       };
       return lastStats;
@@ -656,7 +926,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
     const response = await completeSimple(
       model,
       {
-        systemPrompt: `${ctx.getSystemPrompt()}\n\n${PRUNE_SYSTEM_PROMPT}`,
+        systemPrompt: PRUNE_SYSTEM_PROMPT,
         messages: buildPruneMessages(items),
       },
       {
@@ -666,6 +936,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
         sessionId: manager.getSessionId?.(),
         cacheRetention: "short",
         signal: ctx.signal,
+        onPayload: (payload) => shapeMemeditProviderPayload(payload, auth.apiKey),
       },
     );
 
@@ -686,6 +957,10 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
     const housekeepingIds = statusEntryIds(branch);
     const rewriteIds = new Set([...selectedIds, ...housekeepingIds]);
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds);
+    const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
+    const pruneCost = response.usage?.cost?.total || 0;
+    const estimatedRecacheCost = estimateRecacheCost(deleted.estimatedRecacheTokens, model as AnyRecord);
+    const netTokensSaved = deleted.tokensSaved - deleted.estimatedRecacheTokens;
     lastStats = {
       at: Date.now(),
       mode,
@@ -694,8 +969,17 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       selected: selectedIds.size,
       deleted: deleted.counted,
       ignored,
+      contextTokensBefore,
+      tokensSaved: deleted.tokensSaved,
+      estimatedRecacheTokens: deleted.estimatedRecacheTokens,
+      netTokensSaved,
+      netContextPercentSaved: contextTokensBefore > 0 ? (netTokensSaved / contextTokensBefore) * 100 : 0,
+      pruneTokens,
+      pruneCost,
+      estimatedRecacheCost,
       deletedItems: deleted.deletedItems,
     };
+    updateTelemetry(lastStats);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const overflow = isLikelyContextOverflowMessage(message);
@@ -707,15 +991,13 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       selected: 0,
       deleted: 0,
       ignored: 0,
+      contextTokensBefore,
       error: overflow ? "prune request exceeded context; left unchanged for normal Pi compaction" : message,
     };
     if (ctx.hasUI && !overflow) ctx.ui.notify(`pi-memedit failed: ${lastStats.error}`, "warning");
   } finally {
     running = false;
-    if (ctx.hasUI) {
-      const suffix = lastStats?.status === "applied" ? `-${lastStats.deleted}` : lastStats?.status ?? "on";
-      ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? `memedit:${suffix}` : "memedit:off");
-    }
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   }
   return lastStats;
 }
@@ -746,7 +1028,7 @@ function skippedStats(reason: string): MemeditStats {
 
 function formatStats(): string {
   const settingsLines = [
-    `pi-memedit: ${enabled ? "enabled" : "disabled"}`,
+    `pi-memedit: ${isSubagentRuntimeBlocked() ? subagentDisabledReason() : enabled ? "enabled" : "disabled"}`,
     `Show removed text: ${showDeletedItems ? "on" : "off"}`,
     `Settings file: ${SETTINGS_FILE}`,
   ];
@@ -760,6 +1042,10 @@ function formatStats(): string {
     `Selected: ${lastStats.selected}`,
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
+    `Last net context saved: ${formatPercent(lastStats.netContextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} saved - ${formatTokens(lastStats.estimatedRecacheTokens)} recache est)`,
+    `Last overhead: ${formatTokens(lastStats.pruneTokens)} prune tokens, ${formatCost(lastStats.pruneCost)} prune cost, ${formatCost(lastStats.estimatedRecacheCost)} recache-cost est`,
+    `Cumulative net context saved: ${formatPercent(cumulativeNetPercent())} (${formatTokens(telemetry.netTokensSaved)} net / ${formatTokens(telemetry.contextTokensBefore)} considered)`,
+    `Cumulative overhead: ${formatTokens(telemetry.pruneTokens)} prune tokens, ${formatCost(telemetry.pruneCost)} prune cost, ${formatCost(telemetry.estimatedRecacheCost)} recache-cost est`,
   ];
   if (showDeletedItems && lastStats.deletedItems && lastStats.deletedItems.length > 0) {
     lines.push("Removed:", ...lastStats.deletedItems.map(formatDeletedItem));
@@ -769,11 +1055,24 @@ function formatStats(): string {
 }
 
 export default function memedit(pi: ExtensionAPI) {
+  if (isSubagentRuntimeBlocked()) {
+    pi.on("session_start", async (_event, ctx) => {
+      if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:off(subagent)");
+    });
+    pi.registerCommand("memedit", {
+      description: "Show why pi-memedit is disabled in this subagent child process",
+      handler: async (_args, ctx) => {
+        if (ctx.hasUI) ctx.ui.notify(formatStats(), "info");
+      },
+    });
+    return;
+  }
+
   installAgentSessionPatch();
 
   pi.on("session_start", async (_event, ctx) => {
     sessionLogIsAuthoritative = false;
-    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:on" : "memedit:off");
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
 
   pi.on("context", async (event, ctx) => {
@@ -783,6 +1082,16 @@ export default function memedit(pi: ExtensionAPI) {
     }
     const filtered = event.messages.filter((message: AnyRecord) => !isStatusAgentMessage(message));
     if (filtered.length !== event.messages.length) return { messages: filtered as never };
+  });
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    const startLeafId = pendingRunStartLeafId;
+    if (startLeafId === undefined) return;
+
+    pendingRunStartLeafId = undefined;
+    lastCompletedRunStartLeafId = startLeafId;
+    const stats = await runMemedit(ctx, "auto", startLeafId);
+    if (stats) return { message: statusMessage(stats) };
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -795,15 +1104,15 @@ export default function memedit(pi: ExtensionAPI) {
 
     const unsuccessfulReason = unsuccessfulRunReason(event.messages);
     if (unsuccessfulReason) {
+      pendingRunStartLeafId = undefined;
       lastStats = skippedStats(`agent run did not complete cleanly (${unsuccessfulReason})`);
       if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:skipped" : "memedit:off");
-      scheduleChatNotice(pi, lastStats);
       return;
     }
 
+    pendingRunStartLeafId = startLeafId;
     lastCompletedRunStartLeafId = startLeafId;
-    const stats = await runMemedit(ctx, "auto", startLeafId);
-    if (stats) scheduleChatNotice(pi, stats);
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:pending" : "memedit:off");
   });
 
   pi.registerCommand("memedit", {

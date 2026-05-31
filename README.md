@@ -11,7 +11,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
 - `pi-resume-search` — adds `/resume-search` and `/rs` for full-session resume search with match snippets.
 - `pi-system-context` — adds compact local environment context to the system prompt.
-- `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log after each turn.
+- `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log after each turn; disabled by default in pi-subagents child processes and compatible with Anthropic OAuth prune calls.
 
 ## Install
 
@@ -35,6 +35,6 @@ pi update
 
 The package manifest at the repository root loads the extension files from the `pi-*` subdirectories. Keep plugin directories and package names prefixed with `pi-`.
 
-`pi-codex-usage` does not poll OpenAI or ChatGPT usage endpoints. It updates from `x-codex-*` headers already returned by Codex requests, persists the latest snapshot locally, and refreshes only the countdown rendering between requests.
+`pi-codex-usage` does not poll OpenAI or ChatGPT usage endpoints. It updates from `x-codex-*` headers and `codex.rate_limits` WebSocket events already returned by Codex requests, persists the latest snapshot locally, and refreshes countdown/session footer rendering during the conversation.
 
 The root `.npmrc` prevents npm from auto-installing Pi peer dependencies when Pi installs this git package; Pi provides those packages at runtime.

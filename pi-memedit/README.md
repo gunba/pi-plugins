@@ -2,9 +2,9 @@
 
 Pi extension that runs an automatic memory-edit pass after each agent turn.
 
-It calls the current model directly with the current conversation and current system prompt, but only prefixes removable items from the just-finished agent run with compact temporary `[N]` identifiers. Untagged earlier history and protected current-run content are context only and cannot be selected. Selected entries are hard-deleted from both future model context and the persisted session JSONL.
+It calls the current model directly with a dedicated pruning prompt and a text transcript of the current conversation, but only prefixes removable items from the just-finished agent run with compact temporary `[N]` identifiers. Untagged earlier history and protected current-run content are context only and cannot be selected. Selected entries are hard-deleted from both future model context and the persisted session JSONL.
 
-The system prompt and user messages are protected. The pruning request and response are not appended to conversation context. A small visible status message is added after each auto run showing candidate, selected, ignored, and deleted counts; those status messages are filtered out of future model context. Removed item previews can be shown in that status message when enabled.
+The system prompt and user messages are protected. The pruning request and response are not appended to conversation context. A small visible status message is added after each auto run showing candidate, selected, ignored, deleted, estimated net context saved, prune-call overhead, and recache-cost estimates; those status messages are filtered out of future model context. Removed item previews can be shown in that status message when enabled.
 
 ## Commands
 
@@ -19,3 +19,6 @@ The system prompt and user messages are protected. The pruning request and respo
 - `PI_MEMEDIT_SETTINGS=/path/to/settings.json` overrides the settings file path.
 - `PI_MEMEDIT=off` or `PI_MEMEDIT_ENABLED=false` disables on startup.
 - `PI_MEMEDIT_DISABLE=1` disables on startup.
+- `PI_SUBAGENT_CHILD=1` disables memedit automatically so pi-subagents child sessions are never pruned.
+
+Anthropic OAuth (`sk-ant-oat...`) prune calls use a provider-payload shaping callback that adds the Claude Code billing header expected by Anthropic OAuth requests. The prune transcript is sent as plain text, so historical tool calls/results are not serialized as Anthropic `tool_use` blocks.
