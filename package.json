@@ -11,7 +11,7 @@
   "pi": {
     "extensions": [
       "./pi-codex-transport/extensions/codex-transport.ts",
-      "./pi-codex-usage/extensions/codex-usage.ts",
+      "./pi-usage/extensions/usage.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-nested-skills/index.ts",
       "./pi-tab-title/extensions/tab-title.ts",

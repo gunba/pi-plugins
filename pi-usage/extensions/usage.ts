@@ -43,13 +43,16 @@ type UsageWindow = {
   resetAtMs?: number;
   resetAfterSeconds?: number;
 };
-type CodexUsageSnapshot = {
+type UsageSource = "codex" | "claude";
+type UsageSnapshot = {
+  source: UsageSource;
   updatedAtMs: number;
   planType?: string;
   activeLimit?: string;
   primary?: UsageWindow;
   secondary?: UsageWindow;
 };
+type UsageSnapshots = Partial<Record<UsageSource, UsageSnapshot>>;
 
 type AssistantUsage = {
   input?: number;
@@ -59,28 +62,29 @@ type AssistantUsage = {
   cost?: { total?: number };
 };
 
-const EXTENSION_NAME = "pi-codex-usage";
-const WEBSOCKET_PATCH_ID = "pi-codex-usage@2";
+const WEBSOCKET_PATCH_ID = "pi-usage@1";
 const WEBSOCKET_PATCH_STACK_KEY = Symbol.for("pi.websocketPatchStack");
-const GLOBAL_STATE_KEY = Symbol.for("pi.codexUsage.state");
-const DEFAULT_STATE_DIR = join(os.homedir(), ".pi", "agent", "codex-usage");
-const STATE_DIR = process.env.PI_CODEX_USAGE_DIR || DEFAULT_STATE_DIR;
+const GLOBAL_STATE_KEY = Symbol.for("pi.usage.state");
+const DEFAULT_STATE_DIR = join(os.homedir(), ".pi", "agent", "pi-usage");
+const STATE_DIR = process.env.PI_USAGE_DIR || DEFAULT_STATE_DIR;
 const SNAPSHOT_FILE = join(STATE_DIR, "latest.json");
-const DISABLE_FOOTER_ENV = "PI_CODEX_USAGE_FOOTER";
+const DISABLE_FOOTER_ENV = "PI_USAGE_FOOTER";
+const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude" };
+const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
 
-let latestSnapshot: CodexUsageSnapshot | undefined = readPersistedSnapshot();
+let snapshots: UsageSnapshots = readPersistedSnapshots();
 let requestFooterRender: (() => void) | undefined;
 let footerContext: ExtensionContext | undefined;
 let footerEnabled = !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_FOOTER_ENV] || "");
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 
-type CodexUsageGlobalState = {
-  onSnapshot?: (snapshot: CodexUsageSnapshot) => void;
+type UsageGlobalState = {
+  onSnapshot?: (snapshot: UsageSnapshot) => void;
   onWebSocketMessage?: (data: unknown) => void;
 };
 
-function getGlobalState(): CodexUsageGlobalState {
-  const global = globalThis as typeof globalThis & { [GLOBAL_STATE_KEY]?: CodexUsageGlobalState };
+function getGlobalState(): UsageGlobalState {
+  const global = globalThis as typeof globalThis & { [GLOBAL_STATE_KEY]?: UsageGlobalState };
   global[GLOBAL_STATE_KEY] ??= {};
   return global[GLOBAL_STATE_KEY]!;
 }
@@ -146,7 +150,9 @@ function labelForWindow(minutes: number | undefined, fallback: string): string {
   return fallback;
 }
 
-function parseWindow(headers: Record<string, string>, prefix: "primary" | "secondary", fallback: string, nowMs: number): UsageWindow | undefined {
+// --- Codex: x-codex-* response headers and codex.rate_limits WebSocket events ---
+
+function parseCodexWindow(headers: Record<string, string>, prefix: "primary" | "secondary", fallback: string, nowMs: number): UsageWindow | undefined {
   const windowMinutes = numberHeader(headers, `x-codex-${prefix}-window-minutes`);
   const usedPercent = numberHeader(headers, `x-codex-${prefix}-used-percent`);
   const resetAtSeconds = numberHeader(headers, `x-codex-${prefix}-reset-at`);
@@ -163,14 +169,15 @@ function parseWindow(headers: Record<string, string>, prefix: "primary" | "secon
   };
 }
 
-function parseCodexUsageHeaders(headers: HeaderMap | undefined): CodexUsageSnapshot | undefined {
+function parseCodexUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
   const h = toHeaderRecord(headers);
   const nowMs = Date.now();
-  const primary = parseWindow(h, "primary", "5h", nowMs);
-  const secondary = parseWindow(h, "secondary", "7d", nowMs);
+  const primary = parseCodexWindow(h, "primary", "5h", nowMs);
+  const secondary = parseCodexWindow(h, "secondary", "7d", nowMs);
   if (!primary && !secondary) return undefined;
 
   return {
+    source: "codex",
     updatedAtMs: nowMs,
     planType: stringHeader(h, "x-codex-plan-type"),
     activeLimit: stringHeader(h, "x-codex-active-limit"),
@@ -198,7 +205,7 @@ function parseRateLimitEventWindow(value: unknown, fallback: string, nowMs: numb
   };
 }
 
-function parseCodexRateLimitEvent(event: JsonRecord): CodexUsageSnapshot | undefined {
+function parseCodexRateLimitEvent(event: JsonRecord): UsageSnapshot | undefined {
   if (event.type !== "codex.rate_limits") return undefined;
 
   const nowMs = Date.now();
@@ -208,6 +215,7 @@ function parseCodexRateLimitEvent(event: JsonRecord): CodexUsageSnapshot | undef
   if (!primary && !secondary) return undefined;
 
   return {
+    source: "codex",
     updatedAtMs: nowMs,
     planType: stringValue(event.plan_type),
     activeLimit:
@@ -220,7 +228,7 @@ function parseCodexRateLimitEvent(event: JsonRecord): CodexUsageSnapshot | undef
   };
 }
 
-function parseCodexUsageLimitErrorEvent(event: JsonRecord): CodexUsageSnapshot | undefined {
+function parseCodexUsageLimitErrorEvent(event: JsonRecord): UsageSnapshot | undefined {
   if (event.type !== "error") return undefined;
   const headers = recordValue(event.headers);
   const snapshot = parseCodexUsageHeaders(headers);
@@ -233,7 +241,7 @@ function parseCodexUsageLimitErrorEvent(event: JsonRecord): CodexUsageSnapshot |
   };
 }
 
-function parseCodexWebSocketMessage(data: unknown): CodexUsageSnapshot | undefined {
+function parseCodexWebSocketMessage(data: unknown): UsageSnapshot | undefined {
   if (typeof data !== "string") return undefined;
   let event: JsonRecord | undefined;
   try {
@@ -245,28 +253,84 @@ function parseCodexWebSocketMessage(data: unknown): CodexUsageSnapshot | undefin
   return parseCodexRateLimitEvent(event) ?? parseCodexUsageLimitErrorEvent(event);
 }
 
+// --- Claude: anthropic-ratelimit-unified-* response headers (OAuth/Claude Code) ---
+
+function parseClaudeWindow(headers: Record<string, string>, prefix: "5h" | "7d", nowMs: number): UsageWindow | undefined {
+  const utilization = numberHeader(headers, `anthropic-ratelimit-unified-${prefix}-utilization`);
+  const resetAtSeconds = numberHeader(headers, `anthropic-ratelimit-unified-${prefix}-reset`);
+  if (utilization === undefined && resetAtSeconds === undefined) return undefined;
+
+  // Anthropic reports utilization as a fraction (0.0–1.0+); convert to a percentage.
+  return {
+    label: prefix,
+    usedPercent: clampPercent(utilization === undefined ? undefined : utilization * 100),
+    resetAtMs: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : undefined,
+  };
+}
+
+function parseClaudeUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
+  const h = toHeaderRecord(headers);
+  const nowMs = Date.now();
+  const primary = parseClaudeWindow(h, "5h", nowMs);
+  const secondary = parseClaudeWindow(h, "7d", nowMs);
+  if (!primary && !secondary) return undefined;
+
+  return {
+    source: "claude",
+    updatedAtMs: nowMs,
+    activeLimit: stringHeader(h, "anthropic-ratelimit-unified-representative-claim"),
+    primary,
+    secondary,
+  };
+}
+
+function parseUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
+  return parseCodexUsageHeaders(headers) ?? parseClaudeUsageHeaders(headers);
+}
+
 function clampPercent(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function readPersistedSnapshot(): CodexUsageSnapshot | undefined {
+function isUsageSource(value: unknown): value is UsageSource {
+  return value === "codex" || value === "claude";
+}
+
+function readPersistedSnapshots(): UsageSnapshots {
   try {
-    const parsed = JSON.parse(readFileSync(SNAPSHOT_FILE, "utf8")) as CodexUsageSnapshot;
-    if (!parsed || typeof parsed.updatedAtMs !== "number") return undefined;
-    return parsed;
+    const parsed = JSON.parse(readFileSync(SNAPSHOT_FILE, "utf8")) as JsonRecord;
+    if (!parsed || typeof parsed !== "object") return {};
+    const result: UsageSnapshots = {};
+    for (const source of USAGE_SOURCES) {
+      const candidate = parsed[source] as UsageSnapshot | undefined;
+      if (candidate && isUsageSource(candidate.source) && typeof candidate.updatedAtMs === "number") {
+        result[source] = candidate;
+      }
+    }
+    return result;
   } catch {
-    return undefined;
+    return {};
   }
 }
 
-function persistSnapshot(snapshot: CodexUsageSnapshot): void {
+function persistSnapshots(): void {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(SNAPSHOT_FILE, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    writeFileSync(SNAPSHOT_FILE, `${JSON.stringify(snapshots, null, 2)}\n`, "utf8");
   } catch {
     // The footer should keep working even when the state directory is unwritable.
   }
+}
+
+function activeSnapshot(): UsageSnapshot | undefined {
+  let best: UsageSnapshot | undefined;
+  for (const source of USAGE_SOURCES) {
+    const snapshot = snapshots[source];
+    if (!snapshot) continue;
+    if (!best || snapshot.updatedAtMs > best.updatedAtMs) best = snapshot;
+  }
+  return best;
 }
 
 function installWebSocketCapture(): void {
@@ -276,14 +340,14 @@ function installWebSocketCapture(): void {
   const OriginalWebSocket = globalThis.WebSocket;
   const downstreamStack = websocketPatchStack(OriginalWebSocket);
 
-  class CodexUsageWebSocket extends OriginalWebSocket {
-    private __codexUsageTarget = false;
+  class UsageCodexWebSocket extends OriginalWebSocket {
+    private __usageCodexTarget = false;
 
     constructor(url: string | URL, protocols?: string | string[], options?: unknown) {
       // @ts-expect-error WebSocket constructor signatures vary across runtimes.
       super(url, protocols as never, options as never);
-      this.__codexUsageTarget = isCodexUrl(url);
-      if (!this.__codexUsageTarget) return;
+      this.__usageCodexTarget = isCodexUrl(url);
+      if (!this.__usageCodexTarget) return;
 
       this.addEventListener("message", (event) => {
         getGlobalState().onWebSocketMessage?.((event as MessageEvent).data);
@@ -292,21 +356,21 @@ function installWebSocketCapture(): void {
   }
 
   try {
-    Object.defineProperty(CodexUsageWebSocket, "CONNECTING", { value: OriginalWebSocket.CONNECTING });
-    Object.defineProperty(CodexUsageWebSocket, "OPEN", { value: OriginalWebSocket.OPEN });
-    Object.defineProperty(CodexUsageWebSocket, "CLOSING", { value: OriginalWebSocket.CLOSING });
-    Object.defineProperty(CodexUsageWebSocket, "CLOSED", { value: OriginalWebSocket.CLOSED });
+    Object.defineProperty(UsageCodexWebSocket, "CONNECTING", { value: OriginalWebSocket.CONNECTING });
+    Object.defineProperty(UsageCodexWebSocket, "OPEN", { value: OriginalWebSocket.OPEN });
+    Object.defineProperty(UsageCodexWebSocket, "CLOSING", { value: OriginalWebSocket.CLOSING });
+    Object.defineProperty(UsageCodexWebSocket, "CLOSED", { value: OriginalWebSocket.CLOSED });
   } catch {
     // Non-fatal: some runtimes do not allow redefining WebSocket constants.
   }
 
-  Object.defineProperty(CodexUsageWebSocket, WEBSOCKET_PATCH_STACK_KEY, {
+  Object.defineProperty(UsageCodexWebSocket, WEBSOCKET_PATCH_STACK_KEY, {
     value: [...downstreamStack, WEBSOCKET_PATCH_ID],
     enumerable: false,
     configurable: false,
   });
 
-  globalThis.WebSocket = CodexUsageWebSocket as typeof WebSocket;
+  globalThis.WebSocket = UsageCodexWebSocket as typeof WebSocket;
 }
 
 function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): string | undefined {
@@ -324,47 +388,51 @@ function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): 
 
 function formatWindowStatus(window: UsageWindow | undefined, nowMs = Date.now()): string | undefined {
   if (!window) return undefined;
-  const leftPercent = window.usedPercent === undefined ? undefined : 100 - window.usedPercent;
-  const left = leftPercent === undefined ? "?% left" : `${leftPercent}% left`;
+  const leftPercent = window.usedPercent === undefined ? "?" : String(100 - window.usedPercent);
   const reset = formatDurationUntil(window.resetAtMs, nowMs);
-  return reset ? `${window.label}:${left} reset ${reset}` : `${window.label}:${left}`;
+  return reset ? `${window.label}:${leftPercent}% ${reset}` : `${window.label}:${leftPercent}%`;
 }
 
-function formatCodexUsageStatus(nowMs = Date.now()): string | undefined {
-  const snapshot = latestSnapshot;
+function formatUsageStatus(nowMs = Date.now()): string | undefined {
+  const snapshot = activeSnapshot();
   if (!snapshot) return undefined;
   const windows = [formatWindowStatus(snapshot.primary, nowMs), formatWindowStatus(snapshot.secondary, nowMs)].filter(
     (part): part is string => Boolean(part),
   );
   if (windows.length === 0) return undefined;
-  return `Codex ${windows.join(" ")}`;
+  return `${SOURCE_LABELS[snapshot.source]} ${windows.join(" ")}`;
 }
 
-function formatCodexUsageDetails(nowMs = Date.now()): string {
-  const snapshot = latestSnapshot;
-  if (!snapshot) {
+function formatUsageDetails(nowMs = Date.now()): string {
+  const entries = USAGE_SOURCES.map((source) => snapshots[source])
+    .filter((snapshot): snapshot is UsageSnapshot => Boolean(snapshot))
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+
+  if (entries.length === 0) {
     return [
-      "No Codex usage snapshot yet.",
-      "This extension updates passively from x-codex-* response headers and codex.rate_limits WebSocket events after Codex requests; it does not poll OpenAI/ChatGPT usage endpoints.",
+      "No usage snapshot yet.",
+      "This extension updates passively from provider response headers and events after requests: Codex x-codex-* headers / codex.rate_limits WebSocket events, and Claude anthropic-ratelimit-unified-* headers. It does not poll usage endpoints.",
     ].join("\n");
   }
 
-  const lines = [
-    "Codex usage (passive response-header/WebSocket snapshot)",
-    `Updated: ${new Date(snapshot.updatedAtMs).toISOString()}`,
-  ];
-  if (snapshot.planType) lines.push(`Plan: ${snapshot.planType}`);
-  if (snapshot.activeLimit) lines.push(`Active limit: ${snapshot.activeLimit}`);
-  for (const window of [snapshot.primary, snapshot.secondary]) {
-    if (!window) continue;
-    const leftPercent = window.usedPercent === undefined ? "?" : String(100 - window.usedPercent);
-    const reset = formatDurationUntil(window.resetAtMs, nowMs) || "unknown";
-    const resetAt = window.resetAtMs ? new Date(window.resetAtMs).toISOString() : "unknown";
-    lines.push(`${window.label}: ${leftPercent}% left; resets in ${reset} (${resetAt})`);
+  const lines: string[] = [];
+  for (const snapshot of entries) {
+    lines.push(`${SOURCE_LABELS[snapshot.source]} usage (passive response-header/event snapshot)`);
+    lines.push(`Updated: ${new Date(snapshot.updatedAtMs).toISOString()}`);
+    if (snapshot.planType) lines.push(`Plan: ${snapshot.planType}`);
+    if (snapshot.activeLimit) lines.push(`Active limit: ${snapshot.activeLimit}`);
+    for (const window of [snapshot.primary, snapshot.secondary]) {
+      if (!window) continue;
+      const leftPercent = window.usedPercent === undefined ? "?" : String(100 - window.usedPercent);
+      const reset = formatDurationUntil(window.resetAtMs, nowMs) || "unknown";
+      const resetAt = window.resetAtMs ? new Date(window.resetAtMs).toISOString() : "unknown";
+      lines.push(`${window.label}: ${leftPercent}% left; resets in ${reset} (${resetAt})`);
+    }
+    lines.push("");
   }
   lines.push(`State: ${SNAPSHOT_FILE}`);
-  lines.push("Network policy: passive only; no usage polling or extra OpenAI/ChatGPT requests.");
-  return lines.join("\n");
+  lines.push("Network policy: passive only; no usage polling or extra provider requests.");
+  return lines.join("\n").trimEnd();
 }
 
 function formatTokens(count: number): string {
@@ -481,12 +549,12 @@ function buildTopLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["them
   const sessionName = sessionManager.getSessionName?.();
   if (sessionName) parts.push(sessionName);
 
-  const codexStatus = formatCodexUsageStatus();
+  const usageStatus = formatUsageStatus();
   const extensionStatuses = Array.from(footerData.getExtensionStatuses?.().entries() || [])
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([, text]) => sanitizeStatusText(text))
     .filter(Boolean);
-  const status = [codexStatus, ...extensionStatuses].filter((part): part is string => Boolean(part)).join("  ");
+  const status = [usageStatus, ...extensionStatuses].filter((part): part is string => Boolean(part)).join("  ");
   const left = theme.fg("dim", parts.join(" • "));
 
   if (!status) return truncateToWidth(left, width, theme.fg("dim", "..."));
@@ -554,18 +622,19 @@ function refreshFooter(): void {
   requestFooterRender?.();
 }
 
-function recordSnapshot(snapshot: CodexUsageSnapshot): void {
-  const merged = {
+function recordSnapshot(snapshot: UsageSnapshot): void {
+  const previous = snapshots[snapshot.source];
+  const merged: UsageSnapshot = {
     ...snapshot,
-    planType: snapshot.planType ?? latestSnapshot?.planType,
-    activeLimit: snapshot.activeLimit ?? latestSnapshot?.activeLimit,
+    planType: snapshot.planType ?? previous?.planType,
+    activeLimit: snapshot.activeLimit ?? previous?.activeLimit,
   };
-  latestSnapshot = merged;
-  persistSnapshot(merged);
+  snapshots[snapshot.source] = merged;
+  persistSnapshots();
   refreshFooter();
 }
 
-export default function codexUsage(pi: ExtensionAPI): void {
+export default function usage(pi: ExtensionAPI): void {
   const handleWebSocketMessage = (data: unknown) => {
     const snapshot = parseCodexWebSocketMessage(data);
     if (snapshot) recordSnapshot(snapshot);
@@ -626,7 +695,7 @@ export default function codexUsage(pi: ExtensionAPI): void {
 
   pi.on("after_provider_response", async (event, ctx) => {
     rememberFooterContext(ctx);
-    const snapshot = parseCodexUsageHeaders(event.headers as HeaderMap | undefined);
+    const snapshot = parseUsageHeaders(event.headers as HeaderMap | undefined);
     if (snapshot) recordSnapshot(snapshot);
   });
 
@@ -638,8 +707,8 @@ export default function codexUsage(pi: ExtensionAPI): void {
     disposeTickTimer();
   });
 
-  pi.registerCommand("codex-usage", {
-    description: "Show passive Codex 5h/7d usage from headers/WebSocket events and control the compact footer",
+  pi.registerCommand("pi-usage", {
+    description: "Show passive Codex/Claude 5h/7d usage from response headers and events, and control the compact footer",
     handler: async (args, ctx) => {
       const command = args.trim().toLowerCase();
       if (command === "footer off" || command === "off") {
@@ -647,21 +716,21 @@ export default function codexUsage(pi: ExtensionAPI): void {
         ctx.ui.setFooter(undefined);
         requestFooterRender = undefined;
         disposeTickTimer();
-        ctx.ui.notify("Codex usage compact footer disabled for this session", "info");
+        ctx.ui.notify("Usage compact footer disabled for this session", "info");
         return;
       }
       if (command === "footer on" || command === "on") {
         footerEnabled = true;
         installFooter(ctx, pi);
-        ctx.ui.notify("Codex usage compact footer enabled", "info");
+        ctx.ui.notify("Usage compact footer enabled", "info");
         return;
       }
 
       ctx.ui.notify(
         [
-          formatCodexUsageDetails(),
+          formatUsageDetails(),
           "",
-          "Commands: /codex-usage status | footer on | footer off",
+          "Commands: /pi-usage status | footer on | footer off",
           `Disable on startup: ${DISABLE_FOOTER_ENV}=off`,
         ].join("\n"),
         "info",

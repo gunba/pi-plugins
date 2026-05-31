@@ -5,7 +5,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 ## Extensions
 
 - `pi-codex-transport` — Codex WebSocket/SSE transport fixes, timeout control, and diagnostics.
-- `pi-codex-usage` — passively shows Codex 5h/7d usage and reset timers in a compact two-line footer.
+- `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
 - `pi-nested-skills` — presents Agent Skills as nested categories via portable frontmatter metadata.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
@@ -35,6 +35,6 @@ pi update
 
 The package manifest at the repository root loads the extension files from the `pi-*` subdirectories. Keep plugin directories and package names prefixed with `pi-`.
 
-`pi-codex-usage` does not poll OpenAI or ChatGPT usage endpoints. It updates from `x-codex-*` headers and `codex.rate_limits` WebSocket events already returned by Codex requests, persists the latest snapshot locally, and refreshes countdown/session footer rendering during the conversation.
+`pi-usage` does not poll any usage endpoints. It updates from data already returned by provider requests — Codex `x-codex-*` headers and `codex.rate_limits` WebSocket events, and Claude `anthropic-ratelimit-unified-*` headers (sent when Pi uses an Anthropic OAuth/Claude Code subscription) — persists the latest snapshot per provider locally, and refreshes countdown/session footer rendering during the conversation. The footer shows whichever provider was used most recently.
 
 The root `.npmrc` prevents npm from auto-installing Pi peer dependencies when Pi installs this git package; Pi provides those packages at runtime.
