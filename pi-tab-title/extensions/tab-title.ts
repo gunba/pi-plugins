@@ -6,7 +6,7 @@ import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext, SessionEntr
 
 type AnyRecord = Record<string, any>;
 type TitleState = "fresh" | "thinking" | "ready" | "error";
-type TitleSource = "model" | "fallback";
+type TitleSource = "model" | "fallback" | "manual";
 
 type StoredTitle = {
   version: 1;
@@ -33,6 +33,8 @@ const TITLE_MAX_TOKENS = 48;
 // Keep the animation inside the Braille block: those glyphs share a stable
 // advance in terminal tab fonts, so the title does not shift while pulsing.
 const THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TABBY_TITLE_OSC = "\x1b]30;";
+const OSC_TERMINATOR = "\x07";
 const STATE_INDICATORS: Record<Exclude<TitleState, "thinking">, string> = {
   fresh: "○",
   ready: "✓",
@@ -132,7 +134,7 @@ export default function (pi: ExtensionAPI) {
   function renderTitle(ctx: ExtensionContext, indicator?: string): void {
     if (!ctx.hasUI) return;
     const marker = indicator ?? (state === "thinking" ? THINKING_FRAMES[frameIndex % THINKING_FRAMES.length] : STATE_INDICATORS[state]);
-    ctx.ui.setTitle(`${marker} ${currentBaseTitle()}`);
+    setTerminalTitle(ctx, `${marker} ${currentBaseTitle()}`);
   }
 
   function stopAnimation(): void {
@@ -249,6 +251,50 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, _ctx) => {
     stopAnimation();
   });
+
+  pi.registerCommand("tab-title", {
+    description: "Set the Pi-managed terminal tab title base while keeping state indicators",
+    handler: async (args, ctx) => {
+      const title = normalizeGeneratedTitle(args.trim());
+      if (!title) {
+        ctx.ui.notify("Usage: /tab-title <short title>", "error");
+        return;
+      }
+
+      generatedTitle = title;
+      try {
+        pi.setSessionName(title);
+      } catch {
+        // The visible tab title still updates even if session metadata is unavailable.
+      }
+      try {
+        pi.appendEntry<StoredTitle>(STORED_TITLE_TYPE, {
+          version: 1,
+          title,
+          source: "manual",
+          promptHash: "manual",
+          generatedAt: Date.now(),
+        });
+      } catch {
+        // Best-effort persistence only.
+      }
+      renderTitle(ctx);
+    },
+  });
+}
+
+function setTerminalTitle(ctx: ExtensionContext, title: string): void {
+  const safeTitle = sanitizeOscTitle(title);
+  ctx.ui.setTitle(safeTitle);
+
+  // Tabby keeps a separate custom-tab-title channel. After the user renames a
+  // tab in Tabby's UI, OSC 0 updates can remain hidden behind that custom title.
+  // OSC 30 updates the same tab-title channel, so state prefixes stay visible.
+  if (isTabbyTerminal() && process.stdout.isTTY) process.stdout.write(`${TABBY_TITLE_OSC}${safeTitle}${OSC_TERMINATOR}`);
+}
+
+function isTabbyTerminal(): boolean {
+  return process.env.TERM_PROGRAM === "Tabby" || Boolean(process.env.TABBY_CONFIG_DIRECTORY);
 }
 
 async function generateTitle(ctx: ExtensionContext, prompt: string): Promise<GeneratedTitle> {
@@ -419,6 +465,10 @@ function sanitizeTitle(value: string): string {
     .replace(/[<>]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function sanitizeOscTitle(value: string): string {
+  return sanitizeTitle(value).replace(/[\x07\x1b]/g, " ");
 }
 
 function truncateTitle(value: string, maxChars: number): string {
