@@ -65,9 +65,13 @@ type MemeditStats = {
   deleted: number;
   ignored: number;
   contextTokensBefore?: number;
+  contextWindowTokensBefore?: number;
+  contextWindowTokensLimit?: number;
+  contextWindowPercentBefore?: number;
   tokensSaved?: number;
   estimatedRecacheTokens?: number;
   netTokensSaved?: number;
+  contextPercentSaved?: number;
   netContextPercentSaved?: number;
   pruneTokens?: number;
   pruneCost?: number;
@@ -95,6 +99,7 @@ type MemeditSettings = {
 const EXTENSION_NAME = "pi-memedit";
 const STATUS_MESSAGE_TYPE = "pi-memedit-status";
 const SYSTEM_STATUS_KEY = "pi-memedit";
+const PRUNING_WIDGET_KEY = "pi-memedit-pruning";
 const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
@@ -589,6 +594,10 @@ function estimateEntriesTokens(entries: SessionEntry[]): number {
   return entries.reduce((total, entry) => total + estimateEntryTokens(entry), 0);
 }
 
+function estimateContextItemsTokens(items: ContextItem[]): number {
+  return items.reduce((total, item) => total + estimateEntryTokens(item.entry), 0);
+}
+
 function previewEntry(entry: SessionEntry): DeletedItem {
   if (entry.type === "message") {
     const message = entry.message as AnyRecord;
@@ -720,6 +729,7 @@ function applyHardDelete(
   ctx: ExtensionContext,
   deleteIds: Set<string>,
   uncountedIds = new Set<string>(),
+  recacheScopeEntries?: SessionEntry[],
 ): { total: number; counted: number; tokensSaved: number; estimatedRecacheTokens: number; deletedItems: DeletedItem[] } {
   if (deleteIds.size === 0) return { total: 0, counted: 0, tokensSaved: 0, estimatedRecacheTokens: 0, deletedItems: [] };
 
@@ -731,7 +741,8 @@ function applyHardDelete(
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const oldLeafId = manager.getLeafId?.() ?? null;
   const expandedDeleteIds = expandToolDependencies(entries, deleteIds);
-  const firstDeletedIndex = entries.findIndex((entry) => expandedDeleteIds.has(entry.id));
+  const recacheScope = recacheScopeEntries && recacheScopeEntries.length > 0 ? recacheScopeEntries : entries.filter(entryParticipatesInContext);
+  const firstDeletedIndex = recacheScope.findIndex((entry) => expandedDeleteIds.has(entry.id));
 
   const keptEntries = entries.filter((entry) => {
     if (expandedDeleteIds.has(entry.id)) return false;
@@ -772,7 +783,10 @@ function applyHardDelete(
   const countedEntries = removed.filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id));
   const deletedItems = countedEntries.map(previewEntry);
   const tokensSaved = estimateEntriesTokens(countedEntries);
-  const estimatedRecacheTokens = firstDeletedIndex < 0 ? 0 : estimateEntriesTokens(keptEntries.filter((entry) => entries.indexOf(entry) > firstDeletedIndex));
+  const estimatedRecacheTokens =
+    firstDeletedIndex < 0
+      ? 0
+      : estimateEntriesTokens(recacheScope.slice(firstDeletedIndex + 1).filter((entry) => !expandedDeleteIds.has(entry.id)));
   return { total: removed.length, counted: deletedItems.length, tokensSaved, estimatedRecacheTokens, deletedItems };
 }
 
@@ -843,16 +857,51 @@ function formatCost(value: number | undefined): string {
   return `$${cost.toFixed(4)}`;
 }
 
+function cumulativeContextPercent(): number {
+  return telemetry.contextTokensBefore > 0 ? (telemetry.tokensSaved / telemetry.contextTokensBefore) * 100 : 0;
+}
+
 function cumulativeNetPercent(): number {
   return telemetry.contextTokensBefore > 0 ? (telemetry.netTokensSaved / telemetry.contextTokensBefore) * 100 : 0;
+}
+
+function contextUsageFields(ctx: ExtensionContext): Pick<MemeditStats, "contextWindowTokensBefore" | "contextWindowTokensLimit" | "contextWindowPercentBefore"> {
+  const usage = ctx.getContextUsage();
+  return {
+    contextWindowTokensBefore: typeof usage?.tokens === "number" ? usage.tokens : undefined,
+    contextWindowTokensLimit: typeof usage?.contextWindow === "number" ? usage.contextWindow : undefined,
+    contextWindowPercentBefore: typeof usage?.percent === "number" ? usage.percent : undefined,
+  };
+}
+
+function contextWindowSuffix(stats: MemeditStats): string {
+  if (typeof stats.contextWindowPercentBefore !== "number") return "";
+  const tokenDetails =
+    typeof stats.contextWindowTokensBefore === "number" && typeof stats.contextWindowTokensLimit === "number"
+      ? ` (${formatTokens(stats.contextWindowTokensBefore)} / ${formatTokens(stats.contextWindowTokensLimit)})`
+      : "";
+  return `; model window before prune: ${formatPercent(stats.contextWindowPercentBefore)}${tokenDetails}`;
+}
+
+function showPruningUi(ctx: ExtensionContext, candidates: number): void {
+  if (!ctx.hasUI) return;
+  const candidateText = `${candidates} candidate${candidates === 1 ? "" : "s"}`;
+  ctx.ui.setStatus(SYSTEM_STATUS_KEY, `memedit:pruning(${candidates})`);
+  ctx.ui.setWidget(PRUNING_WIDGET_KEY, [
+    `✂ pi-memedit is pruning ${candidateText}…`,
+    "Pi will continue after the memory edit finishes.",
+  ]);
+}
+
+function clearPruningUi(ctx: ExtensionContext): void {
+  if (ctx.hasUI) ctx.ui.setWidget(PRUNING_WIDGET_KEY, undefined);
 }
 
 function footerStatusText(): string {
   if (isSubagentRuntimeBlocked()) return "memedit:off(subagent)";
   if (!enabled) return "memedit:off";
-  if (lastStats?.status === "applied" || lastStats?.status === "noop") {
-    return `memedit:${formatPercent(cumulativeNetPercent())} net`;
-  }
+  if (lastStats?.status === "applied") return `memedit:${formatTokens(lastStats.tokensSaved)} pruned`;
+  if (lastStats?.status === "noop") return "memedit:noop";
   return `memedit:${lastStats?.status ?? "on"}`;
 }
 
@@ -867,7 +916,8 @@ function statusMessage(stats: MemeditStats) {
   const lines = [`${memeditStatusText(stats)} Candidates: ${stats.candidates}; selected: ${stats.selected}; ignored: ${stats.ignored}.`];
   if (stats.status === "applied" || stats.status === "noop") {
     lines.push(
-      `Efficiency: ${formatPercent(stats.netContextPercentSaved)} net context saved (${formatTokens(stats.tokensSaved)} saved - ${formatTokens(stats.estimatedRecacheTokens)} recache est).`,
+      `Context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
+      `Cache impact: ${formatTokens(stats.netTokensSaved)} cache-adjusted net (${formatTokens(stats.tokensSaved)} deleted - ${formatTokens(stats.estimatedRecacheTokens)} recache est).`,
       `Overhead: ${formatTokens(stats.pruneTokens)} prune tokens, ${formatCost(stats.pruneCost)} prune cost, ${formatCost(stats.estimatedRecacheCost)} recache-cost est.`,
     );
   }
@@ -894,21 +944,24 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
 
   const manager = ctx.sessionManager as AnyRecord;
   const branch = (manager.getBranch?.() ?? []) as SessionEntry[];
-  const contextTokensBefore = estimateEntriesTokens(branch);
+  const contextUsageBefore = contextUsageFields(ctx);
   const scopedEntryIds = entryIdsAfter(branch, startLeafId);
   const protectedEntryIds = protectFinalAssistantTextResponse(branch, scopedEntryIds);
   const items = collectContextItems(branch, scopedEntryIds, protectedEntryIds);
+  const activeContextEntries = items.map((item) => item.entry);
+  const contextTokensBefore = estimateContextItemsTokens(items);
   const candidates = items.filter((item) => item.removable && item.number !== undefined);
   if (candidates.length === 0) {
-    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, contextTokensBefore };
+    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, contextTokensBefore, ...contextUsageBefore };
     return lastStats;
   }
 
   running = true;
-  if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:pruning");
+  showPruningUi(ctx, candidates.length);
   try {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) {
+      const authError = auth.ok === false ? auth.error : `No API key for ${model.provider}`;
       lastStats = {
         at: Date.now(),
         mode,
@@ -918,7 +971,8 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
         deleted: 0,
         ignored: 0,
         contextTokensBefore,
-        error: auth.ok ? `No API key for ${model.provider}` : auth.error,
+        ...contextUsageBefore,
+        error: authError,
       };
       return lastStats;
     }
@@ -956,11 +1010,13 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
 
     const housekeepingIds = statusEntryIds(branch);
     const rewriteIds = new Set([...selectedIds, ...housekeepingIds]);
-    const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds);
+    const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries);
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
     const estimatedRecacheCost = estimateRecacheCost(deleted.estimatedRecacheTokens, model as AnyRecord);
     const netTokensSaved = deleted.tokensSaved - deleted.estimatedRecacheTokens;
+    const contextPercentSaved = contextTokensBefore > 0 ? (deleted.tokensSaved / contextTokensBefore) * 100 : 0;
+    const netContextPercentSaved = contextTokensBefore > 0 ? (netTokensSaved / contextTokensBefore) * 100 : 0;
     lastStats = {
       at: Date.now(),
       mode,
@@ -970,10 +1026,12 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       deleted: deleted.counted,
       ignored,
       contextTokensBefore,
+      ...contextUsageBefore,
       tokensSaved: deleted.tokensSaved,
       estimatedRecacheTokens: deleted.estimatedRecacheTokens,
       netTokensSaved,
-      netContextPercentSaved: contextTokensBefore > 0 ? (netTokensSaved / contextTokensBefore) * 100 : 0,
+      contextPercentSaved,
+      netContextPercentSaved,
       pruneTokens,
       pruneCost,
       estimatedRecacheCost,
@@ -992,11 +1050,13 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       deleted: 0,
       ignored: 0,
       contextTokensBefore,
+      ...contextUsageBefore,
       error: overflow ? "prune request exceeded context; left unchanged for normal Pi compaction" : message,
     };
     if (ctx.hasUI && !overflow) ctx.ui.notify(`pi-memedit failed: ${lastStats.error}`, "warning");
   } finally {
     running = false;
+    clearPruningUi(ctx);
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   }
   return lastStats;
@@ -1042,11 +1102,20 @@ function formatStats(): string {
     `Selected: ${lastStats.selected}`,
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
-    `Last net context saved: ${formatPercent(lastStats.netContextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} saved - ${formatTokens(lastStats.estimatedRecacheTokens)} recache est)`,
+    `Last context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
+    `Last cache-adjusted net: ${formatPercent(lastStats.netContextPercentSaved)} (${formatTokens(lastStats.netTokensSaved)} net = ${formatTokens(lastStats.tokensSaved)} deleted - ${formatTokens(lastStats.estimatedRecacheTokens)} recache est)`,
     `Last overhead: ${formatTokens(lastStats.pruneTokens)} prune tokens, ${formatCost(lastStats.pruneCost)} prune cost, ${formatCost(lastStats.estimatedRecacheCost)} recache-cost est`,
-    `Cumulative net context saved: ${formatPercent(cumulativeNetPercent())} (${formatTokens(telemetry.netTokensSaved)} net / ${formatTokens(telemetry.contextTokensBefore)} considered)`,
+    `Cumulative context pruned: ${formatPercent(cumulativeContextPercent())} (${formatTokens(telemetry.tokensSaved)} deleted / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
+    `Cumulative cache-adjusted net: ${formatPercent(cumulativeNetPercent())} (${formatTokens(telemetry.netTokensSaved)} net / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
     `Cumulative overhead: ${formatTokens(telemetry.pruneTokens)} prune tokens, ${formatCost(telemetry.pruneCost)} prune cost, ${formatCost(telemetry.estimatedRecacheCost)} recache-cost est`,
   ];
+  if (typeof lastStats.contextWindowPercentBefore === "number") {
+    const tokenDetails =
+      typeof lastStats.contextWindowTokensBefore === "number" && typeof lastStats.contextWindowTokensLimit === "number"
+        ? ` (${formatTokens(lastStats.contextWindowTokensBefore)} / ${formatTokens(lastStats.contextWindowTokensLimit)})`
+        : "";
+    lines.push(`Model window before last prune: ${formatPercent(lastStats.contextWindowPercentBefore)}${tokenDetails}`);
+  }
   if (showDeletedItems && lastStats.deletedItems && lastStats.deletedItems.length > 0) {
     lines.push("Removed:", ...lastStats.deletedItems.map(formatDeletedItem));
   }
