@@ -315,9 +315,11 @@ function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): Config
 }
 
 function addContextEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string): void {
-  add({ title: "Pi global AGENTS.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "AGENTS.md"), format: "markdown", scope: "global", loaded: true, createTemplate: () => markdownTemplate("Global Instructions") });
-  add({ title: "Pi global SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "SYSTEM.md"), format: "markdown", scope: "global", createTemplate: () => markdownTemplate("System Prompt") });
-  add({ title: "Pi global APPEND_SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "APPEND_SYSTEM.md"), format: "markdown", scope: "global", createTemplate: () => markdownTemplate("Appended System Prompt") });
+  add({ title: "Pi global AGENTS.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "AGENTS.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "AGENTS.md")), createTemplate: () => markdownTemplate("Global Instructions") });
+  add({ title: "Pi global SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "SYSTEM.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "SYSTEM.md")), createTemplate: () => markdownTemplate("System Prompt") });
+  add({ title: "Pi global APPEND_SYSTEM.md", group: "Context files", kind: "context", tool: "pi", path: join(agentDir, "APPEND_SYSTEM.md"), format: "markdown", scope: "global", loaded: fileExists(join(agentDir, "APPEND_SYSTEM.md")), createTemplate: () => markdownTemplate("Appended System Prompt") });
+  add({ title: "Claude global CLAUDE.md", group: "Context files", kind: "context", tool: "claude", path: join(homedir(), ".claude", "CLAUDE.md"), format: "markdown", scope: "compat", loaded: fileExists(join(homedir(), ".claude", "CLAUDE.md")), createTemplate: () => markdownTemplate("Claude Instructions") });
+  add({ title: "Codex global AGENTS.md", group: "Context files", kind: "context", tool: "codex", path: join(homedir(), ".codex", "AGENTS.md"), format: "markdown", scope: "compat", loaded: fileExists(join(homedir(), ".codex", "AGENTS.md")), createTemplate: () => markdownTemplate("Codex Instructions") });
 
   for (const dir of ancestorDirs(cwd)) {
     const label = displayPath(dir, cwd) || basename(dir);
@@ -476,11 +478,31 @@ function matchesFilter(entry: ConfigEntry, filter: string, cwd: string): boolean
   return filter.toLowerCase().split(/\s+/).filter(Boolean).every((token) => haystack.includes(token));
 }
 
+type TabId = "overview" | "settings" | "context" | "skills" | "prompts" | "mcp" | "agents" | "extensions";
+type PickerAction = "open" | "edit" | "addSetting" | "addEnv";
+
+type TabDef = {
+  id: TabId;
+  label: string;
+  description: string;
+};
+
+const TAB_DEFS: TabDef[] = [
+  { id: "overview", label: "Overview", description: "Live Pi session inventory and currently loaded resources." },
+  { id: "settings", label: "Settings", description: "Pi, Claude, Codex, model, hook, JSON, and TOML settings files." },
+  { id: "context", label: ".MD context", description: "AGENTS.md, CLAUDE.md, SYSTEM.md, APPEND_SYSTEM.md, and other prompt Markdown in context." },
+  { id: "skills", label: "Skills", description: "Loaded and discoverable SKILL.md files." },
+  { id: "prompts", label: "Prompts", description: "Prompt template Markdown files." },
+  { id: "mcp", label: "MCP", description: "MCP server configuration files across Pi, Claude, Codex, and shared locations." },
+  { id: "agents", label: "Agents", description: "pi-subagents agent definitions." },
+  { id: "extensions", label: "Extensions", description: "Pi extension entrypoints and command providers." },
+];
+
 type PickerRow =
   | { kind: "inventory"; title: string; subtitle: string }
   | { kind: "entry"; entry: ConfigEntry };
 
-type PickerResult = { action: "inventory" } | { action: "entry"; entry: ConfigEntry } | null;
+type PickerResult = { action: "inventory" } | { action: PickerAction; entry: ConfigEntry } | null;
 
 function fitLine(text: string, width: number): string {
   const clipped = truncateToWidth(text, Math.max(0, width));
@@ -510,32 +532,103 @@ function rowSubtitle(row: PickerRow, cwd: string): string {
   if (row.kind === "inventory") return row.subtitle;
   const entry = row.entry;
   const status = fileExists(entry.path) ? "exists" : "missing";
-  const loaded = entry.loaded ? "loaded" : "not confirmed loaded";
+  const loaded = entry.loaded ? "loaded/current" : "available";
   return `${entry.group} · ${entry.kind} · ${entry.tool} · ${entry.scope} · ${status} · ${loaded} · ${displayPath(entry.path, cwd)}`;
 }
 
-function pickerRows(entries: ConfigEntry[], filter: string, cwd: string): PickerRow[] {
+function entryTabs(entry: ConfigEntry): TabId[] {
+  const tabs: TabId[] = [];
+  if (entry.loaded) tabs.push("overview");
+  if (entry.kind === "settings" || entry.kind === "model" || entry.kind === "hook") tabs.push("settings");
+  if (entry.kind === "context") tabs.push("context");
+  if (entry.kind === "skill") tabs.push("skills");
+  if (entry.kind === "prompt") tabs.push("prompts");
+  if (entry.kind === "mcp") tabs.push("mcp");
+  if (entry.kind === "agent") tabs.push("agents");
+  if (entry.kind === "extension") tabs.push("extensions");
+  return tabs;
+}
+
+function tabMatchesEntry(tab: TabId, entry: ConfigEntry): boolean {
+  return entryTabs(entry).includes(tab);
+}
+
+function tabCount(tab: TabId, entries: ConfigEntry[]): number {
+  if (tab === "overview") return 1 + entries.filter((entry) => entry.loaded).length;
+  return entries.filter((entry) => tabMatchesEntry(tab, entry)).length;
+}
+
+function initialTabAndFilter(initialFilter: string): { tab: TabId; filter: string } {
+  const trimmed = initialFilter.trim();
+  const normalized = trimmed.toLowerCase();
+  const aliases: Record<string, TabId> = {
+    all: "overview",
+    inventory: "overview",
+    setting: "settings",
+    settings: "settings",
+    json: "settings",
+    toml: "settings",
+    md: "context",
+    markdown: "context",
+    context: "context",
+    skill: "skills",
+    skills: "skills",
+    prompt: "prompts",
+    prompts: "prompts",
+    mcp: "mcp",
+    agent: "agents",
+    agents: "agents",
+    subagent: "agents",
+    subagents: "agents",
+    extension: "extensions",
+    extensions: "extensions",
+  };
+  const byAlias = aliases[normalized];
+  if (byAlias) return { tab: byAlias, filter: "" };
+  const byLabel = TAB_DEFS.find((tab) => tab.id === normalized || tab.label.toLowerCase() === normalized);
+  if (byLabel) return { tab: byLabel.id, filter: "" };
+  return { tab: "overview", filter: trimmed };
+}
+
+function pickerRows(entries: ConfigEntry[], filter: string, cwd: string, tab: TabId): PickerRow[] {
   const inventory: PickerRow = { kind: "inventory", title: "Current loaded Pi inventory", subtitle: "Active tools, extension/prompt/skill commands, model, cwd, and session" };
-  const entryRows = entries
+  const tokens = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const matchesInventory = tokens.length === 0 || tokens.every((token) => [inventory.title, inventory.subtitle].join(" ").toLowerCase().includes(token));
+  const rows: PickerRow[] = [];
+  if (tab === "overview" && matchesInventory) rows.push(inventory);
+  rows.push(...entries
+    .filter((entry) => tabMatchesEntry(tab, entry))
     .filter((entry) => !filter || matchesFilter(entry, filter, cwd))
-    .map((entry): PickerRow => ({ kind: "entry", entry }));
-  if (!filter || [inventory.title, inventory.subtitle].join(" ").toLowerCase().includes(filter.toLowerCase())) {
-    return [inventory, ...entryRows];
-  }
-  return entryRows;
+    .map((entry): PickerRow => ({ kind: "entry", entry })));
+  return rows;
+}
+
+function entryIcon(entry: ConfigEntry): string {
+  if (entry.kind === "settings") return "⚙";
+  if (entry.kind === "context") return "◇";
+  if (entry.kind === "skill") return "◆";
+  if (entry.kind === "prompt") return "✎";
+  if (entry.kind === "mcp") return "⛓";
+  if (entry.kind === "agent") return "☉";
+  if (entry.kind === "extension") return "✦";
+  if (entry.kind === "model") return "◎";
+  if (entry.kind === "hook") return "↪";
+  return "•";
 }
 
 function previewLines(row: PickerRow, cwd: string): string[] {
   if (row.kind === "inventory") {
     return [
-      "Shows the live Pi session surfaces that this extension can see.",
+      "Live Pi session inventory",
+      "",
+      "This is not a settings file; it is the runtime surface this extension can see right now.",
       "",
       "Includes:",
-      "• active model and cwd",
+      "• active model, cwd, and session file",
       "• currently registered tools",
       "• slash commands from extensions, prompts, and skills",
       "",
-      "Enter opens a read-only markdown inventory.",
+      "Enter opens a read-only Markdown inventory.",
     ];
   }
 
@@ -557,16 +650,17 @@ function previewLines(row: PickerRow, cwd: string): string[] {
     `Path: ${entry.path}`,
     entry.note ? `Note: ${entry.note}` : undefined,
     "",
-    "Enter opens actions:",
-    "• edit/view full file",
-    supportsSettings ? "• add setting from reference" : undefined,
-    supportsEnv ? "• add environment variable from reference" : undefined,
+    "Actions:",
+    "• Enter/Ctrl+E: edit/view full file",
+    supportsSettings ? "• Ctrl+A: add setting from typed reference catalog" : undefined,
+    supportsEnv ? "• Ctrl+V: add environment variable reference" : undefined,
   ].filter((line): line is string => line !== undefined);
 }
 
 class PiConfigPicker implements Component {
   private selectedIndex = 0;
   private filter: string;
+  private activeTab: TabId;
 
   constructor(
     private readonly entries: ConfigEntry[],
@@ -576,7 +670,9 @@ class PiConfigPicker implements Component {
     private readonly requestRender: () => void,
     private readonly done: (result: PickerResult) => void,
   ) {
-    this.filter = initialFilter;
+    const initial = initialTabAndFilter(initialFilter);
+    this.activeTab = initial.tab;
+    this.filter = initial.filter;
     this.clampSelection();
   }
 
@@ -587,10 +683,28 @@ class PiConfigPicker implements Component {
       this.done(null);
       return;
     }
+    if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+      this.cycleTab(1);
+      return;
+    }
+    if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
+      this.cycleTab(-1);
+      return;
+    }
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-      const row = this.rows()[this.selectedIndex];
-      if (!row) return;
-      this.done(row.kind === "inventory" ? { action: "inventory" } : { action: "entry", entry: row.entry });
+      this.selectCurrent("open");
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("e"))) {
+      this.selectCurrent("edit");
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("a"))) {
+      this.selectCurrent("addSetting");
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("v"))) {
+      this.selectCurrent("addEnv");
       return;
     }
     if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("k"))) {
@@ -604,12 +718,12 @@ class PiConfigPicker implements Component {
       return;
     }
     if (matchesKey(data, Key.pageUp)) {
-      this.selectedIndex = Math.max(0, this.selectedIndex - 8);
+      this.selectedIndex = Math.max(0, this.selectedIndex - this.maxVisibleRows());
       this.requestRender();
       return;
     }
     if (matchesKey(data, Key.pageDown)) {
-      this.selectedIndex = Math.min(this.rows().length - 1, this.selectedIndex + 8);
+      this.selectedIndex = Math.min(this.rows().length - 1, this.selectedIndex + this.maxVisibleRows());
       this.requestRender();
       return;
     }
@@ -635,52 +749,64 @@ class PiConfigPicker implements Component {
   }
 
   render(width: number): string[] {
-    const safeWidth = Math.max(44, width);
+    const safeWidth = Math.max(1, width);
     const color = (s: string) => this.theme.fg("accent", s);
     const rows = this.rows();
     this.clampSelection();
     const selected = rows[this.selectedIndex];
     const lines: string[] = [];
-    lines.push(borderLine(safeWidth, "╭", "─", "╮", color, " pi-config "));
-    const filterText = this.filter ? this.theme.fg("text", this.filter) : this.theme.fg("dim", "type to filter");
+    lines.push(borderLine(safeWidth, "╭", "─", "╮", color, " pi-config settings "));
+    lines.push(boxedLine(this.renderTabs(safeWidth - 2), safeWidth, color));
+    const active = TAB_DEFS.find((tab) => tab.id === this.activeTab)!;
+    lines.push(boxedLine(this.theme.fg("muted", ` ${active.description}`), safeWidth, color));
+    const filterText = this.filter ? this.theme.fg("text", this.filter) : this.theme.fg("dim", `type to filter ${active.label}`);
     lines.push(boxedLine(` Search: ${filterText}`, safeWidth, color));
-    lines.push(boxedLine(this.theme.fg("dim", " ↑↓/ctrl+jk navigate · type filters · ctrl+u clear · enter open · esc close"), safeWidth, color));
+    lines.push(boxedLine(this.theme.fg("dim", " Tab/←→ tabs · ↑↓ rows · Enter edit · Ctrl+A add setting · Ctrl+U clear · Esc close"), safeWidth, color));
     lines.push(borderLine(safeWidth, "├", "─", "┤", color));
 
     if (rows.length === 0) {
-      lines.push(boxedLine(this.theme.fg("warning", ` No matches for ${JSON.stringify(this.filter)}`), safeWidth, color));
-      lines.push(borderLine(safeWidth, "╰", "─", "╯", color));
+      lines.push(boxedLine(this.theme.fg("warning", ` No ${active.label} matches for ${JSON.stringify(this.filter)}`), safeWidth, color));
+      lines.push(borderLine(safeWidth, "╰", "─", "╯", color, `0/${tabCount(this.activeTab, this.entries)}`));
       return lines;
     }
 
-    if (safeWidth >= 96) this.renderSplit(lines, rows, selected, safeWidth, color);
+    if (safeWidth >= 100) this.renderSplit(lines, rows, selected, safeWidth, color);
     else this.renderStacked(lines, rows, selected, safeWidth, color);
 
     lines.push(borderLine(safeWidth, "╰", "─", "╯", color, `${this.selectedIndex + 1}/${rows.length}`));
     return lines;
   }
 
+  private renderTabs(width: number): string {
+    const pieces = TAB_DEFS.map((tab) => {
+      const label = `${tab.label} ${tabCount(tab.id, this.entries)}`;
+      if (tab.id === this.activeTab) return this.theme.bg("selectedBg", this.theme.fg("text", ` ${label} `));
+      return this.theme.fg("muted", ` ${label} `);
+    });
+    return truncateToWidth(` ${pieces.join(" ")}`, width);
+  }
+
   private renderSplit(lines: string[], rows: PickerRow[], selected: PickerRow | undefined, width: number, color: (s: string) => string): void {
     const inner = width - 2;
-    const leftWidth = Math.max(42, Math.floor(inner * 0.48));
+    const leftWidth = Math.max(44, Math.floor(inner * 0.48));
     const rightWidth = inner - leftWidth - 1;
-    const visibleRows = this.visibleRows(rows, 16);
+    const visibleRows = this.visibleRows(rows, this.maxVisibleRows());
     const preview = selected ? previewLines(selected, this.cwd) : [];
-    const maxRows = Math.max(visibleRows.length, Math.min(16, preview.length));
+    const maxRows = Math.max(visibleRows.length, Math.min(this.maxVisibleRows(), preview.length));
     for (let i = 0; i < maxRows; i++) {
       const rowInfo = visibleRows[i];
       const left = rowInfo ? this.renderRow(rowInfo.row, rowInfo.index === this.selectedIndex, leftWidth) : "";
       const rightRaw = preview[i] ?? "";
-      const right = i === 0 && rightRaw ? this.theme.fg("accent", this.theme.bold(rightRaw)) : rightRaw;
-      lines.push(color("│") + fitLine(left, leftWidth) + color("│") + fitLine(this.theme.fg("muted", right), rightWidth) + color("│"));
+      const right = i === 0 && rightRaw ? this.theme.fg("accent", this.theme.bold(rightRaw)) : this.theme.fg("muted", rightRaw);
+      lines.push(color("│") + fitLine(left, leftWidth) + color("│") + fitLine(right, rightWidth) + color("│"));
     }
   }
 
   private renderStacked(lines: string[], rows: PickerRow[], selected: PickerRow | undefined, width: number, color: (s: string) => string): void {
-    for (const rowInfo of this.visibleRows(rows, 10)) {
+    for (const rowInfo of this.visibleRows(rows, Math.min(8, this.maxVisibleRows()))) {
       lines.push(boxedLine(this.renderRow(rowInfo.row, rowInfo.index === this.selectedIndex, width - 2), width, color));
     }
-    lines.push(borderLine(width, "├", "─", "┤", color));
+    lines.push(borderLine(width, "├", "─", "┤", color, " details "));
     for (const line of (selected ? previewLines(selected, this.cwd) : []).slice(0, 8)) {
       lines.push(boxedLine(this.theme.fg("muted", line), width, color));
     }
@@ -689,14 +815,15 @@ class PiConfigPicker implements Component {
   private renderRow(row: PickerRow, selected: boolean, width: number): string {
     const marker = selected ? "→ " : "  ";
     const status = row.kind === "entry" ? (fileExists(row.entry.path) ? "●" : "○") : "◆";
-    const title = `${marker}${status} ${rowTitle(row)}`;
+    const icon = row.kind === "entry" ? entryIcon(row.entry) : "◇";
+    const title = `${marker}${status} ${icon} ${rowTitle(row)}`;
     const subtitle = rowSubtitle(row, this.cwd);
     const plain = `${title} — ${subtitle}`;
     return selected ? this.theme.fg("accent", truncateToWidth(plain, width)) : truncateToWidth(plain, width);
   }
 
   private rows(): PickerRow[] {
-    return pickerRows(this.entries, this.filter.trim(), this.cwd);
+    return pickerRows(this.entries, this.filter.trim(), this.cwd, this.activeTab);
   }
 
   private visibleRows(rows: PickerRow[], maxRows: number): Array<{ row: PickerRow; index: number }> {
@@ -706,6 +833,28 @@ class PiConfigPicker implements Component {
     let start = Math.max(0, this.selectedIndex - half);
     start = Math.min(start, Math.max(0, total - windowSize));
     return rows.slice(start, start + windowSize).map((row, offset) => ({ row, index: start + offset }));
+  }
+
+  private maxVisibleRows(): number {
+    return 12;
+  }
+
+  private cycleTab(delta: number): void {
+    const index = TAB_DEFS.findIndex((tab) => tab.id === this.activeTab);
+    const next = (index + delta + TAB_DEFS.length) % TAB_DEFS.length;
+    this.activeTab = TAB_DEFS[next]!.id;
+    this.selectedIndex = 0;
+    this.requestRender();
+  }
+
+  private selectCurrent(action: PickerAction): void {
+    const row = this.rows()[this.selectedIndex];
+    if (!row) return;
+    if (row.kind === "inventory") {
+      this.done({ action: "inventory" });
+      return;
+    }
+    this.done({ action, entry: row.entry });
   }
 
   private clampSelection(reset = false): void {
@@ -723,22 +872,245 @@ async function chooseEntryOverlay(ctx: ExtensionCommandContext, entries: ConfigE
   return ctx.ui.custom<PickerResult>((tui, theme, _keybindings, done) => new PiConfigPicker(entries, filter, ctx.cwd, theme, () => tui.requestRender(), done), {
     overlay: true,
     overlayOptions: {
-      width: "88%",
-      minWidth: 56,
-      maxHeight: "85%",
+      width: "82%",
+      minWidth: 64,
+      maxHeight: "78%",
       anchor: "center",
-      margin: 1,
+      margin: 2,
     },
   });
 }
 
-async function chooseFrom<T>(ctx: ExtensionCommandContext, title: string, items: T[], render: (item: T, index: number) => string): Promise<T | undefined> {
+type ReferenceItem<T> = {
+  value: T;
+  title: string;
+  subtitle: string;
+  detailLines: string[];
+  searchText: string;
+};
+
+class ReferencePicker<T> implements Component {
+  private selectedIndex = 0;
+  private filter: string;
+
+  constructor(
+    private readonly title: string,
+    private readonly items: ReferenceItem<T>[],
+    initialFilter: string,
+    private readonly theme: Theme,
+    private readonly requestRender: () => void,
+    private readonly done: (result: T | undefined) => void,
+  ) {
+    this.filter = initialFilter;
+    this.clampSelection();
+  }
+
+  invalidate(): void {}
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape)) {
+      this.done(undefined);
+      return;
+    }
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
+      const item = this.filteredItems()[this.selectedIndex];
+      if (item) this.done(item.value);
+      return;
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("k"))) {
+      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("j"))) {
+      this.selectedIndex = Math.min(this.filteredItems().length - 1, this.selectedIndex + 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.pageUp)) {
+      this.selectedIndex = Math.max(0, this.selectedIndex - 10);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.pageDown)) {
+      this.selectedIndex = Math.min(this.filteredItems().length - 1, this.selectedIndex + 10);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.backspace) || matchesKey(data, Key.delete)) {
+      this.filter = [...this.filter].slice(0, -1).join("");
+      this.clampSelection(true);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("u"))) {
+      this.filter = "";
+      this.clampSelection(true);
+      this.requestRender();
+      return;
+    }
+    const printable = decodeKittyPrintable(data) ?? (/^[^\x00-\x1f\x7f]$/.test(data) ? data : undefined);
+    if (printable) {
+      this.filter += printable;
+      this.clampSelection(true);
+      this.requestRender();
+    }
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const color = (s: string) => this.theme.fg("accent", s);
+    const items = this.filteredItems();
+    this.clampSelection();
+    const selected = items[this.selectedIndex];
+    const lines: string[] = [];
+    lines.push(borderLine(safeWidth, "╭", "─", "╮", color, ` ${this.title} `));
+    const filterText = this.filter ? this.theme.fg("text", this.filter) : this.theme.fg("dim", "type to filter reference catalog");
+    lines.push(boxedLine(` Search: ${filterText}`, safeWidth, color));
+    lines.push(boxedLine(this.theme.fg("dim", " ↑↓/Ctrl+J/K navigate · Enter insert · Ctrl+U clear · Esc back"), safeWidth, color));
+    lines.push(borderLine(safeWidth, "├", "─", "┤", color));
+    if (items.length === 0) {
+      lines.push(boxedLine(this.theme.fg("warning", ` No matches for ${JSON.stringify(this.filter)}`), safeWidth, color));
+      lines.push(borderLine(safeWidth, "╰", "─", "╯", color, "0/0"));
+      return lines;
+    }
+    if (safeWidth >= 88) this.renderSplit(lines, items, selected, safeWidth, color);
+    else this.renderStacked(lines, items, selected, safeWidth, color);
+    lines.push(borderLine(safeWidth, "╰", "─", "╯", color, `${this.selectedIndex + 1}/${items.length}`));
+    return lines;
+  }
+
+  private renderSplit(lines: string[], items: ReferenceItem<T>[], selected: ReferenceItem<T> | undefined, width: number, color: (s: string) => string): void {
+    const inner = width - 2;
+    const leftWidth = Math.max(38, Math.floor(inner * 0.46));
+    const rightWidth = inner - leftWidth - 1;
+    const visibleRows = this.visibleItems(items, 10);
+    const details = selected?.detailLines ?? [];
+    const maxRows = Math.max(visibleRows.length, Math.min(10, details.length));
+    for (let i = 0; i < maxRows; i++) {
+      const rowInfo = visibleRows[i];
+      const left = rowInfo ? this.renderReferenceRow(rowInfo.item, rowInfo.index === this.selectedIndex, leftWidth) : "";
+      const detailRaw = details[i] ?? "";
+      const detail = i === 0 && detailRaw ? this.theme.fg("accent", this.theme.bold(detailRaw)) : this.theme.fg("muted", detailRaw);
+      lines.push(color("│") + fitLine(left, leftWidth) + color("│") + fitLine(detail, rightWidth) + color("│"));
+    }
+  }
+
+  private renderStacked(lines: string[], items: ReferenceItem<T>[], selected: ReferenceItem<T> | undefined, width: number, color: (s: string) => string): void {
+    for (const rowInfo of this.visibleItems(items, 8)) {
+      lines.push(boxedLine(this.renderReferenceRow(rowInfo.item, rowInfo.index === this.selectedIndex, width - 2), width, color));
+    }
+    lines.push(borderLine(width, "├", "─", "┤", color, " details "));
+    for (const line of (selected?.detailLines ?? []).slice(0, 6)) {
+      lines.push(boxedLine(this.theme.fg("muted", line), width, color));
+    }
+  }
+
+  private renderReferenceRow(item: ReferenceItem<T>, selected: boolean, width: number): string {
+    const marker = selected ? "→ " : "  ";
+    const line = `${marker}${item.title} — ${item.subtitle}`;
+    return selected ? this.theme.fg("accent", truncateToWidth(line, width)) : truncateToWidth(line, width);
+  }
+
+  private filteredItems(): ReferenceItem<T>[] {
+    const tokens = this.filter.toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return this.items;
+    return this.items.filter((item) => tokens.every((token) => item.searchText.includes(token)));
+  }
+
+  private visibleItems(items: ReferenceItem<T>[], maxRows: number): Array<{ item: ReferenceItem<T>; index: number }> {
+    const total = items.length;
+    const windowSize = Math.min(maxRows, total);
+    const half = Math.floor(windowSize / 2);
+    let start = Math.max(0, this.selectedIndex - half);
+    start = Math.min(start, Math.max(0, total - windowSize));
+    return items.slice(start, start + windowSize).map((item, offset) => ({ item, index: start + offset }));
+  }
+
+  private clampSelection(reset = false): void {
+    const count = this.filteredItems().length;
+    if (reset) this.selectedIndex = 0;
+    if (count === 0) {
+      this.selectedIndex = 0;
+      return;
+    }
+    this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, count - 1));
+  }
+}
+
+async function chooseReference<T>(ctx: ExtensionCommandContext, title: string, items: ReferenceItem<T>[], initialFilter = ""): Promise<T | undefined> {
   if (items.length === 0) return undefined;
-  const choices = items.map((item, index) => `${String(index + 1).padStart(2, "0")}. ${render(item, index)}`);
-  const selected = await ctx.ui.select(title, choices);
-  if (!selected) return undefined;
-  const index = Number(selected.slice(0, selected.indexOf("."))) - 1;
-  return items[index];
+  return ctx.ui.custom<T | undefined>((tui, theme, _keybindings, done) => new ReferencePicker(title, items, initialFilter, theme, () => tui.requestRender(), done), {
+    overlay: true,
+    overlayOptions: {
+      width: "72%",
+      minWidth: 56,
+      maxHeight: "70%",
+      anchor: "center",
+      margin: 2,
+    },
+  });
+}
+
+function stringifyReferenceValue(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function settingReferenceItems(catalog: SettingField[], keys: Set<string>): ReferenceItem<SettingField>[] {
+  return catalog.map((item) => {
+    const present = keys.has(item.key);
+    const choices = item.choices?.length ? `choices: ${item.choices.join(" | ")}` : undefined;
+    const subtitle = `${item.type}${present ? " · already present" : ""}${item.choices?.length ? " · enum" : ""}`;
+    const detailLines = [
+      item.key,
+      "",
+      `Type: ${item.type}`,
+      choices,
+      `Default: ${stringifyReferenceValue(item.defaultValue)}`,
+      "",
+      item.description,
+      "",
+      present ? "This key already exists. Inserting will ask before replacing." : "Enter inserts this key with its documented default, then opens a full-file review editor.",
+    ].filter((line): line is string => line !== undefined);
+    return {
+      value: item,
+      title: `${item.key} · ${item.type}`,
+      subtitle,
+      detailLines,
+      searchText: [item.key, item.label, item.type, item.description, ...(item.choices ?? [])].join(" ").toLowerCase(),
+    };
+  });
+}
+
+function envReferenceItems(catalog: EnvVarField[]): ReferenceItem<EnvVarField>[] {
+  return catalog.map((item) => ({
+    value: item,
+    title: item.name,
+    subtitle: item.tools.join(", "),
+    detailLines: [
+      item.name,
+      "",
+      `Surfaces: ${item.tools.join(", ")}`,
+      item.valueHint ? `Example: ${item.valueHint}` : undefined,
+      "",
+      item.description,
+      "",
+      "Enter prompts for a value, inserts it into the correct env section, then opens a full-file review editor.",
+    ].filter((line): line is string => line !== undefined),
+    searchText: [item.name, item.description, item.valueHint ?? "", ...item.tools].join(" ").toLowerCase(),
+  }));
+}
+
+async function chooseSettingFromReference(ctx: ExtensionCommandContext, catalog: SettingField[], keys: Set<string>): Promise<SettingField | undefined> {
+  return chooseReference(ctx, "Add setting", settingReferenceItems(catalog, keys));
+}
+
+async function chooseEnvVarFromReference(ctx: ExtensionCommandContext, catalog: EnvVarField[]): Promise<EnvVarField | undefined> {
+  return chooseReference(ctx, "Add environment variable", envReferenceItems(catalog));
 }
 
 function settingCatalogFor(tool: SurfaceTool): SettingField[] {
@@ -930,15 +1302,9 @@ async function addSettingFromReference(ctx: ExtensionCommandContext, entry: Conf
     ctx.ui.notify("No setting reference is available for this file type", "warning");
     return false;
   }
-  const filter = (await ctx.ui.input("Filter available settings", "model, compaction, mcp, shell..."))?.trim() ?? "";
   const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
   const keys = currentKeys(entry, before);
-  const filtered = filterCatalog(catalog, filter);
-  const selected = await chooseFrom(ctx, "Add setting", filtered, (item) => {
-    const present = keys.has(item.key) ? "✓ " : "";
-    const choices = item.choices?.length ? ` (${item.choices.join(" | ")})` : "";
-    return `${present}${item.key} · ${item.type}${choices} · ${item.description}`;
-  });
+  const selected = await chooseSettingFromReference(ctx, catalog, keys);
   if (!selected) return false;
   let overwrite = false;
   if (keys.has(selected.key)) {
@@ -964,9 +1330,7 @@ async function addEnvFromReference(ctx: ExtensionCommandContext, entry: ConfigEn
     ctx.ui.notify("Environment variables can only be inserted into JSON/TOML settings files", "warning");
     return false;
   }
-  const filter = (await ctx.ui.input("Filter environment variables", "OPENAI, GITHUB, PI_..."))?.trim() ?? "";
-  const filtered = filterEnvCatalog(envCatalogFor(entry.tool), filter);
-  const selected = await chooseFrom(ctx, "Add environment variable", filtered, (item) => `${item.name} · ${item.description}`);
+  const selected = await chooseEnvVarFromReference(ctx, envCatalogFor(entry.tool));
   if (!selected) return false;
   const value = await ctx.ui.input(`Value for ${selected.name}`, selected.valueHint ?? "leave blank to insert an empty string");
   if (value === undefined) return false;
@@ -983,64 +1347,25 @@ async function addEnvFromReference(ctx: ExtensionCommandContext, entry: ConfigEn
   return true;
 }
 
-function filterCatalog(catalog: SettingField[], filter: string): SettingField[] {
-  const tokens = filter.toLowerCase().split(/\s+/).filter(Boolean);
-  const filtered = tokens.length === 0 ? catalog : catalog.filter((field) => {
-    const haystack = [field.key, field.label, field.type, field.description, ...(field.choices ?? [])].join(" ").toLowerCase();
-    return tokens.every((token) => haystack.includes(token));
-  });
-  return filtered.slice(0, 80);
-}
-
-function filterEnvCatalog(catalog: EnvVarField[], filter: string): EnvVarField[] {
-  const tokens = filter.toLowerCase().split(/\s+/).filter(Boolean);
-  const filtered = tokens.length === 0 ? catalog : catalog.filter((field) => {
-    const haystack = [field.name, field.description, ...(field.tools ?? [])].join(" ").toLowerCase();
-    return tokens.every((token) => haystack.includes(token));
-  });
-  return filtered.slice(0, 80);
-}
-
-async function handleEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
-  while (true) {
-    const supportsSettings = settingCatalogForEntry(entry).length > 0 && (entry.format === "json" || entry.format === "toml");
-    const supportsEnv = supportsEnvInsertion(entry) && envCatalogFor(entry.tool).length > 0;
-    const actions = [
-      "Edit/view full file",
-      ...(supportsSettings ? ["Add setting from reference"] : []),
-      ...(supportsEnv ? ["Add environment variable from reference"] : []),
-      "Show path and status",
-      "Back",
-    ];
-    const selected = await ctx.ui.select(entry.title, actions);
-    if (!selected || selected === "Back") return false;
-    if (selected === "Edit/view full file") return editEntry(ctx, entry);
-    if (selected === "Add setting from reference") return addSettingFromReference(ctx, entry);
-    if (selected === "Add environment variable from reference") return addEnvFromReference(ctx, entry);
-    if (selected === "Show path and status") {
-      const details = [
-        `Title: ${entry.title}`,
-        `Group: ${entry.group}`,
-        `Kind: ${entry.kind}`,
-        `Tool/surface: ${entry.tool}`,
-        `Scope: ${entry.scope}`,
-        `Format: ${entry.format}`,
-        `Loaded/current-session evidence: ${entry.loaded ? "yes" : "not directly confirmed"}`,
-        `Exists: ${fileExists(entry.path) ? "yes" : "no"}`,
-        `Path: ${entry.path}`,
-        entry.note ? `Note: ${entry.note}` : undefined,
-      ].filter(Boolean).join("\n");
-      await ctx.ui.editor(`Details: ${entry.title}`, details);
-    }
-  }
-}
-
 function inventoryMarkdown(pi: ExtensionAPI, ctx: ExtensionCommandContext): string {
+  const entries = discoverEntries(pi, ctx);
   const tools = pi.getAllTools().map((tool) => `- ${tool.name}${tool.description ? ` — ${tool.description}` : ""}`).join("\n");
   const commands = pi.getCommands().map((command) => {
     const info = command.sourceInfo;
     return `- /${command.name} [${command.source}]${command.description ? ` — ${command.description}` : ""}${info?.path ? `\n  - ${displayPath(info.path, ctx.cwd)}` : ""}`;
   }).join("\n");
+  const loadedContext = entries
+    .filter((entry) => entry.kind === "context" && entry.loaded)
+    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
+    .join("\n");
+  const loadedSkills = entries
+    .filter((entry) => entry.kind === "skill" && entry.loaded)
+    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
+    .join("\n");
+  const loadedExtensions = entries
+    .filter((entry) => entry.kind === "extension" && entry.loaded)
+    .map((entry) => `- ${entry.title}\n  - ${displayPath(entry.path, ctx.cwd)}`)
+    .join("\n");
   const prompt = ctx.getSystemPrompt();
   return [
     "# Current Pi inventory",
@@ -1049,6 +1374,15 @@ function inventoryMarkdown(pi: ExtensionAPI, ctx: ExtensionCommandContext): stri
     `session: ${ctx.sessionManager.getSessionFile?.() ?? "unknown"}`,
     `model: ${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown"}`,
     `system prompt chars: ${prompt.length.toLocaleString()}`,
+    "",
+    "## Loaded context Markdown",
+    loadedContext || "(none detected)",
+    "",
+    "## Loaded skills",
+    loadedSkills || "(none detected)",
+    "",
+    "## Loaded extension commands",
+    loadedExtensions || "(none detected)",
     "",
     "## Active tools",
     tools || "(none)",
@@ -1077,7 +1411,11 @@ async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
       await ctx.ui.editor("Current Pi inventory", inventoryMarkdown(pi, ctx));
       continue;
     }
-    const changed = await handleEntry(ctx, result.entry);
+    const changed = result.action === "open" || result.action === "edit"
+      ? await editEntry(ctx, result.entry)
+      : result.action === "addSetting"
+        ? await addSettingFromReference(ctx, result.entry)
+        : await addEnvFromReference(ctx, result.entry);
     if (changed) await maybeReload(ctx);
   }
 }
