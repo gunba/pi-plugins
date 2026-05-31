@@ -122,7 +122,6 @@ export default function (pi: ExtensionAPI) {
   let generatedTitle: string | undefined;
   let hasSeenUserMessage = false;
   let historicalFirstPrompt: string | undefined;
-  let hadErrorThisRun = false;
   let animationTimer: ReturnType<typeof setInterval> | undefined;
   let frameIndex = 0;
 
@@ -202,12 +201,10 @@ export default function (pi: ExtensionAPI) {
 
     historicalFirstPrompt = findFirstUserPrompt(branch);
     hasSeenUserMessage = Boolean(historicalFirstPrompt);
-    hadErrorThisRun = false;
     enterStatic(ctx, hasSeenUserMessage ? "ready" : "fresh");
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    hadErrorThisRun = false;
     enterThinking(ctx);
 
     if (!hasSeenUserMessage) {
@@ -219,33 +216,15 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    hadErrorThisRun = false;
     enterThinking(ctx);
   });
 
-  pi.on("tool_execution_end", async (event, ctx) => {
-    if (!event.isError) return;
-    hadErrorThisRun = true;
-    enterStatic(ctx, "error");
-  });
-
   pi.on("message_end", async (event, ctx) => {
-    const message = event.message as AnyRecord;
-    if (message.role !== "assistant") return;
-    if (message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage) {
-      hadErrorThisRun = true;
-      enterStatic(ctx, "error");
-    }
+    if (isAssistantErrorMessage(event.message as AnyRecord)) enterStatic(ctx, "error");
   });
 
-  pi.on("after_provider_response", async (event, ctx) => {
-    if (event.status < 400) return;
-    hadErrorThisRun = true;
-    enterStatic(ctx, "error");
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    enterStatic(ctx, hadErrorThisRun ? "error" : "ready");
+  pi.on("agent_end", async (event, ctx) => {
+    enterStatic(ctx, lastAssistantMessageFailed(event.messages as AnyRecord[]) ? "error" : "ready");
   });
 
   pi.on("session_shutdown", async (_event, _ctx) => {
@@ -281,6 +260,18 @@ export default function (pi: ExtensionAPI) {
       renderTitle(ctx);
     },
   });
+}
+
+function isAssistantErrorMessage(message: AnyRecord | undefined): boolean {
+  return message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted" || Boolean(message.errorMessage));
+}
+
+function lastAssistantMessageFailed(messages: AnyRecord[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "assistant") return isAssistantErrorMessage(message);
+  }
+  return false;
 }
 
 function setTerminalTitle(ctx: ExtensionContext, title: string): void {
