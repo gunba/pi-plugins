@@ -1,0 +1,24 @@
+{
+  "name": "pi-context-ledger",
+  "version": "0.1.0",
+  "description": "Pi extension that prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "context", "tokens", "tui"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/context-ledger.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
