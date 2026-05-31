@@ -1,0 +1,21 @@
+{
+  "name": "pi-settings-sync",
+  "version": "0.1.0",
+  "description": "Export user-level Pi settings to a portable, OS-translating zip and import them on another machine via an agent-driven skill.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "settings", "export", "import", "sync", "migration"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/settings-sync.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
