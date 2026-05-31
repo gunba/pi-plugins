@@ -30,11 +30,13 @@ const TITLE_MAX_CHARS = 30;
 const PROMPT_MAX_CHARS = 2_000;
 const TITLE_MODEL_TIMEOUT_MS = 6_000;
 const TITLE_MAX_TOKENS = 48;
-const THINKING_FRAMES = ["·", "•", "●", "•"];
+// Keep every thinking frame made from the same characters so proportional
+// terminal tab fonts do not change the total title width on each tick.
+const THINKING_FRAMES = ["●··", "·●·", "··●", "·●·"];
 const STATE_INDICATORS: Record<Exclude<TitleState, "thinking">, string> = {
-  fresh: "○",
-  ready: "✓",
-  error: "✗",
+  fresh: "○··",
+  ready: "✓··",
+  error: "✗··",
 };
 
 const TITLE_SYSTEM_PROMPT = [
