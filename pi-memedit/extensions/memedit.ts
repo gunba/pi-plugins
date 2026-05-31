@@ -75,8 +75,8 @@ type MemeditStats = {
   // while the saving recurs on every subsequent turn. They are not comparable
   // as raw token counts, so we carry them as dollar flows plus a break-even.
   recacheCost?: number; // one-off $ to re-cache the invalidated tail
-  savingPerTurnCost?: number; // $ saved on every subsequent turn
-  breakEvenTurns?: number; // future turns until the recache pays for itself
+  savingPerCallCost?: number; // $ saved on every subsequent provider request
+  breakEvenCalls?: number; // future API calls until the recache pays for itself
   pruneTokens?: number;
   pruneCost?: number;
   deletedItems?: DeletedItem[];
@@ -89,7 +89,7 @@ type MemeditTelemetry = {
   tokensSaved: number;
   estimatedRecacheTokens: number;
   recacheCost: number;
-  savingPerTurnCost: number;
+  savingPerCallCost: number;
   pruneTokens: number;
   pruneCost: number;
 };
@@ -134,6 +134,12 @@ Keep an entry if a future agent resuming this session would need what it holds,
 or would go wrong without it — redoing work, or reopening a settled question.
 Delete an entry only when what it holds is worthless going forward, or already
 held at full fidelity by a surviving entry.
+
+THE NEXT REQUEST
+You may be handed the user's next request, tagged <next_request>. It is the
+session's immediate future: keep every entry it will draw on, even loosely.
+It sharpens the test, but it never licenses deleting a record merely because the
+request does not mention it — the session outlives this one request.
 
 A WRONG TURN IS NOT AUTOMATICALLY DELETABLE
 The flailing toward a result — repeated failed calls, retries, "let me try…" —
@@ -192,7 +198,7 @@ let telemetry: MemeditTelemetry = {
   tokensSaved: 0,
   estimatedRecacheTokens: 0,
   recacheCost: 0,
-  savingPerTurnCost: 0,
+  savingPerCallCost: 0,
   pruneTokens: 0,
   pruneCost: 0,
 };
@@ -443,15 +449,19 @@ function formatPruneItem(item: ContextItem): string {
   return `${tag} ${entryPromptRole(item.entry)} (${scope}; ${mutability}; id=${item.entry.id})\n${text}`;
 }
 
-function buildPruneMessages(items: ContextItem[]): Message[] {
+function buildPruneMessages(items: ContextItem[], upcomingRequest?: string): Message[] {
   const transcript = items.map(formatPruneItem).join("\n\n---\n\n");
+  const upcoming = upcomingRequest?.trim();
+  const upcomingBlock = upcoming
+    ? `The user's next request — the work this session is about to resume — is:\n<next_request>\n${upcoming}\n</next_request>\nRead the transcript through the lens of this request: keep whatever it will need, and treat as bloat only what it clearly leaves behind.\n\n`
+    : "";
   return [
     {
       role: "user",
       content: [
         {
           type: "text",
-          text: `Conversation entries follow. Only entries tagged [N] are deletion candidates; [context] entries are context only and must not be returned.\n\n${transcript}\n\nReturn the deletion JSON now.`,
+          text: `Conversation entries follow. Only entries tagged [N] are deletion candidates; [context] entries are context only and must not be returned.\n\n${upcomingBlock}${transcript}\n\nReturn the deletion JSON now.`,
         },
       ],
       timestamp: Date.now(),
@@ -856,18 +866,20 @@ function cachePricing(model: AnyRecord | undefined): CachePricing {
 //     the prune they would have been a cache read, so the extra cost is only
 //     (cacheWrite - cacheRead) per token, paid once.
 //   - Ongoing saving: the deleted tokens are no longer re-read from cache on
-//     EVERY subsequent turn, saving cacheRead per token per turn.
+//     EVERY subsequent provider request, saving cacheRead per token per call.
+//     A turn fans out into many provider requests (one per tool round-trip),
+//     so the saving recurs per API call, not per user turn.
 function recacheEconomics(
   deletedTokens: number,
   recacheTokens: number,
   model: AnyRecord | undefined,
-): { recacheCost: number; savingPerTurnCost: number; breakEvenTurns: number | undefined } {
+): { recacheCost: number; savingPerCallCost: number; breakEvenCalls: number | undefined } {
   const pricing = cachePricing(model);
   const recachePenaltyPerToken = Math.max(0, pricing.cacheWritePerToken - pricing.cacheReadPerToken);
   const recacheCost = recacheTokens * recachePenaltyPerToken;
-  const savingPerTurnCost = deletedTokens * pricing.cacheReadPerToken;
-  const breakEvenTurns = savingPerTurnCost > 0 ? Math.ceil(recacheCost / savingPerTurnCost) : undefined;
-  return { recacheCost, savingPerTurnCost, breakEvenTurns };
+  const savingPerCallCost = deletedTokens * pricing.cacheReadPerToken;
+  const breakEvenCalls = savingPerCallCost > 0 ? Math.ceil(recacheCost / savingPerCallCost) : undefined;
+  return { recacheCost, savingPerCallCost, breakEvenCalls };
 }
 
 function updateTelemetry(stats: MemeditStats): void {
@@ -877,7 +889,7 @@ function updateTelemetry(stats: MemeditStats): void {
   telemetry.tokensSaved += stats.tokensSaved || 0;
   telemetry.estimatedRecacheTokens += stats.estimatedRecacheTokens || 0;
   telemetry.recacheCost += stats.recacheCost || 0;
-  telemetry.savingPerTurnCost += stats.savingPerTurnCost || 0;
+  telemetry.savingPerCallCost += stats.savingPerCallCost || 0;
   telemetry.pruneTokens += stats.pruneTokens || 0;
   telemetry.pruneCost += stats.pruneCost || 0;
 }
@@ -904,18 +916,18 @@ function formatCost(value: number | undefined): string {
 }
 
 function breakEvenText(stats: MemeditStats): string {
-  if (!stats.savingPerTurnCost) return "no ongoing saving";
+  if (!stats.savingPerCallCost) return "no ongoing saving";
   if (!stats.recacheCost) return "net positive immediately";
-  if (stats.breakEvenTurns === undefined) return "break-even unknown";
-  return `pays for itself after ${stats.breakEvenTurns} turn${stats.breakEvenTurns === 1 ? "" : "s"}`;
+  if (stats.breakEvenCalls === undefined) return "break-even unknown";
+  return `pays for itself after ${stats.breakEvenCalls} API call${stats.breakEvenCalls === 1 ? "" : "s"}`;
 }
 
 function cumulativeContextPercent(): number {
   return telemetry.contextTokensBefore > 0 ? (telemetry.tokensSaved / telemetry.contextTokensBefore) * 100 : 0;
 }
 
-function cumulativeBreakEvenTurns(): number | undefined {
-  return telemetry.savingPerTurnCost > 0 ? Math.ceil(telemetry.recacheCost / telemetry.savingPerTurnCost) : undefined;
+function cumulativeBreakEvenCalls(): number | undefined {
+  return telemetry.savingPerCallCost > 0 ? Math.ceil(telemetry.recacheCost / telemetry.savingPerCallCost) : undefined;
 }
 
 function contextUsageFields(ctx: ExtensionContext): Pick<MemeditStats, "contextWindowTokensBefore" | "contextWindowTokensLimit" | "contextWindowPercentBefore"> {
@@ -971,7 +983,7 @@ function statusMessage(stats: MemeditStats) {
   if (stats.status === "applied" || stats.status === "noop") {
     lines.push(
       `Context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
-      `Cache calculus: re-caches ${formatTokens(stats.estimatedRecacheTokens)} tokens once (${formatCost(stats.recacheCost)}) to save ${formatCost(stats.savingPerTurnCost)}/turn — ${breakEvenText(stats)}.`,
+      `Cache calculus: re-caches ${formatTokens(stats.estimatedRecacheTokens)} tokens once (${formatCost(stats.recacheCost)}) to save ${formatCost(stats.savingPerCallCost)}/API call — ${breakEvenText(stats)}.`,
       `Prune-pass overhead: ${formatTokens(stats.pruneTokens)} tokens, ${formatCost(stats.pruneCost)}.`,
     );
   }
@@ -987,7 +999,12 @@ function statusMessage(stats: MemeditStats) {
   };
 }
 
-async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startLeafId: string | null | undefined): Promise<MemeditStats | undefined> {
+async function runMemedit(
+  ctx: ExtensionContext,
+  mode: "auto" | "manual",
+  startLeafId: string | null | undefined,
+  upcomingRequest?: string,
+): Promise<MemeditStats | undefined> {
   if (isSubagentRuntimeBlocked()) {
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, error: subagentDisabledReason() };
     return lastStats;
@@ -1035,7 +1052,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       model,
       {
         systemPrompt: PRUNE_SYSTEM_PROMPT,
-        messages: buildPruneMessages(items),
+        messages: buildPruneMessages(items, upcomingRequest),
       },
       {
         apiKey: auth.apiKey,
@@ -1067,7 +1084,7 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries);
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
-    const { recacheCost, savingPerTurnCost, breakEvenTurns } = recacheEconomics(
+    const { recacheCost, savingPerCallCost, breakEvenCalls } = recacheEconomics(
       deleted.tokensSaved,
       deleted.estimatedRecacheTokens,
       model as AnyRecord,
@@ -1087,8 +1104,8 @@ async function runMemedit(ctx: ExtensionContext, mode: "auto" | "manual", startL
       estimatedRecacheTokens: deleted.estimatedRecacheTokens,
       contextPercentSaved,
       recacheCost,
-      savingPerTurnCost,
-      breakEvenTurns,
+      savingPerCallCost,
+      breakEvenCalls,
       pruneTokens,
       pruneCost,
       deletedItems: deleted.deletedItems,
@@ -1159,12 +1176,12 @@ function formatStats(): string {
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
     `Last context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
-    `Last cache calculus: re-cache ${formatTokens(lastStats.estimatedRecacheTokens)} tokens once (${formatCost(lastStats.recacheCost)}) vs ${formatCost(lastStats.savingPerTurnCost)}/turn saved — ${breakEvenText(lastStats)}`,
+    `Last cache calculus: re-cache ${formatTokens(lastStats.estimatedRecacheTokens)} tokens once (${formatCost(lastStats.recacheCost)}) vs ${formatCost(lastStats.savingPerCallCost)}/API call saved — ${breakEvenText(lastStats)}`,
     `Last prune-pass overhead: ${formatTokens(lastStats.pruneTokens)} tokens, ${formatCost(lastStats.pruneCost)}`,
     `Cumulative context pruned: ${formatPercent(cumulativeContextPercent())} (${formatTokens(telemetry.tokensSaved)} deleted / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
-    `Cumulative cache calculus: ${formatCost(telemetry.recacheCost)} one-off recache vs ${formatCost(telemetry.savingPerTurnCost)}/turn saved${cumulativeBreakEvenTurns() === undefined ? "" : ` — break-even after ${cumulativeBreakEvenTurns()} turn${cumulativeBreakEvenTurns() === 1 ? "" : "s"}`}`,
+    `Cumulative cache calculus: ${formatCost(telemetry.recacheCost)} one-off recache vs ${formatCost(telemetry.savingPerCallCost)}/API call saved${cumulativeBreakEvenCalls() === undefined ? "" : ` — break-even after ${cumulativeBreakEvenCalls()} API call${cumulativeBreakEvenCalls() === 1 ? "" : "s"}`}`,
     `Cumulative prune-pass overhead: ${formatTokens(telemetry.pruneTokens)} tokens, ${formatCost(telemetry.pruneCost)}`,
-    `Realized saving so far: ${formatCost(realizedSavingsCost)} over ${realizedSavingsCalls} API call${realizedSavingsCalls === 1 ? "" : "s"} (${formatCost(telemetry.savingPerTurnCost)}/call active)`,
+    `Realized saving so far: ${formatCost(realizedSavingsCost)} over ${realizedSavingsCalls} API call${realizedSavingsCalls === 1 ? "" : "s"} (${formatCost(telemetry.savingPerCallCost)}/call active)`,
   ];
   if (typeof lastStats.contextWindowPercentBefore === "number") {
     const tokenDetails =
@@ -1210,13 +1227,13 @@ export default function memedit(pi: ExtensionAPI) {
     if (filtered.length !== event.messages.length) return { messages: filtered as never };
   });
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     const startLeafId = pendingRunStartLeafId;
     if (startLeafId === undefined) return;
 
     pendingRunStartLeafId = undefined;
     lastCompletedRunStartLeafId = startLeafId;
-    const stats = await runMemedit(ctx, "auto", startLeafId);
+    const stats = await runMemedit(ctx, "auto", startLeafId, event.prompt);
     if (stats) return { message: statusMessage(stats) };
   });
 
@@ -1230,8 +1247,8 @@ export default function memedit(pi: ExtensionAPI) {
   pi.on("before_provider_request", async (_event, ctx) => {
     if (isSubagentRuntimeBlocked() || !enabled) return;
     if (running) return; // the prune's own LLM call is overhead, not a saving
-    if (telemetry.savingPerTurnCost <= 0) return;
-    realizedSavingsCost += telemetry.savingPerTurnCost;
+    if (telemetry.savingPerCallCost <= 0) return;
+    realizedSavingsCost += telemetry.savingPerCallCost;
     realizedSavingsCalls += 1;
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
