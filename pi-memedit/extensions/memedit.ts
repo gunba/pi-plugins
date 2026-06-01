@@ -216,12 +216,17 @@ let liveEnabled = settings.liveEnabled;
 let showDeletedItems = settings.showDeletedItems;
 let running = false;
 let sessionLogIsAuthoritative = false;
-let activeRunStartLeafId: string | null | undefined;
-let activeTurnStartLeafId: string | null | undefined;
 let lastLivePruneTurnIndex = -1;
-let pendingRunStartLeafId: string | null | undefined;
-let deferredPruneStartLeafId: string | null | undefined;
-let lastCompletedRunStartLeafId: string | null | undefined;
+// Entries a prune pass has already judged, plus everything present when the
+// session was resumed/restarted. Seeded at session_start from the existing branch
+// (so a resumed conversation is frozen — context only) and grown with the
+// survivors of each pass (so nothing is judged twice). This replaces the old
+// leaf-id boundary entirely: identity, not position, decides what is prunable, so
+// there is nothing to drift, go null, or re-scope already-judged history.
+let consideredEntryIds = new Set<string>();
+// Set when a run ends uncleanly so the next before_agent_start pass is skipped
+// once, leaving that run's entries unjudged (still candidates for a later pass).
+let skipNextAutoPrune = false;
 let lastStats: MemeditStats | undefined;
 // Realized ongoing saving: the pruned tokens are absent from EVERY provider
 // request after a prune, so the benefit accrues in real time, one API call at a
@@ -401,14 +406,34 @@ function getLatestCompactionIndex(branch: SessionEntry[]): number {
   return -1;
 }
 
-function entryIdsAfter(branch: SessionEntry[], startLeafId: string | null | undefined): Set<string> {
-  if (startLeafId === undefined) return new Set();
+function candidateScope(branch: SessionEntry[]): Set<string> {
+  // Pruning candidates = entries this live session produced that no pass has judged
+  // yet. Everything present at session_start (a resumed/restarted conversation) and
+  // every survivor of a prior pass lives in consideredEntryIds, so it is context
+  // only and never re-offered. No positional boundary means nothing can degenerate
+  // to "the whole branch".
   const ids = new Set<string>();
-  let collecting = startLeafId === null;
   for (const entry of branch) {
-    if (collecting) ids.add(entry.id);
-    if (entry.id === startLeafId) collecting = true;
+    if (!consideredEntryIds.has(entry.id)) ids.add(entry.id);
   }
+  return ids;
+}
+
+function currentTurnEntryIds(branch: SessionEntry[]): Set<string> {
+  // The freshest turn is the most recent assistant message and everything after it
+  // (its tool results) — exactly what the continuation will consume. Derived from
+  // the branch at prune time, so it cannot drift or go stale like a stored leaf id.
+  const ids = new Set<string>();
+  let start = -1;
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry.type === "message" && (entry.message as AnyRecord)?.role === "assistant") {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return ids;
+  for (let i = start; i < branch.length; i++) ids.add(branch[i].id);
   return ids;
 }
 
@@ -485,7 +510,7 @@ function entryPromptText(entry: SessionEntry): string {
 
 function formatPruneItem(item: ContextItem): string {
   const tag = item.number ? `[${item.number}]` : "[context]";
-  const scope = item.scoped ? "current-run" : "earlier-context";
+  const scope = item.scoped ? "candidate" : "context";
   const mutability = item.removable ? "removable" : "protected";
   const text = entryPromptText(item.entry).trim() || "(no text)";
   return `${tag} ${entryPromptRole(item.entry)} (${scope}; ${mutability}; id=${item.entry.id})\n${text}`;
@@ -1283,7 +1308,6 @@ function preflightAllowsRun(candidates: ContextItem[], model: AnyRecord, mode: "
 async function runMemedit(
   ctx: ExtensionContext,
   mode: "auto" | "manual" | "live",
-  startLeafId: string | null | undefined,
   options: RunMemeditOptions = {},
 ): Promise<MemeditStats | undefined> {
   if (isSubagentRuntimeBlocked()) {
@@ -1297,7 +1321,7 @@ async function runMemedit(
   const manager = ctx.sessionManager as AnyRecord;
   const branch = (manager.getBranch?.() ?? []) as SessionEntry[];
   const contextUsageBefore = contextUsageFields(ctx);
-  const scopedEntryIds = entryIdsAfter(branch, startLeafId);
+  const scopedEntryIds = candidateScope(branch);
   const protectedEntryIds = protectFinalAssistantTextResponse(branch, scopedEntryIds);
   for (const id of options.extraProtectedEntryIds ?? []) protectedEntryIds.add(id);
   const items = collectContextItems(branch, scopedEntryIds, protectedEntryIds);
@@ -1387,6 +1411,10 @@ async function runMemedit(
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries, model as AnyRecord);
+    // The editor has now judged every candidate shown to it — record them so no
+    // later pass re-offers a survivor. Protected entries (fresh turn, final answer,
+    // user messages) were never candidates and stay eligible for a future pass.
+    for (const item of candidates) consideredEntryIds.add(item.entry.id);
     const { recacheCost, savingPerCallCost, breakEvenCalls } = recacheEconomics(
       deleted.tokensSaved,
       deleted.estimatedRecacheTokens,
@@ -1526,6 +1554,13 @@ export default function memedit(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     sessionLogIsAuthoritative = false;
+    // Freeze whatever already exists: a fresh start has ~nothing, a resume or
+    // restart has the whole prior conversation. Either way it becomes context only
+    // — this session prunes only the content it generates.
+    const branch = ((ctx.sessionManager as AnyRecord).getBranch?.() ?? []) as SessionEntry[];
+    consideredEntryIds = new Set(branch.map((entry) => entry.id));
+    lastLivePruneTurnIndex = -1;
+    skipNextAutoPrune = false;
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
 
@@ -1539,32 +1574,25 @@ export default function memedit(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const startLeafId = pendingRunStartLeafId;
-    if (startLeafId === undefined) return;
-
-    pendingRunStartLeafId = undefined;
-    lastCompletedRunStartLeafId = startLeafId;
-    const stats = await runMemedit(ctx, "auto", startLeafId, {
+    // A run that ended uncleanly left its entries unjudged; skip one pass so they
+    // aren't pruned on the strength of an aborted transcript. They stay candidates,
+    // so a later pass picks them up once the session is healthy again.
+    if (skipNextAutoPrune) {
+      skipNextAutoPrune = false;
+      return;
+    }
+    // Candidates accumulate until there is enough to be worth a pass; an empty or
+    // below-threshold scope simply returns without judging anything, so nothing is
+    // lost by attempting on every turn.
+    const stats = await runMemedit(ctx, "auto", {
       upcomingRequest: event.prompt,
       promptMode: "next-request",
     });
-    if (stats) {
-      deferredPruneStartLeafId = undefined;
-      return { message: statusMessage(stats) };
-    }
-    if (lastStats?.mode === "auto" && lastStats.status === "skipped" && lastStats.error?.includes("not enough removable")) {
-      deferredPruneStartLeafId ??= startLeafId;
-    }
+    if (stats) return { message: statusMessage(stats) };
   });
 
-  pi.on("agent_start", async (_event, ctx) => {
-    activeRunStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
-    activeTurnStartLeafId = activeRunStartLeafId;
+  pi.on("agent_start", async () => {
     lastLivePruneTurnIndex = -1;
-  });
-
-  pi.on("turn_start", async (_event, ctx) => {
-    activeTurnStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
   });
 
   pi.on("turn_end", async (event, ctx) => {
@@ -1581,12 +1609,13 @@ export default function memedit(pi: ExtensionAPI) {
     if (toolResults.length === 0 && assistantMessage?.stopReason !== "toolUse" && !hasToolCalls) return;
     if (event.turnIndex < LIVE_MIN_TURN_INDEX) return;
     if (lastLivePruneTurnIndex >= 0 && event.turnIndex - lastLivePruneTurnIndex < 2) return;
-    const runStartLeafId = activeRunStartLeafId;
-    if (runStartLeafId === undefined) return;
 
     const branch = ((ctx.sessionManager as AnyRecord).getBranch?.() ?? []) as SessionEntry[];
-    const freshTurnEntryIds = entryIdsAfter(branch, activeTurnStartLeafId);
-    const stats = await runMemedit(ctx, "live", runStartLeafId, {
+    // Keep the freshest turn — this assistant message and its tool results — which
+    // the continuation will consume. Derived from the branch, never a stored
+    // boundary, so it cannot drift or go stale.
+    const freshTurnEntryIds = currentTurnEntryIds(branch);
+    const stats = await runMemedit(ctx, "live", {
       promptMode: "continuation",
       promptScope: "scoped",
       extraProtectedEntryIds: freshTurnEntryIds,
@@ -1610,21 +1639,13 @@ export default function memedit(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    const startLeafId = activeRunStartLeafId;
-    activeRunStartLeafId = undefined;
-    activeTurnStartLeafId = undefined;
-
     const unsuccessfulReason = unsuccessfulRunReason(event.messages);
     if (unsuccessfulReason) {
-      pendingRunStartLeafId = undefined;
+      skipNextAutoPrune = true;
       lastStats = skippedStats(`agent run did not complete cleanly (${unsuccessfulReason})`);
       if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:skipped" : "memedit:off");
       return;
     }
-
-    const nextPruneStartLeafId = deferredPruneStartLeafId !== undefined ? deferredPruneStartLeafId : startLeafId;
-    pendingRunStartLeafId = nextPruneStartLeafId;
-    lastCompletedRunStartLeafId = nextPruneStartLeafId;
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
 
@@ -1667,7 +1688,7 @@ export default function memedit(pi: ExtensionAPI) {
       }
       if (command === "run") {
         await ctx.waitForIdle();
-        await runMemedit(ctx, "manual", lastCompletedRunStartLeafId, { promptMode: "manual" });
+        await runMemedit(ctx, "manual", { promptMode: "manual" });
         if (ctx.hasUI) ctx.ui.notify(formatStats(), "info");
         return;
       }

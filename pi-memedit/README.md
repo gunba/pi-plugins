@@ -4,12 +4,12 @@ Pi extension that runs automatic memory-edit passes over low-value conversation 
 
 It calls the current model directly with a dedicated pruning prompt and a text transcript of eligible conversation entries. Only entries tagged with compact temporary `[N]` identifiers are removable; `[context]` entries are context only and cannot be selected. Selected entries are hard-deleted from both future model context and the persisted session JSONL.
 
-User messages, compaction summaries, and the freshest unsafe-to-delete assistant/tool-result tail are protected. The pruning request and response are not appended to model context. Status messages are also filtered out of future model context.
+Only entries this live session generated are eligible: everything present when the session was resumed or restarted is frozen as context, and once a pass has judged an entry it is never re-offered (it stays in context, but out of candidacy). Eligibility is decided by entry identity, not by a positional boundary into the log. User messages, compaction summaries, and the freshest unsafe-to-delete assistant/tool-result tail are protected. The pruning request and response are not appended to model context. Status messages are also filtered out of future model context.
 
 ## Pruning modes
 
-- **Next-request pruning** runs before the next user request is sent to the model. The pruning agent receives the user's next request so it can keep what the upcoming work will need. Small skipped ranges roll forward and are combined with later ranges instead of being forgotten.
-- **Live continuation pruning** is enabled by default. During long agent runs, pi-memedit may prune after a completed tool-using turn once there is substantial older current-run material: about 50k removable tokens, or at least 100 removable entries and 25k removable tokens. It does not run after a final assistant answer. The just-finished turn is protected because the main agent has not consumed the tool results yet. Live pruning uses a continuation-specific prompt and only shows the current run, which keeps the pruning prompt smaller and avoids waiting until a single run has accumulated 100+ messages.
+- **Next-request pruning** runs before the next user request is sent to the model. The pruning agent receives the user's next request so it can keep what the upcoming work will need. When a pass is skipped for too little material, its entries simply stay unjudged and accumulate with later ones until a pass is worthwhile.
+- **Live continuation pruning** is enabled by default. During long agent runs, pi-memedit may prune after a completed tool-using turn once there is substantial older unjudged material: about 50k removable tokens, or at least 100 removable entries and 25k removable tokens. It does not run after a final assistant answer. The freshest turn is protected because the main agent has not consumed the tool results yet. Live pruning uses a continuation-specific prompt and only shows the session's not-yet-judged entries, which keeps the pruning prompt smaller and avoids waiting until a single run has accumulated 100+ messages.
 
 ## Cache and token accounting
 
