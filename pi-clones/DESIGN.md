@@ -181,8 +181,10 @@ Guidance content (the "hey, you can clone yourself" note):
 > everything you know — do not re-explain context; just state the new task.
 > Once you delegate work to a clone, do not repeat that same work yourself;
 > continue only with non-overlapping parent work unless the clone reports a
-> blocker or the user redirects you. Use `clone_status` for active progress, wait
-> for a completion alert or terminal status before `clone_result`, use
+> blocker or the user redirects you. Do not poll `clone_status` after starting
+> background clones: completion alerts are pushed automatically, so check status
+> only when the user asks, a clone seems stuck, or a meaningful delay has passed.
+> Wait for a completion alert or terminal status before `clone_result`, use
 > `clone_continue` with `mode:"inherit"` when a read-only clone needs to keep going
 > with write tools, and use `clone_dismiss` to write off completed clones you no
 > longer need in status lists. A clone has no user to ask: if it hits a decision
@@ -198,8 +200,8 @@ Minimal, primitive-first. One tool the agent reaches for, four thin verbs around
 | Tool | Purpose |
 |---|---|
 | `clone` | Fork self + task; returns `clone_id` immediately by default. Optional `{ mode: "read-only"\|"inherit", background: boolean }`. |
-| `clone_status` | `{id?, include?}` → active clones by default; `include:"completed"` lists terminal clones that have not been written off, and `include:"all"` includes written-off records too. |
-| `clone_result` | `{id}` → final response after the clone reaches `done`/`error`/`stopped`. Running clones return status only; use `clone_status` for progress. |
+| `clone_status` | `{id?, include?}` → one-off active-clone inspection by default; `include:"completed"` lists terminal clones that have not been written off, and `include:"all"` includes written-off records too. Rapid active-clone polls are suppressed because completion alerts are pushed automatically. |
+| `clone_result` | `{id}` → final response after the clone reaches `done`/`error`/`stopped`. Running clones return a wait-for-alert reminder rather than encouraging polling. |
 | `clone_continue` | `{id, task, mode?, background?}` → continue a terminal clone from its existing branch, optionally with `mode:"inherit"` to enable writes/tools instead of starting over. |
 | `clone_log` | `{id, tail?}` → browse the clone transcript when a result looks nonsensical. |
 | `clone_stop` | `{id}` → abort a clone. |

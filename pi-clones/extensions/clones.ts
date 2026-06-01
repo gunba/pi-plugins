@@ -36,6 +36,7 @@ const CLONES_DIR = join(AGENT_DIR, "clones");
 const MAX_DEPTH = 2; // root(0) → clone(1) → sub-clone(2); depth 2 cannot fork further
 const MAX_CONCURRENT = 4; // live clones per owning session
 const CLONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // prune clone session files older than this
+const STATUS_POLL_COOLDOWN_MS = 30_000; // discourage context-burning status polling loops
 
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const BLOCKED_TOOLS = new Set(["ask_user"]); // no human attends a clone
@@ -63,10 +64,12 @@ const ADVICE_TEXT =
 	"or the user redirects you. A clone has no user to ask: if it hits a decision only the human can " +
 	"make, it records the blocker in its result and stops — it escalates to you, never to the user. " +
 	'Default clones are read-only (safe for parallel research); pass mode:"inherit" only for ' +
-	"non-overlapping work that may edit files. Use clone_status to monitor active work. Wait for a " +
-	"completion alert or a done/error/stopped status before calling clone_result; use clone_log only " +
-	"to diagnose a confusing result. Use clone_dismiss to write off completed clones you no longer " +
-	"need in status lists.";
+	"non-overlapping work that may edit files. Do not poll clone_status after starting background " +
+	"clones: wait for completion alerts, continue non-overlapping work, or check status only when " +
+	"the user asks, a clone seems stuck, or a meaningful delay has passed. Wait for a completion " +
+	"alert or a done/error/stopped status before calling clone_result; use clone_log only to diagnose " +
+	"a confusing result. Use clone_dismiss to write off completed clones you no longer need in status " +
+	"lists.";
 
 // --------------------------------------------------------------------------
 // Types
@@ -230,6 +233,7 @@ function sweepStaleClones(): number {
 
 export default function piClones(pi: ExtensionAPI): void {
 	const clones = new Map<string, CloneRecord>();
+	const lastStatusChecks = new Map<string, number>();
 
 	const liveStates: CloneState[] = ["starting", "running", "compacting"];
 	const runningCount = () =>
@@ -551,6 +555,26 @@ export default function piClones(pi: ExtensionAPI): void {
 		}
 	}
 
+	function statusPollSuppression(key: string, hasLiveClone: boolean): string {
+		if (!hasLiveClone) return "";
+		const now = Date.now();
+		const last = lastStatusChecks.get(key);
+		lastStatusChecks.set(key, now);
+		if (last === undefined || now - last >= STATUS_POLL_COOLDOWN_MS) return "";
+		const waitSeconds = Math.ceil((STATUS_POLL_COOLDOWN_MS - (now - last)) / 1000);
+		return (
+			`Active clone status was checked ${ago(last)} ago. Pi intentionally suppresses rapid clone_status polling ` +
+			`because completion alerts are pushed automatically. Do not call clone_status in a loop; wait for alerts, ` +
+			`continue non-overlapping work, or try again in ~${waitSeconds}s if the user explicitly needs an update.`
+		);
+	}
+
+	function activeStatusNotice(hasLiveClone: boolean): string {
+		return hasLiveClone
+			? "\n\nDo not poll clone_status. Completion alerts are pushed automatically; check again only on user request, suspected stuck clone, or after a meaningful delay."
+			: "";
+	}
+
 	function statusLine(rec: CloneRecord): string {
 		const usage = rec.tokens ? ` · ${fmtTokens(rec.tokens)} tok` : "";
 		const act = rec.activity ? ` · ${rec.activity}` : "";
@@ -579,7 +603,8 @@ export default function piClones(pi: ExtensionAPI): void {
 			"parallelisable research/investigation; the clone already has your context, so state only the new task.",
 		promptGuidelines: [
 			"After delegating a task to a clone, do not repeat the same work yourself; continue only with non-overlapping work unless the clone reports a blocker or the user redirects you.",
-			"Use clone_status for active progress. Do not call clone_result for running clones; wait for a completion alert or a done/error/stopped status. Use clone_log only to diagnose surprising results.",
+			"Do not poll clone_status in a loop. Background clones push completion alerts; call clone_status only when the user asks for an update, a clone appears stuck, or a meaningful delay has passed.",
+			"Do not call clone_result for running clones; wait for a completion alert or a done/error/stopped status. Use clone_log only to diagnose surprising results.",
 			"Clone completion alerts are concise; fetch clone_result only when the full handoff is needed for the next step, then use clone_dismiss to write off completed clones you no longer need listed.",
 			'If a clone started read-only but now needs to edit, use clone_continue with mode:"inherit" and a focused continuation task instead of starting over from scratch.',
 		],
@@ -622,7 +647,8 @@ export default function piClones(pi: ExtensionAPI): void {
 								type: "text",
 								text:
 									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). It will alert you when ` +
-									`finished. Use clone_status({id:"${rec.id}"}) for progress; wait for done/error/stopped before ` +
+									`finished. Do not poll clone_status; wait for the completion alert. Use clone_status({id:"${rec.id}"}) ` +
+									`only if the user asks for an update or the clone seems stuck, and wait for done/error/stopped before ` +
 									`clone_result({id:"${rec.id}"}).`,
 							},
 						],
@@ -654,7 +680,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_status",
 		label: "Clone status",
 		description:
-			'Inspect active clones spawned by this session by default. Pass include:"completed" or include:"all" ' +
+			'One-off inspection of clones spawned by this session; active clones are listed by default. This is not a polling tool: background clones push completion alerts. Pass include:"completed" or include:"all" ' +
 			"when you need written-off/completed clone records.",
 		parameters: Type.Object({
 			id: Type.Optional(
@@ -686,8 +712,21 @@ export default function piClones(pi: ExtensionAPI): void {
 						details: { id: params.id, error: "not_found" },
 						isError: true,
 					};
+				const hasLiveClone = liveStates.includes(rec.state);
+				const suppressed = statusPollSuppression(`id:${rec.id}`, hasLiveClone);
+				if (suppressed) {
+					return {
+						content: [{ type: "text", text: suppressed }],
+						details: { id: rec.id, state: rec.state, suppressed: true },
+					};
+				}
 				return {
-					content: [{ type: "text", text: statusLine(rec) }],
+					content: [
+						{
+							type: "text",
+							text: `${statusLine(rec)}${activeStatusNotice(hasLiveClone)}`,
+						},
+					],
 					details: {
 						id: rec.id,
 						state: rec.state,
@@ -724,8 +763,26 @@ export default function piClones(pi: ExtensionAPI): void {
 					},
 				};
 			}
+			const hasLiveClone = sorted.some((rec) => liveStates.includes(rec.state));
+			const suppressed = statusPollSuppression(`list:${include}`, hasLiveClone);
+			if (suppressed) {
+				return {
+					content: [{ type: "text", text: suppressed }],
+					details: {
+						count: sorted.length,
+						active: activeClones().length,
+						completed: terminalClones().filter((c) => !c.dismissedAt).length,
+						suppressed: true,
+					},
+				};
+			}
 			return {
-				content: [{ type: "text", text: sorted.map(statusLine).join("\n") }],
+				content: [
+					{
+						type: "text",
+						text: `${sorted.map(statusLine).join("\n")}${activeStatusNotice(hasLiveClone)}`,
+					},
+				],
 				details: {
 					count: sorted.length,
 					active: activeClones().length,
@@ -739,7 +796,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_result",
 		label: "Clone result",
 		description:
-			"Fetch a clone's final answer after it reaches done/error/stopped. Use clone_status for running clones.",
+			"Fetch a clone's final answer after it reaches done/error/stopped. If the clone is still running, wait for its completion alert rather than polling.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
 		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
@@ -754,7 +811,7 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; use clone_status for progress and wait for done/error/stopped before fetching the final result.`,
+							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; do not poll for progress. Wait for the completion alert or check status only after a meaningful delay before fetching the final result.`,
 						},
 					],
 					details: { id: rec.id, state: rec.state },
@@ -826,7 +883,7 @@ export default function piClones(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `Clone ${continued.id} continued (${mode}). It will alert you when finished. Use clone_status({id:"${continued.id}"}) for progress.`,
+								text: `Clone ${continued.id} continued (${mode}). It will alert you when finished. Do not poll clone_status; use it only if the user asks for an update or the clone seems stuck.`,
 							},
 						],
 						details: { id: continued.id, state: continued.state, mode },
