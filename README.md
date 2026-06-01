@@ -14,6 +14,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message; never sent to the model.
 - `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log, including optional live continuation pruning during long runs; disabled by default in pi-subagents child processes and compatible with Anthropic OAuth prune calls.
 - `pi-settings-sync` — adds `/pi-export` and the `/pi-settings-import` skill for full user-level settings migration between machines (Linux ↔ Windows), translating OS-specific paths and excluding secrets, node_modules, and history.
+- `pi-clones` — forks the running agent into a background clone that inherits the full session context (so it needs no briefing and reuses the warm prompt cache), works one extra task in parallel, and re-merges its result into main. Clones boot as a resume of a forked branch (kept out of resume history), default to read-only tools, auto-compact instead of bricking, and escalate human-only decisions back to the parent. Adds `clone`/`clone_status`/`clone_result`/`clone_log`/`clone_stop` and `/clones`; full rationale in `pi-clones/DESIGN.md`.
 
 ## Install
 
