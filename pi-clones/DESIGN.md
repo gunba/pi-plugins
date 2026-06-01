@@ -220,13 +220,18 @@ stamps last-activity time + usage; `tool_execution_*` feeds current activity;
 
 ## 8. Resume-hiding
 
-Clone sessions live under a **non-default session directory**
-(`~/.pi/agent/clones/<parentId>/<cloneId>.jsonl`). Pi's session pickers and
-`pi-resume-search` enumerate via `SessionManager.listAll()` / `list(cwd,
-sessionDir)`, which scan the default `~/.pi/agent/sessions/<encoded-cwd>/` root —
-a sibling `clones/` dir is never listed. So clones are file-backed (giving
+Clone sessions live under a **non-default session directory**: each fork is a
+flat file `~/.pi/agent/clones/<timestamp>_<cloneId>.jsonl` (Pi's standard session
+filename, written by `SessionManager.forkFrom`), with its parent id and depth
+recorded in an in-file `pi-clone-meta` entry rather than in the path. Pi's session
+pickers and `pi-resume-search` enumerate via `SessionManager.listAll()` /
+`list(cwd, sessionDir)`, which scan the default `~/.pi/agent/sessions/<encoded-cwd>/`
+root — the sibling `clones/` dir is never listed. So clones are file-backed (giving
 `clone_log` and the resume-as-fork seeding for free) yet structurally absent from
-resume history. They are garbage-collected on a TTL; no tombstones in the tree.
+resume history. A root session (depth 0) prunes clone files older than the
+retention window (`CLONE_RETENTION_MS`, 7 days) at `session_start`; clones skip
+the sweep so they never delete each other's live files, and no tombstones
+accumulate in the tree.
 
 ---
 

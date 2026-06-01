@@ -9,6 +9,7 @@
 //
 // See DESIGN.md for the full rationale, the spike evidence, and the cost model.
 
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -26,6 +27,7 @@ const CLONES_DIR = join(AGENT_DIR, "clones");
 
 const MAX_DEPTH = 2; // root(0) → clone(1) → sub-clone(2); depth 2 cannot fork further
 const MAX_CONCURRENT = 4; // live clones per owning session
+const CLONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // prune clone session files older than this
 
 const READONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const BLOCKED_TOOLS = new Set(["ask_user"]); // no human attends a clone
@@ -151,6 +153,33 @@ function hasAdviceMarker(ctx: ExtensionContext): boolean {
 	} catch {
 		return false;
 	}
+}
+
+// Prune clone session files older than the retention window. Best-effort and
+// idempotent: it only removes files past the cutoff, so a live or recently-
+// finished clone (fresh mtime) is never touched. Returns the count removed.
+function sweepStaleClones(): number {
+	let names: string[];
+	try {
+		names = readdirSync(CLONES_DIR);
+	} catch {
+		return 0; // dir absent → nothing to sweep
+	}
+	const cutoff = Date.now() - CLONE_RETENTION_MS;
+	let removed = 0;
+	for (const name of names) {
+		if (!name.endsWith(".jsonl")) continue;
+		const file = join(CLONES_DIR, name);
+		try {
+			if (statSync(file).mtimeMs < cutoff) {
+				unlinkSync(file);
+				removed++;
+			}
+		} catch {
+			/* race with another sweeper or stat error — ignore */
+		}
+	}
+	return removed;
 }
 
 // --------------------------------------------------------------------------
@@ -558,6 +587,13 @@ export default function piClones(pi: ExtensionAPI): void {
 	// ----------------------------------------------------------------------
 	// Lifecycle: abort live clones on parent shutdown.
 	// ----------------------------------------------------------------------
+	// Retention sweep: only the human's session (depth 0) prunes old clone files,
+	// so clones don't each re-sweep. Past the window means past any usefulness for
+	// clone_log/clone_result, and no tombstones accumulate in the tree.
+	pi.on("session_start", async (_event, ctx) => {
+		if (currentDepth(ctx) === 0) sweepStaleClones();
+	});
+
 	pi.on("session_shutdown", () => {
 		for (const rec of clones.values()) {
 			if (liveStates.includes(rec.state)) {
