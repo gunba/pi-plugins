@@ -3,9 +3,10 @@
 A primitive for **forking the running agent**, not spawning a stranger.
 
 A *clone* is the current session, copied at a point in time, given one extra task,
-run in the background, and re-merged into main when it finishes. It is the same
-agent — same system prompt, same conversation, same tools, same auth — plus an
-appended instruction. It is not a fresh "subagent" with zero context.
+run in the background, and reported back to main when it finishes. It is the same
+agent — same conversation, same auth/model, with tool access shaped by the
+requested mode — plus an appended instruction. It is not a fresh "subagent" with
+zero context.
 
 The name avoids the word *subagent* deliberately: that token carries swarm/team
 baggage from pretraining and from the existing Pi plugins, all of which model a
@@ -46,8 +47,8 @@ so the clone does not need its own context-management apparatus.
 
 **Goals**
 - Fork the live session into a background clone with one appended task.
-- Inherit auth, model, tools, and full conversation verbatim.
-- Re-merge the clone's result into main, with an alert on completion.
+- Inherit auth, model, and full conversation verbatim.
+- Alert main on completion without dumping full clone context; full handoffs are fetched with `clone_result` when needed.
 - Let the agent inspect a running clone (last activity + timestamp) and read its
   transcript if a result looks wrong.
 - Keep clone sessions out of resume history.
@@ -66,7 +67,7 @@ so the clone does not need its own context-management apparatus.
 
 ## 3. Architecture
 
-Built entirely on confirmed `@earendil-works/pi-coding-agent@0.75.5` exports.
+Built on confirmed `@earendil-works/pi-coding-agent` SDK exports.
 
 ### 3.1 Execution model — Option A (preferred): in-process SDK fork
 
@@ -76,16 +77,14 @@ clone(task) tool call
        SessionManager.fork(ctx.sessionManager.getSessionFile(), clonesDir, cwd)
        // full inherited history → new file under ~/.pi/agent/clones/…
        // (fallback: write getEntries() to a jsonl, then SessionManager.open())
-  └─ capture parent's exact system-prompt bytes: ctx.getSystemPrompt()
   └─ createAgentSession({
-       model: ctx.model, thinkingLevel,
+       model: ctx.model, thinkingLevel: pi.getThinkingLevel(),
        modelRegistry: ctx.modelRegistry,                 // SHARED auth (OAuth incl.)
        sessionManager: <the forked manager>,             // boots as a RESUME
-       tools: <inherited allowlist minus blocking tools>,// see §10
+       tools: <mode allowlist minus blocking tools>,     // see §10
        cwd: ctx.cwd,
      })                                                  // extensions load normally
-  └─ pin clone system prompt = parent bytes (verbatim, no timestamp drift)
-  └─ clone.prompt(task, { streamingBehavior: "followUp" })
+  └─ clone.prompt(task)
   └─ subscribe to AgentSessionEvent stream (progress, completion, compaction)
 ```
 
@@ -97,7 +96,7 @@ so it only ever prunes the clone's *own* new work — never the inherited contex
 
 Why in-process: shares the parent's model client and auth (no OAuth re-load or
 refresh race), runs headless (`AgentSession` has no TTY dependency — the TUI is a
-separate `InteractiveMode` wrapper), and gives the cleanest cache carryover
+separate `InteractiveMode` wrapper), and gives the cleanest available cache carryover
 because the warm prefix lives in the same account within the same TTL window.
 
 **Gate cleared (§12, spike-confirmed):** `createAgentSession` constructs headless
@@ -124,10 +123,9 @@ Anthropic prompt caching is a **byte-exact prefix match, account-scoped**, ~10%
 read price, 5-minute ephemeral TTL (1-hour available). It is *not* session-bound:
 any request that reproduces a recently-sent prefix hits the cache.
 
-A clone whose request renders as
-`[identical tools] → [identical system bytes] → [identical history] → [new task]`
-hits the parent's warm prefix up to the fork point. So the clone's **first turn**
-costs:
+A clone can hit the parent's warm prefix up to the fork point when the rendered
+request preserves enough byte-identical prefix. So the clone's **first turn** can
+cost roughly:
 
 ```
 ≈ 0.10 × shared_prefix_tokens   (cache read of the inherited context)
@@ -140,33 +138,25 @@ free — at minimum you pay the ~10% read on the shared prefix — but you avoid
 full-price reprocessing a context-free subagent incurs, **and** you avoid the
 parent spending tokens to brief it. Net marginal cost of a clone ≪ a subagent.
 
-To maximise hit rate the fork must preserve byte-identity:
-- Replay `ctx.getSystemPrompt()` **verbatim** — do not let the clone rebuild it
-  (otherwise `pi-system-context`'s timestamp shifts a byte in the prefix and
-  invalidates everything after it).
-- Pass tools in the **same order**; don't add/remove tools before the fork point.
+To improve hit rate the fork should preserve as much byte-identity as possible:
+- Reuse the same model and thinking level.
+- Keep tool policy stable for `mode:"inherit"`; default `read-only` deliberately changes tools for safety.
 - Fork **promptly** (within the TTL of the parent's last call).
-- Place the cache breakpoint at the fork boundary; append the task as the final
-  block. Enforce via the clone's `before_provider_request` hook.
 
 If a hit is missed, the result is still correct — you just pay full input once.
-Caching is an optimisation layer, never a correctness dependency.
+Caching is an optimisation layer, never a correctness dependency, and hard cache
+pinning remains a future optimisation rather than a shipped guarantee.
 
 ---
 
-## 5. Re-merge
+## 5. Completion alert and collection
 
 When the clone reaches `agent_end` and is idle (no queued work), pi-clones:
-1. Extracts the final assistant text (and, if requested, asks the clone for a
-   short structured handoff before closing).
-2. Injects it into the **parent** via `ExtensionActions.sendUserMessage`, wrapped
-   as `<clone_result id=… task=…>…</clone_result>`, which steers a parent turn so
-   the agent is alerted and can integrate immediately.
-3. The tool description tells the agent these blocks are clone results, not user
-   messages (same convention pi-lazy-skills uses for its advice block).
+1. Extracts and stores the final assistant text in the parent session's in-memory clone record.
+2. Sends the **parent** a concise completion alert with id, state, task, and a short sanitized preview. The alert steers a parent turn without dumping the clone's full result into context.
+3. Leaves the full handoff available through `clone_result({id})`; `clone_log({id})` remains a diagnostic escape hatch when a result looks wrong.
 
-Silent variant: `appendEntry` records the result as a custom entry without
-forcing a turn, for clones the agent said it would collect later.
+This avoids duplicate context dumps when the parent is waiting on several clones: the parent watches status/alerts, then fetches only the full results it actually needs.
 
 ---
 
@@ -189,10 +179,15 @@ Guidance content (the "hey, you can clone yourself" note):
 > wide reads, "go find out X while I keep going", independent verification.
 > Give it one clear objective and a definition of done. It already knows
 > everything you know — do not re-explain context; just state the new task.
-> It will alert you when finished; you can also poll its status or read its log.
-> A clone has no user to ask: if it hits a decision only the human can make, it
-> records the blocker in its final report and stops — it escalates to you, never
-> to the user.
+> Once you delegate work to a clone, do not repeat that same work yourself;
+> continue only with non-overlapping parent work unless the clone reports a
+> blocker or the user redirects you. Use `clone_status` for active progress, wait
+> for a completion alert or terminal status before `clone_result`, use
+> `clone_continue` with `mode:"inherit"` when a read-only clone needs to keep going
+> with write tools, and use `clone_dismiss` to write off completed clones you no
+> longer need in status lists. A clone has no user to ask: if it hits a decision
+> only the human can make, it records the blocker in its final report and stops —
+> it escalates to you, never to the user.
 
 ---
 
@@ -202,15 +197,15 @@ Minimal, primitive-first. One tool the agent reaches for, four thin verbs around
 
 | Tool | Purpose |
 |---|---|
-| `clone` | Fork self + task; returns `clone_id` immediately (background). Optional `{ tools: "read-only"\|"inherit", retention: "5m"\|"1h", collect: "auto"\|"manual" }`. |
-| `clone_status` | `{id?}` → state (`running`/`idle`/`compacting`/`retrying`/`done`/`error`), **last entry text + timestamp**, tokens + context %, current tool activity. Lets the agent tell progress from stall. |
-| `clone_result` | `{id}` → final response on demand (for `collect: "manual"` or re-fetch). |
+| `clone` | Fork self + task; returns `clone_id` immediately by default. Optional `{ mode: "read-only"\|"inherit", background: boolean }`. |
+| `clone_status` | `{id?, include?}` → active clones by default; `include:"completed"` lists terminal clones that have not been written off, and `include:"all"` includes written-off records too. |
+| `clone_result` | `{id}` → final response after the clone reaches `done`/`error`/`stopped`. Running clones return status only; use `clone_status` for progress. |
+| `clone_continue` | `{id, task, mode?, background?}` → continue a terminal clone from its existing branch, optionally with `mode:"inherit"` to enable writes/tools instead of starting over. |
 | `clone_log` | `{id, tail?}` → browse the clone transcript when a result looks nonsensical. |
-| `clone_stop` | `{id}` → abort a clone (and optional `clone_steer {id, msg}` if we want mid-run redirection; defer until needed). |
+| `clone_stop` | `{id}` → abort a clone. |
+| `clone_dismiss` | `{id?}` → write off one terminal clone, or all terminal clones when omitted, so routine status lists stay focused on active work. |
 
-Command: `/clones` — TUI list of live/finished clones (token %, age, last
-activity), with a renderer registered via `registerMessageRenderer` for the
-`clone_result`/`clone-advice` custom types.
+Command: `/clones` — TUI list of active clones (token %, age, last activity), with a note when completed clones are waiting to be written off.
 
 Status/liveness is built from the `AgentSession` event stream: `message_end`
 stamps last-activity time + usage; `tool_execution_*` feeds current activity;
@@ -240,9 +235,7 @@ accumulate in the tree.
 In-process clones share the parent's cwd and OS process. The honest hazard is
 write contention, so the default is shaped to avoid it:
 
-- **Default clones are read-only** (`createReadOnlyTools` / allowlist:
-  `read, grep, find, ls`, read-only `bash`). This matches the stated use case —
-  research/investigate in parallel — and is race-free by construction.
+- **Default clones are read-only** (allowlist: `read, grep, find, ls`). This matches the stated use case — research/investigate in parallel — and is race-free by construction.
 - **Write-capable clones are opt-in** and routed through either the exported
   `withFileMutationQueue` (shared with the parent) or a git worktree via Option B
   (full isolation, changes re-merged as a branch). Never let two writers share a
@@ -301,8 +294,7 @@ them inside clones.
 - Clone overflow → real `AgentSession` compaction (`compaction_start/end`,
   `reason: "overflow"`); no bricking. This is the structural fix for the original
   "runs until token limit and bricks" complaint.
-- Clone error/abort → surfaced via `clone_status` and a `<clone_result>` carrying
-  the error; parent decides.
+- Clone error/abort → surfaced via `clone_status` and the completion alert; `clone_result` returns the error plus any partial output when the parent needs it.
 - Orphaned clones on parent shutdown → `session_shutdown` hook aborts all live
   clones and flushes any opt-in transcripts.
 
@@ -321,14 +313,11 @@ them inside clones.
    (multi-listener, returns unsub), `prompt(): Promise<void>`, `getSessionStats()`,
    `getContextUsage()`, `exportToJsonl()`, `setAutoCompactionEnabled()`,
    `compact()`, `dispose()`.
-3. **Blocking-tool neutralisation — pending (P1).** Headless allowlist + `ask_user`
-   stub; confirm no wait-on-human path survives in a clone.
+3. **Blocking-tool neutralisation — RESOLVED.** Headless allowlist drops `ask_user`, and clone guidance instructs clones to report human-only decisions as blockers.
 4. **Cache proof — PRECONDITION MET, empirical check deferred (P2).** Inherited
    messages are byte-identical across the fork (proven), so the prefix *can* match.
-   Confirm `cache_read_input_tokens` ≈ shared prefix on the first real clone turn.
-5. **Re-merge turn — clone side RESOLVED, parent side pending (P1).** `subscribe`
-   → `agent_end` gives the completion signal; confirm `sendUserMessage` from that
-   async callback reliably steers a parent turn.
+   Confirm `cache_read_input_tokens` ≈ shared prefix on real clone turns before making stronger claims.
+5. **Completion alert turn — RESOLVED.** `subscribe` → `agent_end` gives the completion signal; `sendMessage({triggerTurn, deliverAs:"followUp"})` steers a parent turn with a concise alert.
 
 *Spike scripts:* `~/.pi/agent/tmp/clones-spike/` (`spike1-fork-resume.mjs`,
 `spike2-createsession.mjs`) — all assertions green.
@@ -341,15 +330,14 @@ them inside clones.
   → `SessionManager.forkFrom` into hidden dir + depth meta → `createAgentSession`
   resume → `prompt` → `finalText` collect. Proven end-to-end in a real headless Pi
   (`CLONE_RESULT=PONG`).
-- **P1 — background + re-merge + alert + inspection — DONE.** Non-blocking `clone`
+- **P1 — background + completion alert + inspection — DONE.** Non-blocking `clone`
   (default), `subscribe` progress stream, `sendMessage({triggerTurn,deliverAs})`
-  re-merge, `clone_status` (last-activity timestamp), `clone_result`, `clone_log`,
-  `clone_stop`, `/clones`, lazy first-use advice, depth + concurrency guards,
+  concise completion alert, active-only `clone_status`, `clone_result`, `clone_continue`,
+  `clone_log`, `clone_stop`, `clone_dismiss`, `/clones`, lazy first-use advice, depth + concurrency guards,
   `session_shutdown` cleanup. (Background alert suits interactive sessions; a `pi -p`
   parent may exit before a background clone finishes — use synchronous there.)
-- **P2 — cache pinning — PRECONDITION MET, empirical check pending.** Byte-identical
-  inherited prefix proven; optional `before_provider_request` breakpoint + verbatim
-  system prompt to harden the hit rate, then verify `cache_read_input_tokens`.
+- **P2 — cache hardening — PRECONDITION MET, empirical check pending.** Byte-identical
+  inherited session entries proven; optional prompt pinning/cache breakpoint can harden the hit rate after verifying `cache_read_input_tokens`.
 - **P3 — polish — optional.** Custom `registerMessageRenderer` for `pi-clone-result`,
   transcript mirror for `clone_log` after `dispose`.
 - **P4 — write clones — future.** Opt-in `withFileMutationQueue` / worktree (Option B).

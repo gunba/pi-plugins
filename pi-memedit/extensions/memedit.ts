@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai";
@@ -133,6 +133,7 @@ const PRUNING_WIDGET_KEY = "pi-memedit-pruning";
 const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
 const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, liveEnabled: true, showDeletedItems: false };
+let settingsLoadError: string | undefined;
 const PREVIEW_CHARS = 160;
 const LIVE_MIN_TURN_INDEX = 1;
 const LIVE_MIN_CANDIDATES = 100;
@@ -304,23 +305,52 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return error !== null && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT";
+}
+
 function loadSettings(): MemeditSettings {
   try {
     const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as Partial<MemeditSettings>;
+    settingsLoadError = undefined;
     return {
       enabled: readBoolean(parsed.enabled, DEFAULT_SETTINGS.enabled),
       liveEnabled: readBoolean(parsed.liveEnabled, DEFAULT_SETTINGS.liveEnabled),
       showDeletedItems: readBoolean(parsed.showDeletedItems, DEFAULT_SETTINGS.showDeletedItems),
     };
-  } catch {
-    return { ...DEFAULT_SETTINGS };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      settingsLoadError = undefined;
+      return { ...DEFAULT_SETTINGS };
+    }
+    settingsLoadError = `could not read ${SETTINGS_FILE}: ${errorMessage(error)}`;
+    return { enabled: false, liveEnabled: false, showDeletedItems: DEFAULT_SETTINGS.showDeletedItems };
+  }
+}
+
+function writeUtf8FileAtomic(file: string, content: string): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    writeFileSync(tempFile, content, "utf8");
+    renameSync(tempFile, file);
+  } catch (error) {
+    try {
+      rmSync(tempFile, { force: true });
+    } catch {
+      // Best-effort temp cleanup; preserve the original write/rename failure.
+    }
+    throw error;
   }
 }
 
 function saveSettings(): void {
   settings = { enabled, liveEnabled, showDeletedItems };
-  mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  writeUtf8FileAtomic(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 function resolveInitialEnabled(persistedEnabled: boolean): boolean {
@@ -500,8 +530,34 @@ function entryPromptRole(entry: SessionEntry): string {
   return entry.type;
 }
 
+function appendLabeledValue(lines: string[], label: string, value: unknown): void {
+  if (typeof value === "string") {
+    if (value.trim()) lines.push(`[${label}]\n${value}`);
+  } else if (value !== undefined && value !== null) {
+    lines.push(`[${label}]\n${safeJson(value)}`);
+  }
+}
+
+function bashExecutionText(message: AnyRecord | undefined): string {
+  const lines: string[] = [];
+  if (!message) return "";
+  if (typeof message.command === "string" && message.command.trim()) lines.push(`$ ${message.command}`);
+  appendLabeledValue(lines, "stdout", message.output);
+  appendLabeledValue(lines, "stderr", message.stderr);
+  appendLabeledValue(lines, "error", message.error);
+  if (typeof message.exitCode === "number") lines.push(`[exitCode]\n${message.exitCode}`);
+  if (typeof message.signal === "string" && message.signal.trim()) lines.push(`[signal]\n${message.signal}`);
+  return lines.join("\n\n");
+}
+
+function messagePromptText(message: AnyRecord | undefined): string {
+  if (!message) return "";
+  if (message.role === "bashExecution") return bashExecutionText(message);
+  return contentText(message.content);
+}
+
 function entryPromptText(entry: SessionEntry): string {
-  if (entry.type === "message") return contentText((entry.message as AnyRecord).content);
+  if (entry.type === "message") return messagePromptText(entry.message as AnyRecord);
   if (entry.type === "custom_message") return contentText(entry.content);
   if (entry.type === "branch_summary") return String(entry.summary ?? "");
   if (entry.type === "compaction") return String(entry.summary ?? "");
@@ -545,11 +601,6 @@ function pruneSystemPrompt(promptMode: PrunePromptMode | undefined): string {
     return `${PRUNE_SYSTEM_PROMPT}\n\nLIVE CONTINUATION MODE\nThe main agent has not finished. Prefer false negatives over false positives: deleting a result needed by the continuation is worse than keeping bloat. Protected [context] entries include fresh or otherwise unsafe-to-delete entries.`;
   }
   return PRUNE_SYSTEM_PROMPT;
-}
-
-function estimatePruneRequestTokens(items: ContextItem[], options: { upcomingRequest?: string; promptMode?: PrunePromptMode; model?: AnyRecord }): number {
-  const messages = buildPruneMessages(items, options);
-  return estimateTextTokens(pruneSystemPrompt(options.promptMode), options.model) + messages.reduce((total, message) => total + estimateMessageTokens(message as AnyRecord, options.model), 0);
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -740,7 +791,7 @@ function estimateMessageTokens(message: AnyRecord, model?: AnyRecord): number {
         return total;
       }, 0);
     }
-    if (message.role === "bashExecution") return estimateTextTokens(`${message.command ?? ""}${message.output ?? ""}`, model);
+    if (message.role === "bashExecution") return estimateTextTokens(bashExecutionText(message), model);
     if (message.role === "branchSummary" || message.role === "compactionSummary") return estimateTextTokens(String(message.summary ?? ""), model);
   }
   return estimateTokens(message as never);
@@ -763,7 +814,7 @@ function previewEntry(entry: SessionEntry): DeletedItem {
   if (entry.type === "message") {
     const message = entry.message as AnyRecord;
     const role = message.role === "toolResult" ? `toolResult:${message.toolName ?? "tool"}` : String(message.role ?? "message");
-    return { id: entry.id, role, text: truncateText(contentText(message.content) || "(no text)") };
+    return { id: entry.id, role, text: truncateText(entryPromptText(entry) || "(no text)") };
   }
   if (entry.type === "custom_message") {
     return { id: entry.id, role: `custom:${entry.customType ?? "message"}`, text: truncateText(contentText(entry.content) || "(no text)") };
@@ -971,6 +1022,32 @@ function projectHardDelete(
   };
 }
 
+function assertSessionRewriteSupported(manager: AnyRecord): void {
+  const missing: string[] = [];
+  if (typeof manager.getHeader !== "function") missing.push("getHeader()");
+  if (typeof manager.getEntries !== "function") missing.push("getEntries()");
+  if (typeof manager.getLeafId !== "function") missing.push("getLeafId()");
+  if (typeof manager.getSessionFile !== "function") missing.push("getSessionFile()");
+  if (!Array.isArray(manager.fileEntries)) missing.push("fileEntries[]");
+  if (typeof manager._buildIndex !== "function") missing.push("_buildIndex()");
+  if (missing.length > 0) throw new Error(`Pi session manager does not support safe pi-memedit rewrite; missing ${missing.join(", ")}`);
+}
+
+function validateRewrittenReferences(entries: SessionEntry[], keptIds: Set<string>): void {
+  for (const entry of entries) {
+    if (entry.parentId && !keptIds.has(entry.parentId)) throw new Error(`pi-memedit rewrite left dangling parentId on ${entry.id}`);
+    if (entry.type === "compaction" && entry.firstKeptEntryId && !keptIds.has(entry.firstKeptEntryId)) {
+      throw new Error(`pi-memedit rewrite left dangling firstKeptEntryId on ${entry.id}`);
+    }
+    if (entry.type === "branch_summary" && entry.fromId && !keptIds.has(entry.fromId)) {
+      throw new Error(`pi-memedit rewrite left dangling branch_summary fromId on ${entry.id}`);
+    }
+    if (entry.type === "label" && typeof entry.targetId === "string" && !keptIds.has(entry.targetId)) {
+      throw new Error(`pi-memedit rewrite left dangling label targetId on ${entry.id}`);
+    }
+  }
+}
+
 function applyHardDelete(
   ctx: ExtensionContext,
   deleteIds: Set<string>,
@@ -979,20 +1056,27 @@ function applyHardDelete(
   model?: AnyRecord,
 ): DeleteProjection {
   const manager = ctx.sessionManager as AnyRecord;
-  const header = manager.getHeader?.();
+  assertSessionRewriteSupported(manager);
+
+  const header = manager.getHeader();
   if (!header) throw new Error("Current session has no header; cannot rewrite session log");
 
-  const entries = (manager.getEntries?.() ?? []) as SessionEntry[];
+  const entries = manager.getEntries() as SessionEntry[];
   const projection = projectHardDelete(entries, deleteIds, uncountedIds, recacheScopeEntries, model);
   if (projection.expandedDeleteIds.size === 0) return projection;
 
+  const sessionFile = manager.getSessionFile();
+  if (typeof sessionFile !== "string" || !sessionFile) throw new Error("Current session has no writable session file; cannot rewrite session log");
+
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const oldLeafId = manager.getLeafId?.() ?? null;
-  const keptEntries = entries.filter((entry) => {
+  const oldLeafId = manager.getLeafId() ?? null;
+  const retainedEntries = entries.filter((entry) => {
     if (projection.expandedDeleteIds.has(entry.id)) return false;
     if (entry.type === "label" && projection.expandedDeleteIds.has(entry.targetId)) return false;
     return true;
   });
+  const retainedIds = new Set(retainedEntries.map((entry) => entry.id));
+  const keptEntries = retainedEntries.filter((entry) => entry.type !== "label" || typeof entry.targetId !== "string" || retainedIds.has(entry.targetId));
   const keptIds = new Set(keptEntries.map((entry) => entry.id));
 
   const rewrittenEntries = keptEntries.map((entry) => {
@@ -1002,22 +1086,23 @@ function applyHardDelete(
     }
     if (next.type === "compaction") {
       const replacement = replacementFirstKept(next, keptIds, byId);
-      if (replacement) next.firstKeptEntryId = replacement;
+      if (replacement && keptIds.has(replacement)) next.firstKeptEntryId = replacement;
+      else delete next.firstKeptEntryId;
     }
     if (next.type === "branch_summary" && next.fromId && !keptIds.has(next.fromId)) {
-      next.fromId = nearestKeptAncestor(next.fromId, keptIds, byId) ?? next.fromId;
+      const replacement = nearestKeptAncestor(next.fromId, keptIds, byId);
+      if (replacement) next.fromId = replacement;
+      else delete next.fromId;
     }
     return next;
   });
+  validateRewrittenReferences(rewrittenEntries, keptIds);
 
   const nextFileEntries = [header, ...rewrittenEntries];
-  const sessionFile = manager.getSessionFile?.();
-  if (sessionFile) {
-    writeFileSync(sessionFile, `${nextFileEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
-  }
+  writeUtf8FileAtomic(sessionFile, `${nextFileEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 
   manager.fileEntries = nextFileEntries;
-  manager._buildIndex?.();
+  manager._buildIndex();
   manager.leafId = oldLeafId && keptIds.has(oldLeafId) ? oldLeafId : nearestKeptAncestor(oldLeafId, keptIds, byId);
   manager.flushed = true;
 
@@ -1314,7 +1399,7 @@ async function runMemedit(
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, error: subagentDisabledReason() };
     return lastStats;
   }
-  if (!enabled || running) return;
+  if ((!enabled && mode !== "manual") || running) return;
   const model = ctx.model;
   if (!model) return;
 
@@ -1331,7 +1416,7 @@ async function runMemedit(
   const candidates = items.filter((item) => item.removable && item.number !== undefined);
   if (candidates.length === 0) {
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, contextTokensBefore, ...contextUsageBefore };
-    return lastStats;
+    return mode === "manual" || options.showStatusMessage ? lastStats : undefined;
   }
 
   if (!preflightAllowsRun(candidates, model as AnyRecord, mode)) {
@@ -1468,12 +1553,13 @@ async function runMemedit(
 }
 
 function unsuccessfulRunReason(messages: unknown[]): string | undefined {
-  for (const message of messages) {
-    const candidate = message as AnyRecord;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const candidate = messages[index] as AnyRecord;
     if (candidate?.role !== "assistant") continue;
     if (candidate.stopReason === "error" || candidate.stopReason === "aborted" || candidate.stopReason === "length") {
       return candidate.errorMessage ? `${candidate.stopReason}: ${candidate.errorMessage}` : String(candidate.stopReason);
     }
+    return undefined;
   }
   return undefined;
 }
@@ -1498,6 +1584,7 @@ function formatStats(): string {
     `Show removed text: ${showDeletedItems ? "on" : "off"}`,
     `Settings file: ${SETTINGS_FILE}`,
   ];
+  if (settingsLoadError) settingsLines.push(`Settings warning: ${settingsLoadError}; pi-memedit failed closed.`);
   if (!lastStats) return [...settingsLines, "pi-memedit has not run in this session."].join("\n");
   const lines = [
     ...settingsLines,
@@ -1507,7 +1594,7 @@ function formatStats(): string {
     `Candidates: ${lastStats.candidates}`,
     `Selected: ${lastStats.selected}`,
     `Deleted entries: ${lastStats.deleted}`,
-    `Ignored ids: ${lastStats.ignored}`,
+    `Ignored item numbers: ${lastStats.ignored}`,
     `Last estimated context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
     `Last cache impact: invalidated ${formatTokens(lastStats.cacheImpact?.invalidatedTailTokens)} tail tokens; dropped ${formatTokens(lastStats.cacheImpact?.droppedTailTokens)}; rewrote ${formatTokens(lastStats.cacheImpact?.keptTailTokens)} (${formatCost(lastStats.recacheCost)})`,
     `Last savings: ${formatCost(lastStats.savingPerCallCost)}/API call; prune pass ${formatTokens(lastStats.pruneTokens)} tokens, ${formatCost(lastStats.pruneCost)} — ${breakEvenText(lastStats)}`,
@@ -1561,7 +1648,10 @@ export default function memedit(pi: ExtensionAPI) {
     consideredEntryIds = new Set(branch.map((entry) => entry.id));
     lastLivePruneTurnIndex = -1;
     skipNextAutoPrune = false;
-    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
+    if (ctx.hasUI) {
+      ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
+      if (settingsLoadError) ctx.ui.notify(`pi-memedit failed closed: ${settingsLoadError}`, "warning");
+    }
   });
 
   pi.on("context", async (event, ctx) => {

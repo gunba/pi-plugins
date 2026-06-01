@@ -4,10 +4,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
 
-type SurfaceTool = "pi" | "claude" | "codex" | "mcp" | "subagents" | "generic";
+type SurfaceTool = "pi" | "mcp" | "subagents";
 type FileFormat = "json" | "toml" | "markdown" | "text";
-type EntryKind = "settings" | "context" | "skill" | "prompt" | "extension" | "mcp" | "agent" | "model" | "hook" | "resource";
-type FieldType = "boolean" | "string" | "number" | "enum" | "stringArray" | "stringMap" | "object";
+type EntryKind = "settings" | "context" | "skill" | "prompt" | "extension" | "mcp" | "agent" | "model";
+type FieldType = "boolean" | "string" | "number" | "enum" | "stringArray" | "object";
 
 type ConfigEntry = {
   id: string;
@@ -21,7 +21,11 @@ type ConfigEntry = {
   loaded?: boolean;
   createTemplate?: () => string;
   note?: string;
+  exists: boolean;
+  size?: number;
 };
+
+type ConfigEntryInput = Omit<ConfigEntry, "id" | "exists" | "size">;
 
 type SettingField = {
   key: string;
@@ -30,13 +34,6 @@ type SettingField = {
   description: string;
   defaultValue: unknown;
   choices?: string[];
-};
-
-type EnvVarField = {
-  name: string;
-  description: string;
-  valueHint?: string;
-  tools: SurfaceTool[];
 };
 
 const EXTENSION_NAME = "pi-config";
@@ -101,34 +98,8 @@ const MCP_SETTINGS: SettingField[] = [
   field("imports", "Import sources", "stringArray", "Import MCP configs from other tools.", []),
 ];
 
-const ENV_VARS: EnvVarField[] = [
-  env("ANTHROPIC_API_KEY", "Anthropic API key for Pi Claude models.", ["pi"], "sk-ant-..."),
-  env("OPENAI_API_KEY", "OpenAI API key for Pi OpenAI-compatible models and clients.", ["pi"], "sk-..."),
-  env("GITHUB_TOKEN", "GitHub token used by GitHub APIs and some MCP servers.", ["pi", "mcp", "codex", "claude"]),
-  env("GOOGLE_API_KEY", "Google AI API key.", ["pi"], "AIza..."),
-  env("GEMINI_API_KEY", "Gemini API key used by several tools.", ["pi"], "AIza..."),
-  env("GROQ_API_KEY", "Groq API key.", ["pi"]),
-  env("OPENROUTER_API_KEY", "OpenRouter API key.", ["pi"]),
-  env("PERPLEXITY_API_KEY", "Perplexity API key for web/search tools.", ["mcp", "pi"]),
-  env("EXA_API_KEY", "Exa API key for web/search tools.", ["mcp", "pi"]),
-  env("BRAVE_API_KEY", "Brave Search API key.", ["mcp", "pi"]),
-  env("PI_CODING_AGENT_DIR", "Override Pi's global agent directory.", ["pi"]),
-  env("PI_CODING_AGENT_SESSION_DIR", "Override Pi session directory.", ["pi"]),
-  env("PI_OFFLINE", "Disable startup network operations when set to 1.", ["pi"], "1"),
-  env("PI_SKIP_VERSION_CHECK", "Disable Pi version update check.", ["pi"], "1"),
-  env("PI_TELEMETRY", "Set to 0 to opt out of Pi install/update telemetry.", ["pi"], "0"),
-  env("PI_HARDWARE_CURSOR", "Set to 1 to show terminal hardware cursor for IME positioning.", ["pi"], "1"),
-  env("PI_ASK_USER_DISPLAY_MODE", "Default pi-ask-user display mode.", ["pi"], "inline"),
-  env("PI_MEMEDIT", "Enable/disable pi-memedit if installed.", ["pi"], "off"),
-  env("MCP_CONFIG", "Custom MCP config path used by some MCP launchers.", ["mcp"]),
-];
-
 function field(key: string, label: string, type: FieldType, description: string, defaultValue: unknown, choices?: string[]): SettingField {
   return { key, label, type, description, defaultValue, choices };
-}
-
-function env(name: string, description: string, tools: SurfaceTool[], valueHint?: string): EnvVarField {
-  return { name, description, tools, valueHint };
 }
 
 function piAgentDir(): string {
@@ -160,6 +131,15 @@ function fileExists(path: string): boolean {
     return existsSync(path) && statSync(path).isFile();
   } catch {
     return false;
+  }
+}
+
+function fileStatus(path: string): { exists: boolean; size?: number } {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() ? { exists: true, size: stat.size } : { exists: false };
+  } catch {
+    return { exists: false };
   }
 }
 
@@ -197,10 +177,6 @@ function jsonTemplate(): string {
   return "{}\n";
 }
 
-function tomlTemplate(): string {
-  return "";
-}
-
 function markdownTemplate(title: string): string {
   return `# ${title}\n\n`;
 }
@@ -220,8 +196,9 @@ function inferFormat(path: string): FileFormat {
   return "text";
 }
 
-function makeEntry(input: Omit<ConfigEntry, "id">): ConfigEntry {
-  return { ...input, id: `${input.kind}:${input.tool}:${input.scope}:${resolve(input.path)}` };
+function makeEntry(input: ConfigEntryInput): ConfigEntry {
+  const status = fileStatus(input.path);
+  return { ...input, ...status, id: `${input.kind}:${input.tool}:${input.scope}:${resolve(input.path)}` };
 }
 
 function addEntry(entries: ConfigEntry[], seen: Set<string>, entry: ConfigEntry): void {
@@ -230,6 +207,10 @@ function addEntry(entries: ConfigEntry[], seen: Set<string>, entry: ConfigEntry)
   if (existing) {
     existing.loaded ||= entry.loaded;
     if (!existing.note && entry.note) existing.note = entry.note;
+    if (entry.exists) {
+      existing.exists = true;
+      existing.size = entry.size;
+    }
     return;
   }
   if (seen.has(key)) return;
@@ -255,7 +236,7 @@ function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): Config
   const entries: ConfigEntry[] = [];
   const seen = new Set<string>();
 
-  const add = (entry: Omit<ConfigEntry, "id">) => addEntry(entries, seen, makeEntry(entry));
+  const add = (entry: ConfigEntryInput) => addEntry(entries, seen, makeEntry(entry));
 
   add({ title: "Pi global settings", group: "Pi settings", kind: "settings", tool: "pi", path: join(agentDir, "settings.json"), format: "json", scope: "global", createTemplate: jsonTemplate, loaded: true });
   add({ title: "Pi project settings", group: "Pi settings", kind: "settings", tool: "pi", path: join(cwd, ".pi", "settings.json"), format: "json", scope: "project", createTemplate: jsonTemplate, loaded: true });
@@ -270,8 +251,8 @@ function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): Config
   return entries.sort((a, b) => {
     const group = a.group.localeCompare(b.group);
     if (group !== 0) return group;
-    const existsA = fileExists(a.path) ? 0 : 1;
-    const existsB = fileExists(b.path) ? 0 : 1;
+    const existsA = a.exists ? 0 : 1;
+    const existsB = b.exists ? 0 : 1;
     if (existsA !== existsB) return existsA - existsB;
     return a.title.localeCompare(b.title);
   });
@@ -285,7 +266,7 @@ function firstPiContextFileInDir(dir: string): string | undefined {
   return undefined;
 }
 
-function addContextEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string): void {
+function addContextEntries(add: (entry: ConfigEntryInput) => void, cwd: string, agentDir: string): void {
   const addLoadedContext = (path: string, title: string, scope: ConfigEntry["scope"]) => add({
     title,
     group: "Loaded context files",
@@ -319,7 +300,7 @@ function addContextEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: s
   add({ title: fileExists(projectAppendPath) ? "Pi project APPEND_SYSTEM.md" : fileExists(globalAppendPath) ? "Pi user APPEND_SYSTEM.md" : "Pi project APPEND_SYSTEM.md", group: "System prompt files", kind: "context", tool: "pi", path: activeAppendPath, format: "markdown", scope: activeAppendPath === globalAppendPath ? "global" : "project", loaded: fileExists(activeAppendPath), createTemplate: () => markdownTemplate("Appended System Prompt") });
 }
 
-function addMcpEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string, pi: ExtensionAPI): void {
+function addMcpEntries(add: (entry: ConfigEntryInput) => void, cwd: string, agentDir: string, pi: ExtensionAPI): void {
   const mcpLoaded = pi.getAllTools().some((tool) => tool.name === "mcp");
   add({ title: "Shared global MCP config", group: "MCP configs", kind: "mcp", tool: "mcp", path: join(homedir(), ".config", "mcp", "mcp.json"), format: "json", scope: "global", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n", loaded: mcpLoaded, note: "Read by pi-mcp-adapter when installed." });
   add({ title: "Pi global MCP config", group: "MCP configs", kind: "mcp", tool: "mcp", path: join(agentDir, "mcp.json"), format: "json", scope: "global", createTemplate: () => JSON.stringify({ mcpServers: {} }, null, 2) + "\n", loaded: mcpLoaded, note: "Pi-owned pi-mcp-adapter config." });
@@ -333,7 +314,7 @@ function sourceScope(scope: string | undefined): ConfigEntry["scope"] {
   return "global";
 }
 
-function addLoadedCommandEntries(add: (entry: Omit<ConfigEntry, "id">) => void, pi: ExtensionAPI): void {
+function addLoadedCommandEntries(add: (entry: ConfigEntryInput) => void, pi: ExtensionAPI): void {
   for (const command of pi.getCommands()) {
     const info = command.sourceInfo;
     const path = info?.path;
@@ -386,18 +367,19 @@ function piAgentsSkillRoots(cwd: string): string[] {
   return roots;
 }
 
-function addKnownResourceEntries(add: (entry: Omit<ConfigEntry, "id">) => void, cwd: string, agentDir: string): void {
+function addKnownResourceEntries(add: (entry: ConfigEntryInput) => void, cwd: string, agentDir: string): void {
   const hierarchy = ancestorDirs(cwd);
   const skillRoots = [
-    join(agentDir, "skills"),
-    join(homedir(), ".agents", "skills"),
-    join(cwd, ".pi", "skills"),
-    ...piAgentsSkillRoots(cwd),
+    { root: join(agentDir, "skills"), directMarkdown: true },
+    { root: join(homedir(), ".agents", "skills"), directMarkdown: false },
+    { root: join(cwd, ".pi", "skills"), directMarkdown: true },
+    ...piAgentsSkillRoots(cwd).map((root) => ({ root, directMarkdown: false })),
   ];
-  for (const root of skillRoots) {
+  for (const { root, directMarkdown } of skillRoots) {
     const scope = scopeForResourceRoot(root, cwd, agentDir);
-    for (const path of walkNamedFiles(root, (name) => name === "SKILL.md" || name.endsWith(".md"))) {
-      add({ title: `Skill ${basename(dirname(path))}`, group: "Skills", kind: "skill", tool: "pi", path, format: "markdown", scope, loaded: false });
+    for (const path of discoverSkillFiles(root, directMarkdown)) {
+      const title = basename(path) === "SKILL.md" ? `Skill ${basename(dirname(path))}` : `Skill ${basename(path, ".md")}`;
+      add({ title, group: "Skills", kind: "skill", tool: "pi", path, format: "markdown", scope, loaded: false });
     }
   }
 
@@ -429,6 +411,22 @@ function addKnownResourceEntries(add: (entry: Omit<ConfigEntry, "id">) => void, 
   add({ title: "New project subagent", group: "Create project resources", kind: "agent", tool: "subagents", path: join(cwd, ".pi", "agents", "new-agent.md"), format: "markdown", scope: "project", createTemplate: () => markdownTemplate("New Agent") });
 }
 
+function discoverSkillFiles(root: string, directMarkdown: boolean): string[] {
+  const out = new Set<string>();
+  if (!dirExists(root)) return [];
+  if (directMarkdown) {
+    try {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(".md")) out.add(join(root, entry.name));
+      }
+    } catch {
+      return [];
+    }
+  }
+  for (const path of walkNamedFiles(root, (name) => name === "SKILL.md")) out.add(path);
+  return [...out];
+}
+
 function walkNamedFiles(root: string, include: (name: string) => boolean): string[] {
   const out: string[] = [];
   if (!dirExists(root)) return out;
@@ -458,7 +456,7 @@ function matchesFilter(entry: ConfigEntry, filter: string, cwd: string): boolean
 }
 
 type TabId = "settings" | "context" | "skills" | "prompts" | "mcp" | "agents" | "extensions";
-type PickerAction = "open" | "edit" | "addSetting" | "addEnv" | "insertSetting";
+type PickerAction = "open" | "edit" | "addSetting" | "insertSetting";
 
 type TabDef = {
   id: TabId;
@@ -520,14 +518,14 @@ function rowSubtitle(row: PickerRow, cwd: string): string {
     return `PI SETTING · ${row.field.type}${choices} · default ${stringifyReferenceValue(row.field.defaultValue)}`;
   }
   const entry = row.entry;
-  const status = fileExists(entry.path) ? "exists" : "missing";
+  const status = entry.exists ? "exists" : "missing";
   const loaded = entry.loaded ? "loaded/current" : "available";
   return `${scopeLabel(entry.scope)} · ${entry.group} · ${entry.kind} · ${status} · ${loaded} · ${displayPath(entry.path, cwd)}`;
 }
 
 function entryTabs(entry: ConfigEntry): TabId[] {
   const tabs: TabId[] = [];
-  if (entry.kind === "settings" || entry.kind === "model" || entry.kind === "hook") tabs.push("settings");
+  if (entry.kind === "settings" || entry.kind === "model") tabs.push("settings");
   if (entry.kind === "context") tabs.push("context");
   if (entry.kind === "skill") tabs.push("skills");
   if (entry.kind === "prompt") tabs.push("prompts");
@@ -600,7 +598,6 @@ function entryIcon(entry: ConfigEntry): string {
   if (entry.kind === "agent") return "☉";
   if (entry.kind === "extension") return "✦";
   if (entry.kind === "model") return "◎";
-  if (entry.kind === "hook") return "↪";
   return "•";
 }
 
@@ -622,10 +619,8 @@ function previewLines(row: PickerRow, cwd: string): string[] {
   }
 
   const entry = row.entry;
-  const exists = fileExists(entry.path);
-  const stat = exists ? statSync(entry.path) : undefined;
+  const exists = entry.exists;
   const supportsSettings = settingCatalogForEntry(entry).length > 0 && (entry.format === "json" || entry.format === "toml");
-  const supportsEnv = supportsEnvInsertion(entry) && envCatalogFor(entry.tool).length > 0;
   return [
     entry.title,
     "",
@@ -635,14 +630,13 @@ function previewLines(row: PickerRow, cwd: string): string[] {
     `Scope: ${entry.scope}`,
     `Format: ${entry.format}`,
     `Status: ${exists ? "exists" : "missing"}${entry.loaded ? " · loaded/current" : ""}`,
-    stat ? `Size: ${stat.size.toLocaleString()} bytes` : undefined,
+    entry.size !== undefined ? `Size: ${entry.size.toLocaleString()} bytes` : undefined,
     `Path: ${entry.path}`,
     entry.note ? `Note: ${entry.note}` : undefined,
     "",
     "Actions:",
     "• Enter/Ctrl+E: edit/view full file",
     supportsSettings ? "• Ctrl+A: add setting from typed reference catalog" : undefined,
-    supportsEnv ? "• Ctrl+V: add environment variable reference" : undefined,
   ].filter((line): line is string => line !== undefined);
 }
 
@@ -694,10 +688,6 @@ class PiConfigPicker implements Component {
     }
     if (matchesKey(data, Key.ctrl("g"))) {
       this.selectCurrent("insertSetting", "global");
-      return;
-    }
-    if (matchesKey(data, Key.ctrl("v"))) {
-      this.selectCurrent("addEnv");
       return;
     }
     if (matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("k"))) {
@@ -807,7 +797,7 @@ class PiConfigPicker implements Component {
 
   private renderRow(row: PickerRow, selected: boolean, width: number): string {
     const marker = selected ? "→ " : "  ";
-    const status = row.kind === "entry" ? (fileExists(row.entry.path) ? "●" : "○") : "◆";
+    const status = row.kind === "entry" ? (row.entry.exists ? "●" : "○") : "◆";
     const icon = row.kind === "entry" ? entryIcon(row.entry) : "⚙";
     const scope = row.kind === "entry" ? `[${scopeLabel(row.entry.scope)}] ` : "[PI SETTING] ";
     const title = `${marker}${status} ${icon} ${scope}${rowTitle(row)}`;
@@ -1083,31 +1073,8 @@ function settingReferenceItems(catalog: SettingField[], keys: Set<string>): Refe
   });
 }
 
-function envReferenceItems(catalog: EnvVarField[]): ReferenceItem<EnvVarField>[] {
-  return catalog.map((item) => ({
-    value: item,
-    title: item.name,
-    subtitle: item.tools.join(", "),
-    detailLines: [
-      item.name,
-      "",
-      `Surfaces: ${item.tools.join(", ")}`,
-      item.valueHint ? `Example: ${item.valueHint}` : undefined,
-      "",
-      item.description,
-      "",
-      "Enter prompts for a value, inserts it into the correct env section, then opens a full-file review editor.",
-    ].filter((line): line is string => line !== undefined),
-    searchText: [item.name, item.description, item.valueHint ?? "", ...item.tools].join(" ").toLowerCase(),
-  }));
-}
-
 async function chooseSettingFromReference(ctx: ExtensionCommandContext, catalog: SettingField[], keys: Set<string>): Promise<SettingField | undefined> {
   return chooseReference(ctx, "Add setting", settingReferenceItems(catalog, keys));
-}
-
-async function chooseEnvVarFromReference(ctx: ExtensionCommandContext, catalog: EnvVarField[]): Promise<EnvVarField | undefined> {
-  return chooseReference(ctx, "Add environment variable", envReferenceItems(catalog));
 }
 
 function settingCatalogFor(tool: SurfaceTool): SettingField[] {
@@ -1120,14 +1087,6 @@ function settingCatalogForEntry(entry: ConfigEntry): SettingField[] {
   if (entry.kind === "mcp") return MCP_SETTINGS;
   if (entry.kind !== "settings") return [];
   return settingCatalogFor(entry.tool);
-}
-
-function envCatalogFor(tool: SurfaceTool): EnvVarField[] {
-  return ENV_VARS.filter((entry) => entry.tools.includes(tool));
-}
-
-function supportsEnvInsertion(entry: ConfigEntry): boolean {
-  return entry.kind === "settings" && ((entry.tool === "claude" && entry.format === "json") || (entry.tool === "codex" && entry.format === "toml"));
 }
 
 function currentKeysForJson(text: string): Set<string> {
@@ -1175,6 +1134,49 @@ function currentKeys(entry: ConfigEntry, text: string): Set<string> {
   if (entry.format === "json") return currentKeysForJson(text);
   if (entry.format === "toml") return currentKeysForToml(text);
   return new Set();
+}
+
+function validationMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function validateJsonConfig(text: string): string | undefined {
+  try {
+    const parsed = text.trim() ? JSON.parse(text) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "JSON root must be an object.";
+    return undefined;
+  } catch (error) {
+    return `Invalid JSON: ${validationMessage(error)}`;
+  }
+}
+
+function validateTomlConfig(text: string): string | undefined {
+  for (const [index, rawLine] of text.split("\n").entries()) {
+    const line = rawLine.replace(/#.*/, "").trim();
+    if (!line) continue;
+    if (/^(?:\[[^\[\]]+\]|\[\[[^\[\]]+\]\])$/.test(line)) continue;
+    if (/^(?:[A-Za-z0-9_.-]+|"[^"]+")\s*=/.test(line)) continue;
+    return `Invalid TOML near line ${index + 1}: expected a section header or key = value.`;
+  }
+  return undefined;
+}
+
+function validateConfigText(entry: ConfigEntry, text: string): string | undefined {
+  if (entry.format === "json") return validateJsonConfig(text);
+  if (entry.format === "toml") return validateTomlConfig(text);
+  return undefined;
+}
+
+async function reviewValidatedText(ctx: ExtensionCommandContext, entry: ConfigEntry, title: string, initialText: string): Promise<string | undefined> {
+  let text = initialText;
+  while (true) {
+    const reviewed = await ctx.ui.editor(title, text);
+    if (reviewed === undefined) return undefined;
+    const validationError = validateConfigText(entry, reviewed);
+    if (!validationError) return reviewed;
+    ctx.ui.notify(validationError, "error");
+    text = reviewed;
+  }
 }
 
 function jsonSetDotted(obj: Record<string, unknown>, dottedKey: string, value: unknown): void {
@@ -1237,49 +1239,14 @@ function insertTomlSetting(text: string, field: SettingField, overwrite = false)
   return `${prefix}${prefix ? "\n\n" : ""}${description}${key} = ${tomlValue(field.defaultValue)}\n`;
 }
 
-function insertEnvVar(text: string, entry: ConfigEntry, envVar: EnvVarField, value: string): string | null {
-  if (entry.format === "json") {
-    const key = entry.tool === "mcp" ? `env.${envVar.name}` : `env.${envVar.name}`;
-    return insertJsonSetting(text, key, value);
-  }
-  if (entry.format === "toml") {
-    return insertTomlEnv(text, envVar.name, value);
-  }
-  return null;
-}
-
-function insertTomlEnv(text: string, name: string, value: string): string {
-  const section = "shell_environment_policy.set";
-  const lines = text.split("\n");
-  const header = `[${section}]`;
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
-  const assignment = `${name} = ${tomlValue(value)}`;
-  if (headerIndex < 0) {
-    const prefix = text.trimEnd();
-    return `${prefix}${prefix ? "\n\n" : ""}${header}\n${assignment}\n`;
-  }
-  let insertAt = lines.length;
-  for (let i = headerIndex + 1; i < lines.length; i++) {
-    if (/^\s*\[[^\]]+]\s*$/.test(lines[i])) {
-      insertAt = i;
-      break;
-    }
-    if (new RegExp(`^\\s*${escapeRegex(name)}\\s*=`).test(lines[i])) {
-      lines[i] = assignment;
-      return ensureTrailingNewline(lines.join("\n"));
-    }
-  }
-  lines.splice(insertAt, 0, assignment);
-  return ensureTrailingNewline(lines.join("\n"));
-}
-
-
 type SettingsEditorResult = { action: "save"; text: string } | { action: "cancel" };
 
 class SettingsEditorModal implements Component, Focusable {
   private mode: "editor" | "reference" = "editor";
   private referenceFilter = "";
   private referenceIndex = 0;
+  private validationError: string | undefined;
+  private referenceNotice: string | undefined;
   private _focused = false;
 
   constructor(
@@ -1310,7 +1277,14 @@ class SettingsEditorModal implements Component, Focusable {
       return;
     }
     if (matchesKey(data, Key.ctrl("s"))) {
-      this.done({ action: "save", text: this.editor.getExpandedText() });
+      const text = this.editor.getExpandedText();
+      const validationError = validateConfigText(this.entry, text);
+      if (validationError) {
+        this.validationError = validationError;
+        this.requestRender();
+        return;
+      }
+      this.done({ action: "save", text });
       return;
     }
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
@@ -1325,6 +1299,8 @@ class SettingsEditorModal implements Component, Focusable {
       return;
     }
 
+    this.validationError = undefined;
+    this.referenceNotice = undefined;
     this.editor.handleInput(data);
     this.requestRender();
   }
@@ -1335,6 +1311,8 @@ class SettingsEditorModal implements Component, Focusable {
     const lines: string[] = [];
     lines.push(borderLine(safeWidth, "╭", "─", "╮", color, ` edit ${displayPath(this.entry.path, this.cwd)} `));
     lines.push(boxedLine(this.theme.fg("dim", " Ctrl+S save · Esc cancel · Tab/Ctrl+R focus settings reference · Enter inserts selected reference while reference is focused"), safeWidth, color));
+    if (this.validationError) lines.push(boxedLine(this.theme.fg("warning", ` ${this.validationError}`), safeWidth, color));
+    else if (this.referenceNotice) lines.push(boxedLine(this.theme.fg("warning", ` ${this.referenceNotice}`), safeWidth, color));
     lines.push(borderLine(safeWidth, "├", "─", "┤", color));
 
     if (safeWidth >= 110) this.renderSplit(lines, safeWidth, color);
@@ -1376,11 +1354,13 @@ class SettingsEditorModal implements Component, Focusable {
     rows.push(truncateToWidth(this.theme.fg("dim", " Enter insert · ↑↓ move · Ctrl+U clear"), width));
     const items = this.filteredReferenceItems();
     const visible = this.visibleReferenceItems(items, Math.max(1, maxRows - rows.length));
+    const keys = currentKeys(this.entry, this.editor.getExpandedText());
     for (const { item, index } of visible) {
       const selected = focused && index === this.referenceIndex;
       const marker = selected ? "→ " : "  ";
       const choices = item.choices?.length ? ` · ${item.choices.join("|")}` : "";
-      const text = `${marker}${item.key} · ${item.type}${choices}`;
+      const present = keys.has(item.key) ? " · present" : "";
+      const text = `${marker}${item.key} · ${item.type}${choices}${present}`;
       rows.push(selected ? this.theme.fg("accent", truncateToWidth(text, width)) : truncateToWidth(text, width));
     }
     return rows;
@@ -1425,15 +1405,25 @@ class SettingsEditorModal implements Component, Focusable {
 
   private insertReference(field: SettingField): void {
     const current = this.editor.getExpandedText();
+    if (currentKeys(this.entry, current).has(field.key)) {
+      this.referenceNotice = `${field.key} already exists. Edit it directly, or use Ctrl+A from the navigator to replace it after confirmation.`;
+      this.requestRender();
+      return;
+    }
     const next = this.entry.format === "json"
       ? insertJsonSetting(current, field.key, field.defaultValue)
-      : insertTomlSetting(current, field, true);
+      : insertTomlSetting(current, field, false);
     if (next) {
+      this.validationError = undefined;
+      this.referenceNotice = undefined;
       this.editor.setText(next);
       this.mode = "editor";
       this.editor.focused = this._focused;
       this.requestRender();
+      return;
     }
+    this.referenceNotice = "Could not insert automatically. Edit the file manually or fix its syntax first.";
+    this.requestRender();
   }
 
   private filteredReferenceItems(): SettingField[] {
@@ -1491,10 +1481,15 @@ async function editEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Prom
   const before = exists ? readText(entry.path) : (entry.createTemplate?.() ?? "");
   const edited = entry.tool === "pi" && entry.kind === "settings" && (entry.format === "json" || entry.format === "toml")
     ? await editSettingsEntry(ctx, entry, before)
-    : await ctx.ui.editor(entry.title, before);
+    : await reviewValidatedText(ctx, entry, entry.title, before);
   if (edited === undefined) return false;
   if (edited === before && exists) {
     ctx.ui.notify("No changes", "info");
+    return false;
+  }
+  const validationError = validateConfigText(entry, edited);
+  if (validationError) {
+    ctx.ui.notify(validationError, "error");
     return false;
   }
   writeTextAtomic(entry.path, ensureTrailingNewline(edited));
@@ -1521,7 +1516,7 @@ async function insertSettingIntoEntry(ctx: ExtensionCommandContext, entry: Confi
     ctx.ui.notify("Could not insert automatically. Open the file and edit manually.", "error");
     return false;
   }
-  const reviewed = await ctx.ui.editor(`Review ${selected.key} in ${displayPath(entry.path, ctx.cwd)}`, after);
+  const reviewed = await reviewValidatedText(ctx, entry, `Review ${selected.key} in ${displayPath(entry.path, ctx.cwd)}`, after);
   if (reviewed === undefined) return false;
   writeTextAtomic(entry.path, ensureTrailingNewline(reviewed));
   ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
@@ -1537,28 +1532,6 @@ async function addSettingFromReference(ctx: ExtensionCommandContext, entry: Conf
   const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
   const selected = await chooseSettingFromReference(ctx, catalog, currentKeys(entry, before));
   return selected ? insertSettingIntoEntry(ctx, entry, selected) : false;
-}
-
-async function addEnvFromReference(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
-  if (entry.format !== "json" && entry.format !== "toml") {
-    ctx.ui.notify("Environment variables can only be inserted into JSON/TOML settings files", "warning");
-    return false;
-  }
-  const selected = await chooseEnvVarFromReference(ctx, envCatalogFor(entry.tool));
-  if (!selected) return false;
-  const value = await ctx.ui.input(`Value for ${selected.name}`, selected.valueHint ?? "leave blank to insert an empty string");
-  if (value === undefined) return false;
-  const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
-  const after = insertEnvVar(before, entry, selected, value);
-  if (after === null) {
-    ctx.ui.notify("Could not insert environment variable automatically", "error");
-    return false;
-  }
-  const reviewed = await ctx.ui.editor(`Review ${selected.name}`, after);
-  if (reviewed === undefined) return false;
-  writeTextAtomic(entry.path, ensureTrailingNewline(reviewed));
-  ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
-  return true;
 }
 
 async function maybeReload(ctx: ExtensionCommandContext): Promise<void> {
@@ -1582,7 +1555,7 @@ async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
         ? await insertSettingIntoEntry(ctx, result.entry, result.field)
         : result.action === "addSetting"
           ? await addSettingFromReference(ctx, result.entry)
-          : await addEnvFromReference(ctx, result.entry);
+          : false;
     if (changed) await maybeReload(ctx);
   }
 }

@@ -1,10 +1,10 @@
 // pi-clones — fork the running agent into a background clone that inherits the
-// full session context, works one extra task, and re-merges its result into main.
+// full session context, works one extra task, and alerts main when its result is ready.
 //
 // A clone is the same agent (same system prompt, conversation, tools, auth) plus
 // one appended task — not a context-free "subagent". It runs in-process via the
-// Pi SDK, so it shares the parent's model client + auth and reuses the warm
-// prompt cache, and it boots as a resume of a forked branch so the inherited
+// Pi SDK, so it shares the parent's model client + auth and can reuse warm
+// prompt-cache prefixes, and it boots as a resume of a forked branch so the inherited
 // context is frozen (memedit treats resumed entries as context-only).
 //
 // See DESIGN.md for the full rationale, the spike evidence, and the cost model.
@@ -12,15 +12,23 @@
 import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import {
+	SessionManager,
+	createAgentSession,
+} from "@earendil-works/pi-coding-agent";
+import type {
+	AgentToolResult,
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 // --------------------------------------------------------------------------
 // Constants
 // --------------------------------------------------------------------------
 
-const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+const AGENT_DIR =
+	process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 // Hidden clone session dir: a sibling of the normal sessions dir, never scanned
 // by SessionManager.list/listAll, so clones never appear in resume history.
 const CLONES_DIR = join(AGENT_DIR, "clones");
@@ -29,30 +37,51 @@ const MAX_DEPTH = 2; // root(0) → clone(1) → sub-clone(2); depth 2 cannot fo
 const MAX_CONCURRENT = 4; // live clones per owning session
 const CLONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // prune clone session files older than this
 
-const READONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
+const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const BLOCKED_TOOLS = new Set(["ask_user"]); // no human attends a clone
-const CLONE_TOOLS = new Set(["clone", "clone_status", "clone_result", "clone_log", "clone_stop"]);
+const CLONE_TOOLS = new Set([
+	"clone",
+	"clone_status",
+	"clone_result",
+	"clone_log",
+	"clone_stop",
+	"clone_continue",
+	"clone_dismiss",
+]);
 
 const META_TYPE = "pi-clone-meta"; // CustomEntry: depth marker (not sent to LLM)
 const ADVICE_TYPE = "pi-clones-advice"; // CustomEntry: "advice shown" marker
-const RESULT_TYPE = "pi-clone-result"; // CustomMessage: re-merged result (sent to LLM)
+const RESULT_TYPE = "pi-clone-result"; // CustomMessage: concise completion alert (full result stays retrievable)
 
 const ADVICE_TEXT =
 	"[pi-clones] You can fork yourself into a clone — a background copy with all of your current " +
 	"knowledge and context, plus one task you assign. It is you, not a stranger: do not re-explain " +
 	"context, just state the new objective and its definition of done. Use clones only for genuinely " +
 	'parallel or independently-researchable work (wide reads, investigations, "go find out X while I ' +
-	'continue", independent verification). A clone has no user to ask: if it hits a decision only the ' +
-	"human can make, it records the blocker in its result and stops — it escalates to you, never to the " +
-	'user. Default clones are read-only (safe for parallel research); pass mode:"inherit" only for ' +
-	"non-overlapping work that may edit files. You are alerted when a clone finishes; you can also call " +
-	"clone_status (timestamps show progress), clone_result, or clone_log (to inspect a confusing result).";
+	'continue", independent verification). Once you delegate work to a clone, do not repeat that same ' +
+	"work yourself; continue only with non-overlapping parent work unless the clone reports a blocker " +
+	"or the user redirects you. A clone has no user to ask: if it hits a decision only the human can " +
+	"make, it records the blocker in its result and stops — it escalates to you, never to the user. " +
+	'Default clones are read-only (safe for parallel research); pass mode:"inherit" only for ' +
+	"non-overlapping work that may edit files. Use clone_status to monitor active work. Wait for a " +
+	"completion alert or a done/error/stopped status before calling clone_result; use clone_log only " +
+	"to diagnose a confusing result. Use clone_dismiss to write off completed clones you no longer " +
+	"need in status lists.";
 
 // --------------------------------------------------------------------------
 // Types
 // --------------------------------------------------------------------------
 
-type CloneState = "starting" | "running" | "compacting" | "done" | "error" | "stopped";
+type CloneState =
+	| "starting"
+	| "running"
+	| "compacting"
+	| "done"
+	| "error"
+	| "stopped";
+type CloneToolResult = AgentToolResult<Record<string, unknown>> & {
+	isError?: boolean;
+};
 
 interface CloneRecord {
 	id: string;
@@ -70,6 +99,8 @@ interface CloneRecord {
 	activity?: string;
 	lastText: string;
 	error?: string;
+	notifiedAt?: number;
+	dismissedAt?: number;
 	sessionFile?: string;
 	// biome-ignore lint: SDK runtime objects, kept loosely typed on purpose.
 	session?: any;
@@ -89,6 +120,10 @@ function shortId(): string {
 function truncate(s: string, n: number): string {
 	const t = (s ?? "").replace(/\s+/g, " ").trim();
 	return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
+}
+
+function safeSnippet(s: string, n: number): string {
+	return truncate(s, n).replace(/[<>]/g, (c) => (c === "<" ? "‹" : "›"));
 }
 
 function ago(ts: number): string {
@@ -135,7 +170,10 @@ function currentDepth(ctx: ExtensionContext): number {
 		for (const e of branch) {
 			// biome-ignore lint: SessionEntry union, narrowed structurally.
 			const any = e as any;
-			if (any?.customType === META_TYPE && typeof any?.data?.depth === "number") {
+			if (
+				any?.customType === META_TYPE &&
+				typeof any?.data?.depth === "number"
+			) {
 				depth = Math.max(depth, any.data.depth);
 			}
 		}
@@ -194,7 +232,12 @@ export default function piClones(pi: ExtensionAPI): void {
 	const clones = new Map<string, CloneRecord>();
 
 	const liveStates: CloneState[] = ["starting", "running", "compacting"];
-	const runningCount = () => [...clones.values()].filter((c) => liveStates.includes(c.state)).length;
+	const runningCount = () =>
+		[...clones.values()].filter((c) => liveStates.includes(c.state)).length;
+	const terminalClones = () =>
+		[...clones.values()].filter((c) => !liveStates.includes(c.state));
+	const activeClones = () =>
+		[...clones.values()].filter((c) => liveStates.includes(c.state));
 
 	function maybeAdvice(ctx: ExtensionContext): string {
 		if (hasAdviceMarker(ctx)) return "";
@@ -206,8 +249,14 @@ export default function piClones(pi: ExtensionAPI): void {
 		return `${ADVICE_TEXT}\n\n`;
 	}
 
-	function cloneAllowlist(mode: "read-only" | "inherit", newDepth: number): string[] {
-		let allow = mode === "inherit" ? pi.getActiveTools().filter((n) => !BLOCKED_TOOLS.has(n)) : [...READONLY_TOOLS];
+	function cloneAllowlist(
+		mode: "read-only" | "inherit",
+		newDepth: number,
+	): string[] {
+		let allow =
+			mode === "inherit"
+				? pi.getActiveTools().filter((n) => !BLOCKED_TOOLS.has(n))
+				: [...READONLY_TOOLS];
 		// Nested clones only in inherit mode and only below the depth ceiling.
 		if (mode !== "inherit" || newDepth >= MAX_DEPTH) {
 			allow = allow.filter((n) => !CLONE_TOOLS.has(n));
@@ -276,12 +325,21 @@ export default function piClones(pi: ExtensionAPI): void {
 		return rec.lastText;
 	}
 
-	function deliver(rec: CloneRecord): void {
+	function resultText(rec: CloneRecord): string {
+		const text = finalText(rec);
+		if (rec.state !== "error") return text;
+		const error = `Clone ${rec.id} failed: ${rec.error ?? "unknown error"}`;
+		return text.trim() ? `${error}\n\nPartial output:\n${text}` : error;
+	}
+
+	function notifyCompletion(rec: CloneRecord): void {
+		if (rec.notifiedAt) return;
+		rec.notifiedAt = Date.now();
 		const body =
 			rec.state === "error"
-				? `Clone ${rec.id} failed: ${rec.error ?? "unknown error"}`
-				: rec.lastText || "(clone produced no final text — use clone_log to inspect)";
-		const content = `<clone_result id="${rec.id}" state="${rec.state}">\nTask: ${rec.task}\n\n${body}\n</clone_result>`;
+				? `failed: ${rec.error ?? "unknown error"}`
+				: rec.lastText || "no final text";
+		const content = `Clone ${rec.id} finished with state ${rec.state}.\nTask: ${safeSnippet(rec.task, 180)}\nPreview: ${safeSnippet(body, 500)}\n\nUse clone_result({id:"${rec.id}"}) if the full handoff is needed for the next step. Use clone_log only to diagnose a surprising result.`;
 		try {
 			pi.sendMessage(
 				{
@@ -306,24 +364,99 @@ export default function piClones(pi: ExtensionAPI): void {
 
 	function finish(rec: CloneRecord): void {
 		if (rec.state === "stopped") {
-			rec.finishedAt = Date.now();
+			rec.finishedAt = rec.finishedAt ?? Date.now();
 			teardown(rec);
 			return;
 		}
+		if (!liveStates.includes(rec.state)) return;
 		rec.state = "done";
 		rec.finishedAt = Date.now();
 		rec.lastText = finalText(rec);
 		teardown(rec);
-		if (rec.background) deliver(rec);
+		if (rec.background) notifyCompletion(rec);
 	}
 
 	function fail(rec: CloneRecord, err: unknown): void {
+		if (rec.state === "stopped") {
+			rec.finishedAt = rec.finishedAt ?? Date.now();
+			teardown(rec);
+			return;
+		}
+		if (!liveStates.includes(rec.state)) return;
 		rec.state = "error";
 		// biome-ignore lint: error is unknown.
 		rec.error = String((err as any)?.message ?? err);
 		rec.finishedAt = Date.now();
 		teardown(rec);
-		if (rec.background) deliver(rec);
+		if (rec.background) notifyCompletion(rec);
+	}
+
+	function framedTask(task: string, continued: boolean): string {
+		const kind = continued
+			? "You are continuing an existing clone branch with your previous clone transcript available."
+			: "You are a clone: a background fork of the main session with full shared context.";
+		return `${task}\n\n[${kind} Work only this task. You have no user to ask — if you hit a decision only a human can make, state it as a BLOCKER and stop. End with a clear, self-contained final answer the main session can act on.]`;
+	}
+
+	async function continueClone(
+		ctx: ExtensionContext,
+		rec: CloneRecord,
+		task: string,
+		mode: "read-only" | "inherit",
+		background: boolean,
+	): Promise<CloneRecord> {
+		const running = runningCount();
+		if (running >= MAX_CONCURRENT) {
+			throw new Error(
+				`clone limit reached (${running}/${MAX_CONCURRENT}); stop or await existing clones first`,
+			);
+		}
+		if (liveStates.includes(rec.state)) {
+			throw new Error(
+				`clone ${rec.id} is already ${rec.state}; stop or wait before continuing it`,
+			);
+		}
+		if (!rec.manager) {
+			throw new Error(`clone ${rec.id} has no session manager to continue`);
+		}
+
+		const { session } = await createAgentSession({
+			cwd: ctx.cwd,
+			agentDir: AGENT_DIR,
+			modelRegistry: ctx.modelRegistry,
+			...(ctx.model ? { model: ctx.model } : {}),
+			thinkingLevel: pi.getThinkingLevel(),
+			sessionManager: rec.manager,
+			tools: cloneAllowlist(mode, rec.depth),
+		});
+		session.setAutoCompactionEnabled?.(true);
+
+		const now = Date.now();
+		rec.task = task;
+		rec.mode = mode;
+		rec.state = "starting";
+		rec.background = background;
+		rec.startedAt = now;
+		rec.lastActivityAt = now;
+		rec.finishedAt = undefined;
+		rec.toolCount = 0;
+		rec.compactions = 0;
+		rec.tokens = 0;
+		rec.activity = undefined;
+		rec.lastText = "";
+		rec.error = undefined;
+		rec.notifiedAt = undefined;
+		rec.dismissedAt = undefined;
+		rec.session = session;
+		rec.unsubscribe = session.subscribe((ev: unknown) => onEvent(rec, ev));
+
+		const run = session
+			.prompt(framedTask(task, true))
+			.then(() => finish(rec))
+			.catch((e: unknown) => fail(rec, e));
+
+		if (!background) await run;
+		return rec;
 	}
 
 	async function spawnClone(
@@ -334,11 +467,15 @@ export default function piClones(pi: ExtensionAPI): void {
 	): Promise<CloneRecord> {
 		const running = runningCount();
 		if (running >= MAX_CONCURRENT) {
-			throw new Error(`clone limit reached (${running}/${MAX_CONCURRENT}); stop or await existing clones first`);
+			throw new Error(
+				`clone limit reached (${running}/${MAX_CONCURRENT}); stop or await existing clones first`,
+			);
 		}
 		const depth = currentDepth(ctx);
 		if (depth >= MAX_DEPTH) {
-			throw new Error(`max clone depth (${MAX_DEPTH}) reached; this session cannot fork further`);
+			throw new Error(
+				`max clone depth (${MAX_DEPTH}) reached; this session cannot fork further`,
+			);
 		}
 		const newDepth = depth + 1;
 
@@ -346,71 +483,85 @@ export default function piClones(pi: ExtensionAPI): void {
 		// boots as a resume with the full inherited (frozen) context present.
 		const parentFile = ctx.sessionManager.getSessionFile?.();
 		if (!parentFile) {
-			throw new Error("parent session has no file to fork (in-memory session); cannot clone");
+			throw new Error(
+				"parent session has no file to fork (in-memory session); cannot clone",
+			);
 		}
-		const manager = SessionManager.forkFrom(parentFile, ctx.cwd, CLONES_DIR);
-		manager.appendCustomEntry?.(META_TYPE, {
-			depth: newDepth,
-			task,
-			parentId: ctx.sessionManager.getSessionId?.(),
-		});
 
-		const allow = cloneAllowlist(mode, newDepth);
+		let manager: SessionManager | undefined;
+		try {
+			manager = SessionManager.forkFrom(parentFile, ctx.cwd, CLONES_DIR);
+			manager.appendCustomEntry?.(META_TYPE, {
+				depth: newDepth,
+				task,
+				parentId: ctx.sessionManager.getSessionId?.(),
+			});
 
-		const { session } = await createAgentSession({
-			cwd: ctx.cwd,
-			agentDir: AGENT_DIR,
-			modelRegistry: ctx.modelRegistry, // shared auth (incl. Anthropic OAuth)
-			...(ctx.model ? { model: ctx.model } : {}),
-			sessionManager: manager,
-			tools: allow,
-		});
-		session.setAutoCompactionEnabled?.(true); // never brick at the token limit
+			const allow = cloneAllowlist(mode, newDepth);
 
-		const now = Date.now();
-		const rec: CloneRecord = {
-			id: shortId(),
-			task,
-			depth: newDepth,
-			mode,
-			state: "starting",
-			background,
-			startedAt: now,
-			lastActivityAt: now,
-			toolCount: 0,
-			compactions: 0,
-			tokens: 0,
-			lastText: "",
-			sessionFile: manager.getSessionFile?.(),
-			session,
-			manager,
-		};
-		clones.set(rec.id, rec);
-		rec.unsubscribe = session.subscribe((ev: unknown) => onEvent(rec, ev));
+			const { session } = await createAgentSession({
+				cwd: ctx.cwd,
+				agentDir: AGENT_DIR,
+				modelRegistry: ctx.modelRegistry, // shared auth (incl. Anthropic OAuth)
+				...(ctx.model ? { model: ctx.model } : {}),
+				thinkingLevel: pi.getThinkingLevel(),
+				sessionManager: manager,
+				tools: allow,
+			});
+			session.setAutoCompactionEnabled?.(true); // never brick at the token limit
 
-		const framed =
-			`${task}\n\n[You are a clone: a background fork of the main session with full shared context. ` +
-			"Work only this task. You have no user to ask — if you hit a decision only a human can make, state it " +
-			"as a BLOCKER and stop. End with a clear, self-contained final answer the main session can act on.]";
+			const now = Date.now();
+			const rec: CloneRecord = {
+				id: shortId(),
+				task,
+				depth: newDepth,
+				mode,
+				state: "starting",
+				background,
+				startedAt: now,
+				lastActivityAt: now,
+				toolCount: 0,
+				compactions: 0,
+				tokens: 0,
+				lastText: "",
+				sessionFile: manager.getSessionFile?.(),
+				session,
+				manager,
+			};
+			clones.set(rec.id, rec);
+			rec.unsubscribe = session.subscribe((ev: unknown) => onEvent(rec, ev));
 
-		const run = session
-			.prompt(framed)
-			.then(() => finish(rec))
-			.catch((e: unknown) => fail(rec, e));
+			const run = session
+				.prompt(framedTask(task, false))
+				.then(() => finish(rec))
+				.catch((e: unknown) => fail(rec, e));
 
-		if (!background) await run;
-		return rec;
+			if (!background) await run;
+			return rec;
+		} catch (e) {
+			const file = manager?.getSessionFile?.();
+			if (file) {
+				try {
+					unlinkSync(file);
+				} catch {
+					/* best-effort cleanup of a failed setup fork */
+				}
+			}
+			throw e;
+		}
 	}
 
-	// biome-ignore lint: rec is fully typed; output is a status line.
 	function statusLine(rec: CloneRecord): string {
 		const usage = rec.tokens ? ` · ${fmtTokens(rec.tokens)} tok` : "";
 		const act = rec.activity ? ` · ${rec.activity}` : "";
+		const dismissed = rec.dismissedAt
+			? ` · written off ${ago(rec.dismissedAt)} ago`
+			: "";
 		const snippet = rec.lastText ? ` · “${truncate(rec.lastText, 80)}”` : "";
 		return (
 			`${rec.id} [${rec.state}] d${rec.depth}/${rec.mode} · “${truncate(rec.task, 60)}” · ` +
 			`${rec.toolCount} tools${usage}${rec.compactions ? ` · ⇊${rec.compactions}` : ""} · ` +
-			`last activity ${ago(rec.lastActivityAt)} ago (${new Date(rec.lastActivityAt).toISOString()})${act}${snippet}` +
+			`last activity ${ago(rec.lastActivityAt)} ago (${new Date(rec.lastActivityAt).toISOString()})${act}${dismissed}${snippet}` +
 			`${rec.error ? ` · ERROR: ${truncate(rec.error, 120)}` : ""}`
 		);
 	}
@@ -426,6 +577,12 @@ export default function piClones(pi: ExtensionAPI): void {
 			"Fork yourself into a background clone that inherits your full context and works one extra task in " +
 			"parallel. Returns a clone_id immediately and alerts you when the clone finishes. Use for " +
 			"parallelisable research/investigation; the clone already has your context, so state only the new task.",
+		promptGuidelines: [
+			"After delegating a task to a clone, do not repeat the same work yourself; continue only with non-overlapping work unless the clone reports a blocker or the user redirects you.",
+			"Use clone_status for active progress. Do not call clone_result for running clones; wait for a completion alert or a done/error/stopped status. Use clone_log only to diagnose surprising results.",
+			"Clone completion alerts are concise; fetch clone_result only when the full handoff is needed for the next step, then use clone_dismiss to write off completed clones you no longer need listed.",
+			'If a clone started read-only but now needs to edit, use clone_continue with mode:"inherit" and a focused continuation task instead of starting over from scratch.',
+		],
 		parameters: Type.Object({
 			task: Type.String({
 				description:
@@ -433,7 +590,7 @@ export default function piClones(pi: ExtensionAPI): void {
 					"re-explain; state only the new objective and its definition of done.",
 			}),
 			mode: Type.Optional(
-				Type.String({
+				Type.Union([Type.Literal("read-only"), Type.Literal("inherit")], {
 					description:
 						'"read-only" (default): clone gets read-only tools — safe for parallel research. ' +
 						'"inherit": clone gets your active tools (can edit) — only for genuinely non-overlapping work.',
@@ -441,13 +598,20 @@ export default function piClones(pi: ExtensionAPI): void {
 			),
 			background: Type.Optional(
 				Type.Boolean({
-					description: "Default true: return immediately and alert on completion. false: block and return inline.",
+					description:
+						"Default true: return immediately and alert on completion. false: block and return inline.",
 				}),
 			),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+		async execute(
+			_toolCallId,
+			params,
+			_signal,
+			_onUpdate,
+			ctx: ExtensionContext,
+		): Promise<CloneToolResult> {
 			try {
-				const mode: "read-only" | "inherit" = params.mode === "inherit" ? "inherit" : "read-only";
+				const mode: "read-only" | "inherit" = params.mode ?? "read-only";
 				const background = params.background !== false;
 				const advice = maybeAdvice(ctx);
 				const rec = await spawnClone(ctx, params.task, mode, background);
@@ -458,7 +622,8 @@ export default function piClones(pi: ExtensionAPI): void {
 								type: "text",
 								text:
 									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). It will alert you when ` +
-									`finished. Poll clone_status({id:"${rec.id}"}) for progress, or clone_result({id:"${rec.id}"}).`,
+									`finished. Use clone_status({id:"${rec.id}"}) for progress; wait for done/error/stopped before ` +
+									`clone_result({id:"${rec.id}"}).`,
 							},
 						],
 						details: { id: rec.id, state: rec.state, depth: rec.depth, mode },
@@ -475,7 +640,12 @@ export default function piClones(pi: ExtensionAPI): void {
 				};
 			} catch (e) {
 				// biome-ignore lint: error is unknown.
-				return { content: [{ type: "text", text: `clone failed: ${String((e as any)?.message ?? e)}` }], isError: true };
+				const error = String((e as any)?.message ?? e);
+				return {
+					content: [{ type: "text", text: `clone failed: ${error}` }],
+					details: { error },
+					isError: true,
+				};
 			}
 		},
 	});
@@ -484,58 +654,238 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_status",
 		label: "Clone status",
 		description:
-			"Inspect clones spawned by this session: state, last-activity timestamp (to tell progress from a stall), " +
-			"tool count, tokens, and a snippet of the latest output. Omit id for all clones.",
+			'Inspect active clones spawned by this session by default. Pass include:"completed" or include:"all" ' +
+			"when you need written-off/completed clone records.",
 		parameters: Type.Object({
-			id: Type.Optional(Type.String({ description: "Clone id; omit to list all clones from this session." })),
+			id: Type.Optional(
+				Type.String({
+					description:
+						"Clone id; when set, returns that clone even if completed or written off.",
+				}),
+			),
+			include: Type.Optional(
+				Type.Union(
+					[
+						Type.Literal("active"),
+						Type.Literal("completed"),
+						Type.Literal("all"),
+					],
+					{
+						description:
+							"Default active: list only running/starting/compacting clones. completed lists terminal, not-written-off clones. all includes written-off clones too.",
+					},
+				),
+			),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			if (params.id) {
 				const rec = clones.get(params.id);
-				if (!rec) return { content: [{ type: "text", text: `no clone with id ${params.id}` }], isError: true };
-				return { content: [{ type: "text", text: statusLine(rec) }], details: { id: rec.id, state: rec.state } };
+				if (!rec)
+					return {
+						content: [{ type: "text", text: `no clone with id ${params.id}` }],
+						details: { id: params.id, error: "not_found" },
+						isError: true,
+					};
+				return {
+					content: [{ type: "text", text: statusLine(rec) }],
+					details: {
+						id: rec.id,
+						state: rec.state,
+						dismissed: Boolean(rec.dismissedAt),
+					},
+				};
 			}
-			if (clones.size === 0) return { content: [{ type: "text", text: "no clones in this session" }] };
-			const lines = [...clones.values()].sort((a, b) => b.startedAt - a.startedAt).map(statusLine);
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { count: clones.size } };
+			if (clones.size === 0)
+				return {
+					content: [{ type: "text", text: "no clones in this session" }],
+					details: { count: 0 },
+				};
+
+			const include = params.include ?? "active";
+			const records =
+				include === "active"
+					? activeClones()
+					: include === "completed"
+						? terminalClones().filter((c) => !c.dismissedAt)
+						: [...clones.values()];
+			const sorted = records.sort((a, b) => b.startedAt - a.startedAt);
+			if (sorted.length === 0) {
+				const terminal = terminalClones().filter((c) => !c.dismissedAt).length;
+				const suffix =
+					include === "active" && terminal
+						? ` (${terminal} completed; use include:\"completed\" if you need ids, or clone_dismiss to write them off)`
+						: "";
+				return {
+					content: [{ type: "text", text: `no ${include} clones${suffix}` }],
+					details: {
+						count: 0,
+						active: activeClones().length,
+						completed: terminal,
+					},
+				};
+			}
+			return {
+				content: [{ type: "text", text: sorted.map(statusLine).join("\n") }],
+				details: {
+					count: sorted.length,
+					active: activeClones().length,
+					completed: terminalClones().filter((c) => !c.dismissedAt).length,
+				},
+			};
 		},
 	});
 
 	pi.registerTool({
 		name: "clone_result",
 		label: "Clone result",
-		description: "Fetch a clone's final answer (or its current partial output if still running).",
+		description:
+			"Fetch a clone's final answer after it reaches done/error/stopped. Use clone_status for running clones.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
-			if (!rec) return { content: [{ type: "text", text: `no clone with id ${params.id}` }], isError: true };
-			const text = rec.state === "done" || rec.state === "error" ? finalText(rec) : rec.lastText;
-			const note = liveStates.includes(rec.state) ? `(still ${rec.state}; partial)\n\n` : "";
+			if (!rec)
+				return {
+					content: [{ type: "text", text: `no clone with id ${params.id}` }],
+					details: { id: params.id, error: "not_found" },
+					isError: true,
+				};
+			if (liveStates.includes(rec.state)) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; use clone_status for progress and wait for done/error/stopped before fetching the final result.`,
+						},
+					],
+					details: { id: rec.id, state: rec.state },
+				};
+			}
+			const text = resultText(rec);
 			return {
-				content: [{ type: "text", text: `${note}${text || "(no output yet — use clone_log to inspect)"}` }],
+				content: [
+					{
+						type: "text",
+						text: text || "(no output — use clone_log to inspect)",
+					},
+				],
 				details: { id: rec.id, state: rec.state },
 			};
 		},
 	});
 
 	pi.registerTool({
+		name: "clone_continue",
+		label: "Clone continue",
+		description:
+			'Continue a completed/error/stopped clone from its existing branch with a new focused task. Use this to upgrade a read-only clone to mode:"inherit" instead of starting over.',
+		parameters: Type.Object({
+			id: Type.String({ description: "Clone id to continue." }),
+			task: Type.String({
+				description:
+					"The focused continuation task. The clone already has its prior transcript; state only what to do next.",
+			}),
+			mode: Type.Optional(
+				Type.Union([Type.Literal("read-only"), Type.Literal("inherit")], {
+					description:
+						"Tool mode for the continuation. Defaults to the clone's previous mode; pass inherit to enable writes/tools.",
+				}),
+			),
+			background: Type.Optional(
+				Type.Boolean({
+					description:
+						"Default true: return immediately and alert on completion. false: block and return inline.",
+				}),
+			),
+		}),
+		async execute(
+			_toolCallId,
+			params,
+			_signal,
+			_onUpdate,
+			ctx: ExtensionContext,
+		): Promise<CloneToolResult> {
+			try {
+				const rec = clones.get(params.id);
+				if (!rec)
+					return {
+						content: [{ type: "text", text: `no clone with id ${params.id}` }],
+						details: { id: params.id, error: "not_found" },
+						isError: true,
+					};
+				const mode: "read-only" | "inherit" = params.mode ?? rec.mode;
+				const background = params.background !== false;
+				const continued = await continueClone(
+					ctx,
+					rec,
+					params.task,
+					mode,
+					background,
+				);
+				if (background) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Clone ${continued.id} continued (${mode}). It will alert you when finished. Use clone_status({id:"${continued.id}"}) for progress.`,
+							},
+						],
+						details: { id: continued.id, state: continued.state, mode },
+					};
+				}
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Clone ${continued.id} continuation finished (${continued.state}).\n\n${continued.lastText || "(no final text — use clone_log)"}`,
+						},
+					],
+					details: { id: continued.id, state: continued.state, mode },
+				};
+			} catch (e) {
+				// biome-ignore lint: error unknown.
+				const error = String((e as any)?.message ?? e);
+				return {
+					content: [{ type: "text", text: `clone_continue failed: ${error}` }],
+					details: { id: params.id, error },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
 		name: "clone_log",
 		label: "Clone log",
-		description: "Browse a clone's transcript when its result looks wrong. Returns the last `tail` messages (default 20).",
+		description:
+			"Browse a clone's transcript when its result looks wrong. Returns the last `tail` messages (default 20).",
 		parameters: Type.Object({
 			id: Type.String({ description: "Clone id." }),
-			tail: Type.Optional(Type.Number({ description: "How many trailing messages to show (default 20)." })),
+			tail: Type.Optional(
+				Type.Integer({
+					description: "How many trailing messages to show (default 20).",
+				}),
+			),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
-			if (!rec) return { content: [{ type: "text", text: `no clone with id ${params.id}` }], isError: true };
-			const tail = Math.max(1, Math.min(100, params.tail ?? 20));
+			if (!rec)
+				return {
+					content: [{ type: "text", text: `no clone with id ${params.id}` }],
+					details: { id: params.id, error: "not_found" },
+					isError: true,
+				};
+			const tail = Math.max(1, Math.min(100, Math.floor(params.tail ?? 20)));
 			try {
 				const msgs = rec.manager?.buildSessionContext?.()?.messages ?? [];
 				const slice = msgs.slice(-tail);
-				// biome-ignore lint: messages loosely typed.
 				const rendered = slice
-					.map((m: any) => `[${m.role}] ${truncate(textOf(m) || `(${(m.content && m.content[0]?.type) || "non-text"})`, 400)}`)
+					.map((m: unknown) => {
+						const message = m as {
+							role?: string;
+							content?: Array<{ type?: string }>;
+						};
+						return `[${message.role ?? "unknown"}] ${truncate(textOf(message) || `(${message.content?.[0]?.type || "non-text"})`, 400)}`;
+					})
 					.join("\n");
 				return {
 					content: [{ type: "text", text: rendered || "(empty transcript)" }],
@@ -543,7 +893,14 @@ export default function piClones(pi: ExtensionAPI): void {
 				};
 			} catch (e) {
 				// biome-ignore lint: error unknown.
-				return { content: [{ type: "text", text: `could not read clone log: ${String((e as any)?.message ?? e)}` }], isError: true };
+				const error = String((e as any)?.message ?? e);
+				return {
+					content: [
+						{ type: "text", text: `could not read clone log: ${error}` },
+					],
+					details: { id: rec.id, error },
+					isError: true,
+				};
 			}
 		},
 	});
@@ -551,13 +908,24 @@ export default function piClones(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "clone_stop",
 		label: "Clone stop",
-		description: "Abort a running clone. Its partial output remains available via clone_result / clone_log.",
+		description:
+			"Abort a running clone. Its final/partial output remains available via clone_result / clone_log after it stops.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
-			if (!rec) return { content: [{ type: "text", text: `no clone with id ${params.id}` }], isError: true };
+			if (!rec)
+				return {
+					content: [{ type: "text", text: `no clone with id ${params.id}` }],
+					details: { id: params.id, error: "not_found" },
+					isError: true,
+				};
 			if (!liveStates.includes(rec.state)) {
-				return { content: [{ type: "text", text: `clone ${rec.id} already ${rec.state}` }] };
+				return {
+					content: [
+						{ type: "text", text: `clone ${rec.id} already ${rec.state}` },
+					],
+					details: { id: rec.id, state: rec.state },
+				};
 			}
 			rec.state = "stopped";
 			try {
@@ -567,7 +935,67 @@ export default function piClones(pi: ExtensionAPI): void {
 			}
 			rec.lastText = finalText(rec);
 			teardown(rec);
-			return { content: [{ type: "text", text: `clone ${rec.id} stopped` }], details: { id: rec.id, state: rec.state } };
+			return {
+				content: [{ type: "text", text: `clone ${rec.id} stopped` }],
+				details: { id: rec.id, state: rec.state },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "clone_dismiss",
+		label: "Clone dismiss",
+		description:
+			"Write off completed/error/stopped clones so clone_status omits them. Omit id to dismiss every terminal clone.",
+		parameters: Type.Object({
+			id: Type.Optional(
+				Type.String({
+					description: "Clone id; omit to dismiss all terminal clones.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params): Promise<CloneToolResult> {
+			const now = Date.now();
+			if (params.id) {
+				const rec = clones.get(params.id);
+				if (!rec)
+					return {
+						content: [{ type: "text", text: `no clone with id ${params.id}` }],
+						details: { id: params.id, error: "not_found" },
+						isError: true,
+					};
+				if (liveStates.includes(rec.state)) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `clone ${rec.id} is still ${rec.state}; stop or wait before writing it off`,
+							},
+						],
+						details: { id: rec.id, state: rec.state },
+						isError: true,
+					};
+				}
+				rec.dismissedAt = now;
+				return {
+					content: [{ type: "text", text: `clone ${rec.id} written off` }],
+					details: { id: rec.id, state: rec.state, dismissed: true },
+				};
+			}
+
+			const done = terminalClones().filter((c) => !c.dismissedAt);
+			for (const rec of done) rec.dismissedAt = now;
+			return {
+				content: [
+					{
+						type: "text",
+						text: done.length
+							? `wrote off ${done.length} completed clone(s)`
+							: "no completed clones to write off",
+					},
+				],
+				details: { count: done.length },
+			};
 		},
 	});
 
@@ -575,11 +1003,14 @@ export default function piClones(pi: ExtensionAPI): void {
 	// Human command: /clones — compact status summary (TUI only).
 	// ----------------------------------------------------------------------
 	pi.registerCommand("clones", {
-		description: "List background clones spawned by this session.",
+		description: "List active background clones spawned by this session.",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI || !ctx.ui) return;
-			const text =
-				clones.size === 0 ? "no clones in this session" : [...clones.values()].sort((a, b) => b.startedAt - a.startedAt).map(statusLine).join("\n");
+			const active = activeClones().sort((a, b) => b.startedAt - a.startedAt);
+			const completed = terminalClones().filter((c) => !c.dismissedAt).length;
+			const text = active.length
+				? active.map(statusLine).join("\n")
+				: `no active clones${completed ? ` (${completed} completed; use clone_status({include:\"completed\"}) or clone_dismiss)` : ""}`;
 			ctx.ui.notify(text, "info");
 		},
 	});

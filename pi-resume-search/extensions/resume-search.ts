@@ -17,6 +17,7 @@ import {
   visibleWidth,
   type Component,
   type Focusable,
+  type KeyId,
 } from "@earendil-works/pi-tui";
 
 type Theme = ExtensionCommandContext["ui"]["theme"];
@@ -59,7 +60,7 @@ type MatchSnippet = {
 type StatusMessage = { type: "info" | "error"; message: string } | null;
 type KeybindingsLike = {
   matches?: (data: string, keybinding: string) => boolean;
-  getKeys?: (keybinding: string) => string[];
+  getKeys?: (keybinding: string) => KeyId[];
 };
 
 type ResumeSearchOptions = {
@@ -74,7 +75,10 @@ type ResumeSearchOptions = {
 };
 
 const DOCUMENT_CACHE = new Map<string, { modifiedMs: number; document: SessionDocument }>();
+const MAX_DOCUMENT_CACHE_ENTRIES = 200;
 const MAX_SNIPPETS_PER_SESSION = 2;
+const SEARCH_RECOMPUTE_DEBOUNCE_MS = 90;
+const MAX_REGEX_PATTERN_LENGTH = 160;
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
 function stripAnsi(value: string): string {
@@ -130,7 +134,7 @@ function formatTimestamp(timestampMs: number | undefined, fallback: Date): strin
   return formatAge(new Date(timestampMs));
 }
 
-function keyMatches(keybindings: KeybindingsLike, data: string, keybinding: string, fallbackKeys: string[] = []): boolean {
+function keyMatches(keybindings: KeybindingsLike, data: string, keybinding: string, fallbackKeys: readonly KeyId[] = []): boolean {
   try {
     if (keybindings.matches?.(data, keybinding)) return true;
   } catch {
@@ -153,6 +157,34 @@ function keyHintText(theme: Theme, keybindings: KeybindingsLike, keybinding: str
   return `${theme.fg("accent", keyLabel(keybindings, keybinding, fallback))} ${theme.fg("muted", description)}`;
 }
 
+function regexSafetyError(pattern: string): string | undefined {
+  if (pattern.length > MAX_REGEX_PATTERN_LENGTH) return `Regex too long (max ${MAX_REGEX_PATTERN_LENGTH} characters)`;
+
+  let escaped = false;
+  let groups = 0;
+  for (let index = 0; index < pattern.length; index++) {
+    const ch = pattern[index];
+    if (escaped) {
+      if (/^[1-9]$/.test(ch)) return "Backreferences are not supported in interactive search";
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "(") groups++;
+  }
+  if (groups > 12) return "Regex has too many groups for interactive search";
+
+  // Reject common catastrophic-backtracking shapes such as `(a+)+`, `(.*)*`, or `(foo){1,}`.
+  if (/\((?:[^()\\]|\\.)*(?:[+*]|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,?\d*\})/.test(pattern)) {
+    return "Nested regex quantifiers are not supported in interactive search";
+  }
+
+  return undefined;
+}
+
 function parseSearchQuery(query: string): ParsedQuery {
   const trimmed = query.trim();
   if (!trimmed) return { mode: "empty", tokens: [], regex: null };
@@ -160,6 +192,8 @@ function parseSearchQuery(query: string): ParsedQuery {
   if (trimmed.startsWith("re:")) {
     const pattern = trimmed.slice(3).trim();
     if (!pattern) return { mode: "regex", tokens: [], regex: null, error: "Empty regex" };
+    const safetyError = regexSafetyError(pattern);
+    if (safetyError) return { mode: "regex", tokens: [], regex: null, error: safetyError };
     try {
       return { mode: "regex", tokens: [], regex: new RegExp(pattern, "i") };
     } catch (err) {
@@ -199,18 +233,7 @@ function parseSearchQuery(query: string): ParsedQuery {
     buffer += ch;
   }
 
-  if (inQuote) {
-    return {
-      mode: "tokens",
-      tokens: trimmed
-        .split(/\s+/)
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .map((value) => ({ kind: "fuzzy", value })),
-      regex: null,
-    };
-  }
-
+  // Treat an unfinished quoted phrase as a normal fuzzy token without keeping the raw quote.
   flush("fuzzy");
   return { mode: "tokens", tokens, regex: null };
 }
@@ -375,10 +398,35 @@ function documentFromEntries(session: SessionInfo, entries: any[]): SessionDocum
   return { fullText, pieces };
 }
 
-function getSessionDocument(session: SessionInfo): SessionDocument {
+function getCachedSessionDocument(session: SessionInfo): SessionDocument | undefined {
   const modifiedMs = session.modified.getTime();
   const cached = DOCUMENT_CACHE.get(session.path);
-  if (cached && cached.modifiedMs === modifiedMs) return cached.document;
+  if (!cached) return undefined;
+  if (cached.modifiedMs !== modifiedMs) {
+    DOCUMENT_CACHE.delete(session.path);
+    return undefined;
+  }
+
+  // Refresh insertion order so the map behaves like a small LRU cache.
+  DOCUMENT_CACHE.delete(session.path);
+  DOCUMENT_CACHE.set(session.path, cached);
+  return cached.document;
+}
+
+function rememberSessionDocument(path: string, modifiedMs: number, document: SessionDocument): void {
+  DOCUMENT_CACHE.delete(path);
+  DOCUMENT_CACHE.set(path, { modifiedMs, document });
+  while (DOCUMENT_CACHE.size > MAX_DOCUMENT_CACHE_ENTRIES) {
+    const oldest = DOCUMENT_CACHE.keys().next().value;
+    if (typeof oldest !== "string") break;
+    DOCUMENT_CACHE.delete(oldest);
+  }
+}
+
+function getSessionDocument(session: SessionInfo): SessionDocument {
+  const modifiedMs = session.modified.getTime();
+  const cached = getCachedSessionDocument(session);
+  if (cached) return cached;
 
   try {
     const content = readFileSync(session.path, "utf8");
@@ -393,7 +441,7 @@ function getSessionDocument(session: SessionInfo): SessionDocument {
         }
       });
     const document = documentFromEntries(session, entries);
-    DOCUMENT_CACHE.set(session.path, { modifiedMs, document });
+    rememberSessionDocument(session.path, modifiedMs, document);
     return document;
   } catch {
     const fallbackText = normalizeDisplayText(`${session.name ?? ""} ${session.firstMessage} ${session.allMessagesText}`);
@@ -401,7 +449,7 @@ function getSessionDocument(session: SessionInfo): SessionDocument {
       fullText: fallbackText,
       pieces: [{ label: "session", text: fallbackText, timestampMs: modifiedMs }],
     } satisfies SessionDocument;
-    DOCUMENT_CACHE.set(session.path, { modifiedMs, document });
+    rememberSessionDocument(session.path, modifiedMs, document);
     return document;
   }
 }
@@ -500,7 +548,8 @@ function snippetMatches(piece: SessionPiece, parsed: ParsedQuery): boolean {
 
 function snippetsForSession(session: SessionInfo, parsed: ParsedQuery): MatchSnippet[] {
   if (parsed.mode === "empty" || parsed.error) return [];
-  const document = getSessionDocument(session);
+  const document = getCachedSessionDocument(session);
+  if (!document) return [];
   const snippets: MatchSnippet[] = [];
 
   for (const piece of document.pieces) {
@@ -575,6 +624,7 @@ class ResumeSearchSelector implements Component, Focusable {
   private mode: "list" | "rename" = "list";
   private renameTargetPath: string | null = null;
   private statusTimer: ReturnType<typeof setTimeout> | null = null;
+  private recomputeTimer: ReturnType<typeof setTimeout> | null = null;
   private _focused = false;
 
   constructor(private readonly options: ResumeSearchOptions) {
@@ -684,6 +734,7 @@ class ResumeSearchSelector implements Component, Focusable {
     }
     if (keyMatches(this.options.keybindings, data, "tui.select.cancel", ["escape", "ctrl+c"])) {
       this.clearStatusTimer();
+      this.clearRecomputeTimer();
       this.options.done(null);
       return;
     }
@@ -886,10 +937,33 @@ class ResumeSearchSelector implements Component, Focusable {
   }
 
   private recompute(): void {
+    this.clearRecomputeTimer();
     const result = filterSessions(this.getVisibleSessions(), this.input.getValue(), this.sortMode, this.nameFilter);
     this.nodes = result.nodes;
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.nodes.length - 1));
     this.options.requestRender();
+  }
+
+  private scheduleRecompute(): void {
+    this.clearRecomputeTimer();
+    this.options.requestRender();
+    this.recomputeTimer = setTimeout(() => {
+      this.recomputeTimer = null;
+      this.recompute();
+    }, SEARCH_RECOMPUTE_DEBOUNCE_MS);
+  }
+
+  private flushRecompute(): void {
+    if (!this.recomputeTimer) return;
+    clearTimeout(this.recomputeTimer);
+    this.recomputeTimer = null;
+    this.recompute();
+  }
+
+  private clearRecomputeTimer(): void {
+    if (!this.recomputeTimer) return;
+    clearTimeout(this.recomputeTimer);
+    this.recomputeTimer = null;
   }
 
   private async loadScope(scope: Scope): Promise<void> {
@@ -925,18 +999,22 @@ class ResumeSearchSelector implements Component, Focusable {
   private handleSearchInput(data: string): void {
     const before = this.input.getValue();
     this.input.handleInput(data);
-    if (this.input.getValue() !== before) this.selectedIndex = 0;
-    this.recompute();
+    if (this.input.getValue() === before) return;
+    this.selectedIndex = 0;
+    this.scheduleRecompute();
   }
 
   private selectCurrent(): void {
+    this.flushRecompute();
     const selected = this.nodes[this.selectedIndex]?.session;
     if (!selected) return;
     this.clearStatusTimer();
+    this.clearRecomputeTimer();
     this.options.done(selected.path);
   }
 
   private startDeleteConfirmation(): void {
+    this.flushRecompute();
     const selected = this.nodes[this.selectedIndex]?.session;
     if (!selected) return;
     if (samePath(selected.path, this.options.currentSessionPath)) {
@@ -949,7 +1027,7 @@ class ResumeSearchSelector implements Component, Focusable {
 
   private async deleteSession(sessionPath: string): Promise<void> {
     const result = await deleteSessionFile(sessionPath);
-    if (!result.ok) {
+    if (result.ok === false) {
       this.setStatus({ type: "error", message: `Failed to delete: ${result.error}` }, 4000);
       return;
     }
@@ -961,6 +1039,7 @@ class ResumeSearchSelector implements Component, Focusable {
   }
 
   private enterRenameModeForSelected(): void {
+    this.flushRecompute();
     const selected = this.nodes[this.selectedIndex]?.session;
     if (!selected) return;
     this.mode = "rename";
@@ -984,14 +1063,13 @@ class ResumeSearchSelector implements Component, Focusable {
       this.exitRenameMode();
       return;
     }
-    if (!nextName) return;
 
     try {
       const manager = SessionManager.open(target);
       manager.appendSessionInfo(nextName);
-      this.updateSessionName(target, nextName);
+      this.updateSessionName(target, nextName || undefined);
       DOCUMENT_CACHE.delete(target);
-      this.setStatus({ type: "info", message: "Session renamed" }, 2000);
+      this.setStatus({ type: "info", message: nextName ? "Session renamed" : "Session name cleared" }, 2000);
     } catch (err) {
       this.setStatus({ type: "error", message: `Failed to rename: ${err instanceof Error ? err.message : String(err)}` }, 4000);
     } finally {
@@ -999,7 +1077,7 @@ class ResumeSearchSelector implements Component, Focusable {
     }
   }
 
-  private updateSessionName(path: string, nextName: string): void {
+  private updateSessionName(path: string, nextName: string | undefined): void {
     const update = (sessions: SessionInfo[] | null) => {
       if (!sessions) return sessions;
       return sessions.map((session) => (session.path === path ? { ...session, name: nextName } : session));

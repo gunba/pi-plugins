@@ -9,8 +9,38 @@ function stripAnsi(value: string): string {
   return value.replace(ANSI_RE, "");
 }
 
+function isCombiningMark(value: string): boolean {
+  return /\p{Mark}/u.test(value);
+}
+
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 &&
+    (codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1faff))
+  );
+}
+
+function charCellWidth(value: string): number {
+  const codePoint = value.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (codePoint === 0x200d || (codePoint >= 0xfe00 && codePoint <= 0xfe0f) || isCombiningMark(value)) return 0;
+  return isWideCodePoint(codePoint) ? 2 : 1;
+}
+
 function visibleWidth(value: string): number {
-  return [...stripAnsi(value)].length;
+  let width = 0;
+  for (const char of stripAnsi(value)) width += charCellWidth(char);
+  return width;
 }
 
 function truncateToWidth(value: string, width: number, ellipsis = "…"): string {
@@ -20,7 +50,15 @@ function truncateToWidth(value: string, width: number, ellipsis = "…"): string
   const plainEllipsis = stripAnsi(ellipsis);
   const ellipsisWidth = visibleWidth(plainEllipsis);
   const take = Math.max(0, width - ellipsisWidth);
-  return `${[...plain].slice(0, take).join("")}${plainEllipsis}`;
+  let used = 0;
+  let truncated = "";
+  for (const char of plain) {
+    const charWidth = charCellWidth(char);
+    if (used + charWidth > take) break;
+    truncated += char;
+    used += charWidth;
+  }
+  return `${truncated}${plainEllipsis}`;
 }
 
 type HeaderMap = Record<string, unknown>;
@@ -62,8 +100,23 @@ type AssistantUsage = {
   cost?: { total?: number };
 };
 
+type SessionStats = {
+  totalInput: number;
+  totalOutput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  totalCost: number;
+};
+
+type SessionStatsCache = {
+  manager: unknown;
+  entryCount: number;
+  stats: SessionStats;
+};
+
 const WEBSOCKET_PATCH_ID = "pi-usage@1";
 const WEBSOCKET_PATCH_STACK_KEY = Symbol.for("pi.websocketPatchStack");
+const WEBSOCKET_PATCH_ORIGINAL_KEY = Symbol.for("pi.websocketPatchOriginal");
 const GLOBAL_STATE_KEY = Symbol.for("pi.usage.state");
 const DEFAULT_STATE_DIR = join(os.homedir(), ".pi", "agent", "pi-usage");
 const STATE_DIR = process.env.PI_USAGE_DIR || DEFAULT_STATE_DIR;
@@ -77,9 +130,9 @@ let requestFooterRender: (() => void) | undefined;
 let footerContext: ExtensionContext | undefined;
 let footerEnabled = !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_FOOTER_ENV] || "");
 let tickTimer: ReturnType<typeof setInterval> | undefined;
+let sessionStatsCache: SessionStatsCache | undefined;
 
 type UsageGlobalState = {
-  onSnapshot?: (snapshot: UsageSnapshot) => void;
   onWebSocketMessage?: (data: unknown) => void;
 };
 
@@ -128,6 +181,25 @@ function stringHeader(headers: Record<string, string>, key: string): string | un
   return raw && raw.trim() ? raw.trim() : undefined;
 }
 
+function parseResetAtValue(value: unknown): number | undefined {
+  const raw = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  if (!raw) return undefined;
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    if (numeric <= 0) return undefined;
+    // Provider reset timestamps have appeared as epoch seconds and milliseconds.
+    return numeric >= 1_000_000_000_000 ? numeric : numeric * 1000;
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function resetAtHeader(headers: Record<string, string>, key: string): number | undefined {
+  return parseResetAtValue(headers[key]);
+}
+
 function recordValue(value: unknown): JsonRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : undefined;
 }
@@ -155,16 +227,16 @@ function labelForWindow(minutes: number | undefined, fallback: string): string {
 function parseCodexWindow(headers: Record<string, string>, prefix: "primary" | "secondary", fallback: string, nowMs: number): UsageWindow | undefined {
   const windowMinutes = numberHeader(headers, `x-codex-${prefix}-window-minutes`);
   const usedPercent = numberHeader(headers, `x-codex-${prefix}-used-percent`);
-  const resetAtSeconds = numberHeader(headers, `x-codex-${prefix}-reset-at`);
+  const resetAtMs = resetAtHeader(headers, `x-codex-${prefix}-reset-at`);
   const resetAfterSeconds = numberHeader(headers, `x-codex-${prefix}-reset-after-seconds`);
 
-  if (usedPercent === undefined && resetAtSeconds === undefined && resetAfterSeconds === undefined) return undefined;
+  if (usedPercent === undefined && resetAtMs === undefined && resetAfterSeconds === undefined) return undefined;
 
   return {
     label: labelForWindow(windowMinutes, fallback),
     windowMinutes,
     usedPercent: clampPercent(usedPercent),
-    resetAtMs: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : resetAfterSeconds !== undefined ? nowMs + resetAfterSeconds * 1000 : undefined,
+    resetAtMs: resetAtMs ?? (resetAfterSeconds !== undefined ? nowMs + resetAfterSeconds * 1000 : undefined),
     resetAfterSeconds,
   };
 }
@@ -192,15 +264,15 @@ function parseRateLimitEventWindow(value: unknown, fallback: string, nowMs: numb
 
   const windowMinutes = numberValue(window.window_minutes);
   const usedPercent = numberValue(window.used_percent);
-  const resetAtSeconds = numberValue(window.reset_at);
+  const resetAtMs = parseResetAtValue(window.reset_at);
   const resetAfterSeconds = numberValue(window.reset_after_seconds);
-  if (usedPercent === undefined && resetAtSeconds === undefined && resetAfterSeconds === undefined) return undefined;
+  if (usedPercent === undefined && resetAtMs === undefined && resetAfterSeconds === undefined) return undefined;
 
   return {
     label: labelForWindow(windowMinutes, fallback),
     windowMinutes,
     usedPercent: clampPercent(usedPercent),
-    resetAtMs: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : resetAfterSeconds !== undefined ? nowMs + resetAfterSeconds * 1000 : undefined,
+    resetAtMs: resetAtMs ?? (resetAfterSeconds !== undefined ? nowMs + resetAfterSeconds * 1000 : undefined),
     resetAfterSeconds,
   };
 }
@@ -255,24 +327,24 @@ function parseCodexWebSocketMessage(data: unknown): UsageSnapshot | undefined {
 
 // --- Claude: anthropic-ratelimit-unified-* response headers (OAuth/Claude Code) ---
 
-function parseClaudeWindow(headers: Record<string, string>, prefix: "5h" | "7d", nowMs: number): UsageWindow | undefined {
+function parseClaudeWindow(headers: Record<string, string>, prefix: "5h" | "7d"): UsageWindow | undefined {
   const utilization = numberHeader(headers, `anthropic-ratelimit-unified-${prefix}-utilization`);
-  const resetAtSeconds = numberHeader(headers, `anthropic-ratelimit-unified-${prefix}-reset`);
-  if (utilization === undefined && resetAtSeconds === undefined) return undefined;
+  const resetAtMs = resetAtHeader(headers, `anthropic-ratelimit-unified-${prefix}-reset`);
+  if (utilization === undefined && resetAtMs === undefined) return undefined;
 
   // Anthropic reports utilization as a fraction (0.0–1.0+); convert to a percentage.
   return {
     label: prefix,
     usedPercent: clampPercent(utilization === undefined ? undefined : utilization * 100),
-    resetAtMs: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : undefined,
+    resetAtMs,
   };
 }
 
 function parseClaudeUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
   const h = toHeaderRecord(headers);
   const nowMs = Date.now();
-  const primary = parseClaudeWindow(h, "5h", nowMs);
-  const secondary = parseClaudeWindow(h, "7d", nowMs);
+  const primary = parseClaudeWindow(h, "5h");
+  const secondary = parseClaudeWindow(h, "7d");
   if (!primary && !secondary) return undefined;
 
   return {
@@ -297,6 +369,37 @@ function isUsageSource(value: unknown): value is UsageSource {
   return value === "codex" || value === "claude";
 }
 
+function freshWindow(window: UsageWindow | undefined, nowMs: number): UsageWindow | undefined {
+  if (!window) return undefined;
+  return typeof window.resetAtMs === "number" && Number.isFinite(window.resetAtMs) && window.resetAtMs <= nowMs ? undefined : window;
+}
+
+function freshSnapshot(snapshot: UsageSnapshot, nowMs: number): UsageSnapshot | undefined {
+  const primary = freshWindow(snapshot.primary, nowMs);
+  const secondary = freshWindow(snapshot.secondary, nowMs);
+  if (!primary && !secondary) return undefined;
+  return primary === snapshot.primary && secondary === snapshot.secondary ? snapshot : { ...snapshot, primary, secondary };
+}
+
+function pruneExpiredSnapshots(nowMs = Date.now(), persist = false): void {
+  let changed = false;
+  for (const source of USAGE_SOURCES) {
+    const snapshot = snapshots[source];
+    if (!snapshot) continue;
+    const fresh = freshSnapshot(snapshot, nowMs);
+    if (fresh) {
+      if (fresh !== snapshot) {
+        snapshots[source] = fresh;
+        changed = true;
+      }
+    } else {
+      delete snapshots[source];
+      changed = true;
+    }
+  }
+  if (changed && persist) persistSnapshots();
+}
+
 function readPersistedSnapshots(): UsageSnapshots {
   try {
     const parsed = JSON.parse(readFileSync(SNAPSHOT_FILE, "utf8")) as JsonRecord;
@@ -305,7 +408,8 @@ function readPersistedSnapshots(): UsageSnapshots {
     for (const source of USAGE_SOURCES) {
       const candidate = parsed[source] as UsageSnapshot | undefined;
       if (candidate && isUsageSource(candidate.source) && typeof candidate.updatedAtMs === "number") {
-        result[source] = candidate;
+        const fresh = freshSnapshot(candidate, Date.now());
+        if (fresh) result[source] = fresh;
       }
     }
     return result;
@@ -323,7 +427,8 @@ function persistSnapshots(): void {
   }
 }
 
-function activeSnapshot(): UsageSnapshot | undefined {
+function activeSnapshot(nowMs = Date.now()): UsageSnapshot | undefined {
+  pruneExpiredSnapshots(nowMs, true);
   let best: UsageSnapshot | undefined;
   for (const source of USAGE_SOURCES) {
     const snapshot = snapshots[source];
@@ -369,8 +474,24 @@ function installWebSocketCapture(): void {
     enumerable: false,
     configurable: false,
   });
+  Object.defineProperty(UsageCodexWebSocket, WEBSOCKET_PATCH_ORIGINAL_KEY, {
+    value: OriginalWebSocket,
+    enumerable: false,
+    configurable: false,
+  });
 
   globalThis.WebSocket = UsageCodexWebSocket as typeof WebSocket;
+}
+
+function uninstallWebSocketCapture(): void {
+  if (typeof globalThis.WebSocket !== "function") return;
+  const current = globalThis.WebSocket;
+  const stack = websocketPatchStack(current);
+  // The WebSocket constructor is process-global. Restore it only when our wrapper is still top-of-stack;
+  // if another extension wrapped after us, its lifecycle owns the next restoration step.
+  if (stack[stack.length - 1] !== WEBSOCKET_PATCH_ID) return;
+  const original = Reflect.get(current, WEBSOCKET_PATCH_ORIGINAL_KEY);
+  if (typeof original === "function") globalThis.WebSocket = original as typeof WebSocket;
 }
 
 function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): string | undefined {
@@ -394,7 +515,7 @@ function formatWindowStatus(window: UsageWindow | undefined, nowMs = Date.now())
 }
 
 function formatUsageStatus(nowMs = Date.now()): string | undefined {
-  const snapshot = activeSnapshot();
+  const snapshot = activeSnapshot(nowMs);
   if (!snapshot) return undefined;
   const windows = [formatWindowStatus(snapshot.primary, nowMs), formatWindowStatus(snapshot.secondary, nowMs)].filter(
     (part): part is string => Boolean(part),
@@ -404,6 +525,7 @@ function formatUsageStatus(nowMs = Date.now()): string | undefined {
 }
 
 function formatUsageDetails(nowMs = Date.now()): string {
+  pruneExpiredSnapshots(nowMs, true);
   const entries = USAGE_SOURCES.map((source) => snapshots[source])
     .filter((snapshot): snapshot is UsageSnapshot => Boolean(snapshot))
     .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
@@ -460,28 +582,55 @@ function usageFromEntry(entry: unknown): AssistantUsage | undefined {
   return candidate.message.usage;
 }
 
+function emptySessionStats(): SessionStats {
+  return { totalInput: 0, totalOutput: 0, totalCacheRead: 0, totalCacheWrite: 0, totalCost: 0 };
+}
+
+function computeSessionStats(entries: readonly unknown[]): SessionStats {
+  const stats = emptySessionStats();
+  for (const entry of entries) {
+    const usage = usageFromEntry(entry);
+    if (!usage) continue;
+    stats.totalInput += usage.input || 0;
+    stats.totalOutput += usage.output || 0;
+    stats.totalCacheRead += usage.cacheRead || 0;
+    stats.totalCacheWrite += usage.cacheWrite || 0;
+    stats.totalCost += usage.cost?.total || 0;
+  }
+  return stats;
+}
+
+function sessionEntries(ctx: ExtensionContext): { manager: unknown; entries: unknown[] } | undefined {
+  const manager = ctx.sessionManager as unknown as { getEntries?: () => unknown[] };
+  const entries = manager.getEntries?.();
+  return entries ? { manager, entries } : undefined;
+}
+
+function cachedSessionStats(ctx: ExtensionContext): SessionStats {
+  const current = sessionEntries(ctx);
+  if (!current) return emptySessionStats();
+  if (sessionStatsCache?.manager === current.manager && sessionStatsCache.entryCount === current.entries.length) return sessionStatsCache.stats;
+  const stats = computeSessionStats(current.entries);
+  sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats };
+  return stats;
+}
+
+function refreshSessionStats(ctx: ExtensionContext): void {
+  const current = sessionEntries(ctx);
+  if (!current) {
+    sessionStatsCache = undefined;
+    return;
+  }
+  sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats: computeSessionStats(current.entries) };
+}
+
 function buildStatsLine(
   ctx: ExtensionContext,
   theme: ExtensionContext["ui"]["theme"],
   width: number,
   getThinkingLevel: () => string,
 ): string {
-  const sessionManager = ctx.sessionManager as unknown as { getEntries?: () => unknown[] };
-  let totalInput = 0;
-  let totalOutput = 0;
-  let totalCacheRead = 0;
-  let totalCacheWrite = 0;
-  let totalCost = 0;
-
-  for (const entry of sessionManager.getEntries?.() || []) {
-    const usage = usageFromEntry(entry);
-    if (!usage) continue;
-    totalInput += usage.input || 0;
-    totalOutput += usage.output || 0;
-    totalCacheRead += usage.cacheRead || 0;
-    totalCacheWrite += usage.cacheWrite || 0;
-    totalCost += usage.cost?.total || 0;
-  }
+  const { totalInput, totalOutput, totalCacheRead, totalCacheWrite, totalCost } = cachedSessionStats(ctx);
 
   const contextUsage = ctx.getContextUsage?.();
   const contextUsageDetails = contextUsage as (typeof contextUsage & { autoCompact?: boolean }) | undefined;
@@ -601,6 +750,7 @@ function rememberFooterContext(ctx: ExtensionContext): void {
 
 function installFooter(ctx: ExtensionContext, pi: ExtensionAPI): void {
   rememberFooterContext(ctx);
+  refreshSessionStats(ctx);
   if (!ctx.hasUI || !footerEnabled) return;
   ctx.ui.setFooter(createFooter(ctx, () => pi.getThinkingLevel()));
   ensureTickTimer();
@@ -630,6 +780,7 @@ function recordSnapshot(snapshot: UsageSnapshot): void {
     activeLimit: snapshot.activeLimit ?? previous?.activeLimit,
   };
   snapshots[snapshot.source] = merged;
+  pruneExpiredSnapshots(Date.now());
   persistSnapshots();
   refreshFooter();
 }
@@ -640,7 +791,6 @@ export default function usage(pi: ExtensionAPI): void {
     if (snapshot) recordSnapshot(snapshot);
   };
   installWebSocketCapture();
-  getGlobalState().onSnapshot = recordSnapshot;
   getGlobalState().onWebSocketMessage = handleWebSocketMessage;
 
   pi.on("session_start", async (_event, ctx) => {
@@ -665,31 +815,37 @@ export default function usage(pi: ExtensionAPI): void {
 
   pi.on("message_end", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
   pi.on("tool_execution_end", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
   pi.on("turn_end", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
   pi.on("agent_end", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
   pi.on("session_compact", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
   pi.on("session_tree", async (_event, ctx) => {
     rememberFooterContext(ctx);
+    refreshSessionStats(ctx);
     refreshFooter();
   });
 
@@ -701,10 +857,11 @@ export default function usage(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     const state = getGlobalState();
-    if (state.onSnapshot === recordSnapshot) state.onSnapshot = undefined;
     if (state.onWebSocketMessage === handleWebSocketMessage) state.onWebSocketMessage = undefined;
     footerContext = undefined;
+    sessionStatsCache = undefined;
     disposeTickTimer();
+    uninstallWebSocketCapture();
   });
 
   pi.registerCommand("pi-usage", {

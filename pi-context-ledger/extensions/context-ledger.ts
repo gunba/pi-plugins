@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { keyHint } from "@earendil-works/pi-coding-agent";
 import type {
   BuildSystemPromptOptions,
@@ -65,6 +65,17 @@ function formatTokens(count: number): string {
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function contextFileLabel(filePath: string, cwd: string | undefined): string {
+  if (!filePath) return "context file";
+  if (!isAbsolute(filePath)) return filePath;
+  if (!cwd || !isAbsolute(cwd)) return filePath;
+
+  const rel = relative(cwd, filePath);
+  if (!rel || rel === ".") return filePath;
+  if (rel.startsWith("..") || isAbsolute(rel)) return filePath;
+  return rel;
 }
 
 // --- ledger model ------------------------------------------------------------
@@ -148,7 +159,7 @@ function computeLedger(
 
   const contextFiles = options?.contextFiles ?? [];
   const contextItems = contextFiles.map((file) => ({
-    label: basename(file.path),
+    label: contextFileLabel(file.path, ctx.cwd),
     tokens: tokens(file.content) + tokens(file.path) + 8,
   }));
 
@@ -258,7 +269,7 @@ type CardChrome = {
 };
 
 function cardChrome(theme: Theme, viewportWidth: number): CardChrome {
-  const outerWidth = Math.max(MIN_CARD_WIDTH, Math.min(MAX_CARD_WIDTH, viewportWidth - 2));
+  const outerWidth = Math.min(MAX_CARD_WIDTH, Math.max(MIN_CARD_WIDTH, viewportWidth));
   const innerWidth = outerWidth - 4;
   return {
     outerWidth,
@@ -352,6 +363,13 @@ function renderExpanded(ledger: Ledger, theme: Theme, chrome: CardChrome): strin
 }
 
 function renderLedgerCard(ledger: Ledger, theme: Theme, viewportWidth: number, expanded: boolean): string[] {
+  if (viewportWidth < MIN_CARD_WIDTH) {
+    const width = Math.max(1, viewportWidth);
+    return renderLedgerPlain(ledger)
+      .split("\n")
+      .map((line) => truncatePlain(line, width));
+  }
+
   const chrome = cardChrome(theme, viewportWidth);
   const body = expanded ? renderExpanded(ledger, theme, chrome) : renderCollapsed(ledger, theme, chrome);
   return [
@@ -443,9 +461,10 @@ export default function contextLedger(pi: ExtensionAPI): void {
     const sessionId = ctx.sessionManager.getSessionId?.();
     if (sessionId) optionsBySession.set(sessionId, event.systemPromptOptions);
 
-    if (!autoEnabled || !ctx.hasUI) return;
     if (!sessionId || !armedSessions.has(sessionId) || shownSessions.has(sessionId)) return;
     armedSessions.delete(sessionId);
+
+    if (!autoEnabled || !ctx.hasUI) return;
     shownSessions.add(sessionId);
 
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);
@@ -470,7 +489,14 @@ export default function contextLedger(pi: ExtensionAPI): void {
       }
 
       const sessionId = ctx.sessionManager.getSessionId?.();
-      const options = sessionId ? optionsBySession.get(sessionId) : undefined;
+      const hasCapturedOptions = sessionId ? optionsBySession.has(sessionId) : false;
+      const options = hasCapturedOptions && sessionId ? optionsBySession.get(sessionId) : undefined;
+      if (!hasCapturedOptions) {
+        ctx.ui.notify(
+          "pi-context-ledger: skill and context-file attribution is unavailable until after the first agent turn",
+          "warning",
+        );
+      }
       const ledger = computeLedger(ctx, pi, ctx.getSystemPrompt(), options, "", 0);
       pi.sendMessage(
         { customType: CUSTOM_TYPE, content: renderLedgerPlain(ledger), display: true, details: ledger },

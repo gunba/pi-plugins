@@ -22,7 +22,7 @@ Bundled (path-translated where needed):
 
 Excluded by design:
 
-- **Secrets** — `auth.json` is never bundled. Re-authenticate after import.
+- **Secrets** — `auth.json`, obvious key/token files (`.env`, `.ssh/`, `*.pem`, `*.key`, token/secret files, etc.) are skipped, and exported text is scanned for high-risk secret-looking values with warnings. Re-authenticate after import.
 - **Regenerable** — `npm/` (node_modules), `bin/`, and caches. Run `pi update` after
   import to rebuild extensions and MCP servers.
 - **Per-machine history** — `sessions/`, run history, and knowledge bases.
@@ -34,12 +34,15 @@ Config files embed absolute paths (`/home/you/...`, `C:\Users\You\...`,
 sentinels; on import they expand to the **target** machine's roots (always forward-slash,
 so the JSON stays valid on Windows). Paths that are genuinely machine-specific and don't
 exist on the target — a shell binary, an MCP server's install path, a local package
-source — can't be auto-translated. The importer surfaces every one of them as a
-**review item** so the agent (with you) fixes them, instead of silently writing a broken
+source, or an absolute path embedded in exported text — can't be auto-translated. The
+importer scans every detokenized text entry plus package sources and surfaces matches as
+**review items** so the agent (with you) fixes them, instead of silently writing a broken
 config.
 
 Imports are non-destructive: every file the import would overwrite is first copied to
-`~/.pi/agent/backups/settings-sync-<timestamp>/`.
+`~/.pi/agent/backups/settings-sync-<timestamp>/`. Writes are preflighted and staged so
+package/review errors are caught before config files are changed, with rollback on write
+failure.
 
 ## Engine
 

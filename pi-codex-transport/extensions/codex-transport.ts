@@ -30,6 +30,7 @@ const SUMMARY_FILE = join(LOG_DIR, "latest-summary.json");
 const SSE_TIMEOUT_CONFIG_FILE = join(LOG_DIR, "sse-timeout.json");
 const LOG_RAW_IDS = envFlag("CODEX_TRANSPORT_LOG_RAW_IDS");
 const DEFAULT_SSE_HEADER_TIMEOUT_MS = 300_000;
+const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const ENV_SSE_TIMEOUT = "PI_CODEX_SSE_HEADER_TIMEOUT_MS";
 const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
 
@@ -43,7 +44,7 @@ function parseTimeout(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "string" && /^(off|disable|disabled)$/i.test(value.trim())) return 0;
   const parsed = typeof value === "number" ? value : Number(String(value).trim());
-  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_TIMER_TIMEOUT_MS) return undefined;
   return Math.floor(parsed);
 }
 
@@ -58,9 +59,23 @@ function readSseTimeout(): number {
   }
 }
 
-function writeSseTimeout(timeoutMs: number) {
-  mkdirSync(LOG_DIR, { recursive: true });
-  writeFileSync(SSE_TIMEOUT_CONFIG_FILE, JSON.stringify({ timeoutMs }, null, 2), "utf8");
+function ensureLogDir(): boolean {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeSseTimeout(timeoutMs: number): boolean {
+  if (!ensureLogDir()) return false;
+  try {
+    writeFileSync(SSE_TIMEOUT_CONFIG_FILE, JSON.stringify({ timeoutMs }, null, 2), "utf8");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isBuiltinHeaderTimeout(reason: unknown): boolean {
@@ -231,6 +246,26 @@ function summarizeResponseHeaders(headers: Headers): JsonRecord {
   return out;
 }
 
+function summarizeResponseHeadersUnknown(headers: unknown): JsonRecord {
+  try {
+    if (typeof Headers === "undefined") return {};
+    if (headers instanceof Headers) return summarizeResponseHeaders(headers);
+    if (Array.isArray(headers)) return summarizeResponseHeaders(new Headers(headers as HeadersInit));
+    if (headers && typeof headers === "object") {
+      const normalized = new Headers();
+      for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+        if (typeof value === "string") normalized.set(key, value);
+        else if (Array.isArray(value)) normalized.set(key, value.map(String).join(", "));
+        else if (value !== undefined && value !== null) normalized.set(key, String(value));
+      }
+      return summarizeResponseHeaders(normalized);
+    }
+  } catch {
+    // Header logging should fail closed to the sanitized empty summary.
+  }
+  return {};
+}
+
 function summarizeUserAgent(value: string | undefined): JsonRecord | undefined {
   if (!value) return undefined;
   return { chars: value.length, sha256_16: shortHash(value), prefix: value.slice(0, 40) };
@@ -266,6 +301,9 @@ function summarizeFetchBody(body: unknown): JsonRecord {
 }
 
 function summarizePayload(payload: unknown): JsonRecord {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { kind: payload === null ? "null" : Array.isArray(payload) ? "array" : typeof payload };
+  }
   const p = payload as Record<string, unknown>;
   const input = Array.isArray(p.input) ? p.input : [];
   const tools = Array.isArray(p.tools) ? p.tools : [];
@@ -358,9 +396,12 @@ function summarizeTools(tools: unknown[]): JsonRecord {
 }
 
 function summarizeMessage(message: unknown): JsonRecord {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return { kind: message === null ? "null" : Array.isArray(message) ? "array" : typeof message };
+  }
   const m = message as Record<string, unknown>;
   const content = Array.isArray(m.content) ? m.content : [];
-  const usage = m.usage as Record<string, unknown> | undefined;
+  const usage = m.usage && typeof m.usage === "object" && !Array.isArray(m.usage) ? (m.usage as Record<string, unknown>) : undefined;
   return {
     role: m.role,
     stopReason: m.stopReason,
@@ -524,13 +565,14 @@ function installGlobalPatches(state: TransportState) {
   // recursively wrap fetch on every request.
   if (typeof globalThis.fetch === "function" && !fetchPatchStack(globalThis.fetch).includes(FETCH_PATCH_ID)) {
     const downstreamStack = fetchPatchStack(globalThis.fetch);
-    state.originalFetch = globalThis.fetch.bind(globalThis) as typeof fetch;
+    const downstreamFetch = globalThis.fetch.bind(globalThis) as typeof fetch;
+    state.originalFetch = downstreamFetch;
     const patchedFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const current = getState();
       if (!current.enabled || !isCodexUrl(input)) {
-        return current.originalFetch!(input, init);
+        return downstreamFetch(input, init);
       }
-      return instrumentedFetch(current, input, init);
+      return instrumentedFetch(current, downstreamFetch, input, init);
     }) as typeof fetch;
     Object.defineProperty(patchedFetch, FETCH_PATCH_STACK_KEY, {
       value: [...downstreamStack, FETCH_PATCH_ID],
@@ -629,8 +671,9 @@ function summarizeWebSocketEvent(event: Event): JsonRecord {
 function summarizeWsSend(text: string | undefined): JsonRecord | undefined {
   if (!text) return undefined;
   try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    return { type: parsed.type, payload: summarizePayload(parsed) };
+    const parsed = JSON.parse(text);
+    const type = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).type : undefined;
+    return { type, payload: summarizePayload(parsed) };
   } catch {
     return { text: summarizeText(text) };
   }
@@ -639,8 +682,11 @@ function summarizeWsSend(text: string | undefined): JsonRecord | undefined {
 function summarizeWsMessage(text: string | undefined): JsonRecord | undefined {
   if (!text) return undefined;
   try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    return { type: parsed.type, responseId: summarizeId((parsed.response as Record<string, unknown> | undefined)?.id) };
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { payload: summarizePayload(parsed) };
+    const record = parsed as Record<string, unknown>;
+    const response = record.response && typeof record.response === "object" && !Array.isArray(record.response) ? (record.response as Record<string, unknown>) : undefined;
+    return { type: record.type, responseId: summarizeId(response?.id) };
   } catch {
     return { text: summarizeText(text) };
   }
@@ -652,16 +698,21 @@ function isTerminalWsEvent(text: string | undefined): boolean {
 }
 
 function logGlobal(event: string, data?: JsonRecord) {
-  const state = getState();
-  state.log?.(event, data);
+  try {
+    const state = getState();
+    state.log?.(event, data);
+  } catch {
+    // Diagnostics must never interrupt WebSocket flow.
+  }
 }
 
-async function instrumentedFetch(state: TransportState, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function instrumentedFetch(state: TransportState, downstreamFetch: typeof fetch, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const fetchId = randomUUID();
   const start = performance.now();
   const requestHeaders = headersFromFetch(input, init);
   const method = init?.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET");
-  const callerSignal = init?.signal;
+  const requestSignal = typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined;
+  const callerSignal = init?.signal ?? requestSignal;
   const controller = new AbortController();
   state.sseTimeoutMs = readSseTimeout();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -708,7 +759,7 @@ async function instrumentedFetch(state: TransportState, input: RequestInfo | URL
   state.log?.("sse_fetch_start", { ...requestSummary, configuredTimeoutMs: state.sseTimeoutMs });
 
   try {
-    const response = await state.originalFetch!(input, { ...init, signal: controller.signal });
+    const response = await downstreamFetch(input, { ...init, signal: controller.signal });
     if (timer) {
       clearTimeout(timer);
       timer = undefined;
@@ -740,7 +791,7 @@ async function instrumentedFetch(state: TransportState, input: RequestInfo | URL
     const reason = controller.signal.reason;
     const thrown = controller.signal.aborted && reason instanceof Error ? reason : error;
     const info = safeError(thrown);
-    state.log?.("codex_fetch_error", { fetchId, elapsedMs: elapsedMs(start), error: info, aborted: init?.signal?.aborted, abortReason: summarizeAbortReason(init?.signal?.reason), suppressedBuiltinTimeout });
+    state.log?.("codex_fetch_error", { fetchId, elapsedMs: elapsedMs(start), error: info, aborted: callerSignal?.aborted, abortReason: summarizeAbortReason(callerSignal?.reason), suppressedBuiltinTimeout });
     state.log?.("sse_fetch_error", {
       fetchId,
       elapsedMs: elapsedMs(start),
@@ -830,7 +881,7 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
   });
 
   function consumeSseText(text: string, onEvent: (eventType: string, eventSummary: JsonRecord) => void) {
-    sseBuffer += text;
+    sseBuffer += text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     let idx = sseBuffer.indexOf("\n\n");
     while (idx !== -1) {
       const frame = sseBuffer.slice(0, idx);
@@ -867,22 +918,27 @@ function wrapResponseBody(response: Response, fetchId: string, start: number, st
 }
 
 export default function (pi: ExtensionAPI) {
-  mkdirSync(LOG_DIR, { recursive: true });
+  ensureLogDir();
   const state = getState();
-  installGlobalPatches(state);
 
   const log = (event: string, data: JsonRecord = {}) => {
-    if (!state.enabled && event !== "transport_disabled") return;
-    incrementCounter(state, event);
-    const record = {
-      ts: nowIso(),
-      event,
-      pid: process.pid,
-      ...data,
-    };
-    appendFileSync(LOG_FILE, `${JSON.stringify(record)}\n`, "utf8");
+    try {
+      if (!state.enabled && event !== "transport_disabled") return;
+      incrementCounter(state, event);
+      const record = {
+        ts: nowIso(),
+        event,
+        pid: process.pid,
+        ...data,
+      };
+      if (!ensureLogDir()) return;
+      appendFileSync(LOG_FILE, `${JSON.stringify(record)}\n`, "utf8");
+    } catch {
+      // Diagnostics must never interrupt the active transport/session flow.
+    }
   };
   state.log = log;
+  installGlobalPatches(state);
 
   function sessionInfo(ctx: { cwd: string; sessionManager?: { getSessionId(): string; getSessionFile(): string | undefined; getLeafId(): string | null; getBranch(): unknown[]; getEntries(): unknown[] } }): JsonRecord {
     const sessionId = ctx.sessionManager?.getSessionId();
@@ -908,7 +964,12 @@ export default function (pi: ExtensionAPI) {
       counters: state.counters,
       session: ctx ? sessionInfo(ctx) : undefined,
     };
-    writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2), "utf8");
+    if (!ensureLogDir()) return;
+    try {
+      writeFileSync(SUMMARY_FILE, JSON.stringify(summary, null, 2), "utf8");
+    } catch {
+      // Summary output is diagnostic-only.
+    }
   }
 
   pi.on("session_start", async (event, ctx) => {
@@ -989,7 +1050,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
-    log("after_provider_response", { status: event.status, headers: event.headers, session: sessionInfo(ctx) });
+    log("after_provider_response", { status: event.status, headers: summarizeResponseHeadersUnknown(event.headers), session: sessionInfo(ctx) });
   });
 
   pi.on("message_start", async (event, ctx) => {
@@ -1057,7 +1118,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Codex transport disabled", "info");
         return;
       }
-      if (command.startsWith("mark")) {
+      if (command === "mark" || command.startsWith("mark ")) {
         const note = command.slice("mark".length).trim();
         log("user_marker", { note: note ? summarizeText(note) : undefined, session: sessionInfo(ctx) });
         ctx.ui.notify("Codex transport marker written", "info");
@@ -1086,16 +1147,16 @@ export default function (pi: ExtensionAPI) {
       }
       if (trimmed === "off" || trimmed === "disable") {
         state.sseTimeoutMs = 0;
-        writeSseTimeout(0);
-        log("sse_timeout_configured", { timeoutMs: 0, session: sessionInfo(ctx) });
-        ctx.ui.notify(sseTimeoutStatusText(), "info");
+        const persisted = writeSseTimeout(0);
+        log("sse_timeout_configured", { timeoutMs: 0, persisted, session: sessionInfo(ctx) });
+        ctx.ui.notify(`${persisted ? "" : `Warning: failed to write timeout config: ${SSE_TIMEOUT_CONFIG_FILE}\n`}${sseTimeoutStatusText()}`, persisted ? "info" : "warning");
         return;
       }
       if (trimmed === "on" || trimmed === "enable") {
         state.sseTimeoutMs = DEFAULT_SSE_HEADER_TIMEOUT_MS;
-        writeSseTimeout(state.sseTimeoutMs);
-        log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, session: sessionInfo(ctx) });
-        ctx.ui.notify(sseTimeoutStatusText(), "info");
+        const persisted = writeSseTimeout(state.sseTimeoutMs);
+        log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, persisted, session: sessionInfo(ctx) });
+        ctx.ui.notify(`${persisted ? "" : `Warning: failed to write timeout config: ${SSE_TIMEOUT_CONFIG_FILE}\n`}${sseTimeoutStatusText()}`, persisted ? "info" : "warning");
         return;
       }
       const match = trimmed.match(/^(?:set\s+)?(\d+)$/i);
@@ -1103,10 +1164,15 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /sse-timeout [status|on|off|set <ms>|<ms>]", "warning");
         return;
       }
-      state.sseTimeoutMs = Number(match[1]);
-      writeSseTimeout(state.sseTimeoutMs);
-      log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, session: sessionInfo(ctx) });
-      ctx.ui.notify(sseTimeoutStatusText(), "info");
+      const timeoutMs = parseTimeout(match[1]);
+      if (timeoutMs === undefined) {
+        ctx.ui.notify(`Timeout must be between 0 and ${MAX_TIMER_TIMEOUT_MS}ms`, "warning");
+        return;
+      }
+      state.sseTimeoutMs = timeoutMs;
+      const persisted = writeSseTimeout(state.sseTimeoutMs);
+      log("sse_timeout_configured", { timeoutMs: state.sseTimeoutMs, persisted, session: sessionInfo(ctx) });
+      ctx.ui.notify(`${persisted ? "" : `Warning: failed to write timeout config: ${SSE_TIMEOUT_CONFIG_FILE}\n`}${sseTimeoutStatusText()}`, persisted ? "info" : "warning");
     },
   });
 }

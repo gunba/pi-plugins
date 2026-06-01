@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { completeSimple, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Message, Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Message, Model, ThinkingLevel, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-type AnyRecord = Record<string, any>;
+type UnknownRecord = Record<string, unknown>;
 type TitleState = "fresh" | "thinking" | "ready" | "error";
 type TitleSource = "model" | "fallback" | "manual";
 
@@ -131,20 +131,24 @@ const STOP_WORDS = new Set([
 export default function (pi: ExtensionAPI) {
   let state: TitleState = "fresh";
   let generatedTitle: string | undefined;
+  let generatedTitleSource: TitleSource | undefined;
+  let generatedTitlePromptHash: string | undefined;
+  let titleGenerationRun = 0;
   let hasSeenUserMessage = false;
+  let hasTurnError = false;
   let historicalFirstPrompt: string | undefined;
   let animationTimer: ReturnType<typeof setInterval> | undefined;
   let frameIndex = 0;
 
-  function currentBaseTitle(): string {
-    const base = sanitizeTitle(pi.getSessionName() || generatedTitle || fallbackTitleFromCwd(process.cwd())) || "pi";
+  function currentBaseTitle(ctx: ExtensionContext): string {
+    const base = sanitizeTitle(pi.getSessionName() || generatedTitle || fallbackTitleFromCwd(ctx.cwd)) || "pi";
     return truncateTitle(base, TITLE_MAX_CHARS);
   }
 
   function renderTitle(ctx: ExtensionContext, indicator?: string): void {
     if (!ctx.hasUI) return;
     const marker = indicator ?? (state === "thinking" ? THINKING_FRAMES[frameIndex % THINKING_FRAMES.length] : STATE_INDICATORS[state]);
-    setTerminalTitle(ctx, `${marker} ${currentBaseTitle()}`);
+    setTerminalTitle(ctx, `${marker} ${currentBaseTitle(ctx)}`);
   }
 
   function stopAnimation(): void {
@@ -173,18 +177,14 @@ export default function (pi: ExtensionAPI) {
     renderTitle(ctx);
   }
 
-  async function ensureNamedFromPrompt(event: BeforeAgentStartEvent, ctx: ExtensionContext): Promise<void> {
-    if (!ctx.hasUI) return;
-    if (pi.getSessionName() || generatedTitle) return;
+  function markTurnError(ctx: ExtensionContext): void {
+    hasTurnError = true;
+    enterStatic(ctx, "error");
+  }
 
-    const prompt = (historicalFirstPrompt || event.prompt || "").trim();
-    if (!prompt) return;
-
-    const result = await generateTitle(ctx, prompt);
-    generatedTitle = result.title;
-
+  function persistTitle(title: string, source: TitleSource, promptHash: string, model?: Model<Api>): void {
     try {
-      pi.setSessionName(result.title);
+      pi.setSessionName(title);
     } catch {
       // Tab titles still work if session metadata cannot be written.
     }
@@ -192,30 +192,68 @@ export default function (pi: ExtensionAPI) {
     try {
       pi.appendEntry<StoredTitle>(STORED_TITLE_TYPE, {
         version: 1,
-        title: result.title,
-        source: result.source,
-        promptHash: shortHash(prompt),
+        title,
+        source,
+        promptHash,
         generatedAt: Date.now(),
-        model: result.model ? `${result.model.provider}/${result.model.id}` : undefined,
+        model: model ? formatModelName(model) : undefined,
       });
     } catch {
       // Persisting the title is best-effort; the current tab can still be named.
     }
+  }
 
+  function ensureNamedFromPrompt(event: BeforeAgentStartEvent, ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    if (pi.getSessionName() || generatedTitle) return;
+
+    const prompt = (historicalFirstPrompt || event.prompt || "").trim();
+    if (!prompt) return;
+
+    const promptHash = shortHash(prompt);
+    const fallback = fallbackTitleFromPrompt(prompt, ctx.cwd);
+    generatedTitle = fallback;
+    generatedTitleSource = "fallback";
+    generatedTitlePromptHash = promptHash;
+    persistTitle(fallback, "fallback", promptHash);
     renderTitle(ctx);
+
+    startBackgroundTitleGeneration(ctx, prompt, promptHash);
+  }
+
+  function startBackgroundTitleGeneration(ctx: ExtensionContext, prompt: string, promptHash: string): void {
+    const runId = ++titleGenerationRun;
+    void (async () => {
+      const result = await generateTitle(ctx, prompt);
+      if (runId !== titleGenerationRun || generatedTitlePromptHash !== promptHash || generatedTitleSource !== "fallback") return;
+      if (result.source !== "model") return;
+
+      generatedTitle = result.title;
+      generatedTitleSource = result.source;
+      persistTitle(result.title, result.source, promptHash, result.model);
+      renderTitle(ctx);
+    })().catch(() => {
+      // The fallback title is already visible and persisted.
+    });
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    const branch = ctx.sessionManager.getBranch() as SessionEntry[];
+    titleGenerationRun += 1;
+
+    const branch = ctx.sessionManager.getBranch();
     const storedTitle = findLatestStoredTitle(branch);
-    if (storedTitle) generatedTitle = storedTitle;
+    generatedTitle = storedTitle?.title;
+    generatedTitleSource = storedTitle?.source;
+    generatedTitlePromptHash = storedTitle?.promptHash;
 
     historicalFirstPrompt = findFirstUserPrompt(branch);
     hasSeenUserMessage = Boolean(historicalFirstPrompt);
-    enterStatic(ctx, hasSeenUserMessage ? "ready" : "fresh");
+    hasTurnError = latestBranchHadError(branch);
+    enterStatic(ctx, hasTurnError ? "error" : hasSeenUserMessage ? "ready" : "fresh");
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    hasTurnError = false;
     enterThinking(ctx);
 
     if (!hasSeenUserMessage) {
@@ -223,22 +261,29 @@ export default function (pi: ExtensionAPI) {
       historicalFirstPrompt = event.prompt;
     }
 
-    await ensureNamedFromPrompt(event, ctx);
+    ensureNamedFromPrompt(event, ctx);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
+    hasTurnError = false;
     enterThinking(ctx);
   });
 
+  pi.on("tool_execution_end", async (event, ctx) => {
+    if (event.isError) markTurnError(ctx);
+  });
+
   pi.on("message_end", async (event, ctx) => {
-    if (isAssistantErrorMessage(event.message as AnyRecord)) enterStatic(ctx, "error");
+    if (isErrorMessage(event.message)) markTurnError(ctx);
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    enterStatic(ctx, lastAssistantMessageFailed(event.messages as AnyRecord[]) ? "error" : "ready");
+    if (agentMessagesFailed(event.messages)) hasTurnError = true;
+    enterStatic(ctx, hasTurnError ? "error" : "ready");
   });
 
   pi.on("session_shutdown", async (_event, _ctx) => {
+    titleGenerationRun += 1;
     stopAnimation();
   });
 
@@ -251,38 +296,65 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      titleGenerationRun += 1;
       generatedTitle = title;
-      try {
-        pi.setSessionName(title);
-      } catch {
-        // The visible tab title still updates even if session metadata is unavailable.
-      }
-      try {
-        pi.appendEntry<StoredTitle>(STORED_TITLE_TYPE, {
-          version: 1,
-          title,
-          source: "manual",
-          promptHash: "manual",
-          generatedAt: Date.now(),
-        });
-      } catch {
-        // Best-effort persistence only.
-      }
+      generatedTitleSource = "manual";
+      generatedTitlePromptHash = undefined;
+      persistTitle(title, "manual", "manual");
       renderTitle(ctx);
     },
   });
 }
 
-function isAssistantErrorMessage(message: AnyRecord | undefined): boolean {
-  return message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted" || Boolean(message.errorMessage));
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null;
 }
 
-function lastAssistantMessageFailed(messages: AnyRecord[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.role === "assistant") return isAssistantErrorMessage(message);
+function isTextContent(part: unknown): part is { type: "text"; text: string } {
+  return isRecord(part) && part.type === "text" && typeof part.text === "string";
+}
+
+function isUserMessage(message: unknown): message is { role: "user"; content: unknown } {
+  return isRecord(message) && message.role === "user";
+}
+
+function isAssistantMessage(message: unknown): message is AssistantMessage {
+  return isRecord(message) && message.role === "assistant";
+}
+
+function isAssistantErrorMessage(message: unknown): boolean {
+  if (!isAssistantMessage(message)) return false;
+  return message.stopReason === "error" || message.stopReason === "aborted" || (typeof message.errorMessage === "string" && message.errorMessage.trim().length > 0);
+}
+
+function isToolResultMessage(message: unknown): message is ToolResultMessage<unknown> {
+  return isRecord(message) && message.role === "toolResult" && typeof message.isError === "boolean";
+}
+
+function isToolErrorMessage(message: unknown): boolean {
+  return isToolResultMessage(message) && message.isError;
+}
+
+function isErrorMessage(message: unknown): boolean {
+  return isAssistantErrorMessage(message) || isToolErrorMessage(message);
+}
+
+function agentMessagesFailed(messages: readonly unknown[]): boolean {
+  return messages.some(isErrorMessage);
+}
+
+function latestBranchHadError(entries: readonly SessionEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type !== "message") continue;
+    if (isErrorMessage(entry.message)) return true;
+    if (isUserMessage(entry.message)) return false;
   }
   return false;
+}
+
+function formatModelName(model: Model<Api>): string {
+  return `${model.provider}/${model.id}`;
 }
 
 function setTerminalTitle(ctx: ExtensionContext, title: string): void {
@@ -324,6 +396,8 @@ async function generateTitle(ctx: ExtensionContext, prompt: string): Promise<Gen
         maxTokens: TITLE_MAX_TOKENS,
         temperature: 0,
         signal: withTimeout(ctx.signal, TITLE_MODEL_TIMEOUT_MS),
+        timeoutMs: TITLE_MODEL_TIMEOUT_MS,
+        maxRetries: 0,
         ...(reasoning ? { reasoning } : {}),
       },
     );
@@ -337,7 +411,7 @@ async function generateTitle(ctx: ExtensionContext, prompt: string): Promise<Gen
 }
 
 function selectNamingModel(ctx: ExtensionContext): Model<Api> | undefined {
-  const current = ctx.model as Model<Api> | undefined;
+  const current = ctx.model;
   if (!current) return undefined;
 
   const byKey = new Map<string, Model<Api>>();
@@ -349,22 +423,37 @@ function selectNamingModel(ctx: ExtensionContext): Model<Api> | undefined {
   };
 
   add(current);
-  for (const model of ctx.modelRegistry.getAvailable() as Model<Api>[]) add(model);
+  for (const model of ctx.modelRegistry.getAvailable()) add(model);
 
-  const candidates = [...byKey.values()];
+  const candidates = [...byKey.values()].filter(isCheapNamingModel);
   candidates.sort((left, right) => scoreModel(left, current) - scoreModel(right, current));
   return candidates[0];
 }
 
+function preferredModelIndex(model: Model<Api>): number {
+  return PROVIDER_PREFERRED_MODELS[model.provider]?.indexOf(model.id) ?? -1;
+}
+
+function modelBlendedCost(model: Model<Api>): number {
+  return (model.cost.input || 0) + (model.cost.output || 0) * 2 + (model.cost.cacheWrite || 0) * 0.25;
+}
+
+function isCheapNamingModel(model: Model<Api>): boolean {
+  if (preferredModelIndex(model) >= 0) return true;
+
+  const label = `${model.id} ${model.name}`.toLowerCase();
+  if (/nano|micro|flash|haiku|lite|mini|small|spark|fast|gemma/.test(label)) return true;
+  return modelBlendedCost(model) <= 3;
+}
+
 function scoreModel(model: Model<Api>, current: Model<Api>): number {
-  const preferred = PROVIDER_PREFERRED_MODELS[model.provider]?.indexOf(model.id) ?? -1;
+  const preferred = preferredModelIndex(model);
   if (preferred >= 0) return -10_000 + preferred;
 
   const label = `${model.id} ${model.name}`.toLowerCase();
-  const cost = (model.cost.input || 0) + (model.cost.output || 0) * 2 + (model.cost.cacheWrite || 0) * 0.25;
-  let score = cost * 10;
+  let score = modelBlendedCost(model) * 10;
 
-  if (/nano|micro|flash-lite|haiku|lite|mini|small|spark|fast|gemma/.test(label)) score -= 40;
+  if (/nano|micro|flash|haiku|lite|mini|small|spark|fast|gemma/.test(label)) score -= 40;
   if (/pro|opus|max|deep|research|large/.test(label)) score += 80;
   if (/sonnet/.test(label)) score += 30;
   if (model.id === current.id) score += 5;
@@ -374,9 +463,7 @@ function scoreModel(model: Model<Api>, current: Model<Api>): number {
 function preferredReasoning(model: Model<Api>): ThinkingLevel | undefined {
   try {
     const supported = getSupportedThinkingLevels(model);
-    if (/codex/i.test(`${model.provider}/${model.id}`) && supported.includes("xhigh")) return "xhigh";
     if (supported.includes("minimal")) return "minimal";
-    if (supported.includes("low")) return "low";
   } catch {
     // Older or custom model records can omit thinking metadata.
   }
@@ -385,7 +472,7 @@ function preferredReasoning(model: Model<Api>): ThinkingLevel | undefined {
 
 function assistantText(message: AssistantMessage): string {
   return message.content
-    .filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof (part as AnyRecord).text === "string")
+    .filter(isTextContent)
     .map((part) => part.text)
     .join(" ")
     .trim();
@@ -411,19 +498,37 @@ function withTimeout(parent: AbortSignal | undefined, timeoutMs: number): AbortS
   return controller.signal;
 }
 
-function findLatestStoredTitle(entries: SessionEntry[]): string | undefined {
+function findLatestStoredTitle(entries: readonly SessionEntry[]): StoredTitle | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i] as AnyRecord;
+    const entry = entries[i];
     if (entry.type !== "custom" || entry.customType !== STORED_TITLE_TYPE) continue;
-    const title = normalizeGeneratedTitle(entry.data?.title);
-    if (title) return title;
+    const storedTitle = parseStoredTitle(entry.data);
+    if (storedTitle) return storedTitle;
   }
   return undefined;
 }
 
-function findFirstUserPrompt(entries: SessionEntry[]): string | undefined {
-  for (const entry of entries as AnyRecord[]) {
-    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+function parseStoredTitle(value: unknown): StoredTitle | undefined {
+  if (!isRecord(value) || value.version !== 1) return undefined;
+
+  const title = normalizeGeneratedTitle(value.title);
+  const source = parseTitleSource(value.source);
+  const promptHash = typeof value.promptHash === "string" ? value.promptHash : undefined;
+  const generatedAt = typeof value.generatedAt === "number" ? value.generatedAt : undefined;
+  const model = typeof value.model === "string" ? value.model : undefined;
+
+  if (!title || !source || !promptHash || generatedAt === undefined) return undefined;
+  return { version: 1, title, source, promptHash, generatedAt, model };
+}
+
+function parseTitleSource(value: unknown): TitleSource | undefined {
+  if (value === "model" || value === "fallback" || value === "manual") return value;
+  return undefined;
+}
+
+function findFirstUserPrompt(entries: readonly SessionEntry[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.type !== "message" || !isUserMessage(entry.message)) continue;
     const text = textFromContent(entry.message.content).trim();
     if (text) return text;
   }
@@ -433,10 +538,7 @@ function findFirstUserPrompt(entries: SessionEntry[]): string | undefined {
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n");
+  return content.filter(isTextContent).map((part) => part.text).join("\n");
 }
 
 function normalizeGeneratedTitle(value: unknown): string | undefined {

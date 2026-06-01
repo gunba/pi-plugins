@@ -20,4 +20,8 @@ Skill advice is tracked in visible conversation state through `pi-lazy-skills-ad
 
 ## Failure mode
 
-If the selector fails, pi-lazy-skills fails open for that turn and leaves Pi's default skill prompt intact rather than silently hiding all skills.
+If the selector fails, times out, returns malformed/truncated output, or Pi's skill-prompt section cannot be identified safely, pi-lazy-skills fails open for that turn and leaves Pi's default skill prompt intact rather than silently hiding all skills.
+
+## Configuration
+
+Set `PI_LAZY_SKILLS=0`, `false`, `off`, `no`, or `disabled` to disable this extension. Any other value, or leaving the variable unset, enables it.

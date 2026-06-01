@@ -1,7 +1,7 @@
 {
   "name": "pi-config",
   "version": "0.1.0",
-  "description": "Pi-native configuration navigator for Pi, Claude Code, Codex, MCP, skills, and agents.",
+  "description": "Pi-native configuration navigator for Pi settings, context, skills, MCP, and subagents.",
   "private": true,
   "keywords": ["pi-package", "pi", "configuration", "settings", "agents"],
   "type": "module",

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -18,27 +18,38 @@ type ExportResult = {
   warnings?: string[];
 };
 
-function runExport(out: string | undefined): ExportResult {
+function runExport(out: string | undefined): Promise<ExportResult> {
   const args = [ENGINE, "export", "--json"];
   if (out) args.push("--out", out);
-  const proc = spawnSync(process.execPath, args, { encoding: "utf8" });
-  if (proc.error) return { ok: false, error: proc.error.message };
 
-  const stdout = (proc.stdout ?? "").trim();
-  const lastLine = stdout.split(/\r?\n/).filter(Boolean).pop() ?? "";
-  try {
-    return JSON.parse(lastLine) as ExportResult;
-  } catch {
-    const stderr = (proc.stderr ?? "").trim();
-    return { ok: false, error: stderr || stdout || `engine exited with code ${proc.status}` };
-  }
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.setEncoding("utf8");
+    proc.stderr.setEncoding("utf8");
+    proc.stdout.on("data", (chunk) => { stdout += chunk; });
+    proc.stderr.on("data", (chunk) => { stderr += chunk; });
+    proc.on("error", (err) => resolve({ ok: false, error: err.message }));
+    proc.on("close", (code) => {
+      const trimmed = stdout.trim();
+      const lastLine = trimmed.split(/\r?\n/).filter(Boolean).pop() ?? "";
+      try {
+        const parsed = JSON.parse(lastLine) as ExportResult;
+        if (!parsed.ok && !parsed.error && stderr.trim()) parsed.error = stderr.trim();
+        resolve(parsed);
+      } catch {
+        resolve({ ok: false, error: stderr.trim() || trimmed || `engine exited with code ${code}` });
+      }
+    });
+  });
 }
 
 async function handleExport(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const out = args.trim() || undefined;
   ctx.ui.notify("Exporting Pi settings…", "info");
 
-  const result = runExport(out);
+  const result = await runExport(out);
   if (!result.ok) {
     ctx.ui.notify(`Settings export failed: ${result.error ?? "unknown error"}`, "error");
     return;

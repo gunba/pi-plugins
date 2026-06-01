@@ -29,8 +29,7 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
@@ -41,13 +40,11 @@
     },
     "@earendil-works/pi-tui": {
       "optional": true
-    },
-    "@sinclair/typebox": {
-      "optional": true
     }
   },
   "license": "MIT",
   "dependencies": {
-    "js-tiktoken": "^1.0.21"
+    "js-tiktoken": "^1.0.21",
+    "typebox": "^1.1.38"
   }
 }
