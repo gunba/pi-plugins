@@ -8,19 +8,37 @@ and then type your first message. Pi has many guards against context bloat
 on turn one. This extension fills that gap: right after your first message it
 inserts a compact card summarising the initial context budget.
 
+Collapsed (default) — one bar per category, biggest-first, with a teaser of the
+top contributor in each:
+
 ```
 ╭──────────────────────────────────────────────────────────────────╮
-│ ◆ Initial context              ~48.3k tokens · 24% of 200k window  │
+│ ▌ Initial context ▸             ~3.8k tokens · 24% of 200k window  │
 │ ────────────────────────────────────────────────────────────────  │
-│ MCP tools        ███████████████████░  22.4k  46%  6 tools · ato…  │
-│ Skills           ████████░░░░░░░░░░░░   5.6k  12%  21 skills        │
-│ Project context  ██████░░░░░░░░░░░░░░   4.1k   8%  AGENTS.md        │
-│ Extension tools  █████░░░░░░░░░░░░░░░░   3.3k   7%  12 tools         │
-│ Core prompt      █████░░░░░░░░░░░░░░░░   3.2k   7%  base + guidelines│
-│ Built-in tools   ████░░░░░░░░░░░░░░░░░   3.1k   6%  7 tools          │
-│ Your message     █░░░░░░░░░░░░░░░░░░░░   0.8k   2%                   │
-│ pre-conversation context · /context-ledger to recompute            │
+│ Skills           ██████████████████████████  1.1k  29%  21 · ato… │
+│ Project context  ████████████████████████░░   997  27%  AGENTS.md │
+│ Extension tools  ██████████████░░░░░░░░░░░░   570  15%  5 · fetch… │
+│ Core prompt      ██████████░░░░░░░░░░░░░░░░   436  12%  base + g…  │
+│ MCP tools        ██████████░░░░░░░░░░░░░░░░   432  11%  2 · ato    │
+│ Built-in tools   █████░░░░░░░░░░░░░░░░░░░░░   217   6%  7 tools    │
+│ Your message     ░░░░░░░░░░░░░░░░░░░░░░░░░░    19   1%             │
+│ ▸ expand (tool-output key) for per-skill / per-tool detail        │
 ╰──────────────────────────────────────────────────────────────────╯
+```
+
+Expanded (press the tool-output expand key) — every category opens into its
+individual skills, tools, and files, sorted largest-first, so you can see
+*exactly* which item is spending your context:
+
+```
+│ Skills             ██████████████████████████  1.1k   29%        │
+│   ato-mcp-server   ██████████████████████████    54              │
+│   context-mode     █████████████████████████░    53              │
+│   …                                                              │
+│   +10 more         ██████████████████████████   508              │
+│ MCP tools          ██████████░░░░░░░░░░░░░░░░   432   11%        │
+│   ato              ██████████████████████████   258              │
+│   mcp              ██████████████████░░░░░░░░   174              │
 ```
 
 ## What it measures
@@ -39,12 +57,20 @@ against Pi's own `chars/4` token heuristic:
 - **Your message** — the first prompt text plus any attached images.
 
 Rows are sorted largest-first and empty categories are hidden. The window-percent
-and the largest consumer are colour-flagged so waste jumps out.
+and the largest consumer are colour-flagged so waste jumps out. Expanding the card
+attributes every category down to its individual skills, tools, and files (with a
+`+N more` rollup past the first dozen), so the actual culprits are obvious.
+
+Group bars scale to the grand total (cross-category magnitude); item bars scale to
+their group's own largest contributor (so the per-group leader fills its bar).
 
 ## Behaviour
 
 - Shows **once per fresh session** (startup / new), immediately after your first
   message. Resumed and forked sessions are skipped.
+- **Collapsed by default; expandable in place.** It honours the same
+  `app.tools.expand` key that expands tool output — collapsed shows categories,
+  expanded shows every individual skill / tool / file.
 - The card is **never sent to the model**. It renders in the TUI and persists in
   the session log, but a `context` hook strips it from every LLM call, so it
   costs zero context — it only reports it.
@@ -52,6 +78,7 @@ and the largest consumer are colour-flagged so waste jumps out.
 
 ## Controls
 
+- Tool-output **expand key** — toggle category summary ↔ per-item breakdown.
 - `/context-ledger` — recompute and show the breakdown on demand.
 - `/context-ledger off` / `/context-ledger on` — toggle the automatic card for
   the session.
