@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { keyHint } from "@earendil-works/pi-coding-agent";
 import type {
   BuildSystemPromptOptions,
   ExtensionAPI,
@@ -23,9 +24,8 @@ const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const ESTIMATED_IMAGE_CHARS = 4800;
 const MAX_CARD_WIDTH = 90;
 const MIN_CARD_WIDTH = 46;
-// When expanded, cap the rows per group so a huge skill/tool set stays readable;
-// the remainder folds into a single "+N more" leaf.
-const MAX_ITEMS_PER_GROUP = 12;
+// Expanded and plain views intentionally show every item; if the user asks for
+// detail, hiding the tail behind a "+N more" row is worse than a long card.
 
 // --- token + width helpers ---------------------------------------------------
 
@@ -140,7 +140,7 @@ function computeLedger(
 ): Ledger {
   const systemTotal = tokens(systemPrompt);
 
-  const skills = options?.skills ?? [];
+  const skills = systemPrompt.includes("<available_skills>") ? (options?.skills ?? []) : [];
   const skillItems = skills.map((skill) => ({
     label: skill.name,
     tokens: tokens(`${skill.name}: ${skill.description} (${skill.filePath})`) + 6,
@@ -248,14 +248,6 @@ function renderBar(rawTokens: number, maxTokens: number, width: number, color: T
   return theme.fg(color, "█".repeat(filled)) + theme.fg("borderMuted", "░".repeat(width - filled));
 }
 
-/** Apply the per-group item cap, folding the tail into a "+N more" leaf. */
-function cappedItems(items: LedgerLeaf[]): LedgerLeaf[] {
-  if (items.length <= MAX_ITEMS_PER_GROUP) return items;
-  const head = items.slice(0, MAX_ITEMS_PER_GROUP - 1);
-  const tail = items.slice(MAX_ITEMS_PER_GROUP - 1);
-  head.push({ label: `+${tail.length} more`, tokens: sumTokens(tail) });
-  return head;
-}
 
 type CardChrome = {
   outerWidth: number;
@@ -292,10 +284,10 @@ function headerLine(ledger: Ledger, theme: Theme, innerWidth: number, expanded: 
 }
 
 function footerLine(theme: Theme, expanded: boolean): string {
-  const text = expanded
-    ? "▾ per-item breakdown · collapse to summarise · /context-ledger"
-    : "▸ expand (tool-output key) for per-skill / per-tool detail";
-  return theme.fg("dim", text);
+  if (expanded) {
+    return `${theme.fg("dim", "▾ per-item breakdown · ")}${keyHint("app.tools.expand", "to collapse")}${theme.fg("dim", " · /context-ledger")}`;
+  }
+  return `${theme.fg("dim", "▸ ")}${keyHint("app.tools.expand", "to expand")}${theme.fg("dim", " per-skill / per-tool detail")}`;
 }
 
 function renderCollapsed(ledger: Ledger, theme: Theme, chrome: CardChrome): string[] {
@@ -349,7 +341,7 @@ function renderExpanded(ledger: Ledger, theme: Theme, chrome: CardChrome): strin
     // Item bars scale to the group's own largest contributor so the per-group
     // leader stands out; the group bar above already encodes share-of-total.
     const itemScale = group.items.length > 0 ? group.items[0].tokens : group.tokens;
-    for (const item of cappedItems(group.items)) {
+    for (const item of group.items) {
       const itemBar = renderBar(item.tokens, itemScale, barWidth, "borderAccent", theme);
       const name = theme.fg("muted", padTo(`  ${truncatePlain(item.label, nameWidth - 2)}`, nameWidth));
       const itemTokens = theme.fg("dim", padStart(formatTokens(item.tokens), tokensWidth));
@@ -381,7 +373,7 @@ function renderLedgerPlain(ledger: Ledger): string {
   for (const group of ledger.groups) {
     const share = ledger.total > 0 ? Math.round((group.tokens / ledger.total) * 100) : 0;
     lines.push(`  ${group.label}: ${formatTokens(group.tokens)} (${share}%)${group.note ? ` — ${group.note}` : ""}`);
-    for (const item of cappedItems(group.items)) {
+    for (const item of group.items) {
       lines.push(`      ${item.label}: ${formatTokens(item.tokens)}`);
     }
   }

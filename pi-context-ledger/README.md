@@ -22,11 +22,11 @@ top contributor in each:
 │ MCP tools        ██████████░░░░░░░░░░░░░░░░   432  11%  2 · ato    │
 │ Built-in tools   █████░░░░░░░░░░░░░░░░░░░░░   217   6%  7 tools    │
 │ Your message     ░░░░░░░░░░░░░░░░░░░░░░░░░░    19   1%             │
-│ ▸ expand (tool-output key) for per-skill / per-tool detail        │
+│ ▸ ctrl+o to expand per-skill / per-tool detail                   │
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-Expanded (press the tool-output expand key) — every category opens into its
+Expanded (press the configured `app.tools.expand` key; `ctrl+o` by default) — every category opens into its
 individual skills, tools, and files, sorted largest-first, so you can see
 *exactly* which item is spending your context:
 
@@ -34,8 +34,8 @@ individual skills, tools, and files, sorted largest-first, so you can see
 │ Skills             ██████████████████████████  1.1k   29%        │
 │   ato-mcp-server   ██████████████████████████    54              │
 │   context-mode     █████████████████████████░    53              │
-│   …                                                              │
-│   +10 more         ██████████████████████████   508              │
+│   daily            ████████████████████░░░░░░    41              │
+│   gmail            ███████████████████░░░░░░░    39              │
 │ MCP tools          ██████████░░░░░░░░░░░░░░░░   432   11%        │
 │   ato              ██████████████████████████   258              │
 │   mcp              ██████████████████░░░░░░░░   174              │
@@ -58,8 +58,8 @@ against Pi's own `chars/4` token heuristic:
 
 Rows are sorted largest-first and empty categories are hidden. The window-percent
 and the largest consumer are colour-flagged so waste jumps out. Expanding the card
-attributes every category down to its individual skills, tools, and files (with a
-`+N more` rollup past the first dozen), so the actual culprits are obvious.
+attributes every category down to every individual skill, tool, and file, so the
+actual culprits are obvious.
 
 Group bars scale to the grand total (cross-category magnitude); item bars scale to
 their group's own largest contributor (so the per-group leader fills its bar).
@@ -78,7 +78,7 @@ their group's own largest contributor (so the per-group leader fills its bar).
 
 ## Controls
 
-- Tool-output **expand key** — toggle category summary ↔ per-item breakdown.
+- `app.tools.expand` key (`ctrl+o` by default) — toggle category summary ↔ per-item breakdown.
 - `/context-ledger` — recompute and show the breakdown on demand.
 - `/context-ledger off` / `/context-ledger on` — toggle the automatic card for
   the session.

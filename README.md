@@ -7,12 +7,12 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-codex-transport` — Codex WebSocket/SSE transport fixes, timeout control, and diagnostics.
 - `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
-- `pi-nested-skills` — presents Agent Skills as nested categories via portable frontmatter metadata.
+- `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
 - `pi-resume-search` — adds `/resume-search` and `/rs` for full-session resume search with match snippets.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message; never sent to the model.
-- `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log after each turn; disabled by default in pi-subagents child processes and compatible with Anthropic OAuth prune calls.
+- `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log, including optional live continuation pruning during long runs; disabled by default in pi-subagents child processes and compatible with Anthropic OAuth prune calls.
 - `pi-settings-sync` — adds `/pi-export` and the `/pi-settings-import` skill for full user-level settings migration between machines (Linux ↔ Windows), translating OS-specific paths and excluding secrets, node_modules, and history.
 
 ## Install

@@ -4,8 +4,10 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
-import { AgentSession, estimateTokens } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { AgentSession, estimateTokens, keyHint } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
+import { encodingForModel, getEncoding } from "js-tiktoken";
 
 type AnyRecord = Record<string, any>;
 
@@ -56,9 +58,21 @@ type DeletedItem = {
   text: string;
 };
 
+type CacheImpact = {
+  scopeEntries: number;
+  scopeTokens: number;
+  stablePrefixTokens: number;
+  invalidatedTailTokens: number;
+  droppedTailTokens: number;
+  keptTailTokens: number;
+  firstDeletedIndex?: number;
+  firstDeletedRole?: string;
+  firstDeletedPreview?: string;
+};
+
 type MemeditStats = {
   at: number;
-  mode: "auto" | "manual";
+  mode: "auto" | "manual" | "live";
   status: "applied" | "noop" | "skipped" | "failed";
   candidates: number;
   selected: number;
@@ -71,12 +85,15 @@ type MemeditStats = {
   tokensSaved?: number;
   estimatedRecacheTokens?: number;
   contextPercentSaved?: number;
-  // Cache calculus: the recache penalty is a one-off cost paid on the next turn,
-  // while the saving recurs on every subsequent turn. They are not comparable
-  // as raw token counts, so we carry them as dollar flows plus a break-even.
-  recacheCost?: number; // one-off $ to re-cache the invalidated tail
+  cacheImpact?: CacheImpact;
+  // Cache calculus: rewriting the kept tail is a one-off cost paid on the next
+  // turn, while deleted-token saving recurs on every subsequent provider
+  // request. The prune-pass LLM call is another one-off cost, so we report both
+  // cache-only and net break-even figures.
+  recacheCost?: number; // one-off $ to rewrite/cache the kept invalidated tail
   savingPerCallCost?: number; // $ saved on every subsequent provider request
-  breakEvenCalls?: number; // future API calls until the recache pays for itself
+  breakEvenCalls?: number; // future API calls until the cache rewrite pays for itself
+  netBreakEvenCalls?: number; // future API calls until rewrite + prune-pass cost pays for itself
   pruneTokens?: number;
   pruneCost?: number;
   deletedItems?: DeletedItem[];
@@ -96,7 +113,20 @@ type MemeditTelemetry = {
 
 type MemeditSettings = {
   enabled: boolean;
+  liveEnabled: boolean;
   showDeletedItems: boolean;
+};
+
+type PrunePromptMode = "next-request" | "continuation" | "manual";
+
+type RunMemeditOptions = {
+  upcomingRequest?: string;
+  promptMode?: PrunePromptMode;
+  promptScope?: "full" | "scoped";
+  extraProtectedEntryIds?: Set<string>;
+  maxNetBreakEvenCalls?: number;
+  forceContextPercent?: number;
+  showStatusMessage?: boolean;
 };
 
 const EXTENSION_NAME = "pi-memedit";
@@ -105,8 +135,15 @@ const SYSTEM_STATUS_KEY = "pi-memedit";
 const PRUNING_WIDGET_KEY = "pi-memedit-pruning";
 const RESPONSE_MAX_TOKENS = 2048;
 const SETTINGS_FILE = process.env.PI_MEMEDIT_SETTINGS || join(os.homedir(), ".pi", "agent", "memedit", "settings.json");
-const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, showDeletedItems: false };
+const DEFAULT_SETTINGS: MemeditSettings = { enabled: true, liveEnabled: true, showDeletedItems: false };
 const PREVIEW_CHARS = 160;
+const LIVE_MIN_TURN_INDEX = 1;
+const LIVE_MIN_CANDIDATES = 100;
+const LIVE_MIN_CANDIDATE_TOKENS = 50_000;
+const LIVE_MAX_NET_BREAK_EVEN_CALLS = 8;
+const LIVE_FORCE_CONTEXT_PERCENT = 85;
+const AUTO_MAX_NET_BREAK_EVEN_CALLS = 16;
+const AUTO_FORCE_CONTEXT_PERCENT = 85;
 const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const ANTHROPIC_OAUTH_TOKEN_MARKER = "sk-ant-oat";
 const CLAUDE_CODE_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI";
@@ -180,10 +217,13 @@ Return only JSON of this shape:
 
 let settings = loadSettings();
 let enabled = resolveInitialEnabled(settings.enabled);
+let liveEnabled = settings.liveEnabled;
 let showDeletedItems = settings.showDeletedItems;
 let running = false;
 let sessionLogIsAuthoritative = false;
 let activeRunStartLeafId: string | null | undefined;
+let activeTurnStartLeafId: string | null | undefined;
+let lastLivePruneTurnIndex = -1;
 let pendingRunStartLeafId: string | null | undefined;
 let lastCompletedRunStartLeafId: string | null | undefined;
 let lastStats: MemeditStats | undefined;
@@ -268,6 +308,7 @@ function loadSettings(): MemeditSettings {
     const parsed = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as Partial<MemeditSettings>;
     return {
       enabled: readBoolean(parsed.enabled, DEFAULT_SETTINGS.enabled),
+      liveEnabled: readBoolean(parsed.liveEnabled, DEFAULT_SETTINGS.liveEnabled),
       showDeletedItems: readBoolean(parsed.showDeletedItems, DEFAULT_SETTINGS.showDeletedItems),
     };
   } catch {
@@ -276,7 +317,7 @@ function loadSettings(): MemeditSettings {
 }
 
 function saveSettings(): void {
-  settings = { enabled, showDeletedItems };
+  settings = { enabled, liveEnabled, showDeletedItems };
   mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
   writeFileSync(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
@@ -291,6 +332,11 @@ function resolveInitialEnabled(persistedEnabled: boolean): boolean {
 
 function setEnabled(value: boolean): void {
   enabled = value;
+  saveSettings();
+}
+
+function setLiveEnabled(value: boolean): void {
+  liveEnabled = value;
   saveSettings();
 }
 
@@ -449,24 +495,40 @@ function formatPruneItem(item: ContextItem): string {
   return `${tag} ${entryPromptRole(item.entry)} (${scope}; ${mutability}; id=${item.entry.id})\n${text}`;
 }
 
-function buildPruneMessages(items: ContextItem[], upcomingRequest?: string): Message[] {
+function buildPruneMessages(items: ContextItem[], options: { upcomingRequest?: string; promptMode?: PrunePromptMode } = {}): Message[] {
   const transcript = items.map(formatPruneItem).join("\n\n---\n\n");
-  const upcoming = upcomingRequest?.trim();
+  const upcoming = options.upcomingRequest?.trim();
   const upcomingBlock = upcoming
     ? `The user's next request — the work this session is about to resume — is:\n<next_request>\n${upcoming}\n</next_request>\nRead the transcript through the lens of this request: keep whatever it will need, and treat as bloat only what it clearly leaves behind.\n\n`
     : "";
+  const continuationBlock =
+    options.promptMode === "continuation"
+      ? "The main agent is mid-run and will continue after this memory edit. Earlier conversation may be omitted from this pruning prompt and is protected. Be extra conservative: keep the freshest turn, open tool results, current file state, unresolved findings, and anything the continuing agent may need. Delete only stale current-run clutter that is clearly superseded inside the shown transcript.\n\n"
+      : "";
   return [
     {
       role: "user",
       content: [
         {
           type: "text",
-          text: `Conversation entries follow. Only entries tagged [N] are deletion candidates; [context] entries are context only and must not be returned.\n\n${upcomingBlock}${transcript}\n\nReturn the deletion JSON now.`,
+          text: `Conversation entries follow. Only entries tagged [N] are deletion candidates; [context] entries are context only and must not be returned.\n\n${continuationBlock}${upcomingBlock}${transcript}\n\nReturn the deletion JSON now.`,
         },
       ],
       timestamp: Date.now(),
     },
   ];
+}
+
+function pruneSystemPrompt(promptMode: PrunePromptMode | undefined): string {
+  if (promptMode === "continuation") {
+    return `${PRUNE_SYSTEM_PROMPT}\n\nLIVE CONTINUATION MODE\nThe main agent has not finished. Prefer false negatives over false positives: deleting a result needed by the continuation is worse than keeping bloat. Protected [context] entries include fresh or otherwise unsafe-to-delete entries.`;
+  }
+  return PRUNE_SYSTEM_PROMPT;
+}
+
+function estimatePruneRequestTokens(items: ContextItem[], options: { upcomingRequest?: string; promptMode?: PrunePromptMode; model?: AnyRecord }): number {
+  const messages = buildPruneMessages(items, options);
+  return estimateTextTokens(pruneSystemPrompt(options.promptMode), options.model) + messages.reduce((total, message) => total + estimateMessageTokens(message as AnyRecord, options.model), 0);
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -603,17 +665,77 @@ function contentText(content: unknown): string {
     .join(" ");
 }
 
-function estimateEntryTokens(entry: SessionEntry): number {
+const openAiEncoders = new Map<string, ReturnType<typeof getEncoding>>();
+
+function usesOpenAiTokenizer(model: AnyRecord | undefined): boolean {
+  const provider = String(model?.provider ?? "").toLowerCase();
+  const id = String(model?.id ?? "").toLowerCase();
+  if (/anthropic|claude|google|gemini|mistral|bedrock/.test(`${provider} ${id}`)) return false;
+  return /openai|azure|codex|gpt-|\bo[1-9]|chatgpt/.test(`${provider} ${id}`);
+}
+
+function openAiEncoding(model: AnyRecord | undefined): ReturnType<typeof getEncoding> | undefined {
+  if (!usesOpenAiTokenizer(model)) return undefined;
+  const modelId = String(model?.id ?? "gpt-4o");
+  const encodingName = /gpt-4o|gpt-4\.1|gpt-5|\bo[1-9]|codex/i.test(modelId) ? "o200k_base" : "cl100k_base";
+  const key = `${modelId}:${encodingName}`;
+  const cached = openAiEncoders.get(key);
+  if (cached) return cached;
+  try {
+    const encoder = encodingForModel(modelId as never);
+    openAiEncoders.set(key, encoder);
+    return encoder;
+  } catch {
+    const encoder = getEncoding(encodingName);
+    openAiEncoders.set(key, encoder);
+    return encoder;
+  }
+}
+
+function estimateTextTokens(text: string, model?: AnyRecord): number {
+  const encoder = openAiEncoding(model);
+  if (encoder) return encoder.encode(text).length;
+  return Math.ceil(text.length / 4);
+}
+
+function estimateContentTokens(content: unknown, model?: AnyRecord): number {
+  if (typeof content === "string") return estimateTextTokens(content, model);
+  if (!Array.isArray(content)) return 0;
+  return content.reduce((total, part: AnyRecord) => {
+    if (part?.type === "text" && typeof part.text === "string") return total + estimateTextTokens(part.text, model);
+    if (part?.type === "image") return total + Math.ceil(4800 / 4);
+    return total;
+  }, 0);
+}
+
+function estimateMessageTokens(message: AnyRecord, model?: AnyRecord): number {
+  if (usesOpenAiTokenizer(model)) {
+    if (message.role === "user" || message.role === "custom" || message.role === "toolResult") return estimateContentTokens(message.content, model);
+    if (message.role === "assistant") {
+      return (message.content ?? []).reduce((total: number, block: AnyRecord) => {
+        if (block?.type === "text" && typeof block.text === "string") return total + estimateTextTokens(block.text, model);
+        if (block?.type === "thinking" && typeof block.thinking === "string") return total + estimateTextTokens(block.thinking, model);
+        if (block?.type === "toolCall") return total + estimateTextTokens(`${block.name ?? ""}${safeJson(block.arguments ?? {})}`, model);
+        return total;
+      }, 0);
+    }
+    if (message.role === "bashExecution") return estimateTextTokens(`${message.command ?? ""}${message.output ?? ""}`, model);
+    if (message.role === "branchSummary" || message.role === "compactionSummary") return estimateTextTokens(String(message.summary ?? ""), model);
+  }
+  return estimateTokens(message as never);
+}
+
+function estimateEntryTokens(entry: SessionEntry, model?: AnyRecord): number {
   const message = entryToAgentMessage(entry);
-  return message ? estimateTokens(message as never) : 0;
+  return message ? estimateMessageTokens(message as AnyRecord, model) : 0;
 }
 
-function estimateEntriesTokens(entries: SessionEntry[]): number {
-  return entries.reduce((total, entry) => total + estimateEntryTokens(entry), 0);
+function estimateEntriesTokens(entries: SessionEntry[], model?: AnyRecord): number {
+  return entries.reduce((total, entry) => total + estimateEntryTokens(entry, model), 0);
 }
 
-function estimateContextItemsTokens(items: ContextItem[]): number {
-  return items.reduce((total, item) => total + estimateEntryTokens(item.entry), 0);
+function estimateContextItemsTokens(items: ContextItem[], model?: AnyRecord): number {
+  return items.reduce((total, item) => total + estimateEntryTokens(item.entry, model), 0);
 }
 
 function previewEntry(entry: SessionEntry): DeletedItem {
@@ -743,28 +865,111 @@ function replacementFirstKept(compaction: SessionEntry, keptIds: Set<string>, by
   return undefined;
 }
 
+type DeleteProjection = {
+  expandedDeleteIds: Set<string>;
+  total: number;
+  counted: number;
+  tokensSaved: number;
+  estimatedRecacheTokens: number;
+  cacheImpact: CacheImpact;
+  deletedItems: DeletedItem[];
+};
+
+function computeCacheImpact(recacheScope: SessionEntry[], expandedDeleteIds: Set<string>, model?: AnyRecord): CacheImpact {
+  const tokenCounts = recacheScope.map((entry) => estimateEntryTokens(entry, model));
+  const scopeTokens = tokenCounts.reduce((total, value) => total + value, 0);
+  const firstDeletedIndex = recacheScope.findIndex((entry) => expandedDeleteIds.has(entry.id));
+  if (firstDeletedIndex < 0) {
+    return {
+      scopeEntries: recacheScope.length,
+      scopeTokens,
+      stablePrefixTokens: scopeTokens,
+      invalidatedTailTokens: 0,
+      droppedTailTokens: 0,
+      keptTailTokens: 0,
+    };
+  }
+
+  let stablePrefixTokens = 0;
+  let invalidatedTailTokens = 0;
+  let droppedTailTokens = 0;
+  let keptTailTokens = 0;
+  for (let i = 0; i < recacheScope.length; i++) {
+    const tokens = tokenCounts[i] ?? 0;
+    if (i < firstDeletedIndex) {
+      stablePrefixTokens += tokens;
+    } else {
+      invalidatedTailTokens += tokens;
+      if (expandedDeleteIds.has(recacheScope[i].id)) droppedTailTokens += tokens;
+      else keptTailTokens += tokens;
+    }
+  }
+
+  const firstDeleted = recacheScope[firstDeletedIndex];
+  return {
+    scopeEntries: recacheScope.length,
+    scopeTokens,
+    stablePrefixTokens,
+    invalidatedTailTokens,
+    droppedTailTokens,
+    keptTailTokens,
+    firstDeletedIndex,
+    firstDeletedRole: entryPromptRole(firstDeleted),
+    firstDeletedPreview: truncateText(entryPromptText(firstDeleted), 120),
+  };
+}
+
+function projectHardDelete(
+  entries: SessionEntry[],
+  deleteIds: Set<string>,
+  uncountedIds = new Set<string>(),
+  recacheScopeEntries?: SessionEntry[],
+  model?: AnyRecord,
+): DeleteProjection {
+  const expandedDeleteIds = expandToolDependencies(entries, deleteIds);
+  if (expandedDeleteIds.size === 0) {
+    const recacheScope = recacheScopeEntries && recacheScopeEntries.length > 0 ? recacheScopeEntries : entries.filter(entryParticipatesInContext);
+    const cacheImpact = computeCacheImpact(recacheScope, expandedDeleteIds, model);
+    return { expandedDeleteIds, total: 0, counted: 0, tokensSaved: 0, estimatedRecacheTokens: 0, cacheImpact, deletedItems: [] };
+  }
+
+  const recacheScope = recacheScopeEntries && recacheScopeEntries.length > 0 ? recacheScopeEntries : entries.filter(entryParticipatesInContext);
+  const removed = entries.filter((entry) => expandedDeleteIds.has(entry.id) || (entry.type === "label" && expandedDeleteIds.has(entry.targetId)));
+  const countedEntries = removed.filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id));
+  const deletedItems = countedEntries.map(previewEntry);
+  const tokensSaved = estimateEntriesTokens(countedEntries, model);
+  const cacheImpact = computeCacheImpact(recacheScope, expandedDeleteIds, model);
+  return {
+    expandedDeleteIds,
+    total: removed.length,
+    counted: deletedItems.length,
+    tokensSaved,
+    estimatedRecacheTokens: cacheImpact.keptTailTokens,
+    cacheImpact,
+    deletedItems,
+  };
+}
+
 function applyHardDelete(
   ctx: ExtensionContext,
   deleteIds: Set<string>,
   uncountedIds = new Set<string>(),
   recacheScopeEntries?: SessionEntry[],
-): { total: number; counted: number; tokensSaved: number; estimatedRecacheTokens: number; deletedItems: DeletedItem[] } {
-  if (deleteIds.size === 0) return { total: 0, counted: 0, tokensSaved: 0, estimatedRecacheTokens: 0, deletedItems: [] };
-
+  model?: AnyRecord,
+): DeleteProjection {
   const manager = ctx.sessionManager as AnyRecord;
   const header = manager.getHeader?.();
   if (!header) throw new Error("Current session has no header; cannot rewrite session log");
 
   const entries = (manager.getEntries?.() ?? []) as SessionEntry[];
+  const projection = projectHardDelete(entries, deleteIds, uncountedIds, recacheScopeEntries, model);
+  if (projection.expandedDeleteIds.size === 0) return projection;
+
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const oldLeafId = manager.getLeafId?.() ?? null;
-  const expandedDeleteIds = expandToolDependencies(entries, deleteIds);
-  const recacheScope = recacheScopeEntries && recacheScopeEntries.length > 0 ? recacheScopeEntries : entries.filter(entryParticipatesInContext);
-  const firstDeletedIndex = recacheScope.findIndex((entry) => expandedDeleteIds.has(entry.id));
-
   const keptEntries = entries.filter((entry) => {
-    if (expandedDeleteIds.has(entry.id)) return false;
-    if (entry.type === "label" && expandedDeleteIds.has(entry.targetId)) return false;
+    if (projection.expandedDeleteIds.has(entry.id)) return false;
+    if (entry.type === "label" && projection.expandedDeleteIds.has(entry.targetId)) return false;
     return true;
   });
   const keptIds = new Set(keptEntries.map((entry) => entry.id));
@@ -797,15 +1002,7 @@ function applyHardDelete(
 
   sessionLogIsAuthoritative = true;
   markAgentStateNeedsSync(manager.getSessionId?.());
-  const removed = entries.filter((entry) => !keptEntries.includes(entry));
-  const countedEntries = removed.filter((entry) => entryParticipatesInContext(entry) && !uncountedIds.has(entry.id));
-  const deletedItems = countedEntries.map(previewEntry);
-  const tokensSaved = estimateEntriesTokens(countedEntries);
-  const estimatedRecacheTokens =
-    firstDeletedIndex < 0
-      ? 0
-      : estimateEntriesTokens(recacheScope.slice(firstDeletedIndex + 1).filter((entry) => !expandedDeleteIds.has(entry.id)));
-  return { total: removed.length, counted: deletedItems.length, tokensSaved, estimatedRecacheTokens, deletedItems };
+  return projection;
 }
 
 function isStatusAgentMessage(message: AnyRecord): boolean {
@@ -841,6 +1038,7 @@ const COST_TOKEN_DIVISOR = 1_000_000;
 
 type CachePricing = {
   inputPerToken: number;
+  outputPerToken: number;
   cacheReadPerToken: number;
   cacheWritePerToken: number;
 };
@@ -851,10 +1049,12 @@ type CachePricing = {
 function cachePricing(model: AnyRecord | undefined): CachePricing {
   const cost = (model?.cost ?? {}) as AnyRecord;
   const input = typeof cost.input === "number" ? cost.input : 0;
+  const output = typeof cost.output === "number" ? cost.output : input;
   const cacheRead = typeof cost.cacheRead === "number" && cost.cacheRead > 0 ? cost.cacheRead : input;
   const cacheWrite = typeof cost.cacheWrite === "number" && cost.cacheWrite > 0 ? cost.cacheWrite : input;
   return {
     inputPerToken: input / COST_TOKEN_DIVISOR,
+    outputPerToken: output / COST_TOKEN_DIVISOR,
     cacheReadPerToken: cacheRead / COST_TOKEN_DIVISOR,
     cacheWritePerToken: cacheWrite / COST_TOKEN_DIVISOR,
   };
@@ -869,27 +1069,36 @@ function cachePricing(model: AnyRecord | undefined): CachePricing {
 //     EVERY subsequent provider request, saving cacheRead per token per call.
 //     A turn fans out into many provider requests (one per tool round-trip),
 //     so the saving recurs per API call, not per user turn.
+function estimatePrunePassCost(inputTokens: number, model: AnyRecord | undefined, outputTokens = Math.min(RESPONSE_MAX_TOKENS, 512)): number {
+  const pricing = cachePricing(model);
+  return inputTokens * pricing.inputPerToken + outputTokens * pricing.outputPerToken;
+}
+
 function recacheEconomics(
   deletedTokens: number,
   recacheTokens: number,
   model: AnyRecord | undefined,
-): { recacheCost: number; savingPerCallCost: number; breakEvenCalls: number | undefined } {
+  pruneCost = 0,
+): { recacheCost: number; savingPerCallCost: number; breakEvenCalls: number | undefined; netBreakEvenCalls: number | undefined } {
   const pricing = cachePricing(model);
   const recachePenaltyPerToken = Math.max(0, pricing.cacheWritePerToken - pricing.cacheReadPerToken);
   const recacheCost = recacheTokens * recachePenaltyPerToken;
   const savingPerCallCost = deletedTokens * pricing.cacheReadPerToken;
   const breakEvenCalls = savingPerCallCost > 0 ? Math.ceil(recacheCost / savingPerCallCost) : undefined;
-  return { recacheCost, savingPerCallCost, breakEvenCalls };
+  const netBreakEvenCalls = savingPerCallCost > 0 ? Math.ceil((recacheCost + pruneCost) / savingPerCallCost) : undefined;
+  return { recacheCost, savingPerCallCost, breakEvenCalls, netBreakEvenCalls };
 }
 
 function updateTelemetry(stats: MemeditStats): void {
-  if (stats.status !== "applied" && stats.status !== "noop") return;
+  if (stats.status !== "applied" && stats.status !== "noop" && !stats.pruneTokens && !stats.pruneCost) return;
   telemetry.runs++;
-  telemetry.contextTokensBefore += stats.contextTokensBefore || 0;
-  telemetry.tokensSaved += stats.tokensSaved || 0;
-  telemetry.estimatedRecacheTokens += stats.estimatedRecacheTokens || 0;
-  telemetry.recacheCost += stats.recacheCost || 0;
-  telemetry.savingPerCallCost += stats.savingPerCallCost || 0;
+  if (stats.status === "applied" || stats.status === "noop") {
+    telemetry.contextTokensBefore += stats.contextTokensBefore || 0;
+    telemetry.tokensSaved += stats.tokensSaved || 0;
+    telemetry.estimatedRecacheTokens += stats.estimatedRecacheTokens || 0;
+    telemetry.recacheCost += stats.recacheCost || 0;
+    telemetry.savingPerCallCost += stats.savingPerCallCost || 0;
+  }
   telemetry.pruneTokens += stats.pruneTokens || 0;
   telemetry.pruneCost += stats.pruneCost || 0;
 }
@@ -917,9 +1126,12 @@ function formatCost(value: number | undefined): string {
 
 function breakEvenText(stats: MemeditStats): string {
   if (!stats.savingPerCallCost) return "no ongoing saving";
-  if (!stats.recacheCost) return "net positive immediately";
+  if (stats.netBreakEvenCalls !== undefined) {
+    return `net pays back after ${stats.netBreakEvenCalls} API call${stats.netBreakEvenCalls === 1 ? "" : "s"}`;
+  }
+  if (!stats.recacheCost) return "cache-positive immediately";
   if (stats.breakEvenCalls === undefined) return "break-even unknown";
-  return `pays for itself after ${stats.breakEvenCalls} API call${stats.breakEvenCalls === 1 ? "" : "s"}`;
+  return `cache rewrite pays back after ${stats.breakEvenCalls} API call${stats.breakEvenCalls === 1 ? "" : "s"}`;
 }
 
 function cumulativeContextPercent(): number {
@@ -948,14 +1160,85 @@ function contextWindowSuffix(stats: MemeditStats): string {
   return `; model window before prune: ${formatPercent(stats.contextWindowPercentBefore)}${tokenDetails}`;
 }
 
+function statusColor(stats: MemeditStats): ThemeColor {
+  if (stats.status === "applied") return "success";
+  if (stats.status === "noop") return "muted";
+  if (stats.status === "skipped") return "warning";
+  return "error";
+}
+
+function styledStatusHeadline(stats: MemeditStats, theme: Theme): string {
+  const color = statusColor(stats);
+  return `${theme.fg(color, "✂")} ${theme.bold(theme.fg(color, memeditStatusText(stats)))}`;
+}
+
+function styledStatusSummary(stats: MemeditStats, theme: Theme): string[] {
+  const lines = [
+    `${theme.fg("dim", "Candidates")} ${theme.fg("muted", String(stats.candidates))}${theme.fg("dim", " · selected ")}${theme.fg("muted", String(stats.selected))}${theme.fg("dim", " · ignored ")}${theme.fg("muted", String(stats.ignored))}`,
+  ];
+  if (stats.status === "applied" || stats.status === "noop" || stats.tokensSaved !== undefined) {
+    lines.push(
+      `${theme.fg("dim", "Est. context")} ${theme.fg("success", formatPercent(stats.contextPercentSaved))} ${theme.fg("muted", `pruned (${formatTokens(stats.tokensSaved)} / ${formatTokens(stats.contextTokensBefore)} active)`)}`,
+      `${theme.fg("dim", "Cache tail")} ${theme.fg("muted", `invalidate ${formatTokens(stats.cacheImpact?.invalidatedTailTokens)} · drop ${formatTokens(stats.cacheImpact?.droppedTailTokens)} · rewrite ${formatTokens(stats.cacheImpact?.keptTailTokens)} (${formatCost(stats.recacheCost)})`)}`,
+      `${theme.fg("dim", "Savings")} ${theme.fg("success", `${formatCost(stats.savingPerCallCost)}/API call`)} ${theme.fg("muted", `· prune ${formatCost(stats.pruneCost)} · ${breakEvenText(stats)}`)}`,
+    );
+  }
+  if (stats.error) lines.push(`${theme.fg("warning", "Reason")} ${theme.fg("muted", truncateText(stats.error, 220))}`);
+  return lines;
+}
+
+function renderStatusMessage(stats: MemeditStats, expanded: boolean, theme: Theme) {
+  const box = new Box(1, 0, (text: string) => theme.bg("customMessageBg", text));
+  const lines = [styledStatusHeadline(stats, theme), ...styledStatusSummary(stats, theme)];
+  if (expanded) {
+    lines.push(
+      theme.fg("borderMuted", "─".repeat(36)),
+      `${theme.fg("dim", "Mode")} ${theme.fg("muted", stats.mode)}${theme.fg("dim", " · at ")}${theme.fg("muted", new Date(stats.at).toLocaleString())}`,
+    );
+    if (typeof stats.contextWindowPercentBefore === "number") {
+      const tokenDetails =
+        typeof stats.contextWindowTokensBefore === "number" && typeof stats.contextWindowTokensLimit === "number"
+          ? ` (${formatTokens(stats.contextWindowTokensBefore)} / ${formatTokens(stats.contextWindowTokensLimit)})`
+          : "";
+      lines.push(`${theme.fg("dim", "Model window before prune")} ${theme.fg("muted", `${formatPercent(stats.contextWindowPercentBefore)}${tokenDetails}`)}`);
+    }
+    if (stats.cacheImpact) {
+      lines.push(
+        `${theme.fg("dim", "Cache scope")} ${theme.fg("muted", `${stats.cacheImpact.scopeEntries} entries, ${formatTokens(stats.cacheImpact.scopeTokens)} tokens`)}`,
+        `${theme.fg("dim", "Stable prefix")} ${theme.fg("muted", formatTokens(stats.cacheImpact.stablePrefixTokens))}`,
+        `${theme.fg("dim", "First invalidation")} ${theme.fg("muted", `${stats.cacheImpact.firstDeletedRole ?? "none"}${stats.cacheImpact.firstDeletedPreview ? ` — ${stats.cacheImpact.firstDeletedPreview}` : ""}`)}`,
+      );
+    }
+    if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
+      lines.push(theme.fg("warning", "Removed"), ...stats.deletedItems.map((item) => theme.fg("muted", formatDeletedItem(item))));
+    }
+  } else {
+    lines.push(keyHint("app.tools.expand", "details"));
+  }
+  box.addChild(new Text(lines.join("\n"), 0, 0));
+  return box;
+}
+
+function createPruningWidget(candidateText: string) {
+  return (_tui: unknown, theme: Theme) => {
+    const box = new Box(1, 0, (text: string) => theme.bg("toolPendingBg", text));
+    box.addChild(
+      new Text(
+        `${theme.fg("warning", "✂")} ${theme.bold(theme.fg("warning", "pi-memedit pruning"))} ${theme.fg("muted", candidateText)}`,
+        0,
+        0,
+      ),
+    );
+    box.addChild(new Text(theme.fg("dim", "Memory edit in progress — Pi will continue automatically."), 0, 0));
+    return box;
+  };
+}
+
 function showPruningUi(ctx: ExtensionContext, candidates: number): void {
   if (!ctx.hasUI) return;
   const candidateText = `${candidates} candidate${candidates === 1 ? "" : "s"}`;
-  ctx.ui.setStatus(SYSTEM_STATUS_KEY, `memedit:pruning(${candidates})`);
-  ctx.ui.setWidget(PRUNING_WIDGET_KEY, [
-    `✂ pi-memedit is pruning ${candidateText}…`,
-    "Pi will continue after the memory edit finishes.",
-  ]);
+  ctx.ui.setStatus(SYSTEM_STATUS_KEY, ctx.ui.theme.fg("warning", `memedit:pruning(${candidates})`));
+  ctx.ui.setWidget(PRUNING_WIDGET_KEY, createPruningWidget(candidateText));
 }
 
 function clearPruningUi(ctx: ExtensionContext): void {
@@ -980,11 +1263,11 @@ function memeditStatusText(stats: MemeditStats): string {
 
 function statusMessage(stats: MemeditStats) {
   const lines = [`${memeditStatusText(stats)} Candidates: ${stats.candidates}; selected: ${stats.selected}; ignored: ${stats.ignored}.`];
-  if (stats.status === "applied" || stats.status === "noop") {
+  if (stats.status === "applied" || stats.status === "noop" || stats.tokensSaved !== undefined) {
     lines.push(
-      `Context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
-      `Cache calculus: re-caches ${formatTokens(stats.estimatedRecacheTokens)} tokens once (${formatCost(stats.recacheCost)}) to save ${formatCost(stats.savingPerCallCost)}/API call — ${breakEvenText(stats)}.`,
-      `Prune-pass overhead: ${formatTokens(stats.pruneTokens)} tokens, ${formatCost(stats.pruneCost)}.`,
+      `Est. context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
+      `Cache impact: invalidates ${formatTokens(stats.cacheImpact?.invalidatedTailTokens)} tail tokens; drops ${formatTokens(stats.cacheImpact?.droppedTailTokens)} and rewrites ${formatTokens(stats.cacheImpact?.keptTailTokens)} kept tokens (${formatCost(stats.recacheCost)}).`,
+      `Savings: ${formatCost(stats.savingPerCallCost)}/API call; prune pass ${formatTokens(stats.pruneTokens)} tokens, ${formatCost(stats.pruneCost)} — ${breakEvenText(stats)}.`,
     );
   }
   if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
@@ -999,11 +1282,50 @@ function statusMessage(stats: MemeditStats) {
   };
 }
 
+function preflightAllowsRun(
+  contextWindowPercentBefore: number | undefined,
+  candidates: ContextItem[],
+  promptItems: ContextItem[],
+  model: AnyRecord,
+  mode: "auto" | "manual" | "live",
+  options: RunMemeditOptions,
+): boolean {
+  if (mode === "manual") return true;
+
+  const candidateTokens = estimateContextItemsTokens(candidates, model);
+  const forceContextPercent = options.forceContextPercent ?? (mode === "live" ? LIVE_FORCE_CONTEXT_PERCENT : AUTO_FORCE_CONTEXT_PERCENT);
+  const forcedByContext = (contextWindowPercentBefore ?? 0) >= forceContextPercent;
+
+  if (mode === "live") {
+    const enoughWork =
+      candidateTokens >= LIVE_MIN_CANDIDATE_TOKENS ||
+      (candidates.length >= LIVE_MIN_CANDIDATES && candidateTokens >= Math.floor(LIVE_MIN_CANDIDATE_TOKENS / 2));
+    if (!enoughWork && !forcedByContext) return false;
+  }
+
+  const pricing = cachePricing(model);
+  const theoreticalBestSavingPerCall = candidateTokens * pricing.cacheReadPerToken;
+  if (theoreticalBestSavingPerCall <= 0) return forcedByContext;
+
+  // Lower-bound the break-even before spending the prune call. This assumes the
+  // pruner deletes every candidate and causes no kept-tail rewrite. If even that
+  // best case cannot pay back quickly enough, running the selector is pure loss.
+  const estimatedPruneTokens = estimatePruneRequestTokens(promptItems, {
+    upcomingRequest: options.upcomingRequest,
+    promptMode: options.promptMode,
+    model,
+  });
+  const estimatedPruneCost = estimatePrunePassCost(estimatedPruneTokens, model);
+  const bestCaseBreakEven = Math.ceil(estimatedPruneCost / theoreticalBestSavingPerCall);
+  const maxNetBreakEvenCalls = options.maxNetBreakEvenCalls ?? (mode === "live" ? LIVE_MAX_NET_BREAK_EVEN_CALLS : AUTO_MAX_NET_BREAK_EVEN_CALLS);
+  return forcedByContext || bestCaseBreakEven <= maxNetBreakEvenCalls;
+}
+
 async function runMemedit(
   ctx: ExtensionContext,
-  mode: "auto" | "manual",
+  mode: "auto" | "manual" | "live",
   startLeafId: string | null | undefined,
-  upcomingRequest?: string,
+  options: RunMemeditOptions = {},
 ): Promise<MemeditStats | undefined> {
   if (isSubagentRuntimeBlocked()) {
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, error: subagentDisabledReason() };
@@ -1018,13 +1340,35 @@ async function runMemedit(
   const contextUsageBefore = contextUsageFields(ctx);
   const scopedEntryIds = entryIdsAfter(branch, startLeafId);
   const protectedEntryIds = protectFinalAssistantTextResponse(branch, scopedEntryIds);
+  for (const id of options.extraProtectedEntryIds ?? []) protectedEntryIds.add(id);
   const items = collectContextItems(branch, scopedEntryIds, protectedEntryIds);
+  const promptItems = options.promptScope === "scoped" ? items.filter((item) => item.scoped) : items;
   const activeContextEntries = items.map((item) => item.entry);
-  const contextTokensBefore = estimateContextItemsTokens(items);
+  const contextTokensBefore = estimateContextItemsTokens(items, model as AnyRecord);
   const candidates = items.filter((item) => item.removable && item.number !== undefined);
   if (candidates.length === 0) {
     lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, contextTokensBefore, ...contextUsageBefore };
     return lastStats;
+  }
+
+  if (!preflightAllowsRun(contextUsageBefore.contextWindowPercentBefore, candidates, promptItems, model as AnyRecord, mode, options)) {
+    const candidateTokens = estimateContextItemsTokens(candidates, model as AnyRecord);
+    lastStats = {
+      at: Date.now(),
+      mode,
+      status: "skipped",
+      candidates: candidates.length,
+      selected: 0,
+      deleted: 0,
+      ignored: 0,
+      contextTokensBefore,
+      ...contextUsageBefore,
+      tokensSaved: candidateTokens,
+      contextPercentSaved: contextTokensBefore > 0 ? (candidateTokens / contextTokensBefore) * 100 : 0,
+      error: "best-case prune economics did not meet automatic threshold",
+    };
+    if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
+    return undefined;
   }
 
   running = true;
@@ -1051,15 +1395,15 @@ async function runMemedit(
     const response = await completeSimple(
       model,
       {
-        systemPrompt: PRUNE_SYSTEM_PROMPT,
-        messages: buildPruneMessages(items, upcomingRequest),
+        systemPrompt: pruneSystemPrompt(options.promptMode),
+        messages: buildPruneMessages(promptItems, { upcomingRequest: options.upcomingRequest, promptMode: options.promptMode }),
       },
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
         maxTokens: RESPONSE_MAX_TOKENS,
         sessionId: manager.getSessionId?.(),
-        cacheRetention: "short",
+        cacheRetention: "none",
         signal: ctx.signal,
         onPayload: (payload) => shapeMemeditProviderPayload(payload, auth.apiKey),
       },
@@ -1081,13 +1425,14 @@ async function runMemedit(
 
     const housekeepingIds = statusEntryIds(branch);
     const rewriteIds = new Set([...selectedIds, ...housekeepingIds]);
-    const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries);
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
-    const { recacheCost, savingPerCallCost, breakEvenCalls } = recacheEconomics(
+    const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries, model as AnyRecord);
+    const { recacheCost, savingPerCallCost, breakEvenCalls, netBreakEvenCalls } = recacheEconomics(
       deleted.tokensSaved,
       deleted.estimatedRecacheTokens,
       model as AnyRecord,
+      pruneCost,
     );
     const contextPercentSaved = contextTokensBefore > 0 ? (deleted.tokensSaved / contextTokensBefore) * 100 : 0;
     lastStats = {
@@ -1103,9 +1448,11 @@ async function runMemedit(
       tokensSaved: deleted.tokensSaved,
       estimatedRecacheTokens: deleted.estimatedRecacheTokens,
       contextPercentSaved,
+      cacheImpact: deleted.cacheImpact,
       recacheCost,
       savingPerCallCost,
       breakEvenCalls,
+      netBreakEvenCalls,
       pruneTokens,
       pruneCost,
       deletedItems: deleted.deletedItems,
@@ -1162,6 +1509,7 @@ function skippedStats(reason: string): MemeditStats {
 function formatStats(): string {
   const settingsLines = [
     `pi-memedit: ${isSubagentRuntimeBlocked() ? subagentDisabledReason() : enabled ? "enabled" : "disabled"}`,
+    `Live pruning: ${liveEnabled ? "on" : "off"}`,
     `Show removed text: ${showDeletedItems ? "on" : "off"}`,
     `Settings file: ${SETTINGS_FILE}`,
   ];
@@ -1175,9 +1523,9 @@ function formatStats(): string {
     `Selected: ${lastStats.selected}`,
     `Deleted entries: ${lastStats.deleted}`,
     `Ignored ids: ${lastStats.ignored}`,
-    `Last context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
-    `Last cache calculus: re-cache ${formatTokens(lastStats.estimatedRecacheTokens)} tokens once (${formatCost(lastStats.recacheCost)}) vs ${formatCost(lastStats.savingPerCallCost)}/API call saved — ${breakEvenText(lastStats)}`,
-    `Last prune-pass overhead: ${formatTokens(lastStats.pruneTokens)} tokens, ${formatCost(lastStats.pruneCost)}`,
+    `Last estimated context reduction: ${formatPercent(lastStats.contextPercentSaved)} (${formatTokens(lastStats.tokensSaved)} deleted / ${formatTokens(lastStats.contextTokensBefore)} active)`,
+    `Last cache impact: invalidated ${formatTokens(lastStats.cacheImpact?.invalidatedTailTokens)} tail tokens; dropped ${formatTokens(lastStats.cacheImpact?.droppedTailTokens)}; rewrote ${formatTokens(lastStats.cacheImpact?.keptTailTokens)} (${formatCost(lastStats.recacheCost)})`,
+    `Last savings: ${formatCost(lastStats.savingPerCallCost)}/API call; prune pass ${formatTokens(lastStats.pruneTokens)} tokens, ${formatCost(lastStats.pruneCost)} — ${breakEvenText(lastStats)}`,
     `Cumulative context pruned: ${formatPercent(cumulativeContextPercent())} (${formatTokens(telemetry.tokensSaved)} deleted / ${formatTokens(telemetry.contextTokensBefore)} active considered)`,
     `Cumulative cache calculus: ${formatCost(telemetry.recacheCost)} one-off recache vs ${formatCost(telemetry.savingPerCallCost)}/API call saved${cumulativeBreakEvenCalls() === undefined ? "" : ` — break-even after ${cumulativeBreakEvenCalls()} API call${cumulativeBreakEvenCalls() === 1 ? "" : "s"}`}`,
     `Cumulative prune-pass overhead: ${formatTokens(telemetry.pruneTokens)} tokens, ${formatCost(telemetry.pruneCost)}`,
@@ -1198,6 +1546,12 @@ function formatStats(): string {
 }
 
 export default function memedit(pi: ExtensionAPI) {
+  pi.registerMessageRenderer<MemeditStats>(STATUS_MESSAGE_TYPE, (message, { expanded }, theme) => {
+    const stats = message.details;
+    if (!stats || typeof stats !== "object" || typeof (stats as MemeditStats).status !== "string") return undefined;
+    return renderStatusMessage(stats as MemeditStats, expanded === true, theme);
+  });
+
   if (isSubagentRuntimeBlocked()) {
     pi.on("session_start", async (_event, ctx) => {
       if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:off(subagent)");
@@ -1233,12 +1587,55 @@ export default function memedit(pi: ExtensionAPI) {
 
     pendingRunStartLeafId = undefined;
     lastCompletedRunStartLeafId = startLeafId;
-    const stats = await runMemedit(ctx, "auto", startLeafId, event.prompt);
+    const stats = await runMemedit(ctx, "auto", startLeafId, {
+      upcomingRequest: event.prompt,
+      promptMode: "next-request",
+      maxNetBreakEvenCalls: AUTO_MAX_NET_BREAK_EVEN_CALLS,
+      forceContextPercent: AUTO_FORCE_CONTEXT_PERCENT,
+    });
     if (stats) return { message: statusMessage(stats) };
   });
 
   pi.on("agent_start", async (_event, ctx) => {
     activeRunStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
+    activeTurnStartLeafId = activeRunStartLeafId;
+    lastLivePruneTurnIndex = -1;
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    activeTurnStartLeafId = (ctx.sessionManager as AnyRecord).getLeafId?.() ?? null;
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    if (!enabled || !liveEnabled || running) return;
+    // Live pruning only makes sense between a tool-using assistant turn and the
+    // continuation that consumes those tool results. If the assistant has just
+    // given a final answer, pruning here happens after the user-visible finish
+    // line and feels like pointless post-response churn.
+    const assistantMessage = event.message as AnyRecord;
+    const toolResults = Array.isArray(event.toolResults) ? event.toolResults : [];
+    const hasToolCalls = Array.isArray(assistantMessage?.content)
+      ? assistantMessage.content.some((part: AnyRecord) => part?.type === "toolCall")
+      : false;
+    if (toolResults.length === 0 && assistantMessage?.stopReason !== "toolUse" && !hasToolCalls) return;
+    if (event.turnIndex < LIVE_MIN_TURN_INDEX) return;
+    if (lastLivePruneTurnIndex >= 0 && event.turnIndex - lastLivePruneTurnIndex < 2) return;
+    const runStartLeafId = activeRunStartLeafId;
+    if (runStartLeafId === undefined) return;
+
+    const branch = ((ctx.sessionManager as AnyRecord).getBranch?.() ?? []) as SessionEntry[];
+    const freshTurnEntryIds = entryIdsAfter(branch, activeTurnStartLeafId);
+    const stats = await runMemedit(ctx, "live", runStartLeafId, {
+      promptMode: "continuation",
+      promptScope: "scoped",
+      extraProtectedEntryIds: freshTurnEntryIds,
+      maxNetBreakEvenCalls: LIVE_MAX_NET_BREAK_EVEN_CALLS,
+      forceContextPercent: LIVE_FORCE_CONTEXT_PERCENT,
+    });
+    if (stats?.status === "applied") {
+      lastLivePruneTurnIndex = event.turnIndex;
+      if (ctx.hasUI) ctx.ui.notify(`pi-memedit live pruned ${formatTokens(stats.tokensSaved)}; ${breakEvenText(stats)}`, "info");
+    }
   });
 
   // Every provider request after a prune omits the deleted tokens, so the
@@ -1256,6 +1653,7 @@ export default function memedit(pi: ExtensionAPI) {
   pi.on("agent_end", async (event, ctx) => {
     const startLeafId = activeRunStartLeafId;
     activeRunStartLeafId = undefined;
+    activeTurnStartLeafId = undefined;
 
     const unsuccessfulReason = unsuccessfulRunReason(event.messages);
     if (unsuccessfulReason) {
@@ -1290,6 +1688,16 @@ export default function memedit(pi: ExtensionAPI) {
         }
         return;
       }
+      const liveMatch = command.match(/^live\s+(on|off|enable|disable)$/);
+      if (liveMatch) {
+        const next = liveMatch[1] === "on" || liveMatch[1] === "enable";
+        setLiveEnabled(next);
+        if (ctx.hasUI) {
+          ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
+          ctx.ui.notify(`pi-memedit live pruning ${next ? "enabled" : "disabled"} and persisted to ${SETTINGS_FILE}`, "info");
+        }
+        return;
+      }
       const showMatch = command.match(/^(?:show|show-deleted|details|verbose|output|removed|removed-text)\s+(on|off|enable|disable)$/);
       if (showMatch) {
         const next = showMatch[1] === "on" || showMatch[1] === "enable";
@@ -1299,13 +1707,13 @@ export default function memedit(pi: ExtensionAPI) {
       }
       if (command === "run") {
         await ctx.waitForIdle();
-        await runMemedit(ctx, "manual", lastCompletedRunStartLeafId);
+        await runMemedit(ctx, "manual", lastCompletedRunStartLeafId, { promptMode: "manual" });
         if (ctx.hasUI) ctx.ui.notify(formatStats(), "info");
         return;
       }
       if (ctx.hasUI) {
         ctx.ui.notify(
-          `${formatStats()}\n\nCommands: /memedit status | run | on | off | show-deleted on | show-deleted off`,
+          `${formatStats()}\n\nCommands: /memedit status | run | on | off | live on | live off | show-deleted on | show-deleted off`,
           "info",
         );
       }
