@@ -88,12 +88,11 @@ type MemeditStats = {
   cacheImpact?: CacheImpact;
   // Cache calculus: rewriting the kept tail is a one-off cost paid on the next
   // turn, while deleted-token saving recurs on every subsequent provider
-  // request. The prune-pass LLM call is another one-off cost, so we report both
-  // cache-only and net break-even figures.
+  // request. Prune-pass usage is reported separately, but it no longer gates or
+  // rewrites the cache payback calculation.
   recacheCost?: number; // one-off $ to rewrite/cache the kept invalidated tail
   savingPerCallCost?: number; // $ saved on every subsequent provider request
   breakEvenCalls?: number; // future API calls until the cache rewrite pays for itself
-  netBreakEvenCalls?: number; // future API calls until rewrite + prune-pass cost pays for itself
   pruneTokens?: number;
   pruneCost?: number;
   deletedItems?: DeletedItem[];
@@ -124,8 +123,6 @@ type RunMemeditOptions = {
   promptMode?: PrunePromptMode;
   promptScope?: "full" | "scoped";
   extraProtectedEntryIds?: Set<string>;
-  maxNetBreakEvenCalls?: number;
-  forceContextPercent?: number;
   showStatusMessage?: boolean;
 };
 
@@ -140,10 +137,8 @@ const PREVIEW_CHARS = 160;
 const LIVE_MIN_TURN_INDEX = 1;
 const LIVE_MIN_CANDIDATES = 100;
 const LIVE_MIN_CANDIDATE_TOKENS = 50_000;
-const LIVE_MAX_NET_BREAK_EVEN_CALLS = 8;
-const LIVE_FORCE_CONTEXT_PERCENT = 85;
-const AUTO_MAX_NET_BREAK_EVEN_CALLS = 16;
-const AUTO_FORCE_CONTEXT_PERCENT = 85;
+const AUTO_MIN_CANDIDATES = 40;
+const AUTO_MIN_CANDIDATE_TOKENS = 20_000;
 const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const ANTHROPIC_OAUTH_TOKEN_MARKER = "sk-ant-oat";
 const CLAUDE_CODE_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI";
@@ -225,6 +220,7 @@ let activeRunStartLeafId: string | null | undefined;
 let activeTurnStartLeafId: string | null | undefined;
 let lastLivePruneTurnIndex = -1;
 let pendingRunStartLeafId: string | null | undefined;
+let deferredPruneStartLeafId: string | null | undefined;
 let lastCompletedRunStartLeafId: string | null | undefined;
 let lastStats: MemeditStats | undefined;
 // Realized ongoing saving: the pruned tokens are absent from EVERY provider
@@ -1037,8 +1033,6 @@ function usageTotalTokens(usage: AnyRecord | undefined): number {
 const COST_TOKEN_DIVISOR = 1_000_000;
 
 type CachePricing = {
-  inputPerToken: number;
-  outputPerToken: number;
   cacheReadPerToken: number;
   cacheWritePerToken: number;
 };
@@ -1049,12 +1043,9 @@ type CachePricing = {
 function cachePricing(model: AnyRecord | undefined): CachePricing {
   const cost = (model?.cost ?? {}) as AnyRecord;
   const input = typeof cost.input === "number" ? cost.input : 0;
-  const output = typeof cost.output === "number" ? cost.output : input;
   const cacheRead = typeof cost.cacheRead === "number" && cost.cacheRead > 0 ? cost.cacheRead : input;
   const cacheWrite = typeof cost.cacheWrite === "number" && cost.cacheWrite > 0 ? cost.cacheWrite : input;
   return {
-    inputPerToken: input / COST_TOKEN_DIVISOR,
-    outputPerToken: output / COST_TOKEN_DIVISOR,
     cacheReadPerToken: cacheRead / COST_TOKEN_DIVISOR,
     cacheWritePerToken: cacheWrite / COST_TOKEN_DIVISOR,
   };
@@ -1069,24 +1060,17 @@ function cachePricing(model: AnyRecord | undefined): CachePricing {
 //     EVERY subsequent provider request, saving cacheRead per token per call.
 //     A turn fans out into many provider requests (one per tool round-trip),
 //     so the saving recurs per API call, not per user turn.
-function estimatePrunePassCost(inputTokens: number, model: AnyRecord | undefined, outputTokens = Math.min(RESPONSE_MAX_TOKENS, 512)): number {
-  const pricing = cachePricing(model);
-  return inputTokens * pricing.inputPerToken + outputTokens * pricing.outputPerToken;
-}
-
 function recacheEconomics(
   deletedTokens: number,
   recacheTokens: number,
   model: AnyRecord | undefined,
-  pruneCost = 0,
-): { recacheCost: number; savingPerCallCost: number; breakEvenCalls: number | undefined; netBreakEvenCalls: number | undefined } {
+): { recacheCost: number; savingPerCallCost: number; breakEvenCalls: number | undefined } {
   const pricing = cachePricing(model);
   const recachePenaltyPerToken = Math.max(0, pricing.cacheWritePerToken - pricing.cacheReadPerToken);
   const recacheCost = recacheTokens * recachePenaltyPerToken;
   const savingPerCallCost = deletedTokens * pricing.cacheReadPerToken;
   const breakEvenCalls = savingPerCallCost > 0 ? Math.ceil(recacheCost / savingPerCallCost) : undefined;
-  const netBreakEvenCalls = savingPerCallCost > 0 ? Math.ceil((recacheCost + pruneCost) / savingPerCallCost) : undefined;
-  return { recacheCost, savingPerCallCost, breakEvenCalls, netBreakEvenCalls };
+  return { recacheCost, savingPerCallCost, breakEvenCalls };
 }
 
 function updateTelemetry(stats: MemeditStats): void {
@@ -1126,9 +1110,6 @@ function formatCost(value: number | undefined): string {
 
 function breakEvenText(stats: MemeditStats): string {
   if (!stats.savingPerCallCost) return "no ongoing saving";
-  if (stats.netBreakEvenCalls !== undefined) {
-    return `net pays back after ${stats.netBreakEvenCalls} API call${stats.netBreakEvenCalls === 1 ? "" : "s"}`;
-  }
   if (!stats.recacheCost) return "cache-positive immediately";
   if (stats.breakEvenCalls === undefined) return "break-even unknown";
   return `cache rewrite pays back after ${stats.breakEvenCalls} API call${stats.breakEvenCalls === 1 ? "" : "s"}`;
@@ -1282,43 +1263,21 @@ function statusMessage(stats: MemeditStats) {
   };
 }
 
-function preflightAllowsRun(
-  contextWindowPercentBefore: number | undefined,
-  candidates: ContextItem[],
-  promptItems: ContextItem[],
-  model: AnyRecord,
-  mode: "auto" | "manual" | "live",
-  options: RunMemeditOptions,
-): boolean {
+function preflightAllowsRun(candidates: ContextItem[], model: AnyRecord, mode: "auto" | "manual" | "live"): boolean {
   if (mode === "manual") return true;
 
   const candidateTokens = estimateContextItemsTokens(candidates, model);
-  const forceContextPercent = options.forceContextPercent ?? (mode === "live" ? LIVE_FORCE_CONTEXT_PERCENT : AUTO_FORCE_CONTEXT_PERCENT);
-  const forcedByContext = (contextWindowPercentBefore ?? 0) >= forceContextPercent;
-
   if (mode === "live") {
-    const enoughWork =
+    return (
       candidateTokens >= LIVE_MIN_CANDIDATE_TOKENS ||
-      (candidates.length >= LIVE_MIN_CANDIDATES && candidateTokens >= Math.floor(LIVE_MIN_CANDIDATE_TOKENS / 2));
-    if (!enoughWork && !forcedByContext) return false;
+      (candidates.length >= LIVE_MIN_CANDIDATES && candidateTokens >= Math.floor(LIVE_MIN_CANDIDATE_TOKENS / 2))
+    );
   }
 
-  const pricing = cachePricing(model);
-  const theoreticalBestSavingPerCall = candidateTokens * pricing.cacheReadPerToken;
-  if (theoreticalBestSavingPerCall <= 0) return forcedByContext;
-
-  // Lower-bound the break-even before spending the prune call. This assumes the
-  // pruner deletes every candidate and causes no kept-tail rewrite. If even that
-  // best case cannot pay back quickly enough, running the selector is pure loss.
-  const estimatedPruneTokens = estimatePruneRequestTokens(promptItems, {
-    upcomingRequest: options.upcomingRequest,
-    promptMode: options.promptMode,
-    model,
-  });
-  const estimatedPruneCost = estimatePrunePassCost(estimatedPruneTokens, model);
-  const bestCaseBreakEven = Math.ceil(estimatedPruneCost / theoreticalBestSavingPerCall);
-  const maxNetBreakEvenCalls = options.maxNetBreakEvenCalls ?? (mode === "live" ? LIVE_MAX_NET_BREAK_EVEN_CALLS : AUTO_MAX_NET_BREAK_EVEN_CALLS);
-  return forcedByContext || bestCaseBreakEven <= maxNetBreakEvenCalls;
+  return (
+    candidateTokens >= AUTO_MIN_CANDIDATE_TOKENS ||
+    (candidates.length >= AUTO_MIN_CANDIDATES && candidateTokens >= Math.floor(AUTO_MIN_CANDIDATE_TOKENS / 2))
+  );
 }
 
 async function runMemedit(
@@ -1351,7 +1310,7 @@ async function runMemedit(
     return lastStats;
   }
 
-  if (!preflightAllowsRun(contextUsageBefore.contextWindowPercentBefore, candidates, promptItems, model as AnyRecord, mode, options)) {
+  if (!preflightAllowsRun(candidates, model as AnyRecord, mode)) {
     const candidateTokens = estimateContextItemsTokens(candidates, model as AnyRecord);
     lastStats = {
       at: Date.now(),
@@ -1365,7 +1324,7 @@ async function runMemedit(
       ...contextUsageBefore,
       tokensSaved: candidateTokens,
       contextPercentSaved: contextTokensBefore > 0 ? (candidateTokens / contextTokensBefore) * 100 : 0,
-      error: "best-case prune economics did not meet automatic threshold",
+      error: "not enough removable material yet; carrying this range forward",
     };
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
     return undefined;
@@ -1428,11 +1387,10 @@ async function runMemedit(
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries, model as AnyRecord);
-    const { recacheCost, savingPerCallCost, breakEvenCalls, netBreakEvenCalls } = recacheEconomics(
+    const { recacheCost, savingPerCallCost, breakEvenCalls } = recacheEconomics(
       deleted.tokensSaved,
       deleted.estimatedRecacheTokens,
       model as AnyRecord,
-      pruneCost,
     );
     const contextPercentSaved = contextTokensBefore > 0 ? (deleted.tokensSaved / contextTokensBefore) * 100 : 0;
     lastStats = {
@@ -1452,7 +1410,6 @@ async function runMemedit(
       recacheCost,
       savingPerCallCost,
       breakEvenCalls,
-      netBreakEvenCalls,
       pruneTokens,
       pruneCost,
       deletedItems: deleted.deletedItems,
@@ -1590,10 +1547,14 @@ export default function memedit(pi: ExtensionAPI) {
     const stats = await runMemedit(ctx, "auto", startLeafId, {
       upcomingRequest: event.prompt,
       promptMode: "next-request",
-      maxNetBreakEvenCalls: AUTO_MAX_NET_BREAK_EVEN_CALLS,
-      forceContextPercent: AUTO_FORCE_CONTEXT_PERCENT,
     });
-    if (stats) return { message: statusMessage(stats) };
+    if (stats) {
+      deferredPruneStartLeafId = undefined;
+      return { message: statusMessage(stats) };
+    }
+    if (lastStats?.mode === "auto" && lastStats.status === "skipped" && lastStats.error?.includes("not enough removable")) {
+      deferredPruneStartLeafId ??= startLeafId;
+    }
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -1629,8 +1590,6 @@ export default function memedit(pi: ExtensionAPI) {
       promptMode: "continuation",
       promptScope: "scoped",
       extraProtectedEntryIds: freshTurnEntryIds,
-      maxNetBreakEvenCalls: LIVE_MAX_NET_BREAK_EVEN_CALLS,
-      forceContextPercent: LIVE_FORCE_CONTEXT_PERCENT,
     });
     if (stats?.status === "applied") {
       lastLivePruneTurnIndex = event.turnIndex;
@@ -1663,8 +1622,9 @@ export default function memedit(pi: ExtensionAPI) {
       return;
     }
 
-    pendingRunStartLeafId = startLeafId;
-    lastCompletedRunStartLeafId = startLeafId;
+    const nextPruneStartLeafId = deferredPruneStartLeafId !== undefined ? deferredPruneStartLeafId : startLeafId;
+    pendingRunStartLeafId = nextPruneStartLeafId;
+    lastCompletedRunStartLeafId = nextPruneStartLeafId;
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
   });
 

@@ -2,7 +2,7 @@
 
 Pi extension that keeps Agent Skills authentic while avoiding a huge always-on skill list in the main model prompt.
 
-On each user request, before the main agent starts, pi-lazy-skills runs a small selector call against the current model. The selector sees skill names/descriptions and the user's request, and must return only a JSON array of skill identifiers. The extension validates those identifiers and injects a compact custom message containing the matching skill descriptions and `SKILL.md` locations.
+On each user request, before the main agent starts, pi-lazy-skills runs a small selector call against the current model. The selector sees skill names/descriptions and the user's request, and must return only a JSON array of skill identifiers. The selector call uses `cacheRetention: "none"` because its prompt is ephemeral. The extension validates those identifiers and injects a compact custom message containing the matching skill descriptions and `SKILL.md` locations.
 
 The main agent then sees only:
 

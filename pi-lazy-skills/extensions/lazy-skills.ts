@@ -185,7 +185,7 @@ async function selectRelevantSkills(
       headers: auth.headers,
       maxTokens: SELECTOR_MAX_TOKENS,
       sessionId: ctx.sessionManager.getSessionId?.(),
-      cacheRetention: "short",
+      cacheRetention: "none",
       signal: ctx.signal,
     },
   );
