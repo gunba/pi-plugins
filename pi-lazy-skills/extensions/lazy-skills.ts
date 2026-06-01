@@ -8,7 +8,6 @@ const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const MAX_SKILLS_PER_TURN = 5;
 const MAX_DESCRIPTION_CHARS = 600;
 const SELECTOR_MAX_TOKENS = 256;
-const SELECTOR_TIMEOUT_MS = 4_000;
 
 const LAZY_SKILLS_PROMPT_NOTE = `Agent Skills are available lazily. A separate pre-turn selector may add a custom message titled "Skills that may be related to the user request". When such a message appears and a listed skill matches the task, use the read tool to load that skill's file. Resolve relative references against the skill directory (parent of SKILL.md / dirname of the path). Explicit /skill:name invocation still works.`;
 
@@ -213,7 +212,8 @@ async function selectRelevantSkills(
       apiKey: auth.apiKey,
       headers: auth.headers,
       maxTokens: SELECTOR_MAX_TOKENS,
-      timeoutMs: SELECTOR_TIMEOUT_MS,
+      // Do not set timeoutMs here: Codex WebSocket treats it as a stream-idle timeout,
+      // so short selector budgets can fail while the model is legitimately thinking.
       maxRetries: 0,
       sessionId: ctx.sessionManager.getSessionId?.(),
       cacheRetention: "none",
