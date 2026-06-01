@@ -48,7 +48,7 @@ so the clone does not need its own context-management apparatus.
 **Goals**
 - Fork the live session into a background clone with one appended task.
 - Inherit auth, model, and full conversation verbatim.
-- Alert main on completion without dumping full clone context; full handoffs are fetched with `clone_result` when needed.
+- Notify main on completion without dumping clone output; full handoffs are written to result files and read only when needed.
 - Let the agent inspect a running clone (last activity + timestamp) and read its
   transcript if a result looks wrong.
 - Keep clone sessions out of resume history.
@@ -149,14 +149,16 @@ pinning remains a future optimisation rather than a shipped guarantee.
 
 ---
 
-## 5. Completion alert and collection
+## 5. Completion notice and collection
 
 When the clone reaches `agent_end` and is idle (no queued work), pi-clones:
 1. Extracts and stores the final assistant text in the parent session's in-memory clone record.
-2. Sends the **parent** a concise completion alert with id, state, task, and a short sanitized preview. The alert steers a parent turn without dumping the clone's full result into context.
-3. Leaves the full handoff available through `clone_result({id})`; `clone_log({id})` remains a diagnostic escape hatch when a result looks wrong.
+2. Writes the final/partial clone answer to a local markdown result file under the hidden clones directory.
+3. Queues a **small parent completion notice** with id, state, task, and the result-file path only. No clone output or preview is injected into context.
+4. Uses `sendMessage({ deliverAs: "followUp", triggerTurn: false })`, so the notice is delivered between agent actions and never starts a model turn by itself.
+5. Leaves `clone_result({id})` as a path lookup; `clone_log({id})` remains a diagnostic escape hatch when a transcript looks wrong.
 
-This avoids duplicate context dumps when the parent is waiting on several clones: the parent watches status/alerts, then fetches only the full results it actually needs.
+This avoids duplicate context dumps and avoids racing the parent's active model/tool loop. The parent reads the result file only when it genuinely needs the full handoff.
 
 ---
 
@@ -182,12 +184,14 @@ Guidance content (the "hey, you can clone yourself" note):
 > Once you delegate work to a clone, do not repeat that same work yourself;
 > continue only with non-overlapping parent work unless the clone reports a
 > blocker or the user redirects you. Do not poll `clone_status` after starting
-> background clones: completion alerts are pushed automatically, so check status
-> only when the user asks, a clone seems stuck, or a meaningful delay has passed.
-> Wait for a completion alert or terminal status before `clone_result`, use
-> `clone_continue` with `mode:"inherit"` when a read-only clone needs to keep going
-> with write tools, and use `clone_dismiss` to write off completed clones you no
-> longer need in status lists. A clone has no user to ask: if it hits a decision
+> background clones: completion notices are queued automatically and point to a
+> local result file, so check status only when the user asks, a clone seems stuck,
+> or a meaningful delay has passed. Wait for a completion notice or terminal
+> status before `clone_result`; it returns the result-file path, and you should
+> read that file only when the full handoff is needed. Use `clone_continue` with
+> `mode:"inherit"` when a read-only clone needs to keep going with write tools,
+> and use `clone_dismiss` to write off completed clones you no longer need in
+> status lists. A clone has no user to ask: if it hits a decision
 > only the human can make, it records the blocker in its final report and stops —
 > it escalates to you, never to the user.
 
@@ -200,8 +204,8 @@ Minimal, primitive-first. One tool the agent reaches for, four thin verbs around
 | Tool | Purpose |
 |---|---|
 | `clone` | Fork self + task; returns `clone_id` immediately by default. Optional `{ mode: "read-only"\|"inherit", background: boolean }`. |
-| `clone_status` | `{id?, include?}` → one-off active-clone inspection by default; `include:"completed"` lists terminal clones that have not been written off, and `include:"all"` includes written-off records too. Rapid active-clone polls are suppressed because completion alerts are pushed automatically. |
-| `clone_result` | `{id}` → final response after the clone reaches `done`/`error`/`stopped`. Running clones return a wait-for-alert reminder rather than encouraging polling. |
+| `clone_status` | `{id?, include?}` → one-off active-clone inspection by default; `include:"completed"` lists terminal clones that have not been written off, and `include:"all"` includes written-off records too. Rapid active-clone polls are suppressed because completion notices are queued automatically. |
+| `clone_result` | `{id}` → result-file path after the clone reaches `done`/`error`/`stopped`. Running clones return a wait-for-notice reminder rather than encouraging polling. |
 | `clone_continue` | `{id, task, mode?, background?}` → continue a terminal clone from its existing branch, optionally with `mode:"inherit"` to enable writes/tools instead of starting over. |
 | `clone_log` | `{id, tail?}` → browse the clone transcript when a result looks nonsensical. |
 | `clone_stop` | `{id}` → abort a clone. |
@@ -296,7 +300,7 @@ them inside clones.
 - Clone overflow → real `AgentSession` compaction (`compaction_start/end`,
   `reason: "overflow"`); no bricking. This is the structural fix for the original
   "runs until token limit and bricks" complaint.
-- Clone error/abort → surfaced via `clone_status` and the completion alert; `clone_result` returns the error plus any partial output when the parent needs it.
+- Clone error/abort → surfaced via `clone_status` and the queued completion notice; final/partial output is written to a result file and `clone_result` returns its path.
 - Orphaned clones on parent shutdown → `session_shutdown` hook aborts all live
   clones and flushes any opt-in transcripts.
 
@@ -319,7 +323,7 @@ them inside clones.
 4. **Cache proof — PRECONDITION MET, empirical check deferred (P2).** Inherited
    messages are byte-identical across the fork (proven), so the prefix *can* match.
    Confirm `cache_read_input_tokens` ≈ shared prefix on real clone turns before making stronger claims.
-5. **Completion alert turn — RESOLVED.** `subscribe` → `agent_end` gives the completion signal; `sendMessage({triggerTurn, deliverAs:"followUp"})` steers a parent turn with a concise alert.
+5. **Completion notice — RESOLVED.** `subscribe` → `agent_end` gives the completion signal; the result is written to a local file and `sendMessage({triggerTurn:false, deliverAs:"followUp"})` queues a concise pointer without starting a parent turn.
 
 *Spike scripts:* `~/.pi/agent/tmp/clones-spike/` (`spike1-fork-resume.mjs`,
 `spike2-createsession.mjs`) — all assertions green.
@@ -332,12 +336,11 @@ them inside clones.
   → `SessionManager.forkFrom` into hidden dir + depth meta → `createAgentSession`
   resume → `prompt` → `finalText` collect. Proven end-to-end in a real headless Pi
   (`CLONE_RESULT=PONG`).
-- **P1 — background + completion alert + inspection — DONE.** Non-blocking `clone`
-  (default), `subscribe` progress stream, `sendMessage({triggerTurn,deliverAs})`
-  concise completion alert, active-only `clone_status`, `clone_result`, `clone_continue`,
+- **P1 — background + queued completion pointer + inspection — DONE.** Non-blocking `clone`
+  (default), `subscribe` progress stream, local markdown result files, `sendMessage({triggerTurn:false,deliverAs:"followUp"})`
+  concise completion pointer, active-only `clone_status`, `clone_result`, `clone_continue`,
   `clone_log`, `clone_stop`, `clone_dismiss`, `/clones`, lazy first-use advice, depth + concurrency guards,
-  `session_shutdown` cleanup. (Background alert suits interactive sessions; a `pi -p`
-  parent may exit before a background clone finishes — use synchronous there.)
+  `session_shutdown` cleanup. (A `pi -p` parent may exit before a background clone finishes — use synchronous there.)
 - **P2 — cache hardening — PRECONDITION MET, empirical check pending.** Byte-identical
   inherited session entries proven; optional prompt pinning/cache breakpoint can harden the hit rate after verifying `cache_read_input_tokens`.
 - **P3 — polish — optional.** Custom `registerMessageRenderer` for `pi-clone-result`,

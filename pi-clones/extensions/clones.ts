@@ -1,5 +1,5 @@
 // pi-clones — fork the running agent into a background clone that inherits the
-// full session context, works one extra task, and alerts main when its result is ready.
+// full session context, works one extra task, and queues a pointer when its result is ready.
 //
 // A clone is the same agent (same system prompt, conversation, tools, auth) plus
 // one appended task — not a context-free "subagent". It runs in-process via the
@@ -9,7 +9,7 @@
 //
 // See DESIGN.md for the full rationale, the spike evidence, and the cost model.
 
-import { readdirSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,7 @@ import type {
 	AgentToolResult,
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -32,6 +33,7 @@ const AGENT_DIR =
 // Hidden clone session dir: a sibling of the normal sessions dir, never scanned
 // by SessionManager.list/listAll, so clones never appear in resume history.
 const CLONES_DIR = join(AGENT_DIR, "clones");
+const RESULTS_DIR = join(CLONES_DIR, "results");
 
 const MAX_DEPTH = 2; // root(0) → clone(1) → sub-clone(2); depth 2 cannot fork further
 const MAX_CONCURRENT = 4; // live clones per owning session
@@ -52,7 +54,7 @@ const CLONE_TOOLS = new Set([
 
 const META_TYPE = "pi-clone-meta"; // CustomEntry: depth marker (not sent to LLM)
 const ADVICE_TYPE = "pi-clones-advice"; // CustomEntry: "advice shown" marker
-const RESULT_TYPE = "pi-clone-result"; // CustomMessage: concise completion alert (full result stays retrievable)
+const RESULT_TYPE = "pi-clone-result"; // CustomMessage: concise queued completion pointer (result lives in a file)
 
 const ADVICE_TEXT =
 	"[pi-clones] You can fork yourself into a clone — a background copy with all of your current " +
@@ -65,11 +67,13 @@ const ADVICE_TEXT =
 	"make, it records the blocker in its result and stops — it escalates to you, never to the user. " +
 	'Default clones are read-only (safe for parallel research); pass mode:"inherit" only for ' +
 	"non-overlapping work that may edit files. Do not poll clone_status after starting background " +
-	"clones: wait for completion alerts, continue non-overlapping work, or check status only when " +
-	"the user asks, a clone seems stuck, or a meaningful delay has passed. Wait for a completion " +
-	"alert or a done/error/stopped status before calling clone_result; use clone_log only to diagnose " +
-	"a confusing result. Use clone_dismiss to write off completed clones you no longer need in status " +
-	"lists.";
+	"clones: completion notices are queued without triggering a model turn and point to a local " +
+	"result file, so continue non-overlapping work or check status only when the user asks, a clone " +
+	"seems stuck, or a meaningful delay has passed. Wait for a completion notice or a " +
+	"done/error/stopped status before calling clone_result; clone_result returns the result-file " +
+	"path, and you should read that file only when the full handoff is needed. Use clone_log only " +
+	"to diagnose a confusing result. Use clone_dismiss to write off completed clones you no longer " +
+	"need in status lists.";
 
 // --------------------------------------------------------------------------
 // Types
@@ -105,6 +109,7 @@ interface CloneRecord {
 	notifiedAt?: number;
 	dismissedAt?: number;
 	sessionFile?: string;
+	resultFile?: string;
 	// biome-ignore lint: SDK runtime objects, kept loosely typed on purpose.
 	session?: any;
 	// biome-ignore lint: SDK runtime objects, kept loosely typed on purpose.
@@ -196,21 +201,25 @@ function hasAdviceMarker(ctx: ExtensionContext): boolean {
 	}
 }
 
-// Prune clone session files older than the retention window. Best-effort and
-// idempotent: it only removes files past the cutoff, so a live or recently-
+function ensureDir(dir: string): void {
+	mkdirSync(dir, { recursive: true });
+}
+
+// Prune clone session/result files older than the retention window. Best-effort
+// and idempotent: it only removes files past the cutoff, so a live or recently-
 // finished clone (fresh mtime) is never touched. Returns the count removed.
-function sweepStaleClones(): number {
+function sweepStaleFiles(dir: string, suffix: string): number {
 	let names: string[];
 	try {
-		names = readdirSync(CLONES_DIR);
+		names = readdirSync(dir);
 	} catch {
 		return 0; // dir absent → nothing to sweep
 	}
 	const cutoff = Date.now() - CLONE_RETENTION_MS;
 	let removed = 0;
 	for (const name of names) {
-		if (!name.endsWith(".jsonl")) continue;
-		const file = join(CLONES_DIR, name);
+		if (!name.endsWith(suffix)) continue;
+		const file = join(dir, name);
 		try {
 			if (statSync(file).mtimeMs < cutoff) {
 				unlinkSync(file);
@@ -221,6 +230,18 @@ function sweepStaleClones(): number {
 		}
 	}
 	return removed;
+}
+
+function sweepStaleClones(): number {
+	return sweepStaleFiles(CLONES_DIR, ".jsonl") + sweepStaleFiles(RESULTS_DIR, ".md");
+}
+
+function timestampForPath(ts: number): string {
+	return new Date(ts).toISOString().replace(/[:.]/g, "-");
+}
+
+function markdownFence(s: string): string {
+	return s.replace(/```/g, "``\\`");
 }
 
 // --------------------------------------------------------------------------
@@ -234,6 +255,7 @@ function sweepStaleClones(): number {
 export default function piClones(pi: ExtensionAPI): void {
 	const clones = new Map<string, CloneRecord>();
 	const lastStatusChecks = new Map<string, number>();
+	let parentUi: ExtensionUIContext | undefined;
 
 	const liveStates: CloneState[] = ["starting", "running", "compacting"];
 	const runningCount = () =>
@@ -336,14 +358,44 @@ export default function piClones(pi: ExtensionAPI): void {
 		return text.trim() ? `${error}\n\nPartial output:\n${text}` : error;
 	}
 
+	function resultMarkdown(rec: CloneRecord): string {
+		const finishedAt = rec.finishedAt ?? Date.now();
+		const text = resultText(rec).trim() || "(no final text)";
+		const error = rec.error ? `\n- Error: ${rec.error}` : "";
+		return `# Clone ${rec.id} result\n\n- State: ${rec.state}\n- Mode: ${rec.mode}\n- Depth: ${rec.depth}\n- Started: ${new Date(rec.startedAt).toISOString()}\n- Finished: ${new Date(finishedAt).toISOString()}\n- Elapsed: ${finishedAt - rec.startedAt}ms\n- Tool calls: ${rec.toolCount}\n- Tokens observed: ${rec.tokens}\n- Clone session file: ${rec.sessionFile ?? "unknown"}${error}\n\n## Task\n\n\`\`\`text\n${markdownFence(rec.task)}\n\`\`\`\n\n## Final answer\n\n${text}\n`;
+	}
+
+	function persistResult(rec: CloneRecord): string | undefined {
+		try {
+			ensureDir(RESULTS_DIR);
+			const file =
+				rec.resultFile ??
+				join(
+					RESULTS_DIR,
+					`${timestampForPath(rec.finishedAt ?? Date.now())}_${rec.id}.md`,
+				);
+			writeFileSync(file, resultMarkdown(rec), "utf8");
+			rec.resultFile = file;
+			return file;
+		} catch {
+			return undefined;
+		}
+	}
+
 	function notifyCompletion(rec: CloneRecord): void {
 		if (rec.notifiedAt) return;
 		rec.notifiedAt = Date.now();
-		const body =
-			rec.state === "error"
-				? `failed: ${rec.error ?? "unknown error"}`
-				: rec.lastText || "no final text";
-		const content = `Clone ${rec.id} finished with state ${rec.state}.\nTask: ${safeSnippet(rec.task, 180)}\nPreview: ${safeSnippet(body, 500)}\n\nUse clone_result({id:"${rec.id}"}) if the full handoff is needed for the next step. Use clone_log only to diagnose a surprising result.`;
+		const file = rec.resultFile ?? persistResult(rec);
+		const fileText = file ?? "(result file could not be written)";
+		const content = `Clone ${rec.id} finished with state ${rec.state}.\nTask: ${safeSnippet(rec.task, 180)}\nResult file: ${fileText}\n\nNo clone output is included here. Read the result file only if the full handoff is needed. Use clone_log only to diagnose a surprising result.`;
+		try {
+			parentUi?.notify(
+				`Clone ${rec.id} finished (${rec.state}). Result: ${fileText}`,
+				rec.state === "error" ? "warning" : "info",
+			);
+		} catch {
+			/* UI may be gone */
+		}
 		try {
 			pi.sendMessage(
 				{
@@ -354,12 +406,14 @@ export default function piClones(pi: ExtensionAPI): void {
 						id: rec.id,
 						task: rec.task,
 						state: rec.state,
+						resultFile: file,
+						sessionFile: rec.sessionFile,
 						toolCount: rec.toolCount,
 						tokens: rec.tokens,
 						elapsedMs: (rec.finishedAt ?? Date.now()) - rec.startedAt,
 					},
 				},
-				{ triggerTurn: true, deliverAs: "followUp" },
+				{ triggerTurn: false, deliverAs: "followUp" },
 			);
 		} catch {
 			/* parent may be gone; nothing to do */
@@ -369,6 +423,8 @@ export default function piClones(pi: ExtensionAPI): void {
 	function finish(rec: CloneRecord): void {
 		if (rec.state === "stopped") {
 			rec.finishedAt = rec.finishedAt ?? Date.now();
+			rec.lastText = finalText(rec);
+			persistResult(rec);
 			teardown(rec);
 			return;
 		}
@@ -376,6 +432,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		rec.state = "done";
 		rec.finishedAt = Date.now();
 		rec.lastText = finalText(rec);
+		persistResult(rec);
 		teardown(rec);
 		if (rec.background) notifyCompletion(rec);
 	}
@@ -383,6 +440,8 @@ export default function piClones(pi: ExtensionAPI): void {
 	function fail(rec: CloneRecord, err: unknown): void {
 		if (rec.state === "stopped") {
 			rec.finishedAt = rec.finishedAt ?? Date.now();
+			rec.lastText = finalText(rec);
+			persistResult(rec);
 			teardown(rec);
 			return;
 		}
@@ -391,6 +450,8 @@ export default function piClones(pi: ExtensionAPI): void {
 		// biome-ignore lint: error is unknown.
 		rec.error = String((err as any)?.message ?? err);
 		rec.finishedAt = Date.now();
+		rec.lastText = finalText(rec);
+		persistResult(rec);
 		teardown(rec);
 		if (rec.background) notifyCompletion(rec);
 	}
@@ -409,6 +470,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		mode: "read-only" | "inherit",
 		background: boolean,
 	): Promise<CloneRecord> {
+		if (ctx.hasUI) parentUi = ctx.ui;
 		const running = runningCount();
 		if (running >= MAX_CONCURRENT) {
 			throw new Error(
@@ -451,6 +513,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		rec.error = undefined;
 		rec.notifiedAt = undefined;
 		rec.dismissedAt = undefined;
+		rec.resultFile = undefined;
 		rec.session = session;
 		rec.unsubscribe = session.subscribe((ev: unknown) => onEvent(rec, ev));
 
@@ -469,6 +532,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		mode: "read-only" | "inherit",
 		background: boolean,
 	): Promise<CloneRecord> {
+		if (ctx.hasUI) parentUi = ctx.ui;
 		const running = runningCount();
 		if (running >= MAX_CONCURRENT) {
 			throw new Error(
@@ -564,14 +628,14 @@ export default function piClones(pi: ExtensionAPI): void {
 		const waitSeconds = Math.ceil((STATUS_POLL_COOLDOWN_MS - (now - last)) / 1000);
 		return (
 			`Active clone status was checked ${ago(last)} ago. Pi intentionally suppresses rapid clone_status polling ` +
-			`because completion alerts are pushed automatically. Do not call clone_status in a loop; wait for alerts, ` +
+			`because completion notices are queued automatically. Do not call clone_status in a loop; wait for a notice, ` +
 			`continue non-overlapping work, or try again in ~${waitSeconds}s if the user explicitly needs an update.`
 		);
 	}
 
 	function activeStatusNotice(hasLiveClone: boolean): string {
 		return hasLiveClone
-			? "\n\nDo not poll clone_status. Completion alerts are pushed automatically; check again only on user request, suspected stuck clone, or after a meaningful delay."
+			? "\n\nDo not poll clone_status. Completion notices are queued automatically; check again only on user request, suspected stuck clone, or after a meaningful delay."
 			: "";
 	}
 
@@ -581,11 +645,11 @@ export default function piClones(pi: ExtensionAPI): void {
 		const dismissed = rec.dismissedAt
 			? ` · written off ${ago(rec.dismissedAt)} ago`
 			: "";
-		const snippet = rec.lastText ? ` · “${truncate(rec.lastText, 80)}”` : "";
+		const result = rec.resultFile ? ` · result ${rec.resultFile}` : "";
 		return (
 			`${rec.id} [${rec.state}] d${rec.depth}/${rec.mode} · “${truncate(rec.task, 60)}” · ` +
 			`${rec.toolCount} tools${usage}${rec.compactions ? ` · ⇊${rec.compactions}` : ""} · ` +
-			`last activity ${ago(rec.lastActivityAt)} ago (${new Date(rec.lastActivityAt).toISOString()})${act}${dismissed}${snippet}` +
+			`last activity ${ago(rec.lastActivityAt)} ago (${new Date(rec.lastActivityAt).toISOString()})${act}${dismissed}${result}` +
 			`${rec.error ? ` · ERROR: ${truncate(rec.error, 120)}` : ""}`
 		);
 	}
@@ -599,13 +663,13 @@ export default function piClones(pi: ExtensionAPI): void {
 		label: "Clone",
 		description:
 			"Fork yourself into a background clone that inherits your full context and works one extra task in " +
-			"parallel. Returns a clone_id immediately and alerts you when the clone finishes. Use for " +
+			"parallel. Returns a clone_id immediately and queues a small completion notice with a result-file path. Use for " +
 			"parallelisable research/investigation; the clone already has your context, so state only the new task.",
 		promptGuidelines: [
 			"After delegating a task to a clone, do not repeat the same work yourself; continue only with non-overlapping work unless the clone reports a blocker or the user redirects you.",
-			"Do not poll clone_status in a loop. Background clones push completion alerts; call clone_status only when the user asks for an update, a clone appears stuck, or a meaningful delay has passed.",
-			"Do not call clone_result for running clones; wait for a completion alert or a done/error/stopped status. Use clone_log only to diagnose surprising results.",
-			"Clone completion alerts are concise; fetch clone_result only when the full handoff is needed for the next step, then use clone_dismiss to write off completed clones you no longer need listed.",
+			"Do not poll clone_status in a loop. Background clones queue completion notices without triggering a model turn; call clone_status only when the user asks for an update, a clone appears stuck, or a meaningful delay has passed.",
+			"Do not call clone_result for running clones; wait for a completion notice or a done/error/stopped status. clone_result returns a local result-file path; read that file only when the full handoff is needed. Use clone_log only to diagnose surprising results.",
+			"Clone completion notices are concise pointers, not summaries. After consuming a completed clone, use clone_dismiss to write off records you no longer need listed.",
 			'If a clone started read-only but now needs to edit, use clone_continue with mode:"inherit" and a focused continuation task instead of starting over from scratch.',
 		],
 		parameters: Type.Object({
@@ -624,7 +688,7 @@ export default function piClones(pi: ExtensionAPI): void {
 			background: Type.Optional(
 				Type.Boolean({
 					description:
-						"Default true: return immediately and alert on completion. false: block and return inline.",
+						"Default true: return immediately and queue a completion notice. false: block and return the result-file path inline.",
 				}),
 			),
 		}),
@@ -646,8 +710,8 @@ export default function piClones(pi: ExtensionAPI): void {
 							{
 								type: "text",
 								text:
-									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). It will alert you when ` +
-									`finished. Do not poll clone_status; wait for the completion alert. Use clone_status({id:"${rec.id}"}) ` +
+									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). It will queue a completion notice with ` +
+									`a local result-file path when finished. Do not poll clone_status; use clone_status({id:"${rec.id}"}) ` +
 									`only if the user asks for an update or the clone seems stuck, and wait for done/error/stopped before ` +
 									`clone_result({id:"${rec.id}"}).`,
 							},
@@ -659,10 +723,16 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `${advice}Clone ${rec.id} finished (${rec.state}).\n\n${rec.lastText || "(no final text — use clone_log)"}`,
+							text: `${advice}Clone ${rec.id} finished (${rec.state}). Result file: ${rec.resultFile ?? "(not written)"}`,
 						},
 					],
-					details: { id: rec.id, state: rec.state, depth: rec.depth, mode },
+					details: {
+						id: rec.id,
+						state: rec.state,
+						depth: rec.depth,
+						mode,
+						resultFile: rec.resultFile,
+					},
 				};
 			} catch (e) {
 				// biome-ignore lint: error is unknown.
@@ -680,7 +750,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_status",
 		label: "Clone status",
 		description:
-			'One-off inspection of clones spawned by this session; active clones are listed by default. This is not a polling tool: background clones push completion alerts. Pass include:"completed" or include:"all" ' +
+			'One-off inspection of clones spawned by this session; active clones are listed by default. This is not a polling tool: background clones queue completion notices. Pass include:"completed" or include:"all" ' +
 			"when you need written-off/completed clone records.",
 		parameters: Type.Object({
 			id: Type.Optional(
@@ -796,7 +866,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_result",
 		label: "Clone result",
 		description:
-			"Fetch a clone's final answer after it reaches done/error/stopped. If the clone is still running, wait for its completion alert rather than polling.",
+			"Return the local result-file path for a clone after it reaches done/error/stopped. Read the file only when the full handoff is needed.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
 		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
@@ -811,21 +881,32 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; do not poll for progress. Wait for the completion alert or check status only after a meaningful delay before fetching the final result.`,
+							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; do not poll for progress. Wait for the queued completion notice or check status only after a meaningful delay before asking for the result-file path.`,
 						},
 					],
 					details: { id: rec.id, state: rec.state },
 				};
 			}
-			const text = resultText(rec);
+			const file = rec.resultFile ?? persistResult(rec);
+			if (file) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Clone ${rec.id} is ${rec.state}. Result file: ${file}\nRead it with read({path:${JSON.stringify(file)}}) only if the full handoff is needed.`,
+						},
+					],
+					details: { id: rec.id, state: rec.state, resultFile: file },
+				};
+			}
 			return {
 				content: [
 					{
 						type: "text",
-						text: text || "(no output — use clone_log to inspect)",
+						text: "Result file is unavailable; use clone_log to inspect the transcript if needed.",
 					},
 				],
-				details: { id: rec.id, state: rec.state },
+				details: { id: rec.id, state: rec.state, resultFile: undefined },
 			};
 		},
 	});
@@ -850,7 +931,7 @@ export default function piClones(pi: ExtensionAPI): void {
 			background: Type.Optional(
 				Type.Boolean({
 					description:
-						"Default true: return immediately and alert on completion. false: block and return inline.",
+						"Default true: return immediately and queue a completion notice. false: block and return the result-file path inline.",
 				}),
 			),
 		}),
@@ -883,7 +964,7 @@ export default function piClones(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `Clone ${continued.id} continued (${mode}). It will alert you when finished. Do not poll clone_status; use it only if the user asks for an update or the clone seems stuck.`,
+								text: `Clone ${continued.id} continued (${mode}). It will queue a completion notice with a local result-file path when finished. Do not poll clone_status; use it only if the user asks for an update or the clone seems stuck.`,
 							},
 						],
 						details: { id: continued.id, state: continued.state, mode },
@@ -893,10 +974,15 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `Clone ${continued.id} continuation finished (${continued.state}).\n\n${continued.lastText || "(no final text — use clone_log)"}`,
+							text: `Clone ${continued.id} continuation finished (${continued.state}). Result file: ${continued.resultFile ?? "(not written)"}`,
 						},
 					],
-					details: { id: continued.id, state: continued.state, mode },
+					details: {
+						id: continued.id,
+						state: continued.state,
+						mode,
+						resultFile: continued.resultFile,
+					},
 				};
 			} catch (e) {
 				// biome-ignore lint: error unknown.
@@ -966,7 +1052,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_stop",
 		label: "Clone stop",
 		description:
-			"Abort a running clone. Its final/partial output remains available via clone_result / clone_log after it stops.",
+			"Abort a running clone. Its final/partial output is written to a result file; clone_result returns the path after it stops.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
 		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
@@ -990,11 +1076,18 @@ export default function piClones(pi: ExtensionAPI): void {
 			} catch {
 				/* ignore */
 			}
+			rec.finishedAt = Date.now();
 			rec.lastText = finalText(rec);
+			persistResult(rec);
 			teardown(rec);
 			return {
-				content: [{ type: "text", text: `clone ${rec.id} stopped` }],
-				details: { id: rec.id, state: rec.state },
+				content: [
+					{
+						type: "text",
+						text: `clone ${rec.id} stopped${rec.resultFile ? `; partial result file: ${rec.resultFile}` : ""}`,
+					},
+				],
+				details: { id: rec.id, state: rec.state, resultFile: rec.resultFile },
 			};
 		},
 	});
