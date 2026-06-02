@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -20,7 +20,8 @@
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
       "./pi-settings-sync/extensions/settings-sync.ts",
-      "./pi-clones/extensions/clones.ts"
+      "./pi-clones/extensions/clones.ts",
+      "./pi-context-guard/extensions/context-guard.ts"
     ],
     "skills": [
       "./pi-settings-sync/skills"
