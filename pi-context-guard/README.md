@@ -2,13 +2,19 @@
 
 Pi extension that prevents a single oversized context item from reaching the model.
 
-It uses Pi's `context` event as the single invariant point: every provider request, including automatic continuations after tool calls, is built from this context. If a tool result, extension custom message, bash output, assistant message, or older user message is too large, the extension replaces that item with a concise warning before it can be sent to the provider. Tool results keep their `toolCallId`/`toolName` pairing so provider tool protocols remain valid.
+It uses Pi's `context` event as the single invariant point: every provider request, including automatic continuations after tool calls, is built from this context. If a tool result, extension custom message, bash output, assistant message, or older user message is too large, the extension saves the original text to a markdown file and replaces the context item with a concise pointer to that file before it can be sent to the provider. Tool results keep their `toolCallId`/`toolName` pairing so provider tool protocols remain valid.
 
 ## Defaults
 
 - Enabled by default.
 - Per-message guardrail: `50k` estimated tokens.
 - The latest user prompt is protected by default; set `user on` only if you want pasted user prompts guarded too.
+
+Saved files go to:
+
+```text
+~/.pi/agent/context-guard/stripped/*.md
+```
 
 Pi's normal compaction/overflow path remains responsible for total-context pressure. This extension only strips pathological single messages.
 
@@ -38,7 +44,9 @@ Settings persist to:
 - `PI_CONTEXT_GUARD_USER_MESSAGES`
 - `PI_CONTEXT_GUARD_NOTIFY`
 - `PI_CONTEXT_GUARD_SETTINGS`
+- `PI_CONTEXT_GUARD_DIR`
+- `PI_CONTEXT_GUARD_OUTPUT_DIR`
 
 ## Why
 
-Auto-compaction usually runs after an agent run ends. Automatic continuations after tool calls happen inside the same run, so a very large tool result can otherwise be appended and immediately sent to the provider before compaction gets a chance to run. This extension strips that one item at the final context boundary.
+Auto-compaction usually runs after an agent run ends. Automatic continuations after tool calls happen inside the same run, so a very large tool result can otherwise be appended and immediately sent to the provider before compaction gets a chance to run. This extension saves and strips that one item at the final context boundary, so the agent can inspect the saved markdown file without rerunning the original tool.

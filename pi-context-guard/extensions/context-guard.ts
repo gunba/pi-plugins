@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,10 +21,14 @@ type StripRecord = {
 	originalTokens: number;
 	originalBytes: number;
 	limitTokens: number;
+	savedFile?: string;
+	saveError?: string;
 };
 
 const NAME = "pi-context-guard";
-const SETTINGS_FILE = process.env.PI_CONTEXT_GUARD_SETTINGS || join(homedir(), ".pi", "agent", "context-guard", "settings.json");
+const BASE_DIR = process.env.PI_CONTEXT_GUARD_DIR || join(homedir(), ".pi", "agent", "context-guard");
+const SETTINGS_FILE = process.env.PI_CONTEXT_GUARD_SETTINGS || join(BASE_DIR, "settings.json");
+const OUTPUT_DIR = process.env.PI_CONTEXT_GUARD_OUTPUT_DIR || join(BASE_DIR, "stripped");
 const DEFAULT_SETTINGS: Settings = {
 	enabled: true,
 	maxMessageTokens: 50_000,
@@ -38,6 +43,7 @@ let stripCount = 0;
 let lastStrip: StripRecord | undefined;
 const notifiedOrder: string[] = [];
 const notified = new Set<string>();
+const savedFiles = new Map<string, string>();
 
 function bool(value: unknown, fallback: boolean): boolean {
 	if (typeof value === "boolean") return value;
@@ -83,16 +89,20 @@ function withEnv(base: Settings): Settings {
 	};
 }
 
-function saveSettings(): void {
-	mkdirSync(dirname(SETTINGS_FILE), { recursive: true });
-	const tempFile = `${SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
+function writeFileAtomic(file: string, content: string): void {
+	mkdirSync(dirname(file), { recursive: true });
+	const tempFile = `${file}.tmp-${process.pid}-${Date.now()}`;
 	try {
-		writeFileSync(tempFile, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-		renameSync(tempFile, SETTINGS_FILE);
+		writeFileSync(tempFile, content, "utf8");
+		renameSync(tempFile, file);
 	} catch (error) {
 		rmSync(tempFile, { force: true });
 		throw error;
 	}
+}
+
+function saveSettings(): void {
+	writeFileAtomic(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 function parseTokens(text: string): number | undefined {
@@ -117,10 +127,29 @@ function safeEstimate(message: AgentMessage): number {
 	}
 }
 
+function contentText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (part?.type === "text" && typeof part.text === "string") return part.text;
+			if (part?.type === "thinking" && typeof part.thinking === "string") return part.thinking;
+			if (part?.type === "toolCall") return `Tool call: ${part.name ?? "unknown"}\nArguments:\n${JSON.stringify(part.arguments ?? {}, null, 2)}`;
+			return "";
+		})
+		.filter((text) => text.length > 0)
+		.join("\n");
+}
+
 function contentBytes(content: unknown): number {
-	if (typeof content === "string") return Buffer.byteLength(content, "utf8");
-	if (!Array.isArray(content)) return 0;
-	return content.reduce((sum, part) => sum + (part?.type === "text" && typeof part.text === "string" ? Buffer.byteLength(part.text, "utf8") : 0), 0);
+	return Buffer.byteLength(contentText(content), "utf8");
+}
+
+function originalText(message: AnyMessage): string {
+	if (message.role === "bashExecution") return `Command:\n${message.command ?? ""}\n\nOutput:\n${message.output ?? ""}`;
+	if (message.role === "branchSummary" || message.role === "compactionSummary") return String(message.summary ?? "");
+	const text = contentText(message.content);
+	return text.length > 0 ? text : JSON.stringify(message, null, 2);
 }
 
 function messageBytes(message: AnyMessage): number {
@@ -158,10 +187,71 @@ function stripRecord(message: AgentMessage, index: number, originalTokens: numbe
 	};
 }
 
+function safeFileStem(record: StripRecord): string {
+	const slug = record.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "context";
+	const hash = createHash("sha256").update(record.fingerprint).digest("hex").slice(0, 12);
+	return `${slug}-${hash}`;
+}
+
+function metadataFor(message: AnyMessage, record: StripRecord): Record<string, unknown> {
+	return {
+		extension: NAME,
+		label: record.label,
+		role: message.role,
+		toolName: message.toolName,
+		toolCallId: message.toolCallId,
+		customType: message.customType,
+		isError: message.isError,
+		stopReason: message.stopReason,
+		timestamp: message.timestamp,
+		originalTokens: record.originalTokens,
+		originalBytes: record.originalBytes,
+		limitTokens: record.limitTokens,
+		fingerprint: record.fingerprint,
+		savedAt: new Date().toISOString(),
+	};
+}
+
+function markdownFor(message: AgentMessage, record: StripRecord): string {
+	const anyMessage = message as AnyMessage;
+	return [
+		"# Stripped Pi context",
+		"",
+		"This file contains context that pi-context-guard removed from a model request because the single message was too large.",
+		"",
+		"## Metadata",
+		"",
+		"```json",
+		JSON.stringify(metadataFor(anyMessage, record), null, 2),
+		"```",
+		"",
+		"## Original text",
+		"",
+		originalText(anyMessage),
+		"",
+	].join("\n");
+}
+
+function saveOriginal(message: AgentMessage, record: StripRecord): StripRecord {
+	const existing = savedFiles.get(record.fingerprint);
+	if (existing) return { ...record, savedFile: existing };
+	const file = join(OUTPUT_DIR, `${safeFileStem(record)}.md`);
+	try {
+		writeFileAtomic(file, markdownFor(message, record));
+		savedFiles.set(record.fingerprint, file);
+		return { ...record, savedFile: file };
+	} catch (error) {
+		return { ...record, saveError: error instanceof Error ? error.message : String(error) };
+	}
+}
+
 function strippedText(record: StripRecord): string {
+	const location = record.savedFile
+		? ` Original content was saved to ${record.savedFile}. Use read/grep or another narrow inspection tool if the data is still needed.`
+		: ` Original content could not be saved to disk: ${record.saveError ?? "unknown error"}.`;
 	return `[${NAME}] ${record.label} was stripped before the model request because it exceeded the per-message guardrail of ${tokenText(record.limitTokens)}. ` +
-		`Original size was approximately ${tokenText(record.originalTokens)} (${formatSize(record.originalBytes)} text). ` +
-		"Treat the original content as unavailable. Re-run the tool with a narrower query, summarized/indexed output, or a smaller file range if the missing data is still needed.";
+		`Original size was approximately ${tokenText(record.originalTokens)} (${formatSize(record.originalBytes)} text).` +
+		location;
 }
 
 function withGuardDetails(details: unknown, record: StripRecord, originalIsError?: boolean): unknown {
@@ -175,7 +265,7 @@ function strippedMessage(message: AgentMessage, record: StripRecord): AgentMessa
 	if (anyMessage.role === "toolResult") return { ...anyMessage, content, details: withGuardDetails(anyMessage.details, record, anyMessage.isError === true), isError: true } as AgentMessage;
 	if (anyMessage.role === "assistant") return { ...anyMessage, content: [...content, ...(Array.isArray(anyMessage.content) ? anyMessage.content.filter((part) => part?.type === "toolCall") : [])] } as AgentMessage;
 	if (anyMessage.role === "custom") return { ...anyMessage, content: content[0].text, details: withGuardDetails(anyMessage.details, record) } as AgentMessage;
-	if (anyMessage.role === "bashExecution") return { ...anyMessage, output: content[0].text, truncated: true, fullOutputPath: undefined } as AgentMessage;
+	if (anyMessage.role === "bashExecution") return { ...anyMessage, output: content[0].text, truncated: true, fullOutputPath: record.savedFile } as AgentMessage;
 	if (anyMessage.role === "branchSummary" || anyMessage.role === "compactionSummary") return { ...anyMessage, summary: content[0].text } as AgentMessage;
 	return { ...anyMessage, content } as AgentMessage;
 }
@@ -188,7 +278,7 @@ function stripOversizedMessages(messages: AgentMessage[]): { messages: AgentMess
 		if (!canStrip(messages[i], i, latestUser)) continue;
 		const tokens = safeEstimate(messages[i]);
 		if (tokens <= settings.maxMessageTokens) continue;
-		const record = stripRecord(messages[i], i, tokens);
+		const record = saveOriginal(messages[i], stripRecord(messages[i], i, tokens));
 		if (next === messages) next = messages.slice();
 		next[i] = strippedMessage(messages[i], record);
 		records.push(record);
@@ -211,18 +301,20 @@ function report(records: StripRecord[], ctx: ExtensionContext): void {
 	lastStrip = fresh[fresh.length - 1];
 	if (!ctx.hasUI || !settings.showNotifications) return;
 	const largest = fresh.reduce((best, item) => (item.originalTokens > best.originalTokens ? item : best), fresh[0]);
-	ctx.ui.notify(`${NAME} stripped ${fresh.length} oversized context item${fresh.length === 1 ? "" : "s"}; largest was ${largest.label} at ${tokenText(largest.originalTokens)}.`, "warning");
+	const location = largest.savedFile ? ` Saved to ${largest.savedFile}.` : "";
+	ctx.ui.notify(`${NAME} stripped ${fresh.length} oversized context item${fresh.length === 1 ? "" : "s"}; largest was ${largest.label} at ${tokenText(largest.originalTokens)}.${location}`, "warning");
 }
 
 function status(): string {
 	return [
 		`${NAME}: ${settings.enabled ? "on" : "off"}`,
 		`settings: ${SETTINGS_FILE}`,
+		`stripped files: ${OUTPUT_DIR}`,
 		`per-message limit: ${tokenText(settings.maxMessageTokens)}`,
 		`latest user prompt: ${settings.sanitizeLatestUserMessage ? "guarded" : "protected"}`,
 		`notifications: ${settings.showNotifications ? "on" : "off"}`,
 		`stripped this runtime: ${stripCount}`,
-		lastStrip ? `last: ${lastStrip.label} (${tokenText(lastStrip.originalTokens)})` : "last: none",
+		lastStrip ? `last: ${lastStrip.label} (${tokenText(lastStrip.originalTokens)})${lastStrip.savedFile ? ` -> ${lastStrip.savedFile}` : ""}` : "last: none",
 		settingsLoadError ? `warning: ${settingsLoadError}` : undefined,
 	]
 		.filter(Boolean)
