@@ -5,7 +5,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 ## Extensions
 
 - `pi-codex-transport` — Codex WebSocket/SSE transport fixes, timeout control, and diagnostics.
-- `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer.
+- `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer, plus a cumulative conversation token/cost breakdown (uncached input, cached input with hit rate, output, and total `$`) on the stats line; `/pi-usage` prints the full per-bucket token and cost attribution for the current model.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
 - `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
@@ -38,6 +38,8 @@ pi update
 ## Development
 
 The package manifest at the repository root loads the extension files from the `pi-*` subdirectories. Keep plugin directories and package names prefixed with `pi-`.
+
+The footer stats line derives its token breakdown from the per-message `usage` Pi already records (input / cacheRead / cacheWrite / output and matching per-bucket cost), which is normalised identically for Codex and Claude, so cached vs uncached input and spend are exact for both — no tokenizer estimation required.
 
 `pi-usage` does not poll any usage endpoints. It updates from data already returned by provider requests — Codex `x-codex-*` headers and `codex.rate_limits` WebSocket events, and Claude `anthropic-ratelimit-unified-*` headers (sent when Pi uses an Anthropic OAuth/Claude Code subscription) — persists the latest snapshot per provider locally, and refreshes countdown/session footer rendering during the conversation. The footer shows whichever provider was used most recently.
 

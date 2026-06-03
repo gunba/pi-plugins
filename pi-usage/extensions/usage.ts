@@ -92,20 +92,39 @@ type UsageSnapshot = {
 };
 type UsageSnapshots = Partial<Record<UsageSource, UsageSnapshot>>;
 
+type UsageCost = {
+  total?: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+};
+
 type AssistantUsage = {
   input?: number;
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
-  cost?: { total?: number };
+  cost?: UsageCost;
 };
 
+// Token buckets are normalised identically for Codex and Claude:
+//   input      = fresh, uncached input tokens billed at the full input rate
+//   cacheRead  = input tokens served cheaply from the prompt cache
+//   cacheWrite = input tokens written to the cache this turn (Anthropic premium; 0 on Codex)
+//   output     = output tokens
+// They never overlap: totalTokens == input + output + cacheRead + cacheWrite.
+// Per-bucket dollar costs are summed alongside so /pi-usage can attribute spend.
 type SessionStats = {
   totalInput: number;
   totalOutput: number;
   totalCacheRead: number;
   totalCacheWrite: number;
   totalCost: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
 };
 
 type SessionStatsCache = {
@@ -557,6 +576,13 @@ function formatUsageDetails(nowMs = Date.now()): string {
   return lines.join("\n").trimEnd();
 }
 
+function formatMoney(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return "$0";
+  const abs = Math.abs(value);
+  if (abs < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
   if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
@@ -583,7 +609,17 @@ function usageFromEntry(entry: unknown): AssistantUsage | undefined {
 }
 
 function emptySessionStats(): SessionStats {
-  return { totalInput: 0, totalOutput: 0, totalCacheRead: 0, totalCacheWrite: 0, totalCost: 0 };
+  return {
+    totalInput: 0,
+    totalOutput: 0,
+    totalCacheRead: 0,
+    totalCacheWrite: 0,
+    totalCost: 0,
+    costInput: 0,
+    costOutput: 0,
+    costCacheRead: 0,
+    costCacheWrite: 0,
+  };
 }
 
 function computeSessionStats(entries: readonly unknown[]): SessionStats {
@@ -596,6 +632,10 @@ function computeSessionStats(entries: readonly unknown[]): SessionStats {
     stats.totalCacheRead += usage.cacheRead || 0;
     stats.totalCacheWrite += usage.cacheWrite || 0;
     stats.totalCost += usage.cost?.total || 0;
+    stats.costInput += usage.cost?.input || 0;
+    stats.costOutput += usage.cost?.output || 0;
+    stats.costCacheRead += usage.cost?.cacheRead || 0;
+    stats.costCacheWrite += usage.cost?.cacheWrite || 0;
   }
   return stats;
 }
@@ -624,6 +664,33 @@ function refreshSessionStats(ctx: ExtensionContext): void {
   sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats: computeSessionStats(current.entries) };
 }
 
+function formatSessionCostDetails(ctx: ExtensionContext): string {
+  const stats = cachedSessionStats(ctx);
+  const cachedInput = stats.totalCacheRead;
+  const freshInput = stats.totalInput + stats.totalCacheWrite;
+  const allInput = cachedInput + freshInput;
+  if (allInput === 0 && stats.totalOutput === 0) return "No token usage recorded for this session yet.";
+
+  const hitPercent = allInput > 0 ? Math.round((cachedInput / allInput) * 100) : 0;
+  const model = ctx.model;
+  const isSubscription = model?.api === "openai-codex-responses";
+  const modelLabel = model
+    ? `Model: ${model.id}${model.provider ? ` (${model.provider})` : ""}${isSubscription ? " — subscription, $ is notional" : ""}`
+    : "Model: unknown";
+
+  const row = (label: string, tokens: number, cost: number, extra = ""): string =>
+    `${`${label}:`.padEnd(16)}${formatTokens(tokens).padStart(8)}  ${formatMoney(cost).padStart(9)}${extra}`;
+
+  return [
+    "Session tokens & cost (cumulative)",
+    modelLabel,
+    row("Input uncached", freshInput, stats.costInput + stats.costCacheWrite),
+    row("Input cached", cachedInput, stats.costCacheRead, `  (${hitPercent}% of input)`),
+    row("Output", stats.totalOutput, stats.costOutput),
+    row("Total", allInput + stats.totalOutput, stats.totalCost),
+  ].join("\n");
+}
+
 function buildStatsLine(
   ctx: ExtensionContext,
   theme: ExtensionContext["ui"]["theme"],
@@ -640,11 +707,21 @@ function buildStatsLine(
   const autoIndicator = contextUsageDetails?.autoCompact === false ? "" : " (auto)";
   const contextPercentDisplay = `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
 
+  // Only input is ever cached, so the cost story is three buckets: fresh input
+  // (full/premium rate), cached input re-reads (cheap), and output. "in" folds
+  // cache writes into fresh input because those tokens are processed this turn;
+  // "cache" is the cached read with its hit rate over all input.
+  const cachedInput = totalCacheRead;
+  const freshInput = totalInput + totalCacheWrite;
+  const allInput = cachedInput + freshInput;
+
   const statsParts: string[] = [];
-  if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-  if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-  if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-  if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
+  if (freshInput) statsParts.push(`in ${formatTokens(freshInput)}`);
+  if (cachedInput) {
+    const hitPercent = allInput > 0 ? Math.round((cachedInput / allInput) * 100) : 0;
+    statsParts.push(`cache ${formatTokens(cachedInput)}·${hitPercent}%`);
+  }
+  if (totalOutput) statsParts.push(`out ${formatTokens(totalOutput)}`);
   if (totalCost || ctx.model?.api === "openai-codex-responses") {
     statsParts.push(`$${totalCost.toFixed(3)}${ctx.model?.api === "openai-codex-responses" ? " (sub)" : ""}`);
   }
@@ -885,6 +962,8 @@ export default function usage(pi: ExtensionAPI): void {
 
       ctx.ui.notify(
         [
+          formatSessionCostDetails(ctx),
+          "",
           formatUsageDetails(),
           "",
           "Commands: /pi-usage status | footer on | footer off",
