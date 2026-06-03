@@ -8,19 +8,28 @@ const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const MAX_SKILLS_PER_TURN = 5;
 const MAX_DESCRIPTION_CHARS = 600;
 const SELECTOR_MAX_TOKENS = 256;
+// Below this estimated selector-prefix size, prompt caching cannot engage (OpenAI and
+// Anthropic floors are ~1024 tokens) and hiding skills saves little context, so we fall
+// back to Pi's default skill prompt instead of running the selector at all.
+// Override with PI_LAZY_SKILLS_MIN_TOKENS.
+const MIN_PREFIX_TOKENS = 1024;
+const MIN_PREFIX_TOKENS_ENV = "PI_LAZY_SKILLS_MIN_TOKENS";
+const CHARS_PER_TOKEN = 4;
 
 const LAZY_SKILLS_PROMPT_NOTE = `Agent Skills are available lazily. A separate pre-turn selector may add a custom message titled "Skills that may be related to the user request". When such a message appears and a listed skill matches the task, use the read tool to load that skill's file. Resolve relative references against the skill directory (parent of SKILL.md / dirname of the path). Explicit /skill:name invocation still works.`;
 
 const SELECTOR_SYSTEM_PROMPT = `You are pi-lazy-skills' skill selector.
 
-Given a user request and a list of Agent Skills, choose only skills that are likely to be useful for the main agent's next turn.
+You are given a fixed skill catalog below. Each user message contains the main agent's request and a list of already-advised skills to exclude.
+
+Choose only skills from the catalog that are likely to be useful for the main agent's next turn.
 
 Rules:
 - Return ONLY a JSON array of skill names, e.g. ["skill-a", "skill-b"].
-- Use exact skill names from the provided list.
+- Use exact skill names from the catalog.
 - Choose at most ${MAX_SKILLS_PER_TURN} skills.
 - Prefer high precision. Return [] when no skill clearly helps.
-- Do not include skills marked already advised or skills not in the list.
+- Never return a skill listed in the user message's "Already advised" exclude list.
 - Do not explain your choices.`;
 
 type AnyRecord = Record<string, any>;
@@ -119,23 +128,44 @@ function imageAttachmentMetadata(images: readonly ImageContent[] | undefined): s
   return `\n\nUser attachments:\n- images: ${images.length}\n- mime types: ${mimeSummary || "unknown"}\n- approximate total image bytes: ${kb} KiB`;
 }
 
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+function minPrefixTokens(): number {
+  const raw = process.env[MIN_PREFIX_TOKENS_ENV];
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : MIN_PREFIX_TOKENS;
+}
+
+// The catalog is the cached prefix: byte-identical every turn (sorted upstream, no per-turn
+// flags, no timestamps) so OpenAI block-hashing and Anthropic cache_control both reuse it.
+function buildSelectorCatalog(skills: SkillInfo[]): string {
+  const lines = skills.map(
+    (skill) => `- name: ${skill.name}\n  description: ${compactText(skill.description)}\n  location: ${skill.filePath}`,
+  );
+  return `Skill catalog (fixed for this session):\n${lines.join("\n")}`;
+}
+
+function buildSelectorSystemPrompt(skills: SkillInfo[]): string {
+  return `${SELECTOR_SYSTEM_PROMPT}\n\n${buildSelectorCatalog(skills)}`;
+}
+
+// Only the variable tail lives here: the request and the exclude list. Keeping it after the
+// catalog (which sits in the system prompt) preserves the stable cacheable prefix.
 function selectorUserMessage(
   prompt: string,
-  skills: SkillInfo[],
   alreadyAdvised: Set<string>,
   images: readonly ImageContent[] | undefined,
 ): Message {
-  const skillLines = skills.map((skill) => {
-    const advised = alreadyAdvised.has(skill.name) ? " already_advised=true" : "";
-    return `- name: ${skill.name}${advised}\n  description: ${compactText(skill.description)}\n  location: ${skill.filePath}`;
-  });
-
+  const excluded = [...alreadyAdvised].sort();
+  const excludeLine = excluded.length ? excluded.join(", ") : "(none)";
   return {
     role: "user",
     content: [
       {
         type: "text",
-        text: `User request:\n${prompt.trim() || "(empty)"}${imageAttachmentMetadata(images)}\n\nAvailable skills:\n${skillLines.join("\n")}`,
+        text: `User request:\n${prompt.trim() || "(empty)"}${imageAttachmentMetadata(images)}\n\nAlready advised (do not return these): ${excludeLine}`,
       },
     ],
     timestamp: Date.now(),
@@ -205,8 +235,8 @@ async function selectRelevantSkills(
   const response = await completeSimple(
     model,
     {
-      systemPrompt: SELECTOR_SYSTEM_PROMPT,
-      messages: [selectorUserMessage(prompt, skills, alreadyAdvised, images)],
+      systemPrompt: buildSelectorSystemPrompt(skills),
+      messages: [selectorUserMessage(prompt, alreadyAdvised, images)],
     },
     {
       apiKey: auth.apiKey,
@@ -216,7 +246,9 @@ async function selectRelevantSkills(
       // so short selector budgets can fail while the model is legitimately thinking.
       maxRetries: 0,
       sessionId: ctx.sessionManager.getSessionId?.(),
-      cacheRetention: "none",
+      // "short" (5-min ephemeral) caches the stable catalog prefix across this session's
+      // selector calls. Not "long": 1h Anthropic cache writes cost 2x base input tokens.
+      cacheRetention: "short",
       signal: ctx.signal,
     },
   );
@@ -248,6 +280,10 @@ export default function lazySkills(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     const skills = extractSkills(event.systemPromptOptions);
     if (skills.length === 0) return;
+
+    // Below the cache floor the selector prefix cannot be cached and hiding skills saves
+    // little context; fall back to Pi's default skill prompt (all skills in the main prompt).
+    if (estimateTokens(buildSelectorSystemPrompt(skills)) < minPrefixTokens()) return;
 
     const key = sessionKey(ctx);
     // Recompute from the active branch every turn so /tree navigation and compaction cannot leave stale advice state.
