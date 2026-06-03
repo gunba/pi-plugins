@@ -601,6 +601,38 @@ function entryIcon(entry: ConfigEntry): string {
   return "•";
 }
 
+const MAX_PREVIEW_CONTENT_LINES = 120;
+const MAX_PREVIEW_BYTES = 256 * 1024;
+const previewFileCache = new Map<string, { mtimeMs: number; size: number; lines: string[] }>();
+
+// Reads a truncated, cached view of an entry's underlying file for the hover preview pane.
+// Cached by path and invalidated on mtime/size change so repeated renders stay cheap.
+function entryContentPreview(entry: ConfigEntry): string[] {
+  if (!entry.exists) return [];
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(entry.path);
+  } catch {
+    return [];
+  }
+  if (!stat.isFile()) return [];
+  if (stat.size > MAX_PREVIEW_BYTES) return [`(file is ${stat.size.toLocaleString()} bytes — too large to preview)`];
+  const cached = previewFileCache.get(entry.path);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.lines;
+  let lines: string[];
+  try {
+    lines = readFileSync(entry.path, "utf8")
+      .replace(/\r\n/g, "\n")
+      .replace(/\t/g, "  ")
+      .split("\n")
+      .slice(0, MAX_PREVIEW_CONTENT_LINES);
+  } catch {
+    lines = [];
+  }
+  previewFileCache.set(entry.path, { mtimeMs: stat.mtimeMs, size: stat.size, lines });
+  return lines;
+}
+
 function previewLines(row: PickerRow, cwd: string): string[] {
   if (row.kind === "setting") {
     const choices = row.field.choices?.length ? row.field.choices.join(" | ") : undefined;
@@ -619,25 +651,24 @@ function previewLines(row: PickerRow, cwd: string): string[] {
   }
 
   const entry = row.entry;
-  const exists = entry.exists;
   const supportsSettings = settingCatalogForEntry(entry).length > 0 && (entry.format === "json" || entry.format === "toml");
-  return [
+  const header = [
     entry.title,
     "",
-    `Group: ${entry.group}`,
-    `Surface: ${entry.tool}`,
-    `Kind: ${entry.kind}`,
-    `Scope: ${entry.scope}`,
-    `Format: ${entry.format}`,
-    `Status: ${exists ? "exists" : "missing"}${entry.loaded ? " · loaded/current" : ""}`,
-    entry.size !== undefined ? `Size: ${entry.size.toLocaleString()} bytes` : undefined,
-    `Path: ${entry.path}`,
+    `${scopeLabel(entry.scope)} · ${entry.kind} · ${entry.format}${entry.loaded ? " · loaded" : ""}`,
+    `Path: ${displayPath(entry.path, cwd)}`,
+    entry.exists
+      ? `Status: exists${entry.size !== undefined ? ` · ${entry.size.toLocaleString()} bytes` : ""}`
+      : "Status: missing · Enter to create",
     entry.note ? `Note: ${entry.note}` : undefined,
-    "",
-    "Actions:",
-    "• Enter/Ctrl+E: edit/view full file",
-    supportsSettings ? "• Ctrl+A: add setting from typed reference catalog" : undefined,
+    supportsSettings ? "Ctrl+A: add a setting from the reference catalog" : undefined,
   ].filter((line): line is string => line !== undefined);
+
+  const content = entryContentPreview(entry);
+  if (content.length === 0) {
+    return [...header, "", entry.exists ? "(empty file)" : "(not created yet — press Enter to create)"];
+  }
+  return [...header, "", "─── content ───", ...content];
 }
 
 class PiConfigPicker implements Component {
@@ -790,7 +821,7 @@ class PiConfigPicker implements Component {
       lines.push(boxedLine(this.renderRow(rowInfo.row, rowInfo.index === this.selectedIndex, width - 2), width, color));
     }
     lines.push(borderLine(width, "├", "─", "┤", color, " details "));
-    for (const line of (selected ? previewLines(selected, this.cwd) : []).slice(0, 8)) {
+    for (const line of (selected ? previewLines(selected, this.cwd) : []).slice(0, 16)) {
       lines.push(boxedLine(this.theme.fg("muted", line), width, color));
     }
   }
@@ -862,7 +893,7 @@ async function chooseEntryOverlay(ctx: ExtensionCommandContext, entries: ConfigE
       width: "96%",
       minWidth: 80,
       maxHeight: "94%",
-      anchor: "center",
+      anchor: "top-center",
       margin: 1,
     },
   });
@@ -1033,7 +1064,7 @@ async function chooseReference<T>(ctx: ExtensionCommandContext, title: string, i
       width: "90%",
       minWidth: 72,
       maxHeight: "88%",
-      anchor: "center",
+      anchor: "top-center",
       margin: 1,
     },
   });
@@ -1465,7 +1496,7 @@ async function editSettingsEntry(ctx: ExtensionCommandContext, entry: ConfigEntr
       width: "96%",
       minWidth: 90,
       maxHeight: "94%",
-      anchor: "center",
+      anchor: "top-center",
       margin: 1,
     },
   });
