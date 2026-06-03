@@ -57,23 +57,11 @@ const ADVICE_TYPE = "pi-clones-advice"; // CustomEntry: "advice shown" marker
 const RESULT_TYPE = "pi-clone-result"; // CustomMessage: concise queued completion pointer (result lives in a file)
 
 const ADVICE_TEXT =
-	"[pi-clones] You can fork yourself into a clone — a background copy with all of your current " +
-	"knowledge and context, plus one task you assign. It is you, not a stranger: do not re-explain " +
-	"context, just state the new objective and its definition of done. Use clones only for genuinely " +
-	'parallel or independently-researchable work (wide reads, investigations, "go find out X while I ' +
-	'continue", independent verification). Once you delegate work to a clone, do not repeat that same ' +
-	"work yourself; continue only with non-overlapping parent work unless the clone reports a blocker " +
-	"or the user redirects you. A clone has no user to ask: if it hits a decision only the human can " +
-	"make, it records the blocker in its result and stops — it escalates to you, never to the user. " +
-	'Default clones are read-only (safe for parallel research); pass mode:"inherit" only for ' +
-	"non-overlapping work that may edit files. Do not poll clone_status after starting background " +
-	"clones: completion notices are queued without triggering a model turn and point to a local " +
-	"result file, so continue non-overlapping work or check status only when the user asks, a clone " +
-	"seems stuck, or a meaningful delay has passed. Wait for a completion notice or a " +
-	"done/error/stopped status before calling clone_result; clone_result returns the result-file " +
-	"path, and you should read that file only when the full handoff is needed. Use clone_log only " +
-	"to diagnose a confusing result. Use clone_dismiss to write off completed clones you no longer " +
-	"need in status lists.";
+	"[pi-clones] Clones inherit this session plus one task. Give only the new objective and done criteria. " +
+	"Use them for independent parallel work; after delegating, do not duplicate that work in the parent. " +
+	"Clones cannot ask the user; they report human-only blockers. Default mode is read-only; use " +
+	'mode:"inherit" only for non-overlapping edits. Background clones queue result-file notices, so do not ' +
+	"poll status or call clone_result before completion.";
 
 // --------------------------------------------------------------------------
 // Types
@@ -387,7 +375,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		rec.notifiedAt = Date.now();
 		const file = rec.resultFile ?? persistResult(rec);
 		const fileText = file ?? "(result file could not be written)";
-		const content = `Clone ${rec.id} finished with state ${rec.state}.\nTask: ${safeSnippet(rec.task, 180)}\nResult file: ${fileText}\n\nNo clone output is included here. Read the result file only if the full handoff is needed. Use clone_log only to diagnose a surprising result.`;
+		const content = `Clone ${rec.id} finished (${rec.state}).\nTask: ${safeSnippet(rec.task, 180)}\nResult file: ${fileText}\n\nRead the file only if you need the full handoff.`;
 		try {
 			parentUi?.notify(
 				`Clone ${rec.id} finished (${rec.state}). Result: ${fileText}`,
@@ -626,16 +614,12 @@ export default function piClones(pi: ExtensionAPI): void {
 		lastStatusChecks.set(key, now);
 		if (last === undefined || now - last >= STATUS_POLL_COOLDOWN_MS) return "";
 		const waitSeconds = Math.ceil((STATUS_POLL_COOLDOWN_MS - (now - last)) / 1000);
-		return (
-			`Active clone status was checked ${ago(last)} ago. Pi intentionally suppresses rapid clone_status polling ` +
-			`because completion notices are queued automatically. Do not call clone_status in a loop; wait for a notice, ` +
-			`continue non-overlapping work, or try again in ~${waitSeconds}s if the user explicitly needs an update.`
-		);
+		return `clone_status was checked ${ago(last)} ago. Completion notices are automatic; try again in ~${waitSeconds}s only if an update is needed.`;
 	}
 
 	function activeStatusNotice(hasLiveClone: boolean): string {
 		return hasLiveClone
-			? "\n\nDo not poll clone_status. Completion notices are queued automatically; check again only on user request, suspected stuck clone, or after a meaningful delay."
+			? "\n\nCompletion notices are automatic; do not poll status."
 			: "";
 	}
 
@@ -662,33 +646,26 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone",
 		label: "Clone",
 		description:
-			"Fork yourself into a background clone that inherits your full context and works one extra task in " +
-			"parallel. Returns a clone_id immediately and queues a small completion notice with a result-file path. Use for " +
-			"parallelisable research/investigation; the clone already has your context, so state only the new task.",
+			"Fork a background clone that inherits current context and handles one independent task. Returns clone_id; background clones later queue a result-file notice.",
 		promptGuidelines: [
-			"After delegating a task to a clone, do not repeat the same work yourself; continue only with non-overlapping work unless the clone reports a blocker or the user redirects you.",
-			"Do not poll clone_status in a loop. Background clones queue completion notices without triggering a model turn; call clone_status only when the user asks for an update, a clone appears stuck, or a meaningful delay has passed.",
-			"Do not call clone_result for running clones; wait for a completion notice or a done/error/stopped status. clone_result returns a local result-file path; read that file only when the full handoff is needed. Use clone_log only to diagnose surprising results.",
-			"Clone completion notices are concise pointers, not summaries. After consuming a completed clone, use clone_dismiss to write off records you no longer need listed.",
-			'If a clone started read-only but now needs to edit, use clone_continue with mode:"inherit" and a focused continuation task instead of starting over from scratch.',
+			"Use clones only for independent parallel work; after delegating, do not duplicate that work in the parent.",
+			"Clones inherit context and cannot ask the user: state only objective and done criteria; human-only decisions become blockers.",
+			'Wait for a completion notice/done state before clone_result; read result files only if needed, dismiss consumed clones, and use clone_continue mode:"inherit" to upgrade read-only clones.',
 		],
 		parameters: Type.Object({
 			task: Type.String({
 				description:
-					"The single, well-scoped task for the clone. It already has all of your context — do not " +
-					"re-explain; state only the new objective and its definition of done.",
+					"One focused objective and done criteria; clone already has context.",
 			}),
 			mode: Type.Optional(
 				Type.Union([Type.Literal("read-only"), Type.Literal("inherit")], {
 					description:
-						'"read-only" (default): clone gets read-only tools — safe for parallel research. ' +
-						'"inherit": clone gets your active tools (can edit) — only for genuinely non-overlapping work.',
+						'"read-only" default; "inherit" allows active tools for non-overlapping edits.',
 				}),
 			),
 			background: Type.Optional(
 				Type.Boolean({
-					description:
-						"Default true: return immediately and queue a completion notice. false: block and return the result-file path inline.",
+					description: "Default true; false blocks until completion.",
 				}),
 			),
 		}),
@@ -710,10 +687,8 @@ export default function piClones(pi: ExtensionAPI): void {
 							{
 								type: "text",
 								text:
-									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). It will queue a completion notice with ` +
-									`a local result-file path when finished. Do not poll clone_status; use clone_status({id:"${rec.id}"}) ` +
-									`only if the user asks for an update or the clone seems stuck, and wait for done/error/stopped before ` +
-									`clone_result({id:"${rec.id}"}).`,
+									`${advice}Clone ${rec.id} started (depth ${rec.depth}, ${mode}). ` +
+									"A completion notice will provide the result-file path.",
 							},
 						],
 						details: { id: rec.id, state: rec.state, depth: rec.depth, mode },
@@ -750,13 +725,11 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_status",
 		label: "Clone status",
 		description:
-			'One-off inspection of clones spawned by this session; active clones are listed by default. This is not a polling tool: background clones queue completion notices. Pass include:"completed" or include:"all" ' +
-			"when you need written-off/completed clone records.",
+			'Inspect clones once. Defaults to active; pass include:"completed" or include:"all" when needed.',
 		parameters: Type.Object({
 			id: Type.Optional(
 				Type.String({
-					description:
-						"Clone id; when set, returns that clone even if completed or written off.",
+					description: "Clone id; returns it regardless of state/dismissal.",
 				}),
 			),
 			include: Type.Optional(
@@ -768,7 +741,7 @@ export default function piClones(pi: ExtensionAPI): void {
 					],
 					{
 						description:
-							"Default active: list only running/starting/compacting clones. completed lists terminal, not-written-off clones. all includes written-off clones too.",
+							"Default active; completed hides dismissed; all includes dismissed.",
 					},
 				),
 			),
@@ -866,7 +839,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_result",
 		label: "Clone result",
 		description:
-			"Return the local result-file path for a clone after it reaches done/error/stopped. Read the file only when the full handoff is needed.",
+			"Return the result-file path for a done/error/stopped clone.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
 		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
@@ -881,7 +854,7 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `${statusLine(rec)}\n\nClone is still ${rec.state}; do not poll for progress. Wait for the queued completion notice or check status only after a meaningful delay before asking for the result-file path.`,
+							text: `${statusLine(rec)}\n\nStill ${rec.state}; wait for the completion notice.`,
 						},
 					],
 					details: { id: rec.id, state: rec.state },
@@ -893,7 +866,7 @@ export default function piClones(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `Clone ${rec.id} is ${rec.state}. Result file: ${file}\nRead it with read({path:${JSON.stringify(file)}}) only if the full handoff is needed.`,
+							text: `Clone ${rec.id} is ${rec.state}. Result file: ${file}`,
 						},
 					],
 					details: { id: rec.id, state: rec.state, resultFile: file },
@@ -915,23 +888,22 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_continue",
 		label: "Clone continue",
 		description:
-			'Continue a completed/error/stopped clone from its existing branch with a new focused task. Use this to upgrade a read-only clone to mode:"inherit" instead of starting over.',
+			"Continue a terminal clone from its existing branch, optionally changing tool mode.",
 		parameters: Type.Object({
 			id: Type.String({ description: "Clone id to continue." }),
 			task: Type.String({
 				description:
-					"The focused continuation task. The clone already has its prior transcript; state only what to do next.",
+					"Focused next task; clone already has its prior transcript.",
 			}),
 			mode: Type.Optional(
 				Type.Union([Type.Literal("read-only"), Type.Literal("inherit")], {
 					description:
-						"Tool mode for the continuation. Defaults to the clone's previous mode; pass inherit to enable writes/tools.",
+						"Defaults to previous mode; inherit enables writes/tools.",
 				}),
 			),
 			background: Type.Optional(
 				Type.Boolean({
-					description:
-						"Default true: return immediately and queue a completion notice. false: block and return the result-file path inline.",
+					description: "Default true; false blocks until completion.",
 				}),
 			),
 		}),
@@ -964,7 +936,7 @@ export default function piClones(pi: ExtensionAPI): void {
 						content: [
 							{
 								type: "text",
-								text: `Clone ${continued.id} continued (${mode}). It will queue a completion notice with a local result-file path when finished. Do not poll clone_status; use it only if the user asks for an update or the clone seems stuck.`,
+								text: `Clone ${continued.id} continued (${mode}). A completion notice will provide the result-file path.`,
 							},
 						],
 						details: { id: continued.id, state: continued.state, mode },
@@ -1000,7 +972,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_log",
 		label: "Clone log",
 		description:
-			"Browse a clone's transcript when its result looks wrong. Returns the last `tail` messages (default 20).",
+			"Show the last `tail` messages from a clone transcript.",
 		parameters: Type.Object({
 			id: Type.String({ description: "Clone id." }),
 			tail: Type.Optional(
@@ -1052,7 +1024,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_stop",
 		label: "Clone stop",
 		description:
-			"Abort a running clone. Its final/partial output is written to a result file; clone_result returns the path after it stops.",
+			"Abort a running clone and save partial output to a result file.",
 		parameters: Type.Object({ id: Type.String({ description: "Clone id." }) }),
 		async execute(_toolCallId, params): Promise<CloneToolResult> {
 			const rec = clones.get(params.id);
@@ -1096,7 +1068,7 @@ export default function piClones(pi: ExtensionAPI): void {
 		name: "clone_dismiss",
 		label: "Clone dismiss",
 		description:
-			"Write off completed/error/stopped clones so clone_status omits them. Omit id to dismiss every terminal clone.",
+			"Hide terminal clones from clone_status. Omit id to dismiss all terminal clones.",
 		parameters: Type.Object({
 			id: Type.Optional(
 				Type.String({

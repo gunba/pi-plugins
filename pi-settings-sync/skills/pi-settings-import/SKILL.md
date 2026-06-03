@@ -1,6 +1,6 @@
 ---
 name: pi-settings-import
-description: Import a Pi settings bundle produced by /pi-export onto this machine, translating paths for the current OS, backing up what it overwrites, reinstalling packages, and remediating machine-specific values. Use when the user wants to restore, import, or sync their Pi user setup (skills, agents, themes, MCP, config) from a .zip exported on another machine.
+description: Import or restore a Pi settings .zip from /pi-export, with path translation, backups, package reinstall, and machine-specific fixes.
 ---
 
 # Pi Settings Import

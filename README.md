@@ -17,6 +17,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-clones` — forks the running agent into a background clone that inherits the full session context (so it needs no briefing and can reuse warm prompt-cache prefixes), works one extra task in parallel, and alerts main with a concise completion notice; fetch full handoffs with `clone_result` only when needed. Clones boot as a resume of a forked branch (kept out of resume history), default to read-only tools, can be continued with write-enabled tools when needed, auto-compact instead of bricking, and escalate human-only decisions back to the parent. Adds `clone`/`clone_status`/`clone_result`/`clone_continue`/`clone_log`/`clone_stop`/`clone_dismiss` and `/clones`; full rationale in `pi-clones/DESIGN.md`.
 - `pi-context-guard` — enforces a final oversized-message guard before provider requests and automatic tool-call continuations by saving giant tool/custom/bash/assistant context items to markdown files and replacing them with concise file pointers. Defaults to 50k tokens per message; configure with `/context-guard`.
 
+## Startup extension
+
+`pi-startup-env` is a top-level startup helper for environment defaults that must apply before package extensions run. Load it through Pi `settings.json` `extensions`, not only through a package entry.
+
 ## Install
 
 ```bash

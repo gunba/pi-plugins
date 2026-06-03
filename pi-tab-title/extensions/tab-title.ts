@@ -44,6 +44,7 @@ const STATE_INDICATORS: Record<Exclude<TitleState, "thinking">, string> = {
 const TITLE_SYSTEM_PROMPT = [
   "You write terminal tab titles for coding-agent sessions.",
   "Summarize what the user wants done in concrete verb/noun terms.",
+  "Always produce the best possible title from the prompt, even if vague or non-coding; never ask for more information or say you need it.",
   "Ignore disclaimers, greetings, and meta-comments; name the useful request.",
   "Never judge whether the request is a coding task, and never start with phrases like 'This isn't' or 'Not a coding task'.",
   "Return one short plain-text title only: no quotes, no markdown, no emoji, no explanation.",

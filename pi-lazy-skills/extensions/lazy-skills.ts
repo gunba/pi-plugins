@@ -16,7 +16,7 @@ const MIN_PREFIX_TOKENS = 1024;
 const MIN_PREFIX_TOKENS_ENV = "PI_LAZY_SKILLS_MIN_TOKENS";
 const CHARS_PER_TOKEN = 4;
 
-const LAZY_SKILLS_PROMPT_NOTE = `Agent Skills are available lazily. A separate pre-turn selector may add a custom message titled "Skills that may be related to the user request". When such a message appears and a listed skill matches the task, use the read tool to load that skill's file. Resolve relative references against the skill directory (parent of SKILL.md / dirname of the path). Explicit /skill:name invocation still works.`;
+const LAZY_SKILLS_PROMPT_NOTE = `Skills are lazy-loaded. If a pre-turn message lists related skills, read a matching skill file before using it; resolve relative refs from that file's directory. Explicit /skill:name still works.`;
 
 const SELECTOR_SYSTEM_PROMPT = `You are pi-lazy-skills' skill selector.
 
@@ -98,14 +98,9 @@ function replaceSkillsPromptSection(systemPrompt: string): string | undefined {
 }
 
 function adviceContent(skills: SkillInfo[]): string {
-  const lines = [
-    "Skills that may be related to the user request:",
-    "Use read to load a listed skill file only if it matches the task.",
-    "",
-  ];
+  const lines = ["Related skills (read only if relevant):", ""];
   for (const skill of skills) {
-    lines.push(`- ${skill.name} — ${compactText(skill.description)}`);
-    lines.push(`  location: ${skill.filePath}`);
+    lines.push(`- ${skill.name} — ${compactText(skill.description)}; file: ${skill.filePath}`);
   }
   return lines.join("\n");
 }

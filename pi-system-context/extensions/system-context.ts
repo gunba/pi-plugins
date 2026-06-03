@@ -236,11 +236,9 @@ export default function (pi: PiLike) {
 
     const context = [
       "### Local env",
-      `- time: ${sanitizePromptValue(formatUtcTimestamp())} (UTC)`,
-      `- timezone: ${sanitizePromptValue(timeZone)}`,
-      `- os: ${sanitizePromptValue(os.type(), "unknown", 80)} ${sanitizePromptValue(os.release(), "unknown", 80)} (${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)})`,
-      `- term: ${sanitizePromptValue(terminalName())}`,
-      `- ${shellParts.join("; ")}`,
+      `- time: ${sanitizePromptValue(formatUtcTimestamp())} UTC; timezone: ${sanitizePromptValue(timeZone)}`,
+      `- os: ${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)} ${sanitizePromptValue(os.release(), "unknown", 80)}`,
+      `- term: ${sanitizePromptValue(terminalName())}; ${shellParts.join("; ")}`,
       `- cwd: ${compactPromptPath(cwd)}`,
       `- path tools: ${sanitizePromptValue(detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");

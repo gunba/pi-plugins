@@ -1,0 +1,14 @@
+{
+  "name": "pi-startup-env",
+  "version": "0.1.0",
+  "description": "Sets early Pi startup environment defaults before package extensions run.",
+  "private": true,
+  "keywords": ["pi-package", "pi-extension", "startup", "environment"],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/node-options.js"
+    ]
+  },
+  "license": "MIT"
+}
