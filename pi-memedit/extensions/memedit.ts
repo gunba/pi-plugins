@@ -93,6 +93,8 @@ type MemeditStats = {
   recacheCost?: number; // one-off $ to rewrite/cache the kept invalidated tail
   savingPerCallCost?: number; // $ saved on every subsequent provider request
   breakEvenCalls?: number; // future API calls until the cache rewrite pays for itself
+  horizonCalls?: number; // E: provider requests the deletion is expected to keep saving over
+  declinedForCost?: number; // model-selected deletions skipped because recache outweighs savings
   pruneTokens?: number;
   pruneCost?: number;
   deletedItems?: DeletedItem[];
@@ -1183,6 +1185,114 @@ function recacheEconomics(
   return { recacheCost, savingPerCallCost, breakEvenCalls };
 }
 
+// --- Golden-rule profitability gate ---------------------------------------
+//
+// Applying a deletion invalidates the prompt cache from that entry onward, so the
+// kept tail is re-written once at the cache-write rate. That one-off premium is
+// only worth paying when the deleted tokens stop being re-read often enough to
+// recover it: breakEvenCalls = recacheCost / savingPerCall must fall within the
+// cache's remaining life E. The cached-prefix prune already paid for the analysis,
+// so this is a marginal apply/skip decision, not a re-judgement of what to keep.
+//
+// E = min(E_session, calls-until-auto-compaction). Conversation length is
+// heavy-tailed, so remaining provider requests are ~flat by age at a median of
+// MEMEDIT_HORIZON_CALLS (measured across session history); compaction — which
+// evicts the pruned region regardless — caps the horizon near the context ceiling.
+const MEMEDIT_HORIZON_CALLS = 25;
+const COMPACTION_RESERVE_TOKENS = 16_384; // Pi DEFAULT_COMPACTION_SETTINGS.reserveTokens
+const HORIZON_GROWTH_SAMPLE = 8;
+const HORIZON_GROWTH_FALLBACK = 3_000;
+
+function assistantTotalTokensSequence(branch: SessionEntry[]): number[] {
+  const sequence: number[] = [];
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as AnyRecord;
+    if (message?.role !== "assistant") continue;
+    const total = (message.usage as AnyRecord | undefined)?.totalTokens;
+    if (typeof total === "number" && total > 0) sequence.push(total);
+  }
+  return sequence;
+}
+
+// Median positive turn-over-turn context growth, used to project how many more
+// requests fit before auto-compaction. Median (not mean) because tool outputs make
+// the per-turn delta heavy-tailed.
+function recentGrowthPerCall(sequence: number[]): number {
+  if (sequence.length < 2) return HORIZON_GROWTH_FALLBACK;
+  const recent = sequence.slice(-(HORIZON_GROWTH_SAMPLE + 1));
+  const deltas: number[] = [];
+  for (let i = 1; i < recent.length; i++) {
+    const delta = recent[i] - recent[i - 1];
+    if (delta > 0) deltas.push(delta);
+  }
+  if (deltas.length === 0) return HORIZON_GROWTH_FALLBACK;
+  deltas.sort((a, b) => a - b);
+  return deltas[Math.floor(deltas.length / 2)] || HORIZON_GROWTH_FALLBACK;
+}
+
+function estimateForwardHorizon(ctx: ExtensionContext, branch: SessionEntry[], fallbackContextTokens: number): number {
+  const usage = ctx.getContextUsage();
+  const contextWindow = typeof usage?.contextWindow === "number" ? usage.contextWindow : 0;
+  const contextNow = typeof usage?.tokens === "number" ? usage.tokens : fallbackContextTokens;
+  if (contextWindow <= 0) return MEMEDIT_HORIZON_CALLS;
+  const growth = recentGrowthPerCall(assistantTotalTokensSequence(branch));
+  const headroom = contextWindow - COMPACTION_RESERVE_TOKENS - contextNow;
+  const callsToCompaction = headroom > 0 ? headroom / growth : 0;
+  return Math.max(1, Math.min(MEMEDIT_HORIZON_CALLS, Math.round(callsToCompaction)));
+}
+
+function pruneNetValue(cacheImpact: CacheImpact, model: AnyRecord | undefined, horizonCalls: number): number {
+  const { recacheCost, savingPerCallCost } = recacheEconomics(cacheImpact.droppedTailTokens, cacheImpact.keptTailTokens, model);
+  return savingPerCallCost * horizonCalls - recacheCost;
+}
+
+// Choose the subset of model-selected deletions worth applying. Declining the
+// earliest, low-value deletions moves the cache-invalidation point later, shrinking
+// the kept tail that must be re-cached. We pick the first-deletion index that
+// maximises expected net value (ongoing saving over the horizon minus the one-off
+// recache) and apply every deletion from there on; if no cut is net-positive the
+// whole set is declined.
+function selectProfitableDeletions(
+  recacheScope: SessionEntry[],
+  selectedIds: Set<string>,
+  model: AnyRecord | undefined,
+  horizonCalls: number,
+): { appliedIds: Set<string>; declined: number } {
+  if (selectedIds.size === 0) return { appliedIds: new Set(), declined: 0 };
+  const expanded = expandToolDependencies(recacheScope, selectedIds);
+  const pricing = cachePricing(model);
+  const penaltyPerToken = Math.max(0, pricing.cacheWritePerToken - pricing.cacheReadPerToken);
+  const readPerToken = pricing.cacheReadPerToken;
+  // No usable cache pricing: the gate cannot judge, so honour the model's selection.
+  if (readPerToken <= 0 && penaltyPerToken <= 0) return { appliedIds: new Set(expanded), declined: 0 };
+
+  const tokens = recacheScope.map((entry) => estimateEntryTokens(entry, model));
+  const isDeleted = recacheScope.map((entry) => expanded.has(entry.id));
+
+  let droppedSuffix = 0;
+  let keptSuffix = 0;
+  let bestIndex = -1;
+  let bestNet = 0; // baseline 0 = decline everything
+  for (let i = recacheScope.length - 1; i >= 0; i--) {
+    if (isDeleted[i]) droppedSuffix += tokens[i];
+    else keptSuffix += tokens[i];
+    if (!isDeleted[i]) continue;
+    const net = readPerToken * horizonCalls * droppedSuffix - penaltyPerToken * keptSuffix;
+    if (net > bestNet) {
+      bestNet = net;
+      bestIndex = i;
+    }
+  }
+
+  const appliedIds = new Set<string>();
+  if (bestIndex >= 0) {
+    for (let i = bestIndex; i < recacheScope.length; i++) if (isDeleted[i]) appliedIds.add(recacheScope[i].id);
+  }
+  const declined = [...selectedIds].reduce((count, id) => (appliedIds.has(id) ? count : count + 1), 0);
+  return { appliedIds, declined };
+}
+
 function updateTelemetry(stats: MemeditStats): void {
   if (stats.status !== "applied" && stats.status !== "noop" && !stats.pruneTokens && !stats.pruneCost) return;
   telemetry.runs++;
@@ -1274,6 +1384,11 @@ function styledStatusSummary(stats: MemeditStats, theme: Theme): string[] {
       `${theme.fg("dim", "Savings")} ${theme.fg("success", `${formatCost(stats.savingPerCallCost)}/API call`)} ${theme.fg("muted", `· prune ${formatCost(stats.pruneCost)} · ${breakEvenText(stats)}`)}`,
     );
   }
+  if (stats.declinedForCost) {
+    lines.push(
+      `${theme.fg("dim", "Declined")} ${theme.fg("muted", `${stats.declinedForCost} deletion${stats.declinedForCost === 1 ? "" : "s"} — recache > savings within ~${stats.horizonCalls ?? MEMEDIT_HORIZON_CALLS} calls`)}`,
+    );
+  }
   if (stats.error) lines.push(`${theme.fg("warning", "Reason")} ${theme.fg("muted", truncateText(stats.error, 220))}`);
   return lines;
 }
@@ -1359,6 +1474,11 @@ function statusMessage(stats: MemeditStats) {
       `Est. context: ${formatPercent(stats.contextPercentSaved)} pruned (${formatTokens(stats.tokensSaved)} deleted / ${formatTokens(stats.contextTokensBefore)} active${contextWindowSuffix(stats)}).`,
       `Cache impact: invalidates ${formatTokens(stats.cacheImpact?.invalidatedTailTokens)} tail tokens; drops ${formatTokens(stats.cacheImpact?.droppedTailTokens)} and rewrites ${formatTokens(stats.cacheImpact?.keptTailTokens)} kept tokens (${formatCost(stats.recacheCost)}).`,
       `Savings: ${formatCost(stats.savingPerCallCost)}/API call; prune pass ${formatTokens(stats.pruneTokens)} tokens, ${formatCost(stats.pruneCost)} — ${breakEvenText(stats)}.`,
+    );
+  }
+  if (stats.declinedForCost) {
+    lines.push(
+      `Declined ${stats.declinedForCost} deletion${stats.declinedForCost === 1 ? "" : "s"} for cost: recache outweighs savings within the ~${stats.horizonCalls ?? MEMEDIT_HORIZON_CALLS}-call horizon.`,
     );
   }
   if (showDeletedItems && stats.deletedItems && stats.deletedItems.length > 0) {
@@ -1492,9 +1612,32 @@ async function runMemedit(
     }
 
     const housekeepingIds = statusEntryIds(branch);
-    const rewriteIds = new Set([...selectedIds, ...housekeepingIds]);
     const pruneTokens = usageTotalTokens(response.usage as AnyRecord | undefined);
     const pruneCost = response.usage?.cost?.total || 0;
+
+    // Golden-rule gate: the cached-prefix analysis is already paid, so applying a
+    // deletion is now a marginal choice. Take only the deletions whose one-off
+    // recache is repaid by ongoing context savings within the cache's remaining
+    // life; selectProfitableDeletions picks the most profitable invalidation point.
+    const horizonCalls = estimateForwardHorizon(ctx, branch, contextTokensBefore);
+    const entries = (manager.getEntries?.() ?? []) as SessionEntry[];
+    const selection = selectProfitableDeletions(activeContextEntries, selectedIds, model as AnyRecord, horizonCalls);
+    let appliedSelectedIds = selection.appliedIds;
+    let declinedForCost = selection.declined;
+
+    // Applying re-expands tool dependencies, which can drag an earlier entry back
+    // into the tail; re-check the realized economics and back the model-deletions
+    // out entirely if they no longer pay back. Housekeeping (already out of model
+    // context) is always swept regardless.
+    if (appliedSelectedIds.size > 0) {
+      const projected = projectHardDelete(entries, new Set([...appliedSelectedIds, ...housekeepingIds]), housekeepingIds, activeContextEntries, model as AnyRecord);
+      if (pruneNetValue(projected.cacheImpact, model as AnyRecord, horizonCalls) <= 0) {
+        declinedForCost = selectedIds.size;
+        appliedSelectedIds = new Set();
+      }
+    }
+
+    const rewriteIds = new Set([...appliedSelectedIds, ...housekeepingIds]);
     const deleted = applyHardDelete(ctx, rewriteIds, housekeepingIds, activeContextEntries, model as AnyRecord);
     // The editor has now judged every candidate shown to it — record them so no
     // later pass re-offers a survivor. Protected entries (fresh turn, final answer,
@@ -1509,7 +1652,7 @@ async function runMemedit(
     lastStats = {
       at: Date.now(),
       mode,
-      status: deleted.counted > 0 ? "applied" : "noop",
+      status: deleted.counted > 0 ? "applied" : declinedForCost > 0 ? "skipped" : "noop",
       candidates: candidates.length,
       selected: selectedIds.size,
       deleted: deleted.counted,
@@ -1523,9 +1666,15 @@ async function runMemedit(
       recacheCost,
       savingPerCallCost,
       breakEvenCalls,
+      horizonCalls,
+      declinedForCost: declinedForCost || undefined,
       pruneTokens,
       pruneCost,
       deletedItems: deleted.deletedItems,
+      error:
+        deleted.counted === 0 && declinedForCost > 0
+          ? `recache outweighs savings within the ~${horizonCalls}-call horizon; ${declinedForCost} deletion${declinedForCost === 1 ? "" : "s"} declined`
+          : undefined,
     };
     updateTelemetry(lastStats);
   } catch (error) {
