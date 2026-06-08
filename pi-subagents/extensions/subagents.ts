@@ -17,7 +17,9 @@ import {
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 // --------------------------------------------------------------------------
@@ -45,6 +47,11 @@ const GLYPH: Record<string, string> = {
   spawning: "◌", running: "●", waiting: "◐",
   done: "✓", error: "✗", stopped: "■",
 };
+const STATE_COLOR: Record<string, ThemeColor> = {
+  spawning: "dim", running: "accent", waiting: "warning",
+  done: "success", error: "error", stopped: "dim",
+};
+const SETTINGS_FILE = process.env.PI_SUBAGENTS_SETTINGS || join(BASE, "settings.json");
 
 type Beacon = {
   name: string;
@@ -54,6 +61,7 @@ type Beacon = {
   activity?: string;
   startedAt: number;
   updatedAt: number;
+  finishedAt?: number;
 };
 
 type Mail = {
@@ -103,6 +111,24 @@ function lastAssistantText(messages: unknown[]): string {
   return "";
 }
 
+// Persisted view toggle (mirrors pi-memedit's settings.json approach).
+function loadView(): boolean {
+  try {
+    const p = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as { view?: unknown };
+    return typeof p.view === "boolean" ? p.view : true;
+  } catch {
+    return true; // on by default
+  }
+}
+function saveView(view: boolean): void {
+  ensureDir(BASE);
+  writeFileSync(SETTINGS_FILE, `${JSON.stringify({ view }, null, 2)}\n`);
+}
+function padTo(s: string, w: number): string {
+  const len = visibleWidth(s);
+  return len >= w ? truncateToWidth(s, w) : s + " ".repeat(w - len);
+}
+
 // --------------------------------------------------------------------------
 // Run + identity (module state: each pi process is one agent)
 // --------------------------------------------------------------------------
@@ -143,14 +169,16 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
   const dir = agentDir(name);
   ensureDir(dir);
   const prev = readJson<Beacon>(join(dir, "beacon.json"));
+  const state = patch.state ?? prev?.state ?? "running";
   const beacon: Beacon = {
     name,
     parent: patch.parent ?? prev?.parent ?? (name === SELF ? PARENT : null),
     taskName: patch.taskName ?? prev?.taskName ?? "",
-    state: patch.state ?? prev?.state ?? "running",
+    state,
     activity: patch.activity ?? prev?.activity,
     startedAt: prev?.startedAt ?? patch.startedAt ?? now(),
     updatedAt: now(),
+    finishedAt: TERMINAL.has(state) ? (prev?.finishedAt ?? now()) : undefined,
   };
   writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
 }
@@ -410,59 +438,111 @@ function registerChildHooks(pi: ExtensionAPI): void {
 }
 
 // --------------------------------------------------------------------------
-// Team view (root + UI only)
+// Team view — a styled, live panel above the editor (root + UI; on by default)
 // --------------------------------------------------------------------------
 
-let viewShown = false;
 let uiReady = false;
+let viewEnabled = true;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let lastSig: string | undefined;
 
-function renderView(): string[] {
+// Active agents show a live timer; finished agents freeze at their duration.
+function elapsed(b: Beacon): string {
+  return fmtAge((b.finishedAt ?? now()) - b.startedAt);
+}
+
+function readFeed(): string[] {
+  try {
+    return readFileSync(join(runDir, "feed.log"), "utf8").trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// A plain change-detector so we only repaint when something actually moved.
+function viewSignature(agents: Beacon[]): string {
+  const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}`).join("|");
+  return `${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
+}
+
+function teamLines(theme: Theme, width: number): string[] {
   const agents = listAgents();
-  if (!agents.length) return ["No subagents in this run."];
+  const W = Math.max(38, Math.min(width, 78));
+  const inner = W - 4;
+  const B = (s: string) => theme.fg("borderAccent", s);
+  const frame = (content: string) => `${B("│")} ${padTo(content, inner)} ${B("│")}`;
+  const titledBar = (open: string, close: string, label: string) => {
+    const lead = `${open}─ `;
+    const dashes = Math.max(0, W - 1 - visibleWidth(lead) - visibleWidth(label) - 1);
+    return B(lead) + theme.bold(theme.fg("accent", label)) + " " + B("─".repeat(dashes) + close);
+  };
 
+  const out: string[] = [titledBar("╭", "╮", "Subagents")];
+
+  // main owns the panel (the title); its children/grandchildren form the tree.
   const byParent = new Map<string | null, Beacon[]>();
   for (const a of agents) {
-    const k = a.name === "main" ? null : a.parent;
-    if (!byParent.has(k)) byParent.set(k, []);
-    byParent.get(k)!.push(a);
+    if (a.name === "main") continue;
+    if (!byParent.has(a.parent)) byParent.set(a.parent, []);
+    byParent.get(a.parent)!.push(a);
   }
-
-  const lines: string[] = ["Team — pi-subagents"];
-  const walk = (parent: string | null, depth: number) => {
+  const rows: string[] = [];
+  const walk = (parent: string, depth: number) => {
     for (const a of (byParent.get(parent) ?? []).sort((x, y) => x.startedAt - y.startedAt)) {
-      const pad = "  ".repeat(depth);
-      const label = a.name === "main" ? a.name : `${a.name} · ${a.taskName}`;
-      const act = a.activity ? `  ${a.activity}` : "";
-      lines.push(`${pad}${GLYPH[a.state] ?? "•"} ${label}   ${a.state}${act}   ${fmtAge(now() - a.startedAt)}`);
+      const color = STATE_COLOR[a.state] ?? "muted";
+      const head = `${"  ".repeat(depth)}${theme.fg(color, GLYPH[a.state] ?? "•")} ${theme.bold(theme.fg("text", a.name))}`
+        + (a.taskName ? theme.fg("muted", ` · ${a.taskName}`) : "")
+        + `  ${theme.fg(color, a.state)}`
+        + (a.activity ? theme.fg("dim", `  ${a.activity}`) : "");
+      const right = theme.fg("dim", elapsed(a));
+      const gap = inner - visibleWidth(head) - visibleWidth(right);
+      rows.push(gap >= 1 ? `${head}${" ".repeat(gap)}${right}` : padTo(head, inner));
       walk(a.name, depth + 1);
     }
   };
-  // root nodes: main (parent null) plus any orphan
-  walk(null, 0);
+  walk("main", 0);
+  if (!rows.length) rows.push(theme.fg("dim", "no subagents yet"));
+  for (const r of rows) out.push(frame(r));
 
-  const feedPath = join(runDir, "feed.log");
-  if (existsSync(feedPath)) {
-    const feed = readFileSync(feedPath, "utf8").trim().split("\n").slice(-FEED_TAIL);
-    if (feed.length) lines.push("— feed —", ...feed);
+  const feed = readFeed().slice(-FEED_TAIL);
+  if (feed.length) {
+    out.push(titledBar("├", "┤", "feed"));
+    for (const line of feed) {
+      const i = line.indexOf(": ");
+      const route = i < 0 ? line : line.slice(0, i);
+      const body = i < 0 ? "" : line.slice(i + 2);
+      out.push(frame(`${theme.fg("accent", route)}  ${theme.fg("dim", body)}`));
+    }
   }
-  return lines;
+
+  out.push(B(`╰${"─".repeat(W - 2)}╯`));
+  return out;
 }
 
 function refreshView(ctx: ExtensionContext): void {
-  if (viewShown && ctx.hasUI) ctx.ui.setWidget(VIEW_KEY, renderView(), { placement: "aboveEditor" });
+  if (!ctx.hasUI) return;
+  const agents = runDir ? listAgents() : [];
+  if (!viewEnabled || agents.length === 0) {
+    if (lastSig !== undefined) {
+      ctx.ui.setWidget(VIEW_KEY, undefined);
+      lastSig = undefined;
+    }
+    return;
+  }
+  const sig = viewSignature(agents);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  ctx.ui.setWidget(VIEW_KEY, (_tui, theme): Component => ({ render: (w: number) => teamLines(theme, w) }), {
+    placement: "aboveEditor",
+  });
 }
 
 function toggleView(ctx: ExtensionContext): void {
-  viewShown = !viewShown;
-  if (viewShown) {
-    refreshView(ctx);
-    refreshTimer = setInterval(() => refreshView(ctx), REFRESH_MS);
-  } else {
-    ctx.ui.setWidget(VIEW_KEY, undefined);
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = undefined;
-  }
+  viewEnabled = !viewEnabled;
+  saveView(viewEnabled);
+  lastSig = undefined;
+  refreshView(ctx);
+  if (ctx.hasUI) ctx.ui.notify(`Subagent team view ${viewEnabled ? "on" : "off"} (persisted)`, "info");
 }
 
 // --------------------------------------------------------------------------
@@ -516,11 +596,13 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     if (IS_CHILD || !ctx.hasUI || uiReady) return;
     uiReady = true;
+    viewEnabled = loadView();
     sweepOldRuns();
     pi.registerCommand("subagents", {
-      description: "Toggle the live subagent team view.",
+      description: "Toggle the live subagent team view (persisted, on by default).",
       handler: async (_args, cmdCtx) => toggleView(cmdCtx),
     });
     startWatchdog(ctx);
+    refreshTimer = setInterval(() => refreshView(ctx), REFRESH_MS);
   });
 }

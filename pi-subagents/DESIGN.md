@@ -124,14 +124,16 @@ The human is the circuit-breaker; nothing hangs the session.
 
 ## 9. Team view — `/subagents`
 
-A live **company-structure** view: the root main at the top, children and grandchildren
-below, one line per node showing `name · task name · state · activity · elapsed`, plus the
-comms feed. Rendered as a live text widget that tails per-node beacon files and `feed.log`
-under the run directory, so the whole graph at any depth is visible at a glance. Reached by
-the `/subagents` command. States: `spawning · running · waiting · done · error · stopped`.
+A styled panel above the editor: a boxed, colour-coded tree of the run — children and
+grandchildren under the main agent — each row showing `glyph name · task  state  activity`
+with a right-aligned duration that ticks while an agent works and **freezes when it
+finishes**. A `feed` section tails the inter-agent messages. The panel is **on by default
+and persisted** (a small `settings.json`, like pi-memedit); `/subagents` toggles it and saves
+the choice. It appears whenever the run has subagents and hides when empty. States:
+`spawning · running · waiting · done · error · stopped`.
 
 (pi's TUI is keyboard-driven and does not enable mouse reporting, so there is no clickable
-button to surface; the command is the entry point.)
+button; the command is the toggle.)
 
 ## 10. Guidance
 
