@@ -998,7 +998,7 @@ export default function (pi: ExtensionAPI) {
       activeTools: pi.getActiveTools(),
     });
     writeSummary(ctx);
-    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex-tx:on" : "codex-tx:off");
+    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex-tx" : "");
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
@@ -1121,14 +1121,14 @@ export default function (pi: ExtensionAPI) {
       if (command === "on") {
         state.enabled = true;
         log("transport_enabled", { session: sessionInfo(ctx) });
-        ctx.ui.setStatus(EXTENSION_NAME, "codex-tx:on");
+        ctx.ui.setStatus(EXTENSION_NAME, "codex-tx");
         ctx.ui.notify(`Codex transport enabled. Log: ${LOG_FILE}`, "info");
         return;
       }
       if (command === "off") {
         log("transport_disabled", { session: sessionInfo(ctx) });
         state.enabled = false;
-        ctx.ui.setStatus(EXTENSION_NAME, "codex-tx:off");
+        ctx.ui.setStatus(EXTENSION_NAME, "");
         ctx.ui.notify("Codex transport disabled", "info");
         return;
       }

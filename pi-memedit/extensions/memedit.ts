@@ -1438,11 +1438,11 @@ function clearPruningUi(ctx: ExtensionContext): void {
 }
 
 function footerStatusText(): string {
-  if (!enabled) return "memedit:off";
+  if (!enabled) return "";
   if (realizedSavingsCost > 0) return `memedit:${formatCost(realizedSavingsCost)} saved`;
   if (lastStats?.status === "applied") return `memedit:${formatTokens(lastStats.tokensSaved)} pruned`;
   if (lastStats?.status === "noop") return "memedit:noop";
-  return `memedit:${lastStats?.status ?? "on"}`;
+  return lastStats?.status ? `memedit:${lastStats.status}` : "memedit";
 }
 
 function memeditStatusText(stats: MemeditStats): string {
@@ -1850,7 +1850,7 @@ export default function memedit(pi: ExtensionAPI) {
     if (unsuccessfulReason) {
       skipNextAutoPrune = true;
       lastStats = skippedStats(`agent run did not complete cleanly (${unsuccessfulReason})`);
-      if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:skipped" : "memedit:off");
+      if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, enabled ? "memedit:skipped" : "");
       return;
     }
     if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, footerStatusText());
@@ -1863,7 +1863,7 @@ export default function memedit(pi: ExtensionAPI) {
       if (command === "on" || command === "enable") {
         setEnabled(true);
         if (ctx.hasUI) {
-          ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:on");
+          ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit");
           ctx.ui.notify(`pi-memedit enabled and persisted to ${SETTINGS_FILE}`, "info");
         }
         return;
@@ -1871,7 +1871,7 @@ export default function memedit(pi: ExtensionAPI) {
       if (command === "off" || command === "disable") {
         setEnabled(false);
         if (ctx.hasUI) {
-          ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:off");
+          ctx.ui.setStatus(SYSTEM_STATUS_KEY, "");
           ctx.ui.notify(`pi-memedit disabled and persisted to ${SETTINGS_FILE}`, "info");
         }
         return;
