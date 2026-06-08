@@ -16,7 +16,6 @@ import type { Component } from "@earendil-works/pi-tui";
 
 const CUSTOM_TYPE = "pi-context-ledger";
 const DISABLE_ENV = "PI_CONTEXT_LEDGER";
-const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 
 // Pi estimates context with a chars/4 heuristic (see estimateTokens). We mirror
 // it exactly so this ledger agrees with Pi's own accounting, and so image cost
@@ -404,10 +403,6 @@ function isDisabled(value: string | undefined): boolean {
   return /^(0|false|off|no|disabled)$/i.test((value ?? "").trim());
 }
 
-function isSubagentChild(): boolean {
-  return process.env[SUBAGENT_CHILD_ENV] === "1";
-}
-
 function createLedgerComponent(ledger: Ledger, theme: Theme, expanded: boolean): Component {
   let cachedWidth = -1;
   let cachedLines: string[] = [];
@@ -427,8 +422,6 @@ function createLedgerComponent(ledger: Ledger, theme: Theme, expanded: boolean):
 }
 
 export default function contextLedger(pi: ExtensionAPI): void {
-  if (isSubagentChild()) return;
-
   let autoEnabled = !isDisabled(process.env[DISABLE_ENV]);
   const armedSessions = new Set<string>();
   const shownSessions = new Set<string>();

@@ -4,7 +4,6 @@ import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@
 
 const CUSTOM_TYPE = "pi-lazy-skills-advice";
 const DISABLE_ENV = "PI_LAZY_SKILLS";
-const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const MAX_SKILLS_PER_TURN = 5;
 const MAX_DESCRIPTION_CHARS = 600;
 const SELECTOR_MAX_TOKENS = 256;
@@ -43,10 +42,6 @@ type SkillInfo = {
 
 function isDisabled(value: string | undefined): boolean {
   return /^(0|false|off|no|disabled)$/i.test((value ?? "").trim());
-}
-
-function isSubagentChild(): boolean {
-  return process.env[SUBAGENT_CHILD_ENV] === "1";
 }
 
 function sessionKey(ctx: ExtensionContext): string {
@@ -268,7 +263,7 @@ async function selectRelevantSkills(
 }
 
 export default function lazySkills(pi: ExtensionAPI): void {
-  if (isSubagentChild() || isDisabled(process.env[DISABLE_ENV])) return;
+  if (isDisabled(process.env[DISABLE_ENV])) return;
 
   const warnedReplacementFailure = new Set<string>();
 

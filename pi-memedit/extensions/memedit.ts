@@ -142,7 +142,6 @@ const LIVE_MIN_CANDIDATES = 100;
 const LIVE_MIN_CANDIDATE_TOKENS = 50_000;
 const AUTO_MIN_CANDIDATES = 40;
 const AUTO_MIN_CANDIDATE_TOKENS = 20_000;
-const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 const ANTHROPIC_OAUTH_TOKEN_MARKER = "sk-ant-oat";
 const CLAUDE_CODE_IDENTITY_PREFIX = "You are Claude Code, Anthropic's official CLI";
 const ANTHROPIC_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
@@ -286,18 +285,6 @@ function isEnabled(value: string | undefined): boolean {
   return /^(1|true|on|yes|enabled)$/i.test((value ?? "").trim());
 }
 
-function isSubagentChildProcess(): boolean {
-  return process.env[SUBAGENT_CHILD_ENV] === "1";
-}
-
-function isSubagentRuntimeBlocked(): boolean {
-  return isSubagentChildProcess();
-}
-
-function subagentDisabledReason(): string {
-  return "disabled in pi-subagents child process";
-}
-
 function readBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -357,7 +344,6 @@ function saveSettings(): void {
 
 function resolveInitialEnabled(persistedEnabled: boolean): boolean {
   if (isEnabled(process.env.PI_MEMEDIT_DISABLE)) return false;
-  if (isSubagentRuntimeBlocked()) return false;
   if (isDisabled(process.env.PI_MEMEDIT) || isDisabled(process.env.PI_MEMEDIT_ENABLED)) return false;
   if (isEnabled(process.env.PI_MEMEDIT) || isEnabled(process.env.PI_MEMEDIT_ENABLED)) return true;
   return persistedEnabled;
@@ -1452,7 +1438,6 @@ function clearPruningUi(ctx: ExtensionContext): void {
 }
 
 function footerStatusText(): string {
-  if (isSubagentRuntimeBlocked()) return "memedit:off(subagent)";
   if (!enabled) return "memedit:off";
   if (realizedSavingsCost > 0) return `memedit:${formatCost(realizedSavingsCost)} saved`;
   if (lastStats?.status === "applied") return `memedit:${formatTokens(lastStats.tokensSaved)} pruned`;
@@ -1515,10 +1500,6 @@ async function runMemedit(
   mode: "auto" | "manual" | "live",
   options: RunMemeditOptions = {},
 ): Promise<MemeditStats | undefined> {
-  if (isSubagentRuntimeBlocked()) {
-    lastStats = { at: Date.now(), mode, status: "skipped", candidates: 0, selected: 0, deleted: 0, ignored: 0, error: subagentDisabledReason() };
-    return lastStats;
-  }
   if ((!enabled && mode !== "manual") || running) return;
   const model = ctx.model;
   if (!model) return;
@@ -1728,7 +1709,7 @@ function skippedStats(reason: string): MemeditStats {
 
 function formatStats(): string {
   const settingsLines = [
-    `pi-memedit: ${isSubagentRuntimeBlocked() ? subagentDisabledReason() : enabled ? "enabled" : "disabled"}`,
+    `pi-memedit: ${enabled ? "enabled" : "disabled"}`,
     `Live pruning: ${liveEnabled ? "on" : "off"}`,
     `Show removed text: ${showDeletedItems ? "on" : "off"}`,
     `Settings file: ${SETTINGS_FILE}`,
@@ -1772,19 +1753,6 @@ export default function memedit(pi: ExtensionAPI) {
     if (!stats || typeof stats !== "object" || typeof (stats as MemeditStats).status !== "string") return undefined;
     return renderStatusMessage(stats as MemeditStats, expanded === true, theme);
   });
-
-  if (isSubagentRuntimeBlocked()) {
-    pi.on("session_start", async (_event, ctx) => {
-      if (ctx.hasUI) ctx.ui.setStatus(SYSTEM_STATUS_KEY, "memedit:off(subagent)");
-    });
-    pi.registerCommand("memedit", {
-      description: "Show why pi-memedit is disabled in this subagent child process",
-      handler: async (_args, ctx) => {
-        if (ctx.hasUI) ctx.ui.notify(formatStats(), "info");
-      },
-    });
-    return;
-  }
 
   installAgentSessionPatch();
 
@@ -1869,7 +1837,7 @@ export default function memedit(pi: ExtensionAPI) {
   // ongoing cache-read saving is realized one API call at a time. Tick it up
   // live instead of waiting for the next prune or the end of the run.
   pi.on("before_provider_request", async (_event, ctx) => {
-    if (isSubagentRuntimeBlocked() || !enabled) return;
+    if (!enabled) return;
     if (running) return; // the prune's own LLM call is overhead, not a saving
     if (telemetry.savingPerCallCost <= 0) return;
     realizedSavingsCost += telemetry.savingPerCallCost;

@@ -19,7 +19,8 @@
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
       "./pi-settings-sync/extensions/settings-sync.ts",
-      "./pi-context-guard/extensions/context-guard.ts"
+      "./pi-context-guard/extensions/context-guard.ts",
+      "./pi-subagents/extensions/subagents.ts"
     ],
     "skills": [
       "./pi-settings-sync/skills"
