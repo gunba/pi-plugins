@@ -15,12 +15,10 @@
       "./pi-config/extensions/pi-config.ts",
       "./pi-lazy-skills/extensions/lazy-skills.ts",
       "./pi-tab-title/extensions/tab-title.ts",
-      "./pi-resume-search/extensions/resume-search.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
       "./pi-settings-sync/extensions/settings-sync.ts",
-      "./pi-clones/extensions/clones.ts",
       "./pi-context-guard/extensions/context-guard.ts"
     ],
     "skills": [

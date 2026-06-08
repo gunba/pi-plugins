@@ -9,12 +9,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
 - `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
-- `pi-resume-search` — adds `/resume-search` and `/rs` for full-session resume search with match snippets.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message; never sent to the model.
 - `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log, including optional live continuation pruning during long runs; disabled by default in pi-subagents child processes and compatible with Anthropic OAuth prune calls.
 - `pi-settings-sync` — adds `/pi-export` and the `/pi-settings-import` skill for full user-level settings migration between machines (Linux ↔ Windows), translating OS-specific paths and excluding secrets, node_modules, and history.
-- `pi-clones` — forks the running agent into a background clone that inherits the full session context (so it needs no briefing and can reuse warm prompt-cache prefixes), works one extra task in parallel, and alerts main with a concise completion notice; fetch full handoffs with `clone_result` only when needed. Clones boot as a resume of a forked branch (kept out of resume history), default to read-only tools, can be continued with write-enabled tools when needed, auto-compact instead of bricking, and escalate human-only decisions back to the parent. Adds `clone`/`clone_status`/`clone_result`/`clone_continue`/`clone_log`/`clone_stop`/`clone_dismiss` and `/clones`; full rationale in `pi-clones/DESIGN.md`.
 - `pi-context-guard` — enforces a final oversized-message guard before provider requests and automatic tool-call continuations by saving giant tool/custom/bash/assistant context items to markdown files and replacing them with concise file pointers. Defaults to 50k tokens per message; configure with `/context-guard`.
 
 ## Startup extension
