@@ -1,7 +1,7 @@
 {
   "name": "pi-plugins",
-  "version": "0.9.1",
-  "description": "Jordan Graham's custom Pi extensions packaged as one auto-updatable Pi package.",
+  "version": "0.10.0",
+  "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
     "pi",
@@ -10,7 +10,10 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./pi-codex-transport/extensions/codex-transport.ts",
+      "./pi-fixes/extensions/effectiveness.ts",
+      "./pi-fixes/extensions/codex-transport.ts",
+      "./pi-fixes/extensions/context-guard.ts",
+      "./pi-fixes/extensions/claude-effort.ts",
       "./pi-usage/extensions/usage.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-lazy-skills/extensions/lazy-skills.ts",
@@ -19,7 +22,6 @@
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
       "./pi-settings-sync/extensions/settings-sync.ts",
-      "./pi-context-guard/extensions/context-guard.ts",
       "./pi-subagents/extensions/subagents.ts"
     ],
     "skills": [

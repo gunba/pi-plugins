@@ -36,6 +36,16 @@ const DEFAULT_SETTINGS: Settings = {
 	showNotifications: true,
 };
 const MAX_NOTIFIED_FINGERPRINTS = 256;
+const EFFECTIVENESS_KEY = Symbol.for("pi.fixes.effectiveness");
+
+function recordFix(fixId: string, count = 1): void {
+	try {
+		const tracker = (globalThis as Record<symbol, unknown>)[EFFECTIVENESS_KEY] as { record?: (id: string, n?: number) => void } | undefined;
+		tracker?.record?.(fixId, count);
+	} catch {
+		// Effectiveness tracking is best-effort and must never disrupt the fix.
+	}
+}
 
 let settingsLoadError: string | undefined;
 let settings = withEnv(loadSettings());
@@ -298,6 +308,9 @@ function report(records: StripRecord[], ctx: ExtensionContext): void {
 	const fresh = records.filter(remember);
 	if (fresh.length === 0) return;
 	stripCount += fresh.length;
+	// A fresh oversized item was just stripped before it could reach the model:
+	// this is the moment the fix prevents its failure case.
+	recordFix("context-guard-strip", fresh.length);
 	lastStrip = fresh[fresh.length - 1];
 	if (!ctx.hasUI || !settings.showNotifications) return;
 	const largest = fresh.reduce((best, item) => (item.originalTokens > best.originalTokens ? item : best), fresh[0]);

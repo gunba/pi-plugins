@@ -446,15 +446,21 @@ function persistSnapshots(): void {
   }
 }
 
-function activeSnapshot(nowMs = Date.now()): UsageSnapshot | undefined {
+function snapshotForSource(source: UsageSource | undefined, nowMs = Date.now()): UsageSnapshot | undefined {
   pruneExpiredSnapshots(nowMs, true);
-  let best: UsageSnapshot | undefined;
-  for (const source of USAGE_SOURCES) {
-    const snapshot = snapshots[source];
-    if (!snapshot) continue;
-    if (!best || snapshot.updatedAtMs > best.updatedAtMs) best = snapshot;
-  }
-  return best;
+  return source ? snapshots[source] : undefined;
+}
+
+// Map the active model to the usage family it can actually report. Codex usage
+// comes only from the Codex subscription transport; Claude usage only from
+// Anthropic OAuth rate-limit headers. Any other model has no applicable usage,
+// so the footer shows nothing rather than stale data from the previous family.
+function currentUsageSource(model: ExtensionContext["model"] | undefined): UsageSource | undefined {
+  if (!model) return undefined;
+  if (model.api === "openai-codex-responses") return "codex";
+  const haystack = `${model.provider ?? ""} ${model.api ?? ""} ${model.id ?? ""}`.toLowerCase();
+  if (haystack.includes("anthropic") || haystack.includes("claude")) return "claude";
+  return undefined;
 }
 
 function installWebSocketCapture(): void {
@@ -526,21 +532,24 @@ function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): 
   return `${minutes}m`;
 }
 
-function formatWindowStatus(window: UsageWindow | undefined, nowMs = Date.now()): string | undefined {
+function styleUsageWindow(window: UsageWindow | undefined, theme: ExtensionContext["ui"]["theme"], nowMs: number): string | undefined {
   if (!window) return undefined;
-  const leftPercent = window.usedPercent === undefined ? "?" : String(100 - window.usedPercent);
+  const remaining = window.usedPercent === undefined ? undefined : Math.max(0, 100 - window.usedPercent);
+  // Dim by default; escalate only when the remaining budget is genuinely low.
+  const pctColor = remaining === undefined ? "dim" : remaining <= 10 ? "error" : remaining <= 25 ? "warning" : "dim";
+  const head = theme.fg("dim", `${window.label}:`) + theme.fg(pctColor, `${remaining ?? "?"}%`);
   const reset = formatDurationUntil(window.resetAtMs, nowMs);
-  return reset ? `${window.label}:${leftPercent}% ${reset}` : `${window.label}:${leftPercent}%`;
+  return reset ? `${head} ${theme.fg("dim", reset)}` : head;
 }
 
-function formatUsageStatus(nowMs = Date.now()): string | undefined {
-  const snapshot = activeSnapshot(nowMs);
+function formatUsageStatus(theme: ExtensionContext["ui"]["theme"], source: UsageSource | undefined, nowMs = Date.now()): string | undefined {
+  const snapshot = snapshotForSource(source, nowMs);
   if (!snapshot) return undefined;
-  const windows = [formatWindowStatus(snapshot.primary, nowMs), formatWindowStatus(snapshot.secondary, nowMs)].filter(
+  const windows = [styleUsageWindow(snapshot.primary, theme, nowMs), styleUsageWindow(snapshot.secondary, theme, nowMs)].filter(
     (part): part is string => Boolean(part),
   );
   if (windows.length === 0) return undefined;
-  return `${SOURCE_LABELS[snapshot.source]} ${windows.join(" ")}`;
+  return `${theme.fg("dim", SOURCE_LABELS[snapshot.source])} ${windows.join(" ")}`;
 }
 
 function formatUsageDetails(nowMs = Date.now()): string {
@@ -775,11 +784,12 @@ function buildTopLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["them
   const sessionName = sessionManager.getSessionName?.();
   if (sessionName) parts.push(sessionName);
 
-  const usageStatus = formatUsageStatus();
+  const usageStatus = formatUsageStatus(theme, currentUsageSource(ctx.model));
   const extensionStatuses = Array.from(footerData.getExtensionStatuses?.().entries() || [])
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([, text]) => sanitizeStatusText(text))
-    .filter(Boolean);
+    .filter((text): text is string => Boolean(text))
+    .map((text) => theme.fg("dim", text));
   const status = [usageStatus, ...extensionStatuses].filter((part): part is string => Boolean(part)).join("  ");
   const left = theme.fg("dim", parts.join(" • "));
 

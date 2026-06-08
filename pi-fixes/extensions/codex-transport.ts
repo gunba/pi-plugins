@@ -78,6 +78,17 @@ function writeSseTimeout(timeoutMs: number): boolean {
   }
 }
 
+const EFFECTIVENESS_KEY = Symbol.for("pi.fixes.effectiveness");
+
+function recordFix(fixId: string, count = 1): void {
+  try {
+    const tracker = (globalThis as Record<symbol, unknown>)[EFFECTIVENESS_KEY] as { record?: (id: string, n?: number) => void } | undefined;
+    tracker?.record?.(fixId, count);
+  } catch {
+    // Effectiveness tracking is best-effort and must never disrupt the fix.
+  }
+}
+
 function isBuiltinHeaderTimeout(reason: unknown): boolean {
   const message =
     reason instanceof Error
@@ -723,6 +734,9 @@ async function instrumentedFetch(state: TransportState, downstreamFetch: typeof 
     const reason = callerSignal?.reason;
     if (isBuiltinHeaderTimeout(reason)) {
       suppressedBuiltinTimeout = true;
+      // The built-in 10s timeout just fired and we are suppressing it: this is
+      // the exact moment the fix prevents Pi from aborting a slow Codex request.
+      recordFix("codex-sse-timeout");
       state.log?.("sse_builtin_header_timeout_suppressed", {
         fetchId,
         elapsedMs: elapsedMs(start),
@@ -984,7 +998,7 @@ export default function (pi: ExtensionAPI) {
       activeTools: pi.getActiveTools(),
     });
     writeSummary(ctx);
-    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex transport:on" : "codex transport:off");
+    if (ctx.hasUI) ctx.ui.setStatus(EXTENSION_NAME, state.enabled ? "codex-tx:on" : "codex-tx:off");
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
@@ -1107,14 +1121,14 @@ export default function (pi: ExtensionAPI) {
       if (command === "on") {
         state.enabled = true;
         log("transport_enabled", { session: sessionInfo(ctx) });
-        ctx.ui.setStatus(EXTENSION_NAME, "codex transport:on");
+        ctx.ui.setStatus(EXTENSION_NAME, "codex-tx:on");
         ctx.ui.notify(`Codex transport enabled. Log: ${LOG_FILE}`, "info");
         return;
       }
       if (command === "off") {
         log("transport_disabled", { session: sessionInfo(ctx) });
         state.enabled = false;
-        ctx.ui.setStatus(EXTENSION_NAME, "codex transport:off");
+        ctx.ui.setStatus(EXTENSION_NAME, "codex-tx:off");
         ctx.ui.notify("Codex transport disabled", "info");
         return;
       }

@@ -4,7 +4,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-codex-transport` — Codex WebSocket/SSE transport fixes, timeout control, and diagnostics.
+- `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in effectiveness tracking. Covers the Codex SSE 10s header-timeout suppression (`/sse-timeout`, `/codex-transport`) and the oversized single-message guard before provider requests and tool-call continuations (`/context-guard`). `/pi-fixes` reports whether each fix is still firing (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can be retired once its failure stops occurring.
 - `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer, plus a cumulative conversation token/cost breakdown (uncached input, cached input with hit rate, output, and total `$`) on the stats line; `/pi-usage` prints the full per-bucket token and cost attribution for the current model.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
 - `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
@@ -14,11 +14,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log, including optional live continuation pruning during long runs; follows its global setting and is compatible with Anthropic OAuth prune calls.
 - `pi-subagents` — runs background `pi` subagents as a coordinated team. `spawn` starts a named subagent on a task; `message`/`wait` provide a live intercom (agent↔agent and agent↔main); nested spawns are gated by the main agent's approval; and a styled, on-by-default `/subagents` team view shows the live tree. Subagents inherit the full plugin stack, run headless, resume from their own memory when re-addressed, and stay out of `/resume`.
 - `pi-settings-sync` — adds `/pi-export` and the `/pi-settings-import` skill for full user-level settings migration between machines (Linux ↔ Windows), translating OS-specific paths and excluding secrets, node_modules, and history.
-- `pi-context-guard` — enforces a final oversized-message guard before provider requests and automatic tool-call continuations by saving giant tool/custom/bash/assistant context items to markdown files and replacing them with concise file pointers. Defaults to 50k tokens per message; configure with `/context-guard`.
-
-## Startup extension
-
-`pi-startup-env` is a top-level startup helper for environment defaults that must apply before package extensions run. Load it through Pi `settings.json` `extensions`, not only through a package entry.
 
 ## Install
 

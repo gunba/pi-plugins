@@ -1,44 +1,59 @@
 # pi-memedit
 
-Pi extension that runs automatic memory-edit passes over low-value conversation history.
+Pi extension that runs incremental pruning passes over low-value conversation history. Each pass calls the current model with a dedicated pruning prompt and a plain-text transcript of eligible entries; the entries it selects are hard-deleted from both future model context and the persisted session JSONL. memedit does not summarise or compact — it removes whole entries outright.
 
-It calls the current model directly with a dedicated pruning prompt and a text transcript of eligible conversation entries. Only entries tagged with compact temporary `[N]` identifiers are removable; `[context]` entries are context only and cannot be selected. Selected entries are hard-deleted from both future model context and the persisted session JSONL.
+Only entries tagged with compact `[N]` identifiers are removable; `[context]` entries are shown for context only and can never be selected.
 
-Only entries this live session generated are eligible: everything present when the session was resumed or restarted is frozen as context, and once a pass has judged an entry it is never re-offered (it stays in context, but out of candidacy). Eligibility is decided by entry identity, not by a positional boundary into the log. User messages, compaction summaries, and the freshest unsafe-to-delete assistant/tool-result tail are protected. The pruning request and response are not appended to model context. Status messages are also filtered out of future model context.
+## Candidacy
+
+memedit never judges the whole conversation. Candidacy is incremental and decided by entry identity, not by a position in the log:
+
+- Everything present when the session starts, resumes, or restarts is frozen as context the moment the session begins.
+- Only entries this live session generates are eligible, and once a pass has judged an entry it is never re-offered — it stays in context but drops out of candidacy.
+- User messages and compaction summaries are always protected (deleting a compaction can re-expand old history). The most recent assistant text answer is protected, and during live pruning the freshest turn — the latest assistant message and the tool results it produced — is protected too, because the main agent has not consumed those results yet.
+
+The pruning request and response are never added to the conversation, and memedit's own status messages are filtered out of future model context.
 
 ## Pruning modes
 
-- **Next-request pruning** runs before the next user request is sent to the model. The pruning agent receives the user's next request so it can keep what the upcoming work will need. When a pass is skipped for too little material, its entries simply stay unjudged and accumulate with later ones until a pass is worthwhile.
-- **Live continuation pruning** is enabled by default. During long agent runs, pi-memedit may prune after a completed tool-using turn once there is substantial older unjudged material: about 50k removable tokens, or at least 100 removable entries and 25k removable tokens. It does not run after a final assistant answer. The freshest turn is protected because the main agent has not consumed the tool results yet. Live pruning uses a continuation-specific prompt and only shows the session's not-yet-judged entries, which keeps the pruning prompt smaller and avoids waiting until a single run has accumulated 100+ messages.
+- **Next-request pruning** runs before the next user request reaches the model. The pruning agent is handed that upcoming request so it can keep whatever the next step will need. If a pass is skipped for too little material, its entries stay unjudged and accumulate with later ones until a pass is worthwhile.
+- **Live continuation pruning** (on by default) runs after a completed tool-using turn during a long run, once enough older unjudged material has built up. It never runs after a final assistant answer, uses a continuation-specific prompt, and shows only the session's not-yet-judged entries to keep the prompt small.
+
+## Thresholds
+
+Automatic runs gate on a size preflight only — there is no high-context trigger, so a near-full context window is left to Pi's own compaction unless the removable surface is itself large:
+
+- **Next-request:** ~20k removable tokens, or ≥40 removable entries and ≥10k removable tokens.
+- **Live:** ~50k removable tokens, or ≥100 removable entries and ≥25k removable tokens.
+
+Manual `/memedit run` ignores the preflight.
 
 ## Cache and token accounting
 
-The status output separates three cache-tail quantities:
+Status output separates three cache-tail quantities:
 
-- **stable prefix** — context before the first deleted entry, expected to remain cache-reusable;
-- **invalidated tail** — all active-context tokens from the first deleted entry onward;
-- **kept tail rewrite** — the subset of that invalidated tail that remains after deletion and must be rewritten/re-cached.
+- **stable prefix** — context before the first deleted entry, expected to stay cache-reusable;
+- **invalidated tail** — every active-context token from the first deletion onward;
+- **kept tail** — the part of that tail that survives deletion and must be re-written/re-cached.
 
-A prune can delete 52k tokens and rewrite only 1.3k kept-tail tokens if almost everything after the first deletion was removed. The status line reports invalidated, dropped, and rewritten tokens separately.
+Deleting 52k tokens can rewrite only ~1.3k kept-tail tokens when nearly everything after the first deletion is removed. The status line reports invalidated, dropped, and rewritten tokens separately.
 
-Automatic pruning uses size preflight only: normal auto pruning waits for roughly 20k removable tokens, or 40 removable entries and 10k removable tokens; live pruning waits for roughly 50k removable tokens, or 100 removable entries and 25k removable tokens. There is no high-context override. High context usage is left to Pi's normal auto-compaction unless the removable surface itself is large enough.
+Prune calls use `cacheRetention: "none"`, since their transcript is ephemeral and should not pay cache-write premiums. Because the analysis is cheap (it reads the already-cached conversation and only appends a candidate index), applying a deletion is a separate, marginal decision gated on profitability: a deletion invalidates the cache tail after it, so the kept tail is re-written once at the cache-write rate while the deleted tokens stop being re-read on every later request. memedit applies a deletion set only when that one-off recache pays back within the cache's remaining life — `breakEvenCalls = recacheCost / savingPerCall ≤ E`, where `E = min(25, calls-until-auto-compaction)`. The constant 25 is the median remaining provider requests measured across session history (conversation length is heavy-tailed, so remaining requests are roughly flat by age); the compaction term only caps the horizon near the context ceiling, where Pi's compaction would evict the pruned region anyway. Within an accepted set memedit also picks the most profitable first-deletion point, declining early low-value deletions that would invalidate a large kept tail.
 
-Prune calls use `cacheRetention: "none"` because their transcript is ephemeral and should not pay cache-write premiums. Because the prune analysis is cheap (it reads the already-cached conversation and appends a candidate index), applying a deletion is a separate, marginal decision gated on profitability: applying a deletion invalidates the cache tail after it, so the kept tail is re-written once at the cache-write rate, while the deleted tokens stop being re-read on every later request. memedit applies a deletion set only when that one-off recache is recovered within the cache's remaining life — `breakEvenCalls = recacheCost / savingPerCall ≤ E`, where `E = min(25, calls-until-auto-compaction)`. The constant 25 is the median remaining provider requests measured across session history (conversation length is heavy-tailed, so remaining requests are roughly flat by age); the compaction term caps the horizon only near the context ceiling, since compaction would evict the pruned region anyway. Within an accepted set it also picks the most profitable first-deletion point, declining early low-value deletions that would invalidate a large kept tail. OpenAI-family models use `js-tiktoken` (`o200k_base`/`cl100k_base`) for local text-token estimates; other providers still use Pi's conservative fallback estimate while relying on provider-reported usage for actual prune-pass cost.
+OpenAI-family models use `js-tiktoken` (`o200k_base`/`cl100k_base`) for local text-token estimates; other providers use Pi's conservative fallback estimate, while provider-reported usage gives the actual prune-pass cost.
 
 ## Commands
 
 - `/memedit status` — show settings and last run.
-- `/memedit run` — run manually.
-- `/memedit on` / `/memedit off` — toggle automatic pruning and persist the setting.
-- `/memedit live on` / `/memedit live off` — toggle live continuation pruning and persist the setting.
-- `/memedit show-deleted on` / `/memedit show-deleted off` — toggle removed item previews in status output and persist the setting.
+- `/memedit run` — run a pass manually.
+- `/memedit on` / `/memedit off` — toggle automatic pruning (persisted).
+- `/memedit live on` / `/memedit live off` — toggle live continuation pruning (persisted).
+- `/memedit show-deleted on` / `/memedit show-deleted off` — toggle removed-item previews in status output (persisted).
 
 ## Environment
 
-- Settings persist at `~/.pi/agent/memedit/settings.json` by default.
-- `PI_MEMEDIT_SETTINGS=/path/to/settings.json` overrides the settings file path.
-- `PI_MEMEDIT=off` or `PI_MEMEDIT_ENABLED=false` disables on startup.
-- `PI_MEMEDIT_DISABLE=1` disables on startup.
-- `PI_SUBAGENT_CHILD=1` disables memedit automatically so pi-subagents child sessions are never pruned.
+- Settings persist at `~/.pi/agent/memedit/settings.json`; `PI_MEMEDIT_SETTINGS=/path/to/settings.json` overrides that path.
+- `PI_MEMEDIT` / `PI_MEMEDIT_ENABLED` force memedit on or off at startup, overriding the persisted setting (`off`/`false` disable, `on`/`true` enable).
+- `PI_MEMEDIT_DISABLE=1` forces memedit off at startup.
 
-Anthropic OAuth (`sk-ant-oat...`) prune calls use a provider-payload shaping callback that adds the Claude Code billing header expected by Anthropic OAuth requests. The prune transcript is sent as plain text, so historical tool calls/results are not serialized as Anthropic `tool_use` blocks.
+Anthropic OAuth (`sk-ant-oat…`) prune calls run through a provider-payload shaping callback that prepends the Claude Code billing header those requests expect. The transcript is sent as plain text, so historical tool calls/results are never serialised as Anthropic `tool_use` blocks.
