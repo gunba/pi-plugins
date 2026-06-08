@@ -34,7 +34,8 @@ const WATCHDOG_MS = 15_000;
 const STALE_MS = Number(process.env.PI_SUBAGENTS_STALE_MS) || 120_000;
 const RUN_TTL_MS = Number(process.env.PI_SUBAGENTS_RUN_TTL_MS) || 86_400_000; // sweep runs older than 24h
 const FEED_TAIL = 8;
-const RESULT_MAX = 2000;
+const COORDINATION_NOTICE =
+  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. Call wait. When wait returns a child request or error, handle that event with normal tools if needed, then reply/resume with message and call wait again. Do not read completion result files until wait reports that no active subagents or pending messages remain.";
 
 const NAMES = [
   "Alice", "Bob", "Cara", "Dan", "Eve", "Finn", "Grace", "Hugo",
@@ -70,7 +71,15 @@ type Mail = {
   to: string;
   body: string;
   replyTo?: string;
+  kind?: "request" | "completion" | "attention" | "notice";
   ts: number;
+};
+
+type ActiveRequest = {
+  from: string;
+  id: string;
+  body: string;
+  kind: "request" | "attention" | "notice";
 };
 
 // --------------------------------------------------------------------------
@@ -97,18 +106,67 @@ function readJson<T>(path: string): T | undefined {
   }
 }
 
-// The subagent's final answer, to push to its parent on completion.
+// The subagent's final answer. It is never inlined into mailbox messages:
+// write it to a result file so the parent chooses when to spend context on it.
 function lastAssistantText(messages: unknown[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as { role?: string; content?: unknown };
     if (m?.role !== "assistant") continue;
-    if (typeof m.content === "string") return m.content.slice(0, RESULT_MAX);
+    if (typeof m.content === "string") return m.content;
     if (Array.isArray(m.content)) {
       return (m.content as { type?: string; text?: string }[])
-        .filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n").slice(0, RESULT_MAX);
+        .filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n");
     }
   }
   return "";
+}
+
+function finalAssistantStatus(messages: unknown[]): { stopReason?: string; errorMessage?: string } {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; stopReason?: string; errorMessage?: string };
+    if (m?.role === "assistant") return { stopReason: m.stopReason, errorMessage: m.errorMessage };
+  }
+  return {};
+}
+
+function statusNeedsAttention(status: { stopReason?: string; errorMessage?: string }): boolean {
+  return status.stopReason === "error" || status.stopReason === "aborted" || !!status.errorMessage;
+}
+
+function safeFileSegment(s: string): string {
+  return s.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
+}
+
+function resultDir(): string {
+  return join(runDir, "results");
+}
+
+function writeResultFile(name: string, messages: unknown[]): string {
+  ensureDir(resultDir());
+  const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const path = join(resultDir(), `${stamp}_${safeFileSegment(name)}_${rid()}.md`);
+  const status = finalAssistantStatus(messages);
+  const body = lastAssistantText(messages) || status.errorMessage || (statusNeedsAttention(status) ? "(needs attention)" : "(completed)");
+  const header = [
+    `# Subagent result: ${name}`,
+    "",
+    beacon?.taskName ? `Task: ${beacon.taskName}` : undefined,
+    beacon?.parent ? `Parent: ${beacon.parent}` : undefined,
+    status.stopReason ? `Stop reason: ${status.stopReason}` : undefined,
+    status.errorMessage ? `Error: ${status.errorMessage}` : undefined,
+    `Finished: ${new Date().toISOString()}`,
+    "",
+  ].filter((line): line is string => line !== undefined).join("\n");
+  writeFileSync(path, `${header}${body.endsWith("\n") ? body : `${body}\n`}`);
+  return path;
+}
+
+function resultReadyMessage(name: string, path: string, state: "done" | "attention", errorMessage?: string): string {
+  const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+  const label = beacon?.taskName ? ` · ${beacon.taskName}` : "";
+  const head = state === "done" ? `Completed${label}.` : `Needs attention${label}.${errorMessage ? ` ${errorMessage}` : ""}`;
+  return `${head}\nResult file: ${path}`;
 }
 
 // Persisted view toggle (mirrors pi-memedit's settings.json approach).
@@ -161,8 +219,35 @@ function sessionsDir(): string {
 function activeLock(name: string): string {
   return join(agentDir(name), ".active");
 }
+function activePidFile(name: string): string {
+  return join(activeLock(name), "pid");
+}
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string })?.code === "EPERM";
+  }
+}
 function isActive(name: string): boolean {
-  return existsSync(activeLock(name));
+  const lock = activeLock(name);
+  if (!existsSync(lock)) return false;
+  const pidText = (() => {
+    try {
+      return readFileSync(activePidFile(name), "utf8");
+    } catch {
+      return "";
+    }
+  })();
+  const pid = Number(pidText);
+  if (Number.isFinite(pid) && pid > 0) {
+    const alive = processAlive(pid);
+    if (!alive) rmSync(lock, { recursive: true, force: true });
+    return alive;
+  }
+  // Compatibility for locks from older code while this process is alive.
+  return kids.has(name);
 }
 
 function writeBeacon(name: string, patch: Partial<Beacon>): void {
@@ -192,6 +277,35 @@ function listAgents(): Beacon[] {
     if (b) out.push(b);
   }
   return out;
+}
+
+function activeChildren(parent: string): Beacon[] {
+  return listAgents().filter((a) => a.parent === parent && !TERMINAL.has(a.state) && isActive(a.name));
+}
+
+function hasPendingFresh(name: string): boolean {
+  return !!peekFresh(name);
+}
+
+function hasTeamWork(name: string): boolean {
+  return hasPendingFresh(name) || activeChildren(name).length > 0;
+}
+
+function noWaitWorkMessage(name: string): string {
+  const children = listAgents().filter((a) => a.parent === name);
+  if (!children.length) return "No subagents to wait for — spawn a subagent first.";
+  const attention = children.filter((a) => a.state === "error" || a.state === "stopped" || (!TERMINAL.has(a.state) && !isActive(a.name)));
+  if (attention.length) {
+    const names = attention.map((a) => `${a.name}${a.taskName ? ` · ${a.taskName}` : ""} (${a.state})`).join(", ");
+    return `No active subagents or pending messages for ${name}. Children needing attention: ${names}. Repair by messaging/resuming the affected agent, or continue if no repair is needed.`;
+  }
+  return `No active subagents or pending messages for ${name}. Continue normally; do not call wait again until you spawn or message a subagent.`;
+}
+
+function coordinationStatus(name: string): string {
+  const active = activeChildren(name).map((a) => `${a.name}${a.taskName ? ` · ${a.taskName}` : ""}`);
+  const pending = hasPendingFresh(name) ? "yes" : "no";
+  return `active children: ${active.length ? active.join(", ") : "none"}; pending child message: ${pending}`;
 }
 
 // Stateless cleanup: drop run directories from past sessions. No main-side bookkeeping.
@@ -241,6 +355,17 @@ function takeReply(name: string, replyTo: string): Mail | undefined {
     }
   }
   return undefined;
+}
+
+function isCompletionNotice(msg: Mail): boolean {
+  if (msg.kind) return msg.kind === "completion";
+  return msg.body.startsWith("Completed") && msg.body.includes("Result file:");
+}
+
+function activeRequestFor(msg: Mail): ActiveRequest | undefined {
+  if (isCompletionNotice(msg)) return undefined;
+  const kind = msg.kind === "request" || msg.kind === "attention" ? msg.kind : "notice";
+  return { from: msg.from, id: msg.id, body: msg.body, kind };
 }
 
 async function pollFor<T>(fn: () => T | undefined, signal?: AbortSignal): Promise<T | undefined> {
@@ -299,17 +424,21 @@ function runAgent(name: string, prompt: string, ctx: ExtensionContext, fresh: bo
     stdio: "ignore",
     windowsHide: true,
   });
+  if (typeof child.pid === "number") writeFileSync(activePidFile(name), `${child.pid}\n`);
   kids.set(name, child);
-  // Safety net: if the process dies without a clean agent_end, surface it to the launcher.
-  child.on("exit", (code) => {
+  const finishUnexpected = (state: "error" | "stopped", body: string) => {
     rmSync(activeLock(name), { recursive: true, force: true });
     const b = readJson<Beacon>(join(agentDir(name), "beacon.json"));
     if (!b || !TERMINAL.has(b.state)) {
-      writeBeacon(name, { state: code === 0 ? "done" : "error" });
-      post({ id: rid(), from: name, to: SELF, body: code === 0 ? "(completed)" : `exited unexpectedly (code ${code})`, ts: now() });
+      writeBeacon(name, { state });
+      post({ id: rid(), from: name, to: SELF, body, kind: "attention", ts: now() });
     }
     kids.delete(name);
-  });
+  };
+  child.on("error", (error) => finishUnexpected("error", `failed to start: ${(error as Error).message}`));
+  // Safety net: if the process dies without a clean agent_end, surface it to the launcher.
+  child.on("exit", (code) => finishUnexpected("stopped", code === 0 ? "exited before posting a result" : `exited unexpectedly (code ${code})`));
+  child.on("exit", () => refreshView(ctx));
   return true;
 }
 
@@ -328,19 +457,20 @@ function registerTools(pi: ExtensionAPI): void {
     promptSnippet: "spawn(task, name): start a background subagent for independent parallel work",
     promptGuidelines: [
       "Subagents are background pi processes with your tools and no shared memory — give each one objective and its done criteria. Use them for independent parallel work (competing hypotheses, wide searches, parallel builds).",
-      "After spawning your team, call `wait` and let them run rather than duplicating their work. They can't reach the user, so they ask you — investigate if needed, then reply.",
-      "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never blocks you — `wait` is interruptible and `/subagents` shows the whole team.",
+      "After spawning your team, call `wait` and let them run rather than duplicating their work. While child subagents are active or messages are unread, pi-subagents only permits coordination: `wait` or `message`.",
+      "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the whole team.",
     ],
     parameters: Type.Object({
       task: Type.String({ description: "One objective and its done criteria. The subagent starts cold — say everything it needs." }),
       name: Type.String({ description: "A short task name you choose for this subagent (e.g. 'auth-race repro'), shown in the team view." }),
     }),
+    executionMode: "sequential",
     async execute(_id, params, signal, _onUpdate, ctx) {
       ensureRun();
 
       if (IS_CHILD) {
         const reqId = rid();
-        post({ id: reqId, from: SELF, to: "main", body: `[approval] spawn "${params.name}": ${params.task}`, ts: now() });
+        post({ id: reqId, from: SELF, to: "main", body: `[approval] spawn "${params.name}": ${params.task}`, kind: "request", ts: now() });
         const reply = await pollFor(() => takeReply(SELF, reqId), signal);
         if (!reply) return text("Approval wait interrupted.");
         if (!/approve/i.test(reply.body)) return text(`Spawn denied by main: ${reply.body}`);
@@ -360,7 +490,7 @@ function registerTools(pi: ExtensionAPI): void {
     promptSnippet: "message(to, body, reply_to?, wait?): talk to any agent or main",
     promptGuidelines: [
       "Address agents by their name (e.g. 'Alice') or 'main'. To ask a question and block for the answer, set wait:true. To answer a question you received, set reply_to to its id.",
-      "Messaging an agent that has finished resumes it from its own memory with your message as a follow-up task; its result returns like a spawn — call wait.",
+      "Messaging an agent that has finished resumes it from its own memory with your message as a follow-up task; its completion arrives through wait as a result-file notice.",
     ],
     parameters: Type.Object({
       to: Type.String({ description: "Recipient agent name, or 'main'." }),
@@ -368,6 +498,7 @@ function registerTools(pi: ExtensionAPI): void {
       reply_to: Type.Optional(Type.String({ description: "Id of the message you are answering." })),
       wait: Type.Optional(Type.Boolean({ description: "Block until the recipient replies." })),
     }),
+    executionMode: "sequential",
     async execute(_id, params, signal, _onUpdate, ctx) {
       if (!runDir) return text("No run yet — spawn a subagent first.");
       const known = params.to === "main" || existsSync(join(agentDir(params.to), "beacon.json"));
@@ -375,12 +506,16 @@ function registerTools(pi: ExtensionAPI): void {
 
       // A finished agent has no live process: resume it with this message as a follow-up.
       if (params.to !== "main" && !isActive(params.to) && runAgent(params.to, params.body, ctx, false)) {
+        if (activeRequest && activeRequest.from === params.to) activeRequest = undefined;
         refreshView(ctx);
         return text(`Re-addressing ${params.to} (resuming its session). Call wait for its result.`);
       }
 
       const id = rid();
-      post({ id, from: SELF, to: params.to, body: params.body, replyTo: params.reply_to, ts: now() });
+      post({ id, from: SELF, to: params.to, body: params.body, replyTo: params.reply_to, kind: params.wait ? "request" : "notice", ts: now() });
+      if (activeRequest && (params.reply_to === activeRequest.id || (activeRequest.kind !== "request" && params.to === activeRequest.from))) {
+        activeRequest = undefined;
+      }
       if (!params.wait) return text(`Sent to ${params.to}.`);
       const reply = await pollFor(() => takeReply(SELF, id), signal);
       return text(reply ? `${reply.from}: ${reply.body}` : "Reply wait interrupted.");
@@ -390,28 +525,99 @@ function registerTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "wait",
     label: "Wait for team",
-    description: "Yield until a subagent needs you (a question or approval request) or one finishes. Always interruptible.",
+    description: "Yield until a subagent needs you (a question or approval request) or one finishes. Returns immediately when there is no active child or pending message.",
     promptSnippet: "wait(): yield until a subagent needs you or finishes",
     promptGuidelines: [
-      "After spawning your team, call `wait` to yield. It returns when a subagent messages you or one reaches a terminal state. Answer with `message`, then `wait` again. Don't poll; `wait` wakes you.",
+      "After spawning your team, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
     ],
     parameters: Type.Object({}),
+    executionMode: "sequential",
     async execute(_id, _params, signal, _onUpdate) {
       if (!runDir) return text("No run yet — spawn a subagent first.");
-      if (!IS_CHILD) writeBeacon("main", { state: "waiting", activity: "coordinating" });
+      activeRequest = undefined;
+      if (!hasTeamWork(SELF)) return text(noWaitWorkMessage(SELF));
 
-      // Questions, approval requests, results, and crash notices all arrive as messages.
+      writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
+
+      // Questions, approval requests, result-file notices, and crash notices all arrive as messages.
+      // If the last child exits without posting anything, do not wait forever: return immediately.
       const event = await pollFor(() => {
         const fresh = peekFresh(SELF);
-        if (!fresh) return undefined;
-        rmSync(fresh.path, { force: true });
-        return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
+        if (fresh) {
+          rmSync(fresh.path, { force: true });
+          activeRequest = activeRequestFor(fresh.msg);
+          return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
+        }
+        if (activeChildren(SELF).length === 0) return noWaitWorkMessage(SELF);
+        return undefined;
       }, signal);
 
-      if (!IS_CHILD) writeBeacon("main", { state: "running", activity: "" });
+      writeBeacon(SELF, { state: "running", activity: "" });
       return text(event ?? "wait interrupted.");
     },
   });
+}
+
+// --------------------------------------------------------------------------
+// Coordination guardrails
+// --------------------------------------------------------------------------
+
+let spawnQueuedThisTurn = false;
+let activeRequest: ActiveRequest | undefined;
+
+function coordinationPrompt(): string {
+  if (activeRequest) {
+    return [
+      `Subagent coordination request from ${activeRequest.from} (id ${activeRequest.id}).`,
+      activeRequest.kind === "request"
+        ? `Use any tools needed to satisfy the request, then reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: ...), then call wait again.`
+        : `Use any tools needed to handle or repair this subagent event, then call wait again. If you need to resume the agent, message ${activeRequest.from}.`,
+      `Request: ${activeRequest.body}`,
+      coordinationStatus(SELF),
+    ].join("\n");
+  }
+  return `${COORDINATION_NOTICE}\n${coordinationStatus(SELF)}`;
+}
+
+function registerCoordinationHooks(pi: ExtensionAPI): void {
+  pi.on("turn_start", () => {
+    spawnQueuedThisTurn = false;
+  });
+
+  pi.on("tool_execution_start", (event) => {
+    if ((event as { toolName?: string }).toolName === "spawn") spawnQueuedThisTurn = true;
+  });
+
+  pi.on("context", (event) => {
+    if (!runDir || (!activeRequest && !hasTeamWork(SELF))) return;
+    return {
+      messages: [
+        ...event.messages,
+        { role: "user" as const, content: [{ type: "text" as const, text: coordinationPrompt() }], timestamp: now() } as any,
+      ],
+    };
+  });
+
+  pi.on("tool_call", (event) => {
+    const toolName = (event as { toolName?: string }).toolName ?? "";
+    if (spawnQueuedThisTurn && toolName !== "spawn") {
+      return {
+        block: true,
+        reason: "Do not combine spawn with other tools in the same turn. Let spawn return, then call wait in the next turn.",
+      };
+    }
+    if (runDir && hasTeamWork(SELF) && !activeRequest && toolName !== "wait" && toolName !== "message") {
+      return { block: true, reason: coordinationPrompt() };
+    }
+  });
+
+  // If the agent stops without waiting while children are still live (or child
+  // messages are unread), immediately continue with an explicit wait-only nudge.
+  if (!IS_CHILD) {
+    pi.on("agent_end", () => {
+      if (runDir && (activeRequest || hasTeamWork(SELF))) pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
+    });
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -426,14 +632,32 @@ function registerChildHooks(pi: ExtensionAPI): void {
     const name = (event as { toolName?: string }).toolName;
     writeBeacon(SELF, { state: "running", activity: name });
   });
-  // On completion the subagent pushes its result to its parent and exits — the
-  // parent learns the outcome from the message, holding no state of its own.
+  // On completion the subagent pushes only a result-file notice to its parent.
+  // If it still has live children or unread child messages, it is not allowed to
+  // finish; continue the agent loop with an explicit wait-only nudge instead.
   pi.on("agent_end", (event) => {
-    if (PARENT) {
-      const result = lastAssistantText((event as { messages?: unknown[] }).messages ?? []);
-      post({ id: rid(), from: SELF, to: PARENT, body: result || "(completed)", ts: now() });
+    const messages = (event as { messages?: unknown[] }).messages ?? [];
+    const status = finalAssistantStatus(messages);
+    const needsAttention = statusNeedsAttention(status);
+
+    if (!needsAttention && hasTeamWork(SELF)) {
+      writeBeacon(SELF, { state: "running", activity: "must wait" });
+      pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
+      return;
     }
-    writeBeacon(SELF, { state: "done" });
+
+    if (PARENT) {
+      const resultFile = writeResultFile(SELF, messages);
+      post({
+        id: rid(),
+        from: SELF,
+        to: PARENT,
+        body: resultReadyMessage(SELF, resultFile, needsAttention ? "attention" : "done", status.errorMessage),
+        kind: needsAttention ? "attention" : "completion",
+        ts: now(),
+      });
+    }
+    writeBeacon(SELF, { state: needsAttention ? "stopped" : "done" });
   });
 }
 
@@ -569,6 +793,7 @@ function startWatchdog(ctx: ExtensionContext): void {
       if (stop) {
         kids.get(a.name)?.kill();
         writeBeacon(a.name, { state: "stopped" });
+        post({ id: rid(), from: a.name, to: SELF, body: `stopped by watchdog after ${fmtAge(now() - a.updatedAt)} without progress. You may repair it by messaging/resuming the agent if needed.`, kind: "attention", ts: now() });
         refreshView(ctx);
       }
     }
@@ -581,6 +806,7 @@ function startWatchdog(ctx: ExtensionContext): void {
 
 export default function (pi: ExtensionAPI): void {
   registerTools(pi);
+  registerCoordinationHooks(pi);
 
   if (IS_CHILD) {
     ensureDir(inboxDir(SELF));
