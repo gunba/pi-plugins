@@ -838,7 +838,7 @@ function rememberFooterContext(ctx: ExtensionContext): void {
 function installFooter(ctx: ExtensionContext, pi: ExtensionAPI): void {
   rememberFooterContext(ctx);
   refreshSessionStats(ctx);
-  if (!ctx.hasUI || !footerEnabled) return;
+  if (ctx.mode !== "tui" || !footerEnabled) return;
   ctx.ui.setFooter(createFooter(ctx, () => pi.getThinkingLevel()));
   ensureTickTimer();
 }
@@ -957,7 +957,7 @@ export default function usage(pi: ExtensionAPI): void {
       const command = args.trim().toLowerCase();
       if (command === "footer off" || command === "off") {
         footerEnabled = false;
-        ctx.ui.setFooter(undefined);
+        if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
         requestFooterRender = undefined;
         disposeTickTimer();
         ctx.ui.notify("Usage compact footer disabled for this session", "info");

@@ -1573,7 +1573,8 @@ async function maybeReload(ctx: ExtensionCommandContext): Promise<void> {
 }
 
 async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
-  if (!ctx.hasUI) {
+  if (ctx.mode !== "tui") {
+    if (ctx.hasUI) ctx.ui.notify("pi-config requires the interactive TUI", "warning");
     return;
   }
   const initialFilter = args.trim();

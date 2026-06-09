@@ -1430,11 +1430,11 @@ function showPruningUi(ctx: ExtensionContext, candidates: number): void {
   if (!ctx.hasUI) return;
   const candidateText = `${candidates} candidate${candidates === 1 ? "" : "s"}`;
   ctx.ui.setStatus(SYSTEM_STATUS_KEY, ctx.ui.theme.fg("warning", `memedit:pruning(${candidates})`));
-  ctx.ui.setWidget(PRUNING_WIDGET_KEY, createPruningWidget(candidateText));
+  if (ctx.mode === "tui") ctx.ui.setWidget(PRUNING_WIDGET_KEY, createPruningWidget(candidateText));
 }
 
 function clearPruningUi(ctx: ExtensionContext): void {
-  if (ctx.hasUI) ctx.ui.setWidget(PRUNING_WIDGET_KEY, undefined);
+  if (ctx.hasUI && ctx.mode === "tui") ctx.ui.setWidget(PRUNING_WIDGET_KEY, undefined);
 }
 
 function footerStatusText(): string {

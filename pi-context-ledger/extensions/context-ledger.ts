@@ -457,7 +457,7 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!sessionId || !armedSessions.has(sessionId) || shownSessions.has(sessionId)) return;
     armedSessions.delete(sessionId);
 
-    if (!autoEnabled || !ctx.hasUI) return;
+    if (!autoEnabled || ctx.mode !== "tui") return;
     shownSessions.add(sessionId);
 
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);

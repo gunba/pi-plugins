@@ -822,7 +822,7 @@ function teamLines(theme: Theme, width: number): string[] {
 }
 
 function refreshView(ctx: ExtensionContext): void {
-  if (!ctx.hasUI) return;
+  if (ctx.mode !== "tui") return;
   const agents = runDir ? listAgents() : [];
   if (!viewEnabled || agents.length === 0) {
     if (lastSig !== undefined) {
@@ -899,7 +899,7 @@ export default function (pi: ExtensionAPI): void {
 
   // Root + interactive only: the team view and its watchdog (registered once).
   pi.on("session_start", (_event, ctx) => {
-    if (IS_CHILD || !ctx.hasUI || uiReady) return;
+    if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
     uiReady = true;
     viewEnabled = loadView();
     sweepOldRuns();
