@@ -35,7 +35,7 @@ const STALE_MS = Number(process.env.PI_SUBAGENTS_STALE_MS) || 120_000;
 const RUN_TTL_MS = Number(process.env.PI_SUBAGENTS_RUN_TTL_MS) || 86_400_000; // sweep runs older than 24h
 const FEED_TAIL = 8;
 const COORDINATION_NOTICE =
-  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. Call wait. When wait returns a child request or error, handle that event with normal tools if needed, then reply/resume with message and call wait again. Do not read completion result files until wait reports that no active subagents or pending messages remain.";
+  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn more team members, message children, or call wait. When wait returns a child request or error, handle that event with normal tools if needed, then reply/resume with message and call wait again. Do not read completion result files until wait reports that no active subagents or pending messages remain.";
 
 const NAMES = [
   "Alice", "Bob", "Cara", "Dan", "Eve", "Finn", "Grace", "Hugo",
@@ -308,6 +308,10 @@ function coordinationStatus(name: string): string {
   return `active children: ${active.length ? active.join(", ") : "none"}; pending child message: ${pending}`;
 }
 
+function isCoordinating(a: Beacon): boolean {
+  return a.state === "waiting" || activeChildren(a.name).length > 0;
+}
+
 // Stateless cleanup: drop run directories from past sessions. No main-side bookkeeping.
 function sweepOldRuns(): void {
   if (!existsSync(BASE)) return;
@@ -457,7 +461,7 @@ function registerTools(pi: ExtensionAPI): void {
     promptSnippet: "spawn(task, name): start a background subagent for independent parallel work",
     promptGuidelines: [
       "Subagents are background pi processes with your tools and no shared memory — give each one objective and its done criteria. Use them for independent parallel work (competing hypotheses, wide searches, parallel builds).",
-      "After spawning your team, call `wait` and let them run rather than duplicating their work. While child subagents are active or messages are unread, pi-subagents only permits coordination: `wait` or `message`.",
+      "After spawning your team, call `wait` and let them run rather than duplicating their work. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, or `message`.",
       "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the whole team.",
     ],
     parameters: Type.Object({
@@ -606,7 +610,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
         reason: "Do not combine spawn with other tools in the same turn. Let spawn return, then call wait in the next turn.",
       };
     }
-    if (runDir && hasTeamWork(SELF) && !activeRequest && toolName !== "wait" && toolName !== "message") {
+    if (runDir && hasTeamWork(SELF) && !activeRequest && toolName !== "spawn" && toolName !== "wait" && toolName !== "message") {
       return { block: true, reason: coordinationPrompt() };
     }
   });
@@ -782,6 +786,7 @@ function startWatchdog(ctx: ExtensionContext): void {
     // Only direct children: those this session can actually stop.
     for (const a of listAgents()) {
       if (a.parent !== SELF || TERMINAL.has(a.state) || flagged.has(a.name)) continue;
+      if (isCoordinating(a)) continue;
       if (now() - a.updatedAt < STALE_MS) continue;
       flagged.add(a.name);
       prompting = true;
