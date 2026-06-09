@@ -33,9 +33,12 @@ const REFRESH_MS = 1000;
 const WATCHDOG_MS = 15_000;
 const STALE_MS = Number(process.env.PI_SUBAGENTS_STALE_MS) || 120_000;
 const RUN_TTL_MS = Number(process.env.PI_SUBAGENTS_RUN_TTL_MS) || 86_400_000; // sweep runs older than 24h
-const FEED_TAIL = 8;
+const VIEW_ROWS = Number(process.env.PI_SUBAGENTS_ROWS) || Number(process.env.PI_SUBAGENTS_FEED_TAIL) || 8;
+const FEED_TAIL = VIEW_ROWS;
+const FEED_MAX = Number(process.env.PI_SUBAGENTS_FEED_MAX) || 80;
+const AGENT_ROWS_MAX = VIEW_ROWS;
 const COORDINATION_NOTICE =
-  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn more team members, message children, or call wait. When wait returns a child request or error, handle that event with normal tools if needed, then reply/resume with message and call wait again. Do not read completion result files until wait reports that no active subagents or pending messages remain.";
+  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn additional subagents, message children, or call wait. When wait returns a child request or attention event, use tools if needed, then reply/resume with message and call wait again. Read completion result files after wait reports no active subagents or pending messages.";
 
 const NAMES = [
   "Alice", "Bob", "Cara", "Dan", "Eve", "Finn", "Grace", "Hugo",
@@ -335,6 +338,19 @@ function isCoordinating(a: Beacon): boolean {
   return a.state === "waiting" || activeChildren(a.name).length > 0;
 }
 
+function completedRunReadyToHide(): boolean {
+  if (!runDir) return false;
+  const agents = listAgents().filter((a) => a.name !== "main");
+  return agents.length > 0 && agents.every((a) => a.state === "done" && !isActive(a.name)) && !hasPendingFresh(SELF);
+}
+
+function hideCompletedRun(ctx: ExtensionContext): void {
+  if (!completedRunReadyToHide()) return;
+  if (ctx.mode === "tui") ctx.ui.setWidget(VIEW_KEY, undefined);
+  lastSig = undefined;
+  runDir = "";
+}
+
 function modelLabel(message: { provider?: string; model?: string }): string | undefined {
   if (!message.model) return undefined;
   return message.provider ? `${message.provider}/${message.model}` : message.model;
@@ -399,7 +415,10 @@ function sweepOldRuns(): void {
 function post(msg: Mail): void {
   ensureDir(inboxDir(msg.to));
   writeFileSync(join(inboxDir(msg.to), `${msg.ts}-${msg.id}.json`), JSON.stringify(msg));
-  appendFileSync(join(runDir, "feed.log"), `${msg.from}→${msg.to}: ${msg.body.replace(/\s+/g, " ").slice(0, 160)}\n`);
+  const feedPath = join(runDir, "feed.log");
+  appendFileSync(feedPath, `${msg.from}→${msg.to}: ${msg.body.replace(/\s+/g, " ").slice(0, 160)}\n`);
+  const feed = readFeed();
+  if (feed.length > FEED_MAX) writeFileSync(feedPath, `${feed.slice(-FEED_MAX).join("\n")}\n`);
 }
 
 function inboxFiles(name: string): string[] {
@@ -527,15 +546,16 @@ function registerTools(pi: ExtensionAPI): void {
     name: "spawn",
     label: "Spawn subagent",
     description:
-      "Start a background subagent — a fresh pi with your tools and a clean context — to do one task in parallel.",
-    promptSnippet: "spawn(task, name): start a background subagent for independent parallel work",
+      "Start a background subagent — a fresh pi with your tools and a clean context — for one delegated task.",
+    promptSnippet: "spawn(task, name): delegate one suitable subtask to a background subagent",
     promptGuidelines: [
-      "Subagents are background pi processes with your tools and no shared memory — give each one objective and its done criteria. Use them for independent parallel work (competing hypotheses, wide searches, parallel builds).",
-      "After spawning your team, call `wait` and let them run rather than duplicating their work. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, or `message`.",
-      "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the whole team.",
+      "Use spawn only when delegation fits: independent parallel work, competing hypotheses, or context-heavy investigation whose details need not stay in your context.",
+      "Outline the task for the subagent and be clear about the result you want, e.g. findings, an implementation, changed files, open questions, exact paths/ranges, and how to handle blockers or uncertainty.",
+      "After spawning one or more subagents, use `wait` and `message` to coordinate. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, or `message`.",
+      "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the subagent tree.",
     ],
     parameters: Type.Object({
-      task: Type.String({ description: "One objective and its done criteria. The subagent starts cold — say everything it needs." }),
+      task: Type.String({ description: "One delegated objective. Include constraints, done criteria, and the result you want." }),
       name: Type.String({ description: "A short task name you choose for this subagent (e.g. 'auth-race repro'), shown in the team view." }),
     }),
     executionMode: "sequential",
@@ -553,7 +573,7 @@ function registerTools(pi: ExtensionAPI): void {
       const childName = allocName();
       runAgent(childName, params.task, ctx, true, params.name);
       refreshView(ctx);
-      return text(`Spawned ${childName} · ${params.name}. Call wait to yield while the team works.`);
+      return text(`Spawned ${childName} · ${params.name}. Call wait to yield while it works.`);
     },
   });
 
@@ -598,11 +618,11 @@ function registerTools(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "wait",
-    label: "Wait for team",
+    label: "Wait for subagents",
     description: "Yield until a subagent needs you (a question or approval request) or one finishes. Returns immediately when there is no active child or pending message.",
     promptSnippet: "wait(): yield until a subagent needs you or finishes",
     promptGuidelines: [
-      "After spawning your team, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
+      "After spawning one or more subagents, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
     ],
     parameters: Type.Object({}),
     executionMode: "sequential",
@@ -654,6 +674,10 @@ function coordinationPrompt(): string {
 }
 
 function registerCoordinationHooks(pi: ExtensionAPI): void {
+  pi.on("input", (event, ctx) => {
+    if ((event as { source?: string }).source !== "extension") hideCompletedRun(ctx);
+  });
+
   pi.on("turn_start", () => {
     spawnQueuedThisTurn = false;
   });
@@ -766,20 +790,24 @@ function viewSignature(agents: Beacon[]): string {
   return `${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
 }
 
-function teamLines(theme: Theme, width: number): string[] {
-  const agents = listAgents();
-  const W = Math.max(38, Math.min(width, 78));
+function boxLines(theme: Theme, width: number, label: string, rows: string[], minRows = rows.length): string[] {
+  const W = Math.max(24, width);
   const inner = W - 4;
   const B = (s: string) => theme.fg("borderAccent", s);
-  const frame = (content: string) => `${B("│")} ${padTo(content, inner)} ${B("│")}`;
-  const titledBar = (open: string, close: string, label: string) => {
+  const titledBar = (open: string, close: string) => {
     const lead = `${open}─ `;
     const dashes = Math.max(0, W - 1 - visibleWidth(lead) - visibleWidth(label) - 1);
     return B(lead) + theme.bold(theme.fg("accent", label)) + " " + B("─".repeat(dashes) + close);
   };
+  const frame = (content: string) => `${B("│")} ${padTo(content, inner)} ${B("│")}`;
+  const out = [titledBar("╭", "╮")];
+  for (let i = 0; i < Math.max(minRows, rows.length); i++) out.push(frame(rows[i] ?? ""));
+  out.push(B(`╰${"─".repeat(W - 2)}╯`));
+  return out;
+}
 
-  const out: string[] = [titledBar("╭", "╮", "Subagents")];
-
+function agentRows(theme: Theme, inner: number): string[] {
+  const agents = listAgents();
   // main owns the panel (the title); its children/grandchildren form the tree.
   const byParent = new Map<string | null, Beacon[]>();
   for (const a of agents) {
@@ -787,6 +815,7 @@ function teamLines(theme: Theme, width: number): string[] {
     if (!byParent.has(a.parent)) byParent.set(a.parent, []);
     byParent.get(a.parent)!.push(a);
   }
+
   const rows: string[] = [];
   const walk = (parent: string, depth: number) => {
     for (const a of (byParent.get(parent) ?? []).sort((x, y) => x.startedAt - y.startedAt)) {
@@ -803,22 +832,40 @@ function teamLines(theme: Theme, width: number): string[] {
     }
   };
   walk("main", 0);
-  if (!rows.length) rows.push(theme.fg("dim", "no subagents yet"));
-  for (const r of rows) out.push(frame(r));
+  if (!rows.length) return [theme.fg("dim", "no subagents yet")];
+  if (rows.length <= AGENT_ROWS_MAX) return rows;
+  const shown = Math.max(1, AGENT_ROWS_MAX - 1);
+  return [theme.fg("dim", `… ${rows.length - shown} older hidden`), ...rows.slice(-shown)];
+}
 
+function feedRows(theme: Theme): string[] {
   const feed = readFeed().slice(-FEED_TAIL);
-  if (feed.length) {
-    out.push(titledBar("├", "┤", "feed"));
-    for (const line of feed) {
-      const i = line.indexOf(": ");
-      const route = i < 0 ? line : line.slice(0, i);
-      const body = i < 0 ? "" : line.slice(i + 2);
-      out.push(frame(`${theme.fg("accent", route)}  ${theme.fg("dim", body)}`));
-    }
+  if (!feed.length) return [theme.fg("dim", "no feed yet")];
+  return feed.map((line) => {
+    const i = line.indexOf(": ");
+    const route = i < 0 ? line : line.slice(0, i);
+    const body = i < 0 ? "" : line.slice(i + 2);
+    return `${theme.fg("accent", route)}  ${theme.fg("dim", body)}`;
+  });
+}
+
+function teamLines(theme: Theme, width: number): string[] {
+  const W = Math.max(38, Math.min(width, 140));
+  if (W >= 92) {
+    const feedW = Math.max(34, Math.min(52, Math.floor(W * 0.36)));
+    const agentsW = W - feedW - 1;
+    const agents = agentRows(theme, agentsW - 4);
+    const feed = feedRows(theme);
+    const height = Math.max(agents.length, feed.length, FEED_TAIL);
+    const left = boxLines(theme, agentsW, "Subagents", agents, height);
+    const right = boxLines(theme, feedW, "feed", feed, height);
+    return left.map((line, i) => `${line} ${right[i]}`);
   }
 
-  out.push(B(`╰${"─".repeat(W - 2)}╯`));
-  return out;
+  const agentsW = Math.min(W, 78);
+  const agents = boxLines(theme, agentsW, "Subagents", agentRows(theme, agentsW - 4));
+  const feed = boxLines(theme, agentsW, "feed", feedRows(theme), FEED_TAIL);
+  return [...agents, ...feed];
 }
 
 function refreshView(ctx: ExtensionContext): void {

@@ -1,20 +1,20 @@
 # pi-subagents
 
-Run background `pi` processes as a coordinated team. A *subagent* is a fresh `pi` given one task, launched headless in its own process with the same installed plugin stack as a normal session — its own clean context, no shared memory. Teams (competing hypotheses, division of labour, pipelines) and inter-agent conversation are emergent from three tools and one shared filesystem mailbox, not from a catalogue of roles or an orchestration DSL.
+Run background `pi` processes for delegated work. A *subagent* is a fresh `pi` given one task, launched headless in its own process with the same installed plugin stack as a normal session — its own clean context, no shared memory. Use one when the task is independently parallelisable, needs a competing hypothesis, or would consume context the parent does not need to keep.
 
 ## Tools
 
-- `spawn(task, name)` — start a background subagent on one task and return immediately with its assigned name. `task` is the full brief (the subagent starts cold); `name` is a short label shown in the team view. A nested spawn (by a subagent rather than `main`) first asks `main` for approval and only launches if approved.
+- `spawn(task, name)` — start a background subagent on one task and return immediately with its assigned name. `task` is the full brief (the subagent starts cold), including constraints, done criteria, and the result wanted; `name` is a short label shown in the subagent view. A nested spawn (by a subagent rather than `main`) first asks `main` for approval and only launches if approved.
 - `message(to, body, reply_to?, wait?)` — send a message to any agent by name or to `main` (agent↔agent included). `wait:true` blocks for the reply; `reply_to` answers a question by its id. Messaging an agent that has finished resumes it from its own memory with the message as a follow-up task.
 - `wait()` — yield until a subagent needs you (a question or approval request) or one finishes. It returns immediately if there is no active child subagent and no pending child message, so `wait` cannot deadlock an idle parent.
 
-The usual loop: `spawn` a team, call `wait` to yield while they run, answer questions with `message`, then `wait` again. While an agent has active children or unread child messages, pi-subagents enforces that coordination loop: it may `spawn` more team members, `message` children, or `wait`, but not continue independent work. During a child request or repair event returned by `wait`, it can use normal tools, then it must reply/resume with `message` and return to `wait`. A subagent's final answer is never inlined into the wait result; completion returns a result-file path, and the parent reads that file only when it chooses to spend context on it.
+The usual loop: `spawn` one or more suitable subagents, call `wait` to yield while they run, answer questions with `message`, then `wait` again. While an agent has active children or unread child messages, pi-subagents enforces that coordination loop: it may `spawn` additional subagents, `message` children, or `wait`, but not continue independent work. During a child request or repair event returned by `wait`, it can use normal tools, then it must reply/resume with `message` and return to `wait`. A subagent's final answer is never inlined into the wait result; completion returns a result-file path, and the parent reads that file only when it chooses to spend context on it.
 
-## Team view — `/subagents`
+## Subagent view — `/subagents`
 
-A styled panel above the editor shows a colour-coded tree of the run — children and grandchildren under `main` — each row showing `glyph name · task  state  activity` with right-aligned progress (`responses`, token usage, latest context size, cost) and duration. The duration ticks while an agent works and freezes when it finishes. A `feed` section tails inter-agent traffic. States: `spawning · running · waiting · done · error · stopped`.
+A styled panel above the editor shows a colour-coded tree of the run — children and grandchildren under `main` — each row showing `glyph name · task  state  activity` with right-aligned progress (`responses`, token usage, latest context size, cost) and duration. Wide terminals show agents and feed in side-by-side columns. Agent rows are capped, and the feed is tailed and trimmed. States: `spawning · running · waiting · done · error · stopped`.
 
-The view is **on by default and persisted**. `/subagents` toggles it and saves the choice. It appears whenever the run has subagents and hides when the run is empty.
+The view is **on by default and persisted**. `/subagents` toggles it and saves the choice. It appears whenever the run has subagents, hides when the run is empty, and clears on the next user message after all subagents have completed and their messages have been consumed.
 
 ## Behaviour
 
@@ -30,6 +30,8 @@ The view is **on by default and persisted**. `/subagents` toggles it and saves t
 - `PI_SUBAGENTS_SETTINGS` — path to the view-toggle settings file (default `<base>/settings.json`).
 - `PI_SUBAGENTS_STALE_MS` — watchdog "no progress" threshold before prompting (default `120000`).
 - `PI_SUBAGENTS_RUN_TTL_MS` — run directories older than this are swept on startup (default `86400000`, 24h).
+- `PI_SUBAGENTS_ROWS` — rows shown in each side-by-side column before older agent rows/feed items are collapsed (default `8`; `PI_SUBAGENTS_FEED_TAIL` is accepted as a legacy alias).
+- `PI_SUBAGENTS_FEED_MAX` — feed log rows kept on disk per run (default `80`).
 
 Child processes are marked by the environment variables the parent sets on them — `PI_SUBAGENT_NAME` (the subagent's name; its presence is what flags a process as a subagent), `PI_SUBAGENT_PARENT` (the parent's name), and `PI_SUBAGENT_RUN` (the shared run directory for the whole tree).
 
