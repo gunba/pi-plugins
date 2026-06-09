@@ -63,6 +63,14 @@ type Beacon = {
   startedAt: number;
   updatedAt: number;
   finishedAt?: number;
+  responses?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  contextTokens?: number;
+  cost?: number;
+  model?: string;
 };
 
 type Mail = {
@@ -96,6 +104,13 @@ function fmtAge(ms: number): string {
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m${s % 60}s`;
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+function fmtTokens(n = 0): string {
+  if (n < 1000) return `${n}`;
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -264,6 +279,14 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
     startedAt: prev?.startedAt ?? patch.startedAt ?? now(),
     updatedAt: now(),
     finishedAt: TERMINAL.has(state) ? (prev?.finishedAt ?? now()) : undefined,
+    responses: patch.responses ?? prev?.responses,
+    inputTokens: patch.inputTokens ?? prev?.inputTokens,
+    outputTokens: patch.outputTokens ?? prev?.outputTokens,
+    cacheReadTokens: patch.cacheReadTokens ?? prev?.cacheReadTokens,
+    cacheWriteTokens: patch.cacheWriteTokens ?? prev?.cacheWriteTokens,
+    contextTokens: patch.contextTokens ?? prev?.contextTokens,
+    cost: patch.cost ?? prev?.cost,
+    model: patch.model ?? prev?.model,
   };
   writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
 }
@@ -310,6 +333,53 @@ function coordinationStatus(name: string): string {
 
 function isCoordinating(a: Beacon): boolean {
   return a.state === "waiting" || activeChildren(a.name).length > 0;
+}
+
+function modelLabel(message: { provider?: string; model?: string }): string | undefined {
+  if (!message.model) return undefined;
+  return message.provider ? `${message.provider}/${message.model}` : message.model;
+}
+
+function recordAssistantResponse(message: unknown): void {
+  const m = message as {
+    role?: string;
+    provider?: string;
+    model?: string;
+    usage?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      totalTokens?: number;
+      cost?: { total?: number };
+    };
+  };
+  if (m.role !== "assistant") return;
+
+  const prev = readJson<Beacon>(join(agentDir(SELF), "beacon.json"));
+  const usage = m.usage ?? {};
+  writeBeacon(SELF, {
+    state: "running",
+    responses: (prev?.responses ?? 0) + 1,
+    inputTokens: (prev?.inputTokens ?? 0) + (usage.input ?? 0),
+    outputTokens: (prev?.outputTokens ?? 0) + (usage.output ?? 0),
+    cacheReadTokens: (prev?.cacheReadTokens ?? 0) + (usage.cacheRead ?? 0),
+    cacheWriteTokens: (prev?.cacheWriteTokens ?? 0) + (usage.cacheWrite ?? 0),
+    contextTokens: usage.totalTokens ?? prev?.contextTokens,
+    cost: (prev?.cost ?? 0) + (usage.cost?.total ?? 0),
+    model: modelLabel(m) ?? prev?.model,
+  });
+}
+
+function progressSummary(a: Beacon): string {
+  const parts: string[] = [];
+  if (a.responses) parts.push(`${a.responses}r`);
+  if (a.inputTokens || a.outputTokens) parts.push(`↑${fmtTokens(a.inputTokens)} ↓${fmtTokens(a.outputTokens)}`);
+  if (a.cacheReadTokens) parts.push(`R${fmtTokens(a.cacheReadTokens)}`);
+  if (a.cacheWriteTokens) parts.push(`W${fmtTokens(a.cacheWriteTokens)}`);
+  if (a.contextTokens) parts.push(`ctx:${fmtTokens(a.contextTokens)}`);
+  if (a.cost) parts.push(`$${a.cost.toFixed(4)}`);
+  return parts.join(" ");
 }
 
 // Stateless cleanup: drop run directories from past sessions. No main-side bookkeeping.
@@ -636,6 +706,9 @@ function registerChildHooks(pi: ExtensionAPI): void {
     const name = (event as { toolName?: string }).toolName;
     writeBeacon(SELF, { state: "running", activity: name });
   });
+  pi.on("message_end", (event) => {
+    recordAssistantResponse((event as { message?: unknown }).message);
+  });
   // On completion the subagent pushes only a result-file notice to its parent.
   // If it still has live children or unread child messages, it is not allowed to
   // finish; continue the agent loop with an explicit wait-only nudge instead.
@@ -689,7 +762,7 @@ function readFeed(): string[] {
 
 // A plain change-detector so we only repaint when something actually moved.
 function viewSignature(agents: Beacon[]): string {
-  const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}`).join("|");
+  const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}:${progressSummary(a)}`).join("|");
   return `${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
 }
 
@@ -722,7 +795,8 @@ function teamLines(theme: Theme, width: number): string[] {
         + (a.taskName ? theme.fg("muted", ` · ${a.taskName}`) : "")
         + `  ${theme.fg(color, a.state)}`
         + (a.activity ? theme.fg("dim", `  ${a.activity}`) : "");
-      const right = theme.fg("dim", elapsed(a));
+      const progress = progressSummary(a);
+      const right = theme.fg("dim", progress ? `${progress}  ${elapsed(a)}` : elapsed(a));
       const gap = inner - visibleWidth(head) - visibleWidth(right);
       rows.push(gap >= 1 ? `${head}${" ".repeat(gap)}${right}` : padTo(head, inner));
       walk(a.name, depth + 1);

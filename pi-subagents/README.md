@@ -12,7 +12,7 @@ The usual loop: `spawn` a team, call `wait` to yield while they run, answer ques
 
 ## Team view — `/subagents`
 
-A styled panel above the editor shows a colour-coded tree of the run — children and grandchildren under `main` — each row showing `glyph name · task  state  activity` with a right-aligned duration that ticks while an agent works and freezes when it finishes. A `feed` section tails inter-agent traffic. States: `spawning · running · waiting · done · error · stopped`.
+A styled panel above the editor shows a colour-coded tree of the run — children and grandchildren under `main` — each row showing `glyph name · task  state  activity` with right-aligned progress (`responses`, token usage, latest context size, cost) and duration. The duration ticks while an agent works and freezes when it finishes. A `feed` section tails inter-agent traffic. States: `spawning · running · waiting · done · error · stopped`.
 
 The view is **on by default and persisted**. `/subagents` toggles it and saves the choice. It appears whenever the run has subagents and hides when the run is empty.
 

@@ -279,7 +279,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    if (agentMessagesFailed(event.messages)) hasTurnError = true;
+    hasTurnError = latestAssistantFailed(event.messages);
     enterStatic(ctx, hasTurnError ? "error" : "ready");
   });
 
@@ -340,15 +340,19 @@ function isErrorMessage(message: unknown): boolean {
   return isAssistantErrorMessage(message) || isToolErrorMessage(message);
 }
 
-function agentMessagesFailed(messages: readonly unknown[]): boolean {
-  return messages.some(isErrorMessage);
+function latestAssistantFailed(messages: readonly unknown[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (isAssistantMessage(message)) return isAssistantErrorMessage(message);
+  }
+  return false;
 }
 
 function latestBranchHadError(entries: readonly SessionEntry[]): boolean {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.type !== "message") continue;
-    if (isErrorMessage(entry.message)) return true;
+    if (isAssistantMessage(entry.message)) return isAssistantErrorMessage(entry.message);
     if (isUserMessage(entry.message)) return false;
   }
   return false;
