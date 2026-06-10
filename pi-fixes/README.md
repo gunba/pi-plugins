@@ -23,7 +23,7 @@ Automatic continuations after a tool call are sent inside the same run, before c
 
 ### Claude effort lift (`claude-effort.ts`)
 
-Pi's `ThinkingLevel` stops at `xhigh`, but Claude Opus 4.6+ exposes a higher `max` effort tier that Pi can't reach (on opus-4-8, `xhigh` sends effort `"xhigh"`). Until upstream [issue #5361](https://github.com/earendil-works/pi/issues/5361) adds a real `max` level, this rewrites `output_config.effort` on the wire so Pi's five non-off thinking levels map 1:1 onto Anthropic's ladder `low < medium < high < xhigh < max` (so `xhigh` → `max`). It only touches max-capable Opus models (`claude-opus-4-6/4-7/4-8…`), so no model receives an effort it rejects, and it falls through untouched on any error.
+Pi's `ThinkingLevel` stops at `xhigh`, but Claude Fable 5 and Opus 4.7+ expose a higher `max` effort tier that Pi can't reach (on Fable 5 and opus-4-8, `xhigh` sends effort `"xhigh"`). Until upstream [issue #5361](https://github.com/earendil-works/pi/issues/5361) adds a real `max` level, this rewrites `output_config.effort` on the wire so Pi's five non-off thinking levels map 1:1 onto Anthropic's ladder `low < medium < high < xhigh < max` (so `xhigh` → `max`). It only touches models with the full Anthropic effort ladder (`claude-fable-5`, `claude-opus-4-7/4-8…`), so no model receives an effort it rejects, and it falls through untouched on any error.
 
 - No commands or settings; it self-applies. Activations show in `/pi-fixes` as `claude-effort-remap`.
 - Remove this file once #5361 ships a native `max` level.

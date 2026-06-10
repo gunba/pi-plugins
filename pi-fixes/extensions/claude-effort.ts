@@ -2,9 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // Lift Anthropic effort to Claude's top tier.
 //
-// Pi's ThinkingLevel hard-stops at "xhigh", but Claude Opus 4.6+ exposes a
-// higher "max" effort ("absolute maximum capability"). On opus-4-8 Pi maps
-// xhigh -> effort "xhigh", so "max" is unreachable. Until upstream issue #5361
+// Pi's ThinkingLevel hard-stops at "xhigh", but Claude Fable 5 and Opus 4.7+ expose a
+// higher "max" effort ("absolute maximum capability"). On Fable 5 and
+// opus-4-8 Pi maps xhigh -> effort "xhigh", so "max" is unreachable. Until upstream issue #5361
 // adds a real "max" level, we remap on the wire so Pi's five non-off thinking
 // levels map 1:1 onto Anthropic's ladder  low < medium < high < xhigh < max.
 //
@@ -31,9 +31,10 @@ const LEVEL_TO_EFFORT: Record<Exclude<ThinkingLevel, "off">, Effort> = {
 };
 const EFFORT_LADDER: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
-// Only Opus 4.6+ accept the "max" tier; restrict the remap to those so we never
-// send an effort a model would reject. (4.6 already maps xhigh->max upstream.)
-const MAX_CAPABLE_MODEL_RE = /^claude-opus-4-(?:[6-9]|\d{2,})/;
+// Only models with the full Anthropic effort ladder (`low` through `max`) can
+// safely receive the 1-rung lift. Keep this allowlist narrow so we never send
+// an effort a model would reject.
+const MAX_CAPABLE_MODEL_RE = /^claude-(?:fable-5|opus-4-(?:[7-9]|\d{2,}))/;
 
 let currentLevel: ThinkingLevel | undefined;
 
