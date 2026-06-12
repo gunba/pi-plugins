@@ -658,7 +658,8 @@ function sessionEntries(ctx: ExtensionContext): { manager: unknown; entries: unk
 function cachedSessionStats(ctx: ExtensionContext): SessionStats {
   const current = sessionEntries(ctx);
   if (!current) return emptySessionStats();
-  if (sessionStatsCache?.manager === current.manager && sessionStatsCache.entryCount === current.entries.length) return sessionStatsCache.stats;
+  const cache = sessionStatsCache;
+  if (cache && cache.manager === current.manager && cache.entryCount === current.entries.length) return cache.stats;
   const stats = computeSessionStats(current.entries);
   sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats };
   return stats;

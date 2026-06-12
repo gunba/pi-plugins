@@ -262,7 +262,7 @@ function installAgentSessionPatch(): void {
 
   const proto = (AgentSession as unknown as { prototype?: AnyRecord }).prototype;
   const original = proto?._checkCompaction;
-  if (typeof original !== "function") return;
+  if (!proto || typeof original !== "function") return;
 
   proto._checkCompaction = async function patchedCheckCompaction(this: AnyRecord, ...args: unknown[]) {
     const sessionId = this.sessionManager?.getSessionId?.();
@@ -1561,6 +1561,7 @@ async function runMemedit(
       return lastStats;
     }
 
+    const apiKey = auth.apiKey;
     const response = await completeSimple(
       model,
       {
@@ -1574,7 +1575,7 @@ async function runMemedit(
         sessionId: manager.getSessionId?.(),
         cacheRetention: "none",
         signal: ctx.signal,
-        onPayload: (payload) => shapeMemeditProviderPayload(payload, auth.apiKey),
+        onPayload: (payload) => shapeMemeditProviderPayload(payload, apiKey),
       },
     );
 

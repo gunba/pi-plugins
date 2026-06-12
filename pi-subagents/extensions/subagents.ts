@@ -18,7 +18,7 @@ import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -26,17 +26,23 @@ import { Type } from "typebox";
 // Constants
 // --------------------------------------------------------------------------
 
+function positiveEnvInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 const BASE = process.env.PI_SUBAGENTS_DIR || join(homedir(), ".pi", "agent", "subagents");
 const VIEW_KEY = "pi-subagents";
 const POLL_MS = 400;
 const REFRESH_MS = 1000;
 const WATCHDOG_MS = 15_000;
-const STALE_MS = Number(process.env.PI_SUBAGENTS_STALE_MS) || 120_000;
-const RUN_TTL_MS = Number(process.env.PI_SUBAGENTS_RUN_TTL_MS) || 86_400_000; // sweep runs older than 24h
-const VIEW_ROWS = Number(process.env.PI_SUBAGENTS_ROWS) || Number(process.env.PI_SUBAGENTS_FEED_TAIL) || 8;
-const FEED_TAIL = VIEW_ROWS;
-const FEED_MAX = Number(process.env.PI_SUBAGENTS_FEED_MAX) || 80;
-const AGENT_ROWS_MAX = VIEW_ROWS;
+const STALE_MS = positiveEnvInt("PI_SUBAGENTS_STALE_MS") ?? 120_000;
+const RUN_TTL_MS = positiveEnvInt("PI_SUBAGENTS_RUN_TTL_MS") ?? 86_400_000; // sweep runs older than 24h
+const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
+const FEED_MAX = positiveEnvInt("PI_SUBAGENTS_FEED_MAX") ?? 80;
+const AGENT_ROWS_COLLAPSED_MAX = positiveEnvInt("PI_SUBAGENTS_AGENT_ROWS_MAX") ?? positiveEnvInt("PI_SUBAGENTS_ROWS") ?? 8;
 const COORDINATION_NOTICE =
   "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn additional subagents, message children, or call wait. When wait returns a child request or attention event, use tools if needed, then reply/resume with message and call wait again. Read completion result files after wait reports no active subagents or pending messages.";
 
@@ -539,7 +545,7 @@ function runAgent(name: string, prompt: string, ctx: ExtensionContext, fresh: bo
 // Tools
 // --------------------------------------------------------------------------
 
-const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
 function registerTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -647,7 +653,8 @@ function registerTools(pi: ExtensionAPI): void {
       }, signal);
 
       writeBeacon(SELF, { state: "running", activity: "" });
-      return text(event ?? "wait interrupted.");
+      if (event === undefined && signal?.aborted) suppressNextCoordinationNudge = true;
+      return text(event ?? "wait cancelled; subagents are still running. Ask for status or call wait again when ready.");
     },
   });
 }
@@ -712,7 +719,13 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
   // If the agent stops without waiting while children are still live (or child
   // messages are unread), immediately continue with an explicit wait-only nudge.
   if (!IS_CHILD) {
-    pi.on("agent_end", () => {
+    pi.on("agent_end", (event) => {
+      const messages = (event as { messages?: unknown[] }).messages ?? [];
+      const status = finalAssistantStatus(messages);
+      if (status.stopReason === "aborted" || suppressNextCoordinationNudge) {
+        suppressNextCoordinationNudge = false;
+        return;
+      }
       if (runDir && (activeRequest || hasTeamWork(SELF))) pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
     });
   }
@@ -768,8 +781,11 @@ function registerChildHooks(pi: ExtensionAPI): void {
 
 let uiReady = false;
 let viewEnabled = true;
+let agentRowsExpanded = false;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let expandShortcutUnsubscribe: (() => void) | undefined;
 let lastSig: string | undefined;
+let suppressNextCoordinationNudge = false;
 
 // Active agents show a live timer; finished agents freeze at their duration.
 function elapsed(b: Beacon): string {
@@ -784,10 +800,18 @@ function readFeed(): string[] {
   }
 }
 
+function agentCount(agents = listAgents()): number {
+  return agents.filter((agent) => agent.name !== "main").length;
+}
+
+function agentRowsOverflow(agents = listAgents()): boolean {
+  return agentCount(agents) > AGENT_ROWS_COLLAPSED_MAX;
+}
+
 // A plain change-detector so we only repaint when something actually moved.
 function viewSignature(agents: Beacon[]): string {
   const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}:${progressSummary(a)}`).join("|");
-  return `${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
+  return `${agentRowsExpanded ? "expanded" : "collapsed"}#${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
 }
 
 function boxLines(theme: Theme, width: number, label: string, rows: string[], minRows = rows.length): string[] {
@@ -833,9 +857,10 @@ function agentRows(theme: Theme, inner: number): string[] {
   };
   walk("main", 0);
   if (!rows.length) return [theme.fg("dim", "no subagents yet")];
-  if (rows.length <= AGENT_ROWS_MAX) return rows;
-  const shown = Math.max(1, AGENT_ROWS_MAX - 1);
-  return [theme.fg("dim", `… ${rows.length - shown} older hidden`), ...rows.slice(-shown)];
+  if (agentRowsExpanded || rows.length <= AGENT_ROWS_COLLAPSED_MAX) return rows;
+  if (AGENT_ROWS_COLLAPSED_MAX <= 1) return [theme.fg("dim", `… ${rows.length} hidden (ctrl+o expands)`)];
+  const shown = AGENT_ROWS_COLLAPSED_MAX - 1;
+  return [theme.fg("dim", `… ${rows.length - shown} older hidden (ctrl+o expands)`), ...rows.slice(-shown)];
 }
 
 function feedRows(theme: Theme): string[] {
@@ -849,28 +874,51 @@ function feedRows(theme: Theme): string[] {
   });
 }
 
+function subagentsLabel(): string {
+  if (!agentRowsOverflow()) return "Subagents";
+  return agentRowsExpanded ? "Subagents all (ctrl+o)" : "Subagents (ctrl+o)";
+}
+
 function teamLines(theme: Theme, width: number): string[] {
   const W = Math.max(38, Math.min(width, 140));
   if (W >= 92) {
     const feedW = Math.max(34, Math.min(52, Math.floor(W * 0.36)));
     const agentsW = W - feedW - 1;
     const agents = agentRows(theme, agentsW - 4);
-    const feed = feedRows(theme);
-    const height = Math.max(agents.length, feed.length, FEED_TAIL);
-    const left = boxLines(theme, agentsW, "Subagents", agents, height);
+    const height = Math.max(1, agents.length);
+    const feed = feedRows(theme).slice(-height);
+    const left = boxLines(theme, agentsW, subagentsLabel(), agents, height);
     const right = boxLines(theme, feedW, "feed", feed, height);
     return left.map((line, i) => `${line} ${right[i]}`);
   }
 
   const agentsW = Math.min(W, 78);
-  const agents = boxLines(theme, agentsW, "Subagents", agentRows(theme, agentsW - 4));
-  const feed = boxLines(theme, agentsW, "feed", feedRows(theme), FEED_TAIL);
+  const agents = boxLines(theme, agentsW, subagentsLabel(), agentRows(theme, agentsW - 4));
+  const feed = boxLines(theme, agentsW, "feed", feedRows(theme));
   return [...agents, ...feed];
+}
+
+function installExpandShortcut(ctx: ExtensionContext): void {
+  if (ctx.mode !== "tui") return;
+  expandShortcutUnsubscribe?.();
+  expandShortcutUnsubscribe = ctx.ui.onTerminalInput((data) => {
+    if (!matchesKey(data, "ctrl+o")) return undefined;
+    if (!agentRowsOverflow()) {
+      agentRowsExpanded = false;
+      return undefined;
+    }
+
+    agentRowsExpanded = !agentRowsExpanded;
+    lastSig = undefined;
+    refreshView(ctx);
+    return undefined;
+  });
 }
 
 function refreshView(ctx: ExtensionContext): void {
   if (ctx.mode !== "tui") return;
   const agents = runDir ? listAgents() : [];
+  if (agentRowsExpanded && !agentRowsOverflow(agents)) agentRowsExpanded = false;
   if (!viewEnabled || agents.length === 0) {
     if (lastSig !== undefined) {
       ctx.ui.setWidget(VIEW_KEY, undefined);
@@ -881,7 +929,7 @@ function refreshView(ctx: ExtensionContext): void {
   const sig = viewSignature(agents);
   if (sig === lastSig) return;
   lastSig = sig;
-  ctx.ui.setWidget(VIEW_KEY, (_tui, theme): Component => ({ render: (w: number) => teamLines(theme, w) }), {
+  ctx.ui.setWidget(VIEW_KEY, (_tui, theme): Component => ({ render: (w: number) => teamLines(theme, w), invalidate() {} }), {
     placement: "aboveEditor",
   });
 }
@@ -942,6 +990,11 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => {
     for (const child of kids.values()) child.kill();
     if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = undefined;
+    expandShortcutUnsubscribe?.();
+    expandShortcutUnsubscribe = undefined;
+    uiReady = false;
+    lastSig = undefined;
   });
 
   // Root + interactive only: the team view and its watchdog (registered once).
@@ -949,6 +1002,7 @@ export default function (pi: ExtensionAPI): void {
     if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
     uiReady = true;
     viewEnabled = loadView();
+    installExpandShortcut(ctx);
     sweepOldRuns();
     pi.registerCommand("subagents", {
       description: "Toggle the live subagent team view (persisted, on by default).",

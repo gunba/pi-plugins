@@ -33,6 +33,32 @@ Rules:
 
 type AnyRecord = Record<string, any>;
 
+function isRecord(value: unknown): value is AnyRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cannotDisableThinking(model: unknown): boolean {
+  if (!isRecord(model)) return false;
+
+  const thinkingLevelMap = model.thinkingLevelMap;
+  if (isRecord(thinkingLevelMap) && thinkingLevelMap.off === null) return true;
+
+  return model.api === "anthropic-messages"
+    && typeof model.id === "string"
+    && model.id.toLowerCase().includes("fable-5");
+}
+
+function omitUnsupportedDisabledThinking(payload: unknown, model: unknown): unknown | undefined {
+  if (!cannotDisableThinking(model) || !isRecord(payload)) return undefined;
+
+  const thinking = payload.thinking;
+  if (!isRecord(thinking) || thinking.type !== "disabled") return undefined;
+
+  const next = { ...payload };
+  delete next.thinking;
+  return next;
+}
+
 type SkillInfo = {
   name: string;
   description: string;
@@ -240,6 +266,7 @@ async function selectRelevantSkills(
       // selector calls. Not "long": 1h Anthropic cache writes cost 2x base input tokens.
       cacheRetention: "short",
       signal: ctx.signal,
+      onPayload: omitUnsupportedDisabledThinking,
     },
   );
 
