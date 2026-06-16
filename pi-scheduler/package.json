@@ -1,0 +1,16 @@
+{
+  "name": "pi-scheduler",
+  "version": "0.1.0",
+  "description": "Pi extension that schedules user messages for later delivery.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "scheduler", "scheduled-messages"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/scheduler.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "license": "MIT"
+}

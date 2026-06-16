@@ -14,6 +14,8 @@
       "./pi-fixes/extensions/codex-transport.ts",
       "./pi-fixes/extensions/context-guard.ts",
       "./pi-fixes/extensions/claude-effort.ts",
+      "./pi-ask-user/index.ts",
+      "./pi-scheduler/extensions/scheduler.ts",
       "./pi-usage/extensions/usage.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-lazy-skills/extensions/lazy-skills.ts",
@@ -21,11 +23,7 @@
       "./pi-system-context/extensions/system-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
-      "./pi-settings-sync/extensions/settings-sync.ts",
       "./pi-subagents/extensions/subagents.ts"
-    ],
-    "skills": [
-      "./pi-settings-sync/skills"
     ]
   },
   "peerDependencies": {

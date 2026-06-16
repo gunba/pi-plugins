@@ -10,13 +10,14 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
@@ -63,6 +64,9 @@ const STATE_COLOR: Record<string, ThemeColor> = {
 };
 const SETTINGS_FILE = process.env.PI_SUBAGENTS_SETTINGS || join(BASE, "settings.json");
 
+type NestedSpawnApprovalMode = "agent" | "user";
+type SpawnApproval = { type: "spawn"; name: string; task: string };
+
 type Beacon = {
   name: string;
   parent: string | null;
@@ -89,6 +93,7 @@ type Mail = {
   body: string;
   replyTo?: string;
   kind?: "request" | "completion" | "attention" | "notice";
+  approval?: SpawnApproval;
   ts: number;
 };
 
@@ -97,6 +102,7 @@ type ActiveRequest = {
   id: string;
   body: string;
   kind: "request" | "attention" | "notice";
+  approval?: SpawnApproval;
 };
 
 // --------------------------------------------------------------------------
@@ -128,6 +134,46 @@ function readJson<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function expandPath(value: string, baseDir: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  if (isAbsolute(value)) return resolve(value);
+  return resolve(baseDir, value);
+}
+
+function piAgentDir(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR?.trim();
+  return configured ? expandPath(configured, homedir()) : join(homedir(), ".pi", "agent");
+}
+
+function parseNestedSpawnApprovalMode(value: unknown): NestedSpawnApprovalMode | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "agent") return "agent";
+  if (normalized === "user" || normalized === "modal" || normalized === "human") return "user";
+  return undefined;
+}
+
+function readSubagentsSettings(path: string): Record<string, unknown> {
+  return asRecord(readJson<Record<string, unknown>>(path)?.subagents) ?? {};
+}
+
+function nestedSpawnApprovalMode(ctx: ExtensionContext): NestedSpawnApprovalMode {
+  const envMode = parseNestedSpawnApprovalMode(process.env.PI_SUBAGENTS_NESTED_SPAWN_APPROVAL);
+  if (envMode) return envMode;
+
+  const globalSettings = readSubagentsSettings(join(piAgentDir(), "settings.json"));
+  const projectSettings = ctx.isProjectTrusted()
+    ? readSubagentsSettings(join(ctx.cwd, ".pi", "settings.json"))
+    : {};
+  const mergedSettings = { ...globalSettings, ...projectSettings };
+  return parseNestedSpawnApprovalMode(mergedSettings.nestedSpawnApproval) ?? "agent";
 }
 
 // The subagent's final answer. It is never inlined into mailbox messages:
@@ -194,17 +240,16 @@ function resultReadyMessage(name: string, path: string, state: "done" | "attenti
 }
 
 // Persisted view toggle (mirrors pi-memedit's settings.json approach).
+function loadPluginSettings(): Record<string, unknown> {
+  return asRecord(readJson<Record<string, unknown>>(SETTINGS_FILE)) ?? {};
+}
 function loadView(): boolean {
-  try {
-    const p = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as { view?: unknown };
-    return typeof p.view === "boolean" ? p.view : true;
-  } catch {
-    return true; // on by default
-  }
+  const p = loadPluginSettings();
+  return typeof p.view === "boolean" ? p.view : true; // on by default
 }
 function saveView(view: boolean): void {
   ensureDir(BASE);
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify({ view }, null, 2)}\n`);
+  writeFileSync(SETTINGS_FILE, `${JSON.stringify({ ...loadPluginSettings(), view }, null, 2)}\n`);
 }
 function padTo(s: string, w: number): string {
   const len = visibleWidth(s);
@@ -456,6 +501,81 @@ function takeReply(name: string, replyTo: string): Mail | undefined {
   return undefined;
 }
 
+// Atomically claim a fresh message so wait() and UI approval prompts cannot
+// consume the same request. The claim file is not visible to inboxFiles().
+function claimFresh(name: string, predicate: (msg: Mail) => boolean = () => true): { path: string; msg: Mail } | undefined {
+  for (const f of inboxFiles(name)) {
+    const path = join(inboxDir(name), f);
+    const msg = readJson<Mail>(path);
+    if (!msg || msg.replyTo || !predicate(msg)) continue;
+    const claimPath = `${path}.${process.pid}.${rid()}.claim`;
+    try {
+      renameSync(path, claimPath);
+      return { path: claimPath, msg };
+    } catch {
+      // Another loop claimed it first.
+    }
+  }
+  return undefined;
+}
+
+function spawnApprovalDetails(msg: { body: string; approval?: SpawnApproval }): SpawnApproval | undefined {
+  if (msg.approval?.type === "spawn") return msg.approval;
+  const match = msg.body.match(/^\[approval]\s+spawn\s+"([^"]+)":\s*([\s\S]*)$/i);
+  return match ? { type: "spawn", name: match[1] ?? "subagent", task: match[2] ?? "" } : undefined;
+}
+
+function isNestedSpawnApproval(msg: Mail): boolean {
+  return msg.kind === "request" && !!spawnApprovalDetails(msg);
+}
+
+function approvalReplyAllowsSpawn(body: string): boolean {
+  return /^\s*approve(?:\s*:\s*.*)?\s*$/i.test(body);
+}
+
+function replyToNestedSpawnApproval(msg: Mail, approved: boolean, reason: string): void {
+  post({
+    id: rid(),
+    from: SELF,
+    to: msg.from,
+    body: approved ? "approve" : `deny: ${reason}`,
+    replyTo: msg.id,
+    kind: "notice",
+    ts: now(),
+  });
+}
+
+async function resolveNestedSpawnApprovalWithUser(ctx: ExtensionContext, msg: Mail): Promise<string> {
+  const details = spawnApprovalDetails(msg);
+  const label = details?.name ? ` "${details.name}"` : "";
+  if (!ctx.hasUI) {
+    const reason = "user approval mode is enabled, but this session has no UI to confirm nested spawns";
+    replyToNestedSpawnApproval(msg, false, reason);
+    return `Denied nested spawn${label} from ${msg.from}: ${reason}.`;
+  }
+
+  let approved = false;
+  try {
+    approved = await ctx.ui.confirm(
+      "Approve nested subagent?",
+      [
+        `${msg.from} wants to spawn${label}.`,
+        "",
+        "Task:",
+        details?.task || msg.body,
+        "",
+        "Approve this nested spawn request?",
+      ].join("\n"),
+    );
+  } catch (error) {
+    const reason = `user approval prompt failed: ${error instanceof Error ? error.message : String(error)}`;
+    replyToNestedSpawnApproval(msg, false, reason);
+    return `Denied nested spawn${label} from ${msg.from}: ${reason}.`;
+  }
+  replyToNestedSpawnApproval(msg, approved, approved ? "" : "user denied nested spawn request");
+  return `${approved ? "Approved" : "Denied"} nested spawn${label} from ${msg.from}.`;
+}
+
 function isCompletionNotice(msg: Mail): boolean {
   if (msg.kind) return msg.kind === "completion";
   return msg.body.startsWith("Completed") && msg.body.includes("Result file:");
@@ -464,13 +584,35 @@ function isCompletionNotice(msg: Mail): boolean {
 function activeRequestFor(msg: Mail): ActiveRequest | undefined {
   if (isCompletionNotice(msg)) return undefined;
   const kind = msg.kind === "request" || msg.kind === "attention" ? msg.kind : "notice";
-  return { from: msg.from, id: msg.id, body: msg.body, kind };
+  return { from: msg.from, id: msg.id, body: msg.body, kind, approval: spawnApprovalDetails(msg) };
 }
 
 async function pollFor<T>(fn: () => T | undefined, signal?: AbortSignal): Promise<T | undefined> {
   while (!signal?.aborted) {
     const v = fn();
     if (v !== undefined) return v;
+    await sleep(POLL_MS);
+  }
+  return undefined;
+}
+
+async function waitForTeamEvent(ctx: ExtensionContext, signal?: AbortSignal): Promise<string | undefined> {
+  while (!signal?.aborted) {
+    const fresh = claimFresh(SELF);
+    if (fresh) {
+      try {
+        if (isNestedSpawnApproval(fresh.msg) && nestedSpawnApprovalMode(ctx) === "user") {
+          const summary = await resolveNestedSpawnApprovalWithUser(ctx, fresh.msg);
+          if (ctx.hasUI) ctx.ui.notify(summary, "info");
+          continue;
+        }
+        activeRequest = activeRequestFor(fresh.msg);
+        return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
+      } finally {
+        rmSync(fresh.path, { force: true });
+      }
+    }
+    if (activeChildren(SELF).length === 0) return noWaitWorkMessage(SELF);
     await sleep(POLL_MS);
   }
   return undefined;
@@ -558,7 +700,8 @@ function registerTools(pi: ExtensionAPI): void {
       "Use spawn only when delegation fits: independent parallel work, competing hypotheses, or context-heavy investigation whose details need not stay in your context.",
       "Outline the task for the subagent and be clear about the result you want, e.g. findings, an implementation, changed files, open questions, exact paths/ranges, and how to handle blockers or uncertainty.",
       "After spawning one or more subagents, use `wait` and `message` to coordinate. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, or `message`.",
-      "Nested subagents need your approval: reply 'approve' or 'deny' when a subagent asks to spawn one. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the subagent tree.",
+      "Nested subagent spawn requests need deliberate approval. Approve only when the requested child is independent, scoped, non-duplicative, and worth the coordination overhead; otherwise deny or ask the requester to narrow its plan.",
+      "Reply to nested spawn approval requests with exactly `approve` or `deny: <reason>` unless `subagents.nestedSpawnApproval` is `user`, in which case pi-subagents asks the user in a modal and replies for you. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the subagent tree.",
     ],
     parameters: Type.Object({
       task: Type.String({ description: "One delegated objective. Include constraints, done criteria, and the result you want." }),
@@ -570,10 +713,18 @@ function registerTools(pi: ExtensionAPI): void {
 
       if (IS_CHILD) {
         const reqId = rid();
-        post({ id: reqId, from: SELF, to: "main", body: `[approval] spawn "${params.name}": ${params.task}`, kind: "request", ts: now() });
+        post({
+          id: reqId,
+          from: SELF,
+          to: "main",
+          body: `[approval] spawn "${params.name}": ${params.task}`,
+          kind: "request",
+          approval: { type: "spawn", name: params.name, task: params.task },
+          ts: now(),
+        });
         const reply = await pollFor(() => takeReply(SELF, reqId), signal);
         if (!reply) return text("Approval wait interrupted.");
-        if (!/approve/i.test(reply.body)) return text(`Spawn denied by main: ${reply.body}`);
+        if (!approvalReplyAllowsSpawn(reply.body)) return text(`Spawn denied by main: ${reply.body}`);
       }
 
       const childName = allocName();
@@ -632,7 +783,7 @@ function registerTools(pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({}),
     executionMode: "sequential",
-    async execute(_id, _params, signal, _onUpdate) {
+    async execute(_id, _params, signal, _onUpdate, ctx) {
       if (!runDir) return text("No run yet — spawn a subagent first.");
       activeRequest = undefined;
       if (!hasTeamWork(SELF)) return text(noWaitWorkMessage(SELF));
@@ -641,16 +792,7 @@ function registerTools(pi: ExtensionAPI): void {
 
       // Questions, approval requests, result-file notices, and crash notices all arrive as messages.
       // If the last child exits without posting anything, do not wait forever: return immediately.
-      const event = await pollFor(() => {
-        const fresh = peekFresh(SELF);
-        if (fresh) {
-          rmSync(fresh.path, { force: true });
-          activeRequest = activeRequestFor(fresh.msg);
-          return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
-        }
-        if (activeChildren(SELF).length === 0) return noWaitWorkMessage(SELF);
-        return undefined;
-      }, signal);
+      const event = await waitForTeamEvent(ctx, signal);
 
       writeBeacon(SELF, { state: "running", activity: "" });
       if (event === undefined && signal?.aborted) suppressNextCoordinationNudge = true;
@@ -668,6 +810,18 @@ let activeRequest: ActiveRequest | undefined;
 
 function coordinationPrompt(): string {
   if (activeRequest) {
+    const approval = activeRequest.approval;
+    if (approval) {
+      return [
+        `Nested subagent spawn approval request from ${activeRequest.from} (id ${activeRequest.id}).`,
+        `Requested child: ${approval.name}`,
+        `Task: ${approval.task}`,
+        "Decide deliberately; do not rubber-stamp nested delegation.",
+        "Approve only if the child task is independent, scoped, non-duplicative of active work, and worth the coordination overhead. Deny if the requester should do the work directly or needs a narrower plan.",
+        `Reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: "approve") or message(..., body: "deny: <reason>"), then call wait again.`,
+        coordinationStatus(SELF),
+      ].join("\n");
+    }
     return [
       `Subagent coordination request from ${activeRequest.from} (id ${activeRequest.id}).`,
       activeRequest.kind === "request"
@@ -783,6 +937,7 @@ let uiReady = false;
 let viewEnabled = true;
 let agentRowsExpanded = false;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let approvalTimer: ReturnType<typeof setInterval> | undefined;
 let expandShortcutUnsubscribe: (() => void) | undefined;
 let lastSig: string | undefined;
 let suppressNextCoordinationNudge = false;
@@ -800,12 +955,40 @@ function readFeed(): string[] {
   }
 }
 
-function agentCount(agents = listAgents()): number {
-  return agents.filter((agent) => agent.name !== "main").length;
+type AgentTreeRow = {
+  agent: Beacon;
+  depth: number;
+  order: number;
+};
+
+type CollapsedAgentRows = {
+  visible: AgentTreeRow[];
+  hiddenCount: number;
+  hiddenDoneCount: number;
+};
+
+function flattenAgentRows(agents = listAgents()): AgentTreeRow[] {
+  // main owns the panel (the title); its children/grandchildren form the tree.
+  const byParent = new Map<string | null, Beacon[]>();
+  for (const agent of agents) {
+    if (agent.name === "main") continue;
+    if (!byParent.has(agent.parent)) byParent.set(agent.parent, []);
+    byParent.get(agent.parent)!.push(agent);
+  }
+
+  const rows: AgentTreeRow[] = [];
+  const walk = (parent: string, depth: number) => {
+    for (const agent of (byParent.get(parent) ?? []).sort((x, y) => x.startedAt - y.startedAt)) {
+      rows.push({ agent, depth, order: rows.length });
+      walk(agent.name, depth + 1);
+    }
+  };
+  walk("main", 0);
+  return rows;
 }
 
 function agentRowsOverflow(agents = listAgents()): boolean {
-  return agentCount(agents) > AGENT_ROWS_COLLAPSED_MAX;
+  return flattenAgentRows(agents).length > AGENT_ROWS_COLLAPSED_MAX;
 }
 
 // A plain change-detector so we only repaint when something actually moved.
@@ -830,37 +1013,88 @@ function boxLines(theme: Theme, width: number, label: string, rows: string[], mi
   return out;
 }
 
-function agentRows(theme: Theme, inner: number): string[] {
-  const agents = listAgents();
-  // main owns the panel (the title); its children/grandchildren form the tree.
-  const byParent = new Map<string | null, Beacon[]>();
-  for (const a of agents) {
-    if (a.name === "main") continue;
-    if (!byParent.has(a.parent)) byParent.set(a.parent, []);
-    byParent.get(a.parent)!.push(a);
+function rowHidePriority(row: AgentTreeRow): number {
+  if (row.agent.state === "done") return 0;
+  if (row.agent.state === "error" || row.agent.state === "stopped") return 2;
+  return 1;
+}
+
+function hasVisibleDescendant(rows: AgentTreeRow[], index: number, hidden: Set<number>): boolean {
+  const depth = rows[index]!.depth;
+  for (let i = index + 1; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.depth <= depth) return false;
+    if (!hidden.has(row.order)) return true;
+  }
+  return false;
+}
+
+function nextRowToHide(rows: AgentTreeRow[], hidden: Set<number>): number | undefined {
+  let best: number | undefined;
+  let bestPriority = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (hidden.has(row.order) || hasVisibleDescendant(rows, i, hidden)) continue;
+    const priority = rowHidePriority(row);
+    if (best === undefined || priority < bestPriority || (priority === bestPriority && row.order < rows[best]!.order)) {
+      best = i;
+      bestPriority = priority;
+    }
+  }
+  return best;
+}
+
+function collapseAgentRows(rows: AgentTreeRow[]): CollapsedAgentRows {
+  if (rows.length <= AGENT_ROWS_COLLAPSED_MAX) return { visible: rows, hiddenCount: 0, hiddenDoneCount: 0 };
+  if (AGENT_ROWS_COLLAPSED_MAX <= 1) {
+    return { visible: [], hiddenCount: rows.length, hiddenDoneCount: rows.filter((row) => row.agent.state === "done").length };
   }
 
-  const rows: string[] = [];
-  const walk = (parent: string, depth: number) => {
-    for (const a of (byParent.get(parent) ?? []).sort((x, y) => x.startedAt - y.startedAt)) {
-      const color = STATE_COLOR[a.state] ?? "muted";
-      const head = `${"  ".repeat(depth)}${theme.fg(color, GLYPH[a.state] ?? "•")} ${theme.bold(theme.fg("text", a.name))}`
-        + (a.taskName ? theme.fg("muted", ` · ${a.taskName}`) : "")
-        + `  ${theme.fg(color, a.state)}`
-        + (a.activity ? theme.fg("dim", `  ${a.activity}`) : "");
-      const progress = progressSummary(a);
-      const right = theme.fg("dim", progress ? `${progress}  ${elapsed(a)}` : elapsed(a));
-      const gap = inner - visibleWidth(head) - visibleWidth(right);
-      rows.push(gap >= 1 ? `${head}${" ".repeat(gap)}${right}` : padTo(head, inner));
-      walk(a.name, depth + 1);
-    }
-  };
-  walk("main", 0);
+  const targetVisible = AGENT_ROWS_COLLAPSED_MAX - 1; // keep one line for the expansion hint.
+  const hidden = new Set<number>();
+  while (rows.length - hidden.size > targetVisible) {
+    const index = nextRowToHide(rows, hidden);
+    if (index === undefined) break;
+    hidden.add(rows[index]!.order);
+  }
+
+  const visible = rows.filter((row) => !hidden.has(row.order));
+  const hiddenDoneCount = rows.filter((row) => hidden.has(row.order) && row.agent.state === "done").length;
+  return { visible, hiddenCount: hidden.size, hiddenDoneCount };
+}
+
+function hiddenRowsSummary(collapsed: CollapsedAgentRows): string {
+  const rowWord = collapsed.hiddenCount === 1 ? "row" : "rows";
+  if (collapsed.hiddenDoneCount === collapsed.hiddenCount && collapsed.hiddenCount > 0) {
+    return `… ${collapsed.hiddenCount} completed ${rowWord} hidden (ctrl+o expands)`;
+  }
+  if (collapsed.hiddenDoneCount > 0) {
+    const doneWord = collapsed.hiddenDoneCount === 1 ? "row" : "rows";
+    return `… ${collapsed.hiddenCount} ${rowWord} hidden, ${collapsed.hiddenDoneCount} completed ${doneWord} first (ctrl+o expands)`;
+  }
+  return `… ${collapsed.hiddenCount} ${rowWord} hidden (ctrl+o expands)`;
+}
+
+function renderAgentRow(theme: Theme, inner: number, row: AgentTreeRow): string {
+  const a = row.agent;
+  const color = STATE_COLOR[a.state] ?? "muted";
+  const head = `${"  ".repeat(row.depth)}${theme.fg(color, GLYPH[a.state] ?? "•")} ${theme.bold(theme.fg("text", a.name))}`
+    + (a.taskName ? theme.fg("muted", ` · ${a.taskName}`) : "")
+    + `  ${theme.fg(color, a.state)}`
+    + (a.activity ? theme.fg("dim", `  ${a.activity}`) : "");
+  const progress = progressSummary(a);
+  const right = theme.fg("dim", progress ? `${progress}  ${elapsed(a)}` : elapsed(a));
+  const gap = inner - visibleWidth(head) - visibleWidth(right);
+  return gap >= 1 ? `${head}${" ".repeat(gap)}${right}` : padTo(head, inner);
+}
+
+function agentRows(theme: Theme, inner: number): string[] {
+  const rows = flattenAgentRows();
   if (!rows.length) return [theme.fg("dim", "no subagents yet")];
-  if (agentRowsExpanded || rows.length <= AGENT_ROWS_COLLAPSED_MAX) return rows;
-  if (AGENT_ROWS_COLLAPSED_MAX <= 1) return [theme.fg("dim", `… ${rows.length} hidden (ctrl+o expands)`)];
-  const shown = AGENT_ROWS_COLLAPSED_MAX - 1;
-  return [theme.fg("dim", `… ${rows.length - shown} older hidden (ctrl+o expands)`), ...rows.slice(-shown)];
+  if (agentRowsExpanded || rows.length <= AGENT_ROWS_COLLAPSED_MAX) return rows.map((row) => renderAgentRow(theme, inner, row));
+
+  const collapsed = collapseAgentRows(rows);
+  return [theme.fg("dim", hiddenRowsSummary(collapsed)), ...collapsed.visible.map((row) => renderAgentRow(theme, inner, row))];
 }
 
 function feedRows(theme: Theme): string[] {
@@ -882,7 +1116,7 @@ function subagentsLabel(): string {
 function teamLines(theme: Theme, width: number): string[] {
   const W = Math.max(38, Math.min(width, 140));
   if (W >= 92) {
-    const feedW = Math.max(34, Math.min(52, Math.floor(W * 0.36)));
+    const feedW = Math.max(34, Math.min(68, Math.floor(W * 0.47)));
     const agentsW = W - feedW - 1;
     const agents = agentRows(theme, agentsW - 4);
     const height = Math.max(1, agents.length);
@@ -943,27 +1177,48 @@ function toggleView(ctx: ExtensionContext): void {
 }
 
 // --------------------------------------------------------------------------
-// Watchdog (root + UI only): stuck agents are a human decision, never a timeout
+// Human prompts (root + UI only): approvals and stuck agents are user decisions
 // --------------------------------------------------------------------------
 
 const flagged = new Set<string>();
-let prompting = false;
+let uiPrompting = false;
+
+function startNestedSpawnApprovalPrompts(ctx: ExtensionContext): void {
+  approvalTimer = setInterval(async () => {
+    if (!runDir || uiPrompting || nestedSpawnApprovalMode(ctx) !== "user") return;
+    const fresh = claimFresh(SELF, isNestedSpawnApproval);
+    if (!fresh) return;
+    uiPrompting = true;
+    try {
+      const summary = await resolveNestedSpawnApprovalWithUser(ctx, fresh.msg);
+      if (ctx.hasUI) ctx.ui.notify(summary, "info");
+      refreshView(ctx);
+    } finally {
+      rmSync(fresh.path, { force: true });
+      uiPrompting = false;
+    }
+  }, REFRESH_MS);
+}
 
 function startWatchdog(ctx: ExtensionContext): void {
   setInterval(async () => {
-    if (!runDir || prompting) return;
+    if (!runDir || uiPrompting) return;
     // Only direct children: those this session can actually stop.
     for (const a of listAgents()) {
       if (a.parent !== SELF || TERMINAL.has(a.state) || flagged.has(a.name)) continue;
       if (isCoordinating(a)) continue;
       if (now() - a.updatedAt < STALE_MS) continue;
       flagged.add(a.name);
-      prompting = true;
-      const stop = await ctx.ui.confirm(
-        "Subagent stuck?",
-        `${a.name} · ${a.taskName} — no progress for ${fmtAge(now() - a.updatedAt)}. Stop it?`,
-      );
-      prompting = false;
+      uiPrompting = true;
+      let stop = false;
+      try {
+        stop = await ctx.ui.confirm(
+          "Subagent stuck?",
+          `${a.name} · ${a.taskName} — no progress for ${fmtAge(now() - a.updatedAt)}. Stop it?`,
+        );
+      } finally {
+        uiPrompting = false;
+      }
       if (stop) {
         kids.get(a.name)?.kill();
         writeBeacon(a.name, { state: "stopped" });
@@ -991,6 +1246,8 @@ export default function (pi: ExtensionAPI): void {
     for (const child of kids.values()) child.kill();
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
+    if (approvalTimer) clearInterval(approvalTimer);
+    approvalTimer = undefined;
     expandShortcutUnsubscribe?.();
     expandShortcutUnsubscribe = undefined;
     uiReady = false;
@@ -1008,6 +1265,7 @@ export default function (pi: ExtensionAPI): void {
       description: "Toggle the live subagent team view (persisted, on by default).",
       handler: async (_args, cmdCtx) => toggleView(cmdCtx),
     });
+    startNestedSpawnApprovalPrompts(ctx);
     startWatchdog(ctx);
     refreshTimer = setInterval(() => refreshView(ctx), REFRESH_MS);
   });

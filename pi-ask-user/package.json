@@ -1,0 +1,26 @@
+{
+  "name": "pi-plugins-ask-user",
+  "version": "0.11.2-pi-plugins.0",
+  "description": "Conservative fork of pi-ask-user providing the ask_user tool without mandatory decision-gate skill guidance.",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "ask_user",
+    "interactive"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0",
+    "@sinclair/typebox": "*"
+  }
+}

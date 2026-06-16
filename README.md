@@ -5,6 +5,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 ## Extensions
 
 - `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in effectiveness tracking. Covers the Codex SSE 10s header-timeout suppression (`/sse-timeout`, `/codex-transport`) and the oversized single-message guard before provider requests and tool-call continuations (`/context-guard`). `/pi-fixes` reports whether each fix is still firing (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can be retired once its failure stops occurring.
+- `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that provides the interactive `ask_user` tool without loading the upstream mandatory decision-gate skill by default.
+- `pi-scheduler` — adds `/schedule <delay> <message>` for delayed user messages (`15m`, `5h`, `5.5h`, `30d`) with a compact queued-message panel, countdowns, and cancel/list command reminders.
 - `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer, plus a cumulative conversation token/cost breakdown (uncached input, cached input with hit rate, output, and total `$`) on the stats line; `/pi-usage` prints the full per-bucket token and cost attribution for the current model.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
 - `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
@@ -12,8 +14,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message; never sent to the model.
 - `pi-memedit` — automatically hard-deletes low-value conversation items from live context and the session log, including optional live continuation pruning during long runs; follows its global setting and is compatible with Anthropic OAuth prune calls.
-- `pi-subagents` — runs background `pi` subagents as a coordinated team. `spawn` starts a named subagent on a task; `message`/`wait` provide a live intercom (agent↔agent and agent↔main); nested spawns are gated by the main agent's approval; and a styled, on-by-default `/subagents` team view shows the live tree. Subagents inherit the full plugin stack, run headless, resume from their own memory when re-addressed, and stay out of `/resume`.
-- `pi-settings-sync` — adds `/pi-export` and the `/pi-settings-import` skill for full user-level settings migration between machines (Linux ↔ Windows), translating OS-specific paths and excluding secrets, node_modules, and history.
+- `pi-subagents` — runs background `pi` subagents as a coordinated team. `spawn` starts a named subagent on a task; `message`/`wait` provide a live intercom (agent↔agent and agent↔main); nested spawns are approval-gated by the main agent by default, or by a user confirmation modal when `subagents.nestedSpawnApproval` is `user`; and a styled, on-by-default `/subagents` team view shows the live tree. Subagents inherit the full plugin stack, run headless, resume from their own memory when re-addressed, and stay out of `/resume`.
 
 ## Install
 

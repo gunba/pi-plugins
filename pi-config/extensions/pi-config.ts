@@ -90,6 +90,7 @@ const PI_SETTINGS: SettingField[] = [
   field("themes", "Theme paths", "stringArray", "Local theme file paths or directories.", []),
   field("enableSkillCommands", "Enable skill commands", "boolean", "Register skills as /skill:name commands.", true),
   field("subagents", "Subagents config", "object", "pi-subagents overrides and defaults when that package is installed.", {}),
+  field("subagents.nestedSpawnApproval", "Nested spawn approval", "enum", "Who confirms nested subagent spawn requests: agent lets the main agent approve or deny; user prompts the user with a modal for every nested request.", "agent", ["agent", "user"]),
 ];
 
 const MCP_SETTINGS: SettingField[] = [

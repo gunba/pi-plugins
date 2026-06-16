@@ -71,6 +71,13 @@ const PROVIDER_PREFERRED_MODELS: Record<string, string[]> = {
 };
 
 const SHORT_KEYWORDS = new Set(["ai", "ci", "db", "llm", "mcp", "osc", "pi", "qa", "rd", "ui", "ux"]);
+const FALLBACK_FILE_BLOCK_PATTERN = /<file\b[^>]*>[\s\S]*?<\/file>/gi;
+const FALLBACK_ID_PREAMBLE_PATTERN = /^\s*(?:id|session\s+id|leaf\s+id)\s*:\s*[a-z0-9][a-z0-9-]{11,}\s*(?:[-–—]\s*)?/gim;
+const FALLBACK_UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const FALLBACK_PATH_PATTERN = /(?<![a-z0-9._:-])(?:file:\/\/)?(?:~(?=\/)|\/|[a-z]:[\\/]|\.{1,2}[\\/])(?:[^\s"'`<>()[\]{}|]+[\\/])*[^\s"'`<>()[\]{}|]*/gi;
+const FALLBACK_RELATIVE_FILE_PATH_PATTERN = /(?<![a-z0-9._:-])(?:[a-z0-9][a-z0-9._+-]*[\\/])+[a-z0-9][a-z0-9._+-]*\.[a-z0-9]{1,12}(?![a-z0-9._:-])/gi;
+const FALLBACK_RELATIVE_HANDOFF_PATH_PATTERN = /(?<![A-Za-z0-9._:-])(?:[A-Za-z0-9][A-Za-z0-9._+-]*[\\/]){2,}[A-Z][A-Z0-9_-]{2,}(?![A-Za-z0-9._:-])/g;
+const FALLBACK_FILE_PREAMBLE_PATTERN = /\b(?:continue\s+from|attached\s+file|session\s+id|leaf\s+id|file|session|path|source|id)\s*:\s*/gi;
 
 const STOP_WORDS = new Set([
   "about",
@@ -591,7 +598,8 @@ function truncateTitle(value: string, maxChars: number): string {
 }
 
 function fallbackTitleFromPrompt(prompt: string, cwd: string): string {
-  const tokens = Array.from(prompt.toLowerCase().matchAll(/[a-z0-9][a-z0-9+#._-]*/g), (match) => match[0])
+  const promptText = fallbackPromptText(prompt);
+  const tokens = Array.from(promptText.toLowerCase().matchAll(/[a-z0-9][a-z0-9+#._-]*/g), (match) => match[0])
     .map((token) => token.replace(/^[_-]+|[_-]+$/g, ""))
     .filter((token) => token && !STOP_WORDS.has(token) && (token.length >= 3 || SHORT_KEYWORDS.has(token)));
 
@@ -603,12 +611,33 @@ function fallbackTitleFromPrompt(prompt: string, cwd: string): string {
     if ([...title].length >= TITLE_MIN_CHARS || selected.length >= 5) break;
   }
 
-  let candidate = titleCase(selected).join(" ") || fallbackTitleFromCwd(cwd);
-  if ([...candidate].length < TITLE_MIN_CHARS - 4) {
-    const cwdTitle = fallbackTitleFromCwd(cwd);
-    if (!candidate.toLowerCase().includes(cwdTitle.toLowerCase())) candidate = `${candidate} ${cwdTitle}`.trim();
+  const candidate = titleCase(selected).join(" ");
+  return (candidate ? normalizeGeneratedTitle(candidate) : undefined) || (promptText ? fallbackTitleFromCwd(cwd) : "pi session");
+}
+
+function fallbackPromptText(prompt: string): string {
+  return stripLeadingFallbackPreamble(
+    prompt
+      .replace(FALLBACK_FILE_BLOCK_PATTERN, " ")
+      .replace(FALLBACK_ID_PREAMBLE_PATTERN, " ")
+      .replace(FALLBACK_UUID_PATTERN, " ")
+      .replace(FALLBACK_PATH_PATTERN, " ")
+      .replace(FALLBACK_RELATIVE_FILE_PATH_PATTERN, " ")
+      .replace(FALLBACK_RELATIVE_HANDOFF_PATH_PATTERN, " ")
+      .replace(FALLBACK_FILE_PREAMBLE_PATTERN, " "),
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripLeadingFallbackPreamble(value: string): string {
+  let text = value;
+  for (let i = 0; i < 4; i += 1) {
+    const next = text.replace(/^\s*(?:continue\s+from|attached\s+file|session\s+id|leaf\s+id|file|session|path|source|id)\b\s*:?[\s-]*/i, "");
+    if (next === text) return text;
+    text = next;
   }
-  return normalizeGeneratedTitle(candidate) || fallbackTitleFromCwd(cwd);
+  return text;
 }
 
 function fallbackTitleFromCwd(cwd: string): string {
