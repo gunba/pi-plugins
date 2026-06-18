@@ -15,7 +15,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { spawn as spawnChild, type ChildProcess } from "node:child_process";
+import { spawn as spawnChild, spawnSync, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
@@ -39,13 +39,14 @@ const VIEW_KEY = "pi-subagents";
 const POLL_MS = 400;
 const REFRESH_MS = 1000;
 const WATCHDOG_MS = 15_000;
-const STALE_MS = positiveEnvInt("PI_SUBAGENTS_STALE_MS") ?? 120_000;
+const STALE_MS = positiveEnvInt("PI_SUBAGENTS_STALE_MS") ?? 600_000;
+const ACTIVE_TOOL_STALE_MS = positiveEnvInt("PI_SUBAGENTS_ACTIVE_TOOL_STALE_MS") ?? 1_800_000;
 const RUN_TTL_MS = positiveEnvInt("PI_SUBAGENTS_RUN_TTL_MS") ?? 86_400_000; // sweep runs older than 24h
 const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
 const FEED_MAX = positiveEnvInt("PI_SUBAGENTS_FEED_MAX") ?? 80;
 const AGENT_ROWS_COLLAPSED_MAX = positiveEnvInt("PI_SUBAGENTS_AGENT_ROWS_MAX") ?? positiveEnvInt("PI_SUBAGENTS_ROWS") ?? 8;
 const COORDINATION_NOTICE =
-  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn additional subagents, message children, or call wait. When wait returns a child request or attention event, use tools if needed, then reply/resume with message and call wait again. Read completion result files after wait reports no active subagents or pending messages.";
+  "Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn additional subagents, message children, kill a wedged child, or call wait. When wait returns a child request or attention event, use tools if needed, then reply/resume with message or kill the child and call wait again. Read completion result files after wait reports no active subagents or pending messages.";
 
 const NAMES = [
   "Alice", "Bob", "Cara", "Dan", "Eve", "Finn", "Grace", "Hugo",
@@ -84,6 +85,7 @@ type Beacon = {
   contextTokens?: number;
   cost?: number;
   model?: string;
+  lastAssistantText?: string;
 };
 
 type Mail = {
@@ -178,15 +180,21 @@ function nestedSpawnApprovalMode(ctx: ExtensionContext): NestedSpawnApprovalMode
 
 // The subagent's final answer. It is never inlined into mailbox messages:
 // write it to a result file so the parent chooses when to spend context on it.
+function assistantTextFromMessage(message: unknown): string {
+  const m = message as { role?: string; content?: unknown };
+  if (m?.role !== "assistant") return "";
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) {
+    return (m.content as { type?: string; text?: string }[])
+      .filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n");
+  }
+  return "";
+}
+
 function lastAssistantText(messages: unknown[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i] as { role?: string; content?: unknown };
-    if (m?.role !== "assistant") continue;
-    if (typeof m.content === "string") return m.content;
-    if (Array.isArray(m.content)) {
-      return (m.content as { type?: string; text?: string }[])
-        .filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n");
-    }
+    const text = assistantTextFromMessage(messages[i]);
+    if (text) return text;
   }
   return "";
 }
@@ -201,6 +209,21 @@ function finalAssistantStatus(messages: unknown[]): { stopReason?: string; error
 
 function statusNeedsAttention(status: { stopReason?: string; errorMessage?: string }): boolean {
   return status.stopReason === "error" || status.stopReason === "aborted" || !!status.errorMessage;
+}
+
+function providerBackoffMessage(status: { stopReason?: string; errorMessage?: string }): string | undefined {
+  const raw = `${status.stopReason ?? ""} ${status.errorMessage ?? ""}`.toLowerCase();
+  if (!raw.trim()) return undefined;
+  if (
+    raw.includes("429")
+    || raw.includes("rate_limit")
+    || raw.includes("rate limit")
+    || raw.includes("too many requests")
+    || raw.includes("resource_exhausted")
+    || raw.includes("quota")
+    || raw.includes("overloaded")
+  ) return status.errorMessage || status.stopReason;
+  return undefined;
 }
 
 function safeFileSegment(s: string): string {
@@ -341,6 +364,7 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
     contextTokens: patch.contextTokens ?? prev?.contextTokens,
     cost: patch.cost ?? prev?.cost,
     model: patch.model ?? prev?.model,
+    lastAssistantText: patch.lastAssistantText ?? prev?.lastAssistantText,
   };
   writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
 }
@@ -425,8 +449,10 @@ function recordAssistantResponse(message: unknown): void {
 
   const prev = readJson<Beacon>(join(agentDir(SELF), "beacon.json"));
   const usage = m.usage ?? {};
-  writeBeacon(SELF, {
+  const text = assistantTextFromMessage(message).replace(/\s+/g, " ").trim();
+  const patch: Partial<Beacon> = {
     state: "running",
+    activity: "",
     responses: (prev?.responses ?? 0) + 1,
     inputTokens: (prev?.inputTokens ?? 0) + (usage.input ?? 0),
     outputTokens: (prev?.outputTokens ?? 0) + (usage.output ?? 0),
@@ -435,7 +461,9 @@ function recordAssistantResponse(message: unknown): void {
     contextTokens: usage.totalTokens ?? prev?.contextTokens,
     cost: (prev?.cost ?? 0) + (usage.cost?.total ?? 0),
     model: modelLabel(m) ?? prev?.model,
-  });
+  };
+  if (text) patch.lastAssistantText = text;
+  writeBeacon(SELF, patch);
 }
 
 function progressSummary(a: Beacon): string {
@@ -463,13 +491,17 @@ function sweepOldRuns(): void {
 // Mailbox
 // --------------------------------------------------------------------------
 
+function appendFeed(line: string): void {
+  const feedPath = join(runDir, "feed.log");
+  appendFileSync(feedPath, `${line.replace(/\s+/g, " ").slice(0, 160)}\n`);
+  const feed = readFeed();
+  if (feed.length > FEED_MAX) writeFileSync(feedPath, `${feed.slice(-FEED_MAX).join("\n")}\n`);
+}
+
 function post(msg: Mail): void {
   ensureDir(inboxDir(msg.to));
   writeFileSync(join(inboxDir(msg.to), `${msg.ts}-${msg.id}.json`), JSON.stringify(msg));
-  const feedPath = join(runDir, "feed.log");
-  appendFileSync(feedPath, `${msg.from}→${msg.to}: ${msg.body.replace(/\s+/g, " ").slice(0, 160)}\n`);
-  const feed = readFeed();
-  if (feed.length > FEED_MAX) writeFileSync(feedPath, `${feed.slice(-FEED_MAX).join("\n")}\n`);
+  appendFeed(`${msg.from}→${msg.to}: ${msg.body}`);
 }
 
 function inboxFiles(name: string): string[] {
@@ -683,6 +715,97 @@ function runAgent(name: string, prompt: string, ctx: ExtensionContext, fresh: bo
   return true;
 }
 
+function activePid(name: string): number | undefined {
+  try {
+    const pid = Number(readFileSync(activePidFile(name), "utf8"));
+    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function killPidTree(pid: number): boolean {
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    return result.status === 0;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function descendantsIncluding(name: string): Beacon[] {
+  const agents = listAgents();
+  const out: Beacon[] = [];
+  const walk = (parent: string) => {
+    for (const child of agents.filter((a) => a.parent === parent)) {
+      out.push(child);
+      walk(child.name);
+    }
+  };
+  const root = agents.find((a) => a.name === name);
+  if (root) out.push(root);
+  walk(name);
+  return out;
+}
+
+function removePendingFrom(sender: string, recipient = SELF): number {
+  let removed = 0;
+  for (const file of inboxFiles(recipient)) {
+    const path = join(inboxDir(recipient), file);
+    const msg = readJson<Mail>(path);
+    if (msg?.from === sender) {
+      rmSync(path, { force: true });
+      removed++;
+    }
+  }
+  return removed;
+}
+
+function killOneAgent(name: string, reason: string): string {
+  const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+  if (!beacon) return `${name}: not found`;
+  const pid = activePid(name);
+
+  // Mark terminal before killing so the normal child exit handler does not post
+  // another attention message for an intentional hard stop.
+  writeBeacon(name, { state: "stopped", activity: "" });
+  rmSync(activeLock(name), { recursive: true, force: true });
+  kids.delete(name);
+  const removed = removePendingFrom(name);
+  if (activeRequest?.from === name) activeRequest = undefined;
+
+  let killed = false;
+  if (pid && processAlive(pid)) killed = killPidTree(pid);
+  appendFeed(`${SELF}→${name}: killed (${reason})`);
+  return `${name}: ${pid ? (killed ? `killed pid ${pid}` : `marked stopped; pid ${pid} did not terminate cleanly`) : "marked stopped; no live pid"}${removed ? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}` : ""}`;
+}
+
+function killAgents(selector: string, reason: string): string[] {
+  const names = selector.trim() === "*"
+    ? listAgents().filter((a) => a.parent === SELF && a.state !== "done").flatMap((a) => descendantsIncluding(a.name).map((b) => b.name))
+    : descendantsIncluding(selector.trim()).map((a) => a.name);
+  const unique = [...new Set(names)].filter((name) => name !== SELF);
+  if (!unique.length) return [`No agent matched ${selector}.`];
+  return unique.reverse().map((name) => killOneAgent(name, reason));
+}
+
+function sendAgentNotice(to: string, body: string, ctx: ExtensionContext): string {
+  if (!runDir) return "No run yet — spawn a subagent first.";
+  const known = to === "main" || existsSync(join(agentDir(to), "beacon.json"));
+  if (!known) return `No agent named ${to}.`;
+  if (to !== "main" && !isActive(to) && runAgent(to, body, ctx, false)) {
+    if (activeRequest && activeRequest.from === to) activeRequest = undefined;
+    refreshView(ctx);
+    return `Re-addressing ${to} (resuming its session). Call wait for its result.`;
+  }
+  post({ id: rid(), from: SELF, to, body, kind: "notice", ts: now() });
+  return `Sent to ${to}.`;
+}
+
 // --------------------------------------------------------------------------
 // Tools
 // --------------------------------------------------------------------------
@@ -699,7 +822,7 @@ function registerTools(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use spawn only when delegation fits: independent parallel work, competing hypotheses, or context-heavy investigation whose details need not stay in your context.",
       "Outline the task for the subagent and be clear about the result you want, e.g. findings, an implementation, changed files, open questions, exact paths/ranges, and how to handle blockers or uncertainty.",
-      "After spawning one or more subagents, use `wait` and `message` to coordinate. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, or `message`.",
+      "After spawning one or more subagents, use `wait`, `message`, and `kill` to coordinate. While child subagents are active or messages are unread, pi-subagents only permits coordination: `spawn`, `wait`, `message`, or `kill`.",
       "Nested subagent spawn requests need deliberate approval. Approve only when the requested child is independent, scoped, non-duplicative, and worth the coordination overhead; otherwise deny or ask the requester to narrow its plan.",
       "Reply to nested spawn approval requests with exactly `approve` or `deny: <reason>` unless `subagents.nestedSpawnApproval` is `user`, in which case pi-subagents asks the user in a modal and replies for you. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the subagent tree.",
     ],
@@ -774,12 +897,34 @@ function registerTools(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
+    name: "kill",
+    label: "Kill subagent",
+    description: "Force-kill a running or wedged subagent by name. Use '*' to kill all direct children and their descendants.",
+    promptSnippet: "kill(name): hard-stop a wedged subagent",
+    promptGuidelines: [
+      "Use kill when a subagent is stuck, rate-limited in a replay loop, or cannot be stopped by a normal message.",
+      "Killing marks the agent stopped, clears its pending messages to this parent, and removes it from the wait loop. It does not preserve a graceful final answer.",
+    ],
+    parameters: Type.Object({
+      name: Type.String({ description: "Agent name to kill (e.g. 'Bob'), or '*' for all direct children." }),
+      reason: Type.Optional(Type.String({ description: "Why the agent is being hard-stopped." })),
+    }),
+    executionMode: "sequential",
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!runDir) return text("No run yet — spawn a subagent first.");
+      const lines = killAgents(params.name, params.reason?.trim() || "requested by parent agent");
+      refreshView(ctx);
+      return text(lines.join("\n"));
+    },
+  });
+
+  pi.registerTool({
     name: "wait",
     label: "Wait for subagents",
     description: "Yield until a subagent needs you (a question or approval request) or one finishes. Returns immediately when there is no active child or pending message.",
     promptSnippet: "wait(): yield until a subagent needs you or finishes",
     promptGuidelines: [
-      "After spawning one or more subagents, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
+      "After spawning one or more subagents, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, kill wedged children with `kill`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
     ],
     parameters: Type.Object({}),
     executionMode: "sequential",
@@ -818,7 +963,7 @@ function coordinationPrompt(): string {
         `Task: ${approval.task}`,
         "Decide deliberately; do not rubber-stamp nested delegation.",
         "Approve only if the child task is independent, scoped, non-duplicative of active work, and worth the coordination overhead. Deny if the requester should do the work directly or needs a narrower plan.",
-        `Reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: "approve") or message(..., body: "deny: <reason>"), then call wait again.`,
+        `Reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: "approve") or message(..., body: "deny: <reason>"), or kill the requester if it is wedged, then call wait again.`,
         coordinationStatus(SELF),
       ].join("\n");
     }
@@ -826,7 +971,7 @@ function coordinationPrompt(): string {
       `Subagent coordination request from ${activeRequest.from} (id ${activeRequest.id}).`,
       activeRequest.kind === "request"
         ? `Use any tools needed to satisfy the request, then reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: ...), then call wait again.`
-        : `Use any tools needed to handle or repair this subagent event, then call wait again. If you need to resume the agent, message ${activeRequest.from}.`,
+        : `Use any tools needed to handle or repair this subagent event, then call wait again. If you need to resume the agent, message ${activeRequest.from}; if it is wedged, kill ${activeRequest.from}.`,
       `Request: ${activeRequest.body}`,
       coordinationStatus(SELF),
     ].join("\n");
@@ -865,7 +1010,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
         reason: "Do not combine spawn with other tools in the same turn. Let spawn return, then call wait in the next turn.",
       };
     }
-    if (runDir && hasTeamWork(SELF) && !activeRequest && toolName !== "spawn" && toolName !== "wait" && toolName !== "message") {
+    if (runDir && hasTeamWork(SELF) && !activeRequest && toolName !== "spawn" && toolName !== "wait" && toolName !== "message" && toolName !== "kill") {
       return { block: true, reason: coordinationPrompt() };
     }
   });
@@ -878,6 +1023,17 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
       const status = finalAssistantStatus(messages);
       if (status.stopReason === "aborted" || suppressNextCoordinationNudge) {
         suppressNextCoordinationNudge = false;
+        return;
+      }
+      const backoff = providerBackoffMessage(status);
+      if (backoff) {
+        if (ctx.hasUI && now() - lastProviderBackoffNoticeAt > 60_000) {
+          lastProviderBackoffNoticeAt = now();
+          ctx.ui.notify(
+            `Subagent coordination paused after provider backoff: ${backoff}. Send a new message, wait, message, or kill when ready.`,
+            "warning",
+          );
+        }
         return;
       }
       if (runDir && (activeRequest || hasTeamWork(SELF))) pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
@@ -914,6 +1070,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
       return;
     }
 
+    const finalText = (lastAssistantText(messages) || status.errorMessage || "").replace(/\s+/g, " ").trim();
     if (PARENT) {
       const resultFile = writeResultFile(SELF, messages);
       post({
@@ -925,7 +1082,9 @@ function registerChildHooks(pi: ExtensionAPI): void {
         ts: now(),
       });
     }
-    writeBeacon(SELF, { state: needsAttention ? "stopped" : "done" });
+    const terminalPatch: Partial<Beacon> = { state: needsAttention ? "stopped" : "done" };
+    if (finalText) terminalPatch.lastAssistantText = finalText;
+    writeBeacon(SELF, terminalPatch);
   });
 }
 
@@ -941,6 +1100,7 @@ let approvalTimer: ReturnType<typeof setInterval> | undefined;
 let expandShortcutUnsubscribe: (() => void) | undefined;
 let lastSig: string | undefined;
 let suppressNextCoordinationNudge = false;
+let lastProviderBackoffNoticeAt = 0;
 
 // Active agents show a live timer; finished agents freeze at their duration.
 function elapsed(b: Beacon): string {
@@ -993,7 +1153,7 @@ function agentRowsOverflow(agents = listAgents()): boolean {
 
 // A plain change-detector so we only repaint when something actually moved.
 function viewSignature(agents: Beacon[]): string {
-  const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}:${progressSummary(a)}`).join("|");
+  const rows = agents.map((a) => `${a.name}:${a.state}:${a.activity ?? ""}:${elapsed(a)}:${progressSummary(a)}:${a.lastAssistantText ?? ""}`).join("|");
   return `${agentRowsExpanded ? "expanded" : "collapsed"}#${rows}#${readFeed().slice(-FEED_TAIL).join("|")}`;
 }
 
@@ -1084,8 +1244,12 @@ function renderAgentRow(theme: Theme, inner: number, row: AgentTreeRow): string 
     + (a.activity ? theme.fg("dim", `  ${a.activity}`) : "");
   const progress = progressSummary(a);
   const right = theme.fg("dim", progress ? `${progress}  ${elapsed(a)}` : elapsed(a));
-  const gap = inner - visibleWidth(head) - visibleWidth(right);
-  return gap >= 1 ? `${head}${" ".repeat(gap)}${right}` : padTo(head, inner);
+  const snippet = (a.lastAssistantText ?? "").replace(/\s+/g, " ").trim();
+  const available = inner - visibleWidth(head) - visibleWidth(right) - 3;
+  const middle = snippet && available >= 14 ? theme.fg("dim", ` — ${truncateToWidth(snippet, available)}`) : "";
+  const left = `${head}${middle}`;
+  const gap = inner - visibleWidth(left) - visibleWidth(right);
+  return gap >= 1 ? `${left}${" ".repeat(gap)}${right}` : padTo(left, inner);
 }
 
 function agentRows(theme: Theme, inner: number): string[] {
@@ -1114,9 +1278,9 @@ function subagentsLabel(): string {
 }
 
 function teamLines(theme: Theme, width: number): string[] {
-  const W = Math.max(38, Math.min(width, 140));
+  const W = Math.max(38, Math.min(width, 180));
   if (W >= 92) {
-    const feedW = Math.max(34, Math.min(68, Math.floor(W * 0.47)));
+    const feedW = Math.max(34, Math.min(58, Math.floor(W * 0.34)));
     const agentsW = W - feedW - 1;
     const agents = agentRows(theme, agentsW - 4);
     const height = Math.max(1, agents.length);
@@ -1176,6 +1340,109 @@ function toggleView(ctx: ExtensionContext): void {
   if (ctx.hasUI) ctx.ui.notify(`Subagent team view ${viewEnabled ? "on" : "off"} (persisted)`, "info");
 }
 
+function latestSessionFile(name: string): string | undefined {
+  const dir = sessionsDir();
+  if (!existsSync(dir)) return undefined;
+  const suffix = `_${name}.jsonl`;
+  return readdirSync(dir)
+    .filter((file) => file.endsWith(suffix))
+    .map((file) => join(dir, file))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+}
+
+function messageTextForTranscript(message: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string }): string {
+  if (message.role === "assistant") {
+    const text = assistantTextFromMessage(message).trim();
+    if (text) return text;
+    if (message.errorMessage) return `[${message.stopReason ?? "error"}] ${message.errorMessage}`;
+    return message.stopReason ? `[${message.stopReason}]` : "";
+  }
+  if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content)) {
+    return (message.content as { type?: string; text?: string; name?: string }[])
+      .map((block) => block.text ?? block.name ?? "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+function agentTranscript(name: string, maxChars = 24_000): string {
+  const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+  if (!beacon) return `No agent named ${name}.`;
+  const lines = [
+    `# ${name}${beacon.taskName ? ` · ${beacon.taskName}` : ""}`,
+    `State: ${beacon.state}${beacon.activity ? ` (${beacon.activity})` : ""}`,
+    `Started: ${new Date(beacon.startedAt).toLocaleString()}`,
+    beacon.model ? `Model: ${beacon.model}` : undefined,
+    "",
+  ].filter((line): line is string => line !== undefined);
+
+  const file = latestSessionFile(name);
+  if (!file) {
+    lines.push(beacon.lastAssistantText ? `## Last assistant message\n\n${beacon.lastAssistantText}` : "No session transcript found for this agent.");
+    return lines.join("\n");
+  }
+
+  lines.push(`Transcript: ${file}`, "");
+  let chars = lines.join("\n").length;
+  for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    const event = (() => {
+      try { return JSON.parse(raw) as { message?: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string } }; }
+      catch { return undefined; }
+    })();
+    const message = event?.message;
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    const text = messageTextForTranscript(message).replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) continue;
+    const entry = [`## ${message.role}`, "", text, ""];
+    lines.push(...entry);
+    chars += entry.join("\n").length + 1;
+    if (chars > maxChars) {
+      lines.push("… transcript truncated …");
+      break;
+    }
+  }
+  return lines.join("\n");
+}
+
+async function inspectSubagentCommand(args: string, ctx: ExtensionContext): Promise<void> {
+  if (!runDir) {
+    ctx.ui.notify("No subagent run is active.", "info");
+    return;
+  }
+  const trimmed = args.trim();
+  if (!trimmed || /^list$/i.test(trimmed)) {
+    const rows = listAgents().filter((a) => a.name !== "main").map((a) => `${a.name} · ${a.taskName || "(untitled)"} — ${a.state}`);
+    ctx.ui.notify(rows.length ? rows.join("\n") : "No subagents yet.", "info");
+    return;
+  }
+  const [first, ...rest] = trimmed.split(/\s+/);
+  if (/^kill$/i.test(first ?? "")) {
+    const target = rest[0];
+    if (!target) {
+      ctx.ui.notify("Usage: /subagent kill <name|*>", "error");
+      return;
+    }
+    const lines = killAgents(target, "requested from /subagent");
+    refreshView(ctx);
+    ctx.ui.notify(lines.join("\n"), "warning");
+    return;
+  }
+
+  const name = first ?? "";
+  const inlineMessage = rest.join(" ").trim();
+  if (inlineMessage) {
+    ctx.ui.notify(sendAgentNotice(name, inlineMessage, ctx), "info");
+    return;
+  }
+
+  await ctx.ui.editor(`Subagent ${name}`, agentTranscript(name));
+  const followUp = await ctx.ui.input(`Message ${name}?`, "leave blank to close");
+  if (followUp?.trim()) ctx.ui.notify(sendAgentNotice(name, followUp.trim(), ctx), "info");
+}
+
 // --------------------------------------------------------------------------
 // Human prompts (root + UI only): approvals and stuck agents are user decisions
 // --------------------------------------------------------------------------
@@ -1207,7 +1474,8 @@ function startWatchdog(ctx: ExtensionContext): void {
     for (const a of listAgents()) {
       if (a.parent !== SELF || TERMINAL.has(a.state) || flagged.has(a.name)) continue;
       if (isCoordinating(a)) continue;
-      if (now() - a.updatedAt < STALE_MS) continue;
+      const staleMs = a.activity ? ACTIVE_TOOL_STALE_MS : STALE_MS;
+      if (now() - a.updatedAt < staleMs) continue;
       flagged.add(a.name);
       uiPrompting = true;
       let stop = false;
@@ -1220,9 +1488,8 @@ function startWatchdog(ctx: ExtensionContext): void {
         uiPrompting = false;
       }
       if (stop) {
-        kids.get(a.name)?.kill();
-        writeBeacon(a.name, { state: "stopped" });
-        post({ id: rid(), from: a.name, to: SELF, body: `stopped by watchdog after ${fmtAge(now() - a.updatedAt)} without progress. You may repair it by messaging/resuming the agent if needed.`, kind: "attention", ts: now() });
+        const message = killOneAgent(a.name, `watchdog after ${fmtAge(now() - a.updatedAt)} without progress`);
+        post({ id: rid(), from: a.name, to: SELF, body: `${message}. You may repair it by messaging/resuming the agent if needed.`, kind: "attention", ts: now() });
         refreshView(ctx);
       }
     }
@@ -1264,6 +1531,10 @@ export default function (pi: ExtensionAPI): void {
     pi.registerCommand("subagents", {
       description: "Toggle the live subagent team view (persisted, on by default).",
       handler: async (_args, cmdCtx) => toggleView(cmdCtx),
+    });
+    pi.registerCommand("subagent", {
+      description: "Inspect, message, or kill a subagent: /subagent <name>, /subagent <name> <message>, /subagent kill <name|*>",
+      handler: async (args, cmdCtx) => inspectSubagentCommand(args, cmdCtx),
     });
     startNestedSpawnApprovalPrompts(ctx);
     startWatchdog(ctx);

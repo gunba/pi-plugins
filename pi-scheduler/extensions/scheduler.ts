@@ -13,6 +13,7 @@ const TICK_MS = 5_000;
 const MAX_WIDGET_ROWS = 4;
 const MAX_MESSAGE_PREVIEW = 90;
 const MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
+const WIDGET_PLACEMENT = process.env.PI_SCHEDULER_WIDGET_PLACEMENT === "aboveEditor" ? "aboveEditor" : "belowEditor";
 
 type ScheduledMessage = {
   id: string;
@@ -181,17 +182,25 @@ function refreshWidget(ctx: ExtensionContext): void {
   ctx.ui.setWidget(WIDGET_KEY, (_tui, theme): Component => ({
     render: (width: number) => schedulerWidgetLines(theme, width, messages),
     invalidate() {},
-  }), { placement: "aboveEditor" });
+  }), { placement: WIDGET_PLACEMENT });
 }
 
 function schedulerWidgetLines(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
   const W = Math.max(46, Math.min(width, 140));
-  const rows = messages.slice(0, MAX_WIDGET_ROWS).map((message) => scheduledRow(theme, W - 4, message));
+  const rowWidth = WIDGET_PLACEMENT === "belowEditor" ? W : W - 4;
+  const rows = messages.slice(0, MAX_WIDGET_ROWS).map((message) => scheduledRow(theme, rowWidth, message));
   if (messages.length > MAX_WIDGET_ROWS) {
     rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
   }
   rows.push(theme.fg("dim", "Ctrl+Alt+S list · /schedule cancel <id> · /schedule clear"));
+  if (WIDGET_PLACEMENT === "belowEditor") return compactLines(theme, W, "Scheduled messages", rows);
   return boxLines(theme, W, "Scheduled messages", rows);
+}
+
+function compactLines(theme: Theme, width: number, label: string, rows: string[]): string[] {
+  const prefix = `${theme.bold(theme.fg("accent", label))} ${theme.fg("dim", "·")}`;
+  const first = rows[0] ? `${prefix} ${rows[0]}` : prefix;
+  return [truncateToWidth(first, width), ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width))];
 }
 
 function scheduledRow(theme: Theme, width: number, message: ScheduledMessage): string {
