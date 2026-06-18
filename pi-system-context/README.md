@@ -6,13 +6,11 @@ Pi extension that appends a compact local environment summary to the system prom
 
 ```md
 ### Local env
-- time: 2026-05-29T02:00:00.000Z (UTC)
 - timezone: Australia/Perth
-- os: Windows_NT 10.0.26100 (win32/x64)
-- term: Windows Terminal
-- shell: C:/WINDOWS/system32/cmd.exe; bash: ~/Desktop/Programs/PortableGit/bin/bash.exe
+- os: win32/x64 10.0.26100
+- term: Windows Terminal; shell: C:/WINDOWS/system32/cmd.exe; bash: ~/Desktop/Programs/PortableGit/bin/bash.exe
 - cwd: C:/obsidian
 - path tools: python 3.x, node v22.x, git x.x, rg x.x, ps x.x
 ```
 
-The extension uses short-lived cached PATH probes for common tools so each prompt gets useful environment context without a large prompt block.
+The extension omits volatile timestamps so Anthropic prompt-cache keys stay stable across turns. PATH probes are short-lived cached so each prompt gets useful environment context without repeatedly shelling out.

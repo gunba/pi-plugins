@@ -1635,66 +1635,69 @@ export default function(pi: ExtensionAPI) {
          let removeOverlayInputListener: (() => void) | undefined;
          let hasAnnouncedHide = false;
          try {
-            const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
-               if (signal) {
-                  const onAbort = () => done(null);
-                  signal.addEventListener("abort", onAbort, { once: true });
-               }
-
-               if (timeout && timeout > 0) {
-                  setTimeout(() => done(null), timeout);
-               }
-
-               return new AskComponent(
-                  question,
-                  normalizedContext,
-                  options,
-                  allowMultiple,
-                  allowFreeform,
-                  allowComment,
-                  effectiveDisplayMode,
-                  tui,
-                  theme,
-                  keybindings,
-                  shortcuts,
-                  done,
-               );
-            };
-
-            // Register a raw terminal input listener for the overlay-toggle key so the
-            // overlay can be toggled even while it is hidden (hidden overlays do not
-            // receive input). Inline mode does not need this because the prompt is
-            // already non-modal. Skipped entirely if the user disabled the shortcut.
-            const overlayToggle = shortcuts.overlayToggle;
-            if (
-               effectiveDisplayMode === "overlay"
-               && !overlayToggle.disabled
-               && typeof ctx.ui.onTerminalInput === "function"
-            ) {
-               removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
-                  if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
-                  const nextHidden = !overlayHandle.isHidden();
-                  overlayHandle.setHidden(nextHidden);
-                  if (nextHidden && !hasAnnouncedHide) {
-                     hasAnnouncedHide = true;
-                     ctx.ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
-                  }
-                  return { consume: true };
-               });
-            }
-
-            const customResult = await ctx.ui.custom<AskUIResult | null>(
-               customFactory,
-               buildCustomUIOptions(effectiveDisplayMode, (handle) => {
-                  overlayHandle = handle;
-               }),
-            );
-
-            if (customResult !== undefined) {
-               result = customResult;
-            } else {
-               // RPC/headless mode: degrade to select()/input() dialog protocol
+            if (ctx.mode !== "tui") {
+               // RPC clients surface select()/input() through their native modal protocol.
+               // ctx.ui.custom() is TUI-only (RPC returns undefined), so skip it here to
+               // avoid a no-op custom UI before the real user-choice request is emitted.
                result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
+            } else {
+               const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
+                  if (signal) {
+                     const onAbort = () => done(null);
+                     signal.addEventListener("abort", onAbort, { once: true });
+                  }
+
+                  if (timeout && timeout > 0) {
+                     setTimeout(() => done(null), timeout);
+                  }
+
+                  return new AskComponent(
+                     question,
+                     normalizedContext,
+                     options,
+                     allowMultiple,
+                     allowFreeform,
+                     allowComment,
+                     effectiveDisplayMode,
+                     tui,
+                     theme,
+                     keybindings,
+                     shortcuts,
+                     done,
+                  );
+               };
+
+               // Register a raw terminal input listener for the overlay-toggle key so the
+               // overlay can be toggled even while it is hidden (hidden overlays do not
+               // receive input). Inline mode does not need this because the prompt is
+               // already non-modal. Skipped entirely if the user disabled the shortcut.
+               const overlayToggle = shortcuts.overlayToggle;
+               if (
+                  effectiveDisplayMode === "overlay"
+                  && !overlayToggle.disabled
+                  && typeof ctx.ui.onTerminalInput === "function"
+               ) {
+                  removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
+                     if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
+                     const nextHidden = !overlayHandle.isHidden();
+                     overlayHandle.setHidden(nextHidden);
+                     if (nextHidden && !hasAnnouncedHide) {
+                        hasAnnouncedHide = true;
+                        ctx.ui.notify?.(`ask_user hidden — press ${overlayToggle.spec} to reopen`, "info");
+                     }
+                     return { consume: true };
+                  });
+               }
+
+               const customResult = await ctx.ui.custom<AskUIResult | null | undefined>(
+                  customFactory,
+                  buildCustomUIOptions(effectiveDisplayMode, (handle) => {
+                     overlayHandle = handle;
+                  }),
+               );
+               result = customResult === undefined
+                  ? await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout)
+                  : customResult;
             }
          } catch (error) {
             const message =

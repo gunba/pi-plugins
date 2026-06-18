@@ -123,12 +123,6 @@ function compactPromptPath(value: string | undefined): string {
   return sanitizePromptValue(value ? compactPath(value) : undefined, "unknown", MAX_PROMPT_PATH_LENGTH);
 }
 
-function formatUtcTimestamp(): string {
-  const date = new Date();
-  date.setUTCSeconds(0, 0);
-  return date.toISOString().replace(/:00\.000Z$/, "Z");
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -236,7 +230,7 @@ export default function (pi: PiLike) {
 
     const context = [
       "### Local env",
-      `- time: ${sanitizePromptValue(formatUtcTimestamp())} UTC; timezone: ${sanitizePromptValue(timeZone)}`,
+      `- timezone: ${sanitizePromptValue(timeZone)}`,
       `- os: ${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)} ${sanitizePromptValue(os.release(), "unknown", 80)}`,
       `- term: ${sanitizePromptValue(terminalName())}; ${shellParts.join("; ")}`,
       `- cwd: ${compactPromptPath(cwd)}`,
