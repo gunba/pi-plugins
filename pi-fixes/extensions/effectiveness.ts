@@ -37,7 +37,7 @@ const STALE_AFTER_DAYS = 30;
 // Fixes this package ships, listed so the report shows a fix even when it has
 // never fired — a never-firing fix is the strongest "no longer needed" signal.
 const KNOWN_FIXES: Record<FixId, string> = {
-	"codex-sse-timeout": "Codex SSE 10s header-timeout suppression (codex-transport)",
+	"codex-sse-timeout": "Codex SSE built-in header-timeout suppression (codex-transport)",
 	"context-guard-strip": "Oversized single-message strip (context-guard)",
 	"claude-effort-remap": "Claude effort lifted to top tier (claude-effort)",
 };
