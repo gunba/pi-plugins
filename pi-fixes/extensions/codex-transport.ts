@@ -32,7 +32,7 @@ const LOG_RAW_IDS = envFlag("CODEX_TRANSPORT_LOG_RAW_IDS");
 const DEFAULT_SSE_HEADER_TIMEOUT_MS = 300_000;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const ENV_SSE_TIMEOUT = "PI_CODEX_SSE_HEADER_TIMEOUT_MS";
-const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after 10000ms$/;
+const BUILTIN_CODEX_SSE_HEADER_TIMEOUT_RE = /^Codex SSE response headers timed out after \d+ms$/;
 
 function envFlag(name: string): boolean {
   const value = process.env[name];
@@ -734,8 +734,8 @@ async function instrumentedFetch(state: TransportState, downstreamFetch: typeof 
     const reason = callerSignal?.reason;
     if (isBuiltinHeaderTimeout(reason)) {
       suppressedBuiltinTimeout = true;
-      // The built-in 10s timeout just fired and we are suppressing it: this is
-      // the exact moment the fix prevents Pi from aborting a slow Codex request.
+      // Pi's built-in bounded pre-header timeout just fired and we are suppressing it:
+      // this is the exact moment the fix prevents Pi from aborting a slow Codex request.
       recordFix("codex-sse-timeout");
       state.log?.("sse_builtin_header_timeout_suppressed", {
         fetchId,
@@ -817,7 +817,7 @@ async function instrumentedFetch(state: TransportState, downstreamFetch: typeof 
       const message =
         typeof info.message === "string" && info.message.trim()
           ? info.message
-          : "Codex SSE request failed after Pi's built-in 10s header timeout was suppressed by codex-transport";
+          : "Codex SSE request failed after Pi's built-in header timeout was suppressed by codex-transport";
       state.log?.("sse_synthetic_error_response", {
         fetchId,
         elapsedMs: elapsedMs(start),

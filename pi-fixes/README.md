@@ -6,7 +6,7 @@ Bundled workarounds for upstream Pi issues, with built-in effectiveness tracking
 
 ### Codex SSE response-header timeout (`codex-transport.ts`)
 
-Pi aborts a Codex `/codex/responses` request with *"Codex SSE response headers timed out after 10000ms"* when the provider takes longer than 10s to return headers (common for reasoning models). This patches global `fetch`, suppresses that built-in abort, and lets a configurable timeout (default 300000ms) govern instead. It also instruments Codex fetch/WebSocket traffic into local NDJSON for diagnostics.
+Pi aborts a Codex `/codex/responses` request with messages like *"Codex SSE response headers timed out after 20000ms"* when the provider takes longer than Pi's bounded pre-header wait to return headers (common for reasoning models). This patches global `fetch`, suppresses that built-in abort, and lets a configurable timeout (default 300000ms) govern instead. It also instruments Codex fetch/WebSocket traffic into local NDJSON for diagnostics.
 
 - `/codex-transport status | on | off | mark <note>`
 - `/sse-timeout status | set <ms> | <ms> | on | off`
@@ -30,7 +30,7 @@ Pi's `ThinkingLevel` stops at `xhigh`, but Claude Fable 5 and Opus 4.7+ expose a
 
 ## Effectiveness tracking (`effectiveness.ts`)
 
-Every fix records an activation only when it actually prevents its failure — the Codex fix on each suppressed 10s timeout, the guard on each oversized item stripped. This is the signal for whether a workaround is still earning its place.
+Every fix records an activation only when it actually prevents its failure — the Codex fix on each suppressed built-in header timeout, the guard on each oversized item stripped. This is the signal for whether a workaround is still earning its place.
 
 ```text
 /pi-fixes          # report each fix: total / last 7d / last 30d / last seen / verdict

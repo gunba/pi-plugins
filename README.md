@@ -4,7 +4,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in effectiveness tracking. Covers the Codex SSE 10s header-timeout suppression (`/sse-timeout`, `/codex-transport`) and the oversized single-message guard before provider requests and tool-call continuations (`/context-guard`). `/pi-fixes` reports whether each fix is still firing (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can be retired once its failure stops occurring.
+- `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in effectiveness tracking. Covers Codex SSE built-in header-timeout suppression (`/sse-timeout`, `/codex-transport`) and the oversized single-message guard before provider requests and tool-call continuations (`/context-guard`). `/pi-fixes` reports whether each fix is still firing (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can be retired once its failure stops occurring.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that provides the interactive `ask_user` tool without loading the upstream mandatory decision-gate skill by default.
 - `pi-scheduler` — adds `/schedule <delay> <message>` for delayed user messages (`15m`, `5h`, `5.5h`, `30d`) with a compact queued-message panel, countdowns, and cancel/list command reminders.
 - `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer, plus a cumulative conversation token/cost breakdown (uncached input, cached input with hit rate, output, and total `$`) on the stats line; `/pi-usage` prints the full per-bucket token and cost attribution for the current model.
