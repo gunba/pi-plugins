@@ -9,7 +9,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-scheduler` — adds `/schedule <delay> <message>` for delayed user messages (`15m`, `5h`, `5.5h`, `30d`) with a compact queued-message panel, countdowns, and cancel/list command reminders.
 - `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers in a compact two-line footer, plus a cumulative conversation token/cost breakdown (uncached input, cached input with hit rate, output, and total `$`) on the stats line; `/pi-usage` prints the full per-bucket token and cost attribution for the current model.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context, skills, MCP, and subagent configuration.
-- `pi-lazy-skills` — removes the full skill list from the main prompt and uses a pre-turn selector to inject only likely relevant Agent Skills.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and shows fresh/thinking/ready/error state in the tab title.
 - `pi-system-context` — adds compact local environment context to the system prompt.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of pre-conversation context (system prompt, skills, MCPs, tools, first message) after the first user message; never sent to the model.

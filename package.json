@@ -18,7 +18,6 @@
       "./pi-scheduler/extensions/scheduler.ts",
       "./pi-usage/extensions/usage.ts",
       "./pi-config/extensions/pi-config.ts",
-      "./pi-lazy-skills/extensions/lazy-skills.ts",
       "./pi-tab-title/extensions/tab-title.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
