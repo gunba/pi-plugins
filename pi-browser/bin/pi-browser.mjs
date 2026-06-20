@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import os from "node:os";
@@ -21,6 +21,8 @@ const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "
 const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || join(AGENT_DIR, "sessions");
 const BRIDGE_DIR = process.env.PI_BROWSER_BRIDGE_DIR || join(AGENT_DIR, "pi-browser", "bridge");
 const DESKTOP_STALE_MS = 30_000;
+const DIRECTORY_ENTRY_LIMIT = 300;
+const WORKSPACE_SUGGESTION_LIMIT = 80;
 const MIME = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -184,6 +186,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/status") return json(res, 200, { ok: true, cwd: process.cwd(), sessionsDir: SESSIONS_DIR, workers: [...workers.values()].map((w) => w.summary()), desktopSessions: await listDesktopSessions() });
     if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { sessions: await listSessions() });
     if (url.pathname === "/api/session" && req.method === "GET") return json(res, 200, await readSession(url.searchParams.get("path") || ""));
+    if (url.pathname === "/api/workspaces" && req.method === "GET") return json(res, 200, await listWorkspaces());
+    if (url.pathname === "/api/fs/dirs" && req.method === "GET") return json(res, 200, await listDirectories(url.searchParams.get("path") || os.homedir()));
+    if (url.pathname === "/api/fs/dirs" && req.method === "POST") return createDirectory(req, res);
     if (url.pathname === "/api/workers" && req.method === "GET") return json(res, 200, { workers: [...workers.values()].map((w) => w.summary()) });
     if (url.pathname === "/api/workers" && req.method === "POST") return createWorker(req, res);
     const match = url.pathname.match(/^\/api\/workers\/([^/]+)(?:\/(.*))?$/);
@@ -308,6 +313,86 @@ async function writeBridgeCommand(sessionId, command) {
   await writeFile(tmp, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
   await rename(tmp, final);
   return payload;
+}
+
+async function listWorkspaces() {
+  const home = os.homedir();
+  const candidates = [];
+  for (const desktop of await listDesktopSessions({ includeStale: true })) {
+    if (desktop.cwd) candidates.push({ path: desktop.cwd, label: workspaceName(desktop.cwd), source: "running" });
+  }
+  for (const session of await listSessions()) {
+    if (session.cwd) candidates.push({ path: session.cwd, label: workspaceName(session.cwd), source: "recent" });
+  }
+  candidates.push(
+    { path: join(home, "Desktop", "Projects"), label: "Desktop Projects", source: "common" },
+    { path: join(home, "Projects"), label: "Projects", source: "common" },
+    { path: join(home, "Code"), label: "Code", source: "common" },
+    { path: join(home, "Developer"), label: "Developer", source: "common" },
+    { path: join(home, "Desktop"), label: "Desktop", source: "common" },
+    { path: home, label: "Home", source: "common" },
+    { path: join(home, "Documents"), label: "Documents", source: "common" },
+    { path: join(home, "Downloads"), label: "Downloads", source: "common" },
+    { path: process.cwd(), label: "Server cwd", source: "current" },
+  );
+  const seen = new Set();
+  const workspaces = [];
+  for (const candidate of candidates) {
+    const path = resolve(candidate.path);
+    if (seen.has(path) || !isDirectory(path)) continue;
+    seen.add(path);
+    workspaces.push({ ...candidate, path, displayPath: shortFsPath(path) });
+    if (workspaces.length >= WORKSPACE_SUGGESTION_LIMIT) break;
+  }
+  return { defaultPath: workspaces[0]?.path || home, home, workspaces };
+}
+
+async function listDirectories(input) {
+  const path = resolve(input || os.homedir());
+  if (!isDirectory(path)) throw new Error(`not a directory: ${path}`);
+  const parent = dirname(path) === path ? undefined : dirname(path);
+  const entries = [];
+  let truncated = false;
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    entries.push({ name: entry.name, path: join(path, entry.name), displayPath: shortFsPath(join(path, entry.name)) });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  if (entries.length > DIRECTORY_ENTRY_LIMIT) {
+    entries.length = DIRECTORY_ENTRY_LIMIT;
+    truncated = true;
+  }
+  return { path, displayPath: shortFsPath(path), parent, parentDisplayPath: parent ? shortFsPath(parent) : undefined, entries, truncated };
+}
+
+async function createDirectory(req, res) {
+  const body = await readJson(req);
+  const parent = resolve(String(body.parent || os.homedir()));
+  if (!isDirectory(parent)) return json(res, 400, { error: `parent is not a directory: ${parent}` });
+  const name = String(body.name || "").trim();
+  if (!validDirectoryName(name)) return json(res, 400, { error: "folder name must be a single normal directory name" });
+  const path = join(parent, name);
+  if (existsSync(path)) return json(res, 409, { error: `folder already exists: ${path}` });
+  await mkdir(path, { recursive: false, mode: 0o755 });
+  return json(res, 201, { name, path, displayPath: shortFsPath(path), parent, parentDisplayPath: shortFsPath(parent) });
+}
+
+function validDirectoryName(name) {
+  return !!name && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\") && !/[\0\r\n]/.test(name);
+}
+
+function isDirectory(path) {
+  try { return statSync(path).isDirectory(); }
+  catch { return false; }
+}
+
+function workspaceName(path) {
+  return basename(path) || path;
+}
+
+function shortFsPath(path) {
+  const home = os.homedir();
+  return path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
 }
 
 async function listSessions() {

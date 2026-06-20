@@ -6,6 +6,9 @@ let sessions = [];
 let workers = [];
 let deferredInstall;
 let selectedWorker;
+let selectedWorkspace = localStorage.piBrowserWorkspace || "";
+let workspaces = [];
+let folderPath = "";
 let sessionPollTimer;
 
 if (location.hash.startsWith("#token=")) {
@@ -33,7 +36,45 @@ async function api(path, options = {}) {
 }
 function fmtTime(value) { return value ? new Date(value).toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""; }
 function shortPath(path) { return path?.replace(/^\/home\/jordan/, "~") || ""; }
+function pathName(path) { const parts = String(path || "").split("/").filter(Boolean); return parts.at(-1) || path || "Workspace"; }
 function label(role) { return role === "assistant" ? "Pi" : role === "user" ? "You" : role || "event"; }
+
+async function loadWorkspaces() {
+  try {
+    const data = await api("/api/workspaces");
+    workspaces = data.workspaces || [];
+    if (!selectedWorkspace) selectedWorkspace = data.defaultPath || workspaces[0]?.path || "";
+    renderWorkspaceSelect();
+  } catch (error) {
+    $("status").textContent = error.message;
+  }
+}
+
+function chooseWorkspace(path, addToSuggestions = true) {
+  selectedWorkspace = path;
+  localStorage.piBrowserWorkspace = path;
+  if (addToSuggestions && path && !workspaces.some((workspace) => workspace.path === path)) {
+    workspaces.unshift({ path, label: pathName(path), displayPath: shortPath(path), source: "chosen" });
+  }
+  renderWorkspaceSelect();
+}
+
+function renderWorkspaceSelect() {
+  const select = $("workspace");
+  if (!select) return;
+  select.textContent = "";
+  let options = workspaces;
+  if (selectedWorkspace && !options.some((workspace) => workspace.path === selectedWorkspace)) {
+    options = [{ path: selectedWorkspace, label: pathName(selectedWorkspace), displayPath: shortPath(selectedWorkspace), source: "chosen" }, ...options];
+  }
+  for (const workspace of options) {
+    const option = document.createElement("option");
+    option.value = workspace.path;
+    option.textContent = `${workspace.label || pathName(workspace.path)} — ${workspace.displayPath || shortPath(workspace.path)}`;
+    select.append(option);
+  }
+  select.value = selectedWorkspace || options[0]?.path || "";
+}
 
 async function refreshAll() {
   try {
@@ -72,6 +113,49 @@ function renderSessions() {
     button.innerHTML = `<strong>${escapeHtml(session.title || session.id || "session")}</strong><span class="meta">${escapeHtml(shortPath(session.cwd))} · ${fmtTime(session.modifiedAt)} · ${session.messageCount} msgs</span>`;
     button.onclick = () => openSession(session);
     root.append(button);
+  }
+}
+
+async function openFolderDialog(startPath) {
+  const dialog = $("folder-dialog");
+  dialog.showModal();
+  await loadFolder(startPath || selectedWorkspace || "");
+}
+
+async function loadFolder(path) {
+  const data = await api(`/api/fs/dirs?path=${encodeURIComponent(path || "")}`);
+  folderPath = data.path;
+  $("folder-path").textContent = data.displayPath || shortPath(data.path);
+  $("folder-up").disabled = !data.parent;
+  $("folder-up").onclick = () => data.parent && loadFolder(data.parent).catch((error) => alert(error.message));
+  const list = $("folder-list");
+  list.textContent = "";
+  for (const entry of data.entries || []) {
+    const button = document.createElement("button");
+    button.className = "item";
+    button.innerHTML = `<strong>📁 ${escapeHtml(entry.name)}</strong><span class="meta">${escapeHtml(entry.displayPath || shortPath(entry.path))}</span>`;
+    button.onclick = () => loadFolder(entry.path).catch((error) => alert(error.message));
+    list.append(button);
+  }
+  if (!list.children.length) {
+    const empty = document.createElement("div");
+    empty.className = "folder-empty";
+    empty.textContent = "No visible folders here.";
+    list.append(empty);
+  }
+  if (data.truncated) addBubble("remote", "Folder list was truncated. Choose a narrower parent folder.", "browser");
+}
+
+async function createFolder() {
+  const name = $("folder-name").value.trim();
+  if (!name) return;
+  try {
+    const created = await api("/api/fs/dirs", { method: "POST", body: JSON.stringify({ parent: folderPath, name }) });
+    $("folder-name").value = "";
+    chooseWorkspace(created.path);
+    await loadFolder(created.path);
+  } catch (error) {
+    alert(error.message);
   }
 }
 
@@ -200,7 +284,18 @@ async function handleUiRequest(e) {
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
 
 $("session-filter").oninput = renderSessions;
-$("new").onclick = async () => { const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ cwd: $("cwd").value, name: $("name").value }) }); await refreshAll(); selectWorker(created.worker.id); };
+$("workspace").onchange = () => chooseWorkspace($("workspace").value, false);
+$("browse").onclick = () => openFolderDialog(selectedWorkspace).catch((error) => alert(error.message));
+$("folder-use").onclick = () => { chooseWorkspace(folderPath); $("folder-dialog").close(); };
+$("folder-close").onclick = () => $("folder-dialog").close();
+$("folder-create").onclick = createFolder;
+$("folder-name").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); createFolder(); } });
+$("new").onclick = async () => {
+  if (!selectedWorkspace) return alert("Choose a workspace first.");
+  const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ cwd: selectedWorkspace, name: $("name").value }) });
+  await refreshAll();
+  selectWorker(created.worker.id);
+};
 $("send").onclick = () => send(); $("follow").onclick = () => send("follow_up"); $("screenshot").onclick = quickScreenshot;
 $("abort").onclick = () => activeWorker && api(selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/abort` : `/api/workers/${activeWorker}/abort`, { method: "POST", body: "{}" });
 $("state").onclick = () => {
@@ -231,7 +326,7 @@ function applyLiveState(event) {
   renderWorkers();
 }
 
-refreshAll().then(()=>{ if (activeWorker) selectWorker(activeWorker).catch(()=>{}); });
+Promise.all([loadWorkspaces(), refreshAll()]).then(()=>{ if (activeWorker) selectWorker(activeWorker).catch(()=>{}); });
 setInterval(refreshAll, 5_000);
 window.addEventListener("focus", refreshAll);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAll(); });

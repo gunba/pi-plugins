@@ -18,7 +18,12 @@
     <aside class="sidebar">
       <section class="card">
         <h2>Workers</h2>
-        <div class="new-worker"><input id="cwd" placeholder="cwd" value="/home/jordan/Desktop/Projects/pi-plugins"><input id="name" placeholder="name"><button id="new">New Pi</button></div>
+        <div class="new-worker">
+          <label class="field-label" for="workspace">Workspace</label>
+          <div class="workspace-row"><select id="workspace"></select><button id="browse" type="button">Browse</button></div>
+          <input id="name" placeholder="name (optional)">
+          <button id="new" class="primary">New Pi</button>
+        </div>
         <div id="workers" class="list"></div>
       </section>
       <section class="card">
@@ -37,6 +42,15 @@
     <div class="compose-actions"><button id="screenshot">📷 Screenshot</button><button id="send" class="primary">Send</button><button id="follow">Follow-up</button></div>
   </footer>
   <dialog id="dialog"><form method="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><menu id="dialog-actions"></menu></form></dialog>
+  <dialog id="folder-dialog" class="folder-dialog">
+    <div class="folder-picker">
+      <h2>Choose workspace</h2>
+      <div id="folder-path" class="folder-path"></div>
+      <div class="folder-tools"><button id="folder-up" type="button">Up</button><button id="folder-use" class="primary" type="button">Use this folder</button><button id="folder-close" type="button">Close</button></div>
+      <div id="folder-list" class="folder-list"></div>
+      <div class="folder-create"><input id="folder-name" placeholder="new folder name"><button id="folder-create" type="button">Create</button></div>
+    </div>
+  </dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
