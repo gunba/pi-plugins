@@ -19,8 +19,9 @@ The app stores the token in browser local storage and uses it only for API calls
 - Simple Pi-in-a-browser experience
 - Mobile-friendly PWA
 - Multiple browser tabs can watch/control the same RPC worker
+- Desktop/TUI Pi sessions register with the browser after `/reload`, then can be watched and steered from the PWA
 - Existing session files can be browsed and refreshed
-- Android voice dictation works in the composer; supported browsers also get a push-to-talk button via Web Speech API
+- Android voice dictation works through the normal keyboard microphone in the composer
 
 ## Notes
 

@@ -6,6 +6,7 @@ let sessions = [];
 let workers = [];
 let deferredInstall;
 let selectedWorker;
+let sessionPollTimer;
 
 if (location.hash.startsWith("#token=")) {
   token = decodeURIComponent(location.hash.slice(7));
@@ -37,7 +38,10 @@ function label(role) { return role === "assistant" ? "Pi" : role === "user" ? "Y
 async function refreshAll() {
   try {
     const status = await api("/api/status");
-    workers = status.workers || [];
+    workers = [
+      ...(status.workers || []).map((worker) => ({ ...worker, kind: "rpc" })),
+      ...(status.desktopSessions || []).map(normalizeDesktopSession),
+    ];
     selectedWorker = workers.find((worker) => worker.id === activeWorker) || selectedWorker;
     $("status").textContent = `${workers.length} worker${workers.length === 1 ? "" : "s"} · ${status.sessionsDir}`;
     renderWorkers();
@@ -52,7 +56,8 @@ function renderWorkers() {
   for (const worker of workers.sort((a,b)=>b.createdAt-a.createdAt)) {
     const button = document.createElement("button");
     button.className = `item ${worker.id === activeWorker ? "active" : ""}`;
-    button.innerHTML = `<strong>${escapeHtml(worker.name || worker.state?.sessionName || worker.id)}</strong><span class="meta">${worker.state?.isStreaming ? "running" : worker.exited ? "exited" : "idle"} · ${escapeHtml(shortPath(worker.cwd))}</span>`;
+    const kind = worker.kind === "desktop" ? "desktop" : "browser";
+    button.innerHTML = `<strong>${escapeHtml(worker.name || worker.state?.sessionName || worker.id)}</strong><span class="meta">${kind} · ${worker.state?.isStreaming ? "running" : worker.exited ? "exited" : worker.stale ? "stale" : "idle"} · ${escapeHtml(shortPath(worker.cwd))}</span>`;
     button.onclick = () => selectWorker(worker.id);
     root.append(button);
   }
@@ -85,11 +90,17 @@ async function selectWorker(id) {
   activeWorker = id; localStorage.piBrowserWorker = id;
   renderWorkers();
   if (eventSource) eventSource.close();
+  if (sessionPollTimer) clearInterval(sessionPollTimer);
   const worker = workers.find((w) => w.id === id);
   selectedWorker = worker;
   $("title").textContent = worker?.name || worker?.state?.sessionName || `Pi ${id}`;
   updateComposerState();
   $("messages").textContent = "";
+  if (worker?.kind === "desktop") {
+    await loadDesktopSession(worker);
+    sessionPollTimer = setInterval(() => loadDesktopSession(worker).catch(() => undefined), 2_000);
+    return;
+  }
   eventSource = new EventSource(`/api/workers/${id}/events?token=${encodeURIComponent(token)}`, { withCredentials: false });
   eventSource.addEventListener("snapshot", (event) => {
     const data = JSON.parse(event.data);
@@ -100,6 +111,27 @@ async function selectWorker(id) {
   });
   eventSource.onmessage = (event) => appendEvent(JSON.parse(event.data));
   eventSource.onerror = () => $("status").textContent = "event stream disconnected";
+}
+
+function normalizeDesktopSession(session) {
+  return {
+    id: `desktop:${session.sessionId}`,
+    kind: "desktop",
+    sessionId: session.sessionId,
+    cwd: session.cwd,
+    name: session.sessionName || `Desktop ${session.sessionId?.slice(0, 6)}`,
+    sessionPath: session.sessionFile,
+    createdAt: session.updatedAt,
+    lastEventAt: session.updatedAt,
+    stale: session.stale,
+    state: { isStreaming: !session.isIdle, sessionName: session.sessionName, pendingMessageCount: session.hasPendingMessages ? 1 : 0 },
+  };
+}
+
+async function loadDesktopSession(worker) {
+  if (!worker.sessionPath) return addBubble("remote", "Desktop session has no session file yet.", "desktop");
+  const data = await api(`/api/session?path=${encodeURIComponent(worker.sessionPath)}`);
+  renderMessages(data.messages || []);
 }
 
 function renderMessages(messages) { const root = $("messages"); root.textContent = ""; for (const m of messages) appendMessage(m); root.scrollTop = root.scrollHeight; }
@@ -138,7 +170,8 @@ async function send(mode = currentSendMode()) {
   const message = $("prompt").value.trim(); if (!message) return;
   $("prompt").value = "";
   addBubble("user", message, mode === "prompt" ? "You" : mode === "steer" ? "You · steer" : "You · follow-up");
-  try { await api(`/api/workers/${activeWorker}/prompt`, { method: "POST", body: JSON.stringify({ mode, message }) }); }
+  const url = selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/prompt` : `/api/workers/${activeWorker}/prompt`;
+  try { await api(url, { method: "POST", body: JSON.stringify({ mode, message }) }); }
   catch (error) { addBubble("error", error.message, "send failed"); }
 }
 async function quickScreenshot() {
@@ -147,7 +180,8 @@ async function quickScreenshot() {
   const message = extra ? `The user requested a screenshot. Use host_screenshot, then answer this: ${extra}` : "The user requested a screenshot. Use host_screenshot to inspect the current host desktop and briefly describe what matters.";
   const mode = currentSendMode();
   addBubble("user", message, mode === "steer" ? "Screenshot request · steer" : "Screenshot request");
-  await api(`/api/workers/${activeWorker}/prompt`, { method: "POST", body: JSON.stringify({ mode, message }) });
+  const url = selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/prompt` : `/api/workers/${activeWorker}/prompt`;
+  await api(url, { method: "POST", body: JSON.stringify({ mode, message }) });
 }
 
 async function handleUiRequest(e) {
@@ -168,9 +202,17 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c)=>({"&":"
 $("session-filter").oninput = renderSessions;
 $("new").onclick = async () => { const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ cwd: $("cwd").value, name: $("name").value }) }); await refreshAll(); selectWorker(created.worker.id); };
 $("send").onclick = () => send(); $("follow").onclick = () => send("follow_up"); $("screenshot").onclick = quickScreenshot;
-$("abort").onclick = () => activeWorker && api(`/api/workers/${activeWorker}/abort`, { method: "POST", body: "{}" });
-$("state").onclick = () => activeWorker && api(`/api/workers/${activeWorker}/state`).then((s)=>addBubble("remote", JSON.stringify(s.data || s, null, 2), "state"));
-$("stop").onclick = async () => { if (activeWorker && confirm("Stop this Pi worker?")) { await api(`/api/workers/${activeWorker}`, { method: "DELETE" }); activeWorker = ""; localStorage.removeItem("piBrowserWorker"); if (eventSource) eventSource.close(); await refreshAll(); } };
+$("abort").onclick = () => activeWorker && api(selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/abort` : `/api/workers/${activeWorker}/abort`, { method: "POST", body: "{}" });
+$("state").onclick = () => {
+  if (!activeWorker) return;
+  if (selectedWorker?.kind === "desktop") return addBubble("remote", JSON.stringify(selectedWorker, null, 2), "state");
+  return api(`/api/workers/${activeWorker}/state`).then((s)=>addBubble("remote", JSON.stringify(s.data || s, null, 2), "state"));
+};
+$("stop").onclick = async () => {
+  if (!activeWorker) return;
+  if (selectedWorker?.kind === "desktop") return alert("Desktop Pi sessions are controlled by their terminal. Use Abort to stop the current turn.");
+  if (confirm("Stop this Pi worker?")) { await api(`/api/workers/${activeWorker}`, { method: "DELETE" }); activeWorker = ""; localStorage.removeItem("piBrowserWorker"); if (eventSource) eventSource.close(); await refreshAll(); }
+};
 $("prompt").addEventListener("keydown", (e)=>{ if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
 function currentSendMode() { return selectedWorker?.state?.isStreaming ? "steer" : "prompt"; }

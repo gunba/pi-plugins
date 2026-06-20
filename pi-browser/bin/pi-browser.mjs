@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
@@ -19,6 +19,8 @@ const COMMAND_TIMEOUT_MS = 45_000;
 const TOKEN_FILE = join(os.homedir(), ".config", "pi-browser", "env");
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "agent");
 const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || join(AGENT_DIR, "sessions");
+const BRIDGE_DIR = process.env.PI_BROWSER_BRIDGE_DIR || join(AGENT_DIR, "pi-browser", "bridge");
+const DESKTOP_STALE_MS = 30_000;
 const MIME = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
@@ -179,13 +181,15 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && !url.pathname.startsWith("/api/")) return serveStatic(url, res);
     if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
-    if (url.pathname === "/api/status") return json(res, 200, { ok: true, cwd: process.cwd(), sessionsDir: SESSIONS_DIR, workers: [...workers.values()].map((w) => w.summary()) });
+    if (url.pathname === "/api/status") return json(res, 200, { ok: true, cwd: process.cwd(), sessionsDir: SESSIONS_DIR, workers: [...workers.values()].map((w) => w.summary()), desktopSessions: await listDesktopSessions() });
     if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { sessions: await listSessions() });
     if (url.pathname === "/api/session" && req.method === "GET") return json(res, 200, await readSession(url.searchParams.get("path") || ""));
     if (url.pathname === "/api/workers" && req.method === "GET") return json(res, 200, { workers: [...workers.values()].map((w) => w.summary()) });
     if (url.pathname === "/api/workers" && req.method === "POST") return createWorker(req, res);
     const match = url.pathname.match(/^\/api\/workers\/([^/]+)(?:\/(.*))?$/);
     if (match) return workerRoute(req, res, match[1], match[2] || "");
+    const desktopMatch = url.pathname.match(/^\/api\/desktop\/([^/]+)(?:\/(.*))?$/);
+    if (desktopMatch) return desktopRoute(req, res, desktopMatch[1], desktopMatch[2] || "");
     return json(res, 404, { error: "not found" });
   } catch (error) {
     return json(res, 500, { error: error instanceof Error ? error.message : String(error) });
@@ -255,6 +259,55 @@ async function workerRoute(req, res, id, action) {
   }
   if (action === "rpc" && req.method === "POST") return json(res, 200, await worker.send(await readJson(req), 60_000));
   return json(res, 404, { error: "not found" });
+}
+
+async function desktopRoute(req, res, sessionId, action) {
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeId || safeId !== sessionId) return json(res, 400, { error: "invalid desktop session id" });
+  const session = (await listDesktopSessions({ includeStale: true })).find((item) => item.sessionId === sessionId);
+  if (!session) return json(res, 404, { error: "desktop session is not registered; run /reload in that Pi session" });
+  if (action === "prompt" && req.method === "POST") {
+    const body = await readJson(req);
+    const message = String(body.message || "").trim();
+    if (!message) return json(res, 400, { error: "message required" });
+    await writeBridgeCommand(sessionId, { type: body.mode === "follow_up" ? "follow_up" : "prompt", message });
+    return json(res, 200, { ok: true });
+  }
+  if (action === "abort" && req.method === "POST") {
+    await writeBridgeCommand(sessionId, { type: "abort" });
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 404, { error: "not found" });
+}
+
+async function listDesktopSessions(options = {}) {
+  const dir = join(BRIDGE_DIR, "sessions");
+  let names;
+  try { names = await readdir(dir); }
+  catch { return []; }
+  const now = Date.now();
+  const out = [];
+  for (const name of names.filter((item) => item.endsWith(".json"))) {
+    try {
+      const item = JSON.parse(await readFile(join(dir, name), "utf8"));
+      const stale = now - Number(item.updatedAt || 0) > DESKTOP_STALE_MS;
+      if (stale && !options.includeStale) continue;
+      out.push({ ...item, kind: "desktop", stale });
+    } catch {}
+  }
+  return out.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+}
+
+async function writeBridgeCommand(sessionId, command) {
+  const inbox = join(BRIDGE_DIR, "inbox", sessionId);
+  await mkdir(inbox, { recursive: true });
+  const id = randomUUID();
+  const payload = { id, createdAt: Date.now(), ...command };
+  const tmp = join(inbox, `${Date.now()}-${id}.tmp`);
+  const final = tmp.replace(/\.tmp$/, ".json");
+  await writeFile(tmp, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+  await rename(tmp, final);
+  return payload;
 }
 
 async function listSessions() {

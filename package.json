@@ -17,6 +17,7 @@
       "./pi-fixes/extensions/codex-transport.ts",
       "./pi-fixes/extensions/context-guard.ts",
       "./pi-fixes/extensions/claude-effort.ts",
+      "./pi-browser/extensions/bridge.ts",
       "./pi-browser/extensions/screenshot.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
