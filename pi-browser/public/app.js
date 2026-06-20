@@ -9,6 +9,9 @@ let selectedWorker;
 let selectedWorkspace = localStorage.piBrowserWorkspace || "";
 let workspaces = [];
 let workerOrder = [];
+let toolRows = new Map();
+let statusBase = "";
+let statusEntries = new Map();
 let folderPath = "";
 let sessionPollTimer;
 
@@ -39,6 +42,9 @@ function fmtTime(value) { return value ? new Date(value).toLocaleString([], { mo
 function shortPath(path) { return path?.replace(/^\/home\/jordan/, "~") || ""; }
 function pathName(path) { const parts = String(path || "").split("/").filter(Boolean); return parts.at(-1) || path || "Workspace"; }
 function label(role) { return role === "assistant" ? "Pi" : role === "user" ? "You" : role || "event"; }
+function updateStatusLine() {
+  $("status").textContent = [statusBase, ...statusEntries.values()].filter(Boolean).join(" · ") || "Connected";
+}
 
 async function loadWorkspaces() {
   try {
@@ -85,7 +91,8 @@ async function refreshAll() {
       ...(status.desktopSessions || []).map(normalizeDesktopSession),
     ]);
     selectedWorker = workers.find((worker) => worker.id === activeWorker) || selectedWorker;
-    $("status").textContent = `${workers.length} worker${workers.length === 1 ? "" : "s"} · ${status.sessionsDir}`;
+    statusBase = `${workers.length} worker${workers.length === 1 ? "" : "s"} · ${status.sessionsDir}`;
+    updateStatusLine();
     renderWorkers();
     updateComposerState();
     sessions = (await api("/api/sessions")).sessions || [];
@@ -228,8 +235,8 @@ async function loadDesktopSession(worker) {
   renderMessages(data.messages || []);
 }
 
-function renderMessages(messages) { const root = $("messages"); root.textContent = ""; for (const m of messages) appendMessage(m); root.scrollTop = root.scrollHeight; }
-function renderEvents(events) { const root = $("messages"); root.textContent = ""; for (const e of events) appendEvent(e, false); root.scrollTop = root.scrollHeight; }
+function renderMessages(messages) { toolRows.clear(); const root = $("messages"); root.textContent = ""; for (const m of messages) appendMessage(m); root.scrollTop = root.scrollHeight; }
+function renderEvents(events) { toolRows.clear(); const root = $("messages"); root.textContent = ""; for (const e of events) appendEvent(e, false); root.scrollTop = root.scrollHeight; }
 function appendMessage(m) {
   if (!m.text?.trim()) return;
   addBubble(m.role, m.text, label(m.role));
@@ -237,12 +244,22 @@ function appendMessage(m) {
 function appendEvent(e, scroll = true) {
   applyLiveState(e);
   if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") return appendDelta(e.assistantMessageEvent.delta || "");
-  if (e.type === "message_end" && e.message) return finishAssistantMessage(plain(e.message.content));
-  if (e.type === "tool_execution_start") return addBubble("tool", `▶ ${e.toolName}`, "tool");
-  if (e.type === "tool_execution_end") return addBubble(e.isError ? "error" : "tool", plain(e.result?.content), e.toolName || "tool");
+  if (e.type === "message_end" && e.message) return appendCompletedMessage(e.message);
+  if (e.type === "tool_execution_start") return upsertToolRow(e, "running");
+  if (e.type === "tool_execution_update") return upsertToolRow(e, "running", plain(e.partialResult?.content));
+  if (e.type === "tool_execution_end") return upsertToolRow(e, e.isError ? "error" : "done", plain(e.result?.content), e.isError);
   if (e.type === "extension_ui_request") return handleUiRequest(e);
-  if (e.type?.startsWith("browser_") || e.type === "queue_update" || e.type === "agent_start" || e.type === "agent_end") addBubble("remote", summarizeEvent(e), e.type);
+  if (e.type === "extension_error" || e.type === "browser_worker_error") return addBubble("error", e.error || summarizeEvent(e), "error");
+  if (e.type === "browser_stderr") return addBubble("error", e.text || "", "stderr");
   if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
+}
+function appendCompletedMessage(message) {
+  const text = plain(message.content);
+  if (!text.trim()) return;
+  if (message.role === "assistant") return finishAssistantMessage(text);
+  if (message.role === "user") { if (consumePendingUserEcho(text)) return; return addBubble("user", text, "You"); }
+  if (message.role === "toolResult") return;
+  return addBubble(message.role || "remote", text, label(message.role));
 }
 function appendDelta(text) {
   let bubble = document.querySelector(".msg.assistant.streaming");
@@ -261,12 +278,65 @@ function finishAssistantMessage(text) {
   renderRichText(body, text, "assistant");
   $("messages").scrollTop = $("messages").scrollHeight;
 }
+function consumePendingUserEcho(text) {
+  const normalized = normalizeText(text);
+  for (const bubble of document.querySelectorAll(".msg.user.pending-user")) {
+    if (normalizeText(bubble.dataset.pendingUserText || "") === normalized) {
+      bubble.classList.remove("pending-user");
+      delete bubble.dataset.pendingUserText;
+      return true;
+    }
+  }
+  return false;
+}
+function normalizeText(text) { return String(text || "").trim().replace(/\s+/g, " "); }
 function addBubble(cls, text, title) {
   const div = document.createElement("div"); div.className = `msg ${cls}`;
   const l = document.createElement("span"); l.className = "label"; l.textContent = title;
   const body = document.createElement("div"); body.className = "rich"; body.dataset.raw = text || "";
   renderRichText(body, text || "", cls);
   div.append(l, body); $("messages").append(div); return div;
+}
+function upsertToolRow(event, state, text = "", isError = false) {
+  const id = event.toolCallId || `${event.toolName || "tool"}-${event.receivedAt || event.timestamp || Date.now()}`;
+  let row = toolRows.get(id);
+  if (!row) {
+    const div = document.createElement("div"); div.className = `msg tool compact ${isError ? "error" : ""}`;
+    const labelEl = document.createElement("span"); labelEl.className = "label"; labelEl.textContent = "tool";
+    const body = document.createElement("div"); body.className = "rich tool-row";
+    const details = document.createElement("details"); details.className = "tool-details";
+    const summary = document.createElement("summary");
+    const content = document.createElement("div"); content.className = "tool-content";
+    details.append(summary, content); body.append(details); div.append(labelEl, body); $("messages").append(div);
+    row = { div, labelEl, details, summary, content };
+    toolRows.set(id, row);
+  }
+  row.div.className = `msg tool compact ${isError ? "error" : ""}`;
+  row.labelEl.textContent = event.toolName || "tool";
+  row.summary.textContent = toolSummary(event, state, text);
+  row.details.open = !!isError;
+  row.content.textContent = "";
+  renderRichText(row.content, text || summarizeToolArgs(event), "tool");
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return row.div;
+}
+function toolSummary(event, state, text) {
+  const icon = state === "error" ? "✗" : state === "done" ? "✓" : "▶";
+  const name = event.toolName || "tool";
+  const hint = firstLine(text) || summarizeToolArgs(event);
+  return hint ? `${icon} ${name} — ${hint}` : `${icon} ${name}`;
+}
+function summarizeToolArgs(event) {
+  const args = event.args || {};
+  if (typeof args.command === "string") return args.command;
+  if (typeof args.path === "string") return args.path;
+  if (typeof args.url === "string") return args.url;
+  if (typeof args.query === "string") return args.query;
+  return "";
+}
+function firstLine(text) {
+  const line = String(text || "").split("\n").map((item) => item.trim()).find(Boolean) || "";
+  return line.length > 140 ? `${line.slice(0, 137)}…` : line;
 }
 function renderRichText(root, text, cls = "") {
   root.textContent = "";
@@ -342,7 +412,9 @@ async function send(mode = currentSendMode()) {
   if (!activeWorker) return alert("Start or select a Pi worker first.");
   const message = $("prompt").value.trim(); if (!message) return;
   $("prompt").value = "";
-  addBubble("user", message, mode === "prompt" ? "You" : mode === "steer" ? "You · steer" : "You · follow-up");
+  const bubble = addBubble("user", message, mode === "prompt" ? "You" : mode === "steer" ? "You · steer" : "You · follow-up");
+  bubble.classList.add("pending-user");
+  bubble.dataset.pendingUserText = message;
   const url = selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/prompt` : `/api/workers/${activeWorker}/prompt`;
   try { await api(url, { method: "POST", body: JSON.stringify({ mode, message }) }); }
   catch (error) { addBubble("error", error.message, "send failed"); }
@@ -352,13 +424,25 @@ async function quickScreenshot() {
   const extra = $("prompt").value.trim(); $("prompt").value = "";
   const message = extra ? `The user requested a screenshot. Use host_screenshot, then answer this: ${extra}` : "The user requested a screenshot. Use host_screenshot to inspect the current host desktop and briefly describe what matters.";
   const mode = currentSendMode();
-  addBubble("user", message, mode === "steer" ? "Screenshot request · steer" : "Screenshot request");
+  const bubble = addBubble("user", message, mode === "steer" ? "Screenshot request · steer" : "Screenshot request");
+  bubble.classList.add("pending-user");
+  bubble.dataset.pendingUserText = message;
   const url = selectedWorker?.kind === "desktop" ? `/api/desktop/${selectedWorker.sessionId}/prompt` : `/api/workers/${activeWorker}/prompt`;
   await api(url, { method: "POST", body: JSON.stringify({ mode, message }) });
 }
 
 async function handleUiRequest(e) {
-  if (e.method === "notify") { addBubble("remote", e.message || "", "notification"); return; }
+  if (e.method === "notify") { addBubble(e.notifyType === "error" ? "error" : "remote", e.message || "", "notification"); return; }
+  if (e.method === "setStatus") {
+    const key = e.statusKey || e.id || "status";
+    if (e.statusText) statusEntries.set(key, e.statusText);
+    else statusEntries.delete(key);
+    updateStatusLine();
+    return;
+  }
+  if (e.method === "setTitle") { if (e.title) document.title = e.title; return; }
+  if (e.method === "set_editor_text") { $("prompt").value = e.text || ""; return; }
+  if (e.method === "setWidget") return;
   const dialog = $("dialog"), title = $("dialog-title"), body = $("dialog-body"), actions = $("dialog-actions");
   title.textContent = e.title || e.method; body.textContent = e.message || e.placeholder || ""; actions.textContent = "";
   const reply = (payload) => api(`/api/workers/${activeWorker}/ui`, { method: "POST", body: JSON.stringify({ id: e.id, ...payload }) }).catch((err)=>alert(err.message));

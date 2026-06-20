@@ -22,8 +22,8 @@ The app stores the token in browser local storage and uses it only for API calls
 - Desktop/TUI Pi sessions register with the browser after `/reload`, then can be watched and steered from the PWA
 - New browser workers start from a tap-friendly workspace picker with recent folders, directory browsing, and folder creation
 - Existing session files can be browsed and refreshed
-- Terminal-style transcript rendering with assistant markdown, tool rows, and diff-highlighted code blocks
-- Portrait/mobile layout keeps the terminal full-height and moves workers/sessions into a pop-out sidebar
+- Terminal-style transcript rendering with assistant markdown, collapsed tool rows, and diff-highlighted code blocks
+- Portrait/mobile layout keeps the terminal full-width/full-height and moves workers/sessions into a pop-out sidebar
 - Android voice dictation works through the normal keyboard microphone in the composer
 
 ## Notes
