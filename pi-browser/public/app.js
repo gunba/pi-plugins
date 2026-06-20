@@ -5,6 +5,7 @@ let eventSource;
 let sessions = [];
 let workers = [];
 let deferredInstall;
+let selectedWorker;
 
 if (location.hash.startsWith("#token=")) {
   token = decodeURIComponent(location.hash.slice(7));
@@ -37,8 +38,10 @@ async function refreshAll() {
   try {
     const status = await api("/api/status");
     workers = status.workers || [];
+    selectedWorker = workers.find((worker) => worker.id === activeWorker) || selectedWorker;
     $("status").textContent = `${workers.length} worker${workers.length === 1 ? "" : "s"} · ${status.sessionsDir}`;
     renderWorkers();
+    updateComposerState();
     sessions = (await api("/api/sessions")).sessions || [];
     renderSessions();
   } catch (error) { $("status").textContent = error.message; }
@@ -83,12 +86,16 @@ async function selectWorker(id) {
   renderWorkers();
   if (eventSource) eventSource.close();
   const worker = workers.find((w) => w.id === id);
+  selectedWorker = worker;
   $("title").textContent = worker?.name || worker?.state?.sessionName || `Pi ${id}`;
+  updateComposerState();
   $("messages").textContent = "";
   eventSource = new EventSource(`/api/workers/${id}/events?token=${encodeURIComponent(token)}`, { withCredentials: false });
   eventSource.addEventListener("snapshot", (event) => {
     const data = JSON.parse(event.data);
+    selectedWorker = data.worker;
     $("title").textContent = data.worker?.name || data.worker?.state?.sessionName || `Pi ${id}`;
+    updateComposerState();
     renderEvents(data.events || []);
   });
   eventSource.onmessage = (event) => appendEvent(JSON.parse(event.data));
@@ -102,6 +109,7 @@ function appendMessage(m) {
   addBubble(m.role, m.text, label(m.role));
 }
 function appendEvent(e, scroll = true) {
+  applyLiveState(e);
   if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") return appendDelta(e.assistantMessageEvent.delta || "");
   if (e.type === "message_end" && e.message) return appendMessage({ role: e.message.role, text: plain(e.message.content) });
   if (e.type === "tool_execution_start") return addBubble("tool", `${e.toolName}`, "tool start");
@@ -125,11 +133,11 @@ function addBubble(cls, text, title) {
 function summarizeEvent(e) { if (e.type === "queue_update") return `steering ${e.steering?.length || 0}, follow-up ${e.followUp?.length || 0}`; if (e.error) return e.error; return JSON.stringify(e); }
 function plain(content) { if (typeof content === "string") return content; if (!Array.isArray(content)) return ""; return content.map((p)=>p?.type === "text" ? p.text : p?.type === "toolCall" ? `[tool: ${p.name}]` : p?.type === "image" ? "[image]" : "").filter(Boolean).join("\n"); }
 
-async function send(mode) {
+async function send(mode = currentSendMode()) {
   if (!activeWorker) return alert("Start or select a Pi worker first.");
   const message = $("prompt").value.trim(); if (!message) return;
   $("prompt").value = "";
-  addBubble("user", message, mode === "prompt" ? "You" : mode);
+  addBubble("user", message, mode === "prompt" ? "You" : mode === "steer" ? "You · steer" : "You · follow-up");
   try { await api(`/api/workers/${activeWorker}/prompt`, { method: "POST", body: JSON.stringify({ mode, message }) }); }
   catch (error) { addBubble("error", error.message, "send failed"); }
 }
@@ -137,8 +145,9 @@ async function quickScreenshot() {
   if (!activeWorker) return alert("Start or select a Pi worker first.");
   const extra = $("prompt").value.trim(); $("prompt").value = "";
   const message = extra ? `The user requested a screenshot. Use host_screenshot, then answer this: ${extra}` : "The user requested a screenshot. Use host_screenshot to inspect the current host desktop and briefly describe what matters.";
-  addBubble("user", message, "Screenshot request");
-  await api(`/api/workers/${activeWorker}/prompt`, { method: "POST", body: JSON.stringify({ mode: "prompt", message }) });
+  const mode = currentSendMode();
+  addBubble("user", message, mode === "steer" ? "Screenshot request · steer" : "Screenshot request");
+  await api(`/api/workers/${activeWorker}/prompt`, { method: "POST", body: JSON.stringify({ mode, message }) });
 }
 
 async function handleUiRequest(e) {
@@ -156,20 +165,31 @@ async function handleUiRequest(e) {
 
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
 
-$("refresh").onclick = refreshAll; $("session-filter").oninput = renderSessions;
+$("session-filter").oninput = renderSessions;
 $("new").onclick = async () => { const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ cwd: $("cwd").value, name: $("name").value }) }); await refreshAll(); selectWorker(created.worker.id); };
-$("send").onclick = () => send("prompt"); $("steer").onclick = () => send("steer"); $("follow").onclick = () => send("follow_up"); $("screenshot").onclick = quickScreenshot;
+$("send").onclick = () => send(); $("follow").onclick = () => send("follow_up"); $("screenshot").onclick = quickScreenshot;
 $("abort").onclick = () => activeWorker && api(`/api/workers/${activeWorker}/abort`, { method: "POST", body: "{}" });
 $("state").onclick = () => activeWorker && api(`/api/workers/${activeWorker}/state`).then((s)=>addBubble("remote", JSON.stringify(s.data || s, null, 2), "state"));
 $("stop").onclick = async () => { if (activeWorker && confirm("Stop this Pi worker?")) { await api(`/api/workers/${activeWorker}`, { method: "DELETE" }); activeWorker = ""; localStorage.removeItem("piBrowserWorker"); if (eventSource) eventSource.close(); await refreshAll(); } };
-$("prompt").addEventListener("keydown", (e)=>{ if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send("prompt"); } });
-$("voice").onclick = () => {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return alert("Speech recognition is not available in this browser. Use the Android keyboard microphone instead.");
-  const recognition = new SR(); recognition.lang = navigator.language || "en-US"; recognition.interimResults = true;
-  recognition.onresult = (event) => { let text = ""; for (const result of event.results) text += result[0].transcript; $("prompt").value = text; };
-  recognition.start();
-};
+$("prompt").addEventListener("keydown", (e)=>{ if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+
+function currentSendMode() { return selectedWorker?.state?.isStreaming ? "steer" : "prompt"; }
+function updateComposerState() {
+  const sendButton = $("send");
+  if (!sendButton) return;
+  sendButton.textContent = currentSendMode() === "steer" ? "Steer" : "Send";
+  sendButton.title = currentSendMode() === "steer" ? "Agent is running; send as steering" : "Agent is idle; send now";
+}
+function applyLiveState(event) {
+  if (!selectedWorker) return;
+  if (event.type === "agent_start") selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: true };
+  if (event.type === "agent_end") selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: false };
+  if (event.type === "queue_update") selectedWorker.state = { ...(selectedWorker.state || {}), steering: event.steering || [], followUp: event.followUp || [], pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) };
+  updateComposerState();
+  renderWorkers();
+}
 
 refreshAll().then(()=>{ if (activeWorker) selectWorker(activeWorker).catch(()=>{}); });
-setInterval(refreshAll, 10_000);
+setInterval(refreshAll, 5_000);
+window.addEventListener("focus", refreshAll);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAll(); });
