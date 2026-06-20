@@ -8,12 +8,16 @@
     "pi-extension"
   ],
   "type": "module",
+  "bin": {
+    "pi-browser": "./pi-browser/bin/pi-browser.mjs"
+  },
   "pi": {
     "extensions": [
       "./pi-fixes/extensions/effectiveness.ts",
       "./pi-fixes/extensions/codex-transport.ts",
       "./pi-fixes/extensions/context-guard.ts",
       "./pi-fixes/extensions/claude-effort.ts",
+      "./pi-browser/extensions/screenshot.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
       "./pi-usage/extensions/usage.ts",

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#11100f">
+  <title>Pi Browser</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div><h1>Pi Browser</h1><p id="status">Disconnected</p></div>
+    <div class="header-actions"><button id="refresh">Refresh</button><button id="install" hidden>Install</button></div>
+  </header>
+  <main>
+    <aside class="sidebar">
+      <section class="card">
+        <h2>Workers</h2>
+        <div class="new-worker"><input id="cwd" placeholder="cwd" value="/home/jordan/Desktop/Projects/pi-plugins"><input id="name" placeholder="name"><button id="new">New Pi</button></div>
+        <div id="workers" class="list"></div>
+      </section>
+      <section class="card">
+        <h2>Sessions</h2>
+        <input id="session-filter" placeholder="filter sessions">
+        <div id="sessions" class="list sessions"></div>
+      </section>
+    </aside>
+    <section class="chat card">
+      <div class="chat-head"><h2 id="title">Select or start a Pi</h2><div><button id="state">State</button><button id="abort">Abort</button><button id="stop" class="danger">Stop</button></div></div>
+      <div id="messages" class="messages"></div>
+    </section>
+  </main>
+  <footer class="composer">
+    <textarea id="prompt" rows="3" placeholder="Message Pi…"></textarea>
+    <div class="compose-actions"><button id="voice">🎙 Voice</button><button id="screenshot">📷 Screenshot</button><button id="send" class="primary">Send</button><button id="steer">Steer</button><button id="follow">Follow-up</button></div>
+  </footer>
+  <dialog id="dialog"><form method="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><menu id="dialog-actions"></menu></form></dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

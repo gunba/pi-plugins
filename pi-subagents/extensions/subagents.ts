@@ -1018,7 +1018,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
   // If the agent stops without waiting while children are still live (or child
   // messages are unread), immediately continue with an explicit wait-only nudge.
   if (!IS_CHILD) {
-    pi.on("agent_end", (event) => {
+    pi.on("agent_end", (event, ctx) => {
       const messages = (event as { messages?: unknown[] }).messages ?? [];
       const status = finalAssistantStatus(messages);
       if (status.stopReason === "aborted" || suppressNextCoordinationNudge) {

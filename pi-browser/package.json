@@ -1,0 +1,12 @@
+{
+  "name": "pi-browser",
+  "version": "0.1.0",
+  "description": "Minimal browser UI for controlling Pi sessions.",
+  "private": true,
+  "keywords": ["pi", "browser", "remote", "pwa"],
+  "type": "module",
+  "bin": {
+    "pi-browser": "./bin/pi-browser.mjs"
+  },
+  "license": "MIT"
+}
