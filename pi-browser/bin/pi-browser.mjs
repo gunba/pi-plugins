@@ -300,7 +300,11 @@ async function listDesktopSessions(options = {}) {
       out.push({ ...item, kind: "desktop", stale });
     } catch {}
   }
-  return out.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  return out.sort((a, b) => desktopSortKey(a).localeCompare(desktopSortKey(b), undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function desktopSortKey(session) {
+  return `${session.sessionName || ""}\0${session.cwd || ""}\0${session.sessionId || ""}`;
 }
 
 async function writeBridgeCommand(sessionId, command) {

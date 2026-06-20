@@ -8,6 +8,7 @@ let deferredInstall;
 let selectedWorker;
 let selectedWorkspace = localStorage.piBrowserWorkspace || "";
 let workspaces = [];
+let workerOrder = [];
 let folderPath = "";
 let sessionPollTimer;
 
@@ -79,10 +80,10 @@ function renderWorkspaceSelect() {
 async function refreshAll() {
   try {
     const status = await api("/api/status");
-    workers = [
+    workers = stableWorkers([
       ...(status.workers || []).map((worker) => ({ ...worker, kind: "rpc" })),
       ...(status.desktopSessions || []).map(normalizeDesktopSession),
-    ];
+    ]);
     selectedWorker = workers.find((worker) => worker.id === activeWorker) || selectedWorker;
     $("status").textContent = `${workers.length} worker${workers.length === 1 ? "" : "s"} · ${status.sessionsDir}`;
     renderWorkers();
@@ -92,9 +93,16 @@ async function refreshAll() {
   } catch (error) { $("status").textContent = error.message; }
 }
 
+function stableWorkers(nextWorkers) {
+  const byId = new Map(nextWorkers.map((worker) => [worker.id, worker]));
+  workerOrder = workerOrder.filter((id) => byId.has(id));
+  for (const worker of nextWorkers) if (!workerOrder.includes(worker.id)) workerOrder.push(worker.id);
+  return workerOrder.map((id) => byId.get(id)).filter(Boolean);
+}
+
 function renderWorkers() {
   const root = $("workers"); root.textContent = "";
-  for (const worker of workers.sort((a,b)=>b.createdAt-a.createdAt)) {
+  for (const worker of workers) {
     const button = document.createElement("button");
     button.className = `item ${worker.id === activeWorker ? "active" : ""}`;
     const kind = worker.kind === "desktop" ? "desktop" : "browser";
@@ -160,6 +168,7 @@ async function createFolder() {
 }
 
 async function openSession(session) {
+  closeSidebar();
   $("title").textContent = session.title || session.id || "Session";
   const data = await api(`/api/session?path=${encodeURIComponent(session.path)}`);
   renderMessages(data.messages || []);
@@ -171,6 +180,7 @@ async function openSession(session) {
 }
 
 async function selectWorker(id) {
+  closeSidebar();
   activeWorker = id; localStorage.piBrowserWorker = id;
   renderWorkers();
   if (eventSource) eventSource.close();
@@ -227,9 +237,9 @@ function appendMessage(m) {
 function appendEvent(e, scroll = true) {
   applyLiveState(e);
   if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") return appendDelta(e.assistantMessageEvent.delta || "");
-  if (e.type === "message_end" && e.message) return appendMessage({ role: e.message.role, text: plain(e.message.content) });
-  if (e.type === "tool_execution_start") return addBubble("tool", `${e.toolName}`, "tool start");
-  if (e.type === "tool_execution_end") return addBubble(e.isError ? "error" : "tool", plain(e.result?.content), `${e.toolName} result`);
+  if (e.type === "message_end" && e.message) return finishAssistantMessage(plain(e.message.content));
+  if (e.type === "tool_execution_start") return addBubble("tool", `▶ ${e.toolName}`, "tool");
+  if (e.type === "tool_execution_end") return addBubble(e.isError ? "error" : "tool", plain(e.result?.content), e.toolName || "tool");
   if (e.type === "extension_ui_request") return handleUiRequest(e);
   if (e.type?.startsWith("browser_") || e.type === "queue_update" || e.type === "agent_start" || e.type === "agent_end") addBubble("remote", summarizeEvent(e), e.type);
   if (scroll) $("messages").scrollTop = $("messages").scrollHeight;
@@ -237,15 +247,94 @@ function appendEvent(e, scroll = true) {
 function appendDelta(text) {
   let bubble = document.querySelector(".msg.assistant.streaming");
   if (!bubble) bubble = addBubble("assistant streaming", "", "Pi");
-  bubble.lastChild.textContent += text;
+  const body = bubble.querySelector(".rich");
+  body.dataset.raw = `${body.dataset.raw || ""}${text}`;
+  renderRichText(body, body.dataset.raw, "assistant");
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+function finishAssistantMessage(text) {
+  const bubble = document.querySelector(".msg.assistant.streaming");
+  if (!bubble) return appendMessage({ role: "assistant", text });
+  bubble.classList.remove("streaming");
+  const body = bubble.querySelector(".rich");
+  body.dataset.raw = text;
+  renderRichText(body, text, "assistant");
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 function addBubble(cls, text, title) {
   const div = document.createElement("div"); div.className = `msg ${cls}`;
   const l = document.createElement("span"); l.className = "label"; l.textContent = title;
-  const body = document.createTextNode(text || "");
+  const body = document.createElement("div"); body.className = "rich"; body.dataset.raw = text || "";
+  renderRichText(body, text || "", cls);
   div.append(l, body); $("messages").append(div); return div;
 }
+function renderRichText(root, text, cls = "") {
+  root.textContent = "";
+  const value = String(text || "");
+  if (!value) return;
+  if ((cls.includes("tool") || cls.includes("bash")) && looksLikeDiff(value)) return root.append(renderCodeBlock(value, "diff"));
+  const fence = /```([^\n`]*)\n([\s\S]*?)```/g;
+  let last = 0;
+  let match;
+  while ((match = fence.exec(value))) {
+    renderMarkdownText(root, value.slice(last, match.index));
+    root.append(renderCodeBlock(match[2].replace(/\n$/, ""), match[1].trim()));
+    last = fence.lastIndex;
+  }
+  renderMarkdownText(root, value.slice(last));
+}
+function renderMarkdownText(root, text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length;) {
+    if (!lines[i].trim()) { i++; continue; }
+    const heading = lines[i].match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const h = document.createElement(`h${heading[1].length}`);
+      h.innerHTML = inlineMarkdown(heading[2]);
+      root.append(h); i++; continue;
+    }
+    if (/^\s*[-*]\s+/.test(lines[i])) {
+      const ul = document.createElement("ul");
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        const li = document.createElement("li"); li.innerHTML = inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, "")); ul.append(li); i++;
+      }
+      root.append(ul); continue;
+    }
+    if (/^>\s?/.test(lines[i])) {
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) quote.push(lines[i++].replace(/^>\s?/, ""));
+      const bq = document.createElement("blockquote"); bq.innerHTML = inlineMarkdown(quote.join("\n")).replace(/\n/g, "<br>"); root.append(bq); continue;
+    }
+    const paragraph = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,3})\s+/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^>\s?/.test(lines[i])) paragraph.push(lines[i++]);
+    const p = document.createElement("p"); p.innerHTML = inlineMarkdown(paragraph.join("\n")).replace(/\n/g, "<br>"); root.append(p);
+  }
+}
+function inlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+function renderCodeBlock(text, lang = "") {
+  const pre = document.createElement("pre"); pre.className = "code-block";
+  if (lang) { const l = document.createElement("span"); l.className = "code-lang"; l.textContent = lang; pre.append(l); }
+  const code = document.createElement("code");
+  for (const line of String(text).split("\n")) {
+    const span = document.createElement("span"); span.className = `code-line ${diffLineClass(line, lang)}`.trim(); span.textContent = line || " "; code.append(span);
+  }
+  pre.append(code); return pre;
+}
+function diffLineClass(line, lang = "") {
+  if (lang === "diff" || looksLikeDiffLine(line)) {
+    if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("diff --git")) return "file";
+    if (line.startsWith("@@")) return "meta";
+    if (line.startsWith("+") && !line.startsWith("+++")) return "add";
+    if (line.startsWith("-") && !line.startsWith("---")) return "del";
+  }
+  return "";
+}
+function looksLikeDiff(text) { return /^(diff --git|@@ |\+\+\+ |--- )/m.test(text) || String(text).split("\n").filter(looksLikeDiffLine).length >= 3; }
+function looksLikeDiffLine(line) { return /^[+\-][^+\-]/.test(line) || /^@@/.test(line); }
 function summarizeEvent(e) { if (e.type === "queue_update") return `steering ${e.steering?.length || 0}, follow-up ${e.followUp?.length || 0}`; if (e.error) return e.error; return JSON.stringify(e); }
 function plain(content) { if (typeof content === "string") return content; if (!Array.isArray(content)) return ""; return content.map((p)=>p?.type === "text" ? p.text : p?.type === "toolCall" ? `[tool: ${p.name}]` : p?.type === "image" ? "[image]" : "").filter(Boolean).join("\n"); }
 
@@ -282,7 +371,12 @@ async function handleUiRequest(e) {
 }
 
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+function openSidebar() { document.body.classList.add("sidebar-open"); }
+function closeSidebar() { document.body.classList.remove("sidebar-open"); }
+function toggleSidebar() { document.body.classList.toggle("sidebar-open"); }
 
+$("sidebar-toggle").onclick = toggleSidebar;
+$("sidebar-backdrop").onclick = closeSidebar;
 $("session-filter").oninput = renderSessions;
 $("workspace").onchange = () => chooseWorkspace($("workspace").value, false);
 $("browse").onclick = () => openFolderDialog(selectedWorkspace).catch((error) => alert(error.message));
