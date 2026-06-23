@@ -22,6 +22,21 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 pi install git:github.com/gunba/pi-plugins
 ```
 
+## Web Search
+
+Use `npm:pi-web-access` for web search, content fetching, GitHub repository cloning, PDFs, and video extraction. Configure it to use Perplexity in `~/.pi/web-search.json`:
+
+```json
+{
+  "perplexityApiKey": "pplx-...",
+  "provider": "perplexity",
+  "searchProvider": "perplexity",
+  "perplexityModel": "sonar"
+}
+```
+
+Keep the API key in the local user config file, not in this repository.
+
 Do not pin a ref if you want Pi startup/update checks to detect new commits. Use:
 
 ```bash
