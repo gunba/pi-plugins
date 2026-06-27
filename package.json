@@ -19,6 +19,7 @@
       "./pi-fixes/extensions/claude-effort.ts",
       "./pi-browser/extensions/bridge.ts",
       "./pi-browser/extensions/screenshot.ts",
+      "./pi-file-links/extensions/file-links.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
       "./pi-usage/extensions/usage.ts",

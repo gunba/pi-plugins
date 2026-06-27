@@ -2,9 +2,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Key, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 
 const WIDGET_KEY = "pi-scheduler";
 const BASE_DIR = process.env.PI_SCHEDULER_DIR || join(homedir(), ".pi", "agent", "scheduler");
@@ -13,7 +14,7 @@ const TICK_MS = 5_000;
 const MAX_WIDGET_ROWS = 4;
 const MAX_MESSAGE_PREVIEW = 90;
 const MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
-const SCHEDULE_HELP = "Ctrl+Alt+S list · /schedule cancel <id> · /schedule clear";
+const SCHEDULE_CONTROLS = "Ctrl+Alt+S list · /schedule cancel <id> · /schedule clear";
 const WIDGET_PLACEMENT = process.env.PI_SCHEDULER_WIDGET_PLACEMENT === "aboveEditor" ? "aboveEditor" : "belowEditor";
 
 type ScheduledMessage = {
@@ -108,6 +109,21 @@ function scheduleMessage(ctx: ExtensionContext, delayMs: number, message: string
   return entry;
 }
 
+function scheduleAndNotify(ctx: ExtensionContext, delayMs: number, message: string): ScheduledMessage {
+  const entry = scheduleMessage(ctx, delayMs, message);
+  ctx.ui.notify(scheduleConfirmation(entry), "info");
+  refreshWidget(ctx);
+  return entry;
+}
+
+function scheduleConfirmation(entry: ScheduledMessage): string {
+  return `Scheduled #${entry.id} ${formatRemaining(entry.dueAt)} (${formatDueAt(entry.dueAt)}).`;
+}
+
+function invalidDelayMessage(): string {
+  return "Invalid delay. Use minutes, hours, or days like 15m, 5h, 5.5h, or 30d.";
+}
+
 function uniqueId(existing: ScheduledMessage[]): string {
   const used = new Set(existing.map((message) => message.id));
   for (;;) {
@@ -181,33 +197,104 @@ function refreshWidget(ctx: ExtensionContext): void {
   }
 
   ctx.ui.setWidget(WIDGET_KEY, (_tui, theme): Component => ({
-    render: (width: number) => schedulerWidgetLines(theme, width, messages),
+    render: (width: number) => schedulerWidgetLines(theme, width, messages, ctx.ui.getToolsExpanded()),
     invalidate() {},
   }), { placement: WIDGET_PLACEMENT });
 }
 
-function schedulerWidgetLines(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
+function expandKeyHint(expanded: boolean): string {
+  const action = expanded ? "collapse" : "expand";
+  try {
+    return keyHint("app.tools.expand", action);
+  } catch {
+    return `ctrl+o ${action}`;
+  }
+}
+
+function scheduleHelp(expanded: boolean): string {
+  return `${expandKeyHint(expanded)} · ${SCHEDULE_CONTROLS}`;
+}
+
+function schedulerWidgetLines(theme: Theme, width: number, messages: ScheduledMessage[], expanded: boolean): string[] {
   const W = Math.max(46, Math.min(width, 140));
   const label = "Scheduled messages";
-  const rowWidth = WIDGET_PLACEMENT === "belowEditor" ? compactFirstRowMessageWidth(W, label) : W - 4;
-  const rows = messages.slice(0, MAX_WIDGET_ROWS).map((message) => scheduledRow(theme, rowWidth, message));
-  if (messages.length > MAX_WIDGET_ROWS) {
-    rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
+  const help = scheduleHelp(expanded);
+  const innerWidth = WIDGET_PLACEMENT === "belowEditor" ? W - 2 : W - 4;
+  const rows = expanded
+    ? expandedScheduledRows(theme, innerWidth, messages)
+    : collapsedScheduledRows(theme, WIDGET_PLACEMENT === "belowEditor" ? compactFirstRowMessageWidth(W, label, help) : innerWidth, messages);
+
+  if (WIDGET_PLACEMENT === "belowEditor") {
+    return expanded ? expandedCompactLines(theme, W, label, rows, help) : compactLines(theme, W, label, rows, help);
   }
-  if (WIDGET_PLACEMENT === "belowEditor") return compactLines(theme, W, label, rows);
-  rows.push(theme.fg("dim", SCHEDULE_HELP));
+
+  rows.push(theme.fg("dim", help));
   return boxLines(theme, W, label, rows);
 }
 
-function compactFirstRowMessageWidth(width: number, label: string): number {
-  return Math.max(12, width - visibleWidth(label) - visibleWidth(SCHEDULE_HELP) - 6);
+function collapsedScheduledRows(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
+  const rows = messages.slice(0, MAX_WIDGET_ROWS).map((message) => scheduledRow(theme, width, message));
+  if (messages.length > MAX_WIDGET_ROWS) {
+    rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
+  }
+  return rows;
 }
 
-function compactLines(theme: Theme, width: number, label: string, rows: string[]): string[] {
+function expandedScheduledRows(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
+  const rows: string[] = [];
+  for (const message of messages.slice(0, MAX_WIDGET_ROWS)) {
+    rows.push(scheduledExpandedHeader(theme, width, message));
+    rows.push(...expandedMessageLines(theme, Math.max(12, width - 2), message.message).map((line) => `  ${line}`));
+  }
+  if (messages.length > MAX_WIDGET_ROWS) {
+    rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
+  }
+  return rows;
+}
+
+function scheduledExpandedHeader(theme: Theme, width: number, message: ScheduledMessage): string {
+  const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", formatRemaining(message.dueAt))}`;
+  const at = theme.fg("dim", formatDueAt(message.dueAt));
+  return truncateToWidth(`${left} ${at}`, width);
+}
+
+function expandedMessageLines(theme: Theme, width: number, message: string): string[] {
+  const normalized = message.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized) return [theme.fg("dim", "(empty)")];
+
+  const lines: string[] = [];
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      lines.push("");
+      continue;
+    }
+    lines.push(...wrapTextWithAnsi(theme.fg("text", line), width));
+  }
+  return lines;
+}
+
+function compactFirstRowMessageWidth(width: number, label: string, help: string): number {
+  return Math.max(12, width - visibleWidth(label) - visibleWidth(help) - 6);
+}
+
+function compactLines(theme: Theme, width: number, label: string, rows: string[], help: string): string[] {
   const prefix = `${theme.bold(theme.fg("accent", label))} ${theme.fg("dim", "·")}`;
-  const suffix = theme.fg("dim", ` · ${SCHEDULE_HELP}`);
-  const first = rows[0] ? `${prefix} ${rows[0]}${suffix}` : `${prefix} ${theme.fg("dim", SCHEDULE_HELP)}`;
-  return [first, ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width))];
+  const suffix = theme.fg("dim", ` · ${help}`);
+  const first = rows[0] ? `${prefix} ${rows[0]}${suffix}` : `${prefix} ${theme.fg("dim", help)}`;
+  return [truncateToWidth(first, width), ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width))];
+}
+
+function expandedCompactLines(theme: Theme, width: number, label: string, rows: string[], help: string): string[] {
+  const prefix = `${theme.bold(theme.fg("accent", label))} ${theme.fg("dim", "·")}`;
+  const firstContent = rows[0] ?? theme.fg("dim", help);
+  const firstWidth = Math.max(12, width - visibleWidth(prefix) - 1);
+  const first = truncateToWidth(`${prefix} ${truncateToWidth(firstContent, firstWidth)}`, width);
+  return [
+    first,
+    ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width)),
+    truncateToWidth(`  ${theme.fg("dim", help)}`, width),
+  ];
 }
 
 function scheduledRow(theme: Theme, width: number, message: ScheduledMessage): string {
@@ -292,6 +379,48 @@ function stopTicker(ctx?: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerTool({
+    name: "schedule",
+    label: "Schedule message",
+    description: "Schedule a future user message back to this same Pi session. Useful as a delayed self-reminder or wait-until-later tool.",
+    promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
+    promptGuidelines: [
+      "Use schedule when you need to be reminded or re-contacted after a real-world delay instead of polling manually.",
+      "Write the scheduled message with enough context that you can resume the task when it is delivered.",
+      "Delays use minutes, hours, or days, for example `15m`, `5h`, `5.5h`, or `30d`.",
+    ],
+    parameters: Type.Object({
+      delay: Type.String({ description: "Delay before delivery, using m/h/d units, e.g. 15m, 5h, 5.5h, or 30d." }),
+      message: Type.String({ description: "The future message to send back to this same Pi session." }),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const delayMs = parseDelay(params.delay);
+      const message = params.message.trim();
+      if (!delayMs || !message) {
+        const error = !delayMs ? invalidDelayMessage() : "Scheduled message cannot be empty.";
+        return {
+          content: [{ type: "text", text: error }],
+          details: { delay: params.delay, message: params.message, error },
+          isError: true,
+        };
+      }
+
+      const entry = scheduleAndNotify(ctx, delayMs, message);
+      return {
+        content: [{ type: "text", text: scheduleConfirmation(entry) }],
+        details: {
+          id: entry.id,
+          sessionId: entry.sessionId,
+          dueAt: entry.dueAt,
+          dueAtDisplay: formatDueAt(entry.dueAt),
+          delay: params.delay,
+          message: entry.message,
+        },
+      };
+    },
+  });
+
   pi.registerShortcut(Key.ctrlAlt("s"), {
     description: "Show scheduled messages",
     handler: async (ctx) => {
@@ -341,9 +470,7 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      const entry = scheduleMessage(ctx, delayMs, message);
-      ctx.ui.notify(`Scheduled #${entry.id} ${formatRemaining(entry.dueAt)} (${formatDueAt(entry.dueAt)}).`, "info");
-      refreshWidget(ctx);
+      scheduleAndNotify(ctx, delayMs, message);
     },
   });
 

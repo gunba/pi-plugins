@@ -14,6 +14,20 @@ let statusBase = "";
 let statusEntries = new Map();
 let folderPath = "";
 let sessionPollTimer;
+let sessionRefreshTimer;
+let sessionsLoadedAt = 0;
+let desktopSessionCursor;
+let streamingRenderTimer;
+let streamingRenderBody;
+let scrollTimer;
+
+const SESSION_LIST_LIMIT = 120;
+const SESSION_REFRESH_MS = 45_000;
+const DESKTOP_POLL_MS = 2_500;
+const SESSION_TAIL_LIMIT = 260;
+const STREAM_RENDER_MS = 80;
+const MAX_RICH_TEXT_CHARS = 180_000;
+const MAX_CODE_LINES = 2_000;
 
 if (location.hash.startsWith("#token=")) {
   token = decodeURIComponent(location.hash.slice(7));
@@ -39,6 +53,7 @@ async function api(path, options = {}) {
   return data;
 }
 function fmtTime(value) { return value ? new Date(value).toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""; }
+function messageCountLabel(session) { return `${session.messageCountTruncated ? "≥" : ""}${session.messageCount || 0} msgs`; }
 function shortPath(path) { return path?.replace(/^\/home\/jordan/, "~") || ""; }
 function pathName(path) { const parts = String(path || "").split("/").filter(Boolean); return parts.at(-1) || path || "Workspace"; }
 function label(role) { return role === "assistant" ? "Pi" : role === "user" ? "You" : role || "event"; }
@@ -83,7 +98,7 @@ function renderWorkspaceSelect() {
   select.value = selectedWorkspace || options[0]?.path || "";
 }
 
-async function refreshAll() {
+async function refreshStatus() {
   try {
     const status = await api("/api/status");
     workers = stableWorkers([
@@ -95,7 +110,14 @@ async function refreshAll() {
     updateStatusLine();
     renderWorkers();
     updateComposerState();
-    sessions = (await api("/api/sessions")).sessions || [];
+  } catch (error) { $("status").textContent = error.message; }
+}
+
+async function loadSessions(options = {}) {
+  if (!options.force && sessionsLoadedAt && Date.now() - sessionsLoadedAt < SESSION_REFRESH_MS) return;
+  try {
+    sessions = (await api(`/api/sessions?limit=${SESSION_LIST_LIMIT}${options.force ? "&force=1" : ""}`)).sessions || [];
+    sessionsLoadedAt = Date.now();
     renderSessions();
   } catch (error) { $("status").textContent = error.message; }
 }
@@ -108,27 +130,29 @@ function stableWorkers(nextWorkers) {
 }
 
 function renderWorkers() {
-  const root = $("workers"); root.textContent = "";
+  const fragment = document.createDocumentFragment();
   for (const worker of workers) {
     const button = document.createElement("button");
     button.className = `item ${worker.id === activeWorker ? "active" : ""}`;
     const kind = worker.kind === "desktop" ? "desktop" : "browser";
     button.innerHTML = `<strong>${escapeHtml(worker.name || worker.state?.sessionName || worker.id)}</strong><span class="meta">${kind} · ${worker.state?.isStreaming ? "running" : worker.exited ? "exited" : worker.stale ? "stale" : "idle"} · ${escapeHtml(shortPath(worker.cwd))}</span>`;
     button.onclick = () => selectWorker(worker.id);
-    root.append(button);
+    fragment.append(button);
   }
+  $("workers").replaceChildren(fragment);
 }
 
 function renderSessions() {
-  const root = $("sessions"); root.textContent = "";
+  const fragment = document.createDocumentFragment();
   const filter = $("session-filter").value.toLowerCase();
   for (const session of sessions.filter((s) => `${s.title} ${s.cwd} ${s.firstUser}`.toLowerCase().includes(filter)).slice(0, 80)) {
     const button = document.createElement("button");
     button.className = "item";
-    button.innerHTML = `<strong>${escapeHtml(session.title || session.id || "session")}</strong><span class="meta">${escapeHtml(shortPath(session.cwd))} · ${fmtTime(session.modifiedAt)} · ${session.messageCount} msgs</span>`;
+    button.innerHTML = `<strong>${escapeHtml(session.title || session.id || "session")}</strong><span class="meta">${escapeHtml(shortPath(session.cwd))} · ${fmtTime(session.modifiedAt)} · ${messageCountLabel(session)}</span>`;
     button.onclick = () => openSession(session);
-    root.append(button);
+    fragment.append(button);
   }
+  $("sessions").replaceChildren(fragment);
 }
 
 async function openFolderDialog(startPath) {
@@ -176,12 +200,13 @@ async function createFolder() {
 
 async function openSession(session) {
   closeSidebar();
+  desktopSessionCursor = undefined;
   $("title").textContent = session.title || session.id || "Session";
-  const data = await api(`/api/session?path=${encodeURIComponent(session.path)}`);
+  const data = await api(`/api/session?path=${encodeURIComponent(session.path)}&tail=${SESSION_TAIL_LIMIT}`);
   renderMessages(data.messages || []);
   if (confirm("Start a browser-controlled Pi worker for this session?")) {
     const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ sessionPath: session.path }) });
-    await refreshAll();
+    await refreshStatus();
     selectWorker(created.worker.id);
   }
 }
@@ -192,14 +217,15 @@ async function selectWorker(id) {
   renderWorkers();
   if (eventSource) eventSource.close();
   if (sessionPollTimer) clearInterval(sessionPollTimer);
+  desktopSessionCursor = undefined;
   const worker = workers.find((w) => w.id === id);
   selectedWorker = worker;
   $("title").textContent = worker?.name || worker?.state?.sessionName || `Pi ${id}`;
   updateComposerState();
   $("messages").textContent = "";
   if (worker?.kind === "desktop") {
-    await loadDesktopSession(worker);
-    sessionPollTimer = setInterval(() => loadDesktopSession(worker).catch(() => undefined), 2_000);
+    await loadDesktopSession(worker, { reset: true });
+    sessionPollTimer = setInterval(() => loadDesktopSession(worker).catch(() => undefined), DESKTOP_POLL_MS);
     return;
   }
   eventSource = new EventSource(`/api/workers/${id}/events?token=${encodeURIComponent(token)}`, { withCredentials: false });
@@ -229,17 +255,47 @@ function normalizeDesktopSession(session) {
   };
 }
 
-async function loadDesktopSession(worker) {
+async function loadDesktopSession(worker, options = {}) {
   if (!worker.sessionPath) return addBubble("remote", "Desktop session has no session file yet.", "desktop");
-  const data = await api(`/api/session?path=${encodeURIComponent(worker.sessionPath)}`);
-  renderMessages(data.messages || []);
+  const cursorMatches = desktopSessionCursor?.path === worker.sessionPath;
+  const query = cursorMatches && !options.reset
+    ? `after=${desktopSessionCursor.nextOffset}`
+    : `tail=${SESSION_TAIL_LIMIT}`;
+  const data = await api(`/api/session?path=${encodeURIComponent(worker.sessionPath)}&${query}`);
+  desktopSessionCursor = { path: worker.sessionPath, nextOffset: data.nextOffset ?? data.size ?? desktopSessionCursor?.nextOffset ?? 0 };
+  if (data.reset || !cursorMatches || options.reset) renderMessages(data.messages || []);
+  else appendMessages(data.messages || []);
 }
 
-function renderMessages(messages) { toolRows.clear(); const root = $("messages"); root.textContent = ""; for (const m of messages) appendMessage(m); root.scrollTop = root.scrollHeight; }
-function renderEvents(events) { toolRows.clear(); const root = $("messages"); root.textContent = ""; for (const e of events) appendEvent(e, false); root.scrollTop = root.scrollHeight; }
-function appendMessage(m) {
+function renderMessages(messages) {
+  flushStreamingRender();
+  toolRows.clear();
+  const root = $("messages");
+  const fragment = document.createDocumentFragment();
+  for (const m of messages) appendMessage(m, fragment);
+  root.replaceChildren(fragment);
+  root.scrollTop = root.scrollHeight;
+}
+function appendMessages(messages) {
+  if (!messages.length) return;
+  const root = $("messages");
+  const fragment = document.createDocumentFragment();
+  for (const m of messages) appendMessage(m, fragment);
+  root.append(fragment);
+  scheduleScrollToBottom();
+}
+function renderEvents(events) {
+  flushStreamingRender();
+  toolRows.clear();
+  const root = $("messages");
+  root.textContent = "";
+  for (const e of events) appendEvent(e, false);
+  root.scrollTop = root.scrollHeight;
+}
+function appendMessage(m, parent = $("messages")) {
   if (!m.text?.trim()) return;
-  addBubble(m.role, m.text, label(m.role));
+  if (m.type === "tool" || m.role === "tool" || m.role === "bash") return addTranscriptTool(m, parent);
+  addBubble(m.role, m.text, label(m.role), parent);
 }
 function appendEvent(e, scroll = true) {
   applyLiveState(e);
@@ -265,18 +321,19 @@ function appendDelta(text) {
   let bubble = document.querySelector(".msg.assistant.streaming");
   if (!bubble) bubble = addBubble("assistant streaming", "", "Pi");
   const body = bubble.querySelector(".rich");
-  body.dataset.raw = `${body.dataset.raw || ""}${text}`;
-  renderRichText(body, body.dataset.raw, "assistant");
-  $("messages").scrollTop = $("messages").scrollHeight;
+  body.rawText = `${body.rawText || ""}${text}`;
+  scheduleStreamingRender(body);
+  scheduleScrollToBottom();
 }
 function finishAssistantMessage(text) {
+  flushStreamingRender();
   const bubble = document.querySelector(".msg.assistant.streaming");
   if (!bubble) return appendMessage({ role: "assistant", text });
   bubble.classList.remove("streaming");
   const body = bubble.querySelector(".rich");
-  body.dataset.raw = text;
+  body.rawText = text;
   renderRichText(body, text, "assistant");
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scheduleScrollToBottom();
 }
 function consumePendingUserEcho(text) {
   const normalized = normalizeText(text);
@@ -290,35 +347,84 @@ function consumePendingUserEcho(text) {
   return false;
 }
 function normalizeText(text) { return String(text || "").trim().replace(/\s+/g, " "); }
-function addBubble(cls, text, title) {
+function scheduleStreamingRender(body) {
+  streamingRenderBody = body;
+  if (streamingRenderTimer) return;
+  streamingRenderTimer = setTimeout(flushStreamingRender, STREAM_RENDER_MS);
+}
+function flushStreamingRender() {
+  if (streamingRenderTimer) clearTimeout(streamingRenderTimer);
+  streamingRenderTimer = undefined;
+  const body = streamingRenderBody;
+  streamingRenderBody = undefined;
+  if (body?.isConnected) renderRichText(body, body.rawText || "", "assistant");
+}
+function scheduleScrollToBottom() {
+  if (scrollTimer) return;
+  scrollTimer = requestAnimationFrame(() => {
+    scrollTimer = undefined;
+    const root = $("messages");
+    root.scrollTop = root.scrollHeight;
+  });
+}
+function addBubble(cls, text, title, parent = $("messages")) {
   const div = document.createElement("div"); div.className = `msg ${cls}`;
   const l = document.createElement("span"); l.className = "label"; l.textContent = title;
-  const body = document.createElement("div"); body.className = "rich"; body.dataset.raw = text || "";
+  const body = document.createElement("div"); body.className = "rich"; body.rawText = text || "";
   renderRichText(body, text || "", cls);
-  div.append(l, body); $("messages").append(div); return div;
+  div.append(l, body); parent.append(div); return div;
 }
+function addTranscriptTool(message, parent = $("messages")) {
+  const row = createToolRow(parent);
+  const toolName = message.role === "bash" ? "bash" : "tool";
+  row.div.className = `msg tool compact ${message.isError ? "error" : ""}`;
+  row.labelEl.textContent = toolName;
+  row.summary.textContent = `${message.isError ? "✗" : "✓"} ${toolName} — ${firstLine(message.text)}`;
+  setLazyToolContent(row, message.text || "", !!message.isError);
+  return row.div;
+}
+
 function upsertToolRow(event, state, text = "", isError = false) {
   const id = event.toolCallId || `${event.toolName || "tool"}-${event.receivedAt || event.timestamp || Date.now()}`;
   let row = toolRows.get(id);
   if (!row) {
-    const div = document.createElement("div"); div.className = `msg tool compact ${isError ? "error" : ""}`;
-    const labelEl = document.createElement("span"); labelEl.className = "label"; labelEl.textContent = "tool";
-    const body = document.createElement("div"); body.className = "rich tool-row";
-    const details = document.createElement("details"); details.className = "tool-details";
-    const summary = document.createElement("summary");
-    const content = document.createElement("div"); content.className = "tool-content";
-    details.append(summary, content); body.append(details); div.append(labelEl, body); $("messages").append(div);
-    row = { div, labelEl, details, summary, content };
+    row = createToolRow($("messages"));
     toolRows.set(id, row);
   }
   row.div.className = `msg tool compact ${isError ? "error" : ""}`;
   row.labelEl.textContent = event.toolName || "tool";
   row.summary.textContent = toolSummary(event, state, text);
-  row.details.open = !!isError;
-  row.content.textContent = "";
-  renderRichText(row.content, text || summarizeToolArgs(event), "tool");
-  $("messages").scrollTop = $("messages").scrollHeight;
+  setLazyToolContent(row, text || summarizeToolArgs(event), !!isError || row.details.open);
+  scheduleScrollToBottom();
   return row.div;
+}
+
+function createToolRow(parent) {
+  const div = document.createElement("div"); div.className = "msg tool compact";
+  const labelEl = document.createElement("span"); labelEl.className = "label"; labelEl.textContent = "tool";
+  const body = document.createElement("div"); body.className = "rich tool-row";
+  const details = document.createElement("details"); details.className = "tool-details";
+  const summary = document.createElement("summary");
+  const content = document.createElement("div"); content.className = "tool-content";
+  const row = { div, labelEl, details, summary, content, rawText: "" };
+  details.ontoggle = () => { if (details.open) renderLazyToolContent(row); };
+  details.append(summary, content); body.append(details); div.append(labelEl, body); parent.append(div);
+  return row;
+}
+
+function setLazyToolContent(row, text, open) {
+  row.rawText = text || "";
+  row.content.dataset.rendered = "";
+  row.content.textContent = "";
+  row.details.open = open;
+  if (open) renderLazyToolContent(row);
+}
+
+function renderLazyToolContent(row) {
+  if (row.content.dataset.rendered === "1") return;
+  row.content.textContent = "";
+  renderRichText(row.content, row.rawText || "", "tool");
+  row.content.dataset.rendered = "1";
 }
 function toolSummary(event, state, text) {
   const icon = state === "error" ? "✗" : state === "done" ? "✓" : "▶";
@@ -340,7 +446,8 @@ function firstLine(text) {
 }
 function renderRichText(root, text, cls = "") {
   root.textContent = "";
-  const value = String(text || "");
+  let value = String(text || "");
+  if (value.length > MAX_RICH_TEXT_CHARS) value = `${value.slice(0, MAX_RICH_TEXT_CHARS)}\n\n[Browser preview truncated at ${MAX_RICH_TEXT_CHARS.toLocaleString()} characters]`;
   if (!value) return;
   if ((cls.includes("tool") || cls.includes("bash")) && looksLikeDiff(value)) return root.append(renderCodeBlock(value, "diff"));
   const fence = /```([^\n`]*)\n([\s\S]*?)```/g;
@@ -389,8 +496,12 @@ function renderCodeBlock(text, lang = "") {
   const pre = document.createElement("pre"); pre.className = "code-block";
   if (lang) { const l = document.createElement("span"); l.className = "code-lang"; l.textContent = lang; pre.append(l); }
   const code = document.createElement("code");
-  for (const line of String(text).split("\n")) {
+  const lines = String(text).split("\n");
+  for (const line of lines.slice(0, MAX_CODE_LINES)) {
     const span = document.createElement("span"); span.className = `code-line ${diffLineClass(line, lang)}`.trim(); span.textContent = line || " "; code.append(span);
+  }
+  if (lines.length > MAX_CODE_LINES) {
+    const span = document.createElement("span"); span.className = "code-line meta"; span.textContent = `[Browser preview truncated at ${MAX_CODE_LINES.toLocaleString()} lines]`; code.append(span);
   }
   pre.append(code); return pre;
 }
@@ -471,7 +582,7 @@ $("folder-name").addEventListener("keydown", (event) => { if (event.key === "Ent
 $("new").onclick = async () => {
   if (!selectedWorkspace) return alert("Choose a workspace first.");
   const created = await api("/api/workers", { method: "POST", body: JSON.stringify({ cwd: selectedWorkspace, name: $("name").value }) });
-  await refreshAll();
+  await refreshStatus();
   selectWorker(created.worker.id);
 };
 $("send").onclick = () => send(); $("follow").onclick = () => send("follow_up"); $("screenshot").onclick = quickScreenshot;
@@ -484,7 +595,7 @@ $("state").onclick = () => {
 $("stop").onclick = async () => {
   if (!activeWorker) return;
   if (selectedWorker?.kind === "desktop") return alert("Desktop Pi sessions are controlled by their terminal. Use Abort to stop the current turn.");
-  if (confirm("Stop this Pi worker?")) { await api(`/api/workers/${activeWorker}`, { method: "DELETE" }); activeWorker = ""; localStorage.removeItem("piBrowserWorker"); if (eventSource) eventSource.close(); await refreshAll(); }
+  if (confirm("Stop this Pi worker?")) { await api(`/api/workers/${activeWorker}`, { method: "DELETE" }); activeWorker = ""; localStorage.removeItem("piBrowserWorker"); if (eventSource) eventSource.close(); await refreshStatus(); }
 };
 $("prompt").addEventListener("keydown", (e)=>{ if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
@@ -497,14 +608,21 @@ function updateComposerState() {
 }
 function applyLiveState(event) {
   if (!selectedWorker) return;
-  if (event.type === "agent_start") selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: true };
-  if (event.type === "agent_end") selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: false };
-  if (event.type === "queue_update") selectedWorker.state = { ...(selectedWorker.state || {}), steering: event.steering || [], followUp: event.followUp || [], pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) };
-  updateComposerState();
-  renderWorkers();
+  let changed = false;
+  if (event.type === "agent_start") { selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: true }; changed = true; }
+  if (event.type === "agent_end") { selectedWorker.state = { ...(selectedWorker.state || {}), isStreaming: false }; changed = true; }
+  if (event.type === "queue_update") {
+    selectedWorker.state = { ...(selectedWorker.state || {}), steering: event.steering || [], followUp: event.followUp || [], pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) };
+    changed = true;
+  }
+  if (changed) {
+    updateComposerState();
+    renderWorkers();
+  }
 }
 
-Promise.all([loadWorkspaces(), refreshAll()]).then(()=>{ if (activeWorker) selectWorker(activeWorker).catch(()=>{}); });
-setInterval(refreshAll, 5_000);
-window.addEventListener("focus", refreshAll);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAll(); });
+Promise.all([loadWorkspaces(), refreshStatus(), loadSessions({ force: true })]).then(()=>{ if (activeWorker) selectWorker(activeWorker).catch(()=>{}); });
+setInterval(refreshStatus, 5_000);
+sessionRefreshTimer = setInterval(() => loadSessions().catch(() => undefined), SESSION_REFRESH_MS);
+window.addEventListener("focus", () => { refreshStatus(); loadSessions().catch(() => undefined); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshStatus(); loadSessions().catch(() => undefined); } });

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
@@ -13,8 +13,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = resolve(__dirname, "..", "public");
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8080;
-const MAX_EVENTS = 1200;
-const MAX_SESSION_FILES = 300;
+const MAX_EVENTS = numberEnv("PI_BROWSER_MAX_EVENTS", 600);
+const MAX_SNAPSHOT_EVENTS = Math.min(MAX_EVENTS, numberEnv("PI_BROWSER_MAX_SNAPSHOT_EVENTS", 250));
+const MAX_SESSION_FILES = numberEnv("PI_BROWSER_MAX_SESSION_FILES", 240);
+const SESSION_LIST_CACHE_MS = numberEnv("PI_BROWSER_SESSION_LIST_CACHE_MS", 30_000);
+const SESSION_META_LINE_LIMIT = numberEnv("PI_BROWSER_SESSION_META_LINE_LIMIT", 180);
+const DEFAULT_SESSION_TAIL = numberEnv("PI_BROWSER_SESSION_TAIL", 250);
+const MAX_SESSION_TAIL_LINES = numberEnv("PI_BROWSER_SESSION_TAIL_LINES", 1500);
+const MAX_SESSION_INCREMENT_BYTES = numberEnv("PI_BROWSER_SESSION_INCREMENT_BYTES", 2_000_000);
 const COMMAND_TIMEOUT_MS = 45_000;
 const TOKEN_FILE = join(os.homedir(), ".config", "pi-browser", "env");
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || join(os.homedir(), ".pi", "agent");
@@ -42,6 +48,9 @@ const host = args.host ?? process.env.PI_BROWSER_HOST ?? DEFAULT_HOST;
 const port = Number(args.port ?? process.env.PI_BROWSER_PORT ?? DEFAULT_PORT);
 const token = args.token ?? process.env.PI_BROWSER_TOKEN ?? process.env.PI_WEB_TOKEN ?? await readTokenFile() ?? randomBytes(24).toString("base64url");
 const workers = new Map();
+const sessionMetaCache = new Map();
+let sessionListCache;
+let sessionListPromise;
 
 if (!process.env.PI_BROWSER_TOKEN && !process.env.PI_WEB_TOKEN && !args.token) await writeTokenFile(token);
 
@@ -158,7 +167,7 @@ class Worker {
 
   subscribe(res) {
     this.clients.add(res);
-    res.write(`event: snapshot\ndata: ${JSON.stringify({ worker: this.summary(), events: this.events })}\n\n`);
+    res.write(`event: snapshot\ndata: ${JSON.stringify({ worker: this.summary(), events: this.events.slice(-MAX_SNAPSHOT_EVENTS) })}\n\n`);
     const ping = setInterval(() => res.write(`event: ping\ndata: ${Date.now()}\n\n`), 20_000);
     res.on("close", () => { clearInterval(ping); this.clients.delete(res); });
   }
@@ -184,8 +193,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && !url.pathname.startsWith("/api/")) return serveStatic(url, res);
     if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
     if (url.pathname === "/api/status") return json(res, 200, { ok: true, cwd: process.cwd(), sessionsDir: SESSIONS_DIR, workers: [...workers.values()].map((w) => w.summary()), desktopSessions: await listDesktopSessions() });
-    if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { sessions: await listSessions() });
-    if (url.pathname === "/api/session" && req.method === "GET") return json(res, 200, await readSession(url.searchParams.get("path") || ""));
+    if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { sessions: await listSessions({ limit: positiveInt(url.searchParams.get("limit"), MAX_SESSION_FILES), force: url.searchParams.get("force") === "1" }) });
+    if (url.pathname === "/api/session" && req.method === "GET") return json(res, 200, await readSession(url.searchParams.get("path") || "", { tail: positiveInt(url.searchParams.get("tail"), undefined), after: nonNegativeInt(url.searchParams.get("after")) }));
     if (url.pathname === "/api/workspaces" && req.method === "GET") return json(res, 200, await listWorkspaces());
     if (url.pathname === "/api/fs/dirs" && req.method === "GET") return json(res, 200, await listDirectories(url.searchParams.get("path") || os.homedir()));
     if (url.pathname === "/api/fs/dirs" && req.method === "POST") return createDirectory(req, res);
@@ -325,7 +334,7 @@ async function listWorkspaces() {
   for (const desktop of await listDesktopSessions({ includeStale: true })) {
     if (desktop.cwd) candidates.push({ path: desktop.cwd, label: workspaceName(desktop.cwd), source: "running" });
   }
-  for (const session of await listSessions()) {
+  for (const session of await listSessions({ limit: WORKSPACE_SUGGESTION_LIMIT })) {
     if (session.cwd) candidates.push({ path: session.cwd, label: workspaceName(session.cwd), source: "recent" });
   }
   candidates.push(
@@ -399,49 +408,98 @@ function shortFsPath(path) {
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
 }
 
-async function listSessions() {
+async function listSessions(options = {}) {
+  const limit = Math.min(options.limit || MAX_SESSION_FILES, MAX_SESSION_FILES);
+  if (!options.force && sessionListCache && sessionListCache.expiresAt > Date.now()) return sessionListCache.sessions.slice(0, limit);
+  if (!options.force && sessionListPromise) return (await sessionListPromise).slice(0, limit);
+
+  sessionListPromise = buildSessionList().finally(() => { sessionListPromise = undefined; });
+  const sessions = await sessionListPromise;
+  return sessions.slice(0, limit);
+}
+
+async function buildSessionList() {
   const files = [];
   await walk(SESSIONS_DIR, files);
+  files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  const selected = files.slice(0, MAX_SESSION_FILES);
   const out = [];
-  for (const path of files.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs).slice(0, MAX_SESSION_FILES)) out.push(await sessionMeta(path));
+  const livePaths = new Set(selected.map((file) => file.path));
+  for (const file of selected) out.push(await sessionMeta(file.path, file.stat));
+  for (const key of sessionMetaCache.keys()) if (!livePaths.has(key)) sessionMetaCache.delete(key);
+  sessionListCache = { expiresAt: Date.now() + SESSION_LIST_CACHE_MS, sessions: out };
   return out;
 }
 
 async function walk(dir, files) {
   let entries;
-  try { entries = await import("node:fs/promises").then((fs) => fs.readdir(dir, { withFileTypes: true })); }
+  try { entries = await readdir(dir, { withFileTypes: true }); }
   catch { return; }
   for (const entry of entries) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) await walk(path, files);
-    else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      try { files.push({ path, stat: statSync(path) }); } catch {}
+    }
   }
 }
 
-async function sessionMeta(path) {
-  const stat = statSync(path);
-  const meta = { path, id: undefined, cwd: undefined, name: undefined, firstUser: "", modifiedAt: stat.mtimeMs, size: stat.size, messageCount: 0 };
+async function sessionMeta(path, stat = statSync(path)) {
+  const cacheKey = `${stat.mtimeMs}:${stat.size}`;
+  const cached = sessionMetaCache.get(path);
+  if (cached?.cacheKey === cacheKey) return cached.meta;
+
+  const meta = { path, id: undefined, cwd: undefined, name: undefined, firstUser: "", modifiedAt: stat.mtimeMs, size: stat.size, messageCount: 0, messageCountTruncated: false };
+  let scannedEntries = 0;
   await readJsonLines(path, (entry) => {
+    scannedEntries += 1;
     if (entry.type === "session") { meta.id = entry.id; meta.cwd = entry.cwd; }
     if (entry.type === "session_info" && entry.name) meta.name = entry.name;
     if (entry.type === "message") {
       meta.messageCount += 1;
       if (!meta.firstUser && entry.message?.role === "user") meta.firstUser = plainText(entry.message.content).slice(0, 160);
     }
-  }, 400);
+  }, SESSION_META_LINE_LIMIT);
+  meta.messageCountTruncated = scannedEntries >= SESSION_META_LINE_LIMIT;
   meta.title = meta.name || meta.firstUser || meta.id || path.split("/").pop();
+  sessionMetaCache.set(path, { cacheKey, meta });
   return meta;
 }
 
-async function readSession(path) {
+async function readSession(path, options = {}) {
   const sessionPath = assertSessionPath(path);
+  const stat = statSync(sessionPath);
+
+  if (Number.isFinite(options.after)) {
+    const after = options.after;
+    if (after < 0 || after > stat.size || stat.size - after > MAX_SESSION_INCREMENT_BYTES) {
+      return { ...(await readSessionTail(sessionPath, options.tail || DEFAULT_SESSION_TAIL)), reset: true };
+    }
+    if (after === stat.size) return { path: sessionPath, header: undefined, entries: [], messages: [], nextOffset: stat.size, size: stat.size };
+    const entries = [];
+    await readJsonLinesFromOffset(sessionPath, after, (entry) => entries.push(entry));
+    return { path: sessionPath, header: undefined, entries, messages: entries.map(displayEntry).filter(Boolean), nextOffset: stat.size, size: stat.size };
+  }
+
+  if (options.tail) return readSessionTail(sessionPath, options.tail);
+
   const entries = [];
   let header;
   await readJsonLines(sessionPath, (entry) => {
     if (entry.type === "session") header = entry;
     entries.push(entry);
   });
-  return { path: sessionPath, header, entries, messages: entries.map(displayEntry).filter(Boolean) };
+  return { path: sessionPath, header, entries, messages: entries.map(displayEntry).filter(Boolean), nextOffset: stat.size, size: stat.size };
+}
+
+async function readSessionTail(sessionPath, tail) {
+  const stat = statSync(sessionPath);
+  const displayLimit = Math.max(1, Math.min(tail || DEFAULT_SESSION_TAIL, DEFAULT_SESSION_TAIL * 4));
+  const rawLineLimit = Math.max(displayLimit, Math.min(MAX_SESSION_TAIL_LINES, displayLimit * 3));
+  const lines = await readLastLines(sessionPath, rawLineLimit, stat.size);
+  const entries = parseJsonLines(lines);
+  const messages = entries.map(displayEntry).filter(Boolean).slice(-displayLimit);
+  return { path: sessionPath, header: undefined, entries: [], messages, nextOffset: stat.size, size: stat.size, truncated: lines.truncated || messages.length === displayLimit };
 }
 
 function displayEntry(entry) {
@@ -477,6 +535,15 @@ function assertSessionPath(input) {
 
 async function readJsonLines(path, onEntry, maxLines = Infinity) {
   const stream = createReadStream(path, { encoding: "utf8" });
+  await readJsonLinesFromStream(stream, onEntry, maxLines);
+}
+
+async function readJsonLinesFromOffset(path, offset, onEntry, maxLines = Infinity) {
+  const stream = createReadStream(path, { encoding: "utf8", start: offset });
+  await readJsonLinesFromStream(stream, onEntry, maxLines);
+}
+
+async function readJsonLinesFromStream(stream, onEntry, maxLines = Infinity) {
   let buffer = "";
   let count = 0;
   for await (const chunk of stream) {
@@ -492,6 +559,43 @@ async function readJsonLines(path, onEntry, maxLines = Infinity) {
     }
   }
   if (buffer.trim() && count < maxLines) { try { onEntry(JSON.parse(buffer)); } catch {} }
+}
+
+async function readLastLines(path, maxLines, knownSize) {
+  const size = knownSize ?? statSync(path).size;
+  if (size <= 0 || maxLines <= 0) return [];
+  const handle = await open(path, "r");
+  try {
+    const chunkSize = 64 * 1024;
+    let position = size;
+    const chunks = [];
+    let newlineCount = 0;
+    while (position > 0 && newlineCount <= maxLines) {
+      const readSize = Math.min(chunkSize, position);
+      position -= readSize;
+      const buffer = Buffer.allocUnsafe(readSize);
+      await handle.read(buffer, 0, readSize, position);
+      chunks.unshift(buffer);
+      for (let i = 0; i < buffer.length; i++) if (buffer[i] === 10) newlineCount += 1;
+    }
+    const text = Buffer.concat(chunks).toString("utf8");
+    let lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    if (position > 0 && lines.length) lines.shift();
+    const tail = lines.slice(-maxLines).filter((line) => line.trim());
+    tail.truncated = position > 0 || lines.length > maxLines;
+    return tail;
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseJsonLines(lines) {
+  const entries = [];
+  for (const line of lines) {
+    try { entries.push(JSON.parse(line)); } catch {}
+  }
+  return entries;
 }
 
 async function serveStatic(url, res) {
@@ -536,6 +640,9 @@ function attachJsonl(stream, onLine) {
 }
 function attachText(stream, onText) { const decoder = new StringDecoder("utf8"); stream.on("data", (chunk) => onText(decoder.write(chunk))); stream.on("end", () => { const rest = decoder.end(); if (rest) onText(rest); }); }
 function localAddress() { const nets = os.networkInterfaces(); for (const entries of Object.values(nets)) for (const n of entries || []) if (n.family === "IPv4" && !n.internal) return n.address; return undefined; }
+function numberEnv(name, fallback) { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback; }
+function positiveInt(value, fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback; }
+function nonNegativeInt(value) { if (value === undefined || value === null || value === "") return undefined; const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined; }
 function parseArgs(argv) { const out = {}; for (let i = 0; i < argv.length; i++) { const arg = argv[i]; if (arg === "--help" || arg === "-h") out.help = true; else if (arg === "--host") out.host = argv[++i]; else if (arg === "--port" || arg === "-p") out.port = argv[++i]; else if (arg === "--token") out.token = argv[++i]; else throw new Error(`unknown argument: ${arg}`); } return out; }
 async function readTokenFile() { try { const text = await readFile(TOKEN_FILE, "utf8"); return text.match(/^PI_BROWSER_TOKEN=(.+)$/m)?.[1]?.trim() || text.match(/^PI_WEB_TOKEN=(.+)$/m)?.[1]?.trim(); } catch { return undefined; } }
 async function writeTokenFile(value) { await mkdir(dirname(TOKEN_FILE), { recursive: true }); await import("node:fs/promises").then((fs) => fs.writeFile(TOKEN_FILE, `PI_BROWSER_TOKEN=${value}\n`, { mode: 0o600 })); }
