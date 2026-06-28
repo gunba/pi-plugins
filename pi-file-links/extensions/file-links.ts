@@ -8,7 +8,12 @@ const MAX_TEXT_LENGTH = 300_000;
 const MAX_CANDIDATE_LENGTH = 500;
 const PATH_BOUNDARY = /[\s,;!?)}\]>"]/;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", "!", "?", ")", "]", "}", ">", "\""]);
-const FILE_LINK_RE = /\[((?:\\.|[^\\\]])*)\]\(<file:\/\/[^>]+>\)/g;
+const OSC8_OPEN_PREFIX = "\x1b]8;;";
+const OSC8_TERMINATOR = "\x07";
+const OSC8_CLOSE = `${OSC8_OPEN_PREFIX}${OSC8_TERMINATOR}`;
+const MARKDOWN_FILE_LINK_RE = /\[((?:\\.|[^\\\]])*)\]\(<file:\/\/[^>]+>\)/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC-8 links use ESC and BEL bytes.
+const OSC8_FILE_LINK_RE = /\x1b]8;[^\x07\x1b;]*;file:\/\/[^\x07\x1b]*(?:\x07|\x1b\\)(.*?)\x1b]8;[^\x07\x1b;]*;(?:\x07|\x1b\\)/gs;
 
 type TextPart = { type?: string; text?: string; [key: string]: unknown };
 type MessageLike = { role?: string; content?: unknown; [key: string]: unknown };
@@ -30,7 +35,7 @@ type ResolvedCandidate = ParsedCandidate & {
 };
 
 export default function fileLinks(pi: ExtensionAPI): void {
-  pi.on("message_end", async (event, ctx) => {
+  pi.on("message_end", (event, ctx) => {
     const message = event.message as unknown as MessageLike;
     if (!shouldLinkMessage(message)) return;
     const linked = linkMessage(message, ctx);
@@ -86,7 +91,12 @@ function stripMessageFileLinks(message: MessageLike): MessageLike {
 }
 
 function isTextPart(value: unknown): value is TextPart {
-  return !!value && typeof value === "object" && (value as TextPart).type === "text" && typeof (value as TextPart).text === "string";
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    (value as TextPart).type === "text" &&
+    typeof (value as TextPart).text === "string"
+  );
 }
 
 function linkifyText(text: string, cwd: string): string {
@@ -198,7 +208,7 @@ function linkifyStandalonePath(raw: string, cwd: string): string | undefined {
   if (!parsed) return undefined;
   const resolved = resolveCandidate(parsed, cwd);
   if (!isLinkable(resolved)) return undefined;
-  return leading + markdownFileLink(resolved) + trailing;
+  return leading + terminalFileLink(resolved) + trailing;
 }
 
 function findPathAt(line: string, start: number, cwd: string): { link: string; end: number } | undefined {
@@ -207,20 +217,20 @@ function findPathAt(line: string, start: number, cwd: string): { link: string; e
 
   const existing = longestExistingCandidate(line, start, type, cwd);
   if (existing) {
-    return { link: markdownFileLink(existing) + existing.trailing, end: start + existing.visible.length + existing.trailing.length };
+    return { link: terminalFileLink(existing) + existing.trailing, end: start + existing.visible.length + existing.trailing.length };
   }
 
   const parsed = fallbackCandidate(line, start, type);
   if (!parsed) return undefined;
   const resolved = resolveCandidate(parsed, cwd);
   if (!isLinkable(resolved)) return undefined;
-  return { link: markdownFileLink(resolved) + resolved.trailing, end: start + resolved.visible.length + resolved.trailing.length };
+  return { link: terminalFileLink(resolved) + resolved.trailing, end: start + resolved.visible.length + resolved.trailing.length };
 }
 
 function candidateTypeAt(line: string, start: number, standalone: boolean): CandidateType | undefined {
   const rest = line.slice(start);
   const prev = start > 0 ? line[start - 1] : "";
-  if (!standalone && prev && !isBoundaryBeforePath(prev)) return undefined;
+  if (!standalone && prev && !/[\s([{<"']/.test(prev)) return undefined;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rest)) return undefined;
 
   if (rest.startsWith("~/") || rest.startsWith("~\\")) return "tilde";
@@ -233,12 +243,8 @@ function candidateTypeAt(line: string, start: number, standalone: boolean): Cand
   return undefined;
 }
 
-function isBoundaryBeforePath(ch: string): boolean {
-  return /[\s([{<"']/.test(ch);
-}
-
 function isBareStart(ch: string | undefined): boolean {
-  return !!ch && /[A-Za-z0-9_.@~+-]/.test(ch);
+  return ch !== undefined && /[A-Za-z0-9_.@~+-]/.test(ch);
 }
 
 function looksLikeBarePath(text: string): boolean {
@@ -301,8 +307,10 @@ function readTokenCandidate(line: string, start: number): { body: string; traili
 function trimTrailingPunctuation(raw: string): { body: string; trailing: string } {
   let body = raw;
   let trailing = "";
-  while (body && TRAILING_PUNCTUATION.has(body[body.length - 1]!)) {
-    trailing = body[body.length - 1] + trailing;
+  while (body) {
+    const last = body.at(-1);
+    if (!last || !TRAILING_PUNCTUATION.has(last)) break;
+    trailing = last + trailing;
     body = body.slice(0, -1);
   }
   return { body, trailing };
@@ -364,20 +372,23 @@ function isLinkable(candidate: ResolvedCandidate): boolean {
   return candidate.strong;
 }
 
-function markdownFileLink(candidate: ResolvedCandidate): string {
-  return `[${escapeMarkdownLabel(candidate.visible)}](<${candidate.url}>)`;
+function terminalFileLink(candidate: ResolvedCandidate): string {
+  const label = escapeMarkdownLabel(candidate.visible);
+  return `${OSC8_OPEN_PREFIX}${candidate.url}${OSC8_TERMINATOR}${label}${OSC8_CLOSE}`;
 }
 
 function escapeMarkdownLabel(value: string): string {
-  return value.replace(/([\\\[\]])/g, "\\$1");
+  return value.replace(/([\\[\]])/g, "\\$1");
 }
 
 function stripFileLinks(text: string): string {
-  return text.replace(FILE_LINK_RE, (_full, label: string) => unescapeMarkdownLabel(label));
+  return text
+    .replace(OSC8_FILE_LINK_RE, (_full, label: string) => unescapeMarkdownLabel(label))
+    .replace(MARKDOWN_FILE_LINK_RE, (_full, label: string) => unescapeMarkdownLabel(label));
 }
 
 function unescapeMarkdownLabel(value: string): string {
-  return value.replace(/\\([\\\[\]])/g, "$1");
+  return value.replace(/\\([\\[\]])/g, "$1");
 }
 
 function hasFileExtension(path: string): boolean {
