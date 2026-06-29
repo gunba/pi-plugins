@@ -32,6 +32,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   breakdown (uncached input, cached input with hit rate, output, and total
   `$`) on the stats line; `/pi-usage` prints the full per-bucket token and
   cost attribution for the current model.
+- `pi-extension-freshness` — prints a startup extension freshness panel with
+  last-updated dates, age-based color coding, and `/extension-freshness` for
+  on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, MCP, and subagent configuration.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and
