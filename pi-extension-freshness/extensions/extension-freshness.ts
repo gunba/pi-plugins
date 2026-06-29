@@ -12,12 +12,11 @@ import {
   type Theme,
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 
 const CUSTOM_TYPE = "pi-extension-freshness";
 const FRESH_DAYS = 90;
 const STALE_DAYS = 365;
-const MAX_COLLAPSED_ROWS = 18;
 
 type FreshnessStatus = "fresh" | "aging" | "stale" | "unknown";
 type FreshnessSource = "git" | "file" | "unknown";
@@ -52,18 +51,6 @@ type UpdateInfo = {
   source: FreshnessSource;
 };
 
-function padTo(value: string, width: number): string {
-  return truncateToWidth(value, width, "", true);
-}
-
-function padStartVisible(value: string, width: number): string {
-  const padding = width - visibleWidth(value);
-  return padding > 0 ? `${" ".repeat(padding)}${value}` : value;
-}
-
-function truncatePlain(value: string, width: number): string {
-  return truncateToWidth(value, Math.max(1, width), "…");
-}
 
 function toPosix(value: string): string {
   return value.split(sep).join("/");
@@ -344,23 +331,62 @@ function summaryText(report: ExtensionFreshnessReport): string {
   return parts.join(" · ");
 }
 
+function labelCounts(rows: ExtensionFreshnessRow[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.label, (counts.get(row.label) ?? 0) + 1);
+  return counts;
+}
+
+function sourceNeedsContext(row: ExtensionFreshnessRow): boolean {
+  return row.sourceLabel !== `local:${row.scope}` && row.sourceLabel !== `auto:${row.scope}`;
+}
+
+function displayLabel(row: ExtensionFreshnessRow, counts: Map<string, number>): string {
+  const normalized = row.label.replace(/\\/g, "/");
+  const name = normalized.split("/").pop() ?? normalized;
+  const duplicated = (counts.get(row.label) ?? 0) > 1;
+  const genericEntry = normalized === name && /^(index|extension)\.[cm]?[jt]s$/i.test(name);
+
+  if (!sourceNeedsContext(row) || (!duplicated && !genericEntry)) return row.label;
+  if (/^index\.[cm]?[jt]s$/i.test(normalized)) return row.sourceLabel;
+  return `${row.sourceLabel}:${row.label}`;
+}
+
+function formatRowText(row: ExtensionFreshnessRow, counts: Map<string, number>, withSource: boolean): string {
+  const base = `${displayLabel(row, counts)} ${row.updatedDate} (${row.age})`;
+  return withSource ? `${base} [${row.sourceLabel}, ${row.freshnessSource}]` : base;
+}
+
+function wrapCommaParagraph(items: string[], width: number): string[] {
+  const indent = "  ";
+  const maxWidth = Math.max(36, width);
+  const lines: string[] = [];
+  let current = indent;
+
+  items.forEach((item, index) => {
+    const token = `${item}${index < items.length - 1 ? "," : ""}`;
+    const separator = current === indent ? "" : " ";
+    if (current !== indent && visibleWidth(current) + visibleWidth(separator) + visibleWidth(token) > maxWidth) {
+      lines.push(current);
+      current = `${indent}${token}`;
+      return;
+    }
+    current = `${current}${separator}${token}`;
+  });
+
+  if (current !== indent) lines.push(current);
+  return lines;
+}
+
 function renderPlain(report: ExtensionFreshnessReport): string {
-  const lines = [`Extension freshness: ${summaryText(report)}`];
-  for (const row of report.rows) {
-    lines.push(`  ${row.updatedDate.padEnd(10)} ${row.age.padStart(6)} ${row.label} (${row.sourceLabel})`);
-  }
-  return lines.join("\n");
+  const counts = labelCounts(report.rows);
+  return [`Extension freshness: ${summaryText(report)}`, report.rows.map((row) => formatRowText(row, counts, true)).join(", ")]
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 function renderRows(report: ExtensionFreshnessReport, theme: Theme, width: number, expanded: boolean): string[] {
-  const rows = expanded ? report.rows : report.rows.slice(0, MAX_COLLAPSED_ROWS);
-  const dateWidth = 10;
-  const ageWidth = 6;
-  const sourceWidth = expanded ? Math.min(26, Math.max(12, Math.floor(width * 0.24))) : 0;
-  const gapWidth = expanded ? 8 : 6;
-  const labelWidth = Math.max(12, width - dateWidth - ageWidth - sourceWidth - gapWidth);
   const lines: string[] = [];
-
   const heading = theme.fg("mdHeading", "[Extension freshness]");
   const summary = theme.fg("dim", summaryText(report));
   lines.push(`${heading} ${summary}`);
@@ -368,30 +394,14 @@ function renderRows(report: ExtensionFreshnessReport, theme: Theme, width: numbe
     theme.fg("dim", `  green <${FRESH_DAYS}d · yellow ${FRESH_DAYS}-${STALE_DAYS - 1}d · red ≥${STALE_DAYS}d · /extension-freshness`),
   );
 
-  if (rows.length === 0) {
+  if (report.rows.length === 0) {
     lines.push(theme.fg("muted", "  No extensions found."));
     return lines;
   }
 
-  for (const row of rows) {
-    const color = statusColor(row.status);
-    const date = theme.fg(color, padTo(row.updatedDate, dateWidth));
-    const age = theme.fg(color, padStartVisible(row.age, ageWidth));
-    const label = theme.fg(row.status === "unknown" ? "muted" : "text", padTo(row.label, labelWidth));
-    if (expanded) {
-      const source = theme.fg("dim", truncatePlain(row.sourceLabel, sourceWidth));
-      const sourceNote = theme.fg("dim", row.freshnessSource === "git" ? "git" : row.freshnessSource);
-      lines.push(`  ${date}  ${age}  ${label}  ${source}  ${sourceNote}`);
-    } else {
-      lines.push(`  ${date}  ${age}  ${label}`);
-    }
-  }
-
-  const remaining = report.rows.length - rows.length;
-  if (remaining > 0) {
-    lines.push(theme.fg("dim", `  +${remaining} more · expand startup/tools for all sources`));
-  }
-
+  const counts = labelCounts(report.rows);
+  const items = report.rows.map((row) => theme.fg(statusColor(row.status), formatRowText(row, counts, expanded)));
+  lines.push(...wrapCommaParagraph(items, width));
   return lines;
 }
 
