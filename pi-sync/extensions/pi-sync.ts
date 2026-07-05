@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExecResult, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -182,6 +182,41 @@ async function remoteBranchExists(pi: ExtensionAPI, root: string, branch: string
   return result.code === 0;
 }
 
+async function hasHead(pi: ExtensionAPI, root: string): Promise<boolean> {
+  const result = await git(pi, root, ["rev-parse", "--verify", "HEAD"], true);
+  return result.code === 0;
+}
+
+async function remoteTrackedFiles(pi: ExtensionAPI, root: string, ref: string): Promise<string[]> {
+  const result = await git(pi, root, ["ls-tree", "-r", "--name-only", ref]);
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith(".git/"));
+}
+
+function bootstrapBackupDir(root: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return join(root, "agent", "backups", `pi-sync-bootstrap-${stamp}`);
+}
+
+function backupExistingPaths(root: string, relativePaths: string[]): string | undefined {
+  const backupRoot = bootstrapBackupDir(root);
+  let count = 0;
+
+  for (const relativePath of relativePaths) {
+    const source = join(root, relativePath);
+    if (!existsSync(source)) continue;
+
+    const target = join(backupRoot, relativePath);
+    mkdirSync(dirname(target), { recursive: true });
+    renameSync(source, target);
+    count += 1;
+  }
+
+  return count > 0 ? backupRoot : undefined;
+}
+
 async function commitLocalChanges(pi: ExtensionAPI, root: string, message: string): Promise<boolean> {
   await git(pi, root, ["add", "-A"]);
   const diff = await git(pi, root, ["diff", "--cached", "--quiet"], true);
@@ -292,11 +327,41 @@ async function handleRemote(pi: ExtensionAPI, ctx: ExtensionCommandContext, root
   notify(ctx, `Pi setup sync origin set to ${remote}`);
 }
 
+async function handleBootstrap(pi: ExtensionAPI, ctx: ExtensionCommandContext, root: string, remote: string): Promise<void> {
+  if (!remote) throw new Error("Usage: /pi-sync bootstrap <private-repo-url>");
+
+  await initRepo(pi, root);
+  await setOrigin(pi, root, remote);
+
+  if (await hasHead(pi, root)) {
+    await pullFastForward(pi, root);
+    await refreshPackages(pi, ctx);
+    notify(ctx, "Pi setup bootstrap complete. Existing repo fast-forwarded; run /reload or restart Pi.");
+    return;
+  }
+
+  await git(pi, root, ["fetch", "origin"]);
+  const branch = DEFAULT_BRANCH;
+  const ref = `origin/${branch}`;
+  if (!(await remoteBranchExists(pi, root, branch))) {
+    throw new Error(`Remote branch ${ref} was not found.`);
+  }
+
+  const trackedFiles = await remoteTrackedFiles(pi, root, ref);
+  const backupDir = backupExistingPaths(root, trackedFiles);
+  await git(pi, root, ["checkout", "-B", branch, ref]);
+  await git(pi, root, ["branch", "--set-upstream-to", ref, branch], true);
+  await refreshPackages(pi, ctx);
+
+  notify(ctx, `Pi setup bootstrap complete.${backupDir ? ` Previous local files backed up to ${backupDir}.` : ""} Run /reload or restart Pi.`);
+}
+
 function helpText(root: string): string {
   return [
     "Pi setup sync commands:",
     "  /pi-sync status",
     "  /pi-sync init [private-repo-url]",
+    "  /pi-sync bootstrap <private-repo-url>",
     "  /pi-sync pull",
     "  /pi-sync push [commit message]",
     "  /pi-sync sync [commit message]",
@@ -316,6 +381,9 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string)
       return;
     case "init":
       await handleInit(pi, ctx, root, rest);
+      return;
+    case "bootstrap":
+      await handleBootstrap(pi, ctx, root, rest);
       return;
     case "pull":
     case "update":
