@@ -15,8 +15,8 @@ import {
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 
 const CUSTOM_TYPE = "pi-extension-freshness";
-const FRESH_DAYS = 90;
-const STALE_DAYS = 365;
+const FRESH_DAYS = 30;
+const STALE_DAYS = 180;
 
 type FreshnessStatus = "fresh" | "aging" | "stale" | "unknown";
 type FreshnessSource = "git" | "file" | "unknown";
@@ -95,7 +95,7 @@ function formatAge(days: number | undefined): string {
 
 function statusForAge(days: number | undefined): FreshnessStatus {
   if (days === undefined) return "unknown";
-  if (days >= STALE_DAYS) return "stale";
+  if (days > STALE_DAYS) return "stale";
   if (days >= FRESH_DAYS) return "aging";
   return "fresh";
 }
@@ -391,7 +391,7 @@ function renderRows(report: ExtensionFreshnessReport, theme: Theme, width: numbe
   const summary = theme.fg("dim", summaryText(report));
   lines.push(`${heading} ${summary}`);
   lines.push(
-    theme.fg("dim", `  green <${FRESH_DAYS}d · yellow ${FRESH_DAYS}-${STALE_DAYS - 1}d · red ≥${STALE_DAYS}d · /extension-freshness`),
+    theme.fg("dim", `  green <${FRESH_DAYS}d · yellow ${FRESH_DAYS}-${STALE_DAYS}d · red >${STALE_DAYS}d · /extension-freshness`),
   );
 
   if (report.rows.length === 0) {
