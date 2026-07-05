@@ -37,6 +37,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, MCP, and subagent configuration.
+- `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
+  git repository, with generated package installs, sessions, caches, tmp files,
+  and local auth state kept machine-local.
 - `pi-tab-title` — auto-names terminal tabs from the first user message and
   shows fresh/thinking/ready/error state in the tab title.
 - `pi-system-context` — adds compact local environment context to the system

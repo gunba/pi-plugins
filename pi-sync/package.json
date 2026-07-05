@@ -1,0 +1,15 @@
+{
+  "name": "pi-sync",
+  "version": "0.1.0",
+  "description": "Pi extension that syncs the user's Pi setup via a private git repository.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "sync", "git", "configuration"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/pi-sync.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT"
+}

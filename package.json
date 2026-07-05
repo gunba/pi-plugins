@@ -25,7 +25,8 @@
       "./pi-system-context/extensions/system-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
-      "./pi-subagents/extensions/subagents.ts"
+      "./pi-subagents/extensions/subagents.ts",
+      "./pi-sync/extensions/pi-sync.ts"
     ]
   },
   "peerDependencies": {
