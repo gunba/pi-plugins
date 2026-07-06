@@ -1,0 +1,20 @@
+{
+  "name": "pi-compaction-context",
+  "version": "0.1.0",
+  "description": "Pi extension that carries loaded markdown context into compaction requests.",
+  "private": true,
+  "keywords": ["pi-package", "pi", "compaction", "context"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/compaction-context.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}

@@ -44,6 +44,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   shows fresh/thinking/ready/error state in the tab title.
 - `pi-system-context` — adds compact local environment context to the system
   prompt.
+- `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
+  context into Pi's compaction summariser so checkpoint summaries are written
+  with the same project rules as normal turns.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
