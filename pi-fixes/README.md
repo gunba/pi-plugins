@@ -4,15 +4,6 @@ Bundled workarounds for upstream Pi issues, with built-in effectiveness tracking
 
 ## Fixes
 
-### Codex SSE response-header timeout (`codex-transport.ts`)
-
-Pi aborts a Codex `/codex/responses` request with messages like *"Codex SSE response headers timed out after 20000ms"* when the provider takes longer than Pi's bounded pre-header wait to return headers (common for reasoning models). This patches global `fetch`, suppresses that built-in abort, and lets a configurable timeout (default 300000ms) govern instead. It also instruments Codex fetch/WebSocket traffic into local NDJSON for diagnostics.
-
-- `/codex-transport status | on | off | mark <note>`
-- `/sse-timeout status | set <ms> | <ms> | on | off`
-- State: `~/.pi/agent/codex-transport/` (`events.ndjson`, `latest-summary.json`, `sse-timeout.json`).
-- Env: `CODEX_TRANSPORT_DISABLE`, `CODEX_TRANSPORT_DIR`, `CODEX_TRANSPORT_LOG_RAW_IDS`, `PI_CODEX_SSE_HEADER_TIMEOUT_MS`.
-
 ### Oversized single-message guard (`context-guard.ts`)
 
 Automatic continuations after a tool call are sent inside the same run, before compaction can run, so one giant tool result can reach the provider and blow up the request. Using Pi's `context` event — the single point every provider request is built from — this strips any single message over the limit, saves the original to a markdown file, and replaces it with a concise pointer (tool results keep their `toolCallId`/`toolName` pairing).
@@ -30,7 +21,7 @@ Pi's `ThinkingLevel` stops at `xhigh`, but Claude Fable 5 and Opus 4.7+ expose a
 
 ## Effectiveness tracking (`effectiveness.ts`)
 
-Every fix records an activation only when it actually prevents its failure — the Codex fix on each suppressed built-in header timeout, the guard on each oversized item stripped. This is the signal for whether a workaround is still earning its place.
+Every fix records an activation only when it actually prevents its failure. This is the signal for whether a workaround is still earning its place.
 
 ```text
 /pi-fixes          # report each fix: total / last 7d / last 30d / last seen / verdict

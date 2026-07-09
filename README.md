@@ -5,17 +5,18 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 ## Extensions
 
 - `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in
-  effectiveness tracking. Covers Codex SSE built-in header-timeout suppression
-  (`/sse-timeout`, `/codex-transport`) and the oversized single-message guard
-  before provider requests and tool-call continuations (`/context-guard`).
-  `/pi-fixes` reports whether each fix is still firing (last 7d/30d, last
-  seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can be retired once its
-  failure stops occurring.
-- `pi-codex-compat` — adds Codex-shaped `apply_patch` and `shell_command`
-  tools for GPT-5.x/Codex models. `apply_patch` accepts the Codex patch
-  envelope, optional environment preambles, moves, and heredoc bodies;
-  `shell_command` maps Codex-style command/workdir/timeout fields onto Pi's
-  bash backend while preserving context-mode HTTP-output guardrails.
+  effectiveness tracking. Covers the oversized single-message guard before
+  provider requests and tool-call continuations (`/context-guard`) and the
+  Claude effort lift. `/pi-fixes` reports whether each fix is still firing
+  (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can
+  be retired once its failure stops occurring.
+- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `shell_command`,
+  `write_stdin`, and `view_image` tools for GPT-5.x/Codex models.
+  `apply_patch` accepts the Codex patch envelope, optional environment
+  preambles, moves, and heredoc bodies; `shell_command` maps Codex-style
+  command/workdir/timeout fields onto Pi's bash backend while preserving
+  context-mode HTTP-output guardrails, and can return resumable sessions for
+  `write_stdin` when `yield_time_ms` is used.
 - `pi-file-links` — turns project-relative paths, absolute Linux paths, tilde
   paths, Windows paths, UNC paths, and existing paths with spaces into
   clickable terminal file links while stripping generated links before model

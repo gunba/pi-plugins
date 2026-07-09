@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 //
 // Mechanism: the Anthropic SDK issues requests through global fetch with a JSON
 // string body carrying `output_config.effort` (adaptive thinking). We wrap fetch
-// — sharing the patch-stack convention used by codex-transport and pi-usage so
+// — sharing the patch-stack convention used by other fetch wrappers so
 // the wrappers compose — and rewrite that one field for max-capable Opus models.
 // Anything unexpected falls through untouched; the remap can never break a request.
 
@@ -116,7 +116,7 @@ export default function claudeEffort(pi: ExtensionAPI) {
 	capture();
 
 	// Pi installs undici after extension load (which can replace global fetch),
-	// so re-apply lazily before requests — same pattern as codex-transport.
+	// so re-apply lazily before requests.
 	pi.on("session_start", async () => {
 		installPatch();
 		capture();

@@ -1,14 +1,13 @@
 {
   "name": "pi-fixes",
   "version": "0.1.0",
-  "description": "Bundled Pi workarounds (Codex SSE timeout, oversized-message guard) with built-in effectiveness tracking so each fix can be retired once it stops firing.",
+  "description": "Bundled Pi workarounds (oversized-message guard, Claude effort lift) with built-in effectiveness tracking so each fix can be retired once it stops firing.",
   "private": true,
-  "keywords": ["pi-package", "pi", "pi-extension", "codex", "transport", "sse", "context", "guard", "fixes"],
+  "keywords": ["pi-package", "pi", "pi-extension", "claude", "context", "guard", "fixes"],
   "type": "module",
   "pi": {
     "extensions": [
       "./extensions/effectiveness.ts",
-      "./extensions/codex-transport.ts",
       "./extensions/context-guard.ts",
       "./extensions/claude-effort.ts"
     ]

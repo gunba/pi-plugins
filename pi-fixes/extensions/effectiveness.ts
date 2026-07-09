@@ -13,8 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 //
 // Consumers (the fix extensions) record via a globalThis symbol so they do not
 // need to import this module. Persistence is append-only NDJSON of per-flush
-// deltas, which is safe across concurrent processes (e.g. subagents) the same
-// way the codex-transport event log is.
+// deltas, which is safe across concurrent processes (e.g. subagents).
 
 type FixId = string;
 
@@ -37,7 +36,6 @@ const STALE_AFTER_DAYS = 30;
 // Fixes this package ships, listed so the report shows a fix even when it has
 // never fired — a never-firing fix is the strongest "no longer needed" signal.
 const KNOWN_FIXES: Record<FixId, string> = {
-	"codex-sse-timeout": "Codex SSE built-in header-timeout suppression (codex-transport)",
 	"context-guard-strip": "Oversized single-message strip (context-guard)",
 	"claude-effort-remap": "Claude effort lifted to top tier (claude-effort)",
 };
