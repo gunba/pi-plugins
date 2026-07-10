@@ -39,7 +39,7 @@ const MANAGED_GITIGNORE_LINES = [
   "agent/codex-transport/",
   "agent/context-guard/",
   "agent/pi-fixes/",
-  "agent/pi-usage/",
+  "agent/pi-codex-compat/",
   "agent/memedit/",
   "agent/pi-browser/",
   "",

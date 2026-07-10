@@ -11,17 +11,21 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can
   be retired once its failure stops occurring.
 - `pi-codex-compat` — adds Codex-shaped `apply_patch`, `shell_command`,
-  `write_stdin`, and `view_image` tools for GPT-5.x/Codex models.
-  `apply_patch` accepts the Codex patch envelope, optional environment
-  preambles, moves, and heredoc bodies; `shell_command` maps Codex-style
-  command/workdir/timeout fields onto Pi's bash backend while preserving
-  context-mode HTTP-output guardrails, and can return resumable sessions for
-  `write_stdin` when `yield_time_ms` is used. `view_image` emits Pi-native image
-  blocks and normalises image results written by older releases before provider
-  requests, including when sessions are resumed. `/repair-session-images`
-  creates a backup and permanently rewrites those blocks in the current session.
-  The Codex-shaped tool overlay activates only for Codex-like models, preserves
-  unrelated tools, and exposes `view_image` only to models that accept images.
+  `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
+  The tool overlay activates only for Codex-like models and preserves unrelated
+  tools. Text-only Codex models receive saved image artifacts and delegate visual
+  inspection to an authenticated image-capable model for concise descriptions.
+  `apply_patch` accepts Codex envelopes, optional environment preambles, moves,
+  and heredoc bodies. Managed shell sessions stream partial output, terminate
+  process trees, retain complete logs when display output is truncated, and use
+  compact tool rendering while preserving context-mode HTTP-output guardrails.
+  `view_image` emits Pi-native image blocks and normalises older session images
+  before provider requests; `/repair-session-images` performs a backed-up
+  permanent repair. `image_gen` follows OpenAI Codex's standalone image tool,
+  generates or edits with `gpt-image-2`, and saves outputs under
+  `$CODEX_HOME/generated_images`. The integrated compact footer passively shows
+  Codex 5h/7d usage and session token/cost statistics; `/pi-usage` shows the
+  detailed breakdown and controls the footer.
 - `pi-file-links` — turns project-relative paths, absolute Linux paths, tilde
   paths, Windows paths, UNC paths, and existing paths with spaces into
   clickable terminal file links while stripping generated links before model
@@ -33,11 +37,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
   compact queued-message panel, countdowns, `ctrl+o` expansion, and
   cancel/list command reminders.
-- `pi-usage` — passively shows Codex and Claude 5h/7d usage and reset timers
-  in a compact two-line footer, plus a cumulative conversation token/cost
-  breakdown (uncached input, cached input with hit rate, output, and total
-  `$`) on the stats line; `/pi-usage` prints the full per-bucket token and
-  cost attribution for the current model.
 - `pi-extension-freshness` — prints a startup extension freshness panel with
   last-updated dates, age-based color coding, and `/extension-freshness` for
   on-demand review of stale extension paths.
@@ -126,19 +125,14 @@ npm run check
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release.
 
-The footer stats line derives its token breakdown from the per-message `usage`
-Pi already records (input / cacheRead / cacheWrite / output and matching
-per-bucket cost), which is normalised identically for Codex and Claude, so
-cached vs uncached input and spend are exact for both — no tokenizer estimation
-required.
+The integrated Codex footer derives its token breakdown from the per-message
+`usage` Pi records (input / cacheRead / cacheWrite / output and matching
+per-bucket cost), so cached versus uncached input and notional API spend remain
+exact without tokenizer estimation.
 
-`pi-usage` does not poll any usage endpoints. It updates from data already
-returned by provider requests — Codex `x-codex-*` headers and
-`codex.rate_limits` WebSocket events, and Claude
-`anthropic-ratelimit-unified-*` headers (sent when Pi uses an Anthropic
-OAuth/Claude Code subscription) — persists the latest snapshot per provider
-locally, and refreshes countdown/session footer rendering during the
-conversation. The footer shows whichever provider was used most recently.
+Codex plan-window tracking is passive: `x-codex-*` response headers and
+`codex.rate_limits` WebSocket events update the persisted snapshot and footer
+countdowns during the conversation.
 
 The root `.npmrc` prevents npm from auto-installing Pi peer dependencies when
 Pi installs this git package; Pi provides those packages at runtime.

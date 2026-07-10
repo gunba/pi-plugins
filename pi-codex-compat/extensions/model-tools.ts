@@ -16,6 +16,7 @@ export const CODEX_COMPAT_TOOL_NAMES = [
 	"shell_command",
 	"write_stdin",
 	"view_image",
+	"image_gen",
 ];
 
 function mergeToolNames(...groups: string[][]): string[] {
@@ -43,10 +44,45 @@ export function isCodexLikeModel(model: ModelDescriptor | null | undefined): boo
 	);
 }
 
+export function isChatGptCodexModel(
+	model: ModelDescriptor | null | undefined,
+): boolean {
+	if (!model) return false;
+	const provider = (model.provider ?? "").toLowerCase();
+	const api = (model.api ?? "").toLowerCase();
+	return (
+		api === "openai-codex-responses" ||
+		provider === "codex" ||
+		provider.includes("openai-codex") ||
+		provider.includes("chatgpt")
+	);
+}
+
+export function isImageGenerationModel(
+	model: ModelDescriptor | null | undefined,
+): boolean {
+	if (!model || !isCodexLikeModel(model)) return false;
+	const provider = (model.provider ?? "").toLowerCase();
+	const api = (model.api ?? "").toLowerCase();
+	const id = (model.id ?? "").toLowerCase();
+	if (
+		provider.includes("anthropic") ||
+		id.includes("claude") ||
+		provider.includes("copilot") ||
+		api.includes("copilot")
+	) {
+		return false;
+	}
+	return isChatGptCodexModel(model) || provider.includes("openai");
+}
+
 export function toolsForModel(model: ModelDescriptor | null | undefined): string[] {
 	if (!isCodexLikeModel(model)) return [];
 	const tools = ["apply_patch", "shell_command", "write_stdin"];
-	if (model?.input?.includes("image")) tools.push("view_image");
+	if (model?.input?.includes("image") || isImageGenerationModel(model)) {
+		tools.push("view_image");
+	}
+	if (isImageGenerationModel(model)) tools.push("image_gen");
 	return tools;
 }
 

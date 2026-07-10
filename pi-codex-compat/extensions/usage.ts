@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isCodexLikeModel } from "./model-tools.ts";
 
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -81,7 +82,7 @@ type UsageWindow = {
   resetAtMs?: number;
   resetAfterSeconds?: number;
 };
-type UsageSource = "codex" | "claude";
+type UsageSource = "codex";
 type UsageSnapshot = {
   source: UsageSource;
   updatedAtMs: number;
@@ -108,13 +109,9 @@ type AssistantUsage = {
   cost?: UsageCost;
 };
 
-// Token buckets are normalised identically for Codex and Claude:
-//   input      = fresh, uncached input tokens billed at the full input rate
-//   cacheRead  = input tokens served cheaply from the prompt cache
-//   cacheWrite = input tokens written to the cache this turn (Anthropic premium; 0 on Codex)
-//   output     = output tokens
-// They never overlap: totalTokens == input + output + cacheRead + cacheWrite.
-// Per-bucket dollar costs are summed alongside so /pi-usage can attribute spend.
+// Pi records disjoint Codex token buckets: fresh input, cached input, cache
+// writes (normally zero for Codex), and output. Per-bucket dollar costs are
+// summed alongside so /pi-usage can attribute notional API spend.
 type SessionStats = {
   totalInput: number;
   totalOutput: number;
@@ -133,16 +130,21 @@ type SessionStatsCache = {
   stats: SessionStats;
 };
 
-const WEBSOCKET_PATCH_ID = "pi-usage@1";
+const WEBSOCKET_PATCH_ID = "pi-codex-compat-usage@1";
 const WEBSOCKET_PATCH_STACK_KEY = Symbol.for("pi.websocketPatchStack");
 const WEBSOCKET_PATCH_ORIGINAL_KEY = Symbol.for("pi.websocketPatchOriginal");
-const GLOBAL_STATE_KEY = Symbol.for("pi.usage.state");
-const DEFAULT_STATE_DIR = join(os.homedir(), ".pi", "agent", "pi-usage");
-const STATE_DIR = process.env.PI_USAGE_DIR || DEFAULT_STATE_DIR;
-const SNAPSHOT_FILE = join(STATE_DIR, "latest.json");
-const DISABLE_FOOTER_ENV = "PI_USAGE_FOOTER";
-const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude" };
-const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
+const GLOBAL_STATE_KEY = Symbol.for("pi.codexCompat.usage.state");
+const DEFAULT_STATE_DIR = join(
+  os.homedir(),
+  ".pi",
+  "agent",
+  "pi-codex-compat",
+);
+const STATE_DIR = process.env.PI_CODEX_USAGE_DIR || DEFAULT_STATE_DIR;
+const SNAPSHOT_FILE = join(STATE_DIR, "usage.json");
+const DISABLE_FOOTER_ENV = "PI_CODEX_USAGE_FOOTER";
+const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex" };
+const USAGE_SOURCES: readonly UsageSource[] = ["codex"];
 
 let snapshots: UsageSnapshots = readPersistedSnapshots();
 let requestFooterRender: (() => void) | undefined;
@@ -157,8 +159,9 @@ type UsageGlobalState = {
 
 function getGlobalState(): UsageGlobalState {
   const global = globalThis as typeof globalThis & { [GLOBAL_STATE_KEY]?: UsageGlobalState };
-  global[GLOBAL_STATE_KEY] ??= {};
-  return global[GLOBAL_STATE_KEY]!;
+  const state = global[GLOBAL_STATE_KEY] ?? {};
+  global[GLOBAL_STATE_KEY] = state;
+  return state;
 }
 
 function websocketPatchStack(value: unknown): string[] {
@@ -169,7 +172,10 @@ function websocketPatchStack(value: unknown): string[] {
 
 function isCodexUrl(url: unknown): boolean {
   try {
-    const raw = typeof url === "string" ? url : url instanceof URL ? url.toString() : (url as { url?: string })?.url;
+    let raw: string | undefined;
+    if (typeof url === "string") raw = url;
+    else if (url instanceof URL) raw = url.toString();
+    else raw = (url as { url?: string })?.url;
     if (!raw) return false;
     const parsed = new URL(raw);
     return parsed.pathname.endsWith("/codex/responses") || parsed.pathname.includes("/codex/responses");
@@ -201,7 +207,9 @@ function stringHeader(headers: Record<string, string>, key: string): string | un
 }
 
 function parseResetAtValue(value: unknown): number | undefined {
-  const raw = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  let raw = "";
+  if (typeof value === "number") raw = String(value);
+  else if (typeof value === "string") raw = value.trim();
   if (!raw) return undefined;
 
   const numeric = Number(raw);
@@ -344,39 +352,8 @@ function parseCodexWebSocketMessage(data: unknown): UsageSnapshot | undefined {
   return parseCodexRateLimitEvent(event) ?? parseCodexUsageLimitErrorEvent(event);
 }
 
-// --- Claude: anthropic-ratelimit-unified-* response headers (OAuth/Claude Code) ---
-
-function parseClaudeWindow(headers: Record<string, string>, prefix: "5h" | "7d"): UsageWindow | undefined {
-  const utilization = numberHeader(headers, `anthropic-ratelimit-unified-${prefix}-utilization`);
-  const resetAtMs = resetAtHeader(headers, `anthropic-ratelimit-unified-${prefix}-reset`);
-  if (utilization === undefined && resetAtMs === undefined) return undefined;
-
-  // Anthropic reports utilization as a fraction (0.0–1.0+); convert to a percentage.
-  return {
-    label: prefix,
-    usedPercent: clampPercent(utilization === undefined ? undefined : utilization * 100),
-    resetAtMs,
-  };
-}
-
-function parseClaudeUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
-  const h = toHeaderRecord(headers);
-  const nowMs = Date.now();
-  const primary = parseClaudeWindow(h, "5h");
-  const secondary = parseClaudeWindow(h, "7d");
-  if (!primary && !secondary) return undefined;
-
-  return {
-    source: "claude",
-    updatedAtMs: nowMs,
-    activeLimit: stringHeader(h, "anthropic-ratelimit-unified-representative-claim"),
-    primary,
-    secondary,
-  };
-}
-
-function parseUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
-  return parseCodexUsageHeaders(headers) ?? parseClaudeUsageHeaders(headers);
+export function parseUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
+  return parseCodexUsageHeaders(headers);
 }
 
 function clampPercent(value: number | undefined): number | undefined {
@@ -385,7 +362,7 @@ function clampPercent(value: number | undefined): number | undefined {
 }
 
 function isUsageSource(value: unknown): value is UsageSource {
-  return value === "codex" || value === "claude";
+  return value === "codex";
 }
 
 function freshWindow(window: UsageWindow | undefined, nowMs: number): UsageWindow | undefined {
@@ -451,16 +428,10 @@ function snapshotForSource(source: UsageSource | undefined, nowMs = Date.now()):
   return source ? snapshots[source] : undefined;
 }
 
-// Map the active model to the usage family it can actually report. Codex usage
-// comes only from the Codex subscription transport; Claude usage only from
-// Anthropic OAuth rate-limit headers. Any other model has no applicable usage,
-// so the footer shows nothing rather than stale data from the previous family.
-function currentUsageSource(model: ExtensionContext["model"] | undefined): UsageSource | undefined {
-  if (!model) return undefined;
-  if (model.api === "openai-codex-responses") return "codex";
-  const haystack = `${model.provider ?? ""} ${model.api ?? ""} ${model.id ?? ""}`.toLowerCase();
-  if (haystack.includes("anthropic") || haystack.includes("claude")) return "claude";
-  return undefined;
+// Codex usage is available only from the subscription transport. API-key
+// models have token/cost statistics but do not expose the 5h/7d plan windows.
+export function currentUsageSource(model: ExtensionContext["model"] | undefined): UsageSource | undefined {
+  return model?.api === "openai-codex-responses" ? "codex" : undefined;
 }
 
 function installWebSocketCapture(): void {
@@ -514,7 +485,7 @@ function uninstallWebSocketCapture(): void {
   const stack = websocketPatchStack(current);
   // The WebSocket constructor is process-global. Restore it only when our wrapper is still top-of-stack;
   // if another extension wrapped after us, its lifecycle owns the next restoration step.
-  if (stack[stack.length - 1] !== WEBSOCKET_PATCH_ID) return;
+  if (stack.at(-1) !== WEBSOCKET_PATCH_ID) return;
   const original = Reflect.get(current, WEBSOCKET_PATCH_ORIGINAL_KEY);
   if (typeof original === "function") globalThis.WebSocket = original as typeof WebSocket;
 }
@@ -536,7 +507,9 @@ function styleUsageWindow(window: UsageWindow | undefined, theme: ExtensionConte
   if (!window) return undefined;
   const remaining = window.usedPercent === undefined ? undefined : Math.max(0, 100 - window.usedPercent);
   // Dim by default; escalate only when the remaining budget is genuinely low.
-  const pctColor = remaining === undefined ? "dim" : remaining <= 10 ? "error" : remaining <= 25 ? "warning" : "dim";
+  let pctColor: "dim" | "error" | "warning" = "dim";
+  if (remaining !== undefined && remaining <= 10) pctColor = "error";
+  else if (remaining !== undefined && remaining <= 25) pctColor = "warning";
   const head = theme.fg("dim", `${window.label}:`) + theme.fg(pctColor, `${remaining ?? "?"}%`);
   const reset = formatDurationUntil(window.resetAtMs, nowMs);
   return reset ? `${head} ${theme.fg("dim", reset)}` : head;
@@ -560,8 +533,8 @@ function formatUsageDetails(nowMs = Date.now()): string {
 
   if (entries.length === 0) {
     return [
-      "No usage snapshot yet.",
-      "This extension updates passively from provider response headers and events after requests: Codex x-codex-* headers / codex.rate_limits WebSocket events, and Claude anthropic-ratelimit-unified-* headers. It does not poll usage endpoints.",
+      "No Codex usage snapshot yet.",
+      "The plugin updates passively from x-codex-* response headers and codex.rate_limits WebSocket events. It does not poll usage endpoints.",
     ].join("\n");
   }
 
@@ -684,9 +657,12 @@ function formatSessionCostDetails(ctx: ExtensionContext): string {
   const hitPercent = allInput > 0 ? Math.round((cachedInput / allInput) * 100) : 0;
   const model = ctx.model;
   const isSubscription = model?.api === "openai-codex-responses";
-  const modelLabel = model
-    ? `Model: ${model.id}${model.provider ? ` (${model.provider})` : ""}${isSubscription ? " — subscription, $ is notional" : ""}`
-    : "Model: unknown";
+  let modelLabel = "Model: unknown";
+  if (model) {
+    const provider = model.provider ? ` (${model.provider})` : "";
+    const subscription = isSubscription ? " — subscription, $ is notional" : "";
+    modelLabel = `Model: ${model.id}${provider}${subscription}`;
+  }
 
   const row = (label: string, tokens: number, cost: number, extra = ""): string =>
     `${`${label}:`.padEnd(16)}${formatTokens(tokens).padStart(8)}  ${formatMoney(cost).padStart(9)}${extra}`;
@@ -735,12 +711,9 @@ function buildStatsLine(
   if (totalCost || ctx.model?.api === "openai-codex-responses") {
     statsParts.push(`$${totalCost.toFixed(3)}${ctx.model?.api === "openai-codex-responses" ? " (sub)" : ""}`);
   }
-  const contextPart =
-    contextPercentValue > 90
-      ? theme.fg("error", contextPercentDisplay)
-      : contextPercentValue > 70
-        ? theme.fg("warning", contextPercentDisplay)
-        : contextPercentDisplay;
+  let contextPart = contextPercentDisplay;
+  if (contextPercentValue > 90) contextPart = theme.fg("error", contextPercentDisplay);
+  else if (contextPercentValue > 70) contextPart = theme.fg("warning", contextPercentDisplay);
   statsParts.push(contextPart);
 
   let statsLeft = statsParts.join(" ");
@@ -748,9 +721,8 @@ function buildStatsLine(
 
   const modelName = ctx.model?.id || "no-model";
   const thinkingLevel = getThinkingLevel();
-  const rightSide = ctx.model?.reasoning
-    ? `${modelName} • ${thinkingLevel === "off" ? "thinking off" : thinkingLevel}`
-    : modelName;
+  const thinkingLabel = thinkingLevel === "off" ? "thinking off" : thinkingLevel;
+  const rightSide = ctx.model?.reasoning ? `${modelName} • ${thinkingLabel}` : modelName;
   const rightWidth = visibleWidth(rightSide);
   const leftWidth = visibleWidth(statsLeft);
   const minPadding = 2;
@@ -788,9 +760,10 @@ function buildTopLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["them
   const usageStatus = formatUsageStatus(theme, currentUsageSource(ctx.model));
   const extensionStatuses = Array.from(footerData.getExtensionStatuses?.().entries() || [])
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, text]) => sanitizeStatusText(text))
-    .filter((text): text is string => Boolean(text))
-    .map((text) => theme.fg("dim", text));
+    .flatMap(([, text]) => {
+      const sanitized = sanitizeStatusText(text);
+      return sanitized ? [theme.fg("dim", sanitized)] : [];
+    });
   const status = [usageStatus, ...extensionStatuses].filter((part): part is string => Boolean(part)).join("  ");
   const left = theme.fg("dim", parts.join(" • "));
 
@@ -840,6 +813,12 @@ function installFooter(ctx: ExtensionContext, pi: ExtensionAPI): void {
   rememberFooterContext(ctx);
   refreshSessionStats(ctx);
   if (ctx.mode !== "tui" || !footerEnabled) return;
+  if (!isCodexLikeModel(ctx.model)) {
+    ctx.ui.setFooter(undefined);
+    requestFooterRender = undefined;
+    disposeTickTimer();
+    return;
+  }
   ctx.ui.setFooter(createFooter(ctx, () => pi.getThinkingLevel()));
   ensureTickTimer();
 }
@@ -873,7 +852,7 @@ function recordSnapshot(snapshot: UsageSnapshot): void {
   refreshFooter();
 }
 
-export default function usage(pi: ExtensionAPI): void {
+export default function codexUsage(pi: ExtensionAPI): void {
   const handleWebSocketMessage = (data: unknown) => {
     const snapshot = parseCodexWebSocketMessage(data);
     if (snapshot) recordSnapshot(snapshot);
@@ -892,8 +871,7 @@ export default function usage(pi: ExtensionAPI): void {
   });
 
   pi.on("model_select", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshFooter();
+    installFooter(ctx, pi);
   });
 
   pi.on("thinking_level_select", async (_event, ctx) => {
@@ -953,7 +931,7 @@ export default function usage(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("pi-usage", {
-    description: "Show passive Codex/Claude 5h/7d usage from response headers and events, and control the compact footer",
+    description: "Show passive Codex 5h/7d usage from response headers and events, and control the compact footer",
     handler: async (args, ctx) => {
       const command = args.trim().toLowerCase();
       if (command === "footer off" || command === "off") {

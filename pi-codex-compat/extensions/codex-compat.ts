@@ -1,4 +1,3 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import {
@@ -9,16 +8,36 @@ import {
 	type ExtensionContext,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-	createImageContent,
 	normalizeProviderImageMessages,
+	prepareNativeImageContent,
 } from "./image-content.ts";
+import { describeImageForTextModel } from "./image-description.ts";
+import { executeImageGeneration } from "./image-generation.ts";
 import {
 	syncCodexCompatTools,
 	type ToolActivationState,
 } from "./model-tools.ts";
 import { repairSessionImageFile } from "./session-image-repair.ts";
+import codexUsage from "./usage.ts";
+import {
+	executeManagedShellCommand,
+	executeWriteStdin,
+	shutdownShellSessions,
+	type ShellCommandDetails,
+	type ShellCommandParams,
+} from "./shell-runtime.ts";
+import {
+	formatApplyPatchCall,
+	formatShellCommandCall,
+	formatWriteStdinCall,
+	liveOutputPreview,
+	resultText,
+	summarizeApplyPatchResult,
+	summarizeShellResult,
+} from "./tool-rendering.ts";
 import {
 	prepareApplyPatchArguments,
 	prepareShellCommandArguments,
@@ -85,59 +104,15 @@ type ChangeRecord = {
 	movePath?: string;
 };
 
-type ApplyPatchParams = { input: string; workdir?: string };
-type ShellCommandParams = {
-	command: string;
-	workdir?: string;
-	shell?: string;
-	timeout_ms?: number;
-	timeout?: number;
-	login?: boolean;
-	yield_time_ms?: number;
-	max_output_tokens?: number;
-};
-type WriteStdinParams = {
-	session_id: number;
-	chars?: string;
-	yield_time_ms?: number;
-	max_output_tokens?: number;
-};
 type ViewImageParams = { path: string };
-type ShellSession = {
-	id: number;
-	command: string;
-	workdir: string;
-	child: ChildProcessWithoutNullStreams;
-	output: string;
-	readOffset: number;
-	startedAt: number;
-	exitCode?: number | null;
-	signal?: NodeJS.Signals | null;
-	error?: string;
-	timedOut?: boolean;
-	timeout?: ReturnType<typeof setTimeout>;
+type ViewImageDetails = {
+	path: string;
+	mediaType: string;
+	bytes: number;
+	describedBy?: string;
 };
-type ShellCommandDetails = {
-	output: string;
-	command: string;
-	workdir: string;
-	session_id?: number;
-	exit_code?: number | null;
-	signal?: NodeJS.Signals | null;
-	running: boolean;
-	timed_out?: boolean;
-	error?: string;
-};
-type ViewImageDetails = { path: string; mediaType: string; bytes: number };
 
-const DEFAULT_SESSION_YIELD_MS = 1_000;
-const SESSION_OUTPUT_MAX_CHARS = 1_000_000;
-const DEFAULT_OUTPUT_MAX_CHARS = 50_000;
-const DEFAULT_OUTPUT_MAX_LINES = 2_000;
 const MAX_VIEW_IMAGE_BYTES = 20 * 1024 * 1024;
-
-let nextShellSessionId = 1;
-const shellSessions = new Map<number, ShellSession>();
 
 function normalizePathArgument(path: string): string {
 	return path.startsWith("@") ? path.slice(1) : path;
@@ -672,7 +647,9 @@ async function withMutationQueues<T>(
 	paths: string[],
 	fn: () => Promise<T>,
 ): Promise<T> {
-	const unique = [...new Set(paths.map((path) => resolve(path)))].sort();
+	const unique = [...new Set(paths.map((path) => resolve(path)))].sort((a, b) =>
+		a.localeCompare(b),
+	);
 	let run = fn;
 	for (let index = unique.length - 1; index >= 0; index--) {
 		const path = unique[index];
@@ -835,257 +812,6 @@ function timeoutSeconds(params: ShellCommandParams): number | undefined {
 	return Math.ceil(raw / 1000);
 }
 
-function timeoutMilliseconds(
-	params: Pick<ShellCommandParams, "timeout_ms" | "timeout">,
-): number | undefined {
-	const raw =
-		params.timeout_ms ??
-		(params.timeout !== undefined ? params.timeout * 1000 : undefined);
-	if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return undefined;
-	return Math.ceil(raw);
-}
-
-function positiveMilliseconds(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0
-		? Math.ceil(value)
-		: fallback;
-}
-
-function maxOutputChars(maxOutputTokens: unknown): number {
-	if (
-		typeof maxOutputTokens !== "number" ||
-		!Number.isFinite(maxOutputTokens) ||
-		maxOutputTokens <= 0
-	) {
-		return DEFAULT_OUTPUT_MAX_CHARS;
-	}
-	return Math.max(1_000, Math.ceil(maxOutputTokens * 4));
-}
-
-function truncateCommandOutput(
-	output: string,
-	maxChars: number,
-): { output: string; truncated: boolean } {
-	const lines = output.split("\n");
-	let text =
-		lines.length > DEFAULT_OUTPUT_MAX_LINES
-			? lines.slice(-DEFAULT_OUTPUT_MAX_LINES).join("\n")
-			: output;
-	let truncated = text !== output;
-	if (text.length > maxChars) {
-		text = text.slice(text.length - maxChars);
-		truncated = true;
-	}
-	return {
-		output: truncated ? `[output truncated; showing tail]\n${text}` : text,
-		truncated,
-	};
-}
-
-function appendSessionOutput(session: ShellSession, text: string): void {
-	session.output += text;
-	if (session.output.length <= SESSION_OUTPUT_MAX_CHARS) return;
-	const removed = session.output.length - SESSION_OUTPUT_MAX_CHARS;
-	session.output = session.output.slice(removed);
-	session.readOffset = Math.max(0, session.readOffset - removed);
-}
-
-function shellArgs(
-	shellPath: string,
-	command: string,
-	login: boolean | undefined,
-): string[] {
-	const name = shellPath.split(/[\\/]/).pop() ?? shellPath;
-	if (/^(?:bash|zsh|sh|dash|ksh|fish)$/.test(name))
-		return [login ? "-lc" : "-c", command];
-	return [command];
-}
-
-function sessionExited(session: ShellSession): boolean {
-	return session.exitCode !== undefined || session.error !== undefined;
-}
-
-function settleSession(
-	session: ShellSession,
-	waitMs: number | undefined,
-	signal: AbortSignal | undefined,
-): Promise<void> {
-	if (sessionExited(session)) return Promise.resolve();
-	return new Promise((resolveDone) => {
-		let settled = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const cleanup = () => {
-			if (timer) clearTimeout(timer);
-			session.child.off("exit", done);
-			session.child.off("error", done);
-			signal?.removeEventListener("abort", abort);
-		};
-		const done = () => {
-			if (settled) return;
-			settled = true;
-			cleanup();
-			resolveDone();
-		};
-		const abort = () => {
-			if (!sessionExited(session)) session.child.kill("SIGTERM");
-			done();
-		};
-		session.child.once("exit", done);
-		session.child.once("error", done);
-		signal?.addEventListener("abort", abort, { once: true });
-		if (waitMs !== undefined) timer = setTimeout(done, waitMs);
-	});
-}
-
-function sessionResult(
-	session: ShellSession,
-	params: { max_output_tokens?: number },
-	output: string,
-): PiToolResult<ShellCommandDetails> {
-	const running = !sessionExited(session);
-	const truncated = truncateCommandOutput(
-		output,
-		maxOutputChars(params.max_output_tokens),
-	);
-	const lines = [truncated.output.trimEnd() || "(no output)"];
-	if (running) {
-		lines.push(
-			`Process running with session ID ${session.id}. Use write_stdin with this session_id to send input or poll output.`,
-		);
-	} else if (session.timedOut) {
-		lines.push("Process timed out.");
-	} else if (session.error) {
-		lines.push(`Process failed: ${session.error}`);
-	} else {
-		lines.push(`Process exited with code ${session.exitCode ?? 0}.`);
-	}
-	return {
-		content: [{ type: "text", text: lines.join("\n") }],
-		details: {
-			output: truncated.output,
-			command: session.command,
-			workdir: session.workdir,
-			...(running ? { session_id: session.id } : {}),
-			...(session.exitCode !== undefined
-				? { exit_code: session.exitCode }
-				: {}),
-			...(session.signal !== undefined ? { signal: session.signal } : {}),
-			running,
-			...(session.timedOut ? { timed_out: true } : {}),
-			...(session.error ? { error: session.error } : {}),
-		},
-		...(session.error || session.timedOut ? { isError: true } : {}),
-	};
-}
-
-async function executeManagedShellCommand(
-	params: ShellCommandParams,
-	signal: AbortSignal | undefined,
-	ctx: ExtensionContext,
-): Promise<PiToolResult<ShellCommandDetails>> {
-	const workdir = params.workdir
-		? resolveToolPath(ctx.cwd, params.workdir)
-		: ctx.cwd;
-	const shellPath = params.shell?.trim() || process.env.SHELL || "/bin/sh";
-	const id = nextShellSessionId++;
-	const child = spawn(
-		shellPath,
-		shellArgs(shellPath, params.command, params.login),
-		{
-			cwd: workdir,
-			env: process.env,
-			stdio: "pipe",
-		},
-	);
-	const session: ShellSession = {
-		id,
-		command: params.command,
-		workdir,
-		child,
-		output: "",
-		readOffset: 0,
-		startedAt: Date.now(),
-	};
-	shellSessions.set(id, session);
-
-	child.stdout.on("data", (chunk: Buffer) =>
-		appendSessionOutput(session, chunk.toString("utf8")),
-	);
-	child.stderr.on("data", (chunk: Buffer) =>
-		appendSessionOutput(session, chunk.toString("utf8")),
-	);
-	child.once("error", (error) => {
-		session.error = error instanceof Error ? error.message : String(error);
-	});
-	child.once("exit", (code, exitSignal) => {
-		session.exitCode = code;
-		session.signal = exitSignal;
-		if (session.timeout) clearTimeout(session.timeout);
-	});
-
-	const hardTimeout = timeoutMilliseconds(params);
-	if (hardTimeout !== undefined) {
-		session.timeout = setTimeout(() => {
-			session.timedOut = true;
-			if (!sessionExited(session)) child.kill("SIGTERM");
-			setTimeout(() => {
-				if (!sessionExited(session)) child.kill("SIGKILL");
-			}, 1_000).unref?.();
-		}, hardTimeout);
-		session.timeout.unref?.();
-	}
-
-	if (signal?.aborted) child.kill("SIGTERM");
-	const waitMs =
-		params.yield_time_ms === undefined
-			? undefined
-			: positiveMilliseconds(params.yield_time_ms, DEFAULT_SESSION_YIELD_MS);
-	await settleSession(session, waitMs, signal);
-	if (sessionExited(session)) shellSessions.delete(id);
-	session.readOffset = session.output.length;
-	return sessionResult(session, params, session.output);
-}
-
-async function executeWriteStdin(
-	params: WriteStdinParams,
-	signal: AbortSignal | undefined,
-): Promise<PiToolResult<ShellCommandDetails>> {
-	const session = shellSessions.get(params.session_id);
-	if (!session) {
-		return {
-			content: [
-				{
-					type: "text",
-					text: `write_stdin failed: no running shell session ${params.session_id}`,
-				},
-			],
-			details: {
-				output: "",
-				command: "",
-				workdir: "",
-				running: false,
-				error: "session not found",
-			},
-			isError: true,
-		};
-	}
-	if (
-		params.chars &&
-		!session.child.stdin.destroyed &&
-		!sessionExited(session)
-	) {
-		session.child.stdin.write(params.chars);
-	}
-	const waitMs = positiveMilliseconds(
-		params.yield_time_ms,
-		DEFAULT_SESSION_YIELD_MS,
-	);
-	await settleSession(session, waitMs, signal);
-	const output = session.output.slice(session.readOffset);
-	session.readOffset = session.output.length;
-	if (sessionExited(session)) shellSessions.delete(session.id);
-	return sessionResult(session, params, output);
-}
 
 function mediaTypeForPath(path: string): string | undefined {
 	switch (extname(path).toLowerCase()) {
@@ -1108,6 +834,7 @@ function mediaTypeForPath(path: string): string | undefined {
 async function executeViewImage(
 	params: ViewImageParams,
 	ctx: ExtensionContext,
+	signal?: AbortSignal,
 ): Promise<PiToolResult<ViewImageDetails>> {
 	const absolutePath = resolveToolPath(ctx.cwd, params.path);
 	const mediaType = mediaTypeForPath(absolutePath);
@@ -1140,41 +867,75 @@ async function executeViewImage(
 			isError: true,
 		};
 	}
-	let data = bytes.toString("base64");
-	let outputMediaType = mediaType;
-	if (mediaType === "image/bmp") {
-		const converted = await convertToPng(data, mediaType);
-		if (!converted) {
+	let image;
+	try {
+		image = await prepareNativeImageContent(
+			{ data: bytes.toString("base64"), mimeType: mediaType },
+			convertToPng,
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			content: [
+				{
+					type: "text",
+					text: `view_image failed: could not process ${displayPath(ctx, absolutePath)}: ${message}`,
+				},
+			],
+			details: { path: absolutePath, mediaType, bytes: bytes.length },
+			isError: true,
+		};
+	}
+
+	if (!ctx.model?.input?.includes("image")) {
+		try {
+			const described = await describeImageForTextModel(
+				image,
+				displayPath(ctx, absolutePath),
+				signal,
+				ctx,
+			);
 			return {
 				content: [
 					{
 						type: "text",
-						text: `view_image failed: could not convert ${displayPath(ctx, absolutePath)} to a provider-supported image format`,
+						text: `Image description (${described.model}):\n${described.description}`,
 					},
 				],
-				details: { path: absolutePath, mediaType, bytes: bytes.length },
+				details: {
+					path: absolutePath,
+					mediaType: image.mimeType,
+					bytes: bytes.length,
+					describedBy: described.model,
+				},
+			};
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `view_image failed: ${message}`,
+					},
+				],
+				details: {
+					path: absolutePath,
+					mediaType: image.mimeType,
+					bytes: bytes.length,
+				},
 				isError: true,
 			};
 		}
-		data = converted.data;
-		outputMediaType = converted.mimeType;
 	}
 	return {
 		content: [
 			{ type: "text", text: `Viewed image: ${displayPath(ctx, absolutePath)}` },
-			createImageContent(data, outputMediaType),
+			image,
 		],
-		details: { path: absolutePath, mediaType: outputMediaType, bytes: bytes.length },
+		details: { path: absolutePath, mediaType: image.mimeType, bytes: bytes.length },
 	};
 }
 
-function shutdownShellSessions(): void {
-	for (const session of shellSessions.values()) {
-		if (session.timeout) clearTimeout(session.timeout);
-		if (!sessionExited(session)) session.child.kill("SIGTERM");
-	}
-	shellSessions.clear();
-}
 
 function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("repair-session-images", {
@@ -1229,6 +990,7 @@ function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 }
 
 export default function codexCompat(pi: ExtensionAPI): void {
+	codexUsage(pi);
 	let toolActivationState: ToolActivationState = {
 		enabled: false,
 		previousToolNames: [],
@@ -1257,7 +1019,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
-		shutdownShellSessions();
+		await shutdownShellSessions();
 	});
 	pi.on("session_start", (_event, ctx) => syncTools(ctx.model));
 	pi.on("model_select", (event) => syncTools(event.model));
@@ -1294,6 +1056,39 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return executeApplyPatch(params.input, params.workdir, ctx);
 		},
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(
+				theme.fg("toolTitle", theme.bold(formatApplyPatchCall(args))),
+			);
+			return text;
+		},
+		renderResult(result, { expanded }, theme, context) {
+			const raw = resultText(result);
+			const failed =
+				context.isError ||
+				Boolean((result.details as ApplyPatchDetails | undefined)?.error);
+			const summary = summarizeApplyPatchResult(result.details);
+			let display: string;
+			let color: "error" | "success" | "toolOutput";
+			if (failed) {
+				display = raw || summary;
+				color = "error";
+			} else if (expanded) {
+				display = raw;
+				color = "toolOutput";
+			} else {
+				display = `✓ ${summary}`;
+				color = "success";
+			}
+			const styled = display
+				.split("\n")
+				.map((line) => theme.fg(color, line))
+				.join("\n");
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(styled);
+			return text;
+		},
 	});
 
 	pi.registerTool({
@@ -1328,7 +1123,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			shell: Type.Optional(
 				Type.String({
 					description:
-						"Shell executable to use. Defaults to $SHELL, then /bin/sh.",
+						"Shell executable to use. Defaults to Pi's configured shell resolution.",
 				}),
 			),
 			login: Type.Optional(
@@ -1382,7 +1177,15 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				params.yield_time_ms !== undefined ||
 				params.max_output_tokens !== undefined
 			) {
-				return executeManagedShellCommand(params, signal, ctx);
+				const workdir = params.workdir
+					? resolveToolPath(ctx.cwd, params.workdir)
+					: ctx.cwd;
+				return executeManagedShellCommand(
+					{ ...params, workdir },
+					signal,
+					ctx,
+					onUpdate,
+				);
 			}
 
 			const workdir = params.workdir
@@ -1396,6 +1199,50 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				onUpdate as Parameters<typeof bashTool.execute>[3],
 				ctx,
 			);
+		},
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(
+				theme.fg("toolTitle", theme.bold(formatShellCommandCall(args))),
+			);
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			const raw = resultText(result);
+			const details = result.details as ShellCommandDetails | undefined;
+			const failed =
+				context.isError ||
+				Boolean(
+					details?.error ||
+						details?.timed_out ||
+						details?.aborted ||
+						details?.interrupted ||
+						(details?.exit_code !== undefined &&
+							details.exit_code !== null &&
+							details.exit_code !== 0),
+				);
+			let display: string;
+			let color: "accent" | "error" | "success" | "toolOutput";
+			if (options.isPartial) {
+				display = liveOutputPreview(raw);
+				color = "toolOutput";
+			} else if (failed) {
+				display = raw || summarizeShellResult(details);
+				color = "error";
+			} else if (options.expanded) {
+				display = raw;
+				color = "toolOutput";
+			} else {
+				display = `${details?.running ? "↳" : "✓"} ${summarizeShellResult(details)}`;
+				color = details?.running ? "accent" : "success";
+			}
+			const styled = display
+				.split("\n")
+				.map((line) => theme.fg(color, line))
+				.join("\n");
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(styled);
+			return text;
 		},
 	});
 
@@ -1433,8 +1280,52 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			),
 		}),
 		executionMode: "sequential",
-		async execute(_toolCallId, params, signal) {
-			return executeWriteStdin(params, signal);
+		async execute(_toolCallId, params, signal, onUpdate) {
+			return executeWriteStdin(params, signal, onUpdate);
+		},
+		renderCall(args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(
+				theme.fg("toolTitle", theme.bold(formatWriteStdinCall(args))),
+			);
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			const raw = resultText(result);
+			const details = result.details as ShellCommandDetails | undefined;
+			const failed =
+				context.isError ||
+				Boolean(
+					details?.error ||
+						details?.timed_out ||
+						details?.aborted ||
+						details?.interrupted ||
+						(details?.exit_code !== undefined &&
+							details.exit_code !== null &&
+							details.exit_code !== 0),
+				);
+			let display: string;
+			let color: "accent" | "error" | "success" | "toolOutput";
+			if (options.isPartial) {
+				display = liveOutputPreview(raw);
+				color = "toolOutput";
+			} else if (failed) {
+				display = raw || summarizeShellResult(details);
+				color = "error";
+			} else if (options.expanded) {
+				display = raw;
+				color = "toolOutput";
+			} else {
+				display = `${details?.running ? "↳" : "✓"} ${summarizeShellResult(details)}`;
+				color = details?.running ? "accent" : "success";
+			}
+			const styled = display
+				.split("\n")
+				.map((line) => theme.fg(color, line))
+				.join("\n");
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(styled);
+			return text;
 		},
 	});
 
@@ -1447,13 +1338,61 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use view_image when visual inspection of an existing local image is needed.",
 			"view_image accepts a local filesystem `path`; do not use it for remote URLs.",
+			"On a text-only Codex model, view_image delegates visual inspection to an authenticated image-capable model and returns its concise description.",
 		],
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to a local image file." }),
 		}),
 		prepareArguments: prepareViewImageArguments,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeViewImage(params, ctx);
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			return executeViewImage(params, ctx, signal);
+		},
+	});
+
+	pi.registerTool({
+		name: "image_gen",
+		label: "image_gen",
+		description:
+			"Generate a new image from a prompt or edit up to five local or recent conversation images with OpenAI gpt-image-2.",
+		promptSnippet:
+			"Generate or edit images with gpt-image-2, including local and recent conversation references",
+		promptGuidelines: [
+			"Use image_gen when the user requests a new image or asks to edit an existing image.",
+			"For a new image, call image_gen with only `prompt`.",
+			"For edits, use image_gen `referenced_image_paths` when every target has a local path; inspect unseen local images with view_image first.",
+			"Use image_gen `num_last_images_to_include` only when a target has no local path, choosing the smallest recent-image count that includes every target, up to 5.",
+			"Never provide both image_gen `referenced_image_paths` and `num_last_images_to_include`; ask the user to attach missing images when neither mechanism can include every target.",
+		],
+		parameters: Type.Object({
+			prompt: Type.String({
+				description:
+					"Detailed generation prompt or precise editing instructions.",
+			}),
+			referenced_image_paths: Type.Optional(
+				Type.Array(
+					Type.String({
+						description: "Local image path, absolute or relative to the session cwd.",
+					}),
+					{
+						description: "Local images to edit, in prompt-reference order.",
+						maxItems: 5,
+					},
+				),
+			),
+			num_last_images_to_include: Type.Optional(
+				Type.Integer({
+					description:
+						"Number of most recent conversation images to edit when a target has no local path.",
+					minimum: 1,
+					maximum: 5,
+				}),
+			),
+		}),
+		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+			return executeImageGeneration(toolCallId, params, signal, ctx, {
+				convertImage: convertToPng,
+				withFileMutationQueue,
+			});
 		},
 	});
 }

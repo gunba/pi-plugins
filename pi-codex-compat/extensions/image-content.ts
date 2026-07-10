@@ -142,6 +142,35 @@ export function createImageContent(
 	return { type: "image", data, mimeType };
 }
 
+export async function prepareNativeImageContent(
+	input: { data: string; mimeType?: string },
+	convertImage: ImageConverter,
+): Promise<NativeImageContent> {
+	const declaredMimeType = nativeMimeType(input.mimeType);
+	const mimeType = inferMimeType(input.data);
+	if (!mimeType) throw new Error("unsupported or invalid image data");
+	if (declaredMimeType && declaredMimeType !== mimeType) {
+		throw new Error(
+			`image MIME type ${declaredMimeType} does not match ${mimeType} data`,
+		);
+	}
+	if (PROVIDER_IMAGE_MIME_TYPES.has(mimeType)) {
+		return createImageContent(input.data, mimeType);
+	}
+
+	const converted = await convertImage(input.data, mimeType);
+	const convertedMimeType = converted ? inferMimeType(converted.data) : undefined;
+	if (
+		!converted ||
+		!convertedMimeType ||
+		converted.mimeType !== convertedMimeType ||
+		!PROVIDER_IMAGE_MIME_TYPES.has(convertedMimeType)
+	) {
+		throw new Error(`could not convert ${mimeType} to a supported image format`);
+	}
+	return createImageContent(converted.data, convertedMimeType);
+}
+
 export function normalizeLegacyImageBlock(block: unknown): unknown {
 	if (!isRecord(block) || block.type !== "image") return block;
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.10.5",
+  "version": "0.11.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -22,7 +22,6 @@
       "./pi-file-links/extensions/file-links.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
-      "./pi-usage/extensions/usage.ts",
       "./pi-extension-freshness/extensions/extension-freshness.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-session-search/extensions/session-search.ts",
