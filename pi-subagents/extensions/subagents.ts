@@ -23,6 +23,7 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { providerFailureHint } from "./provider-errors.ts";
+import { terminalRunCanHide } from "./run-lifecycle.ts";
 
 // --------------------------------------------------------------------------
 // Constants
@@ -420,14 +421,14 @@ function isCoordinating(a: Beacon): boolean {
   return a.state === "waiting" || activeChildren(a.name).length > 0;
 }
 
-function completedRunReadyToHide(): boolean {
+function terminalRunReadyToHide(): boolean {
   if (!runDir) return false;
   const agents = listAgents().filter((a) => a.name !== "main");
-  return agents.length > 0 && agents.every((a) => a.state === "done" && !isActive(a.name)) && !hasPendingFresh(SELF);
+  return terminalRunCanHide(agents, isActive, hasPendingFresh(SELF));
 }
 
 function hideCompletedRun(ctx: ExtensionContext): void {
-  if (!completedRunReadyToHide()) return;
+  if (!terminalRunReadyToHide()) return;
   if (ctx.mode === "tui") ctx.ui.setWidget(VIEW_KEY, undefined);
   lastSig = undefined;
   runDir = "";
