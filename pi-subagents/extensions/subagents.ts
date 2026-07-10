@@ -1524,7 +1524,7 @@ export default function (pi: ExtensionAPI): void {
     registerChildHooks(pi);
   }
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
     for (const child of kids.values()) child.kill();
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
@@ -1532,6 +1532,7 @@ export default function (pi: ExtensionAPI): void {
     approvalTimer = undefined;
     expandShortcutUnsubscribe?.();
     expandShortcutUnsubscribe = undefined;
+    if (!IS_CHILD && ctx.mode === "tui") ctx.ui.setWidget(VIEW_KEY, undefined);
     uiReady = false;
     lastSig = undefined;
   });
