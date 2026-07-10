@@ -63,14 +63,13 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   live context and the session log, including optional live continuation
   pruning during long runs; follows its global setting and is compatible with
   Anthropic OAuth prune calls.
-- `pi-subagents` — runs background `pi` subagents as a coordinated team.
-  `spawn` starts a named subagent on a task; `message`/`wait` provide a live
-  intercom (agent↔agent and agent↔main); nested spawns are approval-gated by
-  the main agent by default, or by a user confirmation modal when
-  `subagents.nestedSpawnApproval` is `user`; and a styled, on-by-default
-  `/subagents` team view shows the live tree. Subagents inherit the full plugin
-  stack, run headless, resume from their own memory when re-addressed, and stay
-  out of `/resume`.
+- `pi-subagents` — runs background `pi` subagents as a coordinated team with
+  bounded direct-child concurrency and event-driven coordination. Parents choose
+  human first names while Pi assigns task ids and enforces inherited-or-lower
+  thinking levels. A compact status line opens `/subagents`, a virtualized modal
+  for searching the full nested tree, reading branch-aware sessions, messaging,
+  steering, changing thinking, aborting, and killing any descendant directly.
+  Subagents retain isolated resumable sessions and stay out of `/resume`.
 
 ## Install
 

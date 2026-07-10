@@ -1,0 +1,567 @@
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import {
+	decodeKittyPrintable,
+	Key,
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+	type Component,
+} from "@earendil-works/pi-tui";
+
+export type DashboardAgent = {
+	name: string;
+	taskId: string;
+	parent: string | null;
+	taskName: string;
+	state: string;
+	activity?: string;
+	startedAt: number;
+	updatedAt: number;
+	finishedAt?: number;
+	responses?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	contextTokens?: number;
+	cost?: number;
+	model?: string;
+	thinking?: string;
+	lastAssistantText?: string;
+};
+
+export type DashboardSnapshot = {
+	agents: DashboardAgent[];
+	feed: string[];
+	transcript: string[];
+	transcriptError?: string;
+};
+
+export type DashboardAction = {
+	action: "message" | "steer" | "followUp" | "abort" | "kill" | "thinking";
+	name: string;
+};
+
+type AgentRow = { agent: DashboardAgent; depth: number };
+
+const TERMINAL = new Set(["done", "error", "stopped"]);
+const GLYPH: Record<string, string> = {
+	queued: "○",
+	spawning: "◌",
+	running: "●",
+	waiting: "◐",
+	done: "✓",
+	error: "✗",
+	stopped: "■",
+};
+const STATE_COLOR: Record<string, ThemeColor> = {
+	queued: "dim",
+	spawning: "dim",
+	running: "accent",
+	waiting: "warning",
+	done: "success",
+	error: "error",
+	stopped: "dim",
+};
+
+function fitLine(text: string, width: number): string {
+	const safeWidth = Math.max(0, width);
+	const clipped = truncateToWidth(text, safeWidth);
+	return `${clipped}${" ".repeat(Math.max(0, safeWidth - visibleWidth(clipped)))}`;
+}
+
+function boxedLine(
+	content: string,
+	width: number,
+	color: (text: string) => string,
+): string {
+	if (width <= 2) return fitLine(content, width);
+	return color("│") + fitLine(content, width - 2) + color("│");
+}
+
+function borderLine(
+	width: number,
+	left: string,
+	fill: string,
+	right: string,
+	color: (text: string) => string,
+	label?: string,
+): string {
+	if (width <= 2) return color(fill.repeat(Math.max(0, width)));
+	const inner = width - 2;
+	if (!label || visibleWidth(label) + 2 >= inner)
+		return color(`${left}${fill.repeat(inner)}${right}`);
+	const tag = ` ${label} `;
+	const rest = Math.max(0, inner - visibleWidth(tag) - 1);
+	return color(`${left}${fill}`) + tag + color(`${fill.repeat(rest)}${right}`);
+}
+
+function fmtAge(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+	return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function fmtTokens(value = 0): string {
+	if (value < 1000) return `${value}`;
+	if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+	if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
+	return `${(value / 1_000_000).toFixed(1)}M`;
+}
+
+export function flattenDashboardAgents(agents: DashboardAgent[]): AgentRow[] {
+	const byParent = new Map<string, DashboardAgent[]>();
+	const byName = new Map(agents.map((agent) => [agent.name, agent]));
+	for (const agent of agents) {
+		if (agent.name === "main") continue;
+		const parent =
+			agent.parent && byName.has(agent.parent) ? agent.parent : "main";
+		const siblings = byParent.get(parent) ?? [];
+		siblings.push(agent);
+		byParent.set(parent, siblings);
+	}
+	for (const siblings of byParent.values())
+		siblings.sort(
+			(a, b) => a.startedAt - b.startedAt || a.name.localeCompare(b.name),
+		);
+
+	const rows: AgentRow[] = [];
+	const seen = new Set<string>();
+	const walk = (parent: string, depth: number): void => {
+		for (const agent of byParent.get(parent) ?? []) {
+			if (seen.has(agent.name)) continue;
+			seen.add(agent.name);
+			rows.push({ agent, depth });
+			walk(agent.name, depth + 1);
+		}
+	};
+	walk("main", 0);
+	for (const agent of agents) {
+		if (agent.name !== "main" && !seen.has(agent.name))
+			rows.push({ agent, depth: 0 });
+	}
+	return rows;
+}
+
+export function orchestrationSummary(agents: DashboardAgent[]): string {
+	const workers = agents.filter((agent) => agent.name !== "main");
+	const active = workers.filter((agent) => !TERMINAL.has(agent.state)).length;
+	const waiting = workers.filter(
+		(agent) => agent.state === "waiting" || agent.state === "queued",
+	).length;
+	const done = workers.filter((agent) => agent.state === "done").length;
+	const attention = workers.filter(
+		(agent) => agent.state === "error" || agent.state === "stopped",
+	).length;
+	const parts = [`${active} active`];
+	if (waiting) parts.push(`${waiting} waiting/queued`);
+	if (done) parts.push(`${done} done`);
+	if (attention) parts.push(`${attention} need attention`);
+	return `Subagents: ${parts.join(" · ")}  —  /subagents`;
+}
+
+export class SubagentDashboard implements Component {
+	private selectedName: string | undefined;
+	private filter = "";
+	private searching = false;
+	private transcriptOffset = 0;
+	private cachedWidth: number | undefined;
+	private cachedLines: string[] | undefined;
+	private snapshot: DashboardSnapshot;
+	private readonly theme: Theme;
+	private readonly requestRender: () => void;
+	private readonly done: (action: DashboardAction | null) => void;
+
+	constructor(
+		snapshot: DashboardSnapshot,
+		initialName: string | undefined,
+		theme: Theme,
+		requestRender: () => void,
+		done: (action: DashboardAction | null) => void,
+	) {
+		this.snapshot = snapshot;
+		this.theme = theme;
+		this.requestRender = requestRender;
+		this.done = done;
+		this.selectedName = initialName;
+		this.clampSelection();
+	}
+
+	getSelectedName(): string | undefined {
+		return this.selectedName;
+	}
+
+	update(snapshot: DashboardSnapshot): void {
+		this.snapshot = snapshot;
+		this.clampSelection();
+		this.invalidate();
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	handleInput(data: string): void {
+		if (this.searching) {
+			this.handleSearchInput(data);
+			return;
+		}
+		if (this.handleNavigationInput(data)) return;
+		const actions: Record<string, DashboardAction["action"]> = {
+			m: "message",
+			s: "steer",
+			f: "followUp",
+			a: "abort",
+			x: "kill",
+			t: "thinking",
+		};
+		const action = actions[data];
+		if (action && this.selectedName)
+			this.done({ action, name: this.selectedName });
+	}
+
+	private handleSearchInput(data: string): void {
+		if (
+			matchesKey(data, Key.escape) ||
+			matchesKey(data, Key.enter) ||
+			matchesKey(data, Key.return)
+		) {
+			this.searching = false;
+		} else if (
+			matchesKey(data, Key.backspace) ||
+			matchesKey(data, Key.delete)
+		) {
+			this.filter = [...this.filter].slice(0, -1).join("");
+			this.clampSelection(true);
+		} else if (matchesKey(data, Key.ctrl("u"))) {
+			this.filter = "";
+			this.clampSelection(true);
+		} else {
+			const decoded = decodeKittyPrintable(data);
+			const printable =
+				decoded ?? (/^[^\x00-\x1f\x7f]$/.test(data) ? data : undefined);
+			if (printable) {
+				this.filter += printable;
+				this.clampSelection(true);
+			}
+		}
+		this.invalidateAndRender();
+	}
+
+	private handleNavigationInput(data: string): boolean {
+		const command = this.navigationCommand(data);
+		if (!command) return false;
+		if (command === "close") this.done(null);
+		if (command === "search") {
+			this.searching = true;
+			this.invalidateAndRender();
+		}
+		if (command === "up") this.moveSelection(-1);
+		if (command === "down") this.moveSelection(1);
+		if (command === "pageUp") {
+			this.transcriptOffset = Math.min(
+				this.snapshot.transcript.length,
+				this.transcriptOffset + 12,
+			);
+			this.invalidateAndRender();
+		}
+		if (command === "pageDown") {
+			this.transcriptOffset = Math.max(0, this.transcriptOffset - 12);
+			this.invalidateAndRender();
+		}
+		return true;
+	}
+
+	private navigationCommand(
+		data: string,
+	): "close" | "search" | "up" | "down" | "pageUp" | "pageDown" | undefined {
+		if (matchesKey(data, Key.escape) || data === "q") return "close";
+		if (data === "/") return "search";
+		if (matchesKey(data, Key.up) || data === "k") return "up";
+		if (matchesKey(data, Key.down) || data === "j") return "down";
+		if (matchesKey(data, Key.pageUp)) return "pageUp";
+		if (matchesKey(data, Key.pageDown)) return "pageDown";
+		return undefined;
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		if (this.cachedLines && this.cachedWidth === safeWidth)
+			return this.cachedLines;
+
+		const color = (text: string) => this.theme.fg("accent", text);
+		const rows = this.filteredRows();
+		const selected = rows.find((row) => row.agent.name === this.selectedName);
+		const lines: string[] = [
+			borderLine(safeWidth, "╭", "─", "╮", color, " subagent orchestration "),
+			boxedLine(
+				` ${this.theme.fg("text", orchestrationSummary(this.snapshot.agents))}`,
+				safeWidth,
+				color,
+			),
+			boxedLine(
+				this.searching
+					? ` Search: ${this.filter || this.theme.fg("dim", "type a name, task id, task, or state")}`
+					: this.theme.fg(
+							"dim",
+							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · s steer · f follow-up · t thinking · a abort · x kill · Esc close",
+						),
+				safeWidth,
+				color,
+			),
+			borderLine(safeWidth, "├", "─", "┤", color),
+		];
+
+		if (rows.length === 0) {
+			lines.push(
+				boxedLine(
+					this.theme.fg(
+						"warning",
+						this.filter
+							? ` No matches for ${JSON.stringify(this.filter)}`
+							: " No subagents in this run",
+					),
+					safeWidth,
+					color,
+				),
+			);
+		} else if (safeWidth >= 100) {
+			this.renderSplit(lines, rows, selected, safeWidth, color);
+		} else {
+			this.renderStacked(lines, rows, selected, safeWidth, color);
+		}
+
+		const position = selected
+			? `${rows.findIndex((row) => row.agent.name === selected.agent.name) + 1}/${rows.length}`
+			: `0/${rows.length}`;
+		lines.push(borderLine(safeWidth, "╰", "─", "╯", color, position));
+		this.cachedWidth = safeWidth;
+		this.cachedLines = lines;
+		return lines;
+	}
+
+	private renderSplit(
+		lines: string[],
+		rows: AgentRow[],
+		selected: AgentRow | undefined,
+		width: number,
+		color: (text: string) => string,
+	): void {
+		const inner = width - 2;
+		const leftWidth = Math.max(42, Math.floor(inner * 0.44));
+		const rightWidth = inner - leftWidth - 1;
+		const visibleRows = this.visibleRows(rows, 28);
+		const detail = this.detailLines(selected, 28);
+		const height = Math.max(12, visibleRows.length, detail.length);
+		for (let index = 0; index < height; index++) {
+			const row = visibleRows[index];
+			const left = row
+				? this.renderAgentRow(
+						row.row,
+						row.row.agent.name === this.selectedName,
+						leftWidth,
+					)
+				: "";
+			const right = detail[index] ?? "";
+			lines.push(
+				color("│") +
+					fitLine(left, leftWidth) +
+					color("│") +
+					fitLine(right, rightWidth) +
+					color("│"),
+			);
+		}
+	}
+
+	private renderStacked(
+		lines: string[],
+		rows: AgentRow[],
+		selected: AgentRow | undefined,
+		width: number,
+		color: (text: string) => string,
+	): void {
+		for (const row of this.visibleRows(rows, 9)) {
+			lines.push(
+				boxedLine(
+					this.renderAgentRow(
+						row.row,
+						row.row.agent.name === this.selectedName,
+						width - 2,
+					),
+					width,
+					color,
+				),
+			);
+		}
+		lines.push(borderLine(width, "├", "─", "┤", color, " selected agent "));
+		for (const line of this.detailLines(selected, 16))
+			lines.push(boxedLine(line, width, color));
+	}
+
+	private renderAgentRow(
+		row: AgentRow,
+		selected: boolean,
+		width: number,
+	): string {
+		const agent = row.agent;
+		const stateColor = STATE_COLOR[agent.state] ?? "muted";
+		const branch =
+			row.depth === 0 ? "" : `${"  ".repeat(Math.min(row.depth, 4))}↳ `;
+		const task = agent.taskName ? ` · ${agent.taskName}` : "";
+		const text = `${selected ? "→" : " "} ${branch}${this.theme.fg(stateColor, GLYPH[agent.state] ?? "•")} ${this.theme.bold(agent.name)} · ${agent.taskId}  ${this.theme.fg(stateColor, agent.state)}${task}`;
+		return selected
+			? this.theme.fg("accent", truncateToWidth(text, width))
+			: truncateToWidth(text, width);
+	}
+
+	private detailLines(
+		selected: AgentRow | undefined,
+		maxRows: number,
+	): string[] {
+		if (!selected)
+			return [this.theme.fg("dim", "Select an agent to inspect it")];
+		const metadata = this.agentMetadata(selected.agent);
+		const room = Math.max(
+			1,
+			maxRows - metadata.length - Math.min(4, this.snapshot.feed.length + 1),
+		);
+		const transcript = this.transcriptWindow(room).map((line) =>
+			this.theme.fg("muted", line),
+		);
+		if (transcript.length === 0)
+			transcript.push(
+				this.theme.fg(
+					"dim",
+					this.snapshot.transcriptError ?? "No session entries yet",
+				),
+			);
+		return [...metadata, ...transcript, ...this.feedLines()].slice(0, maxRows);
+	}
+
+	private agentMetadata(agent: DashboardAgent): string[] {
+		const duration = fmtAge((agent.finishedAt ?? Date.now()) - agent.startedAt);
+		const heading = this.theme.fg(
+			"accent",
+			this.theme.bold(`${agent.name} · ${agent.taskId}`),
+		);
+		const metadata = [
+			heading,
+			`${agent.state}${agent.activity ? ` · ${agent.activity}` : ""} · ${duration}`,
+			this.modelLine(agent),
+			this.statsLine(agent),
+			agent.taskName ? `Task: ${agent.taskName}` : undefined,
+			"",
+			this.theme.fg("accent", "── session tail ──"),
+		];
+		const lines = metadata.filter(
+			(line): line is string => line !== undefined && line !== "",
+		);
+		lines.push("");
+		return lines;
+	}
+
+	private modelLine(agent: DashboardAgent): string | undefined {
+		if (agent.model)
+			return `Model: ${agent.model}${agent.thinking ? ` · thinking ${agent.thinking}` : ""}`;
+		return agent.thinking ? `Thinking: ${agent.thinking}` : undefined;
+	}
+
+	private statsLine(agent: DashboardAgent): string | undefined {
+		const parts: string[] = [];
+		if (agent.responses) parts.push(`${agent.responses} responses`);
+		if (agent.inputTokens || agent.outputTokens)
+			parts.push(
+				`↑${fmtTokens(agent.inputTokens)} ↓${fmtTokens(agent.outputTokens)}`,
+			);
+		if (agent.contextTokens)
+			parts.push(`ctx ${fmtTokens(agent.contextTokens)}`);
+		if (agent.cost) parts.push(`$${agent.cost.toFixed(4)}`);
+		return parts.length ? parts.join(" · ") : undefined;
+	}
+
+	private feedLines(): string[] {
+		if (!this.snapshot.feed.length) return [];
+		return [
+			"",
+			this.theme.fg("accent", "── recent coordination ──"),
+			...this.snapshot.feed.slice(-2).map((line) => this.theme.fg("dim", line)),
+		];
+	}
+
+	private transcriptWindow(maxRows: number): string[] {
+		const lines = this.snapshot.transcript;
+		const end = Math.max(0, lines.length - this.transcriptOffset);
+		const start = Math.max(0, end - maxRows);
+		return lines.slice(start, end);
+	}
+
+	private filteredRows(): AgentRow[] {
+		const rows = flattenDashboardAgents(this.snapshot.agents);
+		const query = this.filter.trim().toLowerCase();
+		if (!query) return rows;
+		return rows.filter(({ agent }) =>
+			[
+				agent.name,
+				agent.taskId,
+				agent.taskName,
+				agent.state,
+				agent.activity ?? "",
+				agent.model ?? "",
+				agent.thinking ?? "",
+			]
+				.join(" ")
+				.toLowerCase()
+				.includes(query),
+		);
+	}
+
+	private visibleRows(
+		rows: AgentRow[],
+		maxRows: number,
+	): Array<{ row: AgentRow; index: number }> {
+		const selectedIndex = Math.max(
+			0,
+			rows.findIndex((row) => row.agent.name === this.selectedName),
+		);
+		const windowSize = Math.min(maxRows, rows.length);
+		let start = Math.max(0, selectedIndex - Math.floor(windowSize / 2));
+		start = Math.min(start, Math.max(0, rows.length - windowSize));
+		return rows
+			.slice(start, start + windowSize)
+			.map((row, offset) => ({ row, index: start + offset }));
+	}
+
+	private moveSelection(delta: number): void {
+		const rows = this.filteredRows();
+		if (rows.length === 0) return;
+		const current = Math.max(
+			0,
+			rows.findIndex((row) => row.agent.name === this.selectedName),
+		);
+		const next = Math.max(0, Math.min(rows.length - 1, current + delta));
+		const selected = rows[next];
+		if (!selected) return;
+		this.selectedName = selected.agent.name;
+		this.transcriptOffset = 0;
+		this.invalidateAndRender();
+	}
+
+	private clampSelection(reset = false): void {
+		const rows = this.filteredRows();
+		if (rows.length === 0) {
+			this.selectedName = undefined;
+			return;
+		}
+		const first = rows[0];
+		if (
+			(reset || !rows.some((row) => row.agent.name === this.selectedName)) &&
+			first
+		)
+			this.selectedName = first.agent.name;
+	}
+
+	private invalidateAndRender(): void {
+		this.invalidate();
+		this.requestRender();
+	}
+}
