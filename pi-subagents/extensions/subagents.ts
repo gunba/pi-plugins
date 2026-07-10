@@ -1540,6 +1540,8 @@ export default function (pi: ExtensionAPI): void {
   // Root + interactive only: the team view and its watchdog (registered once).
   pi.on("session_start", (_event, ctx) => {
     if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
+    ctx.ui.setWidget(VIEW_KEY, undefined);
+    lastSig = undefined;
     uiReady = true;
     viewEnabled = loadView();
     installExpandShortcut(ctx);
