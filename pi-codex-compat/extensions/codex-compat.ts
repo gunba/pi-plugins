@@ -14,7 +14,16 @@ import {
 	createImageContent,
 	normalizeProviderImageMessages,
 } from "./image-content.ts";
+import {
+	syncCodexCompatTools,
+	type ToolActivationState,
+} from "./model-tools.ts";
 import { repairSessionImageFile } from "./session-image-repair.ts";
+import {
+	prepareApplyPatchArguments,
+	prepareShellCommandArguments,
+	prepareViewImageArguments,
+} from "./tool-arguments.ts";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -130,17 +139,6 @@ const MAX_VIEW_IMAGE_BYTES = 20 * 1024 * 1024;
 let nextShellSessionId = 1;
 const shellSessions = new Map<number, ShellSession>();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function firstString(...values: unknown[]): string | undefined {
-	for (const value of values) {
-		if (typeof value === "string" && value.length > 0) return value;
-	}
-	return undefined;
-}
-
 function normalizePathArgument(path: string): string {
 	return path.startsWith("@") ? path.slice(1) : path;
 }
@@ -156,36 +154,6 @@ function resolveToolPath(baseDir: string, path: string): string {
 function displayPath(ctx: ExtensionContext, absolutePath: string): string {
 	const rel = relative(ctx.cwd, absolutePath);
 	return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : absolutePath;
-}
-
-function prepareApplyPatchArguments(args: unknown): ApplyPatchParams {
-	if (typeof args === "string") return { input: args };
-	if (!isRecord(args)) return args as ApplyPatchParams;
-
-	const command = args.command;
-	if (Array.isArray(command)) {
-		const commandName = command[0];
-		const body = command[1];
-		if (
-			(commandName === "apply_patch" || commandName === "applypatch") &&
-			typeof body === "string"
-		) {
-			return { input: body, workdir: firstString(args.workdir) };
-		}
-	}
-
-	const input = firstString(args.input, args.patch, args.body, args.text);
-	if (input !== undefined) return { input, workdir: firstString(args.workdir) };
-	return args as ApplyPatchParams;
-}
-
-function prepareShellCommandArguments(args: unknown): ShellCommandParams {
-	if (typeof args === "string") return { command: args };
-	if (!isRecord(args)) return args as ShellCommandParams;
-	const command = firstString(args.command, args.cmd, args.script);
-	return command === undefined
-		? (args as ShellCommandParams)
-		: ({ ...args, command } as ShellCommandParams);
 }
 
 function stripQuotedContent(command: string): string {
@@ -1261,6 +1229,22 @@ function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 }
 
 export default function codexCompat(pi: ExtensionAPI): void {
+	let toolActivationState: ToolActivationState = {
+		enabled: false,
+		previousToolNames: [],
+	};
+	const syncTools = (model: Parameters<typeof syncCodexCompatTools>[1]) => {
+		const result = syncCodexCompatTools(
+			pi.getActiveTools(),
+			model,
+			toolActivationState,
+		);
+		toolActivationState = result.state;
+		if (result.activeTools.join("\0") !== pi.getActiveTools().join("\0")) {
+			pi.setActiveTools(result.activeTools);
+		}
+	};
+
 	// Older pi-codex-compat releases persisted Anthropic wire-format image
 	// blocks in session history. Normalize them before provider serialization so
 	// existing sessions, including resumable subagents, remain usable.
@@ -1275,6 +1259,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async () => {
 		shutdownShellSessions();
 	});
+	pi.on("session_start", (_event, ctx) => syncTools(ctx.model));
+	pi.on("model_select", (event) => syncTools(event.model));
 	registerSessionImageRepairCommand(pi);
 
 	pi.registerTool({
@@ -1465,6 +1451,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			path: Type.String({ description: "Path to a local image file." }),
 		}),
+		prepareArguments: prepareViewImageArguments,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return executeViewImage(params, ctx);
 		},

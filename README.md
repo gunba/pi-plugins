@@ -20,6 +20,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   blocks and normalises image results written by older releases before provider
   requests, including when sessions are resumed. `/repair-session-images`
   creates a backup and permanently rewrites those blocks in the current session.
+  The Codex-shaped tool overlay activates only for Codex-like models, preserves
+  unrelated tools, and exposes `view_image` only to models that accept images.
 - `pi-file-links` — turns project-relative paths, absolute Linux paths, tilde
   paths, Windows paths, UNC paths, and existing paths with spaces into
   clickable terminal file links while stripping generated links before model
