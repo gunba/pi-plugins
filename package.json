@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -8,6 +8,11 @@
     "pi-extension"
   ],
   "type": "module",
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "test": "node --test pi-codex-compat/tests/*.test.mjs pi-subagents/tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
   "pi": {
     "extensions": [
       "./pi-fixes/extensions/effectiveness.ts",
@@ -50,5 +55,12 @@
   "dependencies": {
     "js-tiktoken": "^1.0.21",
     "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
   }
 }

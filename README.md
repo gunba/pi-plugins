@@ -16,7 +16,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   preambles, moves, and heredoc bodies; `shell_command` maps Codex-style
   command/workdir/timeout fields onto Pi's bash backend while preserving
   context-mode HTTP-output guardrails, and can return resumable sessions for
-  `write_stdin` when `yield_time_ms` is used.
+  `write_stdin` when `yield_time_ms` is used. `view_image` emits Pi-native image
+  blocks and normalises image results written by older releases before provider
+  requests, including when sessions are resumed. `/repair-session-images`
+  creates a backup and permanently rewrites those blocks in the current session.
 - `pi-file-links` — turns project-relative paths, absolute Linux paths, tilde
   paths, Windows paths, UNC paths, and existing paths with spaces into
   clickable terminal file links while stripping generated links before model
@@ -109,6 +112,17 @@ pi update
 The package manifest at the repository root loads the extension files from the
 `pi-*` subdirectories. Keep plugin directories and package names prefixed with
 `pi-`.
+
+Install the pinned development dependencies and run the same strict typecheck
+and unit tests as CI:
+
+```bash
+npm ci
+npm run check
+```
+
+The Pi packages remain optional runtime peers; their pinned development copies
+make extension API changes visible to TypeScript before release.
 
 The footer stats line derives its token breakdown from the per-message `usage`
 Pi already records (input / cacheRead / cacheWrite / output and matching

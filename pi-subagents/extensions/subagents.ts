@@ -22,6 +22,7 @@ import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendi
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { providerFailureHint } from "./provider-errors.ts";
 
 // --------------------------------------------------------------------------
 // Constants
@@ -255,11 +256,17 @@ function writeResultFile(name: string, messages: unknown[]): string {
   return path;
 }
 
-function resultReadyMessage(name: string, path: string, state: "done" | "attention", errorMessage?: string): string {
+function resultReadyMessage(
+  name: string,
+  path: string,
+  state: "done" | "attention",
+  errorMessage?: string,
+  recoveryHint?: string,
+): string {
   const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
   const label = beacon?.taskName ? ` · ${beacon.taskName}` : "";
   const head = state === "done" ? `Completed${label}.` : `Needs attention${label}.${errorMessage ? ` ${errorMessage}` : ""}`;
-  return `${head}\nResult file: ${path}`;
+  return `${head}${recoveryHint ? `\nRecovery: ${recoveryHint}` : ""}\nResult file: ${path}`;
 }
 
 // Persisted view toggle (mirrors pi-memedit's settings.json approach).
@@ -1063,6 +1070,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
     const messages = (event as { messages?: unknown[] }).messages ?? [];
     const status = finalAssistantStatus(messages);
     const needsAttention = statusNeedsAttention(status);
+    const recoveryHint = needsAttention ? providerFailureHint(status) : undefined;
 
     if (!needsAttention && hasTeamWork(SELF)) {
       writeBeacon(SELF, { state: "running", activity: "must wait" });
@@ -1077,7 +1085,13 @@ function registerChildHooks(pi: ExtensionAPI): void {
         id: rid(),
         from: SELF,
         to: PARENT,
-        body: resultReadyMessage(SELF, resultFile, needsAttention ? "attention" : "done", status.errorMessage),
+        body: resultReadyMessage(
+          SELF,
+          resultFile,
+          needsAttention ? "attention" : "done",
+          status.errorMessage,
+          recoveryHint,
+        ),
         kind: needsAttention ? "attention" : "completion",
         ts: now(),
       });

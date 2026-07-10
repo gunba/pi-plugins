@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import {
+	convertToPng,
 	createBashToolDefinition,
 	type AgentToolResult,
 	type ExtensionAPI,
@@ -9,6 +10,11 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+	createImageContent,
+	normalizeProviderImageMessages,
+} from "./image-content.ts";
+import { repairSessionImageFile } from "./session-image-repair.ts";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -1166,15 +1172,31 @@ async function executeViewImage(
 			isError: true,
 		};
 	}
+	let data = bytes.toString("base64");
+	let outputMediaType = mediaType;
+	if (mediaType === "image/bmp") {
+		const converted = await convertToPng(data, mediaType);
+		if (!converted) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `view_image failed: could not convert ${displayPath(ctx, absolutePath)} to a provider-supported image format`,
+					},
+				],
+				details: { path: absolutePath, mediaType, bytes: bytes.length },
+				isError: true,
+			};
+		}
+		data = converted.data;
+		outputMediaType = converted.mimeType;
+	}
 	return {
 		content: [
 			{ type: "text", text: `Viewed image: ${displayPath(ctx, absolutePath)}` },
-			{
-				type: "image",
-				source: { type: "base64", mediaType, data: bytes.toString("base64") },
-			} as never,
+			createImageContent(data, outputMediaType),
 		],
-		details: { path: absolutePath, mediaType, bytes: bytes.length },
+		details: { path: absolutePath, mediaType: outputMediaType, bytes: bytes.length },
 	};
 }
 
@@ -1186,10 +1208,74 @@ function shutdownShellSessions(): void {
 	shellSessions.clear();
 }
 
+function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
+	pi.registerCommand("repair-session-images", {
+		description:
+			"Back up and permanently normalize legacy image blocks in the current session",
+		handler: async (args, ctx) => {
+			const option = args.trim();
+			if (option && option !== "--yes") {
+				ctx.ui.notify("Usage: /repair-session-images [--yes]", "warning");
+				return;
+			}
+
+			await ctx.waitForIdle();
+			const sessionPath = ctx.sessionManager.getSessionFile();
+			if (!sessionPath) {
+				ctx.ui.notify("The current session is not persisted to a file.", "warning");
+				return;
+			}
+
+			try {
+				const result = await repairSessionImageFile(
+					sessionPath,
+					convertToPng,
+					async ({ changedEntries, changedBlocks }) => {
+						if (option === "--yes") return true;
+						if (!ctx.hasUI) return false;
+						return ctx.ui.confirm(
+							"Repair session images?",
+							`Normalize ${changedBlocks} image block(s) in ${changedEntries} session entr${changedEntries === 1 ? "y" : "ies"}. The original file will be backed up first.`,
+						);
+					},
+				);
+
+				if (result.changedEntries === 0) {
+					ctx.ui.notify("No legacy or provider-incompatible image blocks found.", "info");
+					return;
+				}
+				if (!result.applied) {
+					ctx.ui.notify("Session image repair cancelled.", "info");
+					return;
+				}
+				ctx.ui.notify(
+					`Repaired ${result.changedBlocks} image block(s). Backup: ${result.backupPath}`,
+					"info",
+				);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Session image repair failed: ${message}`, "error");
+			}
+		},
+	});
+}
+
 export default function codexCompat(pi: ExtensionAPI): void {
+	// Older pi-codex-compat releases persisted Anthropic wire-format image
+	// blocks in session history. Normalize them before provider serialization so
+	// existing sessions, including resumable subagents, remain usable.
+	pi.on("context", async (event) => {
+		const messages = await normalizeProviderImageMessages(
+			event.messages,
+			convertToPng,
+		);
+		if (messages !== event.messages) return { messages };
+	});
+
 	pi.on("session_shutdown", async () => {
 		shutdownShellSessions();
 	});
+	registerSessionImageRepairCommand(pi);
 
 	pi.registerTool({
 		name: "apply_patch",
