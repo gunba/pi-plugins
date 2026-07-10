@@ -38,6 +38,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, MCP, and subagent configuration.
+- `pi-session-search` — adds `/session-search`, an exact-match modal for
+  finding and resuming saved Pi sessions with snippets, all/current-cwd scope
+  switching, regex, quoted phrases, date/path/name filters, a cached session
+  index, and `Ctrl+A` background agent hunts for vague natural-language asks.
 - `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
   git repository, with generated package installs, sessions, caches, tmp files,
   and local auth state kept machine-local.
