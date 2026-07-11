@@ -7,7 +7,7 @@ Run delegated work in isolated background `pi` processes through a Codex V2-shap
 - `spawn_agent(task_name, message)` creates a direct child at `<caller-path>/<task_name>`. Task names use lowercase ASCII letters, digits, and underscores.
 - `send_message(target, message, reply_to?)` stores cooperative mail independently of turn activation. Use `reply_to` for correlated request responses.
 - `followup_task(target, message)` starts or queues a new turn in an existing task's saved session.
-- `wait_agent(timeout_ms?)` waits for mailbox activity, child lifecycle changes, user steering, or a timeout. Normal calls omit `timeout_ms` and use the 30-second default; explicit values are normalized into the 10-second through one-hour range.
+- `wait_agent(timeout_ms?)` waits for mailbox activity, child lifecycle changes, or user steering. Normal calls omit `timeout_ms` and remain suspended until real team activity; explicit polling deadlines are normalized into the 10-second through one-hour range.
 - `interrupt_agent(target)` gracefully interrupts the current turn while preserving the task's resumable session. It also acknowledges a claimed coordination event from that task so the parent can resume waiting.
 - `list_agents(path_prefix?)` returns canonical task paths, Codex-shaped statuses, and the latest task summary.
 - `inspect_agent(target)` lets `/root` read any descendant's active session branch, including messages, reasoning, tool calls/results, provider errors, compactions, and model changes.
@@ -33,7 +33,7 @@ The dashboard provides:
 
 - **Canonical identity.** `/root` is the root task. Each child adds one validated segment, so nested work has stable paths such as `/root/research/history`.
 - **Bounded direct fan-out.** A parent runs at most 12 direct children concurrently by default. Additional accepted tasks remain visible as `pending_init` and launch as slots free.
-- **Event-driven coordination.** Parents watch their inbox and direct children. `wait_agent` also has a bounded timeout and responds to user steering.
+- **Event-driven coordination.** Parents watch their inbox and descendants. `wait_agent` stays suspended without consuming model turns until activity occurs, while user steering remains immediately interruptible.
 - **Atomic state.** Beacon replacement, path reservation, and mailbox claims are atomic. Replies are correlated with their expected sender.
 - **Root coordination gate.** While descendants are active or child mail is unread, the parent remains a coordinator. Collaboration tools handle normal coordination; a claimed child request may use the tools needed to prepare its response. `/root` retains direct inspection and control at every depth.
 - **Live control.** Running children watch a dedicated control inbox for steering, follow-up turns, interruption, and thinking changes.

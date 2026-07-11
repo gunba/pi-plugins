@@ -162,7 +162,7 @@ test("root registration exposes tools without calling runtime actions during loa
 	const waitTool = byName.get("wait_agent");
 	assert.equal(waitTool.parameters.properties.timeout_ms.minimum, 10_000);
 	assert.equal(waitTool.parameters.properties.timeout_ms.maximum, 3_600_000);
-	assert.equal(waitTool.parameters.properties.timeout_ms.default, 30_000);
+	assert.equal(waitTool.parameters.properties.timeout_ms.default, undefined);
 	assert.deepEqual(waitTool.prepareArguments({}), {});
 	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 1000 }), {
 		timeout_ms: 10_000,
@@ -404,6 +404,16 @@ test("model tools route exclusively by canonical task path", async () => {
 			.execute("wait-short", { timeout_ms: 9999 }, undefined, undefined, {}),
 		/at least 10000/,
 	);
+	const waitController = new AbortController();
+	const abortWait = setTimeout(() => waitController.abort(), 20);
+	const unboundedWait = await byName
+		.get("wait_agent")
+		.execute("wait-unbounded", {}, waitController.signal, undefined, {});
+	clearTimeout(abortWait);
+	assert.deepEqual(toolPayload(unboundedWait), {
+		message: "Wait interrupted by new input.",
+		timed_out: false,
+	});
 	const interrupted = await byName
 		.get("interrupt_agent")
 		.execute(
@@ -447,12 +457,7 @@ test("interrupting a stale sender clears its claimed coordination event", async 
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
 	}
-	const rootInbox = join(
-		runDir,
-		"tasks",
-		taskStorageKey("/root"),
-		"inbox",
-	);
+	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
 	mkdirSync(rootInbox, { recursive: true });
 	writeFileSync(
 		join(rootInbox, "stale.json"),
@@ -476,22 +481,14 @@ test("interrupting a stale sender clears its claimed coordination event", async 
 		on: () => {},
 	});
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	await byName
-		.get("wait_agent")
-		.execute("claim", {}, undefined, undefined, {});
+	await byName.get("wait_agent").execute("claim", {}, undefined, undefined, {});
 	const pending = await byName
 		.get("wait_agent")
 		.execute("pending", {}, undefined, undefined, {});
 	assert.match(pending.details.display, /still pending/i);
 	const interrupted = await byName
 		.get("interrupt_agent")
-		.execute(
-			"interrupt",
-			{ target: "/root/stale" },
-			undefined,
-			undefined,
-			{},
-		);
+		.execute("interrupt", { target: "/root/stale" }, undefined, undefined, {});
 	assert.match(interrupted.details.display, /cleared the pending event/i);
 	const settled = await byName
 		.get("wait_agent")

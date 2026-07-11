@@ -69,7 +69,6 @@ const MAX_ACTIVE_CHILDREN = positiveEnvInt("PI_SUBAGENTS_MAX_ACTIVE") ?? 12;
 const ASSISTANT_PREVIEW_MAX = 2000;
 const ROOT_TASK_PATH = "/root";
 const RUN_SCHEMA_VERSION = 2;
-const WAIT_DEFAULT_MS = 30_000;
 const WAIT_MIN_MS = 10_000;
 const WAIT_MAX_MS = 3_600_000;
 const COORDINATION_NOTICE =
@@ -1517,20 +1516,27 @@ function statusForModel(beacon: Beacon): unknown {
 	return "not_found";
 }
 
-function waitTimeout(value: number | undefined): number {
-	const timeout = value ?? WAIT_DEFAULT_MS;
-	if (!Number.isInteger(timeout) || timeout < WAIT_MIN_MS)
+function waitTimeout(value: number): number {
+	if (!Number.isInteger(value) || value < WAIT_MIN_MS)
 		throw new Error(`timeout_ms must be at least ${WAIT_MIN_MS}`);
-	if (timeout > WAIT_MAX_MS)
+	if (value > WAIT_MAX_MS)
 		throw new Error(`timeout_ms must be at most ${WAIT_MAX_MS}`);
-	return timeout;
+	return value;
 }
 
-async function waitForTeamEventWithTimeout(
+async function waitForTeamEventOrTimeout(
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
-	timeoutMs: number,
+	timeoutMs: number | undefined,
 ): Promise<{ event?: string; timedOut: boolean; interrupted: boolean }> {
+	if (timeoutMs === undefined) {
+		const event = await waitForTeamEvent(ctx, signal);
+		return {
+			event,
+			timedOut: false,
+			interrupted: Boolean(signal?.aborted),
+		};
+	}
 	const controller = new AbortController();
 	let timedOut = false;
 	let interrupted = false;
@@ -1773,18 +1779,17 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "wait_agent",
 		label: "Wait for agents",
 		description:
-			"Wait for team mailbox activity, a child lifecycle event, user steering, or a bounded timeout.",
-		promptSnippet: "wait_agent(): wait for collaboration activity",
+			"Wait for team mailbox activity, a child lifecycle event, or user steering. An optional timeout enables deliberate polling.",
+		promptSnippet: "wait_agent(): wait until collaboration activity",
 		promptGuidelines: [
-			"While Pi's coordination gate is active, wait_agent is the normal way to yield after coordination work.",
-			"Omit timeout_ms for the normal 30-second wait. Specify it only when a different bounded deadline is useful.",
+			"While Pi's coordination gate is active, call wait_agent without timeout_ms to yield until the team actually needs you.",
+			"Set timeout_ms only for deliberate bounded polling; normal agent work may take minutes or hours.",
 		],
 		parameters: Type.Object(
 			{
 				timeout_ms: Type.Optional(
 					Type.Integer({
-						description: `Timeout in milliseconds. Defaults to ${WAIT_DEFAULT_MS}, min ${WAIT_MIN_MS}, max ${WAIT_MAX_MS}.`,
-						default: WAIT_DEFAULT_MS,
+						description: `Optional polling timeout in milliseconds. Omit to wait for team activity. Min ${WAIT_MIN_MS}, max ${WAIT_MAX_MS}.`,
 						minimum: WAIT_MIN_MS,
 						maximum: WAIT_MAX_MS,
 					}),
@@ -1815,7 +1820,10 @@ function registerTools(pi: ExtensionAPI): void {
 					message: "No collaboration run exists.",
 					timed_out: false,
 				});
-			const timeoutMs = waitTimeout(params.timeout_ms);
+			const timeoutMs =
+				params.timeout_ms === undefined
+					? undefined
+					: waitTimeout(params.timeout_ms);
 			if (activeRequest)
 				return structured(
 					{ message: "Wait completed.", timed_out: false },
@@ -1827,7 +1835,7 @@ function registerTools(pi: ExtensionAPI): void {
 					"No agent work pending",
 				);
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
-			const outcome = await waitForTeamEventWithTimeout(ctx, signal, timeoutMs);
+			const outcome = await waitForTeamEventOrTimeout(ctx, signal, timeoutMs);
 			writeBeacon(SELF, { state: "running", activity: "" });
 			if (outcome.interrupted) suppressNextCoordinationNudge = true;
 			const message = outcome.interrupted
