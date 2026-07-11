@@ -17,6 +17,7 @@ import {
 	SubagentDashboard,
 	flattenDashboardAgents,
 	orchestrationSummary,
+	taskPathLabel,
 } from "../extensions/subagent-dashboard.ts";
 
 delete process.env.PI_SUBAGENT_TASK_PATH;
@@ -101,6 +102,15 @@ test("Codex task names form canonical hierarchical paths", () => {
 		taskSummary("  Inspect\n\nall   nested agents  "),
 		"Inspect all nested agents",
 	);
+});
+
+test("dashboard tree labels show only each task's local path segment", () => {
+	assert.equal(taskPathLabel("/root/oalcc_dataset"), "oalcc_dataset");
+	assert.equal(
+		taskPathLabel("/root/oalcc_dataset/license_sources"),
+		"license_sources",
+	);
+	assert.equal(taskPathLabel("/root"), "/root");
 });
 
 test("deep canonical paths use fixed-size storage keys", () => {

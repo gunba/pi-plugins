@@ -66,6 +66,12 @@ const STATE_COLOR: Record<string, ThemeColor> = {
 	hard_killed: "dim",
 };
 
+export function taskPathLabel(taskPath: string): string {
+	if (taskPath === "/root") return taskPath;
+	const separator = taskPath.lastIndexOf("/");
+	return separator >= 0 ? taskPath.slice(separator + 1) || taskPath : taskPath;
+}
+
 function fitLine(text: string, width: number): string {
 	const safeWidth = Math.max(0, width);
 	const clipped = truncateToWidth(text, safeWidth);
@@ -374,7 +380,10 @@ export class SubagentDashboard implements Component {
 		color: (text: string) => string,
 	): void {
 		const inner = width - 2;
-		const leftWidth = Math.max(32, Math.min(52, Math.floor(inner * 0.34)));
+		const leftWidth = Math.max(
+			38,
+			Math.min(64, Math.floor(inner * 0.42), inner - 49),
+		);
 		const rightWidth = inner - leftWidth - 1;
 		const visibleRows = this.visibleRows(rows, height);
 		const detail = this.detailLines(selected, height, rightWidth);
@@ -440,7 +449,8 @@ export class SubagentDashboard implements Component {
 		const branch =
 			row.depth === 0 ? "" : `${"  ".repeat(Math.min(row.depth, 4))}↳ `;
 		const task = agent.taskName ? ` · ${agent.taskName}` : "";
-		const text = `${selected ? "→" : " "} ${branch}${this.theme.fg(stateColor, GLYPH[agent.state] ?? "•")} ${this.theme.bold(agent.name)}  ${this.theme.fg(stateColor, agent.state)}${task}`;
+		const label = taskPathLabel(agent.name);
+		const text = `${selected ? "→" : " "} ${branch}${this.theme.fg(stateColor, GLYPH[agent.state] ?? "•")} ${this.theme.bold(label)}  ${this.theme.fg(stateColor, agent.state)}${task}`;
 		return selected
 			? this.theme.fg("accent", truncateToWidth(text, width))
 			: truncateToWidth(text, width);

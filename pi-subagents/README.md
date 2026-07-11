@@ -23,7 +23,7 @@ A compact line above the editor shows active, queued, completed, and attention-n
 
 The dashboard provides:
 
-- a virtualized, searchable parent/child tree keyed by canonical task path;
+- a virtualized, searchable parent/child tree that shows each task's local path segment while retaining the full canonical path in search and selected-task details;
 - state, current activity, model, thinking level, usage, duration, generation, and task summary;
 - the selected task's live active-branch session tail and recent coordination feed;
 - direct actions for cooperative messages, steering, follow-up turns, thinking changes, graceful interruption, and confirmed emergency hard termination;
