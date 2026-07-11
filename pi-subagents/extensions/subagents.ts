@@ -2,7 +2,7 @@
 //
 // A subagent is a fresh `pi --print` child with the same installed capabilities,
 // given one task. Coordination is a filesystem mailbox under a shared run dir;
-// teams and intercom are emergent from three tools (spawn, message, wait).
+// teams and intercom are exposed through a Codex V2-shaped collaboration surface.
 
 import {
 	appendFileSync,
@@ -21,16 +21,17 @@ import {
 	spawnSync,
 	type ChildProcess,
 } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { providerFailureHint } from "./provider-errors.ts";
 import {
@@ -66,10 +67,15 @@ const RUN_TTL_MS = positiveEnvInt("PI_SUBAGENTS_RUN_TTL_MS") ?? 86_400_000; // s
 const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
 const MAX_ACTIVE_CHILDREN = positiveEnvInt("PI_SUBAGENTS_MAX_ACTIVE") ?? 12;
 const ASSISTANT_PREVIEW_MAX = 2000;
+const ROOT_TASK_PATH = "/root";
+const RUN_SCHEMA_VERSION = 2;
+const WAIT_DEFAULT_MS = 30_000;
+const WAIT_MIN_MS = 10_000;
+const WAIT_MAX_MS = 3_600_000;
 const COORDINATION_NOTICE =
-	"Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. You may spawn additional subagents, message children, kill a wedged child, or call wait; main may also inspect or directly control any descendant. When wait returns a child request or attention event, use tools if needed, then reply/resume with message or kill the child and call wait again. Read completion result files after wait reports no active subagents or pending messages.";
+	"Subagent coordination gate: child subagents are active or child messages are unread. Do not do independent work. Use spawn_agent, send_message, followup_task, wait_agent, interrupt_agent, or list_agents; root may also inspect or directly control any descendant. Handle child requests or attention events, then call wait_agent again. Read completion result files after no active subagents or pending messages remain.";
 
-const TERMINAL = new Set(["done", "error", "stopped"]);
+const INACTIVE = new Set(["completed", "error", "interrupted", "hard_killed"]);
 const THINKING_LEVELS = [
 	"off",
 	"minimal",
@@ -82,7 +88,12 @@ const THINKING_LEVELS = [
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 type NestedSpawnApprovalMode = "agent" | "user";
-type SpawnApproval = { type: "spawn"; name: string; task: string };
+type SpawnApproval = {
+	type: "spawn";
+	taskName: string;
+	taskPath: string;
+	message: string;
+};
 
 type Beacon = {
 	name: string;
@@ -104,6 +115,9 @@ type Beacon = {
 	model?: string;
 	thinking?: ThinkingLevel;
 	lastAssistantText?: string;
+	generation?: number;
+	resultFile?: string;
+	errorMessage?: string;
 };
 
 type ControlMessage = {
@@ -161,14 +175,28 @@ function allocateTaskId(): string {
 	throw new Error("Could not allocate a unique subagent task id.");
 }
 
-export function normalizeAgentName(value: string): string {
-	const name = value.normalize("NFKC").trim();
-	if (!/^\p{L}[\p{L}\p{M}'’-]{0,31}$/u.test(name)) {
+export function normalizeTaskName(value: string): string {
+	const taskName = value.trim();
+	if (
+		!taskName ||
+		taskName === "root" ||
+		taskName === "." ||
+		taskName === ".." ||
+		!/^[a-z0-9_]+$/.test(taskName)
+	) {
 		throw new Error(
-			"Subagent name must be one first name (letters with optional apostrophe or hyphen, at most 32 characters).",
+			'task_name must contain only lowercase ASCII letters, digits, and underscores, and cannot be "root", ".", or "..".',
 		);
 	}
-	return `${name[0]!.toLocaleUpperCase()}${name.slice(1)}`;
+	return taskName;
+}
+
+export function childTaskPath(parentPath: string, taskName: string): string {
+	return `${parentPath}/${normalizeTaskName(taskName)}`;
+}
+
+export function taskStorageKey(taskPath: string): string {
+	return createHash("sha256").update(taskPath, "utf8").digest("base64url");
 }
 
 export function taskSummary(task: string): string {
@@ -353,7 +381,7 @@ function writeResultFile(name: string, messages: unknown[]): string {
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const path = join(
 		resultDir(),
-		`${stamp}_${safeFileSegment(name)}_${beacon?.taskId ?? "task"}_${rid().slice(0, 8)}.md`,
+		`${stamp}_${safeFileSegment(name)}_g${beacon?.generation ?? 1}_${rid().slice(0, 8)}.md`,
 	);
 	const status = finalAssistantStatus(messages);
 	const body =
@@ -363,9 +391,9 @@ function writeResultFile(name: string, messages: unknown[]): string {
 	const header = [
 		`# Subagent result: ${name}`,
 		"",
-		beacon?.taskId ? `Task ID: ${beacon.taskId}` : undefined,
 		beacon?.taskName ? `Task: ${beacon.taskName}` : undefined,
 		beacon?.parent ? `Parent: ${beacon.parent}` : undefined,
+		`Generation: ${beacon?.generation ?? 1}`,
 		status.stopReason ? `Stop reason: ${status.stopReason}` : undefined,
 		status.errorMessage ? `Error: ${status.errorMessage}` : undefined,
 		`Finished: ${new Date().toISOString()}`,
@@ -380,32 +408,54 @@ function writeResultFile(name: string, messages: unknown[]): string {
 function resultReadyMessage(
 	name: string,
 	path: string,
-	state: "done" | "attention",
+	state: "completed" | "attention",
 	errorMessage?: string,
 	recoveryHint?: string,
 ): string {
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
-	const label = beacon
-		? ` · ${beacon.taskId}${beacon.taskName ? ` · ${beacon.taskName}` : ""}`
-		: "";
+	const label = beacon?.taskName ? ` · ${beacon.taskName}` : "";
 	const head =
-		state === "done"
+		state === "completed"
 			? `Completed${label}.`
 			: `Needs attention${label}.${errorMessage ? ` ${errorMessage}` : ""}`;
-	return `${head}${recoveryHint ? `\nRecovery: ${recoveryHint}` : ""}\nResult file: ${path}`;
+	return [
+		"Message Type: FINAL_ANSWER",
+		`Task name: ${NOTIFY ?? beacon?.parent ?? ROOT_TASK_PATH}`,
+		`Sender: ${name}`,
+		`Status: ${state}`,
+		"Payload:",
+		head,
+		recoveryHint ? `Recovery: ${recoveryHint}` : undefined,
+		`Result file: ${path}`,
+	]
+		.filter((line): line is string => line !== undefined)
+		.join("\n");
 }
 
 // --------------------------------------------------------------------------
 // Run + identity (module state: each pi process is one agent)
 // --------------------------------------------------------------------------
 
-const SELF = process.env.PI_SUBAGENT_NAME || "main";
-const PARENT = process.env.PI_SUBAGENT_PARENT || null;
-const IS_CHILD = !!process.env.PI_SUBAGENT_NAME;
+const SELF = process.env.PI_SUBAGENT_TASK_PATH || ROOT_TASK_PATH;
+const PARENT = process.env.PI_SUBAGENT_PARENT_PATH || null;
+const NOTIFY = process.env.PI_SUBAGENT_NOTIFY_PATH || PARENT;
+const IS_CHILD = !!process.env.PI_SUBAGENT_TASK_PATH;
 
 let runDir = process.env.PI_SUBAGENT_RUN || "";
 const kids = new Map<string, ChildProcess>();
 let piThinkingLevel: ThinkingLevel = "medium";
+
+function assertRunSchema(): void {
+	if (!runDir) throw new Error("Subagent task is missing PI_SUBAGENT_RUN.");
+	const metadata = readJson<{ schemaVersion?: number; rootPath?: string }>(
+		join(runDir, "run.json"),
+	);
+	if (
+		metadata?.schemaVersion !== RUN_SCHEMA_VERSION ||
+		metadata.rootPath !== ROOT_TASK_PATH
+	)
+		throw new Error(`Unsupported subagent run schema in ${runDir}.`);
+}
 
 function ensureRun(): string {
 	if (!runDir) {
@@ -415,8 +465,12 @@ function ensureRun(): string {
 		);
 		ensureDir(runDir);
 		if (!IS_CHILD) {
+			writeJsonAtomic(join(runDir, "run.json"), {
+				schemaVersion: RUN_SCHEMA_VERSION,
+				rootPath: ROOT_TASK_PATH,
+			});
 			writeFileSync(join(runDir, ".root-pid"), `${process.pid}\n`);
-			writeBeacon("main", {
+			writeBeacon(ROOT_TASK_PATH, {
 				taskId: "main",
 				parent: null,
 				state: "running",
@@ -428,7 +482,7 @@ function ensureRun(): string {
 }
 
 function agentDir(name: string): string {
-	return join(runDir, name);
+	return join(runDir, "tasks", taskStorageKey(name));
 }
 function inboxDir(name: string): string {
 	return join(agentDir(name), "inbox");
@@ -487,14 +541,16 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
 	const beacon: Beacon = {
 		name,
 		taskId:
-			patch.taskId ?? prev?.taskId ?? (name === "main" ? "main" : taskId()),
+			patch.taskId ??
+			prev?.taskId ??
+			(name === ROOT_TASK_PATH ? "main" : taskId()),
 		parent: patch.parent ?? prev?.parent ?? (name === SELF ? PARENT : null),
 		taskName: patch.taskName ?? prev?.taskName ?? "",
 		state,
 		activity: patch.activity ?? prev?.activity,
 		startedAt: prev?.startedAt ?? patch.startedAt ?? now(),
 		updatedAt: now(),
-		finishedAt: TERMINAL.has(state) ? (prev?.finishedAt ?? now()) : undefined,
+		finishedAt: INACTIVE.has(state) ? (prev?.finishedAt ?? now()) : undefined,
 		responses: patch.responses ?? prev?.responses,
 		inputTokens: patch.inputTokens ?? prev?.inputTokens,
 		outputTokens: patch.outputTokens ?? prev?.outputTokens,
@@ -505,16 +561,21 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
 		model: patch.model ?? prev?.model,
 		thinking: patch.thinking ?? prev?.thinking,
 		lastAssistantText: patch.lastAssistantText ?? prev?.lastAssistantText,
+		generation: patch.generation ?? prev?.generation ?? 1,
+		resultFile: patch.resultFile ?? prev?.resultFile,
+		errorMessage: patch.errorMessage ?? prev?.errorMessage,
 	};
 	writeJsonAtomic(join(dir, "beacon.json"), beacon);
 }
 
 function listAgents(): Beacon[] {
 	if (!runDir || !existsSync(runDir)) return [];
+	const tasksDir = join(runDir, "tasks");
+	if (!existsSync(tasksDir)) return [];
 	const out: Beacon[] = [];
-	for (const entry of readdirSync(runDir, { withFileTypes: true })) {
+	for (const entry of readdirSync(tasksDir, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
-		const b = readJson<Beacon>(join(runDir, entry.name, "beacon.json"));
+		const b = readJson<Beacon>(join(tasksDir, entry.name, "beacon.json"));
 		if (b) out.push(b);
 	}
 	return out;
@@ -525,10 +586,17 @@ function activeChildren(parent: string): Beacon[] {
 	if (!existsSync(dir)) return [];
 	const out: Beacon[] = [];
 	for (const child of readdirSync(dir)) {
-		const beacon = readJson<Beacon>(join(agentDir(child), "beacon.json"));
+		let taskPath = "";
+		try {
+			taskPath = readFileSync(join(dir, child), "utf8").trim();
+		} catch {
+			continue;
+		}
+		if (!taskPath) continue;
+		const beacon = readJson<Beacon>(join(agentDir(taskPath), "beacon.json"));
 		if (
 			beacon &&
-			!TERMINAL.has(beacon.state) &&
+			!INACTIVE.has(beacon.state) &&
 			(beacon.state === "queued" || isActive(beacon.name))
 		)
 			out.push(beacon);
@@ -536,9 +604,14 @@ function activeChildren(parent: string): Beacon[] {
 	return out;
 }
 
-function registerChild(parent: string, child: string): void {
-	ensureDir(childrenDir(parent));
-	writeFileSync(join(childrenDir(parent), child), "", { flag: "wx" });
+function activeDescendants(parent: string): Beacon[] {
+	const prefix = `${parent}/`;
+	return listAgents().filter(
+		(agent) =>
+			agent.name.startsWith(prefix) &&
+			!INACTIVE.has(agent.state) &&
+			(agent.state === "queued" || isActive(agent.name)),
+	);
 }
 
 function hasPendingFresh(name: string): boolean {
@@ -546,18 +619,18 @@ function hasPendingFresh(name: string): boolean {
 }
 
 function hasTeamWork(name: string): boolean {
-	return hasPendingFresh(name) || activeChildren(name).length > 0;
+	return hasPendingFresh(name) || activeDescendants(name).length > 0;
 }
 
 function noWaitWorkMessage(name: string): string {
 	const children = listAgents().filter((a) => a.parent === name);
 	if (!children.length)
-		return "No subagents to wait for — spawn a subagent first.";
+		return "No agents to wait for — call spawn_agent first.";
 	const attention = children.filter(
 		(a) =>
 			a.state === "error" ||
-			a.state === "stopped" ||
-			(!TERMINAL.has(a.state) && !isActive(a.name)),
+			a.state === "hard_killed" ||
+			(!INACTIVE.has(a.state) && !isActive(a.name)),
 	);
 	if (attention.length) {
 		const names = attention
@@ -565,13 +638,13 @@ function noWaitWorkMessage(name: string): string {
 				(a) => `${a.name}${a.taskName ? ` · ${a.taskName}` : ""} (${a.state})`,
 			)
 			.join(", ");
-		return `No active subagents or pending messages for ${name}. Children needing attention: ${names}. Repair by messaging/resuming the affected agent, or continue if no repair is needed.`;
+		return `No active subagents or pending messages for ${name}. Children needing attention: ${names}. Use followup_task to repair an affected task, or continue if repair is unnecessary.`;
 	}
-	return `No active subagents or pending messages for ${name}. Continue normally; do not call wait again until you spawn or message a subagent.`;
+	return `No active subagents or pending messages for ${name}. Continue normally until new collaboration work is created.`;
 }
 
 function coordinationStatus(name: string): string {
-	const active = activeChildren(name).map(
+	const active = activeDescendants(name).map(
 		(a) => `${a.name}${a.taskName ? ` · ${a.taskName}` : ""}`,
 	);
 	const pending = hasPendingFresh(name) ? "yes" : "no";
@@ -580,8 +653,12 @@ function coordinationStatus(name: string): string {
 
 function terminalRunReadyToHide(): boolean {
 	if (!runDir) return false;
-	const agents = listAgents().filter((a) => a.name !== "main");
-	return terminalRunCanHide(agents, isActive, hasPendingFresh(SELF));
+	const agents = listAgents().filter((a) => a.name !== ROOT_TASK_PATH);
+	return terminalRunCanHide(
+		agents,
+		isActive,
+		Boolean(activeRequest) || hasPendingFresh(SELF),
+	);
 }
 
 function hideCompletedRun(ctx: ExtensionContext): void {
@@ -741,10 +818,15 @@ function spawnApprovalDetails(msg: { body: string; approval?: SpawnApproval }):
 	| undefined {
 	if (msg.approval?.type === "spawn") return msg.approval;
 	const match = msg.body.match(
-		/^\[approval]\s+spawn\s+"([^"]+)":\s*([\s\S]*)$/i,
+		/^\[approval]\s+spawn\s+"([^"]+)"\s+at\s+([^:]+):\s*([\s\S]*)$/i,
 	);
 	return match
-		? { type: "spawn", name: match[1] ?? "subagent", task: match[2] ?? "" }
+		? {
+				type: "spawn",
+				taskName: match[1] ?? "task",
+				taskPath: match[2]?.trim() ?? "",
+				message: match[3] ?? "",
+			}
 		: undefined;
 }
 
@@ -777,7 +859,7 @@ async function resolveNestedSpawnApprovalWithUser(
 	msg: Mail,
 ): Promise<string> {
 	const details = spawnApprovalDetails(msg);
-	const label = details?.name ? ` "${details.name}"` : "";
+	const label = details?.taskPath ? ` "${details.taskPath}"` : "";
 	if (!ctx.hasUI) {
 		const reason =
 			"user approval mode is enabled, but this session has no UI to confirm nested spawns";
@@ -793,7 +875,7 @@ async function resolveNestedSpawnApprovalWithUser(
 				`${msg.from} wants to spawn${label}.`,
 				"",
 				"Task:",
-				details?.task || msg.body,
+				details?.message || msg.body,
 				"",
 				"Approve this nested spawn request?",
 			].join("\n"),
@@ -833,12 +915,11 @@ async function pollFor<T>(
 	fn: () => T | undefined,
 	signal?: AbortSignal,
 ): Promise<T | undefined> {
-	while (!signal?.aborted) {
-		const v = fn();
-		if (v !== undefined) return v;
-		await waitForDirectoryChange(inboxDir(SELF), signal);
-	}
-	return undefined;
+	if (signal?.aborted) return undefined;
+	const value = fn();
+	if (value !== undefined) return value;
+	await waitForDirectoryChange(inboxDir(SELF), signal);
+	return pollFor(fn, signal);
 }
 
 function waitForDirectoryChange(
@@ -871,31 +952,27 @@ async function waitForTeamEvent(
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
-	while (!signal?.aborted) {
-		const fresh = claimFresh(SELF);
-		if (fresh) {
-			try {
-				if (
-					isNestedSpawnApproval(fresh.msg) &&
-					nestedSpawnApprovalMode(ctx) === "user"
-				) {
-					const summary = await resolveNestedSpawnApprovalWithUser(
-						ctx,
-						fresh.msg,
-					);
-					if (ctx.hasUI) ctx.ui.notify(summary, "info");
-					continue;
-				}
-				activeRequest = activeRequestFor(fresh.msg);
-				return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
-			} finally {
-				rmSync(fresh.path, { force: true });
+	if (signal?.aborted) return undefined;
+	const fresh = claimFresh(SELF);
+	if (fresh) {
+		try {
+			if (
+				isNestedSpawnApproval(fresh.msg) &&
+				nestedSpawnApprovalMode(ctx) === "user"
+			) {
+				const summary = await resolveNestedSpawnApprovalWithUser(ctx, fresh.msg);
+				if (ctx.hasUI) ctx.ui.notify(summary, "info");
+				return waitForTeamEvent(ctx, signal);
 			}
+			activeRequest = activeRequestFor(fresh.msg);
+			return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
+		} finally {
+			rmSync(fresh.path, { force: true });
 		}
-		if (activeChildren(SELF).length === 0) return noWaitWorkMessage(SELF);
-		await waitForDirectoryChange(inboxDir(SELF), signal);
 	}
-	return undefined;
+	if (activeDescendants(SELF).length === 0) return noWaitWorkMessage(SELF);
+	await waitForDirectoryChange(inboxDir(SELF), signal);
+	return waitForTeamEvent(ctx, signal);
 }
 
 function controlFiles(name: string): string[] {
@@ -940,38 +1017,21 @@ function claimControl(
 // Human name allocation (mkdir is the atomic lock)
 // --------------------------------------------------------------------------
 
-function allocName(requested: string): string {
+function reserveChildTaskPath(taskName: string): string {
 	ensureRun();
-	const name = normalizeAgentName(requested);
-	if (
-		listAgents().some(
-			(agent) =>
-				agent.name.localeCompare(name, undefined, { sensitivity: "base" }) ===
-				0,
-		)
-	) {
-		throw new Error(
-			`A subagent named ${name} already exists in this run. Choose another first name.`,
-		);
-	}
-	const namesDir = join(runDir, ".names");
-	ensureDir(namesDir);
-	const nameLock = join(
-		namesDir,
-		Buffer.from(name.normalize("NFKC").toLocaleLowerCase()).toString(
-			"base64url",
-		),
-	);
+	const taskPath = childTaskPath(SELF, taskName);
+	ensureDir(childrenDir(SELF));
+	const pathLock = join(childrenDir(SELF), taskStorageKey(taskPath));
 	let reserved = false;
 	try {
-		writeFileSync(nameLock, name, { flag: "wx" });
+		writeFileSync(pathLock, taskPath, { flag: "wx" });
 		reserved = true;
-		mkdirSync(agentDir(name));
-		return name;
+		mkdirSync(agentDir(taskPath));
+		return taskPath;
 	} catch (error) {
-		if (reserved) rmSync(nameLock, { force: true });
+		if (reserved) rmSync(pathLock, { force: true });
 		if ((error as { code?: string }).code === "EEXIST")
-			throw new Error(`A subagent named ${name} already exists in this run.`);
+			throw new Error(`Task ${taskPath} already exists in this run.`);
 		throw error;
 	}
 }
@@ -986,6 +1046,9 @@ type LaunchRequest = {
 	taskName: string;
 	taskId: string;
 	thinking: ThinkingLevel;
+	parent: string;
+	notify: string;
+	generation: number;
 };
 
 function runningDirectChildren(): Beacon[] {
@@ -1012,13 +1075,21 @@ function launchAgent(
 		request.fresh
 			? {
 					taskId: request.taskId,
-					parent: SELF,
+					parent: request.parent,
 					taskName: request.taskName,
 					thinking: request.thinking,
+					generation: request.generation,
 					state: "spawning",
 					startedAt: now(),
 				}
-			: { thinking: request.thinking, state: "running" },
+			: {
+					thinking: request.thinking,
+					generation: request.generation,
+					state: "running",
+					activity: "",
+					resultFile: "",
+					errorMessage: "",
+				},
 	);
 
 	// Persistent session in an isolated store: resumable, but `/resume` never scans it.
@@ -1042,9 +1113,9 @@ function launchAgent(
 		env: {
 			...process.env,
 			PI_SUBAGENT_RUN: runDir,
-			PI_SUBAGENT_NAME: name,
-			PI_SUBAGENT_TASK_ID: request.taskId,
-			PI_SUBAGENT_PARENT: SELF,
+			PI_SUBAGENT_TASK_PATH: name,
+			PI_SUBAGENT_PARENT_PATH: request.parent,
+			PI_SUBAGENT_NOTIFY_PATH: request.notify,
 		},
 		stdio: "ignore",
 		windowsHide: true,
@@ -1054,11 +1125,11 @@ function launchAgent(
 		writeFileSync(activePidFile(name), `${child.pid}\n`);
 	kids.set(name, child);
 	rmSync(launchFile(name), { force: true });
-	const finishUnexpected = (state: "error" | "stopped", body: string) => {
+	const finishUnexpected = (state: "error", body: string) => {
 		rmSync(activeLock(name), { recursive: true, force: true });
 		const b = readJson<Beacon>(join(agentDir(name), "beacon.json"));
-		if (!b || !TERMINAL.has(b.state)) {
-			writeBeacon(name, { state });
+		if (!b || !INACTIVE.has(b.state)) {
+			writeBeacon(name, { state, errorMessage: body });
 			post({
 				id: rid(),
 				from: name,
@@ -1077,7 +1148,7 @@ function launchAgent(
 	// Safety net: if the process dies without a clean agent_end, surface it to the launcher.
 	child.on("exit", (code) =>
 		finishUnexpected(
-			"stopped",
+			"error",
 			code === 0
 				? "exited before posting a result"
 				: `exited unexpectedly (code ${code})`,
@@ -1105,9 +1176,12 @@ function runAgent(
 		taskName: taskName || beacon?.taskName || "",
 		taskId: id ?? beacon?.taskId ?? taskId(),
 		thinking: thinking ?? beacon?.thinking ?? piThinkingLevel,
+		parent: fresh ? SELF : (beacon?.parent ?? SELF),
+		notify: SELF,
+		generation: fresh ? 1 : (beacon?.generation ?? 1) + 1,
 	};
 	if (isActive(name)) return false;
-	if (runningDirectChildren().length >= MAX_ACTIVE_CHILDREN) {
+	if (fresh && runningDirectChildren().length >= MAX_ACTIVE_CHILDREN) {
 		ensureDir(agentDir(name));
 		writeJsonAtomic(launchFile(name), request);
 		writeBeacon(name, {
@@ -1115,6 +1189,9 @@ function runAgent(
 			parent: fresh ? SELF : beacon?.parent,
 			taskName: request.taskName,
 			thinking: request.thinking,
+			generation: request.generation,
+			resultFile: "",
+			errorMessage: "",
 			state: "queued",
 			startedAt: fresh ? now() : beacon?.startedAt,
 		});
@@ -1198,7 +1275,7 @@ function killOneAgent(name: string, reason: string): string {
 
 	// Mark terminal before killing so the normal child exit handler does not post
 	// another attention message for an intentional hard stop.
-	writeBeacon(name, { state: "stopped", activity: "" });
+	writeBeacon(name, { state: "hard_killed", activity: "" });
 	rmSync(launchFile(name), { force: true });
 	kids.delete(name);
 	const removed = removePendingFrom(name);
@@ -1214,7 +1291,7 @@ function killOneAgent(name: string, reason: string): string {
 				rmSync(activeLock(name), { recursive: true, force: true });
 		}, 250).unref();
 	appendFeed(`${SELF}→${name}: killed (${reason})`);
-	return `${name}: ${pid ? (killed ? `killed pid ${pid}` : `marked stopped; pid ${pid} did not terminate cleanly`) : "marked stopped; no live pid"}${removed ? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}` : ""}`;
+	return `${name}: ${pid ? (killed ? `killed pid ${pid}` : `marked hard-killed; pid ${pid} did not terminate cleanly`) : "marked hard-killed; no live pid"}${removed ? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}` : ""}`;
 }
 
 function killAgents(selector: string, reason: string): string[] {
@@ -1236,16 +1313,11 @@ function killAgents(selector: string, reason: string): string[] {
 		walk(root);
 		return names;
 	};
-	const selected = agents.find(
-		(agent) =>
-			agent.name.localeCompare(selector.trim(), undefined, {
-				sensitivity: "base",
-			}) === 0 || agent.taskId === selector.trim(),
-	);
+	const selected = resolveAgent(selector);
 	const names =
 		selector.trim() === "*"
 			? (children.get(SELF) ?? [])
-					.filter((agent) => agent.state !== "done")
+					.filter((agent) => agent.state !== "completed")
 					.flatMap((agent) => collect(agent.name))
 			: selected
 				? collect(selected.name)
@@ -1257,36 +1329,39 @@ function killAgents(selector: string, reason: string): string[] {
 
 function resolveAgent(selector: string): Beacon | undefined {
 	const normalized = selector.trim();
-	return listAgents().find(
-		(agent) =>
-			agent.name.localeCompare(normalized, undefined, {
-				sensitivity: "base",
-			}) === 0 || agent.taskId === normalized,
+	if (!normalized) return undefined;
+	const absolute = normalized.startsWith("/")
+		? normalized
+		: `${SELF}/${normalized}`;
+	return listAgents().find((agent) => agent.name === absolute);
+}
+
+function canAddress(target: Beacon): boolean {
+	return (
+		SELF === ROOT_TASK_PATH ||
+		target.name === ROOT_TASK_PATH ||
+		target.name === PARENT ||
+		target.name.startsWith(`${SELF}/`)
 	);
+}
+
+function canControlTask(target: Beacon): boolean {
+	return SELF === ROOT_TASK_PATH || target.name.startsWith(`${SELF}/`);
+}
+
+function resolveAuthorizedAgent(selector: string): Beacon | undefined {
+	const target = resolveAgent(selector);
+	return target && canAddress(target) ? target : undefined;
 }
 
 function sendAgentNotice(
 	to: string,
 	body: string,
-	ctx: ExtensionContext,
+	_ctx: ExtensionContext,
 ): string {
-	if (!runDir) return "No run yet — spawn a subagent first.";
-	const target =
-		to === "main"
-			? readJson<Beacon>(join(agentDir("main"), "beacon.json"))
-			: resolveAgent(to);
-	if (!target) return `No agent named or identified by ${to}.`;
-	if (
-		target.name !== "main" &&
-		!isActive(target.name) &&
-		target.state !== "queued" &&
-		runAgent(target.name, body, ctx, false)
-	) {
-		if (activeRequest && activeRequest.from === target.name)
-			activeRequest = undefined;
-		refreshView(ctx);
-		return `Re-addressing ${target.name} · ${target.taskId} (resuming its session). Call wait for its result.`;
-	}
+	if (!runDir) return "No run yet — spawn_agent first.";
+	const target = resolveAuthorizedAgent(to);
+	if (!target) return `Unknown or unauthorized task ${to}.`;
 	post({
 		id: rid(),
 		from: SELF,
@@ -1295,7 +1370,7 @@ function sendAgentNotice(
 		kind: "notice",
 		ts: now(),
 	});
-	return `Sent to ${target.name} · ${target.taskId}.`;
+	return `Sent message to ${target.name}.`;
 }
 
 function controlAgent(
@@ -1305,10 +1380,10 @@ function controlAgent(
 	body?: string,
 	thinking?: ThinkingLevel,
 ): string {
-	if (!runDir) return "No run yet — spawn a subagent first.";
-	const target = resolveAgent(selector);
-	if (!target || target.name === "main")
-		return `No subagent named or identified by ${selector}.`;
+	if (!runDir) return "No run yet — spawn_agent first.";
+	const target = resolveAuthorizedAgent(selector);
+	if (!target || target.name === ROOT_TASK_PATH)
+		return `Unknown or unauthorized subagent ${selector}.`;
 
 	if (action === "setThinking") {
 		if (!thinking) return "A thinking level is required.";
@@ -1322,25 +1397,25 @@ function controlAgent(
 				thinking: allowed,
 				ts: now(),
 			});
-			return `Queued thinking ${allowed} for ${target.name} · ${target.taskId}.`;
+			return `Queued thinking ${allowed} for ${target.name}.`;
 		}
-		return `Set ${target.name} · ${target.taskId} to thinking ${allowed} for its next run.`;
+		return `Set ${target.name} to thinking ${allowed} for its next run.`;
 	}
 
 	if (action === "abort") {
 		if (!isActive(target.name)) return `${target.name} is not running.`;
 		postControl(target.name, { id: rid(), from: SELF, action, ts: now() });
-		return `Requested a graceful abort from ${target.name} · ${target.taskId}.`;
+		return `Requested interruption of ${target.name}.`;
 	}
 
 	const message = body?.trim();
 	if (!message) return `A message is required for ${action}.`;
 	if (!isActive(target.name)) {
 		if (target.state === "queued")
-			return `${target.name} is queued; use message for cooperative delivery after it starts.`;
+			return `${target.name} is queued; its follow-up will run after launch.`;
 		if (runAgent(target.name, message, ctx, false)) {
 			refreshView(ctx);
-			return `Resuming ${target.name} · ${target.taskId} with the message.`;
+			return `Started follow-up turn for ${target.name}.`;
 		}
 		return `${target.name} could not be resumed.`;
 	}
@@ -1351,51 +1426,113 @@ function controlAgent(
 		body: message,
 		ts: now(),
 	});
-	return `Queued ${action === "followUp" ? "follow-up" : "steer"} for ${target.name} · ${target.taskId}.`;
+	return `Queued ${action === "followUp" ? "follow-up" : "steer"} for ${target.name}.`;
 }
 
 // --------------------------------------------------------------------------
 // Tools
 // --------------------------------------------------------------------------
 
-const text = (t: string) => ({
+const text = (t: string, details: Record<string, unknown> = {}) => ({
 	content: [{ type: "text" as const, text: t }],
-	details: {},
+	details,
 });
+
+const structured = (
+	payload: Record<string, unknown>,
+	display?: string,
+) =>
+	text(
+		JSON.stringify(payload),
+		display ? { ...payload, display } : payload,
+	);
+
+function renderToolResult(
+	result: { content?: Array<{ type?: string; text?: string }>; details?: unknown },
+	isPartial: boolean,
+	theme: Theme,
+): Text {
+	if (isPartial) return new Text(theme.fg("warning", "Working…"), 0, 0);
+	const details = asRecord(result.details);
+	const display = typeof details?.display === "string" ? details.display : undefined;
+	const fallback = result.content?.find((part) => part.type === "text")?.text ?? "Done";
+	return new Text(theme.fg(details?.error ? "error" : "success", display ?? fallback), 0, 0);
+}
+
+function statusForModel(beacon: Beacon): unknown {
+	if (beacon.name === ROOT_TASK_PATH && beacon.state === "running") return "running";
+	if (beacon.state === "queued" || beacon.state === "spawning") return "pending_init";
+	if (beacon.state === "running" || beacon.state === "waiting") return "running";
+	if (beacon.state === "interrupted") return "interrupted";
+	if (beacon.state === "completed")
+		return { completed: beacon.lastAssistantText ?? null };
+	if (beacon.state === "error")
+		return { errored: beacon.errorMessage ?? beacon.lastAssistantText ?? "agent failed" };
+	if (beacon.state === "hard_killed") return "shutdown";
+	return "not_found";
+}
+
+function waitTimeout(value: number | undefined): number {
+	const timeout = value ?? WAIT_DEFAULT_MS;
+	if (!Number.isInteger(timeout) || timeout < WAIT_MIN_MS)
+		throw new Error(`timeout_ms must be at least ${WAIT_MIN_MS}`);
+	if (timeout > WAIT_MAX_MS)
+		throw new Error(`timeout_ms must be at most ${WAIT_MAX_MS}`);
+	return timeout;
+}
+
+async function waitForTeamEventWithTimeout(
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+	timeoutMs: number,
+): Promise<{ event?: string; timedOut: boolean; interrupted: boolean }> {
+	const controller = new AbortController();
+	let timedOut = false;
+	let interrupted = false;
+	const onAbort = () => {
+		interrupted = true;
+		controller.abort();
+	};
+	if (signal?.aborted) onAbort();
+	else signal?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(() => {
+		timedOut = true;
+		controller.abort();
+	}, timeoutMs);
+	try {
+		const event = await waitForTeamEvent(ctx, controller.signal);
+		return { event, timedOut, interrupted };
+	} finally {
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", onAbort);
+	}
+}
 
 function registerTools(pi: ExtensionAPI): void {
 	pi.registerTool({
-		name: "spawn",
-		label: "Spawn subagent",
+		name: "spawn_agent",
+		label: "Spawn agent",
 		description:
-			"Start a background subagent — a fresh pi with your tools and a clean context — for one delegated task.",
+			"Spawn one isolated background agent for a concrete delegated task. The child starts with a clean model context and shares the working directory.",
 		promptSnippet:
-			"spawn(task, name, thinking?): delegate one suitable subtask to a named background subagent",
+			"spawn_agent(task_name, message): delegate one bounded, independent task",
 		promptGuidelines: [
-			"Use spawn only when delegation fits: independent parallel work, competing hypotheses, or context-heavy investigation whose details need not stay in your context.",
-			"Outline the task for the subagent and be clear about the result you want, e.g. findings, an implementation, changed files, open questions, exact paths/ranges, and how to handle blockers or uncertainty.",
-			"Choose a distinct human first name for each subagent. Pi assigns a separate task id for tracking and routing.",
-			"Set thinking only when the delegated task needs less reasoning than this agent; a subagent cannot exceed its parent's thinking level.",
-			"After spawning one or more subagents, use `wait`, `message`, and `kill` to coordinate. While child subagents are active or messages are unread, pi-subagents only permits orchestration tools; main can also use `inspect_agent` and `control_agent` for direct descendant intervention.",
-			"Nested subagent spawn requests need deliberate approval. Approve only when the requested child is independent, scoped, non-duplicative, and worth the coordination overhead; otherwise deny or ask the requester to narrow its plan.",
-			"Reply to nested spawn approval requests with exactly `approve` or `deny: <reason>` unless `subagents.nestedSpawnApproval` is `user`, in which case pi-subagents asks the user in a modal and replies for you. A stuck subagent never lets `wait` run with no live work — `wait` is interruptible and `/subagents` shows the subagent tree.",
+			"Delegate only concrete independent work with a clear deliverable; avoid duplicate investigations and overlapping write ownership.",
+			"After spawning, this Pi agent becomes an orchestration-only coordinator until direct children and unread child mail settle.",
+			"Nested spawns require deliberate root approval; approve only useful, non-duplicative delegation.",
 		],
-		parameters: Type.Object({
-			task: Type.String({
-				description:
-					"One delegated objective. Include constraints, done criteria, and the result you want.",
-			}),
-			name: Type.String({
-				description:
-					"A distinct human first name chosen for this subagent (for example Maya or Leo).",
-			}),
-			thinking: Type.Optional(
-				StringEnum(THINKING_LEVELS, {
+		parameters: Type.Object(
+			{
+				task_name: Type.String({
 					description:
-						"Thinking level for the subagent. Defaults to this agent's level and cannot exceed it.",
+						"One lowercase task-path segment using only letters, digits, and underscores.",
 				}),
-			),
-		}),
+				message: Type.String({
+					description: "The delegated objective, constraints, and expected result.",
+				}),
+			},
+			{ additionalProperties: false },
+		),
 		executionMode: "sequential",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!IS_CHILD && runDir && terminalRunReadyToHide()) {
@@ -1404,262 +1541,377 @@ function registerTools(pi: ExtensionAPI): void {
 				runDismissed = false;
 			}
 			ensureRun();
-			const name = normalizeAgentName(params.name);
-			const thinking = thinkingAtOrBelow(
-				params.thinking,
-				pi.getThinkingLevel() as ThinkingLevel,
-			);
+			const taskName = normalizeTaskName(params.task_name);
+			const message = params.message.trim();
+			if (!message) throw new Error("message must not be empty");
+			const taskPath = childTaskPath(SELF, taskName);
 
 			if (IS_CHILD) {
 				const reqId = rid();
 				post({
 					id: reqId,
 					from: SELF,
-					to: "main",
-					body: `[approval] spawn "${name}": ${params.task}`,
+					to: ROOT_TASK_PATH,
+					body: `[approval] spawn "${taskName}" at ${taskPath}: ${message}`,
 					kind: "request",
-					approval: { type: "spawn", name, task: params.task },
+					approval: { type: "spawn", taskName, taskPath, message },
 					ts: now(),
 				});
 				const reply = await pollFor(
-					() => takeReply(SELF, reqId, "main"),
+					() => takeReply(SELF, reqId, ROOT_TASK_PATH),
 					signal,
 				);
-				if (!reply) return text("Approval wait interrupted.");
+				if (!reply) return structured({ error: "Approval wait interrupted." });
 				if (!approvalReplyAllowsSpawn(reply.body))
-					return text(`Spawn denied by main: ${reply.body}`);
+					return structured({ error: `Spawn denied by root: ${reply.body}` });
 			}
 
-			const childName = allocName(name);
-			const id = allocateTaskId();
-			registerChild(SELF, childName);
+			const reservedPath = reserveChildTaskPath(taskName);
 			const accepted = runAgent(
-				childName,
-				params.task,
+				reservedPath,
+				message,
 				ctx,
 				true,
-				taskSummary(params.task),
-				id,
-				thinking,
+				taskSummary(message),
+				allocateTaskId(),
+				pi.getThinkingLevel() as ThinkingLevel,
 			);
 			if (!accepted) {
-				writeBeacon(childName, { state: "error", activity: "launch rejected" });
-				throw new Error(
-					`Could not launch ${childName}; its active lock is already held.`,
-				);
+				writeBeacon(reservedPath, {
+					state: "error",
+					activity: "launch rejected",
+					errorMessage: "active lock already held",
+				});
+				throw new Error(`Could not launch ${reservedPath}; its active lock is held.`);
 			}
 			refreshView(ctx);
 			const state = readJson<Beacon>(
-				join(agentDir(childName), "beacon.json"),
+				join(agentDir(reservedPath), "beacon.json"),
 			)?.state;
-			return text(
-				`${state === "queued" ? "Queued" : "Spawned"} ${childName} · ${id} (thinking ${thinking}). Call wait to yield while it works.`,
+			return structured(
+				{ task_name: reservedPath },
+				`${state === "queued" ? "Queued" : "Spawned"} ${reservedPath}`,
 			);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("accent", `Spawn ${args.task_name}`), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
 		},
 	});
 
 	pi.registerTool({
-		name: "message",
-		label: "Message agent",
+		name: "send_message",
+		label: "Send message",
 		description:
-			"Send a cooperative mailbox message to another agent by name/task id or to `main`. Set wait:true to ask and block for the reply; use reply_to to answer a question.",
+			"Store a cooperative message independently of turn activation. Use reply_to to answer a correlated request.",
 		promptSnippet:
-			"message(to, body, reply_to?, wait?): talk to any agent or main",
-		promptGuidelines: [
-			"Address agents by their name (e.g. 'Alice') or 'main'. To ask a question and block for the answer, set wait:true. To answer a question you received, set reply_to to its id.",
-			"Messaging an agent that has finished resumes it from its own memory with your message as a follow-up task; its completion arrives through wait as a result-file notice.",
-		],
-		parameters: Type.Object({
-			to: Type.String({
-				description: "Recipient agent name, task id, or 'main'.",
-			}),
-			body: Type.String({ description: "The message." }),
-			reply_to: Type.Optional(
-				Type.String({ description: "Id of the message you are answering." }),
-			),
-			wait: Type.Optional(
-				Type.Boolean({ description: "Block until the recipient replies." }),
-			),
-		}),
+			"send_message(target, message, reply_to?): queue coordination mail",
+		parameters: Type.Object(
+			{
+				target: Type.String({
+					description: "Absolute /root/... task path or path relative to the caller.",
+				}),
+				message: Type.String({ description: "Message to deliver." }),
+				reply_to: Type.Optional(
+					Type.String({ description: "Request id being answered." }),
+				),
+			},
+			{ additionalProperties: false },
+		),
 		executionMode: "sequential",
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (!runDir) return text("No run yet — spawn a subagent first.");
-			const target =
-				params.to === "main"
-					? readJson<Beacon>(join(agentDir("main"), "beacon.json"))
-					: resolveAgent(params.to);
-			if (!target) return text(`No agent named or identified by ${params.to}.`);
-
-			// A finished agent has no live process: resume it with this message as a follow-up.
-			if (
-				target.name !== "main" &&
-				!isActive(target.name) &&
-				target.state !== "queued" &&
-				runAgent(target.name, params.body, ctx, false)
-			) {
-				if (activeRequest && activeRequest.from === target.name)
-					activeRequest = undefined;
-				refreshView(ctx);
-				return text(
-					`Re-addressing ${target.name} · ${target.taskId} (resuming its session). Call wait for its result.`,
-				);
-			}
-
+		async execute(_id, params, _signal, _onUpdate, _ctx) {
+			if (!runDir) return structured({ error: "No collaboration run exists." });
+			const target = resolveAuthorizedAgent(params.target);
+			if (!target) return structured({ error: `Unknown or unauthorized task ${params.target}.` });
+			const message = params.message.trim();
+			if (!message) return structured({ error: "message must not be empty" });
 			const id = rid();
 			post({
 				id,
 				from: SELF,
 				to: target.name,
-				body: params.body,
+				body: message,
 				replyTo: params.reply_to,
-				kind: params.wait ? "request" : "notice",
+				kind: "notice",
 				ts: now(),
 			});
 			if (
 				activeRequest &&
+				target.name === activeRequest.from &&
 				(params.reply_to === activeRequest.id ||
-					(activeRequest.kind !== "request" &&
-						target.name === activeRequest.from))
-			) {
+					(activeRequest.kind !== "request" && target.name === activeRequest.from))
+			)
 				activeRequest = undefined;
-			}
-			if (!params.wait)
-				return text(`Sent to ${target.name} · ${target.taskId}.`);
-			const reply = await pollFor(
-				() => takeReply(SELF, id, target.name),
-				signal,
-			);
-			return text(
-				reply ? `${reply.from}: ${reply.body}` : "Reply wait interrupted.",
-			);
+			return structured({}, `Sent message to ${target.name}`);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("accent", `Message ${args.target}`), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
 		},
 	});
 
 	pi.registerTool({
-		name: "kill",
-		label: "Kill subagent",
+		name: "followup_task",
+		label: "Follow up task",
 		description:
-			"Force-kill a running or wedged subagent by first name or task id. Use '*' to kill all direct children and their descendants.",
-		promptSnippet: "kill(name): hard-stop a wedged subagent",
-		promptGuidelines: [
-			"Use kill when a subagent is stuck, rate-limited in a replay loop, or cannot be stopped by a normal message.",
-			"Killing marks the agent stopped, clears its pending messages to this parent, and removes it from the wait loop. It does not preserve a graceful final answer.",
-		],
-		parameters: Type.Object({
-			name: Type.String({
-				description:
-					"Agent first name or task id to kill, or '*' for all direct children.",
-			}),
-			reason: Type.Optional(
-				Type.String({ description: "Why the agent is being hard-stopped." }),
-			),
-		}),
+			"Start or queue a new turn for an existing agent while preserving its isolated session.",
+		promptSnippet: "followup_task(target, message): continue an existing task",
+		parameters: Type.Object(
+			{
+				target: Type.String({
+					description: "Absolute /root/... task path or path relative to the caller.",
+				}),
+				message: Type.String({ description: "Follow-up task or correction." }),
+			},
+			{ additionalProperties: false },
+		),
 		executionMode: "sequential",
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (!runDir) return text("No run yet — spawn a subagent first.");
-			const lines = killAgents(
-				params.name,
-				params.reason?.trim() || "requested by parent agent",
-			);
+			if (!runDir) return structured({ error: "No collaboration run exists." });
+			const target = resolveAuthorizedAgent(params.target);
+			if (
+				!target ||
+				!canControlTask(target) ||
+				target.name === ROOT_TASK_PATH ||
+				target.name === SELF
+			)
+				return structured({ error: `Unknown or invalid follow-up target ${params.target}.` });
+			const message = params.message.trim();
+			if (!message) return structured({ error: "message must not be empty" });
+			let outcome: string;
+			if (isActive(target.name) || target.state === "queued") {
+				postControl(target.name, {
+					id: rid(),
+					from: SELF,
+					action: "followUp",
+					body: message,
+					ts: now(),
+				});
+				outcome = `Queued follow-up for ${target.name}`;
+			} else if (runAgent(target.name, message, ctx, false)) {
+				outcome = `Started follow-up turn for ${target.name}`;
+			} else {
+				return structured({ error: `${target.name} could not be resumed.` });
+			}
+			if (
+				activeRequest?.from === target.name &&
+				activeRequest.kind !== "request"
+			)
+				activeRequest = undefined;
 			refreshView(ctx);
-			return text(lines.join("\n"));
+			return structured({}, outcome);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("accent", `Follow up ${args.target}`), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
 		},
 	});
 
 	pi.registerTool({
-		name: "wait",
-		label: "Wait for subagents",
+		name: "wait_agent",
+		label: "Wait for agents",
 		description:
-			"Yield until a subagent needs you (a question or approval request) or one finishes. Returns immediately when there is no active child or pending message.",
-		promptSnippet: "wait(): yield until a subagent needs you or finishes",
+			"Wait for team mailbox activity, a child lifecycle event, user steering, or a bounded timeout.",
+		promptSnippet: "wait_agent(timeout_ms?): wait for collaboration activity",
 		promptGuidelines: [
-			"After spawning one or more subagents, call `wait` to yield. It returns when a subagent messages you or when a completion result file is ready. Answer questions with `message`, kill wedged children with `kill`, then `wait` again. If `wait` reports no active subagents or pending messages, stop waiting and continue normally.",
+			"While Pi's coordination gate is active, wait_agent is the normal way to yield after coordination work.",
 		],
-		parameters: Type.Object({}),
+		parameters: Type.Object(
+			{
+				timeout_ms: Type.Optional(
+					Type.Number({
+						description: `Timeout from ${WAIT_MIN_MS} to ${WAIT_MAX_MS} ms; defaults to ${WAIT_DEFAULT_MS}.`,
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
 		executionMode: "sequential",
-		async execute(_id, _params, signal, _onUpdate, ctx) {
-			if (!runDir) return text("No run yet — spawn a subagent first.");
-			activeRequest = undefined;
-			if (!hasTeamWork(SELF)) return text(noWaitWorkMessage(SELF));
-
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			if (!runDir) return structured({ message: "No collaboration run exists.", timed_out: false });
+			const timeoutMs = waitTimeout(params.timeout_ms);
+			if (activeRequest)
+				return structured(
+					{ message: "Wait completed.", timed_out: false },
+					`Request from ${activeRequest.from} is still pending`,
+				);
+			if (!hasTeamWork(SELF))
+				return structured(
+					{ message: noWaitWorkMessage(SELF), timed_out: false },
+					"No agent work pending",
+				);
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
-
-			// Questions, approval requests, result-file notices, and crash notices all arrive as messages.
-			// If the last child exits without posting anything, do not wait forever: return immediately.
-			const event = await waitForTeamEvent(ctx, signal);
-
+			const outcome = await waitForTeamEventWithTimeout(ctx, signal, timeoutMs);
 			writeBeacon(SELF, { state: "running", activity: "" });
-			if (event === undefined && signal?.aborted)
-				suppressNextCoordinationNudge = true;
-			return text(
-				event ??
-					"wait cancelled; subagents are still running. Ask for status or call wait again when ready.",
+			if (outcome.interrupted) suppressNextCoordinationNudge = true;
+			const message = outcome.interrupted
+				? "Wait interrupted by new input."
+				: outcome.timedOut
+					? "Wait timed out."
+					: "Wait completed.";
+			return structured(
+				{ message, timed_out: outcome.timedOut },
+				message,
 			);
+		},
+		renderCall(_args, theme) {
+			return new Text(theme.fg("accent", "Waiting for agents"), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
+		},
+	});
+
+	pi.registerTool({
+		name: "interrupt_agent",
+		label: "Interrupt agent",
+		description:
+			"Interrupt an agent's current turn without destroying its resumable session. Root and self cannot be targeted.",
+		promptSnippet: "interrupt_agent(target): interrupt a current agent turn",
+		parameters: Type.Object(
+			{
+				target: Type.String({
+					description: "Absolute /root/... task path or path relative to the caller.",
+				}),
+			},
+			{ additionalProperties: false },
+		),
+		executionMode: "sequential",
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (!runDir) return structured({ error: "No collaboration run exists." });
+			const target = resolveAuthorizedAgent(params.target);
+			if (
+				!target ||
+				!canControlTask(target) ||
+				target.name === ROOT_TASK_PATH ||
+				target.name === SELF
+			)
+				return structured({ error: `Unknown or invalid interrupt target ${params.target}.` });
+			const previousStatus = statusForModel(target);
+			if (isActive(target.name))
+				postControl(target.name, { id: rid(), from: SELF, action: "abort", ts: now() });
+			refreshView(ctx);
+			return structured(
+				{ previous_status: previousStatus },
+				`Interrupted ${target.name}`,
+			);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("warning", `Interrupt ${args.target}`), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
+		},
+	});
+
+	pi.registerTool({
+		name: "list_agents",
+		label: "List agents",
+		description:
+			"List agents in the current /root task tree with stable Codex-shaped statuses.",
+		promptSnippet: "list_agents(path_prefix?): inspect collaboration status",
+		parameters: Type.Object(
+			{
+				path_prefix: Type.Optional(
+					Type.String({
+						description: "Absolute or caller-relative task-path prefix without a trailing slash.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		executionMode: "sequential",
+		async execute(_id, params) {
+			if (!runDir) return structured({ agents: [] }, "No agents");
+			const rawPrefix = params.path_prefix?.trim();
+			if (rawPrefix?.endsWith("/"))
+				return structured({ error: "path_prefix must not have a trailing slash" });
+			const prefix = !rawPrefix
+				? ROOT_TASK_PATH
+				: rawPrefix.startsWith("/")
+					? rawPrefix
+					: `${SELF}/${rawPrefix}`;
+			const agents = listAgents()
+				.filter(
+					(agent) =>
+						canAddress(agent) &&
+						(agent.name === prefix || agent.name.startsWith(`${prefix}/`)),
+				)
+				.sort((a, b) => a.name.localeCompare(b.name))
+				.map((agent) => ({
+					agent_name: agent.name,
+					agent_status: statusForModel(agent),
+					last_task_message: agent.taskName,
+				}));
+			return structured(
+				{ agents },
+				`Listed ${agents.length} agent${agents.length === 1 ? "" : "s"}`,
+			);
+		},
+		renderCall(_args, theme) {
+			return new Text(theme.fg("accent", "List agents"), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
 		},
 	});
 
 	if (!IS_CHILD) {
 		pi.registerTool({
 			name: "inspect_agent",
-			label: "Inspect subagent",
+			label: "Inspect agent",
 			description:
-				"Read a subagent's active session branch, including user messages, thinking, tool calls/results, provider errors, compactions, and assistant messages.",
-			promptSnippet:
-				"inspect_agent(agent): inspect any descendant's live or completed session",
-			promptGuidelines: [
-				"Use inspect_agent to diagnose a stuck or failed descendant directly instead of daisy-chaining status requests through its ancestors.",
-			],
-			parameters: Type.Object({
-				agent: Type.String({ description: "Subagent first name or task id." }),
-			}),
+				"Read any descendant's active session branch, including reasoning, tool calls/results, provider errors, compactions, and assistant messages.",
+			promptSnippet: "inspect_agent(target): inspect any descendant session",
+			parameters: Type.Object(
+				{
+					target: Type.String({ description: "Absolute /root/... task path." }),
+				},
+				{ additionalProperties: false },
+			),
 			executionMode: "sequential",
 			async execute(_id, params) {
-				if (!runDir) return text("No run yet — spawn a subagent first.");
-				const target = resolveAgent(params.agent);
-				if (!target || target.name === "main")
-					return text(`No subagent named or identified by ${params.agent}.`);
+				if (!runDir) return text("No collaboration run exists.");
+				const target = resolveAuthorizedAgent(params.target);
+				if (!target || target.name === ROOT_TASK_PATH)
+					return text(`Unknown subagent ${params.target}.`);
 				return text(agentTranscript(target.name));
 			},
 		});
 
 		pi.registerTool({
 			name: "control_agent",
-			label: "Control subagent",
+			label: "Control agent",
 			description:
-				"Directly steer, queue a follow-up, gracefully abort, or change the thinking level of any descendant. Thinking cannot exceed the main agent's current level.",
+				"Directly steer any descendant or change its Pi thinking level. Use followup_task and interrupt_agent for lifecycle control.",
 			promptSnippet:
-				"control_agent(agent, action, message?, thinking?): directly control any descendant",
-			promptGuidelines: [
-				"Use control_agent steer/follow_up for direct live intervention in a descendant, including deeply nested agents; use abort before kill when the session is responsive.",
-				"Use control_agent set_thinking only at a level equal to or lower than the main agent's current thinking level.",
-			],
-			parameters: Type.Object({
-				agent: Type.String({ description: "Subagent first name or task id." }),
-				action: StringEnum([
-					"steer",
-					"follow_up",
-					"abort",
-					"set_thinking",
-				] as const),
-				message: Type.Optional(
-					Type.String({ description: "Required for steer and follow_up." }),
-				),
-				thinking: Type.Optional(
-					StringEnum(THINKING_LEVELS, {
-						description: "Required for set_thinking.",
-					}),
-				),
-			}),
+				"control_agent(target, action, message?, thinking?): steer or retune any descendant",
+			parameters: Type.Object(
+				{
+					target: Type.String({ description: "Absolute /root/... task path." }),
+					action: StringEnum(["steer", "set_thinking"] as const),
+					message: Type.Optional(
+						Type.String({ description: "Required for steer." }),
+					),
+					thinking: Type.Optional(
+						StringEnum(THINKING_LEVELS, {
+							description: "Required for set_thinking.",
+						}),
+					),
+				},
+				{ additionalProperties: false },
+			),
 			executionMode: "sequential",
 			async execute(_id, params, _signal, _onUpdate, ctx) {
-				const action =
-					params.action === "follow_up"
-						? "followUp"
-						: params.action === "set_thinking"
-							? "setThinking"
-							: params.action;
+				const action = params.action === "set_thinking" ? "setThinking" : "steer";
 				const result = controlAgent(
-					params.agent,
+					params.target,
 					action,
 					ctx,
 					params.message,
@@ -1685,19 +1937,19 @@ function coordinationPrompt(): string {
 		if (approval) {
 			return [
 				`Nested subagent spawn approval request from ${activeRequest.from} (id ${activeRequest.id}).`,
-				`Requested child: ${approval.name}`,
-				`Task: ${approval.task}`,
+				`Requested child: ${approval.taskPath}`,
+				`Task: ${approval.message}`,
 				"Decide deliberately; do not rubber-stamp nested delegation.",
 				"Approve only if the child task is independent, scoped, non-duplicative of active work, and worth the coordination overhead. Deny if the requester should do the work directly or needs a narrower plan.",
-				`Reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: "approve") or message(..., body: "deny: <reason>"), or kill the requester if it is wedged, then call wait again.`,
+				`Reply with send_message(target: "${activeRequest.from}", reply_to: "${activeRequest.id}", message: "approve") or send_message(..., message: "deny: <reason>"), then call wait_agent again.`,
 				coordinationStatus(SELF),
 			].join("\n");
 		}
 		return [
 			`Subagent coordination request from ${activeRequest.from} (id ${activeRequest.id}).`,
 			activeRequest.kind === "request"
-				? `Use any tools needed to satisfy the request, then reply with message(to: "${activeRequest.from}", reply_to: "${activeRequest.id}", body: ...), then call wait again.`
-				: `Use any tools needed to handle or repair this subagent event, then call wait again. If you need to resume the agent, message ${activeRequest.from}; if it is wedged, kill ${activeRequest.from}.`,
+				? `Use any tools needed to satisfy the request, then reply with send_message(target: "${activeRequest.from}", reply_to: "${activeRequest.id}", message: ...), then call wait_agent again.`
+				: `Handle or repair this event, then call wait_agent again. Use followup_task to resume ${activeRequest.from} or interrupt_agent to stop its current turn.`,
 			`Request: ${activeRequest.body}`,
 			coordinationStatus(SELF),
 		].join("\n");
@@ -1721,7 +1973,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", (event) => {
-		if ((event as { toolName?: string }).toolName === "spawn")
+		if ((event as { toolName?: string }).toolName === "spawn_agent")
 			spawnQueuedThisTurn = true;
 	});
 
@@ -1741,21 +1993,23 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", (event) => {
 		const toolName = (event as { toolName?: string }).toolName ?? "";
-		if (spawnQueuedThisTurn && toolName !== "spawn") {
+		if (spawnQueuedThisTurn && toolName !== "spawn_agent") {
 			return {
 				block: true,
 				reason:
-					"Do not combine spawn with other tools in the same turn. Let spawn return, then call wait in the next turn.",
+					"Do not combine spawn_agent with other tools in the same turn. Let it return, then coordinate in the next turn.",
 			};
 		}
 		if (
 			runDir &&
 			hasTeamWork(SELF) &&
 			!activeRequest &&
-			toolName !== "spawn" &&
-			toolName !== "wait" &&
-			toolName !== "message" &&
-			toolName !== "kill" &&
+			toolName !== "spawn_agent" &&
+			toolName !== "send_message" &&
+			toolName !== "followup_task" &&
+			toolName !== "wait_agent" &&
+			toolName !== "interrupt_agent" &&
+			toolName !== "list_agents" &&
 			toolName !== "inspect_agent" &&
 			toolName !== "control_agent"
 		) {
@@ -1780,7 +2034,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 				if (ctx.hasUI && now() - lastProviderBackoffNoticeAt > 60_000) {
 					lastProviderBackoffNoticeAt = now();
 					ctx.ui.notify(
-						`Subagent coordination paused after provider backoff: ${backoff}. Send a new message, wait, message, or kill when ready.`,
+						`Subagent coordination paused after provider backoff: ${backoff}. Send a new message or use the collaboration tools when ready.`,
 						"warning",
 					);
 				}
@@ -1869,12 +2123,13 @@ function registerChildHooks(pi: ExtensionAPI): void {
 	pi.on("agent_settled", () => {
 		const messages = lastChildRunMessages;
 		const status = finalAssistantStatus(messages);
+		const interrupted = status.stopReason === "aborted";
 		const needsAttention = statusNeedsAttention(status);
 		const recoveryHint = needsAttention
 			? providerFailureHint(status)
 			: undefined;
 
-		if (!needsAttention && hasTeamWork(SELF)) {
+		if (hasTeamWork(SELF)) {
 			writeBeacon(SELF, { state: "running", activity: "must wait" });
 			pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
 			return;
@@ -1883,25 +2138,13 @@ function registerChildHooks(pi: ExtensionAPI): void {
 		const finalText = (lastAssistantText(messages) || status.errorMessage || "")
 			.replace(/\s+/g, " ")
 			.trim();
-		if (PARENT) {
-			const resultFile = writeResultFile(SELF, messages);
-			post({
-				id: rid(),
-				from: SELF,
-				to: PARENT,
-				body: resultReadyMessage(
-					SELF,
-					resultFile,
-					needsAttention ? "attention" : "done",
-					status.errorMessage,
-					recoveryHint,
-				),
-				kind: needsAttention ? "attention" : "completion",
-				ts: now(),
-			});
-		}
+		const resultFile = NOTIFY && !interrupted
+			? writeResultFile(SELF, messages)
+			: undefined;
 		const terminalPatch: Partial<Beacon> = {
-			state: needsAttention ? "stopped" : "done",
+			state: interrupted ? "interrupted" : needsAttention ? "error" : "completed",
+			errorMessage: needsAttention ? status.errorMessage : undefined,
+			resultFile,
 		};
 		if (finalText)
 			terminalPatch.lastAssistantText = finalText.slice(
@@ -1909,6 +2152,22 @@ function registerChildHooks(pi: ExtensionAPI): void {
 				ASSISTANT_PREVIEW_MAX,
 			);
 		writeBeacon(SELF, terminalPatch);
+		if (NOTIFY && resultFile) {
+			post({
+				id: rid(),
+				from: SELF,
+				to: NOTIFY,
+				body: resultReadyMessage(
+					SELF,
+					resultFile,
+					needsAttention ? "attention" : "completed",
+					status.errorMessage,
+					recoveryHint,
+				),
+				kind: needsAttention ? "attention" : "completion",
+				ts: now(),
+			});
+		}
 	});
 }
 
@@ -1944,7 +2203,7 @@ function readFeed(): string[] {
 function refreshView(ctx: ExtensionContext): void {
 	if (ctx.mode !== "tui") return;
 	const agents = runDir ? listAgents() : [];
-	const workers = agents.filter((agent) => agent.name !== "main");
+	const workers = agents.filter((agent) => agent.name !== ROOT_TASK_PATH);
 	if (workers.length === 0 || runDismissed) {
 		if (lastSig !== undefined) ctx.ui.setWidget(VIEW_KEY, undefined);
 		lastSig = undefined;
@@ -1981,7 +2240,7 @@ function agentTranscript(name: string, maxChars = 24_000): string {
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 	if (!beacon) return `No agent named ${name}.`;
 	const lines = [
-		`# ${name} · ${beacon.taskId}`,
+		`# ${name}`,
 		beacon.taskName ? `Task: ${beacon.taskName}` : undefined,
 		`State: ${beacon.state}${beacon.activity ? ` (${beacon.activity})` : ""}`,
 		`Started: ${new Date(beacon.startedAt).toLocaleString()}`,
@@ -2083,7 +2342,7 @@ async function runDashboard(
 				THINKING_LEVELS.indexOf(ceiling) + 1,
 			);
 			const level = await ctx.ui.select(
-				`Thinking for ${action.name} (main ceiling: ${ceiling})`,
+				`Thinking for ${action.name} (root ceiling: ${ceiling})`,
 				[...choices],
 			);
 			if (!level) continue;
@@ -2097,11 +2356,11 @@ async function runDashboard(
 		} else {
 			const confirmed = await ctx.ui.confirm(
 				action.action === "kill"
-					? `Kill ${action.name}?`
-					: `Abort ${action.name}?`,
+					? `Emergency stop ${action.name}?`
+					: `Interrupt ${action.name}?`,
 				action.action === "kill"
-					? "Hard-stop this agent and all of its descendants?"
-					: "Request a graceful abort of the current agent run?",
+					? "Terminate this task process and all descendant processes?"
+					: "Gracefully interrupt the current turn and preserve its session?",
 			);
 			if (!confirmed) continue;
 			result =
@@ -2132,7 +2391,7 @@ async function inspectSubagentCommand(
 	if (/^kill$/i.test(first ?? "")) {
 		const target = rest[0];
 		if (!target) {
-			ctx.ui.notify("Usage: /subagent kill <name|task-id|*>", "error");
+			ctx.ui.notify("Usage: /subagent kill </root/task|*>", "error");
 			return;
 		}
 		const lines = killAgents(target, "requested from /subagent");
@@ -2142,9 +2401,9 @@ async function inspectSubagentCommand(
 	}
 
 	const target = resolveAgent(first ?? "");
-	if (!target || target.name === "main") {
+	if (!target || target.name === ROOT_TASK_PATH) {
 		ctx.ui.notify(
-			`No subagent named or identified by ${first ?? ""}.`,
+			`Unknown task path ${first ?? ""}.`,
 			"error",
 		);
 		return;
@@ -2189,12 +2448,12 @@ function startWatchdog(ctx: ExtensionContext): void {
 		const agents = listAgents();
 		const hasLiveChild = new Set(
 			agents
-				.filter((agent) => !TERMINAL.has(agent.state))
+				.filter((agent) => !INACTIVE.has(agent.state))
 				.map((agent) => agent.parent)
 				.filter((parent): parent is string => !!parent),
 		);
 		for (const agent of agents) {
-			if (agent.name === "main" || TERMINAL.has(agent.state)) continue;
+			if (agent.name === ROOT_TASK_PATH || INACTIVE.has(agent.state)) continue;
 			const flaggedAt = flagged.get(agent.name);
 			if (flaggedAt !== undefined && agent.updatedAt > flaggedAt)
 				flagged.delete(agent.name);
@@ -2213,7 +2472,7 @@ function startWatchdog(ctx: ExtensionContext): void {
 			try {
 				stop = await ctx.ui.confirm(
 					"Subagent stuck?",
-					`${agent.name} · ${agent.taskId} — no progress for ${fmtAge(now() - agent.updatedAt)}. Stop it and its descendants?`,
+					`${agent.name} — no progress for ${fmtAge(now() - agent.updatedAt)}. Stop it and its descendants?`,
 				);
 			} finally {
 				uiPrompting = false;
@@ -2226,8 +2485,8 @@ function startWatchdog(ctx: ExtensionContext): void {
 				post({
 					id: rid(),
 					from: agent.name,
-					to: "main",
-					body: `${messages.join("; ")}. Inspect or resume the agent if repair is needed.`,
+					to: ROOT_TASK_PATH,
+					body: `${messages.join("; ")}. Inspect the task or use followup_task if repair is needed.`,
 					kind: "attention",
 					ts: now(),
 				});
@@ -2243,6 +2502,7 @@ function startWatchdog(ctx: ExtensionContext): void {
 // --------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI): void {
+	if (IS_CHILD) assertRunSchema();
 	registerTools(pi);
 	registerCoordinationHooks(pi);
 
@@ -2291,13 +2551,18 @@ export default function (pi: ExtensionAPI): void {
 		pi.registerCommand("subagents", {
 			description: "Open the live subagent orchestration dashboard.",
 			handler: async (args, cmdCtx) => {
-				const target = args.trim() ? resolveAgent(args.trim()) : undefined;
+				const requestedPath = args.trim();
+				const target = requestedPath ? resolveAgent(requestedPath) : undefined;
+				if (requestedPath && !target) {
+					cmdCtx.ui.notify(`Unknown task path ${requestedPath}.`, "error");
+					return;
+				}
 				await runDashboard(cmdCtx, target?.name);
 			},
 		});
 		pi.registerCommand("subagent", {
 			description:
-				"Open, message, or kill a subagent: /subagent <name|task-id>, /subagent <name> <message>, /subagent kill <name|task-id|*>",
+				"Open, message, or emergency-stop a task: /subagent </root/task>, /subagent </root/task> <message>, /subagent kill </root/task|*>",
 			handler: async (args, cmdCtx) => inspectSubagentCommand(args, cmdCtx),
 		});
 		startNestedSpawnApprovalPrompts(ctx);

@@ -3,7 +3,11 @@ export type AgentRunState = {
 	state: string;
 };
 
-const TERMINAL_AGENT_STATES = new Set(["done", "error", "stopped"]);
+const TERMINAL_AGENT_STATES = new Set([
+	"completed",
+	"error",
+	"hard_killed",
+]);
 
 export function terminalRunCanHide(
 	agents: AgentRunState[],

@@ -1,106 +1,62 @@
 # pi-subagents
 
-Run delegated work in isolated background `pi` processes. Every subagent has a
-clean context, the normal installed plugin stack, a human first name chosen by
-its parent, and a separate generated task id.
+Run delegated work in isolated background `pi` processes through a Codex V2-shaped collaboration surface. Each task has a canonical path under `/root`, a clean model context, the normal installed plugin stack, a shared working directory, and a resumable Pi session.
 
 ## Tools
 
-- `spawn(task, name, thinking?)` starts one delegated task. `name` is a distinct
-  first name such as `Maya`; Pi assigns a `task-…` id. `thinking` defaults to
-  the parent's current level and can only be equal or lower.
-- `message(to, body, reply_to?, wait?)` uses the cooperative agent mailbox.
-  Address an agent by first name or task id, use `wait:true` for a request/reply,
-  and use `reply_to` to answer a request. Addressing a finished agent resumes
-  its saved session.
-- `inspect_agent(agent)` lets `main` read any descendant's active session branch
-  directly. Inspection includes user messages, thinking blocks, tool calls and
-  results, provider errors, model/thinking changes, compactions, and assistant
-  messages.
-- `control_agent(agent, action, message?, thinking?)` lets `main` directly
-  `steer`, queue a `follow_up`, request a graceful `abort`, or `set_thinking`
-  for any descendant at any depth.
-- `kill(name, reason?)` hard-stops one subagent and its descendants. `*` stops
-  every direct child subtree.
-- `wait()` yields until a direct child needs attention or finishes. It returns
-  immediately when there is no child work or unread child mail.
+- `spawn_agent(task_name, message)` creates a direct child at `<caller-path>/<task_name>`. Task names use lowercase ASCII letters, digits, and underscores.
+- `send_message(target, message, reply_to?)` stores cooperative mail independently of turn activation. Use `reply_to` for correlated request responses.
+- `followup_task(target, message)` starts or queues a new turn in an existing task's saved session.
+- `wait_agent(timeout_ms?)` waits for mailbox activity, child lifecycle changes, user steering, or a timeout. The default is 30 seconds; accepted values are 10 seconds through one hour.
+- `interrupt_agent(target)` gracefully interrupts the current turn while preserving the task's resumable session.
+- `list_agents(path_prefix?)` returns canonical task paths, Codex-shaped statuses, and the latest task summary.
+- `inspect_agent(target)` lets `/root` read any descendant's active session branch, including messages, reasoning, tool calls/results, provider errors, compactions, and model changes.
+- `control_agent(target, action, message?, thinking?)` lets `/root` steer any descendant or change its Pi thinking level.
 
-The normal orchestration loop is `spawn` → `wait` → respond with `message` or
-intervene with `inspect_agent`/`control_agent` → `wait`. Completion messages
-contain a result-file path rather than inlining the final response into the
-parent's context.
+Targets may be canonical `/root/...` paths or paths relative to the caller. `/root` can address the entire tree; child agents can coordinate with `/root`, their parent, and their own subtree.
+
+The normal orchestration loop is `spawn_agent` → `wait_agent` → coordinate with `send_message`, `followup_task`, `interrupt_agent`, `inspect_agent`, or `control_agent` → `wait_agent`. Completion mail keeps the parent context compact by pointing to a result file.
 
 ## Orchestration dashboard
 
-A compact line above the editor shows active, queued, completed, and
-attention-needed counts. `/subagents` opens a full-terminal overlay for the run;
-`/subagents <name|task-id>` opens it on one agent. `/subagent` is an equivalent
-singular command and also supports inline messages and `kill`.
+A compact line above the editor shows active, queued, completed, and attention-needed counts. `/subagents` opens a full-terminal overlay; `/subagents <task-path>` opens it on one task. `/subagent` is an equivalent singular command and supports inline messages and emergency hard termination.
 
 The dashboard provides:
 
-- a virtualized, searchable parent/child tree that remains bounded with large
-  or deeply nested teams;
-- first name, task id, state, activity, model, thinking level, usage, duration,
-  and task summary;
-- the selected agent's live active-branch session tail, wrapped to the available
-  conversation pane width, and recent coordination feed;
-- direct actions: `m` cooperative message, `s` steer, `f` follow-up, `t`
-  thinking, `a` graceful abort, and `x` hard kill;
-- arrow or `j`/`k` navigation, `/` search, and Page Up/Page Down transcript
-  scrolling.
+- a virtualized, searchable parent/child tree keyed by canonical task path;
+- state, current activity, model, thinking level, usage, duration, generation, and task summary;
+- the selected task's live active-branch session tail and recent coordination feed;
+- direct actions for cooperative messages, steering, follow-up turns, thinking changes, graceful interruption, and confirmed emergency hard termination;
+- arrow or `j`/`k` navigation, `/` search, and Page Up/Page Down transcript scrolling.
 
 ## Behaviour
 
-- **Bounded fan-out.** A parent runs at most 12 direct children concurrently by
-  default. Additional tasks remain visible as `queued` and launch as slots free.
-  This bounds wide bursts without preventing deep orchestration.
-- **Event-driven waiting.** Parents watch their own inbox and use a low-frequency
-  fallback instead of repeatedly scanning every beacon in the run. Direct-child
-  indexes keep nested wait checks proportional to each parent's own children.
-- **Snapshot rendering.** The compact indicator and dashboard read one team
-  snapshot per refresh. Rendering performs no filesystem scans, and assistant
-  previews stored in beacons are bounded.
-- **Atomic state.** Beacon replacement and mailbox creation are atomic. Mail ids
-  are UUIDs, replies are correlated with their expected sender, and selected
-  first names are unique within a run.
-- **Live control.** Running children watch a dedicated control inbox. Steers,
-  follow-ups, aborts, and thinking changes are delivered into the target Pi
-  session without routing through intermediate parents.
-- **Branch-aware inspection.** Session reading uses Pi's `SessionManager`, follows
-  the active branch, retains the newest bounded window, and caches unchanged
-  session files.
-- **Nested approval.** A nested `spawn` asks `main` for deliberate approval. Set
-  `subagents.nestedSpawnApproval` to `user` to route each request through a user
-  confirmation modal.
-- **Resumable sessions.** A completed or attention-needed agent exits after
-  writing its result. Re-addressing it starts the same isolated session with its
-  first name, task id, model, and thinking level intact.
-- **Deep watchdog.** The root watchdog can identify and stop any non-coordinating
-  descendant. Queued, waiting, and parent agents with live children are not
-  treated as stuck.
-- **Settled lifecycle.** Results publish only after Pi emits `agent_settled`, so
-  automatic retry, compaction retry, and queued follow-ups finish first.
+- **Canonical identity.** `/root` is the root task. Each child adds one validated segment, so nested work has stable paths such as `/root/research/history`.
+- **Bounded direct fan-out.** A parent runs at most 12 direct children concurrently by default. Additional accepted tasks remain visible as `pending_init` and launch as slots free.
+- **Event-driven coordination.** Parents watch their inbox and direct children. `wait_agent` also has a bounded timeout and responds to user steering.
+- **Atomic state.** Beacon replacement, path reservation, and mailbox claims are atomic. Replies are correlated with their expected sender.
+- **Root coordination gate.** While descendants are active or child mail is unread, the parent remains a coordinator. Collaboration tools handle normal coordination; a claimed child request may use the tools needed to prepare its response. `/root` retains direct inspection and control at every depth.
+- **Live control.** Running children watch a dedicated control inbox for steering, follow-up turns, interruption, and thinking changes.
+- **Nested approval.** A nested `spawn_agent` asks `/root` for deliberate approval. Set `subagents.nestedSpawnApproval` to `user` to route requests through a confirmation modal.
+- **Resumable tasks.** `followup_task` reopens the same isolated Pi session at the same canonical path and records a new result generation.
+- **Result publication.** A result file is written atomically before completion mail is published. Completion uses a `FINAL_ANSWER` envelope containing the sender path, parent task path, status, and file path.
+- **Lifecycle safety.** A parent remains in coordination while descendants or unread child mail exist. Graceful interruption preserves the session; dashboard, watchdog, and shutdown paths provide confirmed emergency process termination.
+- **Deep watchdog.** The root watchdog can identify and stop a non-coordinating descendant. Queued, waiting, and parent agents with live children are not treated as stuck.
+- **Settled completion.** Results publish only after Pi emits `agent_settled`, so automatic retry, compaction retry, and queued follow-ups finish first.
 
 ## Configuration
 
 Environment variables:
 
-- `PI_SUBAGENTS_DIR` — run storage base (default
-  `~/.pi/agent/subagents`).
-- `PI_SUBAGENTS_MAX_ACTIVE` — concurrent direct children per parent (default
-  `12`).
-- `PI_SUBAGENTS_STALE_MS` — watchdog threshold outside a tool call (default
-  `600000`).
-- `PI_SUBAGENTS_ACTIVE_TOOL_STALE_MS` — watchdog threshold during a tool call
-  (default `1800000`).
-- `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup
-  (default `86400000`).
-- `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows (default `8`).
+- `PI_SUBAGENTS_DIR` — run storage base, default `~/.pi/agent/subagents`.
+- `PI_SUBAGENTS_MAX_ACTIVE` — concurrent direct children per parent, default `12`.
+- `PI_SUBAGENTS_STALE_MS` — watchdog threshold outside a tool call, default `600000`.
+- `PI_SUBAGENTS_ACTIVE_TOOL_STALE_MS` — watchdog threshold during a tool call, default `1800000`.
+- `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup, default `86400000`.
+- `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows, default `8`.
 - `PI_SUBAGENTS_NESTED_SPAWN_APPROVAL` — `agent` or `user`.
 
-Nested approval can also be configured globally in
-`~/.pi/agent/settings.json` or per trusted project in `.pi/settings.json`:
+Nested approval can also be configured globally in `~/.pi/agent/settings.json` or per trusted project in `.pi/settings.json`:
 
 ```json
 {
@@ -113,17 +69,15 @@ Nested approval can also be configured globally in
 ## Storage
 
 ```text
-~/.pi/agent/subagents/<run>/<name>/beacon.json
-~/.pi/agent/subagents/<run>/<name>/children/
-~/.pi/agent/subagents/<run>/<name>/inbox/
-~/.pi/agent/subagents/<run>/<name>/control/
-~/.pi/agent/subagents/<run>/<name>/launch.json
+~/.pi/agent/subagents/<run>/run.json
+~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/beacon.json
+~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/children/
+~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/inbox/
+~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/control/
+~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/launch.json
 ~/.pi/agent/subagents/<run>/results/
 ~/.pi/agent/subagents/<run>/sessions/
 ~/.pi/agent/subagents/<run>/feed.log
 ```
 
-Child processes receive `PI_SUBAGENT_NAME`, `PI_SUBAGENT_TASK_ID`,
-`PI_SUBAGENT_PARENT`, and `PI_SUBAGENT_RUN`. Their sessions use the task id
-inside the run-local session directory, so they remain resumable without
-appearing in `/resume`.
+Child processes receive `PI_SUBAGENT_TASK_PATH`, `PI_SUBAGENT_PARENT_PATH`, `PI_SUBAGENT_NOTIFY_PATH`, and `PI_SUBAGENT_RUN`. Their opaque session identifiers remain inside the run-local session directory and resume through `followup_task`.

@@ -27,6 +27,8 @@ export type DashboardAgent = {
 	model?: string;
 	thinking?: string;
 	lastAssistantText?: string;
+	generation?: number;
+	resultFile?: string;
 };
 
 export type DashboardSnapshot = {
@@ -43,24 +45,25 @@ export type DashboardAction = {
 
 type AgentRow = { agent: DashboardAgent; depth: number };
 
-const TERMINAL = new Set(["done", "error", "stopped"]);
 const GLYPH: Record<string, string> = {
 	queued: "○",
 	spawning: "◌",
 	running: "●",
 	waiting: "◐",
-	done: "✓",
+	completed: "✓",
 	error: "✗",
-	stopped: "■",
+	interrupted: "■",
+	hard_killed: "×",
 };
 const STATE_COLOR: Record<string, ThemeColor> = {
 	queued: "dim",
 	spawning: "dim",
 	running: "accent",
 	waiting: "warning",
-	done: "success",
+	completed: "success",
 	error: "error",
-	stopped: "dim",
+	interrupted: "warning",
+	hard_killed: "dim",
 };
 
 function fitLine(text: string, width: number): string {
@@ -113,9 +116,9 @@ export function flattenDashboardAgents(agents: DashboardAgent[]): AgentRow[] {
 	const byParent = new Map<string, DashboardAgent[]>();
 	const byName = new Map(agents.map((agent) => [agent.name, agent]));
 	for (const agent of agents) {
-		if (agent.name === "main") continue;
+		if (agent.name === "/root") continue;
 		const parent =
-			agent.parent && byName.has(agent.parent) ? agent.parent : "main";
+			agent.parent && byName.has(agent.parent) ? agent.parent : "/root";
 		const siblings = byParent.get(parent) ?? [];
 		siblings.push(agent);
 		byParent.set(parent, siblings);
@@ -135,23 +138,25 @@ export function flattenDashboardAgents(agents: DashboardAgent[]): AgentRow[] {
 			walk(agent.name, depth + 1);
 		}
 	};
-	walk("main", 0);
+	walk("/root", 0);
 	for (const agent of agents) {
-		if (agent.name !== "main" && !seen.has(agent.name))
+		if (agent.name !== "/root" && !seen.has(agent.name))
 			rows.push({ agent, depth: 0 });
 	}
 	return rows;
 }
 
 export function orchestrationSummary(agents: DashboardAgent[]): string {
-	const workers = agents.filter((agent) => agent.name !== "main");
-	const active = workers.filter((agent) => !TERMINAL.has(agent.state)).length;
+	const workers = agents.filter((agent) => agent.name !== "/root");
+	const active = workers.filter(
+		(agent) => agent.state === "running" || agent.state === "spawning",
+	).length;
 	const waiting = workers.filter(
 		(agent) => agent.state === "waiting" || agent.state === "queued",
 	).length;
-	const done = workers.filter((agent) => agent.state === "done").length;
+	const done = workers.filter((agent) => agent.state === "completed").length;
 	const attention = workers.filter(
-		(agent) => agent.state === "error" || agent.state === "stopped",
+		(agent) => agent.state === "error" || agent.state === "hard_killed",
 	).length;
 	const parts = [`${active} active`];
 	if (waiting) parts.push(`${waiting} waiting/queued`);
@@ -218,7 +223,7 @@ export class SubagentDashboard implements Component {
 			m: "message",
 			s: "steer",
 			f: "followUp",
-			a: "abort",
+			i: "abort",
 			x: "kill",
 			t: "thinking",
 		};
@@ -316,10 +321,10 @@ export class SubagentDashboard implements Component {
 			),
 			boxedLine(
 				this.searching
-					? ` Search: ${this.filter || this.theme.fg("dim", "type a name, task id, task, or state")}`
+					? ` Search: ${this.filter || this.theme.fg("dim", "type a task path, task summary, or state")}`
 					: this.theme.fg(
 							"dim",
-							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · s steer · f follow-up · t thinking · a abort · x kill · Esc close",
+							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · s steer · f follow-up · t thinking · i interrupt · x emergency stop · Esc close",
 						),
 				safeWidth,
 				color,
@@ -435,7 +440,7 @@ export class SubagentDashboard implements Component {
 		const branch =
 			row.depth === 0 ? "" : `${"  ".repeat(Math.min(row.depth, 4))}↳ `;
 		const task = agent.taskName ? ` · ${agent.taskName}` : "";
-		const text = `${selected ? "→" : " "} ${branch}${this.theme.fg(stateColor, GLYPH[agent.state] ?? "•")} ${this.theme.bold(agent.name)} · ${agent.taskId}  ${this.theme.fg(stateColor, agent.state)}${task}`;
+		const text = `${selected ? "→" : " "} ${branch}${this.theme.fg(stateColor, GLYPH[agent.state] ?? "•")} ${this.theme.bold(agent.name)}  ${this.theme.fg(stateColor, agent.state)}${task}`;
 		return selected
 			? this.theme.fg("accent", truncateToWidth(text, width))
 			: truncateToWidth(text, width);
@@ -468,11 +473,11 @@ export class SubagentDashboard implements Component {
 		const duration = fmtAge((agent.finishedAt ?? Date.now()) - agent.startedAt);
 		const heading = this.theme.fg(
 			"accent",
-			this.theme.bold(`${agent.name} · ${agent.taskId}`),
+			this.theme.bold(agent.name),
 		);
 		const metadata = [
 			heading,
-			`${agent.state}${agent.activity ? ` · ${agent.activity}` : ""} · ${duration}`,
+			`${agent.state}${agent.activity ? ` · ${agent.activity}` : ""} · generation ${agent.generation ?? 1} · ${duration}`,
 			this.modelLine(agent),
 			this.statsLine(agent),
 			agent.taskName ? `Task: ${agent.taskName}` : undefined,
@@ -536,7 +541,6 @@ export class SubagentDashboard implements Component {
 		return rows.filter(({ agent }) =>
 			[
 				agent.name,
-				agent.taskId,
 				agent.taskName,
 				agent.state,
 				agent.activity ?? "",
