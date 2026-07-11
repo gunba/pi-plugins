@@ -2034,6 +2034,7 @@ async function runDashboard(
 					theme,
 					() => tui.requestRender(),
 					done,
+					() => tui.terminal.rows,
 				);
 				modalTimer = setInterval(() => {
 					if (!component) return;
@@ -2046,11 +2047,10 @@ async function runDashboard(
 			{
 				overlay: true,
 				overlayOptions: {
-					width: "96%",
-					minWidth: 60,
-					maxHeight: "94%",
-					anchor: "top-center",
-					margin: 1,
+					width: "100%",
+					maxHeight: "100%",
+					anchor: "top-left",
+					margin: 0,
 				},
 			},
 		);

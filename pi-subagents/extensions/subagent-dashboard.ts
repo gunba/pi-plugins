@@ -4,6 +4,7 @@ import {
 	Key,
 	matchesKey,
 	truncateToWidth,
+	wrapTextWithAnsi,
 	visibleWidth,
 	type Component,
 } from "@earendil-works/pi-tui";
@@ -164,12 +165,15 @@ export class SubagentDashboard implements Component {
 	private filter = "";
 	private searching = false;
 	private transcriptOffset = 0;
+	private lastTranscriptWidth = 80;
 	private cachedWidth: number | undefined;
+	private cachedHeight: number | undefined;
 	private cachedLines: string[] | undefined;
 	private snapshot: DashboardSnapshot;
 	private readonly theme: Theme;
 	private readonly requestRender: () => void;
 	private readonly done: (action: DashboardAction | null) => void;
+	private readonly getViewportHeight: () => number;
 
 	constructor(
 		snapshot: DashboardSnapshot,
@@ -177,11 +181,13 @@ export class SubagentDashboard implements Component {
 		theme: Theme,
 		requestRender: () => void,
 		done: (action: DashboardAction | null) => void,
+		getViewportHeight: () => number = () => 36,
 	) {
 		this.snapshot = snapshot;
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
+		this.getViewportHeight = getViewportHeight;
 		this.selectedName = initialName;
 		this.clampSelection();
 	}
@@ -198,6 +204,7 @@ export class SubagentDashboard implements Component {
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
+		this.cachedHeight = undefined;
 		this.cachedLines = undefined;
 	}
 
@@ -259,10 +266,8 @@ export class SubagentDashboard implements Component {
 		if (command === "up") this.moveSelection(-1);
 		if (command === "down") this.moveSelection(1);
 		if (command === "pageUp") {
-			this.transcriptOffset = Math.min(
-				this.snapshot.transcript.length,
-				this.transcriptOffset + 12,
-			);
+			const transcriptHeight = this.transcriptVisualLines(this.lastTranscriptWidth).length;
+			this.transcriptOffset = Math.min(transcriptHeight, this.transcriptOffset + 12);
 			this.invalidateAndRender();
 		}
 		if (command === "pageDown") {
@@ -286,8 +291,12 @@ export class SubagentDashboard implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		if (this.cachedLines && this.cachedWidth === safeWidth)
-			return this.cachedLines;
+		const safeHeight = Math.max(6, this.getViewportHeight());
+		if (
+			this.cachedLines &&
+			this.cachedWidth === safeWidth &&
+			this.cachedHeight === safeHeight
+		) return this.cachedLines;
 
 		const color = (text: string) => this.theme.fg("accent", text);
 		const rows = this.filteredRows();
@@ -311,31 +320,33 @@ export class SubagentDashboard implements Component {
 			),
 			borderLine(safeWidth, "├", "─", "┤", color),
 		];
+		const bodyRows = Math.max(1, safeHeight - 5);
 
 		if (rows.length === 0) {
-			lines.push(
-				boxedLine(
-					this.theme.fg(
-						"warning",
-						this.filter
-							? ` No matches for ${JSON.stringify(this.filter)}`
-							: " No subagents in this run",
-					),
-					safeWidth,
-					color,
+			lines.push(boxedLine(
+				this.theme.fg(
+					"warning",
+					this.filter
+						? ` No matches for ${JSON.stringify(this.filter)}`
+						: " No subagents in this run",
 				),
-			);
+				safeWidth,
+				color,
+			));
 		} else if (safeWidth >= 100) {
-			this.renderSplit(lines, rows, selected, safeWidth, color);
+			this.renderSplit(lines, rows, selected, safeWidth, bodyRows, color);
 		} else {
-			this.renderStacked(lines, rows, selected, safeWidth, color);
+			this.renderStacked(lines, rows, selected, safeWidth, bodyRows, color);
 		}
+		while (lines.length < safeHeight - 1) lines.push(boxedLine("", safeWidth, color));
+		if (lines.length > safeHeight - 1) lines.length = safeHeight - 1;
 
 		const position = selected
 			? `${rows.findIndex((row) => row.agent.name === selected.agent.name) + 1}/${rows.length}`
 			: `0/${rows.length}`;
 		lines.push(borderLine(safeWidth, "╰", "─", "╯", color, position));
 		this.cachedWidth = safeWidth;
+		this.cachedHeight = safeHeight;
 		this.cachedLines = lines;
 		return lines;
 	}
@@ -345,14 +356,14 @@ export class SubagentDashboard implements Component {
 		rows: AgentRow[],
 		selected: AgentRow | undefined,
 		width: number,
+		height: number,
 		color: (text: string) => string,
 	): void {
 		const inner = width - 2;
-		const leftWidth = Math.max(42, Math.floor(inner * 0.44));
+		const leftWidth = Math.max(32, Math.min(52, Math.floor(inner * 0.34)));
 		const rightWidth = inner - leftWidth - 1;
-		const visibleRows = this.visibleRows(rows, 28);
-		const detail = this.detailLines(selected, 28);
-		const height = Math.max(12, visibleRows.length, detail.length);
+		const visibleRows = this.visibleRows(rows, height);
+		const detail = this.detailLines(selected, height, rightWidth);
 		for (let index = 0; index < height; index++) {
 			const row = visibleRows[index];
 			const left = row
@@ -378,24 +389,26 @@ export class SubagentDashboard implements Component {
 		rows: AgentRow[],
 		selected: AgentRow | undefined,
 		width: number,
+		height: number,
 		color: (text: string) => string,
 	): void {
-		for (const row of this.visibleRows(rows, 9)) {
-			lines.push(
-				boxedLine(
-					this.renderAgentRow(
-						row.row,
-						row.row.agent.name === this.selectedName,
-						width - 2,
-					),
-					width,
-					color,
-				),
-			);
+		const listHeight = height >= 8
+			? Math.min(10, Math.max(3, Math.floor(height * 0.3)))
+			: Math.max(1, height - 1);
+		const visibleRows = this.visibleRows(rows, listHeight);
+		for (let index = 0; index < listHeight; index++) {
+			const row = visibleRows[index];
+			const content = row
+				? this.renderAgentRow(row.row, row.row.agent.name === this.selectedName, width - 2)
+				: "";
+			lines.push(boxedLine(content, width, color));
 		}
+		const detailHeight = height - listHeight - 1;
+		if (detailHeight < 0) return;
 		lines.push(borderLine(width, "├", "─", "┤", color, " selected agent "));
-		for (const line of this.detailLines(selected, 16))
-			lines.push(boxedLine(line, width, color));
+		const details = this.detailLines(selected, detailHeight, width - 2);
+		for (let index = 0; index < detailHeight; index++)
+			lines.push(boxedLine(details[index] ?? "", width, color));
 	}
 
 	private renderAgentRow(
@@ -417,15 +430,14 @@ export class SubagentDashboard implements Component {
 	private detailLines(
 		selected: AgentRow | undefined,
 		maxRows: number,
+		width: number,
 	): string[] {
 		if (!selected)
 			return [this.theme.fg("dim", "Select an agent to inspect it")];
 		const metadata = this.agentMetadata(selected.agent);
-		const room = Math.max(
-			1,
-			maxRows - metadata.length - Math.min(4, this.snapshot.feed.length + 1),
-		);
-		const transcript = this.transcriptWindow(room).map((line) =>
+		const feed = this.feedLines();
+		const room = Math.max(1, maxRows - metadata.length - feed.length);
+		const transcript = this.transcriptWindow(room, width).map((line) =>
 			this.theme.fg("muted", line),
 		);
 		if (transcript.length === 0)
@@ -435,7 +447,7 @@ export class SubagentDashboard implements Component {
 					this.snapshot.transcriptError ?? "No session entries yet",
 				),
 			);
-		return [...metadata, ...transcript, ...this.feedLines()].slice(0, maxRows);
+		return [...metadata, ...transcript, ...feed].slice(0, maxRows);
 	}
 
 	private agentMetadata(agent: DashboardAgent): string[] {
@@ -488,8 +500,16 @@ export class SubagentDashboard implements Component {
 		];
 	}
 
-	private transcriptWindow(maxRows: number): string[] {
-		const lines = this.snapshot.transcript;
+	private transcriptVisualLines(width: number): string[] {
+		const safeWidth = Math.max(8, width);
+		return this.snapshot.transcript.flatMap((line) =>
+			line.length ? wrapTextWithAnsi(line, safeWidth) : [""],
+		);
+	}
+
+	private transcriptWindow(maxRows: number, width: number): string[] {
+		this.lastTranscriptWidth = width;
+		const lines = this.transcriptVisualLines(width);
 		const end = Math.max(0, lines.length - this.transcriptOffset);
 		const start = Math.max(0, end - maxRows);
 		return lines.slice(start, end);

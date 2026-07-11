@@ -110,7 +110,13 @@ test("dashboard virtualizes 50 agents and obeys narrow and wide render widths", 
 	const snapshot = {
 		agents: agents(50, true),
 		feed: ["main→Agent1: inspect"],
-		transcript: ["user", "task", "", "tool result · read", "ok"],
+		transcript: [
+			"user",
+			"This is a deliberately long agent conversation line that should wrap across the full-screen transcript pane instead of being truncated before its final marker ENDMARK",
+			"",
+			"tool result · read",
+			"ok",
+		],
 	};
 	const dashboard = new SubagentDashboard(
 		snapshot,
@@ -118,13 +124,12 @@ test("dashboard virtualizes 50 agents and obeys narrow and wide render widths", 
 		theme,
 		() => {},
 		() => {},
+		() => 50,
 	);
 	for (const width of [20, 60, 120]) {
 		const lines = dashboard.render(width);
-		assert.ok(
-			lines.length < 40,
-			`rendered ${lines.length} lines at width ${width}`,
-		);
+		assert.equal(lines.length, 50, `dashboard did not fill terminal height at width ${width}`);
+		assert.match(lines.join("\n"), /ENDMARK/);
 		assert.ok(
 			lines.every((line) => visibleWidth(line) <= width),
 			`line exceeded width ${width}`,

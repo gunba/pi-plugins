@@ -33,7 +33,7 @@ parent's context.
 ## Orchestration dashboard
 
 A compact line above the editor shows active, queued, completed, and
-attention-needed counts. `/subagents` opens a focused overlay for the full run;
+attention-needed counts. `/subagents` opens a full-terminal overlay for the run;
 `/subagents <name|task-id>` opens it on one agent. `/subagent` is an equivalent
 singular command and also supports inline messages and `kill`.
 
@@ -43,8 +43,8 @@ The dashboard provides:
   or deeply nested teams;
 - first name, task id, state, activity, model, thinking level, usage, duration,
   and task summary;
-- the selected agent's live active-branch session tail and recent coordination
-  feed;
+- the selected agent's live active-branch session tail, wrapped to the available
+  conversation pane width, and recent coordination feed;
 - direct actions: `m` cooperative message, `s` steer, `f` follow-up, `t`
   thinking, `a` graceful abort, and `x` hard kill;
 - arrow or `j`/`k` navigation, `/` search, and Page Up/Page Down transcript
