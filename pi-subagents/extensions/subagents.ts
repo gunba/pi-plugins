@@ -2243,7 +2243,6 @@ function startWatchdog(ctx: ExtensionContext): void {
 // --------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI): void {
-	piThinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
 	registerTools(pi);
 	registerCoordinationHooks(pi);
 

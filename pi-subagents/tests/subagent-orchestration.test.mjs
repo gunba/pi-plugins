@@ -71,11 +71,13 @@ test("subagent thinking cannot exceed its parent's level", () => {
 	assert.throws(() => thinkingAtOrBelow("minimal", "off"), /exceeds/i);
 });
 
-test("root registration exposes direct inspection and control tools", () => {
+test("root registration exposes tools without calling runtime actions during loading", () => {
 	const tools = [];
 	const handlers = [];
 	subagents({
-		getThinkingLevel: () => "high",
+		getThinkingLevel: () => {
+			throw new Error("Extension runtime not initialized");
+		},
 		registerTool: (tool) => tools.push(tool),
 		on: (event, handler) => handlers.push({ event, handler }),
 	});
