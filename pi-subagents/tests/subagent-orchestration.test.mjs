@@ -157,6 +157,17 @@ test("root registration exposes tools without calling runtime actions during loa
 		Object.keys(byName.get("wait_agent").parameters.properties),
 		["timeout_ms"],
 	);
+	const waitTool = byName.get("wait_agent");
+	assert.equal(waitTool.parameters.properties.timeout_ms.minimum, 10_000);
+	assert.equal(waitTool.parameters.properties.timeout_ms.maximum, 3_600_000);
+	assert.equal(waitTool.parameters.properties.timeout_ms.default, 30_000);
+	assert.deepEqual(waitTool.prepareArguments({}), {});
+	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 1000 }), {
+		timeout_ms: 10_000,
+	});
+	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 9_000_000 }), {
+		timeout_ms: 3_600_000,
+	});
 	assert.equal(byName.get("spawn_agent").parameters.additionalProperties, false);
 	assert.equal(typeof byName.get("spawn_agent").renderCall, "function");
 	assert.equal(typeof byName.get("spawn_agent").renderResult, "function");

@@ -1718,20 +1718,40 @@ function registerTools(pi: ExtensionAPI): void {
 		label: "Wait for agents",
 		description:
 			"Wait for team mailbox activity, a child lifecycle event, user steering, or a bounded timeout.",
-		promptSnippet: "wait_agent(timeout_ms?): wait for collaboration activity",
+		promptSnippet: "wait_agent(): wait for collaboration activity",
 		promptGuidelines: [
 			"While Pi's coordination gate is active, wait_agent is the normal way to yield after coordination work.",
+			"Omit timeout_ms for the normal 30-second wait. Specify it only when a different bounded deadline is useful.",
 		],
 		parameters: Type.Object(
 			{
 				timeout_ms: Type.Optional(
-					Type.Number({
-						description: `Timeout from ${WAIT_MIN_MS} to ${WAIT_MAX_MS} ms; defaults to ${WAIT_DEFAULT_MS}.`,
+					Type.Integer({
+						description: `Timeout in milliseconds. Defaults to ${WAIT_DEFAULT_MS}, min ${WAIT_MIN_MS}, max ${WAIT_MAX_MS}.`,
+						default: WAIT_DEFAULT_MS,
+						minimum: WAIT_MIN_MS,
+						maximum: WAIT_MAX_MS,
 					}),
 				),
 			},
 			{ additionalProperties: false },
 		),
+		prepareArguments(args) {
+			const input = asRecord(args);
+			if (!input) throw new Error("wait_agent arguments must be an object");
+			const unknown = Object.keys(input).find((key) => key !== "timeout_ms");
+			if (unknown) throw new Error(`Unknown wait_agent argument: ${unknown}`);
+			const timeout = input.timeout_ms;
+			if (timeout === undefined) return {};
+			if (typeof timeout !== "number" || !Number.isFinite(timeout))
+				throw new Error("timeout_ms must be a finite number");
+			return {
+				timeout_ms: Math.min(
+					WAIT_MAX_MS,
+					Math.max(WAIT_MIN_MS, Math.round(timeout)),
+				),
+			};
+		},
 		executionMode: "sequential",
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!runDir) return structured({ message: "No collaboration run exists.", timed_out: false });
