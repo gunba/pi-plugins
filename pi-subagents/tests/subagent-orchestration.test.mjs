@@ -70,9 +70,8 @@ function agents(count, deep = false) {
 		const name = deep
 			? `/root/${Array.from({ length: index + 1 }, (_, depth) => `agent_${depth}`).join("/")}`
 			: `/root/agent_${index}`;
-		const parent = deep && index > 0
-			? name.slice(0, name.lastIndexOf("/"))
-			: "/root";
+		const parent =
+			deep && index > 0 ? name.slice(0, name.lastIndexOf("/")) : "/root";
 		out.push({
 			name,
 			taskId: `task-${String(index).padStart(4, "0")}`,
@@ -108,7 +107,10 @@ test("deep canonical paths use fixed-size storage keys", () => {
 	const deepPath = `/root/${Array.from({ length: 100 }, (_, index) => `task_${index}`).join("/")}`;
 	assert.equal(taskStorageKey(deepPath).length, 43);
 	assert.equal(taskStorageKey(deepPath), taskStorageKey(deepPath));
-	assert.notEqual(taskStorageKey(`${deepPath}_other`), taskStorageKey(deepPath));
+	assert.notEqual(
+		taskStorageKey(`${deepPath}_other`),
+		taskStorageKey(deepPath),
+	);
 });
 
 test("subagent thinking cannot exceed its parent's level", () => {
@@ -168,7 +170,10 @@ test("root registration exposes tools without calling runtime actions during loa
 	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 9_000_000 }), {
 		timeout_ms: 3_600_000,
 	});
-	assert.equal(byName.get("spawn_agent").parameters.additionalProperties, false);
+	assert.equal(
+		byName.get("spawn_agent").parameters.additionalProperties,
+		false,
+	);
 	assert.equal(typeof byName.get("spawn_agent").renderCall, "function");
 	assert.equal(typeof byName.get("spawn_agent").renderResult, "function");
 });
@@ -261,12 +266,7 @@ test("nested spawn denial leaves no child task storage", async () => {
 		undefined,
 		{},
 	);
-	const rootInbox = join(
-		runDir,
-		"tasks",
-		taskStorageKey("/root"),
-		"inbox",
-	);
+	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
 	const requestFile = readdirSync(rootInbox)[0];
 	const request = parseJson(readFileSync(join(rootInbox, requestFile), "utf8"));
 	const childInbox = join(
@@ -364,26 +364,32 @@ test("model tools route exclusively by canonical task path", async () => {
 		["/root", "/root/branch/deep", "/root/research"],
 	);
 	assert.equal(listPayload.agents[2].agent_status, "interrupted");
-	const gate = handlers.find(({ event }) => event === "tool_call").handler({
-		toolName: "read",
-	});
+	const gate = handlers
+		.find(({ event }) => event === "tool_call")
+		.handler({
+			toolName: "read",
+		});
 	assert.equal(gate.block, true);
 
-	const rejected = await byName.get("send_message").execute(
-		"send-id",
-		{ target: "task-secret", message: "hello" },
-		undefined,
-		undefined,
-		{},
-	);
+	const rejected = await byName
+		.get("send_message")
+		.execute(
+			"send-id",
+			{ target: "task-secret", message: "hello" },
+			undefined,
+			undefined,
+			{},
+		);
 	assert.match(toolPayload(rejected).error, /unknown/i);
-	const delivered = await byName.get("send_message").execute(
-		"send-path",
-		{ target: "/root/research", message: "hello" },
-		undefined,
-		undefined,
-		{},
-	);
+	const delivered = await byName
+		.get("send_message")
+		.execute(
+			"send-path",
+			{ target: "/root/research", message: "hello" },
+			undefined,
+			undefined,
+			{},
+		);
 	assert.deepEqual(toolPayload(delivered), {});
 	const inbox = join(
 		runDir,
@@ -395,23 +401,102 @@ test("model tools route exclusively by canonical task path", async () => {
 	await assert.rejects(
 		byName
 			.get("wait_agent")
-			.execute(
-				"wait-short",
-				{ timeout_ms: 9999 },
-				undefined,
-				undefined,
-				{},
-			),
+			.execute("wait-short", { timeout_ms: 9999 }, undefined, undefined, {}),
 		/at least 10000/,
 	);
-	const interrupted = await byName.get("interrupt_agent").execute(
-		"interrupt",
-		{ target: "/root/research" },
-		undefined,
-		undefined,
-		{},
-	);
+	const interrupted = await byName
+		.get("interrupt_agent")
+		.execute(
+			"interrupt",
+			{ target: "/root/research" },
+			undefined,
+			undefined,
+			{},
+		);
 	assert.equal(toolPayload(interrupted).previous_status, "interrupted");
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("interrupting a stale sender clears its claimed coordination event", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-stale-event-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/stale",
+			taskId: "task-stale",
+			parent: "/root",
+			taskName: "Finished task with stale event",
+			state: "completed",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+	const rootInbox = join(
+		runDir,
+		"tasks",
+		taskStorageKey("/root"),
+		"inbox",
+	);
+	mkdirSync(rootInbox, { recursive: true });
+	writeFileSync(
+		join(rootInbox, "stale.json"),
+		JSON.stringify({
+			id: "stale-event",
+			from: "/root/stale",
+			to: "/root",
+			body: "Repair this already-finished task",
+			kind: "attention",
+			ts: Date.now(),
+		}),
+	);
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: staleEventSubagents } = await import(
+		`../extensions/subagents.ts?stale-event=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const tools = [];
+	staleEventSubagents({
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
+	});
+	const byName = new Map(tools.map((tool) => [tool.name, tool]));
+	await byName
+		.get("wait_agent")
+		.execute("claim", {}, undefined, undefined, {});
+	const pending = await byName
+		.get("wait_agent")
+		.execute("pending", {}, undefined, undefined, {});
+	assert.match(pending.details.display, /still pending/i);
+	const interrupted = await byName
+		.get("interrupt_agent")
+		.execute(
+			"interrupt",
+			{ target: "/root/stale" },
+			undefined,
+			undefined,
+			{},
+		);
+	assert.match(interrupted.details.display, /cleared the pending event/i);
+	const settled = await byName
+		.get("wait_agent")
+		.execute("settled", {}, undefined, undefined, {});
+	assert.equal(settled.details.display, "No agent work pending");
 	rmSync(runDir, { recursive: true, force: true });
 });
 

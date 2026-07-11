@@ -8,7 +8,7 @@ Run delegated work in isolated background `pi` processes through a Codex V2-shap
 - `send_message(target, message, reply_to?)` stores cooperative mail independently of turn activation. Use `reply_to` for correlated request responses.
 - `followup_task(target, message)` starts or queues a new turn in an existing task's saved session.
 - `wait_agent(timeout_ms?)` waits for mailbox activity, child lifecycle changes, user steering, or a timeout. Normal calls omit `timeout_ms` and use the 30-second default; explicit values are normalized into the 10-second through one-hour range.
-- `interrupt_agent(target)` gracefully interrupts the current turn while preserving the task's resumable session.
+- `interrupt_agent(target)` gracefully interrupts the current turn while preserving the task's resumable session. It also acknowledges a claimed coordination event from that task so the parent can resume waiting.
 - `list_agents(path_prefix?)` returns canonical task paths, Codex-shaped statuses, and the latest task summary.
 - `inspect_agent(target)` lets `/root` read any descendant's active session branch, including messages, reasoning, tool calls/results, provider errors, compactions, and model changes.
 - `control_agent(target, action, message?, thinking?)` lets `/root` steer any descendant or change its Pi thinking level.

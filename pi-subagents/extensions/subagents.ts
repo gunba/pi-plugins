@@ -960,7 +960,10 @@ async function waitForTeamEvent(
 				isNestedSpawnApproval(fresh.msg) &&
 				nestedSpawnApprovalMode(ctx) === "user"
 			) {
-				const summary = await resolveNestedSpawnApprovalWithUser(ctx, fresh.msg);
+				const summary = await resolveNestedSpawnApprovalWithUser(
+					ctx,
+					fresh.msg,
+				);
 				if (ctx.hasUI) ctx.ui.notify(summary, "info");
 				return waitForTeamEvent(ctx, signal);
 			}
@@ -1354,6 +1357,27 @@ function resolveAuthorizedAgent(selector: string): Beacon | undefined {
 	return target && canAddress(target) ? target : undefined;
 }
 
+function dismissActiveRequestFrom(
+	taskPath: string,
+	reason: string,
+): ActiveRequest | undefined {
+	const request = activeRequest;
+	if (!request || request.from !== taskPath) return undefined;
+	if (request.kind === "request") {
+		post({
+			id: rid(),
+			from: SELF,
+			to: request.from,
+			body: `deny: ${reason}`,
+			replyTo: request.id,
+			kind: "notice",
+			ts: now(),
+		});
+	}
+	activeRequest = undefined;
+	return request;
+}
+
 function sendAgentNotice(
 	to: string,
 	body: string,
@@ -1403,7 +1427,19 @@ function controlAgent(
 	}
 
 	if (action === "abort") {
-		if (!isActive(target.name)) return `${target.name} is not running.`;
+		const dismissed = dismissActiveRequestFrom(
+			target.name,
+			`interrupted by ${SELF}`,
+		);
+		if (!isActive(target.name))
+			return dismissed
+				? `Cleared the pending event from ${target.name}; it has no active turn.`
+				: `${target.name} is not running.`;
+		if (target.activity?.startsWith("interrupt requested by "))
+			return `Interruption already requested for ${target.name}.`;
+		writeBeacon(target.name, {
+			activity: `interrupt requested by ${SELF}`,
+		});
 		postControl(target.name, { id: rid(), from: SELF, action, ts: now() });
 		return `Requested interruption of ${target.name}.`;
 	}
@@ -1438,36 +1474,45 @@ const text = (t: string, details: Record<string, unknown> = {}) => ({
 	details,
 });
 
-const structured = (
-	payload: Record<string, unknown>,
-	display?: string,
-) =>
-	text(
-		JSON.stringify(payload),
-		display ? { ...payload, display } : payload,
-	);
+const structured = (payload: Record<string, unknown>, display?: string) =>
+	text(JSON.stringify(payload), display ? { ...payload, display } : payload);
 
 function renderToolResult(
-	result: { content?: Array<{ type?: string; text?: string }>; details?: unknown },
+	result: {
+		content?: Array<{ type?: string; text?: string }>;
+		details?: unknown;
+	},
 	isPartial: boolean,
 	theme: Theme,
 ): Text {
 	if (isPartial) return new Text(theme.fg("warning", "Working…"), 0, 0);
 	const details = asRecord(result.details);
-	const display = typeof details?.display === "string" ? details.display : undefined;
-	const fallback = result.content?.find((part) => part.type === "text")?.text ?? "Done";
-	return new Text(theme.fg(details?.error ? "error" : "success", display ?? fallback), 0, 0);
+	const display =
+		typeof details?.display === "string" ? details.display : undefined;
+	const fallback =
+		result.content?.find((part) => part.type === "text")?.text ?? "Done";
+	return new Text(
+		theme.fg(details?.error ? "error" : "success", display ?? fallback),
+		0,
+		0,
+	);
 }
 
 function statusForModel(beacon: Beacon): unknown {
-	if (beacon.name === ROOT_TASK_PATH && beacon.state === "running") return "running";
-	if (beacon.state === "queued" || beacon.state === "spawning") return "pending_init";
-	if (beacon.state === "running" || beacon.state === "waiting") return "running";
+	if (beacon.name === ROOT_TASK_PATH && beacon.state === "running")
+		return "running";
+	if (beacon.state === "queued" || beacon.state === "spawning")
+		return "pending_init";
+	if (beacon.state === "running" || beacon.state === "waiting")
+		return "running";
 	if (beacon.state === "interrupted") return "interrupted";
 	if (beacon.state === "completed")
 		return { completed: beacon.lastAssistantText ?? null };
 	if (beacon.state === "error")
-		return { errored: beacon.errorMessage ?? beacon.lastAssistantText ?? "agent failed" };
+		return {
+			errored:
+				beacon.errorMessage ?? beacon.lastAssistantText ?? "agent failed",
+		};
 	if (beacon.state === "hard_killed") return "shutdown";
 	return "not_found";
 }
@@ -1528,7 +1573,8 @@ function registerTools(pi: ExtensionAPI): void {
 						"One lowercase task-path segment using only letters, digits, and underscores.",
 				}),
 				message: Type.String({
-					description: "The delegated objective, constraints, and expected result.",
+					description:
+						"The delegated objective, constraints, and expected result.",
 				}),
 			},
 			{ additionalProperties: false },
@@ -1582,7 +1628,9 @@ function registerTools(pi: ExtensionAPI): void {
 					activity: "launch rejected",
 					errorMessage: "active lock already held",
 				});
-				throw new Error(`Could not launch ${reservedPath}; its active lock is held.`);
+				throw new Error(
+					`Could not launch ${reservedPath}; its active lock is held.`,
+				);
 			}
 			refreshView(ctx);
 			const state = readJson<Beacon>(
@@ -1611,7 +1659,8 @@ function registerTools(pi: ExtensionAPI): void {
 		parameters: Type.Object(
 			{
 				target: Type.String({
-					description: "Absolute /root/... task path or path relative to the caller.",
+					description:
+						"Absolute /root/... task path or path relative to the caller.",
 				}),
 				message: Type.String({ description: "Message to deliver." }),
 				reply_to: Type.Optional(
@@ -1624,7 +1673,10 @@ function registerTools(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, _ctx) {
 			if (!runDir) return structured({ error: "No collaboration run exists." });
 			const target = resolveAuthorizedAgent(params.target);
-			if (!target) return structured({ error: `Unknown or unauthorized task ${params.target}.` });
+			if (!target)
+				return structured({
+					error: `Unknown or unauthorized task ${params.target}.`,
+				});
 			const message = params.message.trim();
 			if (!message) return structured({ error: "message must not be empty" });
 			const id = rid();
@@ -1641,7 +1693,8 @@ function registerTools(pi: ExtensionAPI): void {
 				activeRequest &&
 				target.name === activeRequest.from &&
 				(params.reply_to === activeRequest.id ||
-					(activeRequest.kind !== "request" && target.name === activeRequest.from))
+					(activeRequest.kind !== "request" &&
+						target.name === activeRequest.from))
 			)
 				activeRequest = undefined;
 			return structured({}, `Sent message to ${target.name}`);
@@ -1663,7 +1716,8 @@ function registerTools(pi: ExtensionAPI): void {
 		parameters: Type.Object(
 			{
 				target: Type.String({
-					description: "Absolute /root/... task path or path relative to the caller.",
+					description:
+						"Absolute /root/... task path or path relative to the caller.",
 				}),
 				message: Type.String({ description: "Follow-up task or correction." }),
 			},
@@ -1679,7 +1733,9 @@ function registerTools(pi: ExtensionAPI): void {
 				target.name === ROOT_TASK_PATH ||
 				target.name === SELF
 			)
-				return structured({ error: `Unknown or invalid follow-up target ${params.target}.` });
+				return structured({
+					error: `Unknown or invalid follow-up target ${params.target}.`,
+				});
 			const message = params.message.trim();
 			if (!message) return structured({ error: "message must not be empty" });
 			let outcome: string;
@@ -1754,7 +1810,11 @@ function registerTools(pi: ExtensionAPI): void {
 		},
 		executionMode: "sequential",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			if (!runDir) return structured({ message: "No collaboration run exists.", timed_out: false });
+			if (!runDir)
+				return structured({
+					message: "No collaboration run exists.",
+					timed_out: false,
+				});
 			const timeoutMs = waitTimeout(params.timeout_ms);
 			if (activeRequest)
 				return structured(
@@ -1775,10 +1835,7 @@ function registerTools(pi: ExtensionAPI): void {
 				: outcome.timedOut
 					? "Wait timed out."
 					: "Wait completed.";
-			return structured(
-				{ message, timed_out: outcome.timedOut },
-				message,
-			);
+			return structured({ message, timed_out: outcome.timedOut }, message);
 		},
 		renderCall(_args, theme) {
 			return new Text(theme.fg("accent", "Waiting for agents"), 0, 0);
@@ -1794,10 +1851,14 @@ function registerTools(pi: ExtensionAPI): void {
 		description:
 			"Interrupt an agent's current turn without destroying its resumable session. Root and self cannot be targeted.",
 		promptSnippet: "interrupt_agent(target): interrupt a current agent turn",
+		promptGuidelines: [
+			"Call interrupt_agent once, then call wait_agent. Repeating it does not accelerate interruption.",
+		],
 		parameters: Type.Object(
 			{
 				target: Type.String({
-					description: "Absolute /root/... task path or path relative to the caller.",
+					description:
+						"Absolute /root/... task path or path relative to the caller.",
 				}),
 			},
 			{ additionalProperties: false },
@@ -1812,15 +1873,35 @@ function registerTools(pi: ExtensionAPI): void {
 				target.name === ROOT_TASK_PATH ||
 				target.name === SELF
 			)
-				return structured({ error: `Unknown or invalid interrupt target ${params.target}.` });
+				return structured({
+					error: `Unknown or invalid interrupt target ${params.target}.`,
+				});
 			const previousStatus = statusForModel(target);
-			if (isActive(target.name))
-				postControl(target.name, { id: rid(), from: SELF, action: "abort", ts: now() });
-			refreshView(ctx);
-			return structured(
-				{ previous_status: previousStatus },
-				`Interrupted ${target.name}`,
+			const dismissed = dismissActiveRequestFrom(
+				target.name,
+				`interrupted by ${SELF}`,
 			);
+			let display: string;
+			if (!isActive(target.name)) {
+				display = dismissed
+					? `Cleared the pending event from ${target.name}; no active turn remains`
+					: `${target.name} has no active turn`;
+			} else if (target.activity?.startsWith("interrupt requested by ")) {
+				display = `Interruption already requested for ${target.name}`;
+			} else {
+				writeBeacon(target.name, {
+					activity: `interrupt requested by ${SELF}`,
+				});
+				postControl(target.name, {
+					id: rid(),
+					from: SELF,
+					action: "abort",
+					ts: now(),
+				});
+				display = `Requested interruption of ${target.name}`;
+			}
+			refreshView(ctx);
+			return structured({ previous_status: previousStatus }, display);
 		},
 		renderCall(args, theme) {
 			return new Text(theme.fg("warning", `Interrupt ${args.target}`), 0, 0);
@@ -1840,7 +1921,8 @@ function registerTools(pi: ExtensionAPI): void {
 			{
 				path_prefix: Type.Optional(
 					Type.String({
-						description: "Absolute or caller-relative task-path prefix without a trailing slash.",
+						description:
+							"Absolute or caller-relative task-path prefix without a trailing slash.",
 					}),
 				),
 			},
@@ -1851,7 +1933,9 @@ function registerTools(pi: ExtensionAPI): void {
 			if (!runDir) return structured({ agents: [] }, "No agents");
 			const rawPrefix = params.path_prefix?.trim();
 			if (rawPrefix?.endsWith("/"))
-				return structured({ error: "path_prefix must not have a trailing slash" });
+				return structured({
+					error: "path_prefix must not have a trailing slash",
+				});
 			const prefix = !rawPrefix
 				? ROOT_TASK_PATH
 				: rawPrefix.startsWith("/")
@@ -1929,7 +2013,8 @@ function registerTools(pi: ExtensionAPI): void {
 			),
 			executionMode: "sequential",
 			async execute(_id, params, _signal, _onUpdate, ctx) {
-				const action = params.action === "set_thinking" ? "setThinking" : "steer";
+				const action =
+					params.action === "set_thinking" ? "setThinking" : "steer";
 				const result = controlAgent(
 					params.target,
 					action,
@@ -2158,11 +2243,14 @@ function registerChildHooks(pi: ExtensionAPI): void {
 		const finalText = (lastAssistantText(messages) || status.errorMessage || "")
 			.replace(/\s+/g, " ")
 			.trim();
-		const resultFile = NOTIFY && !interrupted
-			? writeResultFile(SELF, messages)
-			: undefined;
+		const resultFile =
+			NOTIFY && !interrupted ? writeResultFile(SELF, messages) : undefined;
 		const terminalPatch: Partial<Beacon> = {
-			state: interrupted ? "interrupted" : needsAttention ? "error" : "completed",
+			state: interrupted
+				? "interrupted"
+				: needsAttention
+					? "error"
+					: "completed",
 			errorMessage: needsAttention ? status.errorMessage : undefined,
 			resultFile,
 		};
@@ -2422,10 +2510,7 @@ async function inspectSubagentCommand(
 
 	const target = resolveAgent(first ?? "");
 	if (!target || target.name === ROOT_TASK_PATH) {
-		ctx.ui.notify(
-			`Unknown task path ${first ?? ""}.`,
-			"error",
-		);
+		ctx.ui.notify(`Unknown task path ${first ?? ""}.`, "error");
 		return;
 	}
 	const inlineMessage = rest.join(" ").trim();
