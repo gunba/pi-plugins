@@ -266,8 +266,13 @@ export class SubagentDashboard implements Component {
 		if (command === "up") this.moveSelection(-1);
 		if (command === "down") this.moveSelection(1);
 		if (command === "pageUp") {
-			const transcriptHeight = this.transcriptVisualLines(this.lastTranscriptWidth).length;
-			this.transcriptOffset = Math.min(transcriptHeight, this.transcriptOffset + 12);
+			const transcriptHeight = this.transcriptVisualLines(
+				this.lastTranscriptWidth,
+			).length;
+			this.transcriptOffset = Math.min(
+				transcriptHeight,
+				this.transcriptOffset + 12,
+			);
 			this.invalidateAndRender();
 		}
 		if (command === "pageDown") {
@@ -296,7 +301,8 @@ export class SubagentDashboard implements Component {
 			this.cachedLines &&
 			this.cachedWidth === safeWidth &&
 			this.cachedHeight === safeHeight
-		) return this.cachedLines;
+		)
+			return this.cachedLines;
 
 		const color = (text: string) => this.theme.fg("accent", text);
 		const rows = this.filteredRows();
@@ -323,22 +329,25 @@ export class SubagentDashboard implements Component {
 		const bodyRows = Math.max(1, safeHeight - 5);
 
 		if (rows.length === 0) {
-			lines.push(boxedLine(
-				this.theme.fg(
-					"warning",
-					this.filter
-						? ` No matches for ${JSON.stringify(this.filter)}`
-						: " No subagents in this run",
+			lines.push(
+				boxedLine(
+					this.theme.fg(
+						"warning",
+						this.filter
+							? ` No matches for ${JSON.stringify(this.filter)}`
+							: " No subagents in this run",
+					),
+					safeWidth,
+					color,
 				),
-				safeWidth,
-				color,
-			));
+			);
 		} else if (safeWidth >= 100) {
 			this.renderSplit(lines, rows, selected, safeWidth, bodyRows, color);
 		} else {
 			this.renderStacked(lines, rows, selected, safeWidth, bodyRows, color);
 		}
-		while (lines.length < safeHeight - 1) lines.push(boxedLine("", safeWidth, color));
+		while (lines.length < safeHeight - 1)
+			lines.push(boxedLine("", safeWidth, color));
 		if (lines.length > safeHeight - 1) lines.length = safeHeight - 1;
 
 		const position = selected
@@ -392,14 +401,19 @@ export class SubagentDashboard implements Component {
 		height: number,
 		color: (text: string) => string,
 	): void {
-		const listHeight = height >= 8
-			? Math.min(10, Math.max(3, Math.floor(height * 0.3)))
-			: Math.max(1, height - 1);
+		const listHeight =
+			height >= 8
+				? Math.min(10, Math.max(3, Math.floor(height * 0.3)))
+				: Math.max(1, height - 1);
 		const visibleRows = this.visibleRows(rows, listHeight);
 		for (let index = 0; index < listHeight; index++) {
 			const row = visibleRows[index];
 			const content = row
-				? this.renderAgentRow(row.row, row.row.agent.name === this.selectedName, width - 2)
+				? this.renderAgentRow(
+						row.row,
+						row.row.agent.name === this.selectedName,
+						width - 2,
+					)
 				: "";
 			lines.push(boxedLine(content, width, color));
 		}

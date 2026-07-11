@@ -128,7 +128,11 @@ test("dashboard virtualizes 50 agents and obeys narrow and wide render widths", 
 	);
 	for (const width of [20, 60, 120]) {
 		const lines = dashboard.render(width);
-		assert.equal(lines.length, 50, `dashboard did not fill terminal height at width ${width}`);
+		assert.equal(
+			lines.length,
+			50,
+			`dashboard did not fill terminal height at width ${width}`,
+		);
 		assert.match(lines.join("\n"), /ENDMARK/);
 		assert.ok(
 			lines.every((line) => visibleWidth(line) <= width),
