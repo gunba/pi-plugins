@@ -155,7 +155,7 @@ test("root registration exposes only the four orchestration primitives", () => {
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("send_message").parameters.properties),
-		["target", "message"],
+		["target", "message", "approve_spawn"],
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("wait_agent").parameters.properties),
@@ -301,8 +301,8 @@ test("structured nested spawn denial leaves no child task storage", async () => 
 	rmSync(runDir, { recursive: true, force: true });
 });
 
-test("root resolves nested spawn approval through the interactive UI", async () => {
-	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-human-approval-"));
+test("root decides nested spawn approval through send_message", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-agent-approval-"));
 	writeFileSync(
 		join(runDir, "run.json"),
 		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
@@ -333,31 +333,15 @@ test("root resolves nested spawn approval through the interactive UI", async () 
 	}
 	process.env.PI_SUBAGENT_RUN = runDir;
 	const { default: approvalExtension } = await import(
-		`../extensions/subagents.ts?human-approval=${Date.now()}`
+		`../extensions/subagents.ts?agent-approval=${Date.now()}`
 	);
 	delete process.env.PI_SUBAGENT_RUN;
-	const handlers = new Map();
+	const tools = [];
 	approvalExtension({
 		getThinkingLevel: () => "high",
-		registerCommand: () => {},
-		registerTool: () => {},
-		on: (event, handler) => handlers.set(event, handler),
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
 	});
-	let confirmationText = "";
-	const context = {
-		cwd: runDir,
-		hasUI: true,
-		mode: "tui",
-		ui: {
-			confirm: async (_title, body) => {
-				confirmationText = body;
-				return true;
-			},
-			notify: () => {},
-			setWidget: () => {},
-		},
-	};
-	await handlers.get("session_start")({}, context);
 	const request = {
 		id: "request",
 		from: "/root/research",
@@ -375,8 +359,35 @@ test("root resolves nested spawn approval through the interactive UI", async () 
 	};
 	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
 	writeFileSync(join(rootInbox, "request.json"), JSON.stringify(request));
-	await new Promise((resolve) => setTimeout(resolve, 1100));
-	assert.ok(confirmationText.includes("/root/research/evidence"));
+	const wait = tools.find((tool) => tool.name === "wait_agent");
+	const event = await wait.execute("wait", {}, undefined, undefined, {});
+	const eventPayload = toolPayload(event);
+	assert.ok(eventPayload.message.includes("nested spawn request"));
+	assert.equal(eventPayload.request.approval.taskPath, "/root/research/evidence");
+	const send = tools.find((tool) => tool.name === "send_message");
+	const missingDecision = await send.execute(
+		"send",
+		{ target: "/root/research", message: "Useful decomposition" },
+		undefined,
+		undefined,
+		{},
+	);
+	assert.equal(
+		toolPayload(missingDecision).error,
+		"approve_spawn is required for this nested spawn request",
+	);
+	const decision = await send.execute(
+		"send",
+		{
+			target: "/root/research",
+			message: "Useful decomposition",
+			approve_spawn: true,
+		},
+		undefined,
+		undefined,
+		{},
+	);
+	assert.equal(toolPayload(decision).approved, true);
 	const childInbox = join(
 		runDir,
 		"tasks",
@@ -388,7 +399,6 @@ test("root resolves nested spawn approval through the interactive UI", async () 
 	assert.equal(reply.replyTo, request.id);
 	assert.equal(reply.approved, true);
 	assert.equal(reply.body, "approve");
-	await handlers.get("session_shutdown")({}, context);
 	rmSync(runDir, { recursive: true, force: true });
 });
 

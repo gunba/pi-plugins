@@ -54,8 +54,8 @@ The dashboard provides:
   active and wake only for mail, lifecycle changes, or user interruption.
 - **Directional messages.** Downward messages are instructions. Upward messages
   are blocking questions. Completion and failure are runtime lifecycle events.
-- **Nested approval.** Every nested `spawn_agent` requires confirmation through
- Pi's interactive UI before the child is created.
+- **Nested approval.** Root decides every nested `spawn_agent` request through a
+ structured `send_message` tool call before the child is created.
 - **Resumable tasks.** Sending a message to a terminal task reopens the same
   isolated session and records a new result generation.
 - **Result publication.** A result file is written atomically before completion

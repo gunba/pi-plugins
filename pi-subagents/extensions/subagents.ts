@@ -135,6 +135,7 @@ type PendingQuestion = {
 	from: string;
 	id: string;
 	body: string;
+	approval?: SpawnApproval;
 };
 
 // --------------------------------------------------------------------------
@@ -749,16 +750,12 @@ function takeReply(
 	return undefined;
 }
 
-// Atomically claim a fresh message so wait() and UI approval prompts cannot
-// consume the same request. The claim file is not visible to inboxFiles().
-function claimFresh(
-	name: string,
-	predicate: (msg: Mail) => boolean = () => true,
-): { path: string; msg: Mail } | undefined {
+// Atomically claim a fresh message. The claim file is not visible to inboxFiles().
+function claimFresh(name: string): { path: string; msg: Mail } | undefined {
 	for (const f of inboxFiles(name)) {
 		const path = join(inboxDir(name), f);
 		const msg = readJson<Mail>(path);
-		if (!msg || msg.replyTo || !predicate(msg)) continue;
+		if (!msg || msg.replyTo) continue;
 		const claimPath = `${path}.${process.pid}.${rid()}.claim`;
 		try {
 			renameSync(path, claimPath);
@@ -776,64 +773,6 @@ function spawnApprovalDetails(msg: { approval?: SpawnApproval }):
 	return msg.approval?.type === "spawn" ? msg.approval : undefined;
 }
 
-function isNestedSpawnApproval(msg: Mail): boolean {
-	return msg.kind === "request" && !!spawnApprovalDetails(msg);
-}
-
-function replyToNestedSpawnApproval(
-	msg: Mail,
-	approved: boolean,
-	reason: string,
-): void {
-	post({
-		id: rid(),
-		from: SELF,
-		to: msg.from,
-		body: approved ? "approve" : reason,
-		replyTo: msg.id,
-		kind: "notice",
-		approved,
-		ts: now(),
-	});
-}
-
-async function resolveNestedSpawnApprovalWithUser(
-	ctx: ExtensionContext,
-	msg: Mail,
-): Promise<string> {
-	const details = spawnApprovalDetails(msg);
-	const label = details?.taskPath ? ` "${details.taskPath}"` : "";
-	if (!ctx.hasUI) {
-		const reason = "nested spawn approval requires an interactive UI";
-		replyToNestedSpawnApproval(msg, false, reason);
-		return `Denied nested spawn${label} from ${msg.from}: ${reason}.`;
-	}
-
-	let approved = false;
-	try {
-		approved = await ctx.ui.confirm(
-			"Approve nested subagent?",
-			[
-				`${msg.from} wants to spawn${label}.`,
-				"",
-				"Task:",
-				details?.message || msg.body,
-				"",
-				"Approve this nested spawn request?",
-			].join("\n"),
-		);
-	} catch (error) {
-		const reason = `user approval prompt failed: ${error instanceof Error ? error.message : String(error)}`;
-		replyToNestedSpawnApproval(msg, false, reason);
-		return `Denied nested spawn${label} from ${msg.from}: ${reason}.`;
-	}
-	replyToNestedSpawnApproval(
-		msg,
-		approved,
-		approved ? "" : "user denied nested spawn request",
-	);
-	return `${approved ? "Approved" : "Denied"} nested spawn${label} from ${msg.from}.`;
-}
 
 function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 	if (msg.kind !== "request") return undefined;
@@ -841,6 +780,7 @@ function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 		from: msg.from,
 		id: msg.id,
 		body: msg.body,
+		approval: spawnApprovalDetails(msg),
 	};
 }
 
@@ -911,21 +851,12 @@ function waitForDirectoryChange(
 }
 
 async function waitForTeamEvent(
-	ctx: ExtensionContext,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	if (signal?.aborted) return undefined;
 	const fresh = claimFresh(SELF);
 	if (fresh) {
 		try {
-			if (isNestedSpawnApproval(fresh.msg)) {
-				const summary = await resolveNestedSpawnApprovalWithUser(
-					ctx,
-					fresh.msg,
-				);
-				if (ctx.hasUI) ctx.ui.notify(summary, "info");
-				return waitForTeamEvent(ctx, signal);
-			}
 			pendingQuestion = pendingQuestionFor(fresh.msg);
 			return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
 		} finally {
@@ -934,7 +865,7 @@ async function waitForTeamEvent(
 	}
 	if (activeDescendants(SELF).length === 0) return noWaitWorkMessage(SELF);
 	await waitForDirectoryChange(inboxDir(SELF), signal);
-	return waitForTeamEvent(ctx, signal);
+	return waitForTeamEvent(signal);
 }
 
 // --------------------------------------------------------------------------
@@ -1458,7 +1389,7 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "send_message",
 		label: "Send message",
 		description:
-			"Send downward instructions or ask an ancestor a blocking question.",
+			"Send a message, or decide a pending nested spawn with approve_spawn.",
 		parameters: Type.Object(
 			{
 				target: Type.String({
@@ -1469,6 +1400,12 @@ function registerTools(pi: ExtensionAPI): void {
 					description: "Message to deliver.",
 					maxLength: 4000,
 				}),
+				approve_spawn: Type.Optional(
+					Type.Boolean({
+						description:
+							"Approve or deny a pending nested spawn request from the target.",
+					}),
+				),
 			},
 			{ additionalProperties: false },
 		),
@@ -1488,18 +1425,41 @@ function registerTools(pi: ExtensionAPI): void {
 						"message must be at most 4000 characters; put reports in the task's final response",
 				});
 
-			if (pendingQuestion?.from === target.name) {
+			const pendingReply =
+				pendingQuestion?.from === target.name ? pendingQuestion : undefined;
+			if (params.approve_spawn !== undefined && !pendingReply?.approval)
+				return structured({
+					error: "approve_spawn is only valid for a pending nested spawn request",
+				});
+			if (pendingReply?.approval && params.approve_spawn === undefined)
+				return structured({
+					error: "approve_spawn is required for this nested spawn request",
+				});
+
+			if (pendingReply) {
+				const approved = pendingReply.approval
+					? params.approve_spawn
+					: undefined;
+				let body = message;
+				if (pendingReply.approval)
+					body = approved ? "approve" : `deny: ${message}`;
 				post({
 					id: rid(),
 					from: SELF,
 					to: target.name,
-					body: message,
-					replyTo: pendingQuestion.id,
+					body,
+					replyTo: pendingReply.id,
 					kind: "notice",
+					approved,
 					ts: now(),
 				});
 				pendingQuestion = undefined;
 				refreshView(ctx);
+				if (pendingReply.approval)
+					return structured(
+						{ approved },
+						`${approved ? "Approved" : "Denied"} ${pendingReply.approval.taskPath}`,
+					);
 				return structured({}, `Replied to ${target.name}`);
 			}
 
@@ -1565,7 +1525,10 @@ function registerTools(pi: ExtensionAPI): void {
 				return structured({ message: "No collaboration run exists." });
 			if (pendingQuestion)
 				return structured(
-					{ message: `Reply to ${pendingQuestion.from} before waiting.` },
+					{
+						message: `Reply to ${pendingQuestion.from} before waiting.`,
+						request: pendingQuestion,
+					},
 					`Reply to ${pendingQuestion.from} before waiting`,
 				);
 			if (!hasTeamWork(SELF))
@@ -1577,7 +1540,7 @@ function registerTools(pi: ExtensionAPI): void {
 			if (!IS_CHILD) scheduleOverseer(ctx);
 			let event: string | undefined;
 			try {
-				event = await waitForTeamEvent(ctx, signal);
+				event = await waitForTeamEvent(signal);
 			} finally {
 				if (!IS_CHILD) cancelOverseer();
 				writeBeacon(SELF, { state: "running", activity: "" });
@@ -1587,7 +1550,7 @@ function registerTools(pi: ExtensionAPI): void {
 			const message = interrupted
 				? "Wait interrupted by user input."
 				: (event ?? "Wait completed.");
-			return structured({ message }, message);
+			return structured({ message, request: pendingQuestion }, message);
 		},
 		renderCall(_args, theme) {
 			return new Text(theme.fg("accent", "Waiting for agents"), 0, 0);
@@ -1651,6 +1614,14 @@ let pendingQuestion: PendingQuestion | undefined;
 
 function coordinationPrompt(): string {
 	if (!pendingQuestion) return COORDINATION_NOTICE;
+	const approval = pendingQuestion.approval;
+	if (approval)
+		return [
+			`Nested spawn request from ${pendingQuestion.from}: ${approval.taskPath}`,
+			`Task: ${approval.message}`,
+			`Thinking: ${approval.thinking ?? "caller default"}`,
+			`Call send_message to ${pendingQuestion.from} with a brief reason and approve_spawn set to true or false.`,
+		].join("\n");
 	return `Question from ${pendingQuestion.from}: ${pendingQuestion.body}\nAnswer with send_message to ${pendingQuestion.from}.`;
 }
 
@@ -1673,6 +1644,8 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 			"wait_agent",
 			"kill_agent",
 		];
+		if (pendingQuestion && toolName !== "send_message")
+			return { block: true, reason: coordinationPrompt() };
 		if (
 			runDir &&
 			hasTeamWork(SELF) &&
@@ -1792,7 +1765,6 @@ function registerChildHooks(pi: ExtensionAPI): void {
 
 let uiReady = false;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
-let approvalTimer: ReturnType<typeof setInterval> | undefined;
 let overseerTimer: ReturnType<typeof setTimeout> | undefined;
 let lastSig: string | undefined;
 let runDismissed = false;
@@ -1967,28 +1939,6 @@ async function inspectSubagentCommand(
 	await runDashboard(ctx, target.name);
 }
 
-// --------------------------------------------------------------------------
-// Human nested-spawn approval
-// --------------------------------------------------------------------------
-let uiPrompting = false;
-
-function startNestedSpawnApprovalPrompts(ctx: ExtensionContext): void {
-	approvalTimer = setInterval(async () => {
-		if (!runDir || uiPrompting) return;
-		const fresh = claimFresh(SELF, isNestedSpawnApproval);
-		if (!fresh) return;
-		uiPrompting = true;
-		try {
-			const summary = await resolveNestedSpawnApprovalWithUser(ctx, fresh.msg);
-			if (ctx.hasUI) ctx.ui.notify(summary, "info");
-			refreshView(ctx);
-		} finally {
-			rmSync(fresh.path, { force: true });
-			uiPrompting = false;
-		}
-	}, REFRESH_MS);
-	approvalTimer.unref();
-}
 
 type OverseerSample = {
 	cpuTicks?: number;
@@ -2211,11 +2161,8 @@ export default function (pi: ExtensionAPI): void {
 			if (pid) killPidTree(pid);
 		}
 		cancelOverseer();
-		for (const timer of [refreshTimer, approvalTimer]) {
-			if (timer) clearInterval(timer);
-		}
+		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = undefined;
-		approvalTimer = undefined;
 		if (!IS_CHILD && runDir) rmSync(join(runDir, ".root-pid"), { force: true });
 		if (!IS_CHILD && ctx.mode === "tui") ctx.ui.setWidget(VIEW_KEY, undefined);
 		uiReady = false;
@@ -2225,7 +2172,6 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		piThinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
 		drainLaunchQueue(ctx);
-		if (!IS_CHILD && !approvalTimer) startNestedSpawnApprovalPrompts(ctx);
 
 		if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
 		ctx.ui.setWidget(VIEW_KEY, undefined);
