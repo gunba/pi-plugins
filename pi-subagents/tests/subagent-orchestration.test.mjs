@@ -138,13 +138,15 @@ test("root registration exposes only the four orchestration primitives", () => {
 	);
 	assert.ok(handlers.some(({ event }) => event === "agent_settled"));
 	assert.ok(handlers.some(({ event }) => event === "thinking_level_select"));
-	assert.equal(handlers.some(({ event }) => event === "context"), false);
+	assert.equal(
+		handlers.some(({ event }) => event === "context"),
+		false,
+	);
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
 	assert.ok(
 		tools.every(
 			(tool) =>
-				tool.promptSnippet === undefined &&
-				tool.promptGuidelines === undefined,
+				tool.promptSnippet === undefined && tool.promptGuidelines === undefined,
 		),
 	);
 	assert.deepEqual(
@@ -336,7 +338,10 @@ test("upward messages block for an automatic parent reply", async () => {
 	const rootTools = [];
 	rootSubagents({ registerTool: (tool) => rootTools.push(tool), on: () => {} });
 	const childTools = [];
-	childSubagents({ registerTool: (tool) => childTools.push(tool), on: () => {} });
+	childSubagents({
+		registerTool: (tool) => childTools.push(tool),
+		on: () => {},
+	});
 	const rootByName = new Map(rootTools.map((tool) => [tool.name, tool]));
 	const childByName = new Map(childTools.map((tool) => [tool.name, tool]));
 	const controller = new AbortController();

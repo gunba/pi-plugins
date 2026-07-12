@@ -1501,10 +1501,7 @@ function registerTools(pi: ExtensionAPI): void {
 					signal,
 				);
 				if (!reply) return structured({ error: "Message wait interrupted." });
-				return structured(
-					{ message: reply.body },
-					`Reply from ${target.name}`,
-				);
+				return structured({ message: reply.body }, `Reply from ${target.name}`);
 			}
 
 			if (
@@ -1658,7 +1655,6 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 		if ((event as { source?: string }).source !== "extension")
 			hideCompletedRun(ctx);
 	});
-
 
 	pi.on("tool_call", (event) => {
 		const toolName = (event as { toolName?: string }).toolName ?? "";
@@ -2110,12 +2106,9 @@ function safeToStop(
 
 function rootIsBlocked(): boolean {
 	if (!runDir) return false;
-	const root = readJson<Beacon>(
-		join(agentDir(ROOT_TASK_PATH), "beacon.json"),
-	);
+	const root = readJson<Beacon>(join(agentDir(ROOT_TASK_PATH), "beacon.json"));
 	return (
-		root?.state === "waiting" &&
-		activeDescendants(ROOT_TASK_PATH).length > 0
+		root?.state === "waiting" && activeDescendants(ROOT_TASK_PATH).length > 0
 	);
 }
 
