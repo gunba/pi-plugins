@@ -54,9 +54,8 @@ The dashboard provides:
   active and wake only for mail, lifecycle changes, or user interruption.
 - **Directional messages.** Downward messages are instructions. Upward messages
   are blocking questions. Completion and failure are runtime lifecycle events.
-- **Nested approval.** A nested `spawn_agent` asks root for approval. Setting
-  `subagents.nestedSpawnApproval` to `user` routes the request through a
-  confirmation modal.
+- **Nested approval.** Every nested `spawn_agent` requires confirmation through
+ Pi's interactive UI before the child is created.
 - **Resumable tasks.** Sending a message to a terminal task reopens the same
   isolated session and records a new result generation.
 - **Result publication.** A result file is written atomically before completion
@@ -82,18 +81,6 @@ Environment variables:
 - `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup,
   default `86400000`.
 - `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows, default `8`.
-- `PI_SUBAGENTS_NESTED_SPAWN_APPROVAL` — `agent` or `user`.
-
-Nested approval can also be configured globally in
-`~/.pi/agent/settings.json` or per trusted project in `.pi/settings.json`:
-
-```json
-{
-  "subagents": {
-    "nestedSpawnApproval": "user"
-  }
-}
-```
 
 ## Storage
 

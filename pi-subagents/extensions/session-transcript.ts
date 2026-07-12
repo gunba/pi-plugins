@@ -42,17 +42,21 @@ type CachedTranscript = {
 
 const cache = new Map<string, CachedTranscript>();
 
+function splitLines(value: string): string[] {
+	return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+}
+
 function contentLines(content: string | ContentBlock[] | undefined): string[] {
-	if (typeof content === "string") return content.split(/\r?\n/);
+	if (typeof content === "string") return splitLines(content);
 	if (!Array.isArray(content)) return [];
 	const lines: string[] = [];
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			lines.push(...block.text.split(/\r?\n/));
+			lines.push(...splitLines(block.text));
 			continue;
 		}
 		if (block.type === "thinking" && block.thinking) {
-			lines.push("[thinking]", ...block.thinking.split(/\r?\n/));
+			lines.push("[thinking]", ...splitLines(block.thinking));
 			continue;
 		}
 		if (block.type === "toolCall") {
@@ -73,7 +77,7 @@ function cleanLines(lines: string[]): string[] {
 	const out: string[] = [];
 	let previousBlank = false;
 	for (const raw of lines) {
-		const line = raw.replace(/\t/g, "  ").replace(/\s+$/g, "");
+		const line = raw.replaceAll("\t", "  ").trimEnd();
 		const blank = line.length === 0;
 		if (blank && previousBlank) continue;
 		out.push(line);
@@ -108,7 +112,7 @@ function bashEntryLines(message: SessionMessage): string[] {
 	return [
 		`bash · ${status}`,
 		message.command ? `$ ${message.command}` : "",
-		...(message.output ?? "").split(/\r?\n/),
+		...splitLines(message.output ?? ""),
 	];
 }
 

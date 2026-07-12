@@ -197,7 +197,7 @@ test("child registration exposes the same four orchestration primitives", async 
 	rmSync(runDir, { recursive: true, force: true });
 });
 
-test("nested spawn denial leaves no child task storage", async () => {
+test("structured nested spawn denial leaves no child task storage", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-approval-"));
 	writeFileSync(
 		join(runDir, "run.json"),
@@ -256,27 +256,41 @@ test("nested spawn denial leaves no child task storage", async () => {
 	const requestFile = readdirSync(rootInbox)[0];
 	const request = parseJson(readFileSync(join(rootInbox, requestFile), "utf8"));
 	assert.equal(request.approval.thinking, "high");
-	const childInbox = join(
+	const researchDir = join(
 		runDir,
 		"tasks",
 		taskStorageKey("/root/research"),
-		"inbox",
 	);
+	const waitingBeacon = parseJson(
+		readFileSync(join(researchDir, "beacon.json"), "utf8"),
+	);
+	assert.equal(waitingBeacon.state, "waiting");
+	assert.equal(waitingBeacon.activity, "awaiting 1 spawn approval");
+	const childInbox = join(researchDir, "inbox");
 	writeFileSync(
 		join(childInbox, "reply.json"),
 		JSON.stringify({
 			id: "reply",
 			from: "/root",
 			to: "/root/research",
-			body: "deny: duplicate work",
+			body: "duplicate work",
 			replyTo: request.id,
 			kind: "notice",
+			approved: false,
 			ts: Date.now(),
 		}),
 	);
 	const result = await pending;
 	clearTimeout(keepAlive);
-	assert.match(toolPayload(result).error, /denied/i);
+	assert.equal(
+		toolPayload(result).error,
+		"Spawn denied by root: duplicate work",
+	);
+	const resumedBeacon = parseJson(
+		readFileSync(join(researchDir, "beacon.json"), "utf8"),
+	);
+	assert.equal(resumedBeacon.state, "running");
+	assert.equal(resumedBeacon.activity, "");
 	const childrenDir = join(
 		runDir,
 		"tasks",
@@ -284,6 +298,97 @@ test("nested spawn denial leaves no child task storage", async () => {
 		"children",
 	);
 	assert.equal(existsSync(childrenDir), false);
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("root resolves nested spawn approval through the interactive UI", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-human-approval-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/research",
+			taskId: "task-research",
+			parent: "/root",
+			taskName: "Research",
+			state: "waiting",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(join(dir, "inbox"), { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: approvalExtension } = await import(
+		`../extensions/subagents.ts?human-approval=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const handlers = new Map();
+	approvalExtension({
+		getThinkingLevel: () => "high",
+		registerCommand: () => {},
+		registerTool: () => {},
+		on: (event, handler) => handlers.set(event, handler),
+	});
+	let confirmationText = "";
+	const context = {
+		cwd: runDir,
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			confirm: async (_title, body) => {
+				confirmationText = body;
+				return true;
+			},
+			notify: () => {},
+			setWidget: () => {},
+		},
+	};
+	await handlers.get("session_start")({}, context);
+	const request = {
+		id: "request",
+		from: "/root/research",
+		to: "/root",
+		body: "nested spawn request",
+		kind: "request",
+		approval: {
+			type: "spawn",
+			taskName: "evidence",
+			taskPath: "/root/research/evidence",
+			message: "Gather the evidence",
+			thinking: "high",
+		},
+		ts: Date.now(),
+	};
+	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
+	writeFileSync(join(rootInbox, "request.json"), JSON.stringify(request));
+	await new Promise((resolve) => setTimeout(resolve, 1100));
+	assert.ok(confirmationText.includes("/root/research/evidence"));
+	const childInbox = join(
+		runDir,
+		"tasks",
+		taskStorageKey("/root/research"),
+		"inbox",
+	);
+	const replyFile = readdirSync(childInbox)[0];
+	const reply = parseJson(readFileSync(join(childInbox, replyFile), "utf8"));
+	assert.equal(reply.replyTo, request.id);
+	assert.equal(reply.approved, true);
+	assert.equal(reply.body, "approve");
+	await handlers.get("session_shutdown")({}, context);
 	rmSync(runDir, { recursive: true, force: true });
 });
 

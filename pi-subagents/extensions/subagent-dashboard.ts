@@ -72,6 +72,15 @@ export function taskPathLabel(taskPath: string): string {
 	return separator >= 0 ? taskPath.slice(separator + 1) || taskPath : taskPath;
 }
 
+function directPrintableInput(data: string): string | undefined {
+	const characters = [...data];
+	if (characters.length !== 1) return undefined;
+	const codePoint = characters[0]?.codePointAt(0);
+	return codePoint !== undefined && codePoint >= 32 && codePoint !== 127
+		? data
+		: undefined;
+}
+
 function fitLine(text: string, width: number): string {
 	const safeWidth = Math.max(0, width);
 	const clipped = truncateToWidth(text, safeWidth);
@@ -254,8 +263,7 @@ export class SubagentDashboard implements Component {
 			this.clampSelection(true);
 		} else {
 			const decoded = decodeKittyPrintable(data);
-			const printable =
-				decoded ?? (/^[^\x00-\x1f\x7f]$/.test(data) ? data : undefined);
+			const printable = decoded ?? directPrintableInput(data);
 			if (printable) {
 				this.filter += printable;
 				this.clampSelection(true);

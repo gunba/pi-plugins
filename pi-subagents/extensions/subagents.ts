@@ -22,7 +22,7 @@ import {
 } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -85,7 +85,6 @@ const THINKING_LEVELS = [
 ] as const;
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
-type NestedSpawnApprovalMode = "agent" | "user";
 type SpawnApproval = {
 	type: "spawn";
 	taskName: string;
@@ -127,6 +126,7 @@ type Mail = {
 	replyTo?: string;
 	kind?: "request" | "completion" | "attention" | "notice";
 	approval?: SpawnApproval;
+	approved?: boolean;
 	ts: number;
 };
 
@@ -134,7 +134,6 @@ type PendingQuestion = {
 	from: string;
 	id: string;
 	body: string;
-	approval?: SpawnApproval;
 };
 
 // --------------------------------------------------------------------------
@@ -145,8 +144,47 @@ const now = () => Date.now();
 const rid = () => randomUUID();
 const ensureDir = (p: string) => mkdirSync(p, { recursive: true });
 
+function isWhitespace(character: string): boolean {
+	return character.trim().length === 0;
+}
+
+function collapseWhitespace(value: string): string {
+	let result = "";
+	let separator = false;
+	for (const character of value) {
+		if (isWhitespace(character)) {
+			separator = result.length > 0;
+			continue;
+		}
+		if (separator) result += " ";
+		result += character;
+		separator = false;
+	}
+	return result;
+}
+
+function splitWords(value: string): string[] {
+	const collapsed = collapseWhitespace(value);
+	return collapsed ? collapsed.split(" ") : [];
+}
+
+function isTaskName(value: string): boolean {
+	if (!value) return false;
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		const lowercase = code >= 97 && code <= 122;
+		const digit = code >= 48 && code <= 57;
+		if (!lowercase && !digit && character !== "_") return false;
+	}
+	return true;
+}
+
+function timestampSegment(value: string): string {
+	return value.replaceAll(":", "-").replaceAll(".", "-");
+}
+
 function taskId(): string {
-	return `task-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+	return `task-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 }
 
 function allocateTaskId(): string {
@@ -171,7 +209,7 @@ export function normalizeTaskName(value: string): string {
 		taskName === "root" ||
 		taskName === "." ||
 		taskName === ".." ||
-		!/^[a-z0-9_]+$/.test(taskName)
+		!isTaskName(taskName)
 	) {
 		throw new Error(
 			'task_name must contain only lowercase ASCII letters, digits, and underscores, and cannot be "root", ".", or "..".',
@@ -189,7 +227,7 @@ export function taskStorageKey(taskPath: string): string {
 }
 
 export function taskSummary(task: string): string {
-	return task.replace(/\s+/g, " ").trim().slice(0, 160);
+	return collapseWhitespace(task).slice(0, 160);
 }
 
 function writeJsonAtomic(path: string, value: unknown): void {
@@ -210,55 +248,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
-}
-
-function expandPath(value: string, baseDir: string): string {
-	if (value === "~") return homedir();
-	if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-	if (isAbsolute(value)) return resolve(value);
-	return resolve(baseDir, value);
-}
-
-function piAgentDir(): string {
-	const configured = process.env.PI_CODING_AGENT_DIR?.trim();
-	return configured
-		? expandPath(configured, homedir())
-		: join(homedir(), ".pi", "agent");
-}
-
-function parseNestedSpawnApprovalMode(
-	value: unknown,
-): NestedSpawnApprovalMode | undefined {
-	if (typeof value !== "string") return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (normalized === "agent") return "agent";
-	if (normalized === "user" || normalized === "modal" || normalized === "human")
-		return "user";
-	return undefined;
-}
-
-function readSubagentsSettings(path: string): Record<string, unknown> {
-	return asRecord(readJson<Record<string, unknown>>(path)?.subagents) ?? {};
-}
-
-function nestedSpawnApprovalMode(
-	ctx: ExtensionContext,
-): NestedSpawnApprovalMode {
-	const envMode = parseNestedSpawnApprovalMode(
-		process.env.PI_SUBAGENTS_NESTED_SPAWN_APPROVAL,
-	);
-	if (envMode) return envMode;
-
-	const globalSettings = readSubagentsSettings(
-		join(piAgentDir(), "settings.json"),
-	);
-	const projectSettings = ctx.isProjectTrusted()
-		? readSubagentsSettings(join(ctx.cwd, ".pi", "settings.json"))
-		: {};
-	const mergedSettings = { ...globalSettings, ...projectSettings };
-	return (
-		parseNestedSpawnApprovalMode(mergedSettings.nestedSpawnApproval) ?? "agent"
-	);
 }
 
 // The subagent's final answer. It is never inlined into mailbox messages:
@@ -331,13 +320,28 @@ function providerBackoffMessage(status: {
 	return undefined;
 }
 
-function safeFileSegment(s: string): string {
-	return (
-		s
-			.replace(/[^a-zA-Z0-9._-]+/g, "-")
-			.replace(/^-+|-+$/g, "")
-			.slice(0, 80) || "subagent"
-	);
+function safeFileSegment(value: string): string {
+	let result = "";
+	let separator = false;
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		const allowed =
+			(code >= 48 && code <= 57) ||
+			(code >= 65 && code <= 90) ||
+			(code >= 97 && code <= 122) ||
+			character === "." ||
+			character === "_" ||
+			character === "-";
+		if (!allowed) {
+			separator = result.length > 0;
+			continue;
+		}
+		if (separator) result += "-";
+		result += character;
+		separator = false;
+		if (result.length === 80) break;
+	}
+	return result || "subagent";
 }
 
 function resultDir(): string {
@@ -347,7 +351,7 @@ function resultDir(): string {
 function writeResultFile(name: string, messages: unknown[]): string {
 	ensureDir(resultDir());
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const stamp = timestampSegment(new Date().toISOString());
 	const path = join(
 		resultDir(),
 		`${stamp}_${safeFileSegment(name)}_g${beacon?.generation ?? 1}_${rid().slice(0, 8)}.md`,
@@ -413,6 +417,7 @@ const IS_CHILD = !!process.env.PI_SUBAGENT_TASK_PATH;
 let runDir = process.env.PI_SUBAGENT_RUN || "";
 const kids = new Map<string, ChildProcess>();
 let piThinkingLevel: ThinkingLevel = "medium";
+let pendingSpawnApprovals = 0;
 
 function assertRunSchema(): void {
 	if (!runDir) throw new Error("Subagent task is missing PI_SUBAGENT_RUN.");
@@ -430,7 +435,7 @@ function ensureRun(): string {
 	if (!runDir) {
 		runDir = join(
 			BASE,
-			`${new Date().toISOString().replace(/[:.]/g, "-")}_${rid().slice(0, 8)}`,
+			`${timestampSegment(new Date().toISOString())}_${rid().slice(0, 8)}`,
 		);
 		ensureDir(runDir);
 		if (!IS_CHILD) {
@@ -645,7 +650,7 @@ function recordAssistantResponse(message: unknown): void {
 
 	const prev = readJson<Beacon>(join(agentDir(SELF), "beacon.json"));
 	const usage = m.usage ?? {};
-	const text = assistantTextFromMessage(message).replace(/\s+/g, " ").trim();
+	const text = collapseWhitespace(assistantTextFromMessage(message));
 	const patch: Partial<Beacon> = {
 		state: "running",
 		activity: "",
@@ -690,7 +695,7 @@ function sweepOldRuns(): void {
 
 function appendFeed(line: string): void {
 	const feedPath = join(runDir, "feed.log");
-	appendFileSync(feedPath, `${line.replace(/\s+/g, " ").slice(0, 160)}\n`);
+	appendFileSync(feedPath, `${collapseWhitespace(line).slice(0, 160)}\n`);
 }
 
 function post(msg: Mail): void {
@@ -763,29 +768,14 @@ function claimFresh(
 	return undefined;
 }
 
-function spawnApprovalDetails(msg: { body: string; approval?: SpawnApproval }):
+function spawnApprovalDetails(msg: { approval?: SpawnApproval }):
 	| SpawnApproval
 	| undefined {
-	if (msg.approval?.type === "spawn") return msg.approval;
-	const match = msg.body.match(
-		/^\[approval]\s+spawn\s+"([^"]+)"\s+at\s+([^:]+):\s*([\s\S]*)$/i,
-	);
-	return match
-		? {
-				type: "spawn",
-				taskName: match[1] ?? "task",
-				taskPath: match[2]?.trim() ?? "",
-				message: match[3] ?? "",
-			}
-		: undefined;
+	return msg.approval?.type === "spawn" ? msg.approval : undefined;
 }
 
 function isNestedSpawnApproval(msg: Mail): boolean {
 	return msg.kind === "request" && !!spawnApprovalDetails(msg);
-}
-
-function approvalReplyAllowsSpawn(body: string): boolean {
-	return /^\s*approve(?:\s*:\s*.*)?\s*$/i.test(body);
 }
 
 function replyToNestedSpawnApproval(
@@ -797,9 +787,10 @@ function replyToNestedSpawnApproval(
 		id: rid(),
 		from: SELF,
 		to: msg.from,
-		body: approved ? "approve" : `deny: ${reason}`,
+		body: approved ? "approve" : reason,
 		replyTo: msg.id,
 		kind: "notice",
+		approved,
 		ts: now(),
 	});
 }
@@ -811,8 +802,7 @@ async function resolveNestedSpawnApprovalWithUser(
 	const details = spawnApprovalDetails(msg);
 	const label = details?.taskPath ? ` "${details.taskPath}"` : "";
 	if (!ctx.hasUI) {
-		const reason =
-			"user approval mode is enabled, but this session has no UI to confirm nested spawns";
+		const reason = "nested spawn approval requires an interactive UI";
 		replyToNestedSpawnApproval(msg, false, reason);
 		return `Denied nested spawn${label} from ${msg.from}: ${reason}.`;
 	}
@@ -849,7 +839,6 @@ function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 		from: msg.from,
 		id: msg.id,
 		body: msg.body,
-		approval: spawnApprovalDetails(msg),
 	};
 }
 
@@ -862,6 +851,35 @@ async function pollFor<T>(
 	if (value !== undefined) return value;
 	await waitForDirectoryChange(inboxDir(SELF), signal);
 	return pollFor(fn, signal);
+}
+
+function updateSpawnApprovalState(): void {
+	let state = "running";
+	let activity = "";
+	if (pendingSpawnApprovals > 0) {
+		state = "waiting";
+		let suffix = "";
+		if (pendingSpawnApprovals !== 1) suffix = "s";
+		activity = `awaiting ${pendingSpawnApprovals} spawn approval${suffix}`;
+	}
+	writeBeacon(SELF, { state, activity });
+}
+
+async function waitForSpawnApproval(
+	requestId: string,
+	signal?: AbortSignal,
+): Promise<Mail | undefined> {
+	pendingSpawnApprovals++;
+	updateSpawnApprovalState();
+	try {
+		return await pollFor(
+			() => takeReply(SELF, requestId, ROOT_TASK_PATH),
+			signal,
+		);
+	} finally {
+		pendingSpawnApprovals--;
+		updateSpawnApprovalState();
+	}
 }
 
 function waitForDirectoryChange(
@@ -898,10 +916,7 @@ async function waitForTeamEvent(
 	const fresh = claimFresh(SELF);
 	if (fresh) {
 		try {
-			if (
-				isNestedSpawnApproval(fresh.msg) &&
-				nestedSpawnApprovalMode(ctx) === "user"
-			) {
+			if (isNestedSpawnApproval(fresh.msg)) {
 				const summary = await resolveNestedSpawnApprovalWithUser(
 					ctx,
 					fresh.msg,
@@ -1391,12 +1406,9 @@ function registerTools(pi: ExtensionAPI): void {
 					approval: { type: "spawn", taskName, taskPath, message, thinking },
 					ts: now(),
 				});
-				const reply = await pollFor(
-					() => takeReply(SELF, reqId, ROOT_TASK_PATH),
-					signal,
-				);
+				const reply = await waitForSpawnApproval(reqId, signal);
 				if (!reply) return structured({ error: "Approval wait interrupted." });
-				if (!approvalReplyAllowsSpawn(reply.body))
+				if (reply.approved !== true)
 					return structured({ error: `Spawn denied by root: ${reply.body}` });
 			}
 
@@ -1634,14 +1646,6 @@ let pendingQuestion: PendingQuestion | undefined;
 
 function coordinationPrompt(): string {
 	if (!pendingQuestion) return COORDINATION_NOTICE;
-	const approval = pendingQuestion.approval;
-	if (approval)
-		return [
-			`Nested spawn request from ${pendingQuestion.from}: ${approval.taskPath}`,
-			`Task: ${approval.message}`,
-			`Thinking: ${approval.thinking ?? "caller default"}`,
-			`Answer with send_message to ${pendingQuestion.from}: "approve" or "deny: <reason>".`,
-		].join("\n");
 	return `Question from ${pendingQuestion.from}: ${pendingQuestion.body}\nAnswer with send_message to ${pendingQuestion.from}.`;
 }
 
@@ -1738,9 +1742,9 @@ function registerChildHooks(pi: ExtensionAPI): void {
 			return;
 		}
 
-		const finalText = (lastAssistantText(messages) || status.errorMessage || "")
-			.replace(/\s+/g, " ")
-			.trim();
+		const finalText = collapseWhitespace(
+			lastAssistantText(messages) || status.errorMessage || "",
+		);
 		const resultFile =
 			NOTIFY && !interrupted ? writeResultFile(SELF, messages) : undefined;
 		const terminalPatch: Partial<Beacon> = {
@@ -1926,10 +1930,14 @@ async function inspectSubagentCommand(
 		ctx.ui.notify("No subagent run is available.", "info");
 		return;
 	}
-	const trimmed = args.trim();
-	if (!trimmed || /^list$/i.test(trimmed)) return runDashboard(ctx);
-	const [first, ...rest] = trimmed.split(/\s+/);
-	if (/^kill$/i.test(first ?? "")) {
+	const words = splitWords(args);
+	if (
+		words.length === 0 ||
+		(words.length === 1 && words[0]?.toLowerCase() === "list")
+	)
+		return runDashboard(ctx);
+	const [first, ...rest] = words;
+	if (first?.toLowerCase() === "kill") {
 		const target = rest[0];
 		if (!target) {
 			ctx.ui.notify("Usage: /subagent kill </root/task|*>", "error");
@@ -1961,8 +1969,7 @@ let uiPrompting = false;
 
 function startNestedSpawnApprovalPrompts(ctx: ExtensionContext): void {
 	approvalTimer = setInterval(async () => {
-		if (!runDir || uiPrompting || nestedSpawnApprovalMode(ctx) !== "user")
-			return;
+		if (!runDir || uiPrompting) return;
 		const fresh = claimFresh(SELF, isNestedSpawnApproval);
 		if (!fresh) return;
 		uiPrompting = true;
@@ -1991,10 +1998,7 @@ function processCpuTicks(pid: number | undefined): number | undefined {
 	if (!pid || process.platform !== "linux") return undefined;
 	try {
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		const fields = stat
-			.slice(stat.lastIndexOf(")") + 2)
-			.trim()
-			.split(/\s+/);
+		const fields = splitWords(stat.slice(stat.lastIndexOf(")") + 2));
 		const user = Number(fields[11]);
 		const system = Number(fields[12]);
 		return Number.isFinite(user) && Number.isFinite(system)
@@ -2216,6 +2220,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		piThinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
 		drainLaunchQueue(ctx);
+		if (!IS_CHILD && !approvalTimer) startNestedSpawnApprovalPrompts(ctx);
 
 		if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
 		ctx.ui.setWidget(VIEW_KEY, undefined);
@@ -2239,7 +2244,6 @@ export default function (pi: ExtensionAPI): void {
 				"Open, message, or stop a task: /subagent </root/task>, /subagent </root/task> <message>, /subagent kill </root/task|*>",
 			handler: async (args, cmdCtx) => inspectSubagentCommand(args, cmdCtx),
 		});
-		startNestedSpawnApprovalPrompts(ctx);
 		refreshTimer = setInterval(() => refreshView(ctx), REFRESH_MS);
 		refreshTimer.unref();
 		refreshView(ctx);
