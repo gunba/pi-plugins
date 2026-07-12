@@ -27,6 +27,11 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that
   provides the interactive `ask_user` tool without loading the upstream
   mandatory decision-gate skill by default.
+- `pi-brief` — adds `/brief <task>` as an interactive intent-to-prompt workflow.
+  The model renders a structured brief in chat, revises it from normal feedback,
+  enforces an explicit process, time horizon, persistence and no-partial-work
+  policies, writes the evolving prompt under `.pi/briefs/`, and replaces the
+  current conversation with the approved brief.
 - `pi-scheduler` — adds `/schedule <delay> <message>` and an agent-facing
   `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
   compact queued-message panel, countdowns, `ctrl+o` expansion, and
