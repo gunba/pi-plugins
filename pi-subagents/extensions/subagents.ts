@@ -98,6 +98,7 @@ type Beacon = {
 	taskId: string;
 	parent: string | null;
 	taskName: string;
+	task?: string;
 	state: string;
 	activity?: string;
 	startedAt: number;
@@ -351,6 +352,7 @@ function resultDir(): string {
 function writeResultFile(name: string, messages: unknown[]): string {
 	ensureDir(resultDir());
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+	const task = beacon?.task || beacon?.taskName;
 	const stamp = timestampSegment(new Date().toISOString());
 	const path = join(
 		resultDir(),
@@ -364,7 +366,7 @@ function writeResultFile(name: string, messages: unknown[]): string {
 	const header = [
 		`# Subagent result: ${name}`,
 		"",
-		beacon?.taskName ? `Task: ${beacon.taskName}` : undefined,
+		task ? `Task: ${task}` : undefined,
 		beacon?.parent ? `Parent: ${beacon.parent}` : undefined,
 		`Generation: ${beacon?.generation ?? 1}`,
 		status.stopReason ? `Stop reason: ${status.stopReason}` : undefined,
@@ -998,12 +1000,14 @@ function launchAgent(
 					taskId: request.taskId,
 					parent: request.parent,
 					taskName: request.taskName,
+					task: request.prompt,
 					thinking: request.thinking,
 					generation: request.generation,
 					state: "spawning",
 					startedAt: now(),
 				}
 			: {
+					task: request.prompt,
 					thinking: request.thinking,
 					generation: request.generation,
 					state: "running",
@@ -1109,6 +1113,7 @@ function runAgent(
 			taskId: request.taskId,
 			parent: fresh ? SELF : beacon?.parent,
 			taskName: request.taskName,
+			task: request.prompt,
 			thinking: request.thinking,
 			generation: request.generation,
 			resultFile: "",
