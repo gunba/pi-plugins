@@ -122,7 +122,6 @@ test("deep canonical paths use fixed-size storage keys", () => {
 	);
 });
 
-
 test("root registration exposes only the four orchestration primitives", () => {
 	const tools = [];
 	const handlers = [];
@@ -133,22 +132,28 @@ test("root registration exposes only the four orchestration primitives", () => {
 		registerTool: (tool) => tools.push(tool),
 		on: (event, handler) => handlers.push({ event, handler }),
 	});
-	assert.deepEqual(tools.map((tool) => tool.name), [
-		"spawn_agent",
-		"send_message",
-		"wait_agent",
-		"kill_agent",
-	]);
+	assert.deepEqual(
+		tools.map((tool) => tool.name),
+		["spawn_agent", "send_message", "wait_agent", "kill_agent"],
+	);
 	assert.ok(handlers.some(({ event }) => event === "agent_settled"));
 	assert.ok(handlers.some(({ event }) => event === "thinking_level_select"));
+	assert.equal(handlers.some(({ event }) => event === "context"), false);
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
+	assert.ok(
+		tools.every(
+			(tool) =>
+				tool.promptSnippet === undefined &&
+				tool.promptGuidelines === undefined,
+		),
+	);
 	assert.deepEqual(
 		Object.keys(byName.get("spawn_agent").parameters.properties),
 		["task_name", "message", "thinking"],
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("send_message").parameters.properties),
-		["target", "message", "reply_to"],
+		["target", "message"],
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("wait_agent").parameters.properties),
@@ -183,12 +188,10 @@ test("child registration exposes the same four orchestration primitives", async 
 		registerTool: (tool) => tools.push(tool),
 		on: () => {},
 	});
-	assert.deepEqual(tools.map((tool) => tool.name), [
-		"spawn_agent",
-		"send_message",
-		"wait_agent",
-		"kill_agent",
-	]);
+	assert.deepEqual(
+		tools.map((tool) => tool.name),
+		["spawn_agent", "send_message", "wait_agent", "kill_agent"],
+	);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
@@ -282,6 +285,91 @@ test("nested spawn denial leaves no child task storage", async () => {
 	rmSync(runDir, { recursive: true, force: true });
 });
 
+test("upward messages block for an automatic parent reply", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-query-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/research",
+			taskId: "task-research",
+			parent: "/root",
+			taskName: "Research",
+			state: "running",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+		if (beacon.name !== "/root") {
+			mkdirSync(join(dir, ".active"), { recursive: true });
+			writeFileSync(join(dir, ".active", "pid"), String(process.pid));
+		}
+	}
+
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: rootSubagents } = await import(
+		`../extensions/subagents.ts?query-root=${Date.now()}`
+	);
+	process.env.PI_SUBAGENT_TASK_PATH = "/root/research";
+	process.env.PI_SUBAGENT_PARENT_PATH = "/root";
+	const { default: childSubagents } = await import(
+		`../extensions/subagents.ts?query-child=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_TASK_PATH;
+	delete process.env.PI_SUBAGENT_PARENT_PATH;
+	delete process.env.PI_SUBAGENT_RUN;
+
+	const rootTools = [];
+	rootSubagents({ registerTool: (tool) => rootTools.push(tool), on: () => {} });
+	const childTools = [];
+	childSubagents({ registerTool: (tool) => childTools.push(tool), on: () => {} });
+	const rootByName = new Map(rootTools.map((tool) => [tool.name, tool]));
+	const childByName = new Map(childTools.map((tool) => [tool.name, tool]));
+	const controller = new AbortController();
+	const keepAlive = setTimeout(() => controller.abort(), 1000);
+	const pendingReply = childByName
+		.get("send_message")
+		.execute(
+			"question",
+			{ target: "/root", message: "Which source should I use?" },
+			controller.signal,
+			undefined,
+			{},
+		);
+	const question = await rootByName
+		.get("wait_agent")
+		.execute("wait", {}, undefined, undefined, {});
+	assert.match(toolPayload(question).message, /Which source should I use/);
+	const sent = await rootByName
+		.get("send_message")
+		.execute(
+			"answer",
+			{ target: "/root/research", message: "Use the primary source." },
+			undefined,
+			undefined,
+			{},
+		);
+	assert.match(sent.details.display, /Replied/);
+	const answer = await pendingReply;
+	clearTimeout(keepAlive);
+	assert.deepEqual(toolPayload(answer), { message: "Use the primary source." });
+	rmSync(runDir, { recursive: true, force: true });
+});
+
 test("model tools route exclusively by canonical task path", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-runtime-"));
 	writeFileSync(
@@ -371,29 +459,44 @@ test("model tools route exclusively by canonical task path", async () => {
 		"inbox",
 	);
 	assert.equal(readdirSync(inbox).length, 1);
+	const realSetTimeout = globalThis.setTimeout;
+	const realClearTimeout = globalThis.clearTimeout;
+	let overseerHandle;
+	let overseerCleared = false;
+	globalThis.setTimeout = (callback, delay, ...args) => {
+		const handle = realSetTimeout(callback, delay, ...args);
+		if (delay === 600_000) overseerHandle = handle;
+		return handle;
+	};
+	globalThis.clearTimeout = (handle) => {
+		if (handle === overseerHandle) overseerCleared = true;
+		return realClearTimeout(handle);
+	};
 	const waitController = new AbortController();
-	const abortWait = setTimeout(() => waitController.abort(), 20);
-	const waitResult = await byName
-		.get("wait_agent")
-		.execute("wait", {}, waitController.signal, undefined, {});
-	clearTimeout(abortWait);
+	const abortWait = realSetTimeout(() => waitController.abort(), 20);
+	let waitResult;
+	try {
+		waitResult = await byName
+			.get("wait_agent")
+			.execute("wait", {}, waitController.signal, undefined, {});
+	} finally {
+		realClearTimeout(abortWait);
+		globalThis.setTimeout = realSetTimeout;
+		globalThis.clearTimeout = realClearTimeout;
+	}
+	assert.ok(overseerHandle, "overseer was not scheduled by blocking wait");
+	assert.equal(overseerCleared, true, "overseer survived after wait ended");
 	assert.deepEqual(toolPayload(waitResult), {
 		message: "Wait interrupted by user input.",
 	});
 	const killed = await byName
 		.get("kill_agent")
-		.execute(
-			"kill",
-			{ target: "/root/research" },
-			undefined,
-			undefined,
-			{},
-		);
+		.execute("kill", { target: "/root/research" }, undefined, undefined, {});
 	assert.match(toolPayload(killed).message, /already interrupted/i);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
-test("informational mail is delivered once without becoming a pending request", async () => {
+test("runtime notices are delivered once without becoming pending questions", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-notice-"));
 	writeFileSync(
 		join(runDir, "run.json"),

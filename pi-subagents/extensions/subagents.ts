@@ -119,7 +119,6 @@ type Beacon = {
 	errorMessage?: string;
 };
 
-
 type Mail = {
 	id: string;
 	from: string;
@@ -131,7 +130,7 @@ type Mail = {
 	ts: number;
 };
 
-type ActiveRequest = {
+type PendingQuestion = {
 	from: string;
 	id: string;
 	body: string;
@@ -193,13 +192,11 @@ export function taskSummary(task: string): string {
 	return task.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
-
 function writeJsonAtomic(path: string, value: unknown): void {
 	const temp = `${path}.${process.pid}.${rid()}.tmp`;
 	writeFileSync(temp, JSON.stringify(value), { flag: "wx" });
 	renameSync(temp, path);
 }
-
 
 function readJson<T>(path: string): T | undefined {
 	try {
@@ -610,7 +607,7 @@ function terminalRunReadyToHide(): boolean {
 	return terminalRunCanHide(
 		agents,
 		isActive,
-		Boolean(activeRequest) || hasPendingFresh(SELF),
+		Boolean(pendingQuestion) || hasPendingFresh(SELF),
 	);
 }
 
@@ -846,7 +843,7 @@ async function resolveNestedSpawnApprovalWithUser(
 	return `${approved ? "Approved" : "Denied"} nested spawn${label} from ${msg.from}.`;
 }
 
-function activeRequestFor(msg: Mail): ActiveRequest | undefined {
+function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 	if (msg.kind !== "request") return undefined;
 	return {
 		from: msg.from,
@@ -912,7 +909,7 @@ async function waitForTeamEvent(
 				if (ctx.hasUI) ctx.ui.notify(summary, "info");
 				return waitForTeamEvent(ctx, signal);
 			}
-			activeRequest = activeRequestFor(fresh.msg);
+			pendingQuestion = pendingQuestionFor(fresh.msg);
 			return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
 		} finally {
 			rmSync(fresh.path, { force: true });
@@ -922,7 +919,6 @@ async function waitForTeamEvent(
 	await waitForDirectoryChange(inboxDir(SELF), signal);
 	return waitForTeamEvent(ctx, signal);
 }
-
 
 // --------------------------------------------------------------------------
 // Human name allocation (mkdir is the atomic lock)
@@ -1186,7 +1182,7 @@ function killOneAgent(name: string, reason: string): string {
 	rmSync(launchFile(name), { force: true });
 	kids.delete(name);
 	const removed = removePendingFrom(name);
-	if (activeRequest?.from === name) activeRequest = undefined;
+	if (pendingQuestion?.from === name) pendingQuestion = undefined;
 	const cleared = removed
 		? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}`
 		: "";
@@ -1279,6 +1275,19 @@ function sendAgentNotice(
 	const message = body.trim();
 	if (!message) return "Message must not be empty.";
 	if (message.length > 4000) return "Message must be at most 4000 characters.";
+	if (pendingQuestion?.from === target.name) {
+		post({
+			id: rid(),
+			from: SELF,
+			to: target.name,
+			body: message,
+			replyTo: pendingQuestion.id,
+			kind: "notice",
+			ts: now(),
+		});
+		pendingQuestion = undefined;
+		return `Replied to ${target.name}.`;
+	}
 	if (
 		target.name !== ROOT_TASK_PATH &&
 		!isActive(target.name) &&
@@ -1298,7 +1307,6 @@ function sendAgentNotice(
 	});
 	return `Sent message to ${target.name}.`;
 }
-
 
 // --------------------------------------------------------------------------
 // Tools
@@ -1333,14 +1341,11 @@ function renderToolResult(
 	);
 }
 
-
 function registerTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "spawn_agent",
 		label: "Spawn agent",
 		description: "Start an isolated child agent.",
-		promptSnippet:
-			"spawn_agent(task_name, message, thinking?): start delegated work",
 		parameters: Type.Object(
 			{
 				task_name: Type.String({
@@ -1353,7 +1358,8 @@ function registerTools(pi: ExtensionAPI): void {
 				}),
 				thinking: Type.Optional(
 					StringEnum(THINKING_LEVELS, {
-						description: "Thinking level for the child. Defaults to the caller's level.",
+						description:
+							"Thinking level for the child. Defaults to the caller's level.",
 					}),
 				),
 			},
@@ -1434,9 +1440,8 @@ function registerTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "send_message",
 		label: "Send message",
-		description: "Send a short message; a finished task resumes its session.",
-		promptSnippet:
-			"send_message(target, message, reply_to?): message or resume an agent",
+		description:
+			"Send downward instructions or ask an ancestor a blocking question.",
 		parameters: Type.Object(
 			{
 				target: Type.String({
@@ -1447,14 +1452,11 @@ function registerTools(pi: ExtensionAPI): void {
 					description: "Message to deliver.",
 					maxLength: 4000,
 				}),
-				reply_to: Type.Optional(
-					Type.String({ description: "Request id being answered." }),
-				),
 			},
 			{ additionalProperties: false },
 		),
 		executionMode: "sequential",
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(_id, params, signal, _onUpdate, ctx) {
 			if (!runDir) return structured({ error: "No collaboration run exists." });
 			const target = resolveAuthorizedAgent(params.target);
 			if (!target || target.name === SELF)
@@ -1465,37 +1467,69 @@ function registerTools(pi: ExtensionAPI): void {
 			if (!message) return structured({ error: "message must not be empty" });
 			if (message.length > 4000)
 				return structured({
-					error: "message must be at most 4000 characters; put reports in the task's final response",
+					error:
+						"message must be at most 4000 characters; put reports in the task's final response",
 				});
-			let outcome: string;
-			if (
-				target.name !== ROOT_TASK_PATH &&
-				!isActive(target.name) &&
-				target.state !== "queued" &&
-				!params.reply_to
-			) {
-				if (!canControlTask(target) || !runAgent(target.name, message, ctx, false))
-					return structured({ error: `${target.name} could not be resumed.` });
-				outcome = `Resumed ${target.name}`;
-			} else {
+
+			if (pendingQuestion?.from === target.name) {
 				post({
 					id: rid(),
 					from: SELF,
 					to: target.name,
 					body: message,
-					replyTo: params.reply_to,
+					replyTo: pendingQuestion.id,
 					kind: "notice",
 					ts: now(),
 				});
-				outcome = `Sent message to ${target.name}`;
+				pendingQuestion = undefined;
+				refreshView(ctx);
+				return structured({}, `Replied to ${target.name}`);
 			}
+
+			if (SELF.startsWith(`${target.name}/`)) {
+				const requestId = rid();
+				post({
+					id: requestId,
+					from: SELF,
+					to: target.name,
+					body: message,
+					kind: "request",
+					ts: now(),
+				});
+				const reply = await pollFor(
+					() => takeReply(SELF, requestId, target.name),
+					signal,
+				);
+				if (!reply) return structured({ error: "Message wait interrupted." });
+				return structured(
+					{ message: reply.body },
+					`Reply from ${target.name}`,
+				);
+			}
+
 			if (
-				activeRequest?.from === target.name &&
-				params.reply_to === activeRequest.id
-			)
-				activeRequest = undefined;
+				target.name !== ROOT_TASK_PATH &&
+				!isActive(target.name) &&
+				target.state !== "queued"
+			) {
+				if (
+					!canControlTask(target) ||
+					!runAgent(target.name, message, ctx, false)
+				)
+					return structured({ error: `${target.name} could not be resumed.` });
+				refreshView(ctx);
+				return structured({}, `Resumed ${target.name}`);
+			}
+			post({
+				id: rid(),
+				from: SELF,
+				to: target.name,
+				body: message,
+				kind: "notice",
+				ts: now(),
+			});
 			refreshView(ctx);
-			return structured({}, outcome);
+			return structured({}, `Sent message to ${target.name}`);
 		},
 		renderCall(args, theme) {
 			return new Text(theme.fg("accent", `Message ${args.target}`), 0, 0);
@@ -1505,22 +1539,20 @@ function registerTools(pi: ExtensionAPI): void {
 		},
 	});
 
-
 	pi.registerTool({
 		name: "wait_agent",
 		label: "Wait for agents",
 		description:
 			"Wait until a child sends a message, finishes, or the user interrupts.",
-		promptSnippet: "wait_agent(): wait for delegated work",
 		parameters: Type.Object({}, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, _params, signal, _onUpdate, ctx) {
 			if (!runDir)
 				return structured({ message: "No collaboration run exists." });
-			if (activeRequest)
+			if (pendingQuestion)
 				return structured(
-					{ message: `Reply to ${activeRequest.from} before waiting.` },
-					`Reply to ${activeRequest.from} before waiting`,
+					{ message: `Reply to ${pendingQuestion.from} before waiting.` },
+					`Reply to ${pendingQuestion.from} before waiting`,
 				);
 			if (!hasTeamWork(SELF))
 				return structured(
@@ -1528,8 +1560,14 @@ function registerTools(pi: ExtensionAPI): void {
 					"No agent work pending",
 				);
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
-			const event = await waitForTeamEvent(ctx, signal);
-			writeBeacon(SELF, { state: "running", activity: "" });
+			if (!IS_CHILD) scheduleOverseer(ctx);
+			let event: string | undefined;
+			try {
+				event = await waitForTeamEvent(ctx, signal);
+			} finally {
+				if (!IS_CHILD) cancelOverseer();
+				writeBeacon(SELF, { state: "running", activity: "" });
+			}
 			const interrupted = Boolean(signal?.aborted);
 			if (interrupted) suppressNextCoordinationNudge = true;
 			const message = interrupted
@@ -1549,7 +1587,6 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "kill_agent",
 		label: "Kill agent",
 		description: "Stop one child subtree, or all child subtrees with '*'.",
-		promptSnippet: "kill_agent(target): stop delegated work",
 		parameters: Type.Object(
 			{
 				target: Type.String({
@@ -1590,30 +1627,25 @@ function registerTools(pi: ExtensionAPI): void {
 			return renderToolResult(result, isPartial, theme);
 		},
 	});
-
-
 }
 
 // --------------------------------------------------------------------------
 // Coordination guardrails
 // --------------------------------------------------------------------------
 
-let activeRequest: ActiveRequest | undefined;
+let pendingQuestion: PendingQuestion | undefined;
 
 function coordinationPrompt(): string {
-	if (!activeRequest) return COORDINATION_NOTICE;
-	const approval = activeRequest.approval;
+	if (!pendingQuestion) return COORDINATION_NOTICE;
+	const approval = pendingQuestion.approval;
 	if (approval)
 		return [
-			`Nested spawn request from ${activeRequest.from}: ${approval.taskPath}`,
+			`Nested spawn request from ${pendingQuestion.from}: ${approval.taskPath}`,
 			`Task: ${approval.message}`,
 			`Thinking: ${approval.thinking ?? "caller default"}`,
-			`Reply with send_message(target: "${activeRequest.from}", reply_to: "${activeRequest.id}", message: "approve") or "deny: <reason>", then call wait_agent.`,
+			`Answer with send_message to ${pendingQuestion.from}: "approve" or "deny: <reason>".`,
 		].join("\n");
-	return [
-		`Message from ${activeRequest.from}: ${activeRequest.body}`,
-		`Reply with send_message(target: "${activeRequest.from}", reply_to: "${activeRequest.id}", message: ...), then call wait_agent.`,
-	].join("\n");
+	return `Question from ${pendingQuestion.from}: ${pendingQuestion.body}\nAnswer with send_message to ${pendingQuestion.from}.`;
 }
 
 function registerCoordinationHooks(pi: ExtensionAPI): void {
@@ -1628,20 +1660,6 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 	});
 
 
-	pi.on("context", (event) => {
-		if (!runDir || (!activeRequest && !hasTeamWork(SELF))) return;
-		return {
-			messages: [
-				...event.messages,
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: coordinationPrompt() }],
-					timestamp: now(),
-				} as any,
-			],
-		};
-	});
-
 	pi.on("tool_call", (event) => {
 		const toolName = (event as { toolName?: string }).toolName ?? "";
 		const coordinationTools = [
@@ -1653,7 +1671,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 		if (
 			runDir &&
 			hasTeamWork(SELF) &&
-			!activeRequest &&
+			!pendingQuestion &&
 			!coordinationTools.includes(toolName)
 		)
 			return { block: true, reason: coordinationPrompt() };
@@ -1682,7 +1700,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 				}
 				return;
 			}
-			if (runDir && (activeRequest || hasTeamWork(SELF)))
+			if (runDir && (pendingQuestion || hasTeamWork(SELF)))
 				pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
 		});
 	}
@@ -1770,7 +1788,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 let uiReady = false;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let approvalTimer: ReturnType<typeof setInterval> | undefined;
-let overseerTimer: ReturnType<typeof setInterval> | undefined;
+let overseerTimer: ReturnType<typeof setTimeout> | undefined;
 let lastSig: string | undefined;
 let runDismissed = false;
 let suppressNextCoordinationNudge = false;
@@ -1825,7 +1843,6 @@ function latestSessionFile(name: string): string | undefined {
 		.map((file) => join(dir, file))
 		.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 }
-
 
 function dashboardSnapshot(selectedName?: string): DashboardSnapshot {
 	const transcript = selectedName
@@ -1978,7 +1995,10 @@ function processCpuTicks(pid: number | undefined): number | undefined {
 	if (!pid || process.platform !== "linux") return undefined;
 	try {
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+		const fields = stat
+			.slice(stat.lastIndexOf(")") + 2)
+			.trim()
+			.split(/\s+/);
 		const user = Number(fields[11]);
 		const system = Number(fields[12]);
 		return Number.isFinite(user) && Number.isFinite(system)
@@ -2088,18 +2108,31 @@ function safeToStop(
 	);
 }
 
+function rootIsBlocked(): boolean {
+	if (!runDir) return false;
+	const root = readJson<Beacon>(
+		join(agentDir(ROOT_TASK_PATH), "beacon.json"),
+	);
+	return (
+		root?.state === "waiting" &&
+		activeDescendants(ROOT_TASK_PATH).length > 0
+	);
+}
+
 async function runOverseer(ctx: ExtensionContext): Promise<void> {
-	if (!runDir || overseerRunning) return;
+	if (!rootIsBlocked() || overseerRunning) return;
 	overseerRunning = true;
 	try {
 		const agents = listAgents();
 		const snapshots = overseerSnapshots(agents);
 		if (!snapshots.length) return;
 		const decisions = await assessBlockedAgents(ctx, snapshots);
+		if (!rootIsBlocked()) return;
 		const candidates = new Map(
 			snapshots.map((snapshot) => [snapshot.taskPath, snapshot]),
 		);
-		const stopped: Array<{ taskPath: string; reason: string; result: string }> = [];
+		const stopped: Array<{ taskPath: string; reason: string; result: string }> =
+			[];
 		for (const decision of decisions) {
 			const observed = candidates.get(decision.taskPath);
 			if (!decision.blocked || !observed) continue;
@@ -2140,11 +2173,18 @@ async function runOverseer(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
-function startOverseer(ctx: ExtensionContext): void {
-	overseerTimer = setInterval(
-		() => void runOverseer(ctx),
-		OVERSEER_INTERVAL_MS,
-	);
+function cancelOverseer(): void {
+	if (overseerTimer) clearTimeout(overseerTimer);
+	overseerTimer = undefined;
+}
+
+function scheduleOverseer(ctx: ExtensionContext): void {
+	if (overseerTimer || !rootIsBlocked()) return;
+	overseerTimer = setTimeout(async () => {
+		overseerTimer = undefined;
+		await runOverseer(ctx);
+		if (rootIsBlocked()) scheduleOverseer(ctx);
+	}, OVERSEER_INTERVAL_MS);
 	overseerTimer.unref();
 }
 
@@ -2168,12 +2208,12 @@ export default function (pi: ExtensionAPI): void {
 			const pid = child.pid;
 			if (pid) killPidTree(pid);
 		}
-		for (const timer of [refreshTimer, approvalTimer, overseerTimer]) {
+		cancelOverseer();
+		for (const timer of [refreshTimer, approvalTimer]) {
 			if (timer) clearInterval(timer);
 		}
 		refreshTimer = undefined;
 		approvalTimer = undefined;
-		overseerTimer = undefined;
 		if (!IS_CHILD && runDir) rmSync(join(runDir, ".root-pid"), { force: true });
 		if (!IS_CHILD && ctx.mode === "tui") ctx.ui.setWidget(VIEW_KEY, undefined);
 		uiReady = false;
@@ -2207,7 +2247,6 @@ export default function (pi: ExtensionAPI): void {
 			handler: async (args, cmdCtx) => inspectSubagentCommand(args, cmdCtx),
 		});
 		startNestedSpawnApprovalPrompts(ctx);
-		startOverseer(ctx);
 		refreshTimer = setInterval(() => refreshView(ctx), REFRESH_MS);
 		refreshTimer.unref();
 		refreshView(ctx);

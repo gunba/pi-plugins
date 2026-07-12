@@ -45,11 +45,12 @@ function assistantText(messages: unknown[]): string {
 		if (message?.role !== "assistant") continue;
 		if (typeof message.content === "string") return message.content;
 		if (Array.isArray(message.content))
-			return message.content.flatMap((part) =>
-				part.type === "text" && typeof part.text === "string"
-					? [part.text]
-					: [],
-			)
+			return message.content
+				.flatMap((part) =>
+					part.type === "text" && typeof part.text === "string"
+						? [part.text]
+						: [],
+				)
 				.join("\n");
 	}
 	return "";
@@ -58,7 +59,8 @@ function assistantText(messages: unknown[]): string {
 export function parseOverseerOutput(text: string): OverseerDecision[] {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
-	if (start < 0 || end <= start) throw new Error("overseer returned no JSON object");
+	if (start < 0 || end <= start)
+		throw new Error("overseer returned no JSON object");
 	let value: { decisions?: unknown[] };
 	try {
 		value = JSON.parse(text.slice(start, end + 1)) as { decisions?: unknown[] };

@@ -8,8 +8,8 @@ a resumable Pi session.
 
 - `spawn_agent(task_name, message, thinking?)` starts a direct child at
   `<caller-path>/<task_name>`.
-- `send_message(target, message, reply_to?)` sends short coordination mail.
-  Messaging a finished task resumes its saved session.
+- `send_message(target, message)` sends a short message. Downward messages
+ instruct or resume a child; upward messages wait for the ancestor's answer.
 - `wait_agent()` waits until a child sends mail, finishes, or the user
   interrupts.
 - `kill_agent(target)` stops one task subtree. Target `*` stops every direct
@@ -52,8 +52,8 @@ The dashboard provides:
   concurrently by default. Additional accepted tasks queue until a slot opens.
 - **Hard coordination waits.** Parents remain suspended while descendants are
   active and wake only for mail, lifecycle changes, or user interruption.
-- **Simple mail.** Informational mail is delivered once. Correlated requests
-  remain pending until answered with `reply_to`.
+- **Directional messages.** Downward messages are instructions. Upward messages
+  are blocking questions. Completion and failure are runtime lifecycle events.
 - **Nested approval.** A nested `spawn_agent` asks root for approval. Setting
   `subagents.nestedSpawnApproval` to `user` routes the request through a
   confirmation modal.
@@ -61,12 +61,13 @@ The dashboard provides:
   isolated session and records a new result generation.
 - **Result publication.** A result file is written atomically before completion
   mail is published.
-- **Blocked-agent oversight.** Every ten minutes, a stateless task-agnostic
-  overseer reviews running-agent telemetry: token deltas, process CPU deltas,
-  process liveness, beacon progress, and recent transcript tails. It stops
-  agents only when that evidence shows a loop, repeated failure, deadlock,
-  impossible wait, or missing process. Slow progressing work remains active.
-  Decisions appear in the dashboard feed.
+- **Blocked-agent oversight.** After root has remained blocked in `wait_agent`
+ for ten minutes, a stateless task-agnostic overseer reviews token deltas,
+ process CPU deltas, process liveness, beacon progress, and transcript tails. It
+ stops agents only when that evidence shows a loop, repeated failure, deadlock,
+ impossible wait, or missing process. It runs only while root remains blocked,
+ and recent progress keeps an agent active. Decisions appear in the dashboard
+ feed.
 
 ## Configuration
 

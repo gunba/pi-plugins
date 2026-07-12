@@ -20,7 +20,10 @@ test("overseer decisions are parsed from strict task-agnostic JSON", () => {
 
 test("overseer rejects missing or malformed decisions", () => {
 	assert.throws(() => parseOverseerOutput("not json"), /no JSON/i);
-	assert.throws(() => parseOverseerOutput('{"decisions":"none"}'), /decisions array/i);
+	assert.throws(
+		() => parseOverseerOutput('{"decisions":"none"}'),
+		/decisions array/i,
+	);
 	assert.throws(
 		() => parseOverseerOutput('{"decisions":[{"taskPath":"/root/worker"}]}'),
 		/invalid decision/i,
