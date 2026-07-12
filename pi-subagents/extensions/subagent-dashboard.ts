@@ -39,7 +39,7 @@ export type DashboardSnapshot = {
 };
 
 export type DashboardAction = {
-	action: "message" | "steer" | "followUp" | "abort" | "kill" | "thinking";
+	action: "message" | "kill";
 	name: string;
 };
 
@@ -161,12 +161,14 @@ export function orchestrationSummary(agents: DashboardAgent[]): string {
 		(agent) => agent.state === "waiting" || agent.state === "queued",
 	).length;
 	const done = workers.filter((agent) => agent.state === "completed").length;
-	const attention = workers.filter(
-		(agent) => agent.state === "error" || agent.state === "hard_killed",
+	const stopped = workers.filter(
+		(agent) => agent.state === "interrupted" || agent.state === "hard_killed",
 	).length;
+	const attention = workers.filter((agent) => agent.state === "error").length;
 	const parts = [`${active} active`];
 	if (waiting) parts.push(`${waiting} waiting/queued`);
 	if (done) parts.push(`${done} done`);
+	if (stopped) parts.push(`${stopped} stopped`);
 	if (attention) parts.push(`${attention} need attention`);
 	return `Subagents: ${parts.join(" · ")}  —  /subagents`;
 }
@@ -227,11 +229,7 @@ export class SubagentDashboard implements Component {
 		if (this.handleNavigationInput(data)) return;
 		const actions: Record<string, DashboardAction["action"]> = {
 			m: "message",
-			s: "steer",
-			f: "followUp",
-			i: "abort",
 			x: "kill",
-			t: "thinking",
 		};
 		const action = actions[data];
 		if (action && this.selectedName)
@@ -330,7 +328,7 @@ export class SubagentDashboard implements Component {
 					? ` Search: ${this.filter || this.theme.fg("dim", "type a task path, task summary, or state")}`
 					: this.theme.fg(
 							"dim",
-							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · s steer · f follow-up · t thinking · i interrupt · x emergency stop · Esc close",
+							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · x stop · Esc close",
 						),
 				safeWidth,
 				color,
@@ -481,10 +479,7 @@ export class SubagentDashboard implements Component {
 
 	private agentMetadata(agent: DashboardAgent): string[] {
 		const duration = fmtAge((agent.finishedAt ?? Date.now()) - agent.startedAt);
-		const heading = this.theme.fg(
-			"accent",
-			this.theme.bold(agent.name),
-		);
+		const heading = this.theme.fg("accent", this.theme.bold(agent.name));
 		const metadata = [
 			heading,
 			`${agent.state}${agent.activity ? ` · ${agent.activity}` : ""} · generation ${agent.generation ?? 1} · ${duration}`,

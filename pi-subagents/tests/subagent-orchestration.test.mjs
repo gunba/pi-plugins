@@ -29,7 +29,6 @@ const {
 	normalizeTaskName,
 	taskStorageKey,
 	taskSummary,
-	thinkingAtOrBelow,
 } = await import("../extensions/subagents.ts");
 
 const theme = {
@@ -123,15 +122,8 @@ test("deep canonical paths use fixed-size storage keys", () => {
 	);
 });
 
-test("subagent thinking cannot exceed its parent's level", () => {
-	assert.equal(thinkingAtOrBelow(undefined, "high"), "high");
-	assert.equal(thinkingAtOrBelow("low", "high"), "low");
-	assert.equal(thinkingAtOrBelow("max", "max"), "max");
-	assert.throws(() => thinkingAtOrBelow("xhigh", "high"), /exceeds/i);
-	assert.throws(() => thinkingAtOrBelow("minimal", "off"), /exceeds/i);
-});
 
-test("root registration exposes tools without calling runtime actions during loading", () => {
+test("root registration exposes only the four orchestration primitives", () => {
 	const tools = [];
 	const handlers = [];
 	subagents({
@@ -141,25 +133,18 @@ test("root registration exposes tools without calling runtime actions during loa
 		registerTool: (tool) => tools.push(tool),
 		on: (event, handler) => handlers.push({ event, handler }),
 	});
-	assert.deepEqual(
-		tools.map((tool) => tool.name),
-		[
-			"spawn_agent",
-			"send_message",
-			"followup_task",
-			"wait_agent",
-			"interrupt_agent",
-			"list_agents",
-			"inspect_agent",
-			"control_agent",
-		],
-	);
+	assert.deepEqual(tools.map((tool) => tool.name), [
+		"spawn_agent",
+		"send_message",
+		"wait_agent",
+		"kill_agent",
+	]);
 	assert.ok(handlers.some(({ event }) => event === "agent_settled"));
 	assert.ok(handlers.some(({ event }) => event === "thinking_level_select"));
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
 	assert.deepEqual(
 		Object.keys(byName.get("spawn_agent").parameters.properties),
-		["task_name", "message"],
+		["task_name", "message", "thinking"],
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("send_message").parameters.properties),
@@ -167,19 +152,9 @@ test("root registration exposes tools without calling runtime actions during loa
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("wait_agent").parameters.properties),
-		["timeout_ms"],
+		[],
 	);
-	const waitTool = byName.get("wait_agent");
-	assert.equal(waitTool.parameters.properties.timeout_ms.minimum, 10_000);
-	assert.equal(waitTool.parameters.properties.timeout_ms.maximum, 3_600_000);
-	assert.equal(waitTool.parameters.properties.timeout_ms.default, undefined);
-	assert.deepEqual(waitTool.prepareArguments({}), {});
-	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 1000 }), {
-		timeout_ms: 10_000,
-	});
-	assert.deepEqual(waitTool.prepareArguments({ timeout_ms: 9_000_000 }), {
-		timeout_ms: 3_600_000,
-	});
+	assert.equal(byName.get("wait_agent").prepareArguments, undefined);
 	assert.equal(
 		byName.get("spawn_agent").parameters.additionalProperties,
 		false,
@@ -188,7 +163,7 @@ test("root registration exposes tools without calling runtime actions during loa
 	assert.equal(typeof byName.get("spawn_agent").renderResult, "function");
 });
 
-test("child registration exposes collaboration tools and keeps root controls private", async () => {
+test("child registration exposes the same four orchestration primitives", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
 	writeFileSync(
 		join(runDir, "run.json"),
@@ -208,17 +183,12 @@ test("child registration exposes collaboration tools and keeps root controls pri
 		registerTool: (tool) => tools.push(tool),
 		on: () => {},
 	});
-	assert.deepEqual(
-		tools.map((tool) => tool.name),
-		[
-			"spawn_agent",
-			"send_message",
-			"followup_task",
-			"wait_agent",
-			"interrupt_agent",
-			"list_agents",
-		],
-	);
+	assert.deepEqual(tools.map((tool) => tool.name), [
+		"spawn_agent",
+		"send_message",
+		"wait_agent",
+		"kill_agent",
+	]);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
@@ -263,6 +233,7 @@ test("nested spawn denial leaves no child task storage", async () => {
 	delete process.env.PI_SUBAGENT_RUN;
 	const tools = [];
 	approvalSubagents({
+		getThinkingLevel: () => "high",
 		registerTool: (tool) => tools.push(tool),
 		on: () => {},
 	});
@@ -279,6 +250,7 @@ test("nested spawn denial leaves no child task storage", async () => {
 	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
 	const requestFile = readdirSync(rootInbox)[0];
 	const request = parseJson(readFileSync(join(rootInbox, requestFile), "utf8"));
+	assert.equal(request.approval.thinking, "high");
 	const childInbox = join(
 		runDir,
 		"tasks",
@@ -365,15 +337,6 @@ test("model tools route exclusively by canonical task path", async () => {
 		on: (event, handler) => handlers.push({ event, handler }),
 	});
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	const listed = await byName
-		.get("list_agents")
-		.execute("list", {}, undefined, undefined, {});
-	const listPayload = toolPayload(listed);
-	assert.deepEqual(
-		listPayload.agents.map((agent) => agent.agent_name),
-		["/root", "/root/branch/deep", "/root/research"],
-	);
-	assert.equal(listPayload.agents[2].agent_status, "interrupted");
 	const gate = handlers
 		.find(({ event }) => event === "tool_call")
 		.handler({
@@ -395,7 +358,7 @@ test("model tools route exclusively by canonical task path", async () => {
 		.get("send_message")
 		.execute(
 			"send-path",
-			{ target: "/root/research", message: "hello" },
+			{ target: "/root/branch/deep", message: "hello" },
 			undefined,
 			undefined,
 			{},
@@ -404,40 +367,91 @@ test("model tools route exclusively by canonical task path", async () => {
 	const inbox = join(
 		runDir,
 		"tasks",
-		taskStorageKey("/root/research"),
+		taskStorageKey("/root/branch/deep"),
 		"inbox",
 	);
 	assert.equal(readdirSync(inbox).length, 1);
-	await assert.rejects(
-		byName
-			.get("wait_agent")
-			.execute("wait-short", { timeout_ms: 9999 }, undefined, undefined, {}),
-		/at least 10000/,
-	);
 	const waitController = new AbortController();
 	const abortWait = setTimeout(() => waitController.abort(), 20);
-	const unboundedWait = await byName
+	const waitResult = await byName
 		.get("wait_agent")
-		.execute("wait-unbounded", {}, waitController.signal, undefined, {});
+		.execute("wait", {}, waitController.signal, undefined, {});
 	clearTimeout(abortWait);
-	assert.deepEqual(toolPayload(unboundedWait), {
-		message: "Wait interrupted by new input.",
-		timed_out: false,
+	assert.deepEqual(toolPayload(waitResult), {
+		message: "Wait interrupted by user input.",
 	});
-	const interrupted = await byName
-		.get("interrupt_agent")
+	const killed = await byName
+		.get("kill_agent")
 		.execute(
-			"interrupt",
+			"kill",
 			{ target: "/root/research" },
 			undefined,
 			undefined,
 			{},
 		);
-	assert.equal(toolPayload(interrupted).previous_status, "interrupted");
+	assert.match(toolPayload(killed).message, /already interrupted/i);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
-test("interrupting a stale sender clears its claimed coordination event", async () => {
+test("informational mail is delivered once without becoming a pending request", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-notice-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/done",
+			taskId: "task-done",
+			parent: "/root",
+			taskName: "Finished task",
+			state: "completed",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
+	mkdirSync(rootInbox, { recursive: true });
+	writeFileSync(
+		join(rootInbox, "notice.json"),
+		JSON.stringify({
+			id: "notice",
+			from: "/root/done",
+			to: "/root",
+			body: "Finished report is ready",
+			kind: "notice",
+			ts: Date.now(),
+		}),
+	);
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: noticeSubagents } = await import(
+		`../extensions/subagents.ts?notice=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const tools = [];
+	noticeSubagents({ registerTool: (tool) => tools.push(tool), on: () => {} });
+	const wait = tools.find((tool) => tool.name === "wait_agent");
+	const delivered = await wait.execute("deliver", {}, undefined, undefined, {});
+	assert.match(toolPayload(delivered).message, /Finished report is ready/);
+	const settled = await wait.execute("settled", {}, undefined, undefined, {});
+	assert.equal(settled.details.display, "No agent work pending");
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("killing a terminal subtree clears its entire stale mailbox backlog", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-stale-event-"));
 	writeFileSync(
 		join(runDir, "run.json"),
@@ -457,7 +471,7 @@ test("interrupting a stale sender clears its claimed coordination event", async 
 			name: "/root/stale",
 			taskId: "task-stale",
 			parent: "/root",
-			taskName: "Finished task with stale event",
+			taskName: "Finished task with stale events",
 			state: "completed",
 			startedAt: 2,
 			updatedAt: 2,
@@ -469,17 +483,18 @@ test("interrupting a stale sender clears its claimed coordination event", async 
 	}
 	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
 	mkdirSync(rootInbox, { recursive: true });
-	writeFileSync(
-		join(rootInbox, "stale.json"),
-		JSON.stringify({
-			id: "stale-event",
-			from: "/root/stale",
-			to: "/root",
-			body: "Repair this already-finished task",
-			kind: "attention",
-			ts: Date.now(),
-		}),
-	);
+	for (let index = 0; index < 25; index++)
+		writeFileSync(
+			join(rootInbox, `${index}.json`),
+			JSON.stringify({
+				id: `stale-${index}`,
+				from: "/root/stale",
+				to: "/root",
+				body: `Stale report ${index}`,
+				kind: "notice",
+				ts: Date.now() + index,
+			}),
+		);
 	process.env.PI_SUBAGENT_RUN = runDir;
 	const { default: staleEventSubagents } = await import(
 		`../extensions/subagents.ts?stale-event=${Date.now()}`
@@ -491,15 +506,18 @@ test("interrupting a stale sender clears its claimed coordination event", async 
 		on: () => {},
 	});
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	await byName.get("wait_agent").execute("claim", {}, undefined, undefined, {});
-	const pending = await byName
-		.get("wait_agent")
-		.execute("pending", {}, undefined, undefined, {});
-	assert.match(pending.details.display, /still pending/i);
-	const interrupted = await byName
-		.get("interrupt_agent")
-		.execute("interrupt", { target: "/root/stale" }, undefined, undefined, {});
-	assert.match(interrupted.details.display, /cleared the pending event/i);
+	const killed = await byName
+		.get("kill_agent")
+		.execute("kill", { target: "*" }, undefined, undefined, {});
+	assert.match(toolPayload(killed).message, /cleared 25 pending messages/i);
+	assert.equal(readdirSync(rootInbox).length, 0);
+	const staleBeacon = parseJson(
+		readFileSync(
+			join(runDir, "tasks", taskStorageKey("/root/stale"), "beacon.json"),
+			"utf8",
+		),
+	);
+	assert.equal(staleBeacon.state, "completed");
 	const settled = await byName
 		.get("wait_agent")
 		.execute("settled", {}, undefined, undefined, {});
@@ -520,7 +538,7 @@ test("compact status summarizes large teams without rendering every agent", () =
 	assert.match(summary, /^Subagents:/);
 	assert.match(summary, /active/);
 	assert.match(summary, /done/);
-	assert.match(summary, /need attention/);
+	assert.match(summary, /stopped/);
 	assert.match(summary, /\/subagents/);
 });
 

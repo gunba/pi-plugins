@@ -63,12 +63,13 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   live context and the session log, including optional live continuation
   pruning during long runs; follows its global setting and is compatible with
   Anthropic OAuth prune calls.
-- `pi-subagents` — runs isolated background `pi` agents through a Codex V2-shaped
-  collaboration surface with canonical `/root/...` task paths, nested approval,
-  bounded direct-child concurrency, event-driven coordination, resumable sessions,
-  and file-backed results. The root remains an orchestration-only coordinator while
-  children are active and can inspect, steer, follow up, interrupt, or retune any
-  descendant. `/subagents` opens the virtualized tree and branch-aware dashboard.
+- `pi-subagents` — runs isolated background `pi` agents with four primitives:
+ `spawn_agent`, `send_message`, `wait_agent`, and `kill_agent`. Parents wait
+ event-first while delegated work is active; the user can interrupt waiting and
+ stop any subtree. Canonical `/root/...` paths, nested approval, resumable
+ sessions, file-backed results, a live transcript dashboard, and a task-agnostic
+ blocked-process overseer keep orchestration observable without expanding the
+ model tool surface.
 
 ## Install
 
