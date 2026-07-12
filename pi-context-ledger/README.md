@@ -71,9 +71,8 @@ their group's own largest contributor (so the per-group leader fills its bar).
 - **Collapsed by default; expandable in place.** It honours the same
   `app.tools.expand` key that expands tool output — collapsed shows categories,
   expanded shows every individual skill / tool / file.
-- The card is **never sent to the model**. It renders in the TUI and persists in
-  the session log, but a `context` hook strips it from every LLM call, so it
-  costs zero context — it only reports it.
+- The card is **never sent to the model**. It is stored as a native TUI-only
+  custom entry, so it persists in the session log at zero context cost.
 - Disabled automatically inside `pi-subagents` child processes.
 
 ## Controls

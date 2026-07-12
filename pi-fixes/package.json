@@ -1,15 +1,14 @@
 {
   "name": "pi-fixes",
   "version": "0.1.0",
-  "description": "Bundled Pi workarounds (oversized-message guard, Claude effort lift) with built-in effectiveness tracking so each fix can be retired once it stops firing.",
+  "description": "Pi workarounds with effectiveness tracking so each fix can be retired once obsolete.",
   "private": true,
-  "keywords": ["pi-package", "pi", "pi-extension", "claude", "context", "guard", "fixes"],
+  "keywords": ["pi-package", "pi", "pi-extension", "context", "guard", "fixes"],
   "type": "module",
   "pi": {
     "extensions": [
       "./extensions/effectiveness.ts",
-      "./extensions/context-guard.ts",
-      "./extensions/claude-effort.ts"
+      "./extensions/context-guard.ts"
     ]
   },
   "peerDependencies": {

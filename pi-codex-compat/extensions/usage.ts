@@ -4,77 +4,8 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isCodexLikeModel } from "./model-tools.ts";
 
-const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-
-function stripAnsi(value: string): string {
-  return value.replace(ANSI_RE, "");
-}
-
-function isCombiningMark(value: string): boolean {
-  return /\p{Mark}/u.test(value);
-}
-
-function isWideCodePoint(codePoint: number): boolean {
-  return (
-    codePoint >= 0x1100 &&
-    (codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1faff))
-  );
-}
-
-function charCellWidth(value: string): number {
-  const codePoint = value.codePointAt(0);
-  if (codePoint === undefined) return 0;
-  if (codePoint === 0x200d || (codePoint >= 0xfe00 && codePoint <= 0xfe0f) || isCombiningMark(value)) return 0;
-  return isWideCodePoint(codePoint) ? 2 : 1;
-}
-
-function visibleWidth(value: string): number {
-  let width = 0;
-  for (const char of stripAnsi(value)) width += charCellWidth(char);
-  return width;
-}
-
-function truncateToWidth(value: string, width: number, ellipsis = "…"): string {
-  if (width <= 0) return "";
-  if (visibleWidth(value) <= width) return value;
-  const plain = stripAnsi(value);
-  const plainEllipsis = stripAnsi(ellipsis);
-  const ellipsisWidth = visibleWidth(plainEllipsis);
-  const take = Math.max(0, width - ellipsisWidth);
-  let used = 0;
-  let truncated = "";
-  for (const char of plain) {
-    const charWidth = charCellWidth(char);
-    if (used + charWidth > take) break;
-    truncated += char;
-    used += charWidth;
-  }
-  return `${truncated}${plainEllipsis}`;
-}
-
 type HeaderMap = Record<string, unknown>;
 type JsonRecord = Record<string, unknown>;
-type FooterData = {
-  getGitBranch?: () => string | null;
-  getExtensionStatuses?: () => ReadonlyMap<string, string>;
-  getAvailableProviderCount?: () => number;
-  onBranchChange?: (callback: () => void) => () => void;
-};
-type FooterComponent = {
-  render(width: number): string[];
-  invalidate(): void;
-  dispose?: () => void;
-};
 type UsageWindow = {
   label: string;
   windowMinutes?: number;
@@ -142,14 +73,14 @@ const DEFAULT_STATE_DIR = join(
 );
 const STATE_DIR = process.env.PI_CODEX_USAGE_DIR || DEFAULT_STATE_DIR;
 const SNAPSHOT_FILE = join(STATE_DIR, "usage.json");
-const DISABLE_FOOTER_ENV = "PI_CODEX_USAGE_FOOTER";
+const STATUS_KEY = "codex-usage";
+const DISABLE_STATUS_ENV = "PI_CODEX_USAGE_STATUS";
 const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex" };
 const USAGE_SOURCES: readonly UsageSource[] = ["codex"];
 
 let snapshots: UsageSnapshots = readPersistedSnapshots();
-let requestFooterRender: (() => void) | undefined;
-let footerContext: ExtensionContext | undefined;
-let footerEnabled = !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_FOOTER_ENV] || "");
+let statusContext: ExtensionContext | undefined;
+let statusEnabled = !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_STATUS_ENV] || "");
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 let sessionStatsCache: SessionStatsCache | undefined;
 
@@ -573,16 +504,6 @@ function formatTokens(count: number): string {
   return `${Math.round(count / 1_000_000)}M`;
 }
 
-function compactPath(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
-  const home = os.homedir().replace(/\\/g, "/");
-  return normalized.toLowerCase().startsWith(home.toLowerCase()) ? `~${normalized.slice(home.length)}` : normalized;
-}
-
-function sanitizeStatusText(text: string): string {
-  return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
-}
-
 function usageFromEntry(entry: unknown): AssistantUsage | undefined {
   if (!entry || typeof entry !== "object") return undefined;
   const candidate = entry as { type?: unknown; message?: { role?: unknown; usage?: AssistantUsage } };
@@ -638,15 +559,6 @@ function cachedSessionStats(ctx: ExtensionContext): SessionStats {
   return stats;
 }
 
-function refreshSessionStats(ctx: ExtensionContext): void {
-  const current = sessionEntries(ctx);
-  if (!current) {
-    sessionStatsCache = undefined;
-    return;
-  }
-  sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats: computeSessionStats(current.entries) };
-}
-
 function formatSessionCostDetails(ctx: ExtensionContext): string {
   const stats = cachedSessionStats(ctx);
   const cachedInput = stats.totalCacheRead;
@@ -677,155 +589,21 @@ function formatSessionCostDetails(ctx: ExtensionContext): string {
   ].join("\n");
 }
 
-function buildStatsLine(
-  ctx: ExtensionContext,
-  theme: ExtensionContext["ui"]["theme"],
-  width: number,
-  getThinkingLevel: () => string,
-): string {
-  const { totalInput, totalOutput, totalCacheRead, totalCacheWrite, totalCost } = cachedSessionStats(ctx);
-
-  const contextUsage = ctx.getContextUsage?.();
-  const contextUsageDetails = contextUsage as (typeof contextUsage & { autoCompact?: boolean }) | undefined;
-  const contextWindow = contextUsage?.contextWindow || ctx.model?.contextWindow || 0;
-  const contextPercentValue = typeof contextUsage?.percent === "number" ? contextUsage.percent : 0;
-  const contextPercent = contextUsage?.percent === null || contextUsage?.percent === undefined ? "?" : contextPercentValue.toFixed(1);
-  const autoIndicator = contextUsageDetails?.autoCompact === false ? "" : " (auto)";
-  const contextPercentDisplay = `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
-
-  // Only input is ever cached, so the cost story is three buckets: fresh input
-  // (full/premium rate), cached input re-reads (cheap), and output. "in" folds
-  // cache writes into fresh input because those tokens are processed this turn;
-  // "cache" is the cached read with its hit rate over all input.
-  const cachedInput = totalCacheRead;
-  const freshInput = totalInput + totalCacheWrite;
-  const allInput = cachedInput + freshInput;
-
-  const statsParts: string[] = [];
-  if (freshInput) statsParts.push(`in ${formatTokens(freshInput)}`);
-  if (cachedInput) {
-    const hitPercent = allInput > 0 ? Math.round((cachedInput / allInput) * 100) : 0;
-    statsParts.push(`cache ${formatTokens(cachedInput)}·${hitPercent}%`);
-  }
-  if (totalOutput) statsParts.push(`out ${formatTokens(totalOutput)}`);
-  if (totalCost || ctx.model?.api === "openai-codex-responses") {
-    statsParts.push(`$${totalCost.toFixed(3)}${ctx.model?.api === "openai-codex-responses" ? " (sub)" : ""}`);
-  }
-  let contextPart = contextPercentDisplay;
-  if (contextPercentValue > 90) contextPart = theme.fg("error", contextPercentDisplay);
-  else if (contextPercentValue > 70) contextPart = theme.fg("warning", contextPercentDisplay);
-  statsParts.push(contextPart);
-
-  let statsLeft = statsParts.join(" ");
-  if (visibleWidth(statsLeft) > width) statsLeft = truncateToWidth(statsLeft, width, "...");
-
-  const modelName = ctx.model?.id || "no-model";
-  const thinkingLevel = getThinkingLevel();
-  const thinkingLabel = thinkingLevel === "off" ? "thinking off" : thinkingLevel;
-  const rightSide = ctx.model?.reasoning ? `${modelName} • ${thinkingLabel}` : modelName;
-  const rightWidth = visibleWidth(rightSide);
-  const leftWidth = visibleWidth(statsLeft);
-  const minPadding = 2;
-
-  let line: string;
-  if (leftWidth + minPadding + rightWidth <= width) {
-    line = `${statsLeft}${" ".repeat(width - leftWidth - rightWidth)}${rightSide}`;
-  } else {
-    const availableForRight = width - leftWidth - minPadding;
-    if (availableForRight > 0) {
-      const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
-      line = `${statsLeft}${" ".repeat(Math.max(0, width - leftWidth - visibleWidth(truncatedRight)))}${truncatedRight}`;
-    } else {
-      line = statsLeft;
-    }
-  }
-
-  return theme.fg("dim", statsLeft) + theme.fg("dim", line.slice(statsLeft.length));
-}
-
-function buildTopLine(ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"], footerData: FooterData, width: number): string {
-  const sessionManager = ctx.sessionManager as unknown as {
-    getCwd?: () => string;
-    getSessionName?: () => string | undefined;
-  };
-  const parts: string[] = [];
-  parts.push(compactPath(sessionManager.getCwd?.() || ctx.cwd || process.cwd()));
-
-  const branch = footerData.getGitBranch?.();
-  if (branch) parts[0] = `${parts[0]} (${branch})`;
-
-  const sessionName = sessionManager.getSessionName?.();
-  if (sessionName) parts.push(sessionName);
-
-  const usageStatus = formatUsageStatus(theme, currentUsageSource(ctx.model));
-  const extensionStatuses = Array.from(footerData.getExtensionStatuses?.().entries() || [])
-    .sort(([a], [b]) => a.localeCompare(b))
-    .flatMap(([, text]) => {
-      const sanitized = sanitizeStatusText(text);
-      return sanitized ? [theme.fg("dim", sanitized)] : [];
-    });
-  const status = [usageStatus, ...extensionStatuses].filter((part): part is string => Boolean(part)).join("  ");
-  const left = theme.fg("dim", parts.join(" • "));
-
-  if (!status) return truncateToWidth(left, width, theme.fg("dim", "..."));
-
-  const leftWidth = visibleWidth(left);
-  const statusWidth = visibleWidth(status);
-  if (leftWidth + 2 + statusWidth <= width) {
-    return `${left}${" ".repeat(width - leftWidth - statusWidth)}${status}`;
-  }
-
-  const maxStatusWidth = Math.max(20, Math.floor(width * 0.72));
-  const compactStatus = statusWidth > maxStatusWidth ? truncateToWidth(status, maxStatusWidth, theme.fg("dim", "...")) : status;
-  const compactStatusWidth = visibleWidth(compactStatus);
-  const leftBudget = Math.max(0, width - compactStatusWidth - 1);
-  if (leftBudget <= 0) return truncateToWidth(compactStatus, width, theme.fg("dim", "..."));
-  return `${truncateToWidth(left, leftBudget, theme.fg("dim", "..."))} ${compactStatus}`;
-}
-
-function createFooter(
-  ctx: ExtensionContext,
-  getThinkingLevel: () => string,
-): (tui: { requestRender: () => void }, theme: ExtensionContext["ui"]["theme"], footerData: FooterData) => FooterComponent {
-  return (tui, theme, footerData) => {
-    requestFooterRender = () => tui.requestRender();
-    const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender());
-
-    return {
-      invalidate() {},
-      render(width: number): string[] {
-        const renderContext = footerContext ?? ctx;
-        return [buildTopLine(renderContext, theme, footerData, width), buildStatsLine(renderContext, theme, width, getThinkingLevel)];
-      },
-      dispose() {
-        unsubscribe?.();
-        if (requestFooterRender) requestFooterRender = undefined;
-      },
-    };
-  };
-}
-
-function rememberFooterContext(ctx: ExtensionContext): void {
-  footerContext = ctx;
-}
-
-function installFooter(ctx: ExtensionContext, pi: ExtensionAPI): void {
-  rememberFooterContext(ctx);
-  refreshSessionStats(ctx);
-  if (ctx.mode !== "tui" || !footerEnabled) return;
-  if (!isCodexLikeModel(ctx.model)) {
-    ctx.ui.setFooter(undefined);
-    requestFooterRender = undefined;
-    disposeTickTimer();
-    return;
-  }
-  ctx.ui.setFooter(createFooter(ctx, () => pi.getThinkingLevel()));
-  ensureTickTimer();
+function updateUsageStatus(ctx: ExtensionContext): void {
+  statusContext = ctx;
+  const status = statusEnabled && isCodexLikeModel(ctx.model)
+    ? formatUsageStatus(ctx.ui.theme, currentUsageSource(ctx.model))
+    : undefined;
+  ctx.ui.setStatus(STATUS_KEY, status);
+  if (status) ensureTickTimer();
+  else disposeTickTimer();
 }
 
 function ensureTickTimer(): void {
   if (tickTimer) return;
-  tickTimer = setInterval(() => requestFooterRender?.(), 30_000);
+  tickTimer = setInterval(() => {
+    if (statusContext) updateUsageStatus(statusContext);
+  }, 30_000);
   tickTimer.unref?.();
 }
 
@@ -835,21 +613,16 @@ function disposeTickTimer(): void {
   tickTimer = undefined;
 }
 
-function refreshFooter(): void {
-  requestFooterRender?.();
-}
-
 function recordSnapshot(snapshot: UsageSnapshot): void {
   const previous = snapshots[snapshot.source];
-  const merged: UsageSnapshot = {
+  snapshots[snapshot.source] = {
     ...snapshot,
     planType: snapshot.planType ?? previous?.planType,
     activeLimit: snapshot.activeLimit ?? previous?.activeLimit,
   };
-  snapshots[snapshot.source] = merged;
   pruneExpiredSnapshots(Date.now());
   persistSnapshots();
-  refreshFooter();
+  if (statusContext) updateUsageStatus(statusContext);
 }
 
 export default function codexUsage(pi: ExtensionAPI): void {
@@ -862,90 +635,49 @@ export default function codexUsage(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     installWebSocketCapture();
-    installFooter(ctx, pi);
+    updateUsageStatus(ctx);
   });
 
   pi.on("before_provider_request", async (_event, ctx) => {
-    rememberFooterContext(ctx);
     installWebSocketCapture();
+    updateUsageStatus(ctx);
   });
 
   pi.on("model_select", async (_event, ctx) => {
-    installFooter(ctx, pi);
-  });
-
-  pi.on("thinking_level_select", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshFooter();
-  });
-
-  pi.on("message_end", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
-  });
-
-  pi.on("tool_execution_end", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
-  });
-
-  pi.on("turn_end", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
-  });
-
-  pi.on("agent_end", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
-  });
-
-  pi.on("session_compact", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
-  });
-
-  pi.on("session_tree", async (_event, ctx) => {
-    rememberFooterContext(ctx);
-    refreshSessionStats(ctx);
-    refreshFooter();
+    updateUsageStatus(ctx);
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
-    rememberFooterContext(ctx);
+    statusContext = ctx;
     const snapshot = parseUsageHeaders(event.headers as HeaderMap | undefined);
     if (snapshot) recordSnapshot(snapshot);
+    else updateUsageStatus(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     const state = getGlobalState();
     if (state.onWebSocketMessage === handleWebSocketMessage) state.onWebSocketMessage = undefined;
-    footerContext = undefined;
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+    statusContext = undefined;
     sessionStatsCache = undefined;
     disposeTickTimer();
     uninstallWebSocketCapture();
   });
 
   pi.registerCommand("pi-usage", {
-    description: "Show passive Codex 5h/7d usage from response headers and events, and control the compact footer",
+    description: "Show passive Codex usage and control its footer status",
     handler: async (args, ctx) => {
       const command = args.trim().toLowerCase();
-      if (command === "footer off" || command === "off") {
-        footerEnabled = false;
-        if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
-        requestFooterRender = undefined;
-        disposeTickTimer();
-        ctx.ui.notify("Usage compact footer disabled for this session", "info");
+      if (command === "off") {
+        statusEnabled = false;
+        updateUsageStatus(ctx);
+        ctx.ui.notify("Codex usage status disabled for this session", "info");
         return;
       }
-      if (command === "footer on" || command === "on") {
-        footerEnabled = true;
-        installFooter(ctx, pi);
-        ctx.ui.notify("Usage compact footer enabled", "info");
+      if (command === "on") {
+        statusEnabled = true;
+        updateUsageStatus(ctx);
+        ctx.ui.notify("Codex usage status enabled", "info");
         return;
       }
 
@@ -955,8 +687,8 @@ export default function codexUsage(pi: ExtensionAPI): void {
           "",
           formatUsageDetails(),
           "",
-          "Commands: /pi-usage status | footer on | footer off",
-          `Disable on startup: ${DISABLE_FOOTER_ENV}=off`,
+          "Commands: /pi-usage | /pi-usage on | /pi-usage off",
+          `Disable on startup: ${DISABLE_STATUS_ENV}=off`,
         ].join("\n"),
         "info",
       );

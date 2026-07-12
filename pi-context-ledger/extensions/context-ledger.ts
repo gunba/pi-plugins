@@ -427,20 +427,10 @@ export default function contextLedger(pi: ExtensionAPI): void {
   const shownSessions = new Set<string>();
   const optionsBySession = new Map<string, BuildSystemPromptOptions>();
 
-  pi.registerMessageRenderer<Ledger>(CUSTOM_TYPE, (message, options, theme) => {
-    const ledger = message.details;
+  pi.registerEntryRenderer<Ledger>(CUSTOM_TYPE, (entry, options, theme) => {
+    const ledger = entry.data;
     if (!ledger || !Array.isArray(ledger.groups)) return undefined;
     return createLedgerComponent(ledger, theme, options.expanded === true);
-  });
-
-  // Keep the breakdown out of the model's context entirely: it is a TUI-only
-  // artifact. The custom message still renders and persists in the session log,
-  // but every LLM call sees a copy with it removed.
-  pi.on("context", async (event) => {
-    const filtered = event.messages.filter(
-      (message) => !(message.role === "custom" && (message as { customType?: string }).customType === CUSTOM_TYPE),
-    );
-    if (filtered.length !== event.messages.length) return { messages: filtered as never };
   });
 
   pi.on("session_start", async (event, ctx) => {
@@ -461,14 +451,7 @@ export default function contextLedger(pi: ExtensionAPI): void {
     shownSessions.add(sessionId);
 
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);
-    return {
-      message: {
-        customType: CUSTOM_TYPE,
-        content: renderLedgerPlain(ledger),
-        display: true,
-        details: ledger,
-      },
-    };
+    pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
   });
 
   pi.registerCommand("context-ledger", {
@@ -491,10 +474,7 @@ export default function contextLedger(pi: ExtensionAPI): void {
         );
       }
       const ledger = computeLedger(ctx, pi, ctx.getSystemPrompt(), options, "", 0);
-      pi.sendMessage(
-        { customType: CUSTOM_TYPE, content: renderLedgerPlain(ledger), display: true, details: ledger },
-        { triggerTurn: false },
-      );
+      pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
     },
   });
 }

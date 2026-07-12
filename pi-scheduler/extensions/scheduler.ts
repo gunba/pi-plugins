@@ -172,17 +172,23 @@ function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const due = dueMessages(ctx);
   if (!due.length) return;
 
+  const delivered: ScheduledMessage[] = [];
   sendingDue = true;
   try {
-    removeMessages(due);
     due.forEach((entry, index) => {
       ctx.ui.notify(`Sending scheduled message #${entry.id}`, "info");
       if (index === 0 && ctx.isIdle()) pi.sendUserMessage(entry.message);
       else pi.sendUserMessage(entry.message, { deliverAs: "followUp" });
+      delivered.push(entry);
     });
   } catch (error) {
     ctx.ui.notify(`Scheduled message delivery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
   } finally {
+    try {
+      removeMessages(delivered);
+    } catch (error) {
+      ctx.ui.notify(`Failed to remove delivered messages: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
     sendingDue = false;
     refreshWidget(ctx);
   }

@@ -6,10 +6,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 - `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in
   effectiveness tracking. Covers the oversized single-message guard before
-  provider requests and tool-call continuations (`/context-guard`) and the
-  Claude effort lift. `/pi-fixes` reports whether each fix is still firing
-  (last 7d/30d, last seen, NEEDED/REVIEW/UNUSED verdict) so a workaround can
-  be retired once its failure stops occurring.
+  provider requests and tool-call continuations (`/context-guard`). `/pi-fixes`
+  reports whether the guard is still firing so it can be retired when obsolete.
 - `pi-codex-compat` — adds Codex-shaped `apply_patch`, `shell_command`,
   `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
   The tool overlay activates only for Codex-like models and preserves unrelated
@@ -23,13 +21,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   before provider requests; `/repair-session-images` performs a backed-up
   permanent repair. `image_gen` follows OpenAI Codex's standalone image tool,
   generates or edits with `gpt-image-2`, and saves outputs under
-  `$CODEX_HOME/generated_images`. The integrated compact footer passively shows
-  Codex 5h/7d usage and session token/cost statistics; `/pi-usage` shows the
-  detailed breakdown and controls the footer.
-- `pi-file-links` — turns project-relative paths, absolute Linux paths, tilde
-  paths, Windows paths, UNC paths, and existing paths with spaces into
-  clickable terminal file links while stripping generated links before model
-  context.
+  `$CODEX_HOME/generated_images`. A native footer status passively shows Codex
+  5h/7d usage; `/pi-usage` shows the detailed token, cost, and rate-limit
+  breakdown and controls that status.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that
   provides the interactive `ask_user` tool without loading the upstream
   mandatory decision-gate skill by default.
@@ -42,15 +36,11 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, MCP, and subagent configuration.
-- `pi-session-search` — adds `/session-search`, an exact-match modal for
-  finding and resuming saved Pi sessions with snippets, all/current-cwd scope
-  switching, regex, quoted phrases, date/path/name filters, a cached session
-  index, and `Ctrl+A` background agent hunts for vague natural-language asks.
 - `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
   git repository, with generated package installs, sessions, caches, tmp files,
   and local auth state kept machine-local.
-- `pi-tab-title` — auto-names terminal tabs from the first user message and
-  shows fresh/thinking/ready/error state in the tab title.
+- `pi-tab-title` — names terminal tabs from the first user message using the
+  current model and keeps the tab title synced with the session name.
 - `pi-system-context` — adds compact local environment context to the system
   prompt.
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
@@ -124,13 +114,13 @@ npm run check
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release.
 
-The integrated Codex footer derives its token breakdown from the per-message
+The detailed Codex usage report derives its token breakdown from the per-message
 `usage` Pi records (input / cacheRead / cacheWrite / output and matching
-per-bucket cost), so cached versus uncached input and notional API spend remain
-exact without tokenizer estimation.
+per-bucket cost). The native Pi footer remains intact; the extension contributes
+only the passive Codex 5h/7d rate-limit status.
 
 Codex plan-window tracking is passive: `x-codex-*` response headers and
-`codex.rate_limits` WebSocket events update the persisted snapshot and footer
+`codex.rate_limits` WebSocket events update the persisted snapshot and status
 countdowns during the conversation.
 
 The root `.npmrc` prevents npm from auto-installing Pi peer dependencies when

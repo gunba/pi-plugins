@@ -12,13 +12,6 @@ Automatic continuations after a tool call are sent inside the same run, before c
 - State: `~/.pi/agent/context-guard/` (`settings.json`, `stripped/*.md`).
 - Env: `PI_CONTEXT_GUARD[_ENABLED]`, `PI_CONTEXT_GUARD_MAX_MESSAGE_TOKENS`, `PI_CONTEXT_GUARD_USER_MESSAGES`, `PI_CONTEXT_GUARD_NOTIFY`, `PI_CONTEXT_GUARD_SETTINGS`, `PI_CONTEXT_GUARD_DIR`, `PI_CONTEXT_GUARD_OUTPUT_DIR`.
 
-### Claude effort lift (`claude-effort.ts`)
-
-Pi's `ThinkingLevel` stops at `xhigh`, but Claude Fable 5 and Opus 4.7+ expose a higher `max` effort tier that Pi can't reach (on Fable 5 and opus-4-8, `xhigh` sends effort `"xhigh"`). Until upstream [issue #5361](https://github.com/earendil-works/pi/issues/5361) adds a real `max` level, this rewrites `output_config.effort` on the wire so Pi's five non-off thinking levels map 1:1 onto Anthropic's ladder `low < medium < high < xhigh < max` (so `xhigh` → `max`). It only touches models with the full Anthropic effort ladder (`claude-fable-5`, `claude-opus-4-7/4-8…`), so no model receives an effort it rejects, and it falls through untouched on any error.
-
-- No commands or settings; it self-applies. Activations show in `/pi-fixes` as `claude-effort-remap`.
-- Remove this file once #5361 ships a native `max` level.
-
 ## Effectiveness tracking (`effectiveness.ts`)
 
 Every fix records an activation only when it actually prevents its failure. This is the signal for whether a workaround is still earning its place.

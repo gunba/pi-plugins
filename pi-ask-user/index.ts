@@ -1484,15 +1484,14 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user one focused question with optional multiple-choice answers when progress is blocked by user input or approval. Prefer resolving routine uncertainty with available tools before asking.",
+         "Ask the user for input or approval when progress is blocked. Prefer resolving routine uncertainty with available tools before asking.",
       promptSnippet:
-         "Ask the user one focused question when progress is blocked by needed user input or approval",
+         "Ask the user for input or approval when progress is blocked",
       promptGuidelines: [
          "Use ask_user sparingly when progress is blocked by a user-owned decision, missing permission, or information that cannot be resolved from project context.",
          "Before calling ask_user, gather relevant context with available tools and pass a concise summary via the context field.",
          "Do not use ask_user for routine implementation details, preferences that can be inferred, or questions answerable by reading files, running checks, or consulting available documentation.",
          "For low-risk reversible ambiguity, make a reasonable assumption, state it briefly, and continue instead of asking.",
-         "Ask exactly one focused question per ask_user call; do not combine multiple numbered, multipart, or unrelated questions into one prompt.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
@@ -1516,7 +1515,7 @@ export default function(pi: ExtensionAPI) {
                      ),
                   }),
                ]),
-               { description: "List of options for the user to choose from" },
+               { description: "Distinct options for a real choice; omit options when the question is open-ended" },
             ),
          ),
          allowMultiple: Type.Optional(

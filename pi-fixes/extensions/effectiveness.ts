@@ -37,7 +37,6 @@ const STALE_AFTER_DAYS = 30;
 // never fired — a never-firing fix is the strongest "no longer needed" signal.
 const KNOWN_FIXES: Record<FixId, string> = {
 	"context-guard-strip": "Oversized single-message strip (context-guard)",
-	"claude-effort-remap": "Claude effort lifted to top tier (claude-effort)",
 };
 
 function ensureDir(): boolean {
