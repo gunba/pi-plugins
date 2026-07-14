@@ -62,7 +62,6 @@ export interface BriefSessionState {
 	revision: number;
 	draft?: BriefDocument;
 	status: "draft" | "approved";
-	toolsBeforeBrief?: string[];
 	filePath?: string;
 }
 

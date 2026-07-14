@@ -345,7 +345,6 @@ function clearBriefModeUi(ctx: ExtensionContext): void {
 }
 
 class BriefPresenter {
-	private registered = false;
 	private readonly pi: ExtensionAPI;
 	private readonly getState: () => BriefSessionState;
 	private readonly persistState: () => void;
@@ -361,13 +360,11 @@ class BriefPresenter {
 		this.getState = getState;
 		this.persistState = persistState;
 		this.updateUi = updateUi;
+		this.register();
 	}
 
-	ensureRegistered(): void {
-		if (this.registered) return;
-		this.registered = true;
+	private register(): void {
 		const presenter = this;
-
 		this.pi.registerTool({
 			name: TOOL_NAME,
 			label: "Task Brief",
@@ -446,11 +443,10 @@ class BriefPresenter {
 class BriefController {
 	private state = emptyState();
 	private readonly pi: ExtensionAPI;
-	private readonly presenter: BriefPresenter;
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
-		this.presenter = new BriefPresenter(
+		new BriefPresenter(
 			pi,
 			() => this.state,
 			() => this.persistState(),
@@ -476,20 +472,7 @@ class BriefController {
 
 	restore(ctx: ExtensionContext): void {
 		this.state = latestPersistedState(ctx) ?? emptyState();
-		if (this.state.active) this.activateBriefTools();
 		this.updateUi(ctx);
-	}
-
-	private restoreNormalTools(): void {
-		if (this.state.toolsBeforeBrief)
-			this.pi.setActiveTools(this.state.toolsBeforeBrief);
-	}
-
-	private activateBriefTools(): void {
-		this.presenter.ensureRegistered();
-		const existingTools =
-			this.state.toolsBeforeBrief ?? this.pi.getActiveTools();
-		this.pi.setActiveTools([...new Set([...existingTools, TOOL_NAME])]);
 	}
 
 	async restartWithApprovedBrief(ctx: ExtensionCommandContext): Promise<void> {
@@ -521,11 +504,9 @@ class BriefController {
 
 		const prompt = compileBriefPrompt(snapshot.brief);
 		const title = snapshot.brief.title.trim();
-		const previousTools = this.state.toolsBeforeBrief;
 
 		this.state.active = false;
 		this.state.status = "approved";
-		this.restoreNormalTools();
 		this.persistState();
 		this.updateUi(ctx);
 
@@ -542,8 +523,6 @@ class BriefController {
 		if (result.cancelled) {
 			this.state.active = true;
 			this.state.status = "draft";
-			this.state.toolsBeforeBrief = previousTools;
-			this.activateBriefTools();
 			this.persistState();
 			this.updateUi(ctx);
 			ctx.ui.notify(
@@ -569,8 +548,6 @@ class BriefController {
 				"Starting a new brief will replace the current draft.",
 			);
 			if (!replace) return;
-		} else {
-			this.state.toolsBeforeBrief = this.pi.getActiveTools();
 		}
 
 		this.state.active = true;
@@ -579,7 +556,6 @@ class BriefController {
 		this.state.draft = undefined;
 		this.state.filePath = undefined;
 		this.state.status = "draft";
-		this.activateBriefTools();
 		this.persistState();
 		this.updateUi(ctx);
 

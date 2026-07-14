@@ -63,14 +63,24 @@ function createHarness() {
 	const entries = [];
 	const userMessages = [];
 	const newSessions = [];
+	const registerToolCalls = [];
+	const setActiveToolsCalls = [];
 	let activeTools = ["read", "edit", "write", "ask_user"];
+	let extensionInitializing = true;
 
 	const pi = {
 		registerCommand(name, command) {
 			commands.set(name, command);
 		},
 		registerTool(tool) {
+			assert.equal(
+				extensionInitializing,
+				true,
+				`${tool.name} was registered after extension initialization`,
+			);
+			registerToolCalls.push(tool.name);
 			tools.set(tool.name, tool);
+			if (!activeTools.includes(tool.name)) activeTools.push(tool.name);
 		},
 		registerEntryRenderer() {},
 		on() {},
@@ -81,6 +91,7 @@ function createHarness() {
 			return [...activeTools];
 		},
 		setActiveTools(names) {
+			setActiveToolsCalls.push([...names]);
 			activeTools = [...names];
 		},
 		sendUserMessage(message, options) {
@@ -141,24 +152,48 @@ function createHarness() {
 	};
 
 	briefExtension(pi);
+	extensionInitializing = false;
 	return {
 		commands,
 		tools,
 		entries,
 		userMessages,
 		newSessions,
+		registerToolCalls,
+		setActiveToolsCalls,
 		ctx,
 		cleanup: () => rmSync(cwd, { recursive: true, force: true }),
 		getActiveTools: () => [...activeTools],
 	};
 }
 
-test("/brief preserves research tools, writes the draft, and replaces the current conversation", async (t) => {
+test("/brief keeps provider tool registration and active membership stable", async (t) => {
 	const harness = createHarness();
 	t.after(harness.cleanup);
 	const command = harness.commands.get("brief");
 	assert.ok(command);
-	assert.equal(harness.tools.has("present_brief"), false);
+	assert.deepEqual(harness.registerToolCalls, ["present_brief"]);
+	assert.equal(harness.tools.has("present_brief"), true);
+	assert.deepEqual(harness.getActiveTools(), [
+		"read",
+		"edit",
+		"write",
+		"ask_user",
+		"present_brief",
+	]);
+	assert.deepEqual(harness.setActiveToolsCalls, []);
+
+	const tool = harness.tools.get("present_brief");
+	await assert.rejects(
+		tool.execute(
+			"call-inactive",
+			{ action: "draft", brief: completeBrief() },
+			undefined,
+			undefined,
+			harness.ctx,
+		),
+		/No active brief/,
+	);
 
 	await command.handler("Build the intended capability", harness.ctx);
 
@@ -169,13 +204,12 @@ test("/brief preserves research tools, writes the draft, and replaces the curren
 		"ask_user",
 		"present_brief",
 	]);
-	assert.equal(harness.tools.has("present_brief"), true);
+	assert.deepEqual(harness.registerToolCalls, ["present_brief"]);
+	assert.deepEqual(harness.setActiveToolsCalls, []);
 	assert.match(
 		harness.userMessages[0].message[0].text,
 		/Build the intended capability/,
 	);
-
-	const tool = harness.tools.get("present_brief");
 	const result = await tool.execute(
 		"call-1",
 		{ action: "draft", brief: completeBrief() },
@@ -210,7 +244,10 @@ test("/brief preserves research tools, writes the draft, and replaces the curren
 		"edit",
 		"write",
 		"ask_user",
+		"present_brief",
 	]);
+	assert.deepEqual(harness.registerToolCalls, ["present_brief"]);
+	assert.deepEqual(harness.setActiveToolsCalls, []);
 	assert.equal(harness.newSessions.length, 1);
 	assert.equal(
 		Object.hasOwn(harness.newSessions[0].options, "parentSession"),
