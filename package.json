@@ -15,8 +15,6 @@
   },
   "pi": {
     "extensions": [
-      "./pi-fixes/extensions/effectiveness.ts",
-      "./pi-fixes/extensions/context-guard.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",

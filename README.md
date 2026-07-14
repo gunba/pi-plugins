@@ -4,10 +4,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-fixes` — bundled workarounds for upstream Pi issues, with built-in
-  effectiveness tracking. Covers the oversized single-message guard before
-  provider requests and tool-call continuations (`/context-guard`). `/pi-fixes`
-  reports whether the guard is still firing so it can be retired when obsolete.
 - `pi-codex-compat` — adds Codex-shaped `apply_patch`, `shell_command`,
   `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
   The tool overlay activates only for Codex-like models and preserves unrelated

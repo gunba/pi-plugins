@@ -48,8 +48,6 @@ const MANAGED_GITIGNORE_LINES = [
 	"agent/run-history.jsonl",
 	"agent/codex-usage/",
 	"agent/codex-transport/",
-	"agent/context-guard/",
-	"agent/pi-fixes/",
 	"agent/pi-codex-compat/",
 	"agent/pi-usage/",
 	"agent/memedit/",
