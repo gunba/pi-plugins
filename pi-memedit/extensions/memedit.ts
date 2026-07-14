@@ -235,7 +235,7 @@ let lastStats: MemeditStats | undefined;
 // time. We tick it up on each request rather than reporting a single snapshot.
 let realizedSavingsCost = 0;
 let realizedSavingsCalls = 0;
-let telemetry: MemeditTelemetry = {
+const telemetry: MemeditTelemetry = {
   runs: 0,
   contextTokensBefore: 0,
   tokensSaved: 0,
@@ -822,7 +822,12 @@ function parseDeleteNumbers(text: string): number[] {
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   const jsonText = start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed;
-  const parsed = JSON.parse(jsonText) as { delete?: unknown };
+  let parsed: { delete?: unknown };
+  try {
+    parsed = JSON.parse(jsonText) as { delete?: unknown };
+  } catch (error) {
+    throw new Error("pi-memedit received invalid JSON from the pruning model", { cause: error });
+  }
   const raw = parsed.delete;
   if (!Array.isArray(raw)) return [];
 
