@@ -60,13 +60,12 @@ The dashboard provides:
   isolated session and records a new result generation.
 - **Result publication.** A result file is written atomically before completion
   mail is published.
-- **Blocked-agent oversight.** After root has remained blocked in `wait_agent`
- for ten minutes, a stateless task-agnostic overseer reviews token deltas,
- process CPU deltas, process liveness, beacon progress, and transcript tails. It
- stops agents only when that evidence shows a loop, repeated failure, deadlock,
- impossible wait, or missing process. It runs only while root remains blocked,
- and recent progress keeps an agent active. Decisions appear in the dashboard
- feed.
+- **Programmatic stall detection.** While root is blocked in `wait_agent`, a
+ deadline-driven watchdog tracks transcript writes, token-bearing responses,
+ streamed model output, and tool lifecycle updates for each active leaf task.
+ After ten minutes without observable progress it wakes the main agent with
+ exact telemetry. The main agent must then request a final status or kill the
+ stalled task; no separate overseer model is involved.
 
 ## Configuration
 
@@ -76,8 +75,8 @@ Environment variables:
   `~/.pi/agent/subagents`.
 - `PI_SUBAGENTS_MAX_ACTIVE` — concurrent direct children per parent, default
   `12`.
-- `PI_SUBAGENTS_OVERSEER_INTERVAL_MS` — blocked-agent review interval, default
-  `600000`.
+- `PI_SUBAGENTS_STALL_TIMEOUT_MS` — maximum time without observable progress
+  before the main agent is alerted, default `600000`.
 - `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup,
   default `86400000`.
 - `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows, default `8`.

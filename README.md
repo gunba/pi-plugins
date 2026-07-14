@@ -4,7 +4,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Extensions
 
-- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `shell_command`,
+- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `exec_command`,
   `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
   The tool overlay activates only for Codex-like models and preserves unrelated
   tools. Text-only Codex models receive saved image artifacts and delegate visual
@@ -58,9 +58,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
  `spawn_agent`, `send_message`, `wait_agent`, and `kill_agent`. Parents wait
  event-first while delegated work is active; the user can interrupt waiting and
  stop any subtree. Canonical `/root/...` paths, nested approval, resumable
- sessions, file-backed results, a live transcript dashboard, and a task-agnostic
- blocked-process overseer keep orchestration observable without expanding the
- model tool surface.
+ sessions, file-backed results, a live transcript dashboard, and programmatic
+ stall detection that wakes the main agent for a kill-or-message decision keep
+ orchestration observable without expanding the model tool surface.
 
 ## Install
 

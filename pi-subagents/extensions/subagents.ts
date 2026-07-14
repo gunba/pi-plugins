@@ -42,9 +42,10 @@ import {
 import { terminalRunCanHide } from "./run-lifecycle.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
 import {
-	assessBlockedAgents,
-	type OverseerSnapshot,
-} from "./subagent-overseer.ts";
+	nextProgressDeadline,
+	stalledProgress,
+	type ProgressObservation,
+} from "./subagent-liveness.ts";
 
 // --------------------------------------------------------------------------
 // Constants
@@ -62,8 +63,9 @@ const BASE =
 const VIEW_KEY = "pi-subagents";
 const REFRESH_MS = 1000;
 const INBOX_FALLBACK_MS = 5000;
-const OVERSEER_INTERVAL_MS =
-	positiveEnvInt("PI_SUBAGENTS_OVERSEER_INTERVAL_MS") ?? 600_000;
+const STALL_TIMEOUT_MS =
+	positiveEnvInt("PI_SUBAGENTS_STALL_TIMEOUT_MS") ?? 600_000;
+const PROGRESS_HEARTBEAT_MIN_MS = 5_000;
 const RUN_TTL_MS = positiveEnvInt("PI_SUBAGENTS_RUN_TTL_MS") ?? 86_400_000; // sweep runs older than 24h
 const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
 const MAX_ACTIVE_CHILDREN = positiveEnvInt("PI_SUBAGENTS_MAX_ACTIVE") ?? 12;
@@ -126,9 +128,19 @@ type Mail = {
 	body: string;
 	replyTo?: string;
 	kind?: "request" | "completion" | "attention" | "notice";
+	topic?: "stalled";
+	taskPaths?: string[];
 	approval?: SpawnApproval;
 	approved?: boolean;
 	ts: number;
+};
+
+type TeamEvent = {
+	message: string;
+	kind?: Mail["kind"];
+	topic?: Mail["topic"];
+	from?: string;
+	taskPaths?: string[];
 };
 
 type PendingQuestion = {
@@ -851,18 +863,25 @@ function waitForDirectoryChange(
 
 async function waitForTeamEvent(
 	signal?: AbortSignal,
-): Promise<string | undefined> {
+): Promise<TeamEvent | undefined> {
 	if (signal?.aborted) return undefined;
 	const fresh = claimFresh(SELF);
 	if (fresh) {
 		try {
 			pendingQuestion = pendingQuestionFor(fresh.msg);
-			return `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`;
+			return {
+				message: `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`,
+				kind: fresh.msg.kind,
+				topic: fresh.msg.topic,
+				from: fresh.msg.from,
+				taskPaths: fresh.msg.taskPaths,
+			};
 		} finally {
 			rmSync(fresh.path, { force: true });
 		}
 	}
-	if (activeDescendants(SELF).length === 0) return noWaitWorkMessage(SELF);
+	if (activeDescendants(SELF).length === 0)
+		return { message: noWaitWorkMessage(SELF) };
 	await waitForDirectoryChange(inboxDir(SELF), signal);
 	return waitForTeamEvent(signal);
 }
@@ -1562,28 +1581,36 @@ function registerTools(pi: ExtensionAPI): void {
 					},
 					"No agent work pending",
 				);
+			if (!IS_CHILD) {
+				const stalled = stalledActiveLeaves();
+				if (stalled.length > 0) return stalledWaitResult(stalled);
+			}
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
-			if (!IS_CHILD) scheduleOverseer(ctx);
-			let event: string | undefined;
+			if (!IS_CHILD) scheduleStallWatchdog();
+			let event: TeamEvent | undefined;
 			try {
 				event = await waitForTeamEvent(signal);
 			} finally {
-				if (!IS_CHILD) cancelOverseer();
+				if (!IS_CHILD) cancelStallWatchdog();
 				writeBeacon(SELF, { state: "running", activity: "" });
 			}
 			const interrupted = Boolean(signal?.aborted);
 			if (interrupted) suppressNextCoordinationNudge = true;
 			const message = interrupted
 				? "Wait interrupted by user input."
-				: (event ?? "Wait completed.");
+				: (event?.message ?? "Wait completed.");
 			const request = currentPendingQuestion();
 			const delegationPending = hasTeamWork(SELF);
+			const stalledAttention = event?.topic === "stalled";
 			let nextAction: string;
 			if (request)
 				nextAction = `Call send_message to reply to ${request.from}.`;
 			else if (interrupted)
 				nextAction =
 					"Handle the user input with send_message or kill_agent, then call wait_agent again if work remains.";
+			else if (stalledAttention)
+				nextAction =
+					"Decide now: call send_message for a final status request or kill_agent for each stalled task. Do not call wait_agent again without acting.";
 			else if (delegationPending)
 				nextAction =
 					"Call wait_agent again. Non-coordination tools remain blocked.";
@@ -1594,6 +1621,9 @@ function registerTools(pi: ExtensionAPI): void {
 				{
 					message,
 					request,
+					attention: stalledAttention
+						? { type: "stalled_agents", task_paths: event?.taskPaths ?? [] }
+						: undefined,
 					delegation_pending: delegationPending,
 					next_action: nextAction,
 				},
@@ -1740,16 +1770,44 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 // Child beacons
 // --------------------------------------------------------------------------
 
+let lastProgressHeartbeatAt = 0;
+
+function writeProgressHeartbeat(activity: string, force = false): void {
+	const observedAt = now();
+	if (
+		!force &&
+		observedAt - lastProgressHeartbeatAt < PROGRESS_HEARTBEAT_MIN_MS
+	)
+		return;
+	lastProgressHeartbeatAt = observedAt;
+	writeBeacon(SELF, { state: "running", activity });
+}
+
 function registerChildHooks(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => {
-		writeBeacon(SELF, { state: "running" });
+		writeProgressHeartbeat("", true);
+	});
+	pi.on("turn_start", () => {
+		writeProgressHeartbeat("responding", true);
+	});
+	pi.on("message_update", () => {
+		writeProgressHeartbeat("responding");
 	});
 	pi.on("tool_execution_start", (event) => {
-		const name = (event as { toolName?: string }).toolName;
-		writeBeacon(SELF, { state: "running", activity: name });
+		const name = (event as { toolName?: string }).toolName ?? "tool";
+		writeProgressHeartbeat(name, true);
+	});
+	pi.on("tool_execution_update", (event) => {
+		const name = (event as { toolName?: string }).toolName ?? "tool";
+		writeProgressHeartbeat(name);
+	});
+	pi.on("tool_execution_end", (event) => {
+		const name = (event as { toolName?: string }).toolName ?? "tool";
+		writeProgressHeartbeat(`${name} complete`, true);
 	});
 	pi.on("message_end", (event) => {
 		recordAssistantResponse((event as { message?: unknown }).message);
+		lastProgressHeartbeatAt = now();
 	});
 	pi.on("agent_end", (event) => {
 		lastChildRunMessages = (event as { messages?: unknown[] }).messages ?? [];
@@ -1817,7 +1875,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 
 let uiReady = false;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
-let overseerTimer: ReturnType<typeof setTimeout> | undefined;
+let stallWatchdogTimer: ReturnType<typeof setTimeout> | undefined;
 let lastSig: string | undefined;
 let runDismissed = false;
 let suppressNextCoordinationNudge = false;
@@ -1991,29 +2049,11 @@ async function inspectSubagentCommand(
 	await runDashboard(ctx, target.name);
 }
 
-type OverseerSample = {
-	cpuTicks?: number;
+type ActiveLeafProgress = ProgressObservation & {
+	agent: Beacon;
+	pid?: number;
 	tokens: number;
-	transcriptHash: string;
 };
-
-const overseerSamples = new Map<string, OverseerSample>();
-let overseerRunning = false;
-
-function processCpuTicks(pid: number | undefined): number | undefined {
-	if (!pid || process.platform !== "linux") return undefined;
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		const fields = splitWords(stat.slice(stat.lastIndexOf(")") + 2));
-		const user = Number(fields[11]);
-		const system = Number(fields[12]);
-		return Number.isFinite(user) && Number.isFinite(system)
-			? user + system
-			: undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 function tokenTotal(agent: Beacon): number {
 	return (
@@ -2024,93 +2064,105 @@ function tokenTotal(agent: Beacon): number {
 	);
 }
 
-function isOverseerCandidate(
-	agent: Beacon,
-	hasLiveChild: Set<string>,
-): boolean {
-	return !(
-		agent.name === ROOT_TASK_PATH ||
-		INACTIVE.has(agent.state) ||
-		agent.state === "queued" ||
-		agent.state === "waiting" ||
-		hasLiveChild.has(agent.name) ||
-		now() - agent.startedAt < OVERSEER_INTERVAL_MS
+function sessionProgressAt(name: string): number {
+	const file = latestSessionFile(name);
+	if (!file) return 0;
+	try {
+		return statSync(file).mtimeMs;
+	} catch {
+		return 0;
+	}
+}
+
+function activeLeafProgress(): ActiveLeafProgress[] {
+	const agents = listAgents();
+	const active = agents.filter(
+		(agent) =>
+			agent.name !== ROOT_TASK_PATH &&
+			!INACTIVE.has(agent.state) &&
+			(agent.state === "queued" || isActive(agent.name)),
 	);
+	const liveParents = new Set(
+		active.flatMap((agent) => (agent.parent ? [agent.parent] : [])),
+	);
+	return active
+		.filter(
+			(agent) =>
+				agent.state !== "queued" &&
+				agent.state !== "waiting" &&
+				!liveParents.has(agent.name),
+		)
+		.map((agent) => ({
+			taskPath: agent.name,
+			progressAt: Math.max(agent.updatedAt, sessionProgressAt(agent.name)),
+			agent,
+			pid: activePid(agent.name),
+			tokens: tokenTotal(agent),
+		}));
 }
 
-function snapshotAgent(agent: Beacon): OverseerSnapshot {
-	const pid = activePid(agent.name);
-	const cpuTicks = processCpuTicks(pid);
-	const tokens = tokenTotal(agent);
-	const transcriptTail = readSessionTranscript(
-		latestSessionFile(agent.name),
-		6000,
-	).lines.slice(-40);
-	const transcriptHash = createHash("sha256")
-		.update(transcriptTail.join("\n"))
-		.digest("hex");
-	const previous = overseerSamples.get(agent.name);
-	overseerSamples.set(agent.name, { cpuTicks, tokens, transcriptHash });
-	return {
-		taskPath: agent.name,
-		state: agent.state,
-		activity: agent.activity,
-		runningForMs: now() - agent.startedAt,
-		unchangedForMs: now() - agent.updatedAt,
-		observedUpdatedAt: agent.updatedAt,
-		pid,
-		processAlive: Boolean(pid && processAlive(pid)),
-		cpuTicks,
-		cpuTicksSinceLastCheck:
-			previous?.cpuTicks !== undefined && cpuTicks !== undefined
-				? cpuTicks - previous.cpuTicks
-				: undefined,
-		tokens,
-		tokensSinceLastCheck: previous ? tokens - previous.tokens : undefined,
-		transcriptChangedSinceLastCheck: previous
-			? transcriptHash !== previous.transcriptHash
-			: undefined,
-		transcriptTail,
-	};
-}
-
-function overseerSnapshots(agents: Beacon[]): OverseerSnapshot[] {
-	const hasLiveChild = new Set(
-		agents.flatMap((agent) =>
-			!INACTIVE.has(agent.state) && agent.parent ? [agent.parent] : [],
+function stalledActiveLeaves(observedAt = now()): ActiveLeafProgress[] {
+	const leaves = activeLeafProgress();
+	const stalled = new Set(
+		stalledProgress(leaves, observedAt, STALL_TIMEOUT_MS).map(
+			(observation) => observation.taskPath,
 		),
 	);
-	const snapshots: OverseerSnapshot[] = [];
-	for (const agent of [...agents].sort((a, b) => a.updatedAt - b.updatedAt)) {
-		if (!isOverseerCandidate(agent, hasLiveChild)) continue;
-		if (snapshots.length >= 24) break;
-		snapshots.push(snapshotAgent(agent));
-	}
-	const current = new Set(snapshots.map((snapshot) => snapshot.taskPath));
-	for (const name of overseerSamples.keys())
-		if (!current.has(name)) overseerSamples.delete(name);
-	return snapshots;
+	return leaves.filter((leaf) => stalled.has(leaf.taskPath));
 }
 
-function safeToStop(
-	current: Beacon | undefined,
-	observed: OverseerSnapshot,
-): boolean {
-	if (
-		!current ||
-		INACTIVE.has(current.state) ||
-		current.state === "queued" ||
-		current.state === "waiting" ||
-		current.updatedAt > observed.observedUpdatedAt ||
-		activeChildren(current.name).length > 0 ||
-		tokenTotal(current) > observed.tokens
-	)
-		return false;
-	const latestCpuTicks = processCpuTicks(activePid(current.name));
-	return !(
-		latestCpuTicks !== undefined &&
-		observed.cpuTicks !== undefined &&
-		latestCpuTicks > observed.cpuTicks
+function durationText(durationMs: number): string {
+	const minutes = Math.max(1, Math.floor(durationMs / 60_000));
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const remainder = minutes % 60;
+	return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function stalledAgentDetails(stalled: ActiveLeafProgress[], observedAt = now()) {
+	return stalled.map((item) => ({
+		task_path: item.taskPath,
+		inactive_for_ms: Math.max(0, observedAt - item.progressAt),
+		last_progress_at: new Date(item.progressAt).toISOString(),
+		state: item.agent.state,
+		activity: item.agent.activity || undefined,
+		pid: item.pid,
+		tokens: item.tokens,
+	}));
+}
+
+function stalledAlertBody(
+	stalled: ActiveLeafProgress[],
+	observedAt = now(),
+): string {
+	return [
+		`Programmatic liveness monitor found ${stalled.length} stalled subagent${stalled.length === 1 ? "" : "s"}:`,
+		...stalled.map((item) => {
+			const inactive = durationText(observedAt - item.progressAt);
+			const activity = item.agent.activity
+				? `, last activity ${item.agent.activity}`
+				: "";
+			return `${item.taskPath}: no transcript, token, or runtime-event progress for ${inactive}${activity}; pid ${item.pid ?? "unknown"}, ${item.tokens} recorded tokens`;
+		}),
+		"The main agent must decide whether to request a final status or kill each task.",
+	].join("\n");
+}
+
+function stalledWaitResult(stalled: ActiveLeafProgress[]) {
+	const observedAt = now();
+	const message = stalledAlertBody(stalled, observedAt);
+	return structured(
+		{
+			message,
+			attention: {
+				type: "stalled_agents",
+				agents: stalledAgentDetails(stalled, observedAt),
+			},
+			delegation_pending: true,
+			next_action:
+				"Decide now: call send_message for a final status request or kill_agent for each stalled task. Do not call wait_agent again without acting.",
+		},
+		`Stalled: ${stalled.map((item) => item.taskPath).join(", ")}`,
 	);
 }
 
@@ -2122,73 +2174,49 @@ function rootIsBlocked(): boolean {
 	);
 }
 
-async function runOverseer(ctx: ExtensionContext): Promise<void> {
-	if (!rootIsBlocked() || overseerRunning) return;
-	overseerRunning = true;
-	try {
-		const agents = listAgents();
-		const snapshots = overseerSnapshots(agents);
-		if (!snapshots.length) return;
-		const decisions = await assessBlockedAgents(ctx, snapshots);
-		if (!rootIsBlocked()) return;
-		const candidates = new Map(
-			snapshots.map((snapshot) => [snapshot.taskPath, snapshot]),
-		);
-		const stopped: Array<{ taskPath: string; reason: string; result: string }> =
-			[];
-		for (const decision of decisions) {
-			const observed = candidates.get(decision.taskPath);
-			if (!decision.blocked || !observed) continue;
-			const current = resolveAgent(decision.taskPath);
-			if (!safeToStop(current, observed)) continue;
-			const result = killAgents(
-				decision.taskPath,
-				`overseer: ${decision.reason}`,
-			).join("; ");
-			stopped.push({
-				taskPath: decision.taskPath,
-				reason: decision.reason,
-				result,
-			});
-		}
-		if (stopped.length) {
-			appendFeed(
-				`overseer: stopped ${stopped.map((item) => item.taskPath).join(", ")}`,
-			);
-			post({
-				id: rid(),
-				from: stopped[0].taskPath,
-				to: ROOT_TASK_PATH,
-				body: `Overseer stopped blocked agents:\n${stopped.map((item) => `${item.taskPath}: ${item.reason} (${item.result})`).join("\n")}`,
-				kind: "notice",
-				ts: now(),
-			});
-			refreshView(ctx);
-		} else {
-			appendFeed(`overseer: checked ${snapshots.length}; no blocked agents`);
-		}
-	} catch (error) {
-		appendFeed(
-			`overseer: check failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	} finally {
-		overseerRunning = false;
+function postStalledAlert(stalled: ActiveLeafProgress[]): void {
+	if (stalled.length === 0) return;
+	const taskPaths = stalled.map((item) => item.taskPath);
+	const body = stalledAlertBody(stalled);
+	appendFeed(`liveness: stalled ${taskPaths.join(", ")}`);
+	post({
+		id: rid(),
+		from: taskPaths[0] ?? ROOT_TASK_PATH,
+		to: ROOT_TASK_PATH,
+		body,
+		kind: "attention",
+		topic: "stalled",
+		taskPaths,
+		ts: now(),
+	});
+}
+
+function runStallWatchdog(): void {
+	if (!rootIsBlocked()) return;
+	const stalled = stalledActiveLeaves();
+	if (stalled.length > 0) {
+		postStalledAlert(stalled);
+		return;
 	}
+	scheduleStallWatchdog();
 }
 
-function cancelOverseer(): void {
-	if (overseerTimer) clearTimeout(overseerTimer);
-	overseerTimer = undefined;
+function cancelStallWatchdog(): void {
+	if (stallWatchdogTimer) clearTimeout(stallWatchdogTimer);
+	stallWatchdogTimer = undefined;
 }
 
-function scheduleOverseer(ctx: ExtensionContext): void {
-	if (overseerTimer || !rootIsBlocked()) return;
-	overseerTimer = setTimeout(async () => {
-		overseerTimer = undefined;
-		await runOverseer(ctx);
-		if (rootIsBlocked()) scheduleOverseer(ctx);
-	}, OVERSEER_INTERVAL_MS);
-	overseerTimer.unref();
+function scheduleStallWatchdog(): void {
+	if (stallWatchdogTimer || !rootIsBlocked()) return;
+	const leaves = activeLeafProgress();
+	const deadline = nextProgressDeadline(leaves, STALL_TIMEOUT_MS);
+	if (deadline === undefined) return;
+	const delay = Math.max(1, Math.min(deadline - now(), 2_147_483_647));
+	stallWatchdogTimer = setTimeout(() => {
+		stallWatchdogTimer = undefined;
+		runStallWatchdog();
+	}, delay);
+	stallWatchdogTimer.unref();
 }
 
 // --------------------------------------------------------------------------
@@ -2211,7 +2239,7 @@ export default function (pi: ExtensionAPI): void {
 			const pid = child.pid;
 			if (pid) killPidTree(pid);
 		}
-		cancelOverseer();
+		cancelStallWatchdog();
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = undefined;
 		if (!IS_CHILD && runDir) rmSync(join(runDir, ".root-pid"), { force: true });

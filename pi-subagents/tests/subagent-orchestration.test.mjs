@@ -417,6 +417,7 @@ test("upward messages block for an automatic parent reply", async () => {
 		join(runDir, "run.json"),
 		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
 	);
+	const queryNow = Date.now();
 	for (const beacon of [
 		{
 			name: "/root",
@@ -424,8 +425,8 @@ test("upward messages block for an automatic parent reply", async () => {
 			parent: null,
 			taskName: "",
 			state: "running",
-			startedAt: 1,
-			updatedAt: 1,
+			startedAt: queryNow,
+			updatedAt: queryNow,
 		},
 		{
 			name: "/root/research",
@@ -433,8 +434,8 @@ test("upward messages block for an automatic parent reply", async () => {
 			parent: "/root",
 			taskName: "Research",
 			state: "running",
-			startedAt: 2,
-			updatedAt: 2,
+			startedAt: queryNow,
+			updatedAt: queryNow,
 		},
 	]) {
 		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
@@ -505,6 +506,7 @@ test("model tools route exclusively by canonical task path", async () => {
 		join(runDir, "run.json"),
 		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
 	);
+	const runtimeNow = Date.now();
 	for (const beacon of [
 		{
 			name: "/root",
@@ -512,8 +514,8 @@ test("model tools route exclusively by canonical task path", async () => {
 			parent: null,
 			taskName: "",
 			state: "running",
-			startedAt: 1,
-			updatedAt: 1,
+			startedAt: runtimeNow,
+			updatedAt: runtimeNow,
 		},
 		{
 			name: "/root/research",
@@ -521,8 +523,8 @@ test("model tools route exclusively by canonical task path", async () => {
 			parent: "/root",
 			taskName: "Research the implementation",
 			state: "interrupted",
-			startedAt: 2,
-			updatedAt: 2,
+			startedAt: runtimeNow,
+			updatedAt: runtimeNow,
 		},
 		{
 			name: "/root/branch/deep",
@@ -530,8 +532,8 @@ test("model tools route exclusively by canonical task path", async () => {
 			parent: "/root/branch",
 			taskName: "Deep running task",
 			state: "running",
-			startedAt: 3,
-			updatedAt: 3,
+			startedAt: runtimeNow,
+			updatedAt: runtimeNow,
 		},
 	]) {
 		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
@@ -590,15 +592,15 @@ test("model tools route exclusively by canonical task path", async () => {
 	assert.equal(readdirSync(inbox).length, 1);
 	const realSetTimeout = globalThis.setTimeout;
 	const realClearTimeout = globalThis.clearTimeout;
-	let overseerHandle;
-	let overseerCleared = false;
+	let stallWatchdogHandle;
+	let stallWatchdogCleared = false;
 	globalThis.setTimeout = (callback, delay, ...args) => {
 		const handle = realSetTimeout(callback, delay, ...args);
-		if (delay === 600_000) overseerHandle = handle;
+		if (delay >= 590_000) stallWatchdogHandle = handle;
 		return handle;
 	};
 	globalThis.clearTimeout = (handle) => {
-		if (handle === overseerHandle) overseerCleared = true;
+		if (handle === stallWatchdogHandle) stallWatchdogCleared = true;
 		return realClearTimeout(handle);
 	};
 	const waitController = new AbortController();
@@ -613,8 +615,15 @@ test("model tools route exclusively by canonical task path", async () => {
 		globalThis.setTimeout = realSetTimeout;
 		globalThis.clearTimeout = realClearTimeout;
 	}
-	assert.ok(overseerHandle, "overseer was not scheduled by blocking wait");
-	assert.equal(overseerCleared, true, "overseer survived after wait ended");
+	assert.ok(
+		stallWatchdogHandle,
+		"stall watchdog was not scheduled by blocking wait",
+	);
+	assert.equal(
+		stallWatchdogCleared,
+		true,
+		"stall watchdog survived after wait ended",
+	);
 	assert.deepEqual(toolPayload(waitResult), {
 		message: "Wait interrupted by user input.",
 		delegation_pending: true,
@@ -625,6 +634,135 @@ test("model tools route exclusively by canonical task path", async () => {
 		.get("kill_agent")
 		.execute("kill", { target: "/root/research" }, undefined, undefined, {});
 	assert.match(toolPayload(killed).message, /already interrupted/i);
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("stalled leaf telemetry is returned to the main agent for a decision", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-stalled-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	const staleAt = Date.now() - 700_000;
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+		{
+			name: "/root/stalled",
+			taskId: "task-stalled",
+			parent: "/root",
+			taskName: "Stalled task",
+			state: "running",
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+		if (beacon.name !== "/root") {
+			mkdirSync(join(dir, ".active"), { recursive: true });
+			writeFileSync(join(dir, ".active", "pid"), String(process.pid));
+		}
+	}
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: stalledSubagents } = await import(
+		`../extensions/subagents.ts?stalled=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const tools = [];
+	stalledSubagents({
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
+	});
+	const waitAgent = tools.find((tool) => tool.name === "wait_agent");
+	const result = await waitAgent.execute(
+		"wait-stalled",
+		{},
+		undefined,
+		undefined,
+		{},
+	);
+	const payload = toolPayload(result);
+	assert.equal(payload.attention.type, "stalled_agents");
+	assert.deepEqual(
+		payload.attention.agents.map((agent) => agent.task_path),
+		["/root/stalled"],
+	);
+	assert.match(payload.next_action, /send_message.*kill_agent/i);
+	assert.doesNotMatch(payload.next_action, /^Call wait_agent/);
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("stall watchdog wakes wait_agent without a separate overseer model", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-watchdog-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	const startedAt = Date.now();
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt,
+			updatedAt: startedAt,
+		},
+		{
+			name: "/root/watchdog",
+			taskId: "task-watchdog",
+			parent: "/root",
+			taskName: "Watchdog task",
+			state: "running",
+			startedAt,
+			updatedAt: startedAt,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+		if (beacon.name !== "/root") {
+			mkdirSync(join(dir, ".active"), { recursive: true });
+			writeFileSync(join(dir, ".active", "pid"), String(process.pid));
+		}
+	}
+	process.env.PI_SUBAGENT_RUN = runDir;
+	process.env.PI_SUBAGENTS_STALL_TIMEOUT_MS = "20";
+	const { default: watchdogSubagents } = await import(
+		`../extensions/subagents.ts?watchdog=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	delete process.env.PI_SUBAGENTS_STALL_TIMEOUT_MS;
+	const tools = [];
+	watchdogSubagents({
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
+	});
+	const waitAgent = tools.find((tool) => tool.name === "wait_agent");
+	const controller = new AbortController();
+	const safety = setTimeout(() => controller.abort(), 1000);
+	const result = await waitAgent.execute(
+		"wait-watchdog",
+		{},
+		controller.signal,
+		undefined,
+		{},
+	);
+	clearTimeout(safety);
+	const payload = toolPayload(result);
+	assert.equal(payload.attention.type, "stalled_agents");
+	assert.deepEqual(payload.attention.task_paths, ["/root/watchdog"]);
+	assert.match(payload.next_action, /send_message.*kill_agent/i);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
