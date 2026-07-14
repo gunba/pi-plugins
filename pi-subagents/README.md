@@ -10,7 +10,9 @@ a resumable Pi session.
   `<caller-path>/<task_name>`.
 - `send_message(target, message)` sends a short message. Downward messages
  instruct or resume a child; upward messages wait for the ancestor's answer.
-- `wait_agent()` waits until a child sends mail, finishes, or the user
+- `restart_agent(target, message)` terminates a stuck process and resumes its
+  persisted conversation in a fresh process with a recovery instruction.
+- `wait_agent()` waits until a child sends mail, finishes, stalls, or the user
   interrupts.
 - `kill_agent(target)` stops one task subtree. Target `*` stops every direct
   child subtree and clears their pending mail.
@@ -21,8 +23,8 @@ address every descendant; child agents can address root, their parent, and
 their own subtree.
 
 The orchestration loop is `spawn_agent` → `wait_agent` → optionally
-`send_message` → `wait_agent`. After the user interrupts a wait,
-`kill_agent("*")` abandons all delegated work.
+`send_message` or `restart_agent` → `wait_agent`. After the user interrupts a
+wait, `kill_agent("*")` abandons all delegated work.
 
 ## Dashboard
 
@@ -57,15 +59,17 @@ The dashboard provides:
 - **Nested approval.** Root decides every nested `spawn_agent` request through a
  structured `send_message` tool call before the child is created.
 - **Resumable tasks.** Sending a message to a terminal task reopens the same
-  isolated session and records a new result generation.
+  isolated session. `restart_agent` also terminates an unresponsive active
+  process and resumes that same session as a new result generation.
 - **Result publication.** A result file is written atomically before completion
   mail is published.
 - **Programmatic stall detection.** While root is blocked in `wait_agent`, a
  deadline-driven watchdog tracks transcript writes, token-bearing responses,
  streamed model output, and tool lifecycle updates for each active leaf task.
  After ten minutes without observable progress it wakes the main agent with
- exact telemetry. The main agent must then request a final status or kill the
- stalled task; no separate overseer model is involved.
+ exact telemetry. The main agent must then restart the persisted conversation
+ in a fresh process or kill the stalled task; no separate overseer model is
+ involved.
 
 ## Configuration
 

@@ -54,12 +54,12 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   live context and the session log, including optional live continuation
   pruning during long runs; follows its global setting and is compatible with
   Anthropic OAuth prune calls.
-- `pi-subagents` — runs isolated background `pi` agents with four primitives:
- `spawn_agent`, `send_message`, `wait_agent`, and `kill_agent`. Parents wait
+- `pi-subagents` — runs isolated background `pi` agents with five primitives:
+ `spawn_agent`, `send_message`, `restart_agent`, `wait_agent`, and `kill_agent`. Parents wait
  event-first while delegated work is active; the user can interrupt waiting and
  stop any subtree. Canonical `/root/...` paths, nested approval, resumable
  sessions, file-backed results, a live transcript dashboard, and programmatic
- stall detection that wakes the main agent for a kill-or-message decision keep
+ stall detection that wakes the main agent for a restart-or-kill decision keep
  orchestration observable without expanding the model tool surface.
 
 ## Install

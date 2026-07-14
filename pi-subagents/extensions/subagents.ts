@@ -73,7 +73,7 @@ const ASSISTANT_PREVIEW_MAX = 2000;
 const ROOT_TASK_PATH = "/root";
 const RUN_SCHEMA_VERSION = 2;
 const COORDINATION_NOTICE =
-	'Delegated work is pending. Call wait_agent. If the user asks to stop, call kill_agent with target "*".';
+	'Delegated work is pending. Call wait_agent. If a task stalls, call restart_agent to resume its session in a fresh process or kill_agent to abandon it.';
 const INACTIVE = new Set(["completed", "error", "interrupted", "hard_killed"]);
 
 const THINKING_LEVELS = [
@@ -1000,20 +1000,24 @@ function launchAgent(
 	kids.set(name, child);
 	rmSync(launchFile(name), { force: true });
 	const finishUnexpected = (state: "error", body: string) => {
-		rmSync(activeLock(name), { recursive: true, force: true });
 		const b = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+		if (b && b.generation !== request.generation) {
+			if (kids.get(name) === child) kids.delete(name);
+			return;
+		}
+		rmSync(activeLock(name), { recursive: true, force: true });
 		if (!b || !INACTIVE.has(b.state)) {
 			writeBeacon(name, { state, errorMessage: body });
 			post({
 				id: rid(),
 				from: name,
-				to: SELF,
+				to: request.notify,
 				body,
 				kind: "attention",
 				ts: now(),
 			});
 		}
-		kids.delete(name);
+		if (kids.get(name) === child) kids.delete(name);
 		setTimeout(() => drainLaunchQueue(ctx), 0).unref();
 	};
 	child.on("error", (error) =>
@@ -1042,6 +1046,7 @@ function runAgent(
 	taskName = "",
 	id?: string,
 	thinking?: ThinkingLevel,
+	generation?: number,
 ): boolean {
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 	const request: LaunchRequest = {
@@ -1051,8 +1056,9 @@ function runAgent(
 		taskId: id ?? beacon?.taskId ?? taskId(),
 		thinking: thinking ?? beacon?.thinking ?? piThinkingLevel,
 		parent: fresh ? SELF : (beacon?.parent ?? SELF),
-		notify: SELF,
-		generation: fresh ? 1 : (beacon?.generation ?? 1) + 1,
+		notify: fresh ? SELF : (beacon?.parent ?? SELF),
+		generation:
+			generation ?? (fresh ? 1 : (beacon?.generation ?? 1) + 1),
 	};
 	if (isActive(name)) return false;
 	if (fresh && runningDirectChildren().length >= MAX_ACTIVE_CHILDREN) {
@@ -1128,6 +1134,90 @@ function killPidTree(pid: number): boolean {
 			return false;
 		}
 	}
+}
+
+type RestartOutcome = {
+	ok: boolean;
+	message: string;
+	generation?: number;
+};
+
+function restartAgentProcess(
+	name: string,
+	prompt: string,
+	ctx: ExtensionContext,
+): RestartOutcome {
+	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+	if (!beacon) return { ok: false, message: `${name}: not found` };
+	if (beacon.state === "queued")
+		return {
+			ok: false,
+			message: `${name}: queued tasks have no conversation to resume`,
+		};
+	if (!latestSessionFile(name))
+		return {
+			ok: false,
+			message: `${name}: no persisted session is available to resume`,
+		};
+
+	const previousGeneration = beacon.generation ?? 1;
+	const nextGeneration = previousGeneration + 1;
+	const trackedChild = kids.get(name);
+	const pid = activePid(name) ?? trackedChild?.pid;
+	const live = Boolean(pid && processAlive(pid));
+
+	// Advance the generation before terminating the old process. Its exit callback
+	// then cannot overwrite the replacement process's lock or beacon.
+	writeBeacon(name, {
+		generation: nextGeneration,
+		state: "restarting",
+		activity: "restarting",
+		resultFile: "",
+		errorMessage: "",
+	});
+	if (live && pid && !killPidTree(pid) && processAlive(pid)) {
+		writeBeacon(name, {
+			generation: previousGeneration,
+			state: beacon.state,
+			activity: beacon.activity ?? "",
+			errorMessage: "restart failed: process could not be terminated",
+		});
+		return {
+			ok: false,
+			message: `${name}: process ${pid} could not be terminated`,
+		};
+	}
+
+	if (kids.get(name) === trackedChild) kids.delete(name);
+	rmSync(activeLock(name), { recursive: true, force: true });
+	rmSync(launchFile(name), { force: true });
+	const accepted = runAgent(
+		name,
+		prompt,
+		ctx,
+		false,
+		beacon.taskName,
+		beacon.taskId,
+		beacon.thinking,
+		nextGeneration,
+	);
+	if (!accepted) {
+		writeBeacon(name, {
+			state: "error",
+			activity: "",
+			errorMessage: "restart failed: replacement launch was rejected",
+		});
+		return {
+			ok: false,
+			message: `${name}: replacement launch was rejected`,
+		};
+	}
+	appendFeed(`${SELF}→${name}: restarted generation ${nextGeneration}`);
+	return {
+		ok: true,
+		message: `${name}: resumed session in generation ${nextGeneration}`,
+		generation: nextGeneration,
+	};
 }
 
 function removePendingFrom(sender: string, recipient = SELF): number {
@@ -1318,7 +1408,7 @@ function registerTools(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
 		promptGuidelines: [
-			"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, wait_agent, and kill_agent are allowed.",
+			"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, restart_agent, wait_agent, and kill_agent are allowed.",
 		],
 		parameters: Type.Object(
 			{
@@ -1544,6 +1634,64 @@ function registerTools(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "restart_agent",
+		label: "Restart agent",
+		description:
+			"Terminate a stuck task process and resume its persisted conversation in a fresh process.",
+		parameters: Type.Object(
+			{
+				target: Type.String({
+					description:
+						"Absolute /root/... task path or path relative to the caller.",
+				}),
+				message: Type.String({
+					description:
+						"Recovery instruction appended to the resumed conversation.",
+					maxLength: 4000,
+				}),
+			},
+			{ additionalProperties: false },
+		),
+		executionMode: "sequential",
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (!runDir) return structured({ error: "No collaboration run exists." });
+			const target = resolveAuthorizedAgent(params.target);
+			if (
+				!target ||
+				!canControlTask(target) ||
+				target.name === ROOT_TASK_PATH ||
+				target.name === SELF
+			)
+				return structured({
+					error: `Unknown or invalid restart target ${params.target}.`,
+				});
+			const message = params.message.trim();
+			if (!message) return structured({ error: "message must not be empty" });
+			if (message.length > 4000)
+				return structured({ error: "message must be at most 4000 characters" });
+			const outcome = restartAgentProcess(target.name, message, ctx);
+			refreshView(ctx);
+			if (!outcome.ok) return structured({ error: outcome.message });
+			return structured(
+				{
+					task_name: target.name,
+					generation: outcome.generation,
+					resumed_session: true,
+					delegation_pending: true,
+					next_action: "Call wait_agent for the restarted task.",
+				},
+				outcome.message,
+			);
+		},
+		renderCall(args, theme) {
+			return new Text(theme.fg("warning", `Restart ${args.target}`), 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			return renderToolResult(result, isPartial, theme);
+		},
+	});
+
+	pi.registerTool({
 		name: "wait_agent",
 		label: "Wait for agents",
 		description:
@@ -1607,10 +1755,10 @@ function registerTools(pi: ExtensionAPI): void {
 				nextAction = `Call send_message to reply to ${request.from}.`;
 			else if (interrupted)
 				nextAction =
-					"Handle the user input with send_message or kill_agent, then call wait_agent again if work remains.";
+					"Handle the user input with send_message, restart_agent, or kill_agent, then call wait_agent again if work remains.";
 			else if (stalledAttention)
 				nextAction =
-					"Decide now: call send_message for a final status request or kill_agent for each stalled task. Do not call wait_agent again without acting.";
+					"Decide now: call restart_agent to resume each stalled session in a fresh process, or kill_agent to abandon it. Do not call wait_agent again without acting.";
 			else if (delegationPending)
 				nextAction =
 					"Call wait_agent again. Non-coordination tools remain blocked.";
@@ -1723,6 +1871,7 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 		const coordinationTools = [
 			"spawn_agent",
 			"send_message",
+			"restart_agent",
 			"wait_agent",
 			"kill_agent",
 		];
@@ -2144,7 +2293,7 @@ function stalledAlertBody(
 				: "";
 			return `${item.taskPath}: no transcript, token, or runtime-event progress for ${inactive}${activity}; pid ${item.pid ?? "unknown"}, ${item.tokens} recorded tokens`;
 		}),
-		"The main agent must decide whether to request a final status or kill each task.",
+		"The main agent must decide whether to restart each session in a fresh process or abandon it.",
 	].join("\n");
 }
 
@@ -2160,7 +2309,7 @@ function stalledWaitResult(stalled: ActiveLeafProgress[]) {
 			},
 			delegation_pending: true,
 			next_action:
-				"Decide now: call send_message for a final status request or kill_agent for each stalled task. Do not call wait_agent again without acting.",
+				"Decide now: call restart_agent to resume each stalled session in a fresh process, or kill_agent to abandon it. Do not call wait_agent again without acting.",
 		},
 		`Stalled: ${stalled.map((item) => item.taskPath).join(", ")}`,
 	);

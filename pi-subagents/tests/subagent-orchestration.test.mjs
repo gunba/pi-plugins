@@ -122,7 +122,7 @@ test("deep canonical paths use fixed-size storage keys", () => {
 	);
 });
 
-test("root registration exposes only the four orchestration primitives", () => {
+test("root registration exposes only the five orchestration primitives", () => {
 	const tools = [];
 	const handlers = [];
 	subagents({
@@ -134,7 +134,13 @@ test("root registration exposes only the four orchestration primitives", () => {
 	});
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["spawn_agent", "send_message", "wait_agent", "kill_agent"],
+		[
+			"spawn_agent",
+			"send_message",
+			"restart_agent",
+			"wait_agent",
+			"kill_agent",
+		],
 	);
 	assert.ok(handlers.some(({ event }) => event === "agent_settled"));
 	assert.ok(handlers.some(({ event }) => event === "thinking_level_select"));
@@ -148,14 +154,14 @@ test("root registration exposes only the four orchestration primitives", () => {
 		"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
 	);
 	assert.deepEqual(byName.get("spawn_agent").promptGuidelines, [
-		"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, wait_agent, and kill_agent are allowed.",
+		"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, restart_agent, wait_agent, and kill_agent are allowed.",
 	]);
 	assert.equal(
 		byName.get("wait_agent").promptSnippet,
 		"Wait for delegated work; repeat while delegation_pending is true",
 	);
 	assert.equal(byName.get("wait_agent").promptGuidelines, undefined);
-	for (const name of ["send_message", "kill_agent"]) {
+	for (const name of ["send_message", "restart_agent", "kill_agent"]) {
 		assert.equal(byName.get(name).promptSnippet, undefined);
 		assert.equal(byName.get(name).promptGuidelines, undefined);
 	}
@@ -166,6 +172,10 @@ test("root registration exposes only the four orchestration primitives", () => {
 	assert.deepEqual(
 		Object.keys(byName.get("send_message").parameters.properties),
 		["target", "message", "approve_spawn"],
+	);
+	assert.deepEqual(
+		Object.keys(byName.get("restart_agent").parameters.properties),
+		["target", "message"],
 	);
 	assert.deepEqual(
 		Object.keys(byName.get("wait_agent").parameters.properties),
@@ -180,7 +190,7 @@ test("root registration exposes only the four orchestration primitives", () => {
 	assert.equal(typeof byName.get("spawn_agent").renderResult, "function");
 });
 
-test("child registration exposes the same four orchestration primitives", async () => {
+test("child registration exposes the same five orchestration primitives", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
 	writeFileSync(
 		join(runDir, "run.json"),
@@ -202,7 +212,13 @@ test("child registration exposes the same four orchestration primitives", async 
 	});
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["spawn_agent", "send_message", "wait_agent", "kill_agent"],
+		[
+			"spawn_agent",
+			"send_message",
+			"restart_agent",
+			"wait_agent",
+			"kill_agent",
+		],
 	);
 	rmSync(runDir, { recursive: true, force: true });
 });
@@ -628,7 +644,7 @@ test("model tools route exclusively by canonical task path", async () => {
 		message: "Wait interrupted by user input.",
 		delegation_pending: true,
 		next_action:
-			"Handle the user input with send_message or kill_agent, then call wait_agent again if work remains.",
+			"Handle the user input with send_message, restart_agent, or kill_agent, then call wait_agent again if work remains.",
 	});
 	const killed = await byName
 		.get("kill_agent")
@@ -696,7 +712,7 @@ test("stalled leaf telemetry is returned to the main agent for a decision", asyn
 		payload.attention.agents.map((agent) => agent.task_path),
 		["/root/stalled"],
 	);
-	assert.match(payload.next_action, /send_message.*kill_agent/i);
+	assert.match(payload.next_action, /restart_agent.*kill_agent/i);
 	assert.doesNotMatch(payload.next_action, /^Call wait_agent/);
 	rmSync(runDir, { recursive: true, force: true });
 });
@@ -762,7 +778,7 @@ test("stall watchdog wakes wait_agent without a separate overseer model", async 
 	const payload = toolPayload(result);
 	assert.equal(payload.attention.type, "stalled_agents");
 	assert.deepEqual(payload.attention.task_paths, ["/root/watchdog"]);
-	assert.match(payload.next_action, /send_message.*kill_agent/i);
+	assert.match(payload.next_action, /restart_agent.*kill_agent/i);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
