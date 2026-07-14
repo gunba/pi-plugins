@@ -753,7 +753,7 @@ test("stall watchdog wakes wait_agent without a separate overseer model", async 
 		}
 	}
 	process.env.PI_SUBAGENT_RUN = runDir;
-	process.env.PI_SUBAGENTS_STALL_TIMEOUT_MS = "20";
+	process.env.PI_SUBAGENTS_STALL_TIMEOUT_MS = "250";
 	const { default: watchdogSubagents } = await import(
 		`../extensions/subagents.ts?watchdog=${Date.now()}`
 	);
@@ -764,9 +764,18 @@ test("stall watchdog wakes wait_agent without a separate overseer model", async 
 		registerTool: (tool) => tools.push(tool),
 		on: () => {},
 	});
+	const watchdogBeaconPath = join(
+		runDir,
+		"tasks",
+		taskStorageKey("/root/watchdog"),
+		"beacon.json",
+	);
+	const watchdogBeacon = parseJson(readFileSync(watchdogBeaconPath, "utf8"));
+	watchdogBeacon.updatedAt = Date.now();
+	writeFileSync(watchdogBeaconPath, JSON.stringify(watchdogBeacon));
 	const waitAgent = tools.find((tool) => tool.name === "wait_agent");
 	const controller = new AbortController();
-	const safety = setTimeout(() => controller.abort(), 1000);
+	const safety = setTimeout(() => controller.abort(), 2000);
 	const result = await waitAgent.execute(
 		"wait-watchdog",
 		{},
