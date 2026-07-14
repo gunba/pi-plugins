@@ -256,11 +256,7 @@ test("structured nested spawn denial leaves no child task storage", async () => 
 	const requestFile = readdirSync(rootInbox)[0];
 	const request = parseJson(readFileSync(join(rootInbox, requestFile), "utf8"));
 	assert.equal(request.approval.thinking, "high");
-	const researchDir = join(
-		runDir,
-		"tasks",
-		taskStorageKey("/root/research"),
-	);
+	const researchDir = join(runDir, "tasks", taskStorageKey("/root/research"));
 	const waitingBeacon = parseJson(
 		readFileSync(join(researchDir, "beacon.json"), "utf8"),
 	);
@@ -363,7 +359,10 @@ test("root decides nested spawn approval through send_message", async () => {
 	const event = await wait.execute("wait", {}, undefined, undefined, {});
 	const eventPayload = toolPayload(event);
 	assert.ok(eventPayload.message.includes("nested spawn request"));
-	assert.equal(eventPayload.request.approval.taskPath, "/root/research/evidence");
+	assert.equal(
+		eventPayload.request.approval.taskPath,
+		"/root/research/evidence",
+	);
 	const send = tools.find((tool) => tool.name === "send_message");
 	const missingDecision = await send.execute(
 		"send",

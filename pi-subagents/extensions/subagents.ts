@@ -773,7 +773,6 @@ function spawnApprovalDetails(msg: { approval?: SpawnApproval }):
 	return msg.approval?.type === "spawn" ? msg.approval : undefined;
 }
 
-
 function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 	if (msg.kind !== "request") return undefined;
 	return {
@@ -1429,7 +1428,8 @@ function registerTools(pi: ExtensionAPI): void {
 				pendingQuestion?.from === target.name ? pendingQuestion : undefined;
 			if (params.approve_spawn !== undefined && !pendingReply?.approval)
 				return structured({
-					error: "approve_spawn is only valid for a pending nested spawn request",
+					error:
+						"approve_spawn is only valid for a pending nested spawn request",
 				});
 			if (pendingReply?.approval && params.approve_spawn === undefined)
 				return structured({
@@ -1938,7 +1938,6 @@ async function inspectSubagentCommand(
 	}
 	await runDashboard(ctx, target.name);
 }
-
 
 type OverseerSample = {
 	cpuTicks?: number;
