@@ -143,12 +143,22 @@ test("root registration exposes only the four orchestration primitives", () => {
 		false,
 	);
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	assert.ok(
-		tools.every(
-			(tool) =>
-				tool.promptSnippet === undefined && tool.promptGuidelines === undefined,
-		),
+	assert.equal(
+		byName.get("spawn_agent").promptSnippet,
+		"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
 	);
+	assert.deepEqual(byName.get("spawn_agent").promptGuidelines, [
+		"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, wait_agent, and kill_agent are allowed.",
+	]);
+	assert.equal(
+		byName.get("wait_agent").promptSnippet,
+		"Wait for delegated work; repeat while delegation_pending is true",
+	);
+	assert.equal(byName.get("wait_agent").promptGuidelines, undefined);
+	for (const name of ["send_message", "kill_agent"]) {
+		assert.equal(byName.get(name).promptSnippet, undefined);
+		assert.equal(byName.get(name).promptGuidelines, undefined);
+	}
 	assert.deepEqual(
 		Object.keys(byName.get("spawn_agent").parameters.properties),
 		["task_name", "message", "thinking"],
@@ -607,6 +617,9 @@ test("model tools route exclusively by canonical task path", async () => {
 	assert.equal(overseerCleared, true, "overseer survived after wait ended");
 	assert.deepEqual(toolPayload(waitResult), {
 		message: "Wait interrupted by user input.",
+		delegation_pending: true,
+		next_action:
+			"Handle the user input with send_message or kill_agent, then call wait_agent again if work remains.",
 	});
 	const killed = await byName
 		.get("kill_agent")

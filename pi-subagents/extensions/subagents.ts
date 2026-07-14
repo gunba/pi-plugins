@@ -1296,6 +1296,11 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "spawn_agent",
 		label: "Spawn agent",
 		description: "Start an isolated child agent.",
+		promptSnippet:
+			"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
+		promptGuidelines: [
+			"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, wait_agent, and kill_agent are allowed.",
+		],
 		parameters: Type.Object(
 			{
 				task_name: Type.String({
@@ -1372,7 +1377,13 @@ function registerTools(pi: ExtensionAPI): void {
 				join(agentDir(reservedPath), "beacon.json"),
 			)?.state;
 			return structured(
-				{ task_name: reservedPath, thinking },
+				{
+					task_name: reservedPath,
+					thinking,
+					delegation_pending: true,
+					next_action:
+						"Call wait_agent. Non-coordination tools are blocked while delegated work remains.",
+				},
 				`${state === "queued" ? "Queued" : "Spawned"} ${reservedPath}`,
 			);
 		},
@@ -1518,22 +1529,37 @@ function registerTools(pi: ExtensionAPI): void {
 		label: "Wait for agents",
 		description:
 			"Wait until a child sends a message, finishes, or the user interrupts.",
+		promptSnippet:
+			"Wait for delegated work; repeat while delegation_pending is true",
 		parameters: Type.Object({}, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, _params, signal, _onUpdate, ctx) {
 			if (!runDir)
-				return structured({ message: "No collaboration run exists." });
+				return structured(
+					{
+						message: "No collaboration run exists.",
+						delegation_pending: false,
+						next_action: "Continue with ordinary tools.",
+					},
+					"No collaboration run exists",
+				);
 			if (pendingQuestion)
 				return structured(
 					{
 						message: `Reply to ${pendingQuestion.from} before waiting.`,
 						request: pendingQuestion,
+						delegation_pending: true,
+						next_action: `Call send_message to reply to ${pendingQuestion.from}.`,
 					},
 					`Reply to ${pendingQuestion.from} before waiting`,
 				);
 			if (!hasTeamWork(SELF))
 				return structured(
-					{ message: noWaitWorkMessage(SELF) },
+					{
+						message: noWaitWorkMessage(SELF),
+						delegation_pending: false,
+						next_action: "Continue with ordinary tools.",
+					},
 					"No agent work pending",
 				);
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
@@ -1550,7 +1576,29 @@ function registerTools(pi: ExtensionAPI): void {
 			const message = interrupted
 				? "Wait interrupted by user input."
 				: (event ?? "Wait completed.");
-			return structured({ message, request: pendingQuestion }, message);
+			const request = currentPendingQuestion();
+			const delegationPending = hasTeamWork(SELF);
+			let nextAction: string;
+			if (request)
+				nextAction = `Call send_message to reply to ${request.from}.`;
+			else if (interrupted)
+				nextAction =
+					"Handle the user input with send_message or kill_agent, then call wait_agent again if work remains.";
+			else if (delegationPending)
+				nextAction =
+					"Call wait_agent again. Non-coordination tools remain blocked.";
+			else
+				nextAction =
+					"Delegated work is complete; ordinary tools are available.";
+			return structured(
+				{
+					message,
+					request,
+					delegation_pending: delegationPending,
+					next_action: nextAction,
+				},
+				message,
+			);
 		},
 		renderCall(_args, theme) {
 			return new Text(theme.fg("accent", "Waiting for agents"), 0, 0);
@@ -1611,6 +1659,10 @@ function registerTools(pi: ExtensionAPI): void {
 // --------------------------------------------------------------------------
 
 let pendingQuestion: PendingQuestion | undefined;
+
+function currentPendingQuestion(): PendingQuestion | undefined {
+	return pendingQuestion;
+}
 
 function coordinationPrompt(): string {
 	if (!pendingQuestion) return COORDINATION_NOTICE;
