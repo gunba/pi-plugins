@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	MAX_PROVIDER_IMAGE_CONVERSIONS,
 	createImageContent,
 	normalizeLegacyImageBlock,
 	normalizeLegacyImageMessages,
 	normalizeProviderImageMessages,
+	prepareNativeImageContent,
 } from "../extensions/image-content.ts";
+import { MAX_LOCAL_IMAGE_BYTES } from "../extensions/image-limits.ts";
 
 const PNG_DATA =
 	"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==";
@@ -57,14 +60,44 @@ test("legacy Anthropic media_type spelling is accepted", () => {
 });
 
 test("unrecoverable image blocks are replaced before reaching a provider", () => {
-	assert.deepEqual(normalizeLegacyImageBlock({ type: "image", data: "unknown" }), {
-		type: "text",
-		text: "[Invalid image content omitted: missing data or supported MIME type]",
-	});
+	assert.deepEqual(
+		normalizeLegacyImageBlock({ type: "image", data: "unknown" }),
+		{
+			type: "text",
+			text: "[Invalid image content omitted: missing data or supported MIME type]",
+		},
+	);
+});
+
+test("oversized resumed and converted image data is rejected before decoding", async () => {
+	const oversizedBase64 = "A".repeat(
+		Math.ceil(((MAX_LOCAL_IMAGE_BYTES + 1) * 4) / 3),
+	);
+	assert.deepEqual(
+		normalizeLegacyImageBlock({
+			type: "image",
+			data: oversizedBase64,
+			mimeType: "image/png",
+		}),
+		{
+			type: "text",
+			text: "[Invalid image content omitted: unsupported or invalid image data]",
+		},
+	);
+	await assert.rejects(
+		prepareNativeImageContent(
+			{ data: BMP_DATA, mimeType: "image/bmp" },
+			async () => ({ data: oversizedBase64, mimeType: "image/png" }),
+		),
+		new RegExp(`larger than ${MAX_LOCAL_IMAGE_BYTES} bytes`),
+	);
 });
 
 test("message normalization changes only messages containing legacy images", () => {
-	const untouched = { role: "user", content: [{ type: "text", text: "hello" }] };
+	const untouched = {
+		role: "user",
+		content: [{ type: "text", text: "hello" }],
+	};
 	const legacy = {
 		role: "toolResult",
 		content: [
@@ -112,15 +145,75 @@ test("provider normalization converts historical BMP image blocks", async () => 
 	);
 });
 
+test("provider normalization byte-validates supported native resumed images", async () => {
+	const invalid = {
+		role: "toolResult",
+		content: [createImageContent("bm90LWEtcG5n", "image/png")],
+	};
+	const normalized = await normalizeProviderImageMessages(
+		[invalid],
+		async () => null,
+	);
+
+	assert.deepEqual(normalized[0].content[0], {
+		type: "text",
+		text: "[Invalid image content omitted: unsupported or invalid image data]",
+	});
+});
+
+test("provider normalization preserves valid native identities for prompt-cache stability", async () => {
+	const image = createImageContent(PNG_DATA, "image/png");
+	const message = { role: "user", content: [image] };
+	const messages = [message];
+	const normalized = await normalizeProviderImageMessages(
+		messages,
+		async () => null,
+	);
+
+	assert.equal(normalized, messages);
+	assert.equal(normalized[0], message);
+	assert.equal(normalized[0].content[0], image);
+});
+
 test("provider normalization omits historical BMP when conversion fails", async () => {
 	const bmp = {
 		role: "toolResult",
 		content: [createImageContent(BMP_DATA, "image/bmp")],
 	};
-	const normalized = await normalizeProviderImageMessages([bmp], async () => null);
+	const normalized = await normalizeProviderImageMessages(
+		[bmp],
+		async () => null,
+	);
 
 	assert.deepEqual(normalized[0].content[0], {
 		type: "text",
-		text: "[Image content omitted: could not convert image/bmp]",
+		text: "[Image content omitted: could not convert image/bmp to a supported image format]",
 	});
+});
+
+test("historical image conversion has bounded concurrency", async () => {
+	let active = 0;
+	let peak = 0;
+	const message = {
+		role: "toolResult",
+		content: Array.from({ length: 50 }, () =>
+			createImageContent(BMP_DATA, "image/bmp"),
+		),
+	};
+	const normalized = await normalizeProviderImageMessages(
+		[message],
+		async () => {
+			active += 1;
+			peak = Math.max(peak, active);
+			await new Promise((resolve) => setImmediate(resolve));
+			active -= 1;
+			return { data: PNG_DATA, mimeType: "image/png" };
+		},
+	);
+	assert.equal(peak, MAX_PROVIDER_IMAGE_CONVERSIONS);
+	assert.equal(normalized[0].content.length, 50);
+	assert.equal(
+		normalized[0].content.every((block) => block.mimeType === "image/png"),
+		true,
+	);
 });

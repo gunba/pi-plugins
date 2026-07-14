@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+	mkdtemp,
+	readFile,
+	readdir,
+	rm,
+	truncate,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { executeImageGeneration } from "../extensions/image-generation.ts";
+import {
+	executeImageGeneration,
+	recentConversationImageSources,
+} from "../extensions/image-generation.ts";
+import {
+	MAX_IMAGE_API_RESPONSE_BYTES,
+	MAX_LOCAL_IMAGE_BYTES,
+	readLocalImageFile,
+} from "../extensions/image-limits.ts";
 
 const PNG_DATA =
 	"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==";
@@ -16,7 +31,14 @@ const SECOND_PNG_DATA = (() => {
 const BMP_DATA =
 	"Qk1GAAAAAAAAADYAAAAoAAAAAgAAAAIAAAABABgAAAAAABAAAADEDgAAxA4AAAAAAAAAAAAAAP8AAP8AAAAA/wAA/wAAAA==";
 
-function mockContext({ model, branch = [], auth, cwd, sessionId = "session-123" }) {
+function mockContext({
+	model,
+	branch = [],
+	contextEntries = branch,
+	auth,
+	cwd,
+	sessionId = "session-123",
+}) {
 	return {
 		cwd,
 		model,
@@ -29,6 +51,9 @@ function mockContext({ model, branch = [], auth, cwd, sessionId = "session-123" 
 		sessionManager: {
 			getBranch() {
 				return branch;
+			},
+			buildContextEntries() {
+				return contextEntries;
 			},
 			getSessionId() {
 				return sessionId;
@@ -46,7 +71,8 @@ function jsonResponse(body, init = {}) {
 }
 
 function jwt(accountId) {
-	const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+	const part = (value) =>
+		Buffer.from(JSON.stringify(value)).toString("base64url");
 	return `${part({ alg: "none" })}.${part({
 		"https://api.openai.com/auth": { chatgpt_account_id: accountId },
 	})}.signature`;
@@ -85,7 +111,9 @@ test("OpenAI API-key generation posts fixed defaults and atomically saves Pi-nat
 				codexHome: join(root, "codex-home"),
 				async fetchImpl(url, init) {
 					request = { url, init };
-					return jsonResponse({ data: [{ b64_json: PNG_DATA }] });
+					return jsonResponse({
+						data: [{ b64_json: PNG_DATA, revised_prompt: "a moonlit lake" }],
+					});
 				},
 			},
 		);
@@ -107,12 +135,23 @@ test("OpenAI API-key generation posts fixed defaults and atomically saves Pi-nat
 			data: PNG_DATA,
 			mimeType: "image/png",
 		});
-		assert.match(result.content[1].text, /Saved generated image to .*call-1\.png$/);
+		assert.match(
+			result.content[1].text,
+			/Saved generated image to .*call-1\.png$/,
+		);
 		assert.equal(result.details.operation, "generations");
-		assert.equal((await readFile(result.details.path)).toString("base64"), PNG_DATA);
-		assert.deepEqual(await readdir(join(root, "codex-home", "generated_images", "session-123")), [
-			"call-1.png",
-		]);
+		assert.equal(result.details.callId, "call-1");
+		assert.equal(result.details.revisedPrompt, "a moonlit lake");
+		assert.equal(
+			(await readFile(result.details.path)).toString("base64"),
+			PNG_DATA,
+		);
+		assert.deepEqual(
+			await readdir(
+				join(root, "codex-home", "generated_images", "session-123"),
+			),
+			["call-1.png"],
+		);
 	});
 });
 
@@ -156,7 +195,10 @@ test("ChatGPT Codex OAuth edits local images through the codex endpoint", async 
 
 		assert.equal(conversion.data, BMP_DATA);
 		assert.equal(conversion.mimeType, "image/bmp");
-		assert.equal(request.url, "https://chatgpt.test/backend-api/codex/images/edits");
+		assert.equal(
+			request.url,
+			"https://chatgpt.test/backend-api/codex/images/edits",
+		);
 		assert.deepEqual(JSON.parse(request.init.body), {
 			images: [{ image_url: `data:image/png;base64,${PNG_DATA}` }],
 			prompt: "add a red hat",
@@ -189,7 +231,23 @@ test("recent conversation edits select the requested newest images in chronologi
 			{
 				type: "message",
 				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "image-call",
+							name: "view_image",
+							arguments: { path: "source.png" },
+						},
+					],
+				},
+			},
+			{
+				type: "message",
+				message: {
 					role: "toolResult",
+					toolCallId: "image-call",
+					toolName: "view_image",
 					content: [
 						{ type: "text", text: "generated" },
 						{ type: "image", data: second, mimeType: "image/png" },
@@ -228,6 +286,230 @@ test("recent conversation edits select the requested newest images in chronologi
 			{ image_url: `data:image/png;base64,${first}` },
 			{ image_url: `data:image/png;base64,${second}` },
 		]);
+	});
+});
+
+test("recent selection uses compacted context and reuses text-only generated paths", async () => {
+	await withTempDir(async (root) => {
+		const generatedPath = join(root, "generated.png");
+		await writeFile(generatedPath, Buffer.from(PNG_DATA, "base64"));
+		const oldCompactedImage = SECOND_PNG_DATA;
+		const currentImage = SECOND_PNG_DATA;
+		const generatedCall = {
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "generated-call",
+						name: "image_gen",
+						arguments: { prompt: "first" },
+					},
+				],
+			},
+		};
+		const generatedResult = {
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "generated-call",
+				toolName: "image_gen",
+				content: [
+					{ type: "text", text: `Saved generated image to ${generatedPath}` },
+				],
+				details: { path: generatedPath, operation: "generations", bytes: 1 },
+			},
+		};
+		const current = {
+			type: "message",
+			message: {
+				role: "user",
+				content: [{ type: "image", data: currentImage, mimeType: "image/png" }],
+			},
+		};
+		const branch = [
+			{
+				type: "message",
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "image",
+							data: oldCompactedImage,
+							mimeType: "image/png",
+						},
+					],
+				},
+			},
+			generatedCall,
+			generatedResult,
+			current,
+		];
+		const contextEntries = [generatedCall, generatedResult, current];
+		let body;
+		const model = {
+			provider: "openai",
+			id: "gpt-5",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.test/v1",
+			input: ["text", "image"],
+		};
+		const ctx = mockContext({
+			model,
+			branch,
+			contextEntries,
+			cwd: root,
+			auth: { ok: true, apiKey: "sk-test" },
+		});
+		assert.equal(recentConversationImageSources(ctx, 3).length, 2);
+		await executeImageGeneration(
+			"call-compacted",
+			{ prompt: "combine visible images", num_last_images_to_include: 2 },
+			undefined,
+			ctx,
+			{
+				codexHome: join(root, "codex-home"),
+				async fetchImpl(_url, init) {
+					body = JSON.parse(init.body);
+					return jsonResponse({ data: [{ b64_json: PNG_DATA }] });
+				},
+			},
+		);
+
+		assert.deepEqual(body.images, [
+			{ image_url: `data:image/png;base64,${PNG_DATA}` },
+			{ image_url: `data:image/png;base64,${currentImage}` },
+		]);
+	});
+});
+
+test("orphan tool-result images are excluded from recent selection", async () => {
+	await withTempDir(async (root) => {
+		const model = {
+			provider: "openai",
+			id: "gpt-5",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.test/v1",
+			input: ["text", "image"],
+		};
+		const orphan = {
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "missing-call",
+				toolName: "view_image",
+				content: [{ type: "image", data: PNG_DATA, mimeType: "image/png" }],
+			},
+		};
+		await assert.rejects(
+			executeImageGeneration(
+				"call-orphan",
+				{ prompt: "edit", num_last_images_to_include: 1 },
+				undefined,
+				mockContext({
+					model,
+					branch: [orphan],
+					cwd: root,
+					auth: { ok: true, apiKey: "sk-test" },
+				}),
+				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
+			),
+			/only 0 were available/,
+		);
+	});
+});
+
+test("inline image-generation results take precedence over their saved-path fallback", () => {
+	const call = {
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "native-generation",
+					name: "image_gen",
+					arguments: { prompt: "image" },
+				},
+			],
+		},
+	};
+	const result = {
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolCallId: "native-generation",
+			toolName: "image_gen",
+			content: [{ type: "image", data: PNG_DATA, mimeType: "image/png" }],
+			details: { path: "/not-needed.png" },
+		},
+	};
+	const sources = recentConversationImageSources(
+		mockContext({
+			model: undefined,
+			branch: [call, result],
+			cwd: process.cwd(),
+			auth: undefined,
+		}),
+		5,
+	);
+	assert.equal(sources.length, 1);
+	assert.equal(sources[0].kind, "inline");
+	assert.equal(sources[0].image.data, PNG_DATA);
+});
+
+test("local image references enforce the 20 MiB boundary", async () => {
+	await withTempDir(async (root) => {
+		const boundaryPath = join(root, "boundary.bmp");
+		await writeFile(boundaryPath, Buffer.from("BM"));
+		await truncate(boundaryPath, MAX_LOCAL_IMAGE_BYTES);
+		assert.equal(
+			(await readLocalImageFile(boundaryPath, "boundary image")).length,
+			MAX_LOCAL_IMAGE_BYTES,
+		);
+
+		const oversizedPath = join(root, "oversized.bmp");
+		await writeFile(oversizedPath, Buffer.from("BM"));
+		await truncate(oversizedPath, MAX_LOCAL_IMAGE_BYTES + 1);
+		await assert.rejects(
+			readLocalImageFile(oversizedPath, "oversized image"),
+			new RegExp(`larger than ${MAX_LOCAL_IMAGE_BYTES} bytes`),
+		);
+	});
+});
+
+test("image API response bodies are rejected before an oversized payload is read", async () => {
+	await withTempDir(async (root) => {
+		const model = {
+			provider: "openai",
+			id: "gpt-5",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.test/v1",
+			input: ["text", "image"],
+		};
+		await assert.rejects(
+			executeImageGeneration(
+				"call-large-response",
+				{ prompt: "paint" },
+				undefined,
+				mockContext({
+					model,
+					cwd: root,
+					auth: { ok: true, apiKey: "sk-test" },
+				}),
+				{
+					codexHome: root,
+					fetchImpl: async () =>
+						new Response("{}", {
+							headers: {
+								"content-length": String(MAX_IMAGE_API_RESPONSE_BYTES + 1),
+							},
+						}),
+				},
+			),
+			new RegExp(`larger than ${MAX_IMAGE_API_RESPONSE_BYTES} bytes`),
+		);
 	});
 });
 
@@ -283,12 +565,49 @@ test("edit reference validation runs before authentication or fetch", async () =
 		await assert.rejects(
 			executeImageGeneration(
 				"call-invalid",
+				{ prompt: "edit", referenced_image_paths: [] },
+				undefined,
+				ctx,
+				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
+			),
+			/must contain at least one path/,
+		);
+		await assert.rejects(
+			executeImageGeneration(
+				"call-invalid",
+				{
+					prompt: "edit",
+					referenced_image_paths: [],
+					num_last_images_to_include: 1,
+				},
+				undefined,
+				ctx,
+				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
+			),
+			/must contain at least one path|provide only one/,
+		);
+		await assert.rejects(
+			executeImageGeneration(
+				"call-invalid",
 				{ prompt: "edit", num_last_images_to_include: 1 },
 				undefined,
 				ctx,
 				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
 			),
 			/only 0 were available/,
+		);
+		const oversizedPath = join(root, "oversized.png");
+		await writeFile(oversizedPath, "x");
+		await truncate(oversizedPath, MAX_LOCAL_IMAGE_BYTES + 1);
+		await assert.rejects(
+			executeImageGeneration(
+				"call-invalid",
+				{ prompt: "edit", referenced_image_paths: ["oversized.png"] },
+				undefined,
+				ctx,
+				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
+			),
+			new RegExp(`larger than ${MAX_LOCAL_IMAGE_BYTES} bytes`),
 		);
 		assert.equal(authCalls, 0);
 	});
@@ -327,6 +646,39 @@ test("API errors are concise and do not publish an image", async () => {
 		await assert.rejects(
 			readdir(join(root, "codex-home", "generated_images")),
 			/ENOENT/,
+		);
+	});
+});
+
+test("mandatory atomic publication surfaces save failures", async () => {
+	await withTempDir(async (root) => {
+		const model = {
+			provider: "openai",
+			id: "gpt-5",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.test/v1",
+			input: ["text", "image"],
+		};
+		await assert.rejects(
+			executeImageGeneration(
+				"call-save-failure",
+				{ prompt: "paint" },
+				undefined,
+				mockContext({
+					model,
+					cwd: root,
+					auth: { ok: true, apiKey: "sk-test" },
+				}),
+				{
+					codexHome: join(root, "codex-home"),
+					fetchImpl: async () =>
+						jsonResponse({ data: [{ b64_json: PNG_DATA }] }),
+					withFileMutationQueue: async () => {
+						throw new Error("publication denied");
+					},
+				},
+			),
+			/publication denied/,
 		);
 	});
 });

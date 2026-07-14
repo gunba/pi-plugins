@@ -9,8 +9,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   The tool overlay activates only for Codex-like models and preserves unrelated
   tools. Text-only Codex models receive saved image artifacts and delegate visual
   inspection to an authenticated image-capable model for concise descriptions.
-  `apply_patch` accepts Codex envelopes, optional environment preambles, moves,
-  and heredoc bodies. Managed shell sessions stream partial output, terminate
+  `apply_patch` accepts Codex envelopes, moves, and structurally recognized
+  heredoc bodies; environment IDs are rejected until Pi exposes real routing.
+  Managed shell sessions stream partial output, terminate
   process trees, retain complete logs when display output is truncated, and use
   compact tool rendering while preserving context-mode HTTP-output guardrails.
   `view_image` emits Pi-native image blocks and normalises older session images

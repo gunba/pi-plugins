@@ -2,7 +2,7 @@
 // OpenAI Codex's Apache-2.0 image-generation extension and Images endpoint:
 // codex-rs/ext/image-generation and codex-rs/codex-api/src/endpoint/images.rs.
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
@@ -10,16 +10,20 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	type ImageConverter,
+	type NativeImageContent,
 	createImageContent,
 	normalizeLegacyImageBlock,
 	prepareNativeImageContent,
-	type ImageConverter,
-	type NativeImageContent,
 } from "./image-content.ts";
 import {
-	isChatGptCodexModel,
-	isImageGenerationModel,
-} from "./model-tools.ts";
+	MAX_IMAGE_API_RESPONSE_BYTES,
+	MAX_LOCAL_IMAGE_BYTES,
+	decodedBase64ByteLength,
+	readLocalImageFile,
+	readResponseTextWithinLimit,
+} from "./image-limits.ts";
+import { isChatGptCodexModel, isImageGenerationModel } from "./model-tools.ts";
 
 const IMAGE_MODEL = "gpt-image-2";
 const MAX_EDIT_IMAGES = 5;
@@ -41,6 +45,8 @@ export type ImageGenerationDetails = {
 	path: string;
 	operation: "generations" | "edits";
 	bytes: number;
+	callId: string;
+	revisedPrompt?: string;
 };
 
 export type ImageGenerationDependencies = {
@@ -54,9 +60,54 @@ export type ImageGenerationDependencies = {
 };
 
 type ImageRequestReference = { image_url: string };
+type ConversationImageSource =
+	| { kind: "inline"; image: NativeImageContent }
+	| { kind: "generated-path"; path: string };
 
 function isRecord(value: unknown): value is UnknownRecord {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Reject lossy TypeBox coercion before Pi validates the public schema. */
+export function prepareImageGenerationArguments(
+	args: unknown,
+): ImageGenerationParams {
+	if (!isRecord(args)) return args as ImageGenerationParams;
+	if (args.prompt !== undefined && typeof args.prompt !== "string") {
+		throw new Error("prompt must be a string");
+	}
+	if (args.referenced_image_paths !== undefined) {
+		if (!Array.isArray(args.referenced_image_paths)) {
+			throw new Error("referenced_image_paths must be an array of strings");
+		}
+		if (args.referenced_image_paths.length === 0) {
+			throw new Error(
+				"referenced_image_paths must contain at least one path when provided",
+			);
+		}
+		if (args.referenced_image_paths.some((path) => typeof path !== "string")) {
+			throw new Error("referenced_image_paths must be an array of strings");
+		}
+	}
+	if (
+		args.num_last_images_to_include !== undefined &&
+		(!Number.isSafeInteger(args.num_last_images_to_include) ||
+			(args.num_last_images_to_include as number) < 1 ||
+			(args.num_last_images_to_include as number) > MAX_EDIT_IMAGES)
+	) {
+		throw new Error(
+			`num_last_images_to_include must be between 1 and ${MAX_EDIT_IMAGES}`,
+		);
+	}
+	if (
+		args.referenced_image_paths !== undefined &&
+		args.num_last_images_to_include !== undefined
+	) {
+		throw new Error(
+			"provide only one of referenced_image_paths or num_last_images_to_include",
+		);
+	}
+	return args as ImageGenerationParams;
 }
 
 function safePathSegment(value: string, fallback: string): string {
@@ -71,7 +122,13 @@ function codexHomePath(): string {
 
 function decodeGeneratedImage(data: string): Buffer {
 	const normalized = data.trim();
-	if (!normalized) throw new Error("image generation returned empty image data");
+	if (!normalized)
+		throw new Error("image generation returned empty image data");
+	if (decodedBase64ByteLength(normalized) > MAX_LOCAL_IMAGE_BYTES) {
+		throw new Error(
+			`image generation returned more than ${MAX_LOCAL_IMAGE_BYTES} image bytes`,
+		);
+	}
 	if (
 		normalized.length % 4 === 1 ||
 		!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)
@@ -81,6 +138,11 @@ function decodeGeneratedImage(data: string): Buffer {
 	const bytes = Buffer.from(normalized, "base64");
 	if (bytes.length === 0) {
 		throw new Error("image generation returned empty image data");
+	}
+	if (bytes.length > MAX_LOCAL_IMAGE_BYTES) {
+		throw new Error(
+			`image generation returned more than ${MAX_LOCAL_IMAGE_BYTES} image bytes`,
+		);
 	}
 	return bytes;
 }
@@ -98,7 +160,12 @@ export async function saveGeneratedImageAtomically(
 	const bytes = decodeGeneratedImage(data);
 	const session = safePathSegment(sessionId, "session");
 	const call = safePathSegment(callId, "image");
-	const path = join(resolve(codexHome), "generated_images", session, `${call}.png`);
+	const path = join(
+		resolve(codexHome),
+		"generated_images",
+		session,
+		`${call}.png`,
+	);
 	const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
 
 	return mutationQueue(path, async () => {
@@ -116,7 +183,9 @@ export async function saveGeneratedImageAtomically(
 function resolvedLocalPath(cwd: string, value: string): string {
 	const normalized = value.trim().replace(/^@/, "");
 	if (!normalized) throw new Error("referenced image path cannot be empty");
-	return isAbsolute(normalized) ? resolve(normalized) : resolve(cwd, normalized);
+	return isAbsolute(normalized)
+		? resolve(normalized)
+		: resolve(cwd, normalized);
 }
 
 async function localImageReference(
@@ -126,7 +195,10 @@ async function localImageReference(
 ): Promise<ImageRequestReference> {
 	const absolutePath = resolvedLocalPath(ctx.cwd, path);
 	try {
-		const bytes = await readFile(absolutePath);
+		const bytes = await readLocalImageFile(
+			absolutePath,
+			`referenced image at ${path}`,
+		);
 		const image = await prepareNativeImageContent(
 			{ data: bytes.toString("base64") },
 			convertImage,
@@ -134,7 +206,9 @@ async function localImageReference(
 		return { image_url: imageDataUrl(image) };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`unable to process referenced image at ${path}: ${message}`);
+		throw new Error(
+			`unable to process referenced image at ${path}: ${message}`,
+		);
 	}
 }
 
@@ -162,32 +236,108 @@ function entryContent(entry: unknown): unknown[] {
 	return Array.isArray(content) ? content : [];
 }
 
-function chronologicalImages(images: NativeImageContent[]): NativeImageContent[] {
-	const result: NativeImageContent[] = [];
-	for (let index = images.length - 1; index >= 0; index--) {
-		result.push(images[index]);
-	}
-	return result;
+function entryMessage(entry: unknown): UnknownRecord | undefined {
+	return isRecord(entry) && isRecord(entry.message) ? entry.message : undefined;
 }
 
-export function recentConversationImages(
-	ctx: ExtensionContext,
-	count: number,
-): NativeImageContent[] {
-	const entries = ctx.sessionManager.getBranch();
-	const images: NativeImageContent[] = [];
-	for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex--) {
-		const content = entryContent(entries[entryIndex]);
-		for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex--) {
-			const image = nativeImageContent(content[blockIndex]);
-			if (!image) continue;
-			images.push(image);
-			if (images.length === count) {
-				return chronologicalImages(images);
+function presentToolCallIds(entries: unknown[]): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of entries) {
+		const message = entryMessage(entry);
+		if (message?.role !== "assistant") continue;
+		for (const block of entryContent(entry)) {
+			if (
+				isRecord(block) &&
+				block.type === "toolCall" &&
+				typeof block.id === "string"
+			) {
+				ids.add(block.id);
 			}
 		}
 	}
-	return chronologicalImages(images);
+	return ids;
+}
+
+function generatedImagePath(entry: unknown): string | undefined {
+	const message = entryMessage(entry);
+	if (message?.role !== "toolResult" || message.toolName !== "image_gen") {
+		return undefined;
+	}
+	const details = isRecord(message.details) ? message.details : undefined;
+	return typeof details?.path === "string" && details.path.trim()
+		? details.path
+		: undefined;
+}
+
+function chronologicalSources(
+	sources: ConversationImageSource[],
+): ConversationImageSource[] {
+	return sources.reverse();
+}
+
+export function recentConversationImageSources(
+	ctx: ExtensionContext,
+	count: number,
+): ConversationImageSource[] {
+	const entries = ctx.sessionManager.buildContextEntries();
+	const callIds = presentToolCallIds(entries);
+	const sources: ConversationImageSource[] = [];
+	for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex--) {
+		const message = entryMessage(entries[entryIndex]);
+		if (message?.role === "toolResult") {
+			if (
+				typeof message.toolCallId !== "string" ||
+				!callIds.has(message.toolCallId)
+			) {
+				continue;
+			}
+		}
+
+		const content = entryContent(entries[entryIndex]);
+		let foundInlineImage = false;
+		for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex--) {
+			const image = nativeImageContent(content[blockIndex]);
+			if (!image) continue;
+			foundInlineImage = true;
+			sources.push({ kind: "inline", image });
+			if (sources.length === count) {
+				return chronologicalSources(sources);
+			}
+		}
+		if (!foundInlineImage) {
+			const path = generatedImagePath(entries[entryIndex]);
+			if (path) {
+				sources.push({ kind: "generated-path", path });
+				if (sources.length === count) {
+					return chronologicalSources(sources);
+				}
+			}
+		}
+	}
+	return chronologicalSources(sources);
+}
+
+export async function recentConversationImages(
+	ctx: ExtensionContext,
+	count: number,
+	convertImage: ImageConverter,
+): Promise<NativeImageContent[]> {
+	const sources = recentConversationImageSources(ctx, count);
+	return Promise.all(
+		sources.map(async (source) => {
+			if (source.kind === "inline") {
+				return prepareNativeImageContent(source.image, convertImage);
+			}
+			const bytes = await readLocalImageFile(
+				source.path,
+				`recent generated image at ${source.path}`,
+			);
+			return prepareNativeImageContent(
+				{ data: bytes.toString("base64") },
+				convertImage,
+			);
+		}),
+	);
 }
 
 function imageDataUrl(image: NativeImageContent): string {
@@ -206,7 +356,12 @@ async function requestImageReferences(
 			`referenced_image_paths must contain at most ${MAX_EDIT_IMAGES} paths`,
 		);
 	}
-	if (paths.length > 0 && count !== undefined) {
+	if (params.referenced_image_paths !== undefined && paths.length === 0) {
+		throw new Error(
+			"referenced_image_paths must contain at least one path when provided",
+		);
+	}
+	if (params.referenced_image_paths !== undefined && count !== undefined) {
 		throw new Error(
 			"provide only one of referenced_image_paths or num_last_images_to_include",
 		);
@@ -227,16 +382,13 @@ async function requestImageReferences(
 	}
 	if (count === undefined) return [];
 
-	const recent = recentConversationImages(ctx, count);
+	const recent = await recentConversationImages(ctx, count, convertImage);
 	if (recent.length !== count) {
 		throw new Error(
 			`requested the last ${count} conversation images, but only ${recent.length} were available`,
 		);
 	}
-	const prepared = await Promise.all(
-		recent.map((image) => prepareNativeImageContent(image, convertImage)),
-	);
-	return prepared.map((image) => ({ image_url: imageDataUrl(image) }));
+	return recent.map((image) => ({ image_url: imageDataUrl(image) }));
 }
 
 function decodeChatGptAccountId(token: string): string {
@@ -254,7 +406,9 @@ function decodeChatGptAccountId(token: string): string {
 		if (!accountId) throw new Error("missing ChatGPT account ID");
 		return accountId;
 	} catch {
-		throw new Error("failed to extract chatgpt-account-id from Codex OAuth token");
+		throw new Error(
+			"failed to extract chatgpt-account-id from Codex OAuth token",
+		);
 	}
 }
 
@@ -318,15 +472,26 @@ function responseError(response: Response, text: string): Error {
 	);
 }
 
-function responseImageData(payload: unknown): string {
+function responseImageData(payload: unknown): {
+	data: string;
+	revisedPrompt?: string;
+} {
 	if (!isRecord(payload) || !Array.isArray(payload.data)) {
 		throw new Error("image generation response did not contain image data");
 	}
 	const first = payload.data[0];
-	if (!isRecord(first) || typeof first.b64_json !== "string" || !first.b64_json.trim()) {
+	if (
+		!isRecord(first) ||
+		typeof first.b64_json !== "string" ||
+		!first.b64_json.trim()
+	) {
 		throw new Error("image generation response did not contain image data");
 	}
-	return first.b64_json.trim();
+	const revisedPrompt =
+		typeof first.revised_prompt === "string" && first.revised_prompt.trim()
+			? first.revised_prompt.trim()
+			: undefined;
+	return { data: first.b64_json.trim(), revisedPrompt };
 }
 
 export async function executeImageGeneration(
@@ -343,14 +508,15 @@ export async function executeImageGeneration(
 	if (!params.prompt.trim()) throw new Error("prompt cannot be empty");
 	if (signal?.aborted) throw new Error("image generation aborted");
 
-	const convertImage =
-		dependencies.convertImage ?? (async () => null);
+	const convertImage = dependencies.convertImage ?? (async () => null);
 	const images = await requestImageReferences(params, ctx, convertImage);
 	const operation = images.length > 0 ? "edits" : "generations";
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) throw new Error(auth.error);
 	if (!auth.apiKey) {
-		throw new Error(`no API key or OAuth token is available for ${model.provider}`);
+		throw new Error(
+			`no API key or OAuth token is available for ${model.provider}`,
+		);
 	}
 
 	const body = {
@@ -368,11 +534,19 @@ export async function executeImageGeneration(
 		body: JSON.stringify(body),
 		signal,
 	});
-	const responseText = await response.text();
+	const responseText = await readResponseTextWithinLimit(
+		response,
+		MAX_IMAGE_API_RESPONSE_BYTES,
+	);
 	if (!response.ok) throw responseError(response, responseText);
-	const imageData = responseImageData(parseJson(responseText));
+	const imageResponse = responseImageData(parseJson(responseText));
+	if (decodedBase64ByteLength(imageResponse.data) > MAX_LOCAL_IMAGE_BYTES) {
+		throw new Error(
+			`image generation returned more than ${MAX_LOCAL_IMAGE_BYTES} image bytes`,
+		);
+	}
 	const generatedImage = await prepareNativeImageContent(
-		{ data: imageData },
+		{ data: imageResponse.data },
 		convertImage,
 	);
 	if (generatedImage.mimeType !== "image/png") {
@@ -395,6 +569,14 @@ export async function executeImageGeneration(
 	if (model.input?.includes("image")) content.unshift(generatedImage);
 	return {
 		content,
-		details: { path: saved.path, operation, bytes: saved.bytes },
+		details: {
+			path: saved.path,
+			operation,
+			bytes: saved.bytes,
+			callId: toolCallId,
+			...(imageResponse.revisedPrompt
+				? { revisedPrompt: imageResponse.revisedPrompt }
+				: {}),
+		},
 	};
 }

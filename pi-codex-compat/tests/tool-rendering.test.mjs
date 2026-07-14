@@ -3,17 +3,17 @@ import test from "node:test";
 
 import {
 	formatApplyPatchCall,
-	formatShellCommandCall,
+	formatExecCommandCall,
 	formatWriteStdinCall,
 	liveOutputPreview,
 	summarizeApplyPatchResult,
-	summarizeShellResult,
+	summarizeExecResult,
 } from "../extensions/tool-rendering.ts";
 
 test("tool calls render as compact useful one-liners", () => {
 	assert.equal(
-		formatShellCommandCall({
-			command: "npm run typecheck\n&& npm test",
+		formatExecCommandCall({
+			cmd: "npm run typecheck\n&& npm test",
 			workdir: "C:/dev/pi-plugins",
 			yield_time_ms: 500,
 		}),
@@ -48,24 +48,28 @@ test("collapsed result summaries stay terse and expose important state", () => {
 		"Patched 1 file",
 	);
 	assert.equal(
-		summarizeShellResult({ running: true, session_id: 12 }),
+		summarizeExecResult({ running: true, session_id: 12 }),
 		"Session #12 running",
 	);
 	assert.equal(
-		summarizeShellResult({
+		summarizeExecResult({
 			exit_code: 0,
 			truncated: true,
 			full_output_path: "x.log",
 		}),
 		"Completed · output saved",
 	);
-	assert.equal(summarizeShellResult({ timed_out: true }), "Timed out");
+	assert.equal(
+		summarizeExecResult({ exit_code: 0, truncated: true }),
+		"Completed · output truncated",
+	);
+	assert.equal(summarizeExecResult({ signal: "SIGINT" }), "Exited with SIGINT");
 });
 
 test("partial output previews retain only the live tail", () => {
 	assert.equal(
 		liveOutputPreview(
-			"one\ntwo\nthree\nfour\nfive\nProcess running with session ID 1.",
+			"Chunk ID: abc123\nWall time: 0.2500 seconds\nProcess running with session ID 1\nOriginal token count: 5\nOutput:\none\ntwo\nthree\nfour\nfive",
 		),
 		"two\nthree\nfour\nfive",
 	);

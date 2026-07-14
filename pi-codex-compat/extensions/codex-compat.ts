@@ -1,15 +1,14 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import {
-	convertToPng,
-	createBashToolDefinition,
-	generateDiffString,
-	renderDiff,
 	type AgentToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type Theme,
 	type ToolRenderResultOptions,
+	convertToPng,
+	generateDiffString,
+	renderDiff,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -19,34 +18,44 @@ import {
 	prepareNativeImageContent,
 } from "./image-content.ts";
 import { describeImageForTextModel } from "./image-description.ts";
-import { executeImageGeneration } from "./image-generation.ts";
 import {
-	syncCodexCompatTools,
+	type ImageGenerationDetails,
+	type ImageGenerationParams,
+	executeImageGeneration,
+	prepareImageGenerationArguments,
+} from "./image-generation.ts";
+import { MAX_LOCAL_IMAGE_BYTES, readLocalImageFile } from "./image-limits.ts";
+import {
+	CODEX_COMPAT_TOOL_NAMES,
 	type ToolActivationState,
+	syncCodexCompatTools,
 } from "./model-tools.ts";
 import { repairSessionImageFile } from "./session-image-repair.ts";
-import codexUsage from "./usage.ts";
+import { extractShellApplyPatch } from "./shell-apply-patch.ts";
 import {
-	executeManagedShellCommand,
+	type ExecCommandDetails,
+	createExecRuntimeOwner,
+	executeManagedExecCommand,
 	executeWriteStdin,
-	shutdownShellSessions,
-	type ShellCommandDetails,
-	type ShellCommandParams,
+	prepareExecCommandArguments,
+	prepareWriteStdinArguments,
+	shutdownExecSessions,
+	startExecSessionRuntime,
 } from "./shell-runtime.ts";
 import {
+	prepareApplyPatchArguments,
+	prepareViewImageArguments,
+} from "./tool-arguments.ts";
+import {
 	formatApplyPatchCall,
-	formatShellCommandCall,
+	formatExecCommandCall,
 	formatWriteStdinCall,
 	liveOutputPreview,
 	resultText,
 	summarizeApplyPatchResult,
-	summarizeShellResult,
+	summarizeExecResult,
 } from "./tool-rendering.ts";
-import {
-	prepareApplyPatchArguments,
-	prepareShellCommandArguments,
-	prepareViewImageArguments,
-} from "./tool-arguments.ts";
+import codexUsage from "./usage.ts";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -57,7 +66,6 @@ const MOVE_TO_MARKER = "*** Move to: ";
 const EOF_MARKER = "*** End of File";
 const CHANGE_CONTEXT_MARKER = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER = "@@";
-const ENVIRONMENT_ID_MARKER = "*** Environment ID:";
 const EXTENSION_NAME = "pi-codex-compat";
 
 const BLOCKED_HTTP_PATTERNS = [
@@ -89,17 +97,16 @@ type UpdateFileChunk = {
 
 type ParsedPatch = {
 	hunks: Hunk[];
-	environmentId?: string;
 	workdir?: string;
 };
 
 type PatchParseMode = "started" | "add" | "delete" | "update" | "ended";
 type ApplyPatchDetails = {
 	changes: ChangeRecord[];
-	environmentId?: string;
+	exitCode: 0 | 1;
+	wallTimeSeconds: number;
 	error?: string;
 };
-type PiToolResult<T> = AgentToolResult<T> & { isError?: boolean };
 
 type FileState = { exists: boolean; content?: string };
 type ChangeRecord = {
@@ -110,22 +117,31 @@ type ChangeRecord = {
 };
 type MoveRecord = { path: string; movePath: string };
 
+class PatchApplicationError extends Error {
+	readonly changes: ChangeRecord[];
+
+	constructor(message: string, changes: ChangeRecord[]) {
+		super(message);
+		this.name = "PatchApplicationError";
+		this.changes = changes;
+	}
+}
+
 type ViewImageParams = { path: string };
 type ViewImageDetails = {
 	path: string;
 	mediaType: string;
 	bytes: number;
 	describedBy?: string;
+	error?: string;
 };
-
-const MAX_VIEW_IMAGE_BYTES = 20 * 1024 * 1024;
 
 function normalizePathArgument(path: string): string {
 	return path.startsWith("@") ? path.slice(1) : path;
 }
 
 function resolveToolPath(baseDir: string, path: string): string {
-	const normalized = normalizePathArgument(path.trim());
+	const normalized = normalizePathArgument(path);
 	if (!normalized) throw new Error("path cannot be empty");
 	return isAbsolute(normalized)
 		? resolve(normalized)
@@ -139,6 +155,16 @@ function displayPathFromCwd(cwd: string, absolutePath: string): string {
 
 function displayPath(ctx: ExtensionContext, absolutePath: string): string {
 	return displayPathFromCwd(ctx.cwd, absolutePath);
+}
+
+function interceptedPatchWorkdir(
+	cwd: string,
+	execWorkdir: string | undefined,
+	shellWorkdir: string | undefined,
+): string | undefined {
+	const outer = execWorkdir ? resolveToolPath(cwd, execWorkdir) : cwd;
+	if (shellWorkdir) return resolveToolPath(outer, shellWorkdir);
+	return execWorkdir ? outer : undefined;
 }
 
 function stripQuotedContent(command: string): string {
@@ -184,35 +210,10 @@ function unsafeHttpReason(command: string): string | undefined {
 	return undefined;
 }
 
-function unquoteShellWord(value: string): string {
-	const trimmed = value.trim();
-	if (
-		(trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-		(trimmed.startsWith('"') && trimmed.endsWith('"'))
-	) {
-		return trimmed.slice(1, -1);
-	}
-	return trimmed;
-}
-
-function extractShellApplyPatch(
-	command: string,
-): { input: string; workdir?: string } | undefined {
-	const trimmed = command.trim();
-	const match = trimmed.match(
-		/^(?:(?:cd\s+(.+?)\s*&&\s*)?apply_?patch\s+<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*\n)([\s\S]*?)\n\s*\2\s*$/,
-	);
-	if (!match) return undefined;
-	return {
-		input: match[3],
-		workdir: match[1] ? unquoteShellWord(match[1]) : undefined,
-	};
-}
-
 function unwrapPatchInput(input: string): { input: string; workdir?: string } {
-	const trimmed = input.trim();
-	const shell = extractShellApplyPatch(trimmed);
+	const shell = extractShellApplyPatch(input);
 	if (shell) return shell;
+	const trimmed = input.trim();
 
 	const lines = splitPatchLines(trimmed);
 	if (lines.length >= 4) {
@@ -220,7 +221,7 @@ function unwrapPatchInput(input: string): { input: string; workdir?: string } {
 		const last = lines[lines.length - 1];
 		if (
 			(first === "<<EOF" || first === "<<'EOF'" || first === '<<"EOF"') &&
-			last.endsWith("EOF")
+			last === "EOF"
 		) {
 			return { input: lines.slice(1, -1).join("\n") };
 		}
@@ -247,7 +248,6 @@ function parsePatch(input: string): ParsedPatch {
 	const hunks: Hunk[] = [];
 	let mode = "started" as PatchParseMode;
 	let currentUpdateLine = 0;
-	let environmentId: string | undefined;
 
 	const lastUpdate = (): UpdateFileHunk | undefined => {
 		const last = hunks[hunks.length - 1];
@@ -273,19 +273,6 @@ function parsePatch(input: string): ParsedPatch {
 	};
 
 	const handleHeaders = (line: string, lineNumber: number): boolean => {
-		if (mode === "started" && line.startsWith(ENVIRONMENT_ID_MARKER)) {
-			if (environmentId !== undefined)
-				throw new Error(
-					"invalid patch: apply_patch environment_id cannot be specified more than once",
-				);
-			const id = line.slice(ENVIRONMENT_ID_MARKER.length).trim();
-			if (!id)
-				throw new Error(
-					"invalid patch: apply_patch environment_id cannot be empty",
-				);
-			environmentId = id;
-			return true;
-		}
 		if (line === END_PATCH_MARKER) {
 			ensureUpdateHunkIsNotEmpty(line, lineNumber);
 			mode = "ended";
@@ -337,6 +324,11 @@ function parsePatch(input: string): ParsedPatch {
 		}
 
 		if (mode === "started") {
+			if (trimmed.startsWith("*** Environment ID:")) {
+				throw new Error(
+					"invalid patch: Environment ID is unsupported because Pi extensions cannot route apply_patch to attached environments",
+				);
+			}
 			if (handleHeaders(trimmed, lineNumber)) continue;
 			throw new Error(
 				`invalid hunk at line ${lineNumber}, '${trimmed}' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'`,
@@ -468,7 +460,7 @@ function parsePatch(input: string): ParsedPatch {
 			"invalid patch: The last line of the patch must be '*** End Patch'",
 		);
 	if (hunks.length === 0) throw new Error("No files were modified.");
-	return { hunks, environmentId, workdir: unwrapped.workdir };
+	return { hunks, workdir: unwrapped.workdir };
 }
 
 function ensureUpdateChunk(update: UpdateFileHunk): UpdateFileChunk {
@@ -528,18 +520,33 @@ function seekSequence(
 	return undefined;
 }
 
+function preferredLineEnding(contents: string): "\n" | "\r\n" {
+	let crlf = 0;
+	let bareLf = 0;
+	for (let index = 0; index < contents.length; index++) {
+		if (contents[index] !== "\n") continue;
+		if (contents[index - 1] === "\r") crlf += 1;
+		else bareLf += 1;
+	}
+	return crlf > bareLf ? "\r\n" : "\n";
+}
+
 function deriveNewContents(
 	originalContents: string,
 	chunks: UpdateFileChunk[],
 	path: string,
 ): string {
-	const originalLines = originalContents.split("\n");
+	const lineEnding = preferredLineEnding(originalContents);
+	const originalLines = originalContents
+		.split("\n")
+		.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
 	if (originalLines[originalLines.length - 1] === "") originalLines.pop();
 
 	const replacements: Array<{
 		start: number;
 		oldLength: number;
 		newLines: string[];
+		ordinal: number;
 	}> = [];
 	let lineIndex = 0;
 
@@ -563,6 +570,7 @@ function deriveNewContents(
 				start: originalLines.length,
 				oldLength: 0,
 				newLines: [...chunk.newLines],
+				ordinal: replacements.length,
 			});
 			continue;
 		}
@@ -595,12 +603,15 @@ function deriveNewContents(
 			start: found,
 			oldLength: pattern.length,
 			newLines: [...newLines],
+			ordinal: replacements.length,
 		});
 		lineIndex = found + pattern.length;
 	}
 
 	const nextLines = [...originalLines];
-	for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
+	for (const replacement of replacements.sort(
+		(a, b) => b.start - a.start || b.ordinal - a.ordinal,
+	)) {
 		nextLines.splice(
 			replacement.start,
 			replacement.oldLength,
@@ -608,7 +619,7 @@ function deriveNewContents(
 		);
 	}
 	if (nextLines[nextLines.length - 1] !== "") nextLines.push("");
-	return nextLines.join("\n");
+	return nextLines.join(lineEnding);
 }
 
 async function readOptionalFile(path: string): Promise<FileState> {
@@ -632,15 +643,68 @@ function stateEquals(a: FileState, b: FileState): boolean {
 
 async function restoreOriginals(
 	originals: Map<string, FileState>,
-): Promise<void> {
+): Promise<Array<{ path: string; error: string }>> {
+	const failures: Array<{ path: string; error: string }> = [];
 	for (const [path, state] of originals) {
-		if (state.exists) {
-			await mkdir(dirname(path), { recursive: true });
-			await writeFile(path, state.content ?? "", "utf8");
-		} else {
-			await rm(path, { force: true });
+		try {
+			if (state.exists) {
+				await mkdir(dirname(path), { recursive: true });
+				await writeFile(path, state.content ?? "", "utf8");
+			} else {
+				await rm(path, { force: true });
+			}
+		} catch (error) {
+			failures.push({
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
+	return failures;
+}
+
+async function ensureParentDirectory(
+	path: string,
+	createdDirectories: Set<string>,
+): Promise<void> {
+	const target = dirname(path);
+	const firstCreated = await mkdir(target, { recursive: true });
+	if (!firstCreated) return;
+	const boundary = resolve(firstCreated);
+	let current = resolve(target);
+	while (true) {
+		createdDirectories.add(current);
+		if (current === boundary) break;
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+}
+
+async function removeCreatedDirectories(
+	createdDirectories: Set<string>,
+): Promise<Array<{ path: string; error: string }>> {
+	const failures: Array<{ path: string; error: string }> = [];
+	for (const path of [...createdDirectories].sort(
+		(a, b) => b.length - a.length,
+	)) {
+		try {
+			await rmdir(path);
+		} catch (error) {
+			if (
+				error &&
+				typeof error === "object" &&
+				(error as { code?: unknown }).code === "ENOENT"
+			) {
+				continue;
+			}
+			failures.push({
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return failures;
 }
 
 function collectHunkPaths(baseDir: string, hunks: Hunk[]): string[] {
@@ -736,16 +800,19 @@ async function applyParsedPatch(
 	parsed: ParsedPatch,
 	requestedWorkdir?: string,
 ): Promise<{ changes: ChangeRecord[]; baseDir: string }> {
-	const requestedBaseDir = requestedWorkdir ?? parsed.workdir;
-	const baseDir = requestedBaseDir
-		? resolveToolPath(ctx.cwd, requestedBaseDir)
+	const outerBaseDir = requestedWorkdir
+		? resolveToolPath(ctx.cwd, requestedWorkdir)
 		: ctx.cwd;
+	const baseDir = parsed.workdir
+		? resolveToolPath(outerBaseDir, parsed.workdir)
+		: outerBaseDir;
 	const queuePaths = collectHunkPaths(baseDir, parsed.hunks);
 
 	return withMutationQueues(queuePaths, async () => {
 		const originals = new Map<string, FileState>();
 		const states = new Map<string, FileState>();
 		const moves: MoveRecord[] = [];
+		const createdDirectories = new Set<string>();
 
 		const load = async (path: string): Promise<FileState> => {
 			const absolute = resolve(path);
@@ -806,15 +873,59 @@ async function applyParsedPatch(
 		try {
 			for (const [path, state] of finalStates) {
 				if (state.exists) {
-					await mkdir(dirname(path), { recursive: true });
+					await ensureParentDirectory(path, createdDirectories);
 					await writeFile(path, state.content ?? "", "utf8");
 				} else {
 					await rm(path, { force: true });
 				}
 			}
 		} catch (error) {
-			await restoreOriginals(originals);
-			throw error;
+			const originalMessage =
+				error instanceof Error ? error.message : String(error);
+			const restoreFailures = await restoreOriginals(originals);
+			const directoryFailures =
+				await removeCreatedDirectories(createdDirectories);
+			const residualStates: Array<[string, FileState]> = [];
+			const verificationFailures: Array<{ path: string; error: string }> = [];
+			for (const [path, original] of originals) {
+				try {
+					const current = await readOptionalFile(path);
+					if (!stateEquals(original, current))
+						residualStates.push([path, current]);
+				} catch (readError) {
+					verificationFailures.push({
+						path,
+						error: `could not verify rollback: ${readError instanceof Error ? readError.message : String(readError)}`,
+					});
+				}
+			}
+			const residualChanges = collectEffectiveChanges(
+				originals,
+				residualStates,
+				moves,
+			);
+			const residualPaths = new Set(residualStates.map(([path]) => path));
+			const unverifiablePaths = new Set(
+				verificationFailures.map(({ path }) => path),
+			);
+			const rollbackFailures = [
+				...restoreFailures.filter(
+					({ path }) => residualPaths.has(path) || unverifiablePaths.has(path),
+				),
+				...directoryFailures,
+				...verificationFailures,
+			];
+			const rollbackMessage = rollbackFailures.length
+				? `; rollback errors: ${rollbackFailures
+						.map(
+							({ path, error: rollbackError }) => `${path}: ${rollbackError}`,
+						)
+						.join("; ")}`
+				: "";
+			throw new PatchApplicationError(
+				`${originalMessage}${rollbackMessage}`,
+				residualChanges,
+			);
 		}
 
 		return {
@@ -824,66 +935,87 @@ async function applyParsedPatch(
 	});
 }
 
-function formatApplyPatchResult(
+function applyPatchSuccessOutput(
 	ctx: ExtensionContext,
-	changes: ChangeRecord[],
-	environmentId?: string,
+	hunks: Hunk[],
+	baseDir: string,
 ): string {
-	const seen = new Set<string>();
-	const lines = ["Applied patch."];
-	if (environmentId) lines.push(`Environment ID: ${environmentId}`);
-	for (const change of changes) {
-		const key = `${change.action}:${change.path}:${change.movePath ?? ""}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		const path = displayPath(ctx, change.path);
-		if (change.action === "moved" && change.movePath) {
-			lines.push(`- moved ${path} -> ${displayPath(ctx, change.movePath)}`);
-		} else {
-			lines.push(`- ${change.action} ${path}`);
-		}
+	const groups: Record<"A" | "M" | "D", string[]> = { A: [], M: [], D: [] };
+	for (const hunk of hunks) {
+		const code = hunk.type === "add" ? "A" : hunk.type === "delete" ? "D" : "M";
+		const path = displayPath(ctx, resolveToolPath(baseDir, hunk.path));
+		groups[code].push(path);
 	}
-	return lines.join("\n");
+	return [
+		"Success. Updated the following files:",
+		...groups.A.map((path) => `A ${path}`),
+		...groups.M.map((path) => `M ${path}`),
+		...groups.D.map((path) => `D ${path}`),
+	].join("\n");
+}
+
+function formatApplyPatchModelOutput(
+	exitCode: 0 | 1,
+	wallTimeSeconds: number,
+	output: string,
+): string {
+	const roundedSeconds = Math.round(wallTimeSeconds * 10) / 10;
+	return [
+		`Exit code: ${exitCode}`,
+		`Wall time: ${roundedSeconds} seconds`,
+		"Output:",
+		output,
+	].join("\n");
 }
 
 async function executeApplyPatch(
 	input: string,
 	workdir: string | undefined,
 	ctx: ExtensionContext,
-): Promise<PiToolResult<ApplyPatchDetails>> {
+): Promise<AgentToolResult<ApplyPatchDetails>> {
+	const startedAt = process.hrtime.bigint();
+	const elapsedSeconds = () =>
+		Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
 	try {
 		const parsed = parsePatch(input);
 		const result = await applyParsedPatch(ctx, parsed, workdir);
+		const wallTimeSeconds = elapsedSeconds();
 		return {
 			content: [
 				{
 					type: "text",
-					text: formatApplyPatchResult(
-						ctx,
-						result.changes,
-						parsed.environmentId,
+					text: formatApplyPatchModelOutput(
+						0,
+						wallTimeSeconds,
+						applyPatchSuccessOutput(ctx, parsed.hunks, result.baseDir),
 					),
 				},
 			],
-			details: { changes: result.changes, environmentId: parsed.environmentId },
+			details: { changes: result.changes, exitCode: 0, wallTimeSeconds },
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		const changes = error instanceof PatchApplicationError ? error.changes : [];
+		const wallTimeSeconds = elapsedSeconds();
 		return {
-			content: [{ type: "text", text: `apply_patch failed: ${message}` }],
-			details: { changes: [], error: message },
-			isError: true,
+			content: [
+				{
+					type: "text",
+					text: formatApplyPatchModelOutput(
+						1,
+						wallTimeSeconds,
+						`apply_patch verification failed: ${message}`,
+					),
+				},
+			],
+			details: {
+				changes,
+				exitCode: 1,
+				wallTimeSeconds,
+				error: message,
+			},
 		};
 	}
-}
-
-function timeoutSeconds(params: ShellCommandParams): number | undefined {
-	const raw =
-		params.timeout_ms ??
-		(params.timeout !== undefined ? params.timeout * 1000 : undefined);
-	if (raw === undefined) return undefined;
-	if (!Number.isFinite(raw) || raw <= 0) return undefined;
-	return Math.ceil(raw / 1000);
 }
 
 function mediaTypeForPath(path: string): string | undefined {
@@ -904,43 +1036,56 @@ function mediaTypeForPath(path: string): string | undefined {
 	}
 }
 
+function viewImageFailure(
+	path: string,
+	mediaType: string,
+	bytes: number,
+	message: string,
+): AgentToolResult<ViewImageDetails> {
+	return {
+		content: [{ type: "text", text: `view_image failed: ${message}` }],
+		details: { path, mediaType, bytes, error: message },
+	};
+}
+
 async function executeViewImage(
 	params: ViewImageParams,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
-): Promise<PiToolResult<ViewImageDetails>> {
-	const absolutePath = resolveToolPath(ctx.cwd, params.path);
+): Promise<AgentToolResult<ViewImageDetails>> {
+	let absolutePath: string;
+	try {
+		absolutePath = resolveToolPath(ctx.cwd, params.path);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return viewImageFailure(
+			params.path,
+			"application/octet-stream",
+			0,
+			message,
+		);
+	}
 	const mediaType = mediaTypeForPath(absolutePath);
 	if (!mediaType) {
-		return {
-			content: [
-				{
-					type: "text",
-					text: `view_image failed: unsupported image extension for ${displayPath(ctx, absolutePath)}`,
-				},
-			],
-			details: {
-				path: absolutePath,
-				mediaType: "application/octet-stream",
-				bytes: 0,
-			},
-			isError: true,
-		};
+		return viewImageFailure(
+			absolutePath,
+			"application/octet-stream",
+			0,
+			`unsupported image extension for ${displayPath(ctx, absolutePath)}`,
+		);
 	}
-	const bytes = await readFile(absolutePath);
-	if (bytes.length > MAX_VIEW_IMAGE_BYTES) {
-		return {
-			content: [
-				{
-					type: "text",
-					text: `view_image failed: ${displayPath(ctx, absolutePath)} is larger than ${MAX_VIEW_IMAGE_BYTES} bytes`,
-				},
-			],
-			details: { path: absolutePath, mediaType, bytes: bytes.length },
-			isError: true,
-		};
+	let bytes: Buffer;
+	try {
+		bytes = await readLocalImageFile(
+			absolutePath,
+			displayPath(ctx, absolutePath),
+			MAX_LOCAL_IMAGE_BYTES,
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return viewImageFailure(absolutePath, mediaType, 0, message);
 	}
-	let image;
+	let image: Awaited<ReturnType<typeof prepareNativeImageContent>>;
 	try {
 		image = await prepareNativeImageContent(
 			{ data: bytes.toString("base64"), mimeType: mediaType },
@@ -948,16 +1093,12 @@ async function executeViewImage(
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return {
-			content: [
-				{
-					type: "text",
-					text: `view_image failed: could not process ${displayPath(ctx, absolutePath)}: ${message}`,
-				},
-			],
-			details: { path: absolutePath, mediaType, bytes: bytes.length },
-			isError: true,
-		};
+		return viewImageFailure(
+			absolutePath,
+			mediaType,
+			bytes.length,
+			`could not process ${displayPath(ctx, absolutePath)}: ${message}`,
+		);
 	}
 
 	if (!ctx.model?.input?.includes("image")) {
@@ -984,20 +1125,12 @@ async function executeViewImage(
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return {
-				content: [
-					{
-						type: "text",
-						text: `view_image failed: ${message}`,
-					},
-				],
-				details: {
-					path: absolutePath,
-					mediaType: image.mimeType,
-					bytes: bytes.length,
-				},
-				isError: true,
-			};
+			return viewImageFailure(
+				absolutePath,
+				image.mimeType,
+				bytes.length,
+				message,
+			);
 		}
 	}
 	return {
@@ -1039,11 +1172,6 @@ function renderApplyPatchResult(
 		display = theme.fg("success", `✓ ${summary}`);
 	} else {
 		const sections: string[] = [];
-		if (details.environmentId) {
-			sections.push(
-				theme.fg("muted", `Environment ID: ${details.environmentId}`),
-			);
-		}
 		for (const change of details.changes) {
 			const sourcePath = displayPathFromCwd(context.cwd, change.path);
 			const targetPath = change.movePath
@@ -1062,6 +1190,90 @@ function renderApplyPatchResult(
 		display = sections.join("\n") || theme.fg("toolOutput", raw || summary);
 	}
 
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	text.setText(display);
+	return text;
+}
+
+type ImageRenderContext<TArgs> = {
+	args?: TArgs;
+	cwd: string;
+	isError: boolean;
+	lastComponent: unknown;
+};
+
+function renderViewImageResult(
+	result: AgentToolResult<ViewImageDetails>,
+	{ expanded }: ToolRenderResultOptions,
+	theme: Theme,
+	context: ImageRenderContext<ViewImageParams>,
+): Text {
+	const raw = resultText(result);
+	const details = result.details;
+	const path =
+		typeof details?.path === "string"
+			? displayPathFromCwd(context.cwd, details.path)
+			: (context.args?.path ?? "image");
+	let display: string;
+	if (context.isError || details.error) {
+		display = raw
+			.split("\n")
+			.map((line) => theme.fg("error", line))
+			.join("\n");
+	} else {
+		const heading = theme.fg("success", "• Viewed Image");
+		const lines = [heading, theme.fg("muted", `  ${path}`)];
+		if (expanded && details.describedBy && raw) {
+			lines.push(theme.fg("toolOutput", raw));
+		}
+		display = lines.join("\n");
+	}
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	text.setText(display);
+	return text;
+}
+
+function imageGenerationCallLabel(args: ImageGenerationParams): string {
+	const operation =
+		(args.referenced_image_paths?.length ?? 0) > 0 ||
+		args.num_last_images_to_include !== undefined
+			? "Edit Image"
+			: "Generate Image";
+	const prompt =
+		typeof args.prompt === "string" ? args.prompt.trim().split("\n", 1)[0] : "";
+	return prompt ? `${operation}: ${prompt}` : operation;
+}
+
+function renderImageGenerationResult(
+	result: AgentToolResult<ImageGenerationDetails>,
+	{ expanded }: ToolRenderResultOptions,
+	theme: Theme,
+	context: ImageRenderContext<ImageGenerationParams>,
+): Text {
+	const raw = resultText(result);
+	const details = result.details;
+	let display: string;
+	if (context.isError) {
+		display = [
+			theme.fg("error", "✗ Image generation failed"),
+			theme.fg("error", raw),
+		]
+			.filter(Boolean)
+			.join("\n");
+	} else {
+		const lines = [
+			theme.fg("success", "• Generated Image:"),
+			theme.fg("muted", `  ${displayPathFromCwd(context.cwd, details.path)}`),
+		];
+		if (expanded && details.revisedPrompt) {
+			lines.push(
+				theme.fg("toolOutput", `Revised prompt: ${details.revisedPrompt}`),
+			);
+		}
+		display = lines.join("\n");
+	}
 	const text =
 		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	text.setText(display);
@@ -1128,15 +1340,39 @@ function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 
 export default function codexCompat(pi: ExtensionAPI): void {
 	codexUsage(pi);
+	const fallbackExecRuntimeOwner = createExecRuntimeOwner();
+	const execRuntimeOwners = new Map<
+		string,
+		ReturnType<typeof createExecRuntimeOwner>
+	>();
+	const execRuntimeOwnerFor = (
+		ctx: Pick<ExtensionContext, "sessionManager">,
+	) => {
+		const sessionId = ctx.sessionManager?.getSessionId?.();
+		if (!sessionId) return fallbackExecRuntimeOwner;
+		let owner = execRuntimeOwners.get(sessionId);
+		if (!owner) {
+			owner = createExecRuntimeOwner();
+			execRuntimeOwners.set(sessionId, owner);
+		}
+		return owner;
+	};
 	let toolActivationState: ToolActivationState = {
 		enabled: false,
-		previousToolNames: [],
 	};
-	const syncTools = (model: Parameters<typeof syncCodexCompatTools>[1]) => {
+	const syncTools = (
+		model: ExtensionContext["model"],
+		ctx: Pick<ExtensionContext, "modelRegistry">,
+	) => {
 		const result = syncCodexCompatTools(
 			pi.getActiveTools(),
 			model,
 			toolActivationState,
+			{
+				imageGenerationAuthenticated: Boolean(
+					model && ctx.modelRegistry.hasConfiguredAuth(model),
+				),
+			},
 		);
 		toolActivationState = result.state;
 		if (result.activeTools.join("\0") !== pi.getActiveTools().join("\0")) {
@@ -1154,40 +1390,60 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		);
 		if (messages !== event.messages) return { messages };
 	});
-
-	pi.on("session_shutdown", async () => {
-		await shutdownShellSessions();
+	pi.on("tool_result", (event) => {
+		if (event.isError || !CODEX_COMPAT_TOOL_NAMES.includes(event.toolName)) {
+			return;
+		}
+		if (!event.details || typeof event.details !== "object") return;
+		const details = event.details as { error?: unknown; aborted?: unknown };
+		if (typeof details.error === "string" || details.aborted === true) {
+			return { isError: true };
+		}
 	});
-	pi.on("session_start", (_event, ctx) => syncTools(ctx.model));
-	pi.on("model_select", (event) => syncTools(event.model));
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const owner = execRuntimeOwners.get(sessionId);
+		if (!owner) return;
+		await shutdownExecSessions(owner);
+		execRuntimeOwners.delete(sessionId);
+	});
+	pi.on("session_start", async (_event, ctx) => {
+		await startExecSessionRuntime(execRuntimeOwnerFor(ctx));
+		syncTools(ctx.model, ctx);
+	});
+	pi.on("model_select", (event, ctx) => syncTools(event.model, ctx));
 	registerSessionImageRepairCommand(pi);
 
 	pi.registerTool({
 		name: "apply_patch",
 		label: "apply_patch",
 		description:
-			"Apply a Codex apply_patch patch to local files. The input string is the Codex patch envelope beginning with *** Begin Patch and ending with *** End Patch.",
+			"Use the apply_patch tool to edit files. Pass the complete Codex patch envelope in the input field.",
 		promptSnippet:
 			"Apply Codex-style file patches using the apply_patch patch envelope",
 		promptGuidelines: [
 			"Use apply_patch for manual file edits when a Codex-style patch is natural; pass the whole patch body as the `input` string.",
 			"apply_patch input must use the Codex envelope: `*** Begin Patch`, one or more Add/Delete/Update File sections, and `*** End Patch`.",
-			"apply_patch supports `*** Move to:`, optional `*** Environment ID:`, and heredoc bodies copied from `apply_patch <<'PATCH'` shell snippets.",
+			"apply_patch supports `*** Move to:` and heredoc bodies copied from structurally valid `apply_patch <<'PATCH'` shell snippets.",
 			"Do not use apply_patch for generated outputs or broad mechanical rewrites where a script or formatter is the clearer tool.",
 			"When context-mode tools such as ctx_execute or ctx_execute_file are active, keep using them for large-output analysis; apply_patch is only for committing file mutations.",
 		],
-		parameters: Type.Object({
-			input: Type.String({
-				description:
-					"Codex apply_patch patch text. Include the full *** Begin Patch / *** End Patch envelope.",
-			}),
-			workdir: Type.Optional(
-				Type.String({
+		parameters: Type.Object(
+			{
+				input: Type.String({
 					description:
-						"Base directory for relative patch paths. Defaults to the Pi session cwd.",
+						"Codex apply_patch patch text. Include the full *** Begin Patch / *** End Patch envelope.",
 				}),
-			),
-		}),
+				workdir: Type.Optional(
+					Type.String({
+						description:
+							"Base directory for relative patch paths. Defaults to the Pi session cwd.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
 		prepareArguments: prepareApplyPatchArguments,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1212,134 +1468,130 @@ export default function codexCompat(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "shell_command",
-		label: "shell_command",
+		name: "exec_command",
+		label: "exec_command",
 		description:
-			"Run a shell command with Codex-compatible parameter names. Prefer Pi/context-mode tools for large output. apply_patch heredocs are intercepted and applied by the apply_patch tool. Long-running commands can return a session_id for write_stdin.",
+			"Runs a command with plain pipes, returning output or a session ID for ongoing polling. tty defaults to false; tty:true is rejected because PTY/ConPTY allocation belongs to the Codex core runtime and is unavailable inside this extension.",
 		promptSnippet:
-			"Run shell commands with Codex-compatible shell_command(command, workdir, timeout_ms)",
+			"Run commands in managed sessions with the Codex Unified Exec contract",
 		promptGuidelines: [
-			"Use shell_command when a Codex-style tool call would use `shell_command`; always set `workdir` when operating inside a repository.",
-			"shell_command accepts `command`, optional `workdir`, `timeout_ms`, `login`, `shell`, `yield_time_ms`, and `max_output_tokens`.",
-			"shell_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
-			"Use shell_command with `yield_time_ms` for long-running commands; use write_stdin with the returned `session_id` to send input or poll output.",
-			"Do not use shell_command for raw HTTP clients that would dump output into context; use context-mode tools such as ctx_execute, ctx_fetch_and_index, or fetch_content.",
+			"Use exec_command when a Codex-style tool call would use `exec_command`; always set `workdir` when operating inside a repository.",
+			"exec_command accepts `cmd`, optional `workdir`, `tty`, `shell`, `login`, `yield_time_ms`, and `max_output_tokens`.",
+			"exec_command uses plain pipes. `tty:false` is the default; `tty:true` is rejected rather than pretending a pipe is a PTY.",
+			"exec_command initially waits 10,000ms and clamps the wait to 250–30,000ms (2,000–30,000ms on Windows). A command still running after that wait returns a session ID.",
+			"exec_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
+			"Use write_stdin with the returned `session_id` to poll or to send an exact Ctrl-C character to a non-TTY session; other non-empty input is rejected.",
+			"Do not use exec_command for raw HTTP clients that would dump output into context; use context-mode tools such as ctx_execute, ctx_fetch_and_index, or fetch_content.",
 		],
-		parameters: Type.Object({
-			command: Type.String({
-				description: "Shell script to run in the user's default shell.",
-			}),
-			workdir: Type.Optional(
-				Type.String({
-					description:
-						"Working directory for the command. Defaults to the Pi session cwd.",
+		parameters: Type.Object(
+			{
+				cmd: Type.String({
+					description: "Shell command to execute.",
 				}),
-			),
-			timeout_ms: Type.Optional(
-				Type.Number({
-					description: "Maximum command runtime in milliseconds.",
-				}),
-			),
-			shell: Type.Optional(
-				Type.String({
-					description:
-						"Shell executable to use. Defaults to Pi's configured shell resolution.",
-				}),
-			),
-			login: Type.Optional(
-				Type.Boolean({
-					description:
-						"Run the shell with login shell semantics when supported.",
-				}),
-			),
-			yield_time_ms: Type.Optional(
-				Type.Number({
-					description:
-						"Return after this many milliseconds if the command is still running, with a session_id.",
-				}),
-			),
-			max_output_tokens: Type.Optional(
-				Type.Number({
-					description:
-						"Approximate maximum output tokens to return, preserving the tail.",
-				}),
-			),
-		}),
-		prepareArguments: prepareShellCommandArguments,
+				workdir: Type.Optional(
+					Type.String({
+						description:
+							"Working directory for the command. Defaults to the turn cwd.",
+					}),
+				),
+				tty: Type.Optional(
+					Type.Boolean({
+						description:
+							"Requests PTY allocation. False or omitted uses plain pipes; true is rejected by this extension because PTY/ConPTY support belongs to Codex core.",
+					}),
+				),
+				yield_time_ms: Type.Optional(
+					Type.Integer({
+						description:
+							"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms (2000-30000 ms on Windows).",
+						minimum: 0,
+					}),
+				),
+				max_output_tokens: Type.Optional(
+					Type.Integer({
+						description:
+							"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.",
+						minimum: 0,
+					}),
+				),
+				shell: Type.Optional(
+					Type.String({
+						description:
+							"Shell binary to launch. Defaults to the user's default shell.",
+					}),
+				),
+				login: Type.Optional(
+					Type.Boolean({
+						description:
+							"True runs with login shell semantics; false disables them. Defaults to true.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		prepareArguments: prepareExecCommandArguments,
 		executionMode: "sequential",
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const interceptedPatch = extractShellApplyPatch(params.command);
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const interceptedPatch = extractShellApplyPatch(params.cmd);
 			if (interceptedPatch) {
 				return executeApplyPatch(
 					interceptedPatch.input,
-					interceptedPatch.workdir ?? params.workdir,
+					interceptedPatchWorkdir(
+						ctx.cwd,
+						params.workdir,
+						interceptedPatch.workdir,
+					),
 					ctx,
 				);
 			}
 
-			const blockReason = unsafeHttpReason(params.command);
+			const blockReason = unsafeHttpReason(params.cmd);
 			if (blockReason) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `shell_command blocked by ${EXTENSION_NAME}: ${blockReason}`,
+							text: `exec_command blocked by ${EXTENSION_NAME}: ${blockReason}`,
 						},
 					],
 					details: { error: blockReason },
-					isError: true,
-				} as PiToolResult<{ error: string }>;
-			}
-
-			if (
-				params.login === true ||
-				params.shell ||
-				params.yield_time_ms !== undefined ||
-				params.max_output_tokens !== undefined
-			) {
-				const workdir = params.workdir
-					? resolveToolPath(ctx.cwd, params.workdir)
-					: ctx.cwd;
-				return executeManagedShellCommand(
-					{ ...params, workdir },
-					signal,
-					ctx,
-					onUpdate,
-				);
+				} as AgentToolResult<{ error: string }>;
 			}
 
 			const workdir = params.workdir
 				? resolveToolPath(ctx.cwd, params.workdir)
 				: ctx.cwd;
-			const bashTool = createBashToolDefinition(workdir);
-			return bashTool.execute(
-				toolCallId,
-				{ command: params.command, timeout: timeoutSeconds(params) },
+			return executeManagedExecCommand(
+				{ ...params, workdir },
 				signal,
-				onUpdate as Parameters<typeof bashTool.execute>[3],
 				ctx,
+				onUpdate,
+				execRuntimeOwnerFor(ctx),
 			);
 		},
 		renderCall(args, theme, context) {
 			const interceptedPatch =
-				typeof args.command === "string"
-					? extractShellApplyPatch(args.command)
+				typeof args.cmd === "string"
+					? extractShellApplyPatch(args.cmd)
 					: undefined;
 			const label = interceptedPatch
 				? formatApplyPatchCall({
 						input: interceptedPatch.input,
-						workdir: interceptedPatch.workdir ?? args.workdir,
+						workdir: interceptedPatchWorkdir(
+							context.cwd,
+							typeof args.workdir === "string" ? args.workdir : undefined,
+							interceptedPatch.workdir,
+						),
 					})
-				: formatShellCommandCall(args);
+				: formatExecCommandCall(args);
 			const text =
 				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(theme.fg("toolTitle", theme.bold(label)));
 			return text;
 		},
 		renderResult(result, options, theme, context) {
-			const command = (context.args as { command?: unknown } | undefined)
-				?.command;
-			if (typeof command === "string" && extractShellApplyPatch(command)) {
+			const cmd = (context.args as { cmd?: unknown } | undefined)?.cmd;
+			if (typeof cmd === "string" && extractShellApplyPatch(cmd)) {
 				return renderApplyPatchResult(
 					result as AgentToolResult<ApplyPatchDetails>,
 					options,
@@ -1348,17 +1600,14 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				);
 			}
 			const raw = resultText(result);
-			const details = result.details as ShellCommandDetails | undefined;
+			const details = result.details as ExecCommandDetails | undefined;
 			const failed =
 				context.isError ||
 				Boolean(
 					details?.error ||
-						details?.timed_out ||
 						details?.aborted ||
-						details?.interrupted ||
-						(details?.exit_code !== undefined &&
-							details.exit_code !== null &&
-							details.exit_code !== 0),
+						details?.signal ||
+						(details?.exit_code !== undefined && details.exit_code !== 0),
 				);
 			let display: string;
 			let color: "accent" | "error" | "success" | "toolOutput";
@@ -1366,13 +1615,13 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				display = liveOutputPreview(raw);
 				color = "toolOutput";
 			} else if (failed) {
-				display = raw || summarizeShellResult(details);
+				display = raw || summarizeExecResult(details);
 				color = "error";
 			} else if (options.expanded) {
 				display = raw;
 				color = "toolOutput";
 			} else {
-				display = `${details?.running ? "↳" : "✓"} ${summarizeShellResult(details)}`;
+				display = `${details?.running ? "↳" : "✓"} ${summarizeExecResult(details)}`;
 				color = details?.running ? "accent" : "success";
 			}
 			const styled = display
@@ -1390,38 +1639,54 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		name: "write_stdin",
 		label: "write_stdin",
 		description:
-			"Write to or poll a running shell_command session returned with a session_id.",
+			"Writes characters to an existing unified exec session and returns recent output. In this plain-pipe fallback, only empty polling or an exact U+0003 interrupt is accepted.",
 		promptSnippet:
-			"Send input to, or poll output from, a running shell_command session",
+			"Poll a Unified Exec session or send an exact Ctrl-C interrupt",
 		promptGuidelines: [
-			"Use write_stdin only with a `session_id` returned by shell_command.",
-			'Use write_stdin with `chars: ""` to poll a running session without sending input.',
+			"Use write_stdin only with a `session_id` returned by exec_command.",
+			"Use write_stdin with omitted or empty `chars` to poll without writing; empty polls default to 5,000ms.",
+			"Non-TTY exec_command sessions accept only an exact U+0003 Ctrl-C input. Other non-empty `chars` values are rejected because stdin is closed.",
+			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it requests `taskkill /T` tree termination because an extension cannot emit a truthful console Ctrl-C event.",
+			"Do not rapidly poll shell sessions at one-second intervals. Prefer the empty-poll default and increase `yield_time_ms` for repeated waits.",
 		],
-		parameters: Type.Object({
-			session_id: Type.Number({
-				description: "Session ID returned by shell_command.",
-			}),
-			chars: Type.Optional(
-				Type.String({
-					description:
-						"Characters to write to stdin. Use an empty string to poll only.",
+		parameters: Type.Object(
+			{
+				session_id: Type.Integer({
+					description: "Identifier of the running unified exec session.",
+					minimum: 1,
 				}),
-			),
-			yield_time_ms: Type.Optional(
-				Type.Number({
-					description: "Milliseconds to wait for output before returning.",
-				}),
-			),
-			max_output_tokens: Type.Optional(
-				Type.Number({
-					description:
-						"Approximate maximum output tokens to return, preserving the tail.",
-				}),
-			),
-		}),
+				chars: Type.Optional(
+					Type.String({
+						description:
+							"Empty or omitted polls without writing. Exact U+0003 requests interruption; all other non-empty input is rejected for plain-pipe sessions.",
+					}),
+				),
+				yield_time_ms: Type.Optional(
+					Type.Integer({
+						description:
+							"Wait before yielding output. Exact interrupt requests default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.",
+						minimum: 0,
+					}),
+				),
+				max_output_tokens: Type.Optional(
+					Type.Integer({
+						description:
+							"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.",
+						minimum: 0,
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		prepareArguments: prepareWriteStdinArguments,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, signal, onUpdate) {
-			return executeWriteStdin(params, signal, onUpdate);
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			return executeWriteStdin(
+				params,
+				signal,
+				onUpdate,
+				execRuntimeOwnerFor(ctx),
+			);
 		},
 		renderCall(args, theme, context) {
 			const text =
@@ -1433,17 +1698,14 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		},
 		renderResult(result, options, theme, context) {
 			const raw = resultText(result);
-			const details = result.details as ShellCommandDetails | undefined;
+			const details = result.details as ExecCommandDetails | undefined;
 			const failed =
 				context.isError ||
 				Boolean(
 					details?.error ||
-						details?.timed_out ||
 						details?.aborted ||
-						details?.interrupted ||
-						(details?.exit_code !== undefined &&
-							details.exit_code !== null &&
-							details.exit_code !== 0),
+						details?.signal ||
+						(details?.exit_code !== undefined && details.exit_code !== 0),
 				);
 			let display: string;
 			let color: "accent" | "error" | "success" | "toolOutput";
@@ -1451,13 +1713,13 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				display = liveOutputPreview(raw);
 				color = "toolOutput";
 			} else if (failed) {
-				display = raw || summarizeShellResult(details);
+				display = raw || summarizeExecResult(details);
 				color = "error";
 			} else if (options.expanded) {
 				display = raw;
 				color = "toolOutput";
 			} else {
-				display = `${details?.running ? "↳" : "✓"} ${summarizeShellResult(details)}`;
+				display = `${details?.running ? "↳" : "✓"} ${summarizeExecResult(details)}`;
 				color = details?.running ? "accent" : "success";
 			}
 			const styled = display
@@ -1475,19 +1737,38 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		name: "view_image",
 		label: "view_image",
 		description:
-			"View a local image file by returning it to the model as image content.",
+			"View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
 		promptSnippet: "Inspect a local PNG/JPEG/GIF/WebP/BMP image",
 		promptGuidelines: [
 			"Use view_image when visual inspection of an existing local image is needed.",
 			"view_image accepts a local filesystem `path`; do not use it for remote URLs.",
 			"On a text-only Codex model, view_image delegates visual inspection to an authenticated image-capable model and returns its concise description.",
 		],
-		parameters: Type.Object({
-			path: Type.String({ description: "Path to a local image file." }),
-		}),
+		parameters: Type.Object(
+			{
+				path: Type.String({ description: "Path to a local image file." }),
+			},
+			{ additionalProperties: false },
+		),
 		prepareArguments: prepareViewImageArguments,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeViewImage(params, ctx, signal);
+		},
+		renderCall(args, theme, context) {
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(
+				theme.fg("toolTitle", theme.bold(`View Image: ${args.path}`)),
+			);
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			return renderViewImageResult(
+				result as AgentToolResult<ViewImageDetails>,
+				options,
+				theme,
+				context,
+			);
 		},
 	});
 
@@ -1495,7 +1776,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		name: "image_gen",
 		label: "image_gen",
 		description:
-			"Generate a new image from a prompt or edit up to five local or recent conversation images with OpenAI gpt-image-2.",
+			"Generate images from descriptions or edit existing images from precise instructions, using up to five local or recent conversation references with OpenAI gpt-image-2.",
 		promptSnippet:
 			"Generate or edit images with gpt-image-2, including local and recent conversation references",
 		promptGuidelines: [
@@ -1504,38 +1785,61 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"For edits, use image_gen `referenced_image_paths` when every target has a local path; inspect unseen local images with view_image first.",
 			"Use image_gen `num_last_images_to_include` only when a target has no local path, choosing the smallest recent-image count that includes every target, up to 5.",
 			"Never provide both image_gen `referenced_image_paths` and `num_last_images_to_include`; ask the user to attach missing images when neither mechanism can include every target.",
+			"Directly generate the image without reconfirmation or clarification unless required images must be attached again.",
+			"Always use image_gen for image editing unless the user explicitly requests otherwise. Do not use Python for image editing unless specifically instructed.",
 		],
-		parameters: Type.Object({
-			prompt: Type.String({
-				description:
-					"Detailed generation prompt or precise editing instructions.",
-			}),
-			referenced_image_paths: Type.Optional(
-				Type.Array(
-					Type.String({
-						description:
-							"Local image path, absolute or relative to the session cwd.",
-					}),
-					{
-						description: "Local images to edit, in prompt-reference order.",
-						maxItems: 5,
-					},
-				),
-			),
-			num_last_images_to_include: Type.Optional(
-				Type.Integer({
+		parameters: Type.Object(
+			{
+				prompt: Type.String({
 					description:
-						"Number of most recent conversation images to edit when a target has no local path.",
-					minimum: 1,
-					maximum: 5,
+						"Detailed generation prompt or precise editing instructions.",
 				}),
-			),
-		}),
+				referenced_image_paths: Type.Optional(
+					Type.Array(
+						Type.String({
+							description:
+								"Local image path, absolute or relative to the session cwd.",
+						}),
+						{
+							description: "Local images to edit, in prompt-reference order.",
+							minItems: 1,
+							maxItems: 5,
+						},
+					),
+				),
+				num_last_images_to_include: Type.Optional(
+					Type.Integer({
+						description:
+							"Number of most recent conversation images to edit when a target has no local path.",
+						minimum: 1,
+						maximum: 5,
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		prepareArguments: prepareImageGenerationArguments,
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			return executeImageGeneration(toolCallId, params, signal, ctx, {
 				convertImage: convertToPng,
 				withFileMutationQueue,
 			});
+		},
+		renderCall(args, theme, context) {
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(
+				theme.fg("toolTitle", theme.bold(imageGenerationCallLabel(args))),
+			);
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			return renderImageGenerationResult(
+				result as AgentToolResult<ImageGenerationDetails>,
+				options,
+				theme,
+				context,
+			);
 		},
 	});
 }

@@ -1,20 +1,20 @@
 type ApplyPatchRenderArgs = { input?: unknown; workdir?: unknown };
-type ShellCommandRenderArgs = {
-	command?: unknown;
+type ExecCommandRenderArgs = {
+	cmd?: unknown;
 	workdir?: unknown;
 	shell?: unknown;
 	login?: unknown;
+	tty?: unknown;
 	yield_time_ms?: unknown;
 };
 type WriteStdinRenderArgs = { session_id?: unknown; chars?: unknown };
 
-type ShellResultDetails = {
+type ExecResultDetails = {
 	session_id?: number;
-	exit_code?: number | null;
+	exit_code?: number;
+	signal?: string;
 	running?: boolean;
-	timed_out?: boolean;
 	aborted?: boolean;
-	interrupted?: boolean;
 	truncated?: boolean;
 	full_output_path?: string;
 	fullOutputPath?: string;
@@ -40,13 +40,14 @@ function displayWorkdir(value: unknown): string {
 	return workdir ? ` in ${workdir}` : "";
 }
 
-export function formatShellCommandCall(args: ShellCommandRenderArgs): string {
-	const command = compactText(args.command) || "…";
+export function formatExecCommandCall(args: ExecCommandRenderArgs): string {
+	const command = compactText(args.cmd) || "…";
 	const options: string[] = [];
 	if (typeof args.shell === "string" && args.shell.trim()) {
 		options.push(compactText(args.shell, 35));
 	}
 	if (args.login === true) options.push("login");
+	if (args.tty === true) options.push("tty");
 	if (typeof args.yield_time_ms === "number") {
 		options.push(`yield ${args.yield_time_ms}ms`);
 	}
@@ -56,7 +57,8 @@ export function formatShellCommandCall(args: ShellCommandRenderArgs): string {
 
 function visibleInput(value: string): string {
 	return value
-		.replace(/\u0003/g, "^C")
+		.split("\u0003")
+		.join("^C")
 		.replace(/\r/g, "\\r")
 		.replace(/\n/g, "\\n")
 		.replace(/\t/g, "\\t");
@@ -74,11 +76,12 @@ export function formatWriteStdinCall(args: WriteStdinRenderArgs): string {
 
 export function formatApplyPatchCall(args: ApplyPatchRenderArgs): string {
 	const input = typeof args.input === "string" ? args.input : "";
-	const paths = [...input.matchAll(/^\*\*\* (?:Add|Delete|Update) File: (.+)$/gm)]
-		.flatMap((match) => {
-			const path = match[1]?.trim();
-			return path ? [path] : [];
-		});
+	const paths = [
+		...input.matchAll(/^\*\*\* (?:Add|Delete|Update) File: (.+)$/gm),
+	].flatMap((match) => {
+		const path = match[1]?.trim();
+		return path ? [path] : [];
+	});
 	const uniquePaths = [...new Set(paths)];
 	let target = `${uniquePaths.length} files`;
 	if (uniquePaths.length === 0) target = "patch";
@@ -105,35 +108,30 @@ export function resultText(result: { content?: unknown }): string {
 
 export function liveOutputPreview(text: string, maxLines = 4): string {
 	const lines = text.trimEnd().split("\n");
-	const statusIndex = lines.findIndex((line) =>
-		/^Process (?:running|exited|timed out|failed|aborted|interrupted)/.test(
-			line,
-		),
-	);
-	const outputLines = statusIndex >= 0 ? lines.slice(0, statusIndex) : lines;
+	const outputIndex = lines.indexOf("Output:");
+	const outputLines = outputIndex >= 0 ? lines.slice(outputIndex + 1) : lines;
 	return outputLines.slice(-maxLines).join("\n").trim() || "Running…";
 }
 
-export function summarizeShellResult(details: unknown): string {
-	const value = (details ?? {}) as ShellResultDetails;
+export function summarizeExecResult(details: unknown): string {
+	const value = (details ?? {}) as ExecResultDetails;
 	const savedPath = value.full_output_path ?? value.fullOutputPath;
 	let summary: string;
-	if (value.timed_out) summary = "Timed out";
-	else if (value.aborted) summary = "Aborted";
-	else if (value.interrupted) summary = "Interrupted";
+	if (value.aborted) summary = "Aborted";
 	else if (value.error) summary = "Failed";
 	else if (value.running) {
 		summary = value.session_id
 			? `Session #${value.session_id} running`
 			: "Process running";
 	} else if (value.exit_code !== undefined) {
-		summary = value.exit_code === 0
-			? "Completed"
-			: `Exited ${value.exit_code ?? "without a code"}`;
+		summary = value.exit_code === 0 ? "Completed" : `Exited ${value.exit_code}`;
+	} else if (value.signal) {
+		summary = `Exited with ${value.signal}`;
 	} else {
 		summary = "Completed";
 	}
-	if (value.truncated || savedPath) summary += " · output saved";
+	if (savedPath) summary += " · output saved";
+	else if (value.truncated) summary += " · output truncated";
 	return summary;
 }
 
