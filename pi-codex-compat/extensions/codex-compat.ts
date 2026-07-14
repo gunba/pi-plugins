@@ -3,9 +3,13 @@ import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import {
 	convertToPng,
 	createBashToolDefinition,
+	generateDiffString,
+	renderDiff,
 	type AgentToolResult,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type Theme,
+	type ToolRenderResultOptions,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -102,7 +106,9 @@ type ChangeRecord = {
 	action: "added" | "deleted" | "updated" | "moved";
 	path: string;
 	movePath?: string;
+	diff: string;
 };
+type MoveRecord = { path: string; movePath: string };
 
 type ViewImageParams = { path: string };
 type ViewImageDetails = {
@@ -126,9 +132,13 @@ function resolveToolPath(baseDir: string, path: string): string {
 		: resolve(baseDir, normalized);
 }
 
-function displayPath(ctx: ExtensionContext, absolutePath: string): string {
-	const rel = relative(ctx.cwd, absolutePath);
+function displayPathFromCwd(cwd: string, absolutePath: string): string {
+	const rel = relative(cwd, absolutePath);
 	return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : absolutePath;
+}
+
+function displayPath(ctx: ExtensionContext, absolutePath: string): string {
+	return displayPathFromCwd(ctx.cwd, absolutePath);
 }
 
 function stripQuotedContent(command: string): string {
@@ -659,6 +669,68 @@ async function withMutationQueues<T>(
 	return run();
 }
 
+function effectiveMoveChange(
+	originals: Map<string, FileState>,
+	finalStates: Map<string, FileState>,
+	move: MoveRecord,
+): ChangeRecord | undefined {
+	const sourceOriginal = originals.get(move.path);
+	const sourceFinal = finalStates.get(move.path);
+	const destinationOriginal = originals.get(move.movePath);
+	const destinationFinal = finalStates.get(move.movePath);
+	if (
+		!sourceOriginal?.exists ||
+		sourceFinal?.exists !== false ||
+		destinationOriginal?.exists ||
+		!destinationFinal?.exists
+	) {
+		return undefined;
+	}
+	return {
+		action: "moved",
+		path: move.path,
+		movePath: move.movePath,
+		diff: generateDiffString(
+			sourceOriginal.content ?? "",
+			destinationFinal.content ?? "",
+		).diff,
+	};
+}
+
+function collectEffectiveChanges(
+	originals: Map<string, FileState>,
+	finalStates: Array<[string, FileState]>,
+	moves: MoveRecord[],
+): ChangeRecord[] {
+	const remaining = new Map(finalStates);
+	const changes: ChangeRecord[] = [];
+
+	for (const move of moves) {
+		const change = effectiveMoveChange(originals, remaining, move);
+		if (!change) continue;
+		changes.push(change);
+		remaining.delete(move.path);
+		remaining.delete(move.movePath);
+	}
+
+	for (const [path, state] of remaining) {
+		const original = originals.get(path) ?? { exists: false };
+		let action: ChangeRecord["action"];
+		if (!original.exists) action = "added";
+		else if (!state.exists) action = "deleted";
+		else action = "updated";
+		changes.push({
+			action,
+			path,
+			diff: generateDiffString(
+				original.exists ? (original.content ?? "") : "",
+				state.exists ? (state.content ?? "") : "",
+			).diff,
+		});
+	}
+	return changes;
+}
+
 async function applyParsedPatch(
 	ctx: ExtensionContext,
 	parsed: ParsedPatch,
@@ -673,7 +745,7 @@ async function applyParsedPatch(
 	return withMutationQueues(queuePaths, async () => {
 		const originals = new Map<string, FileState>();
 		const states = new Map<string, FileState>();
-		const changes: ChangeRecord[] = [];
+		const moves: MoveRecord[] = [];
 
 		const load = async (path: string): Promise<FileState> => {
 			const absolute = resolve(path);
@@ -697,7 +769,6 @@ async function applyParsedPatch(
 			const sourcePath = resolveToolPath(baseDir, hunk.path);
 			if (hunk.type === "add") {
 				await setState(sourcePath, { exists: true, content: hunk.contents });
-				changes.push({ action: "added", path: sourcePath });
 				continue;
 			}
 
@@ -706,7 +777,6 @@ async function applyParsedPatch(
 
 			if (hunk.type === "delete") {
 				await setState(sourcePath, { exists: false });
-				changes.push({ action: "deleted", path: sourcePath });
 				continue;
 			}
 
@@ -720,10 +790,9 @@ async function applyParsedPatch(
 				await setState(destPath, { exists: true, content: newContent });
 				if (destPath !== sourcePath)
 					await setState(sourcePath, { exists: false });
-				changes.push({ action: "moved", path: sourcePath, movePath: destPath });
+				moves.push({ path: sourcePath, movePath: destPath });
 			} else {
 				await setState(sourcePath, { exists: true, content: newContent });
-				changes.push({ action: "updated", path: sourcePath });
 			}
 		}
 
@@ -731,6 +800,8 @@ async function applyParsedPatch(
 			const original = originals.get(path);
 			return original ? !stateEquals(original, state) : true;
 		});
+
+		const changes = collectEffectiveChanges(originals, finalStates, moves);
 
 		try {
 			for (const [path, state] of finalStates) {
@@ -746,7 +817,10 @@ async function applyParsedPatch(
 			throw error;
 		}
 
-		return { changes, baseDir };
+		return {
+			changes,
+			baseDir,
+		};
 	});
 }
 
@@ -811,7 +885,6 @@ function timeoutSeconds(params: ShellCommandParams): number | undefined {
 	if (!Number.isFinite(raw) || raw <= 0) return undefined;
 	return Math.ceil(raw / 1000);
 }
-
 
 function mediaTypeForPath(path: string): string | undefined {
 	switch (extname(path).toLowerCase()) {
@@ -932,10 +1005,68 @@ async function executeViewImage(
 			{ type: "text", text: `Viewed image: ${displayPath(ctx, absolutePath)}` },
 			image,
 		],
-		details: { path: absolutePath, mediaType: image.mimeType, bytes: bytes.length },
+		details: {
+			path: absolutePath,
+			mediaType: image.mimeType,
+			bytes: bytes.length,
+		},
 	};
 }
 
+type ApplyPatchRenderContext = {
+	cwd: string;
+	isError: boolean;
+	lastComponent: unknown;
+};
+
+function renderApplyPatchResult(
+	result: AgentToolResult<ApplyPatchDetails>,
+	{ expanded }: ToolRenderResultOptions,
+	theme: Theme,
+	context: ApplyPatchRenderContext,
+): Text {
+	const details = result.details;
+	const raw = resultText(result);
+	const summary = summarizeApplyPatchResult(details);
+	let display: string;
+
+	if (context.isError || details.error) {
+		display = (raw || summary)
+			.split("\n")
+			.map((line) => theme.fg("error", line))
+			.join("\n");
+	} else if (!expanded) {
+		display = theme.fg("success", `✓ ${summary}`);
+	} else {
+		const sections: string[] = [];
+		if (details.environmentId) {
+			sections.push(
+				theme.fg("muted", `Environment ID: ${details.environmentId}`),
+			);
+		}
+		for (const change of details.changes) {
+			const sourcePath = displayPathFromCwd(context.cwd, change.path);
+			const targetPath = change.movePath
+				? displayPathFromCwd(context.cwd, change.movePath)
+				: undefined;
+			const heading = targetPath
+				? `moved ${sourcePath} -> ${targetPath}`
+				: `${change.action} ${sourcePath}`;
+			sections.push(theme.fg("toolTitle", theme.bold(heading)));
+			if (change.diff) {
+				sections.push(
+					renderDiff(change.diff, { filePath: change.movePath ?? change.path }),
+				);
+			}
+		}
+		display = sections.join("\n") || theme.fg("toolOutput", raw || summary);
+	}
+
+	const text =
+		(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	text.setText(display);
+	return text;
+}
 
 function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("repair-session-images", {
@@ -951,7 +1082,10 @@ function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 			await ctx.waitForIdle();
 			const sessionPath = ctx.sessionManager.getSessionFile();
 			if (!sessionPath) {
-				ctx.ui.notify("The current session is not persisted to a file.", "warning");
+				ctx.ui.notify(
+					"The current session is not persisted to a file.",
+					"warning",
+				);
 				return;
 			}
 
@@ -970,7 +1104,10 @@ function registerSessionImageRepairCommand(pi: ExtensionAPI): void {
 				);
 
 				if (result.changedEntries === 0) {
-					ctx.ui.notify("No legacy or provider-incompatible image blocks found.", "info");
+					ctx.ui.notify(
+						"No legacy or provider-incompatible image blocks found.",
+						"info",
+					);
 					return;
 				}
 				if (!result.applied) {
@@ -1057,37 +1194,20 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			return executeApplyPatch(params.input, params.workdir, ctx);
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(
 				theme.fg("toolTitle", theme.bold(formatApplyPatchCall(args))),
 			);
 			return text;
 		},
-		renderResult(result, { expanded }, theme, context) {
-			const raw = resultText(result);
-			const failed =
-				context.isError ||
-				Boolean((result.details as ApplyPatchDetails | undefined)?.error);
-			const summary = summarizeApplyPatchResult(result.details);
-			let display: string;
-			let color: "error" | "success" | "toolOutput";
-			if (failed) {
-				display = raw || summary;
-				color = "error";
-			} else if (expanded) {
-				display = raw;
-				color = "toolOutput";
-			} else {
-				display = `✓ ${summary}`;
-				color = "success";
-			}
-			const styled = display
-				.split("\n")
-				.map((line) => theme.fg(color, line))
-				.join("\n");
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(styled);
-			return text;
+		renderResult(result, options, theme, context) {
+			return renderApplyPatchResult(
+				result as AgentToolResult<ApplyPatchDetails>,
+				options,
+				theme,
+				context,
+			);
 		},
 	});
 
@@ -1201,13 +1321,32 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			);
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(
-				theme.fg("toolTitle", theme.bold(formatShellCommandCall(args))),
-			);
+			const interceptedPatch =
+				typeof args.command === "string"
+					? extractShellApplyPatch(args.command)
+					: undefined;
+			const label = interceptedPatch
+				? formatApplyPatchCall({
+						input: interceptedPatch.input,
+						workdir: interceptedPatch.workdir ?? args.workdir,
+					})
+				: formatShellCommandCall(args);
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(theme.fg("toolTitle", theme.bold(label)));
 			return text;
 		},
 		renderResult(result, options, theme, context) {
+			const command = (context.args as { command?: unknown } | undefined)
+				?.command;
+			if (typeof command === "string" && extractShellApplyPatch(command)) {
+				return renderApplyPatchResult(
+					result as AgentToolResult<ApplyPatchDetails>,
+					options,
+					theme,
+					context,
+				);
+			}
 			const raw = resultText(result);
 			const details = result.details as ShellCommandDetails | undefined;
 			const failed =
@@ -1240,7 +1379,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				.split("\n")
 				.map((line) => theme.fg(color, line))
 				.join("\n");
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(styled);
 			return text;
 		},
@@ -1284,7 +1424,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			return executeWriteStdin(params, signal, onUpdate);
 		},
 		renderCall(args, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(
 				theme.fg("toolTitle", theme.bold(formatWriteStdinCall(args))),
 			);
@@ -1323,7 +1464,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				.split("\n")
 				.map((line) => theme.fg(color, line))
 				.join("\n");
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const text =
+				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(styled);
 			return text;
 		},
@@ -1371,7 +1513,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			referenced_image_paths: Type.Optional(
 				Type.Array(
 					Type.String({
-						description: "Local image path, absolute or relative to the session cwd.",
+						description:
+							"Local image path, absolute or relative to the session cwd.",
 					}),
 					{
 						description: "Local images to edit, in prompt-reference order.",
