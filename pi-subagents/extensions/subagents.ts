@@ -32,7 +32,6 @@ import type {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { providerFailureHint } from "./provider-errors.ts";
 import {
 	SubagentDashboard,
 	orchestrationSummary,
@@ -69,12 +68,20 @@ const PROGRESS_HEARTBEAT_MIN_MS = 5_000;
 const RUN_TTL_MS = positiveEnvInt("PI_SUBAGENTS_RUN_TTL_MS") ?? 86_400_000; // sweep runs older than 24h
 const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
 const MAX_ACTIVE_CHILDREN = positiveEnvInt("PI_SUBAGENTS_MAX_ACTIVE") ?? 12;
+const AUTO_RECOVERY_PROMPT = "Continue";
+const RECOVERY_SUMMARY_PROMPT =
+	"Review the conversation and return the best available result for the original delegated task. Summarize completed work, evidence, unresolved issues, and why execution stopped. Do not continue implementation or call tools.";
 const ASSISTANT_PREVIEW_MAX = 2000;
 const ROOT_TASK_PATH = "/root";
 const RUN_SCHEMA_VERSION = 2;
-const COORDINATION_NOTICE =
-	'Delegated work is pending. Call wait_agent. If a task stalls, call restart_agent to resume its session in a fresh process or kill_agent to abandon it.';
+const COORDINATION_NOTICE = "Delegated work is pending. Call wait_agent.";
 const INACTIVE = new Set(["completed", "error", "interrupted", "hard_killed"]);
+const RECOVERING = new Set([
+	"restart_requested",
+	"summary_requested",
+	"restarting",
+	"summarizing",
+]);
 
 const THINKING_LEVELS = [
 	"off",
@@ -119,6 +126,24 @@ type Beacon = {
 	generation?: number;
 	resultFile?: string;
 	errorMessage?: string;
+	recoveryStage?: RecoveryStage;
+};
+
+type RecoveryStage =
+	| "idle"
+	| "continued_once"
+	| "continued_twice"
+	| "restarted"
+	| "summarizing";
+
+type AssistantStatus = {
+	stopReason?: string;
+	errorMessage?: string;
+};
+
+type ExitRecovery = {
+	prompt: string;
+	stage: "restarted" | "summarizing";
 };
 
 type Mail = {
@@ -149,6 +174,23 @@ type PendingQuestion = {
 	body: string;
 	approval?: SpawnApproval;
 };
+
+function exitRecovery(beacon: Beacon | undefined): ExitRecovery | undefined {
+	if (
+		!beacon ||
+		INACTIVE.has(beacon.state) ||
+		beacon.recoveryStage === "summarizing"
+	)
+		return undefined;
+	if (beacon.state === "restart_requested")
+		return { prompt: AUTO_RECOVERY_PROMPT, stage: "restarted" };
+	if (
+		beacon.state === "summary_requested" ||
+		beacon.recoveryStage === "restarted"
+	)
+		return { prompt: RECOVERY_SUMMARY_PROMPT, stage: "summarizing" };
+	return { prompt: AUTO_RECOVERY_PROMPT, stage: "restarted" };
+}
 
 // --------------------------------------------------------------------------
 // Pure helpers
@@ -287,10 +329,7 @@ function lastAssistantText(messages: unknown[]): string {
 	return "";
 }
 
-function finalAssistantStatus(messages: unknown[]): {
-	stopReason?: string;
-	errorMessage?: string;
-} {
+function finalAssistantStatus(messages: unknown[]): AssistantStatus {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i] as {
 			role?: string;
@@ -303,35 +342,17 @@ function finalAssistantStatus(messages: unknown[]): {
 	return {};
 }
 
-function statusNeedsAttention(status: {
-	stopReason?: string;
-	errorMessage?: string;
-}): boolean {
+function statusNeedsAttention(status: AssistantStatus): boolean {
 	return (
+		!status.stopReason ||
 		status.stopReason === "error" ||
 		status.stopReason === "aborted" ||
 		!!status.errorMessage
 	);
 }
 
-function providerBackoffMessage(status: {
-	stopReason?: string;
-	errorMessage?: string;
-}): string | undefined {
-	const raw =
-		`${status.stopReason ?? ""} ${status.errorMessage ?? ""}`.toLowerCase();
-	if (!raw.trim()) return undefined;
-	if (
-		raw.includes("429") ||
-		raw.includes("rate_limit") ||
-		raw.includes("rate limit") ||
-		raw.includes("too many requests") ||
-		raw.includes("resource_exhausted") ||
-		raw.includes("quota") ||
-		raw.includes("overloaded")
-	)
-		return status.errorMessage || status.stopReason;
-	return undefined;
+function isSuccessfulAssistantStatus(status: AssistantStatus): boolean {
+	return !statusNeedsAttention(status);
 }
 
 function safeFileSegment(value: string): string {
@@ -398,7 +419,6 @@ function resultReadyMessage(
 	path: string,
 	state: "completed" | "attention",
 	errorMessage?: string,
-	recoveryHint?: string,
 ): string {
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 	const label = beacon?.taskName ? ` · ${beacon.taskName}` : "";
@@ -413,7 +433,6 @@ function resultReadyMessage(
 		`Status: ${state}`,
 		"Payload:",
 		head,
-		recoveryHint ? `Recovery: ${recoveryHint}` : undefined,
 		`Result file: ${path}`,
 	]
 		.filter((line): line is string => line !== undefined)
@@ -532,6 +551,7 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
 			(name === ROOT_TASK_PATH ? "main" : taskId()),
 		parent: patch.parent ?? prev?.parent ?? (name === SELF ? PARENT : null),
 		taskName: patch.taskName ?? prev?.taskName ?? "",
+		task: patch.task ?? prev?.task,
 		state,
 		activity: patch.activity ?? (INACTIVE.has(state) ? "" : prev?.activity),
 		startedAt: prev?.startedAt ?? patch.startedAt ?? now(),
@@ -550,6 +570,7 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
 		generation: patch.generation ?? prev?.generation ?? 1,
 		resultFile: patch.resultFile ?? prev?.resultFile,
 		errorMessage: patch.errorMessage ?? prev?.errorMessage,
+		recoveryStage: patch.recoveryStage ?? prev?.recoveryStage,
 	};
 	writeJsonAtomic(join(dir, "beacon.json"), beacon);
 }
@@ -583,7 +604,9 @@ function activeChildren(parent: string): Beacon[] {
 		if (
 			beacon &&
 			!INACTIVE.has(beacon.state) &&
-			(beacon.state === "queued" || isActive(beacon.name))
+			(beacon.state === "queued" ||
+				RECOVERING.has(beacon.state) ||
+				isActive(beacon.name))
 		)
 			out.push(beacon);
 	}
@@ -596,7 +619,9 @@ function activeDescendants(parent: string): Beacon[] {
 		(agent) =>
 			agent.name.startsWith(prefix) &&
 			!INACTIVE.has(agent.state) &&
-			(agent.state === "queued" || isActive(agent.name)),
+			(agent.state === "queued" ||
+				RECOVERING.has(agent.state) ||
+				isActive(agent.name)),
 	);
 }
 
@@ -614,7 +639,9 @@ function noWaitWorkMessage(name: string): string {
 	const failed = children.filter(
 		(agent) =>
 			agent.state === "error" ||
-			(!INACTIVE.has(agent.state) && !isActive(agent.name)),
+			(!INACTIVE.has(agent.state) &&
+				!RECOVERING.has(agent.state) &&
+				!isActive(agent.name)),
 	);
 	if (failed.length)
 		return `No active agents or unread messages. Failed: ${failed.map((agent) => agent.name).join(", ")}.`;
@@ -650,6 +677,8 @@ function modelLabel(message: { provider?: string; model?: string }):
 function recordAssistantResponse(message: unknown): void {
 	const m = message as {
 		role?: string;
+		stopReason?: string;
+		errorMessage?: string;
 		provider?: string;
 		model?: string;
 		usage?: {
@@ -678,6 +707,13 @@ function recordAssistantResponse(message: unknown): void {
 		cost: (prev?.cost ?? 0) + (usage.cost?.total ?? 0),
 		model: modelLabel(m) ?? prev?.model,
 	};
+	if (
+		isSuccessfulAssistantStatus(m) &&
+		prev?.recoveryStage !== "summarizing"
+	) {
+		patch.recoveryStage = "idle";
+		patch.errorMessage = "";
+	}
 	if (text) patch.lastAssistantText = text.slice(0, ASSISTANT_PREVIEW_MAX);
 	writeBeacon(SELF, patch);
 }
@@ -926,7 +962,9 @@ type LaunchRequest = {
 
 function runningDirectChildren(): Beacon[] {
 	return activeChildren(SELF).filter(
-		(agent) => agent.state !== "queued" && isActive(agent.name),
+		(agent) =>
+			agent.state !== "queued" &&
+			(RECOVERING.has(agent.state) || isActive(agent.name)),
 	);
 }
 
@@ -935,6 +973,11 @@ function launchAgent(
 	request: LaunchRequest,
 	ctx: ExtensionContext,
 ): boolean {
+	const existingBeacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+	const summarizing =
+		!request.fresh && existingBeacon?.recoveryStage === "summarizing";
+	const sessionFile = request.fresh ? undefined : latestSessionFile(name);
+	if (!request.fresh && !sessionFile) return false;
 	try {
 		mkdirSync(activeLock(name)); // claims the agent; throws if already active
 	} catch {
@@ -952,11 +995,11 @@ function launchAgent(
 					task: request.prompt,
 					thinking: request.thinking,
 					generation: request.generation,
+					recoveryStage: "idle",
 					state: "spawning",
 					startedAt: now(),
 				}
 			: {
-					task: request.prompt,
 					thinking: request.thinking,
 					generation: request.generation,
 					state: "running",
@@ -971,12 +1014,12 @@ function launchAgent(
 		process.argv[1],
 		"--print",
 		request.prompt,
-		"--session-id",
-		request.taskId,
+		...(request.fresh
+			? ["--session-id", request.taskId]
+			: ["--session", sessionFile as string]),
 		"--session-dir",
 		sessionsDir(),
-		"--exclude-tools",
-		"ask_user",
+		...(summarizing ? ["--no-tools"] : ["--exclude-tools", "ask_user"]),
 		"--thinking",
 		request.thinking,
 	];
@@ -999,13 +1042,35 @@ function launchAgent(
 		writeFileSync(activePidFile(name), `${child.pid}\n`);
 	kids.set(name, child);
 	rmSync(launchFile(name), { force: true });
-	const finishUnexpected = (state: "error", body: string) => {
+	let finalized = false;
+	const finishUnexpected = (state: "error", detail: string) => {
+		if (finalized) return;
+		finalized = true;
 		const b = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 		if (b && b.generation !== request.generation) {
 			if (kids.get(name) === child) kids.delete(name);
 			return;
 		}
+		let body = detail;
+		const recovery = exitRecovery(b);
+		if (recovery) {
+			const outcome = restartAgentProcess(
+				name,
+				recovery.prompt,
+				ctx,
+				request.generation,
+				recovery.stage,
+			);
+			if (outcome.ok || outcome.superseded) {
+				if (kids.get(name) === child) kids.delete(name);
+				setTimeout(() => drainLaunchQueue(ctx), 0).unref();
+				return;
+			}
+			body = `automatic restart failed: ${outcome.message}`;
+		}
+
 		rmSync(activeLock(name), { recursive: true, force: true });
+		if (kids.get(name) === child) kids.delete(name);
 		if (!b || !INACTIVE.has(b.state)) {
 			writeBeacon(name, { state, errorMessage: body });
 			post({
@@ -1017,7 +1082,6 @@ function launchAgent(
 				ts: now(),
 			});
 		}
-		if (kids.get(name) === child) kids.delete(name);
 		setTimeout(() => drainLaunchQueue(ctx), 0).unref();
 	};
 	child.on("error", (error) =>
@@ -1140,84 +1204,158 @@ type RestartOutcome = {
 	ok: boolean;
 	message: string;
 	generation?: number;
+	superseded?: boolean;
 };
+
+function acquireRestartClaim(claim: string): boolean {
+	const tryAcquire = (): boolean => {
+		const candidate = `${claim}.${process.pid}.${rid()}`;
+		mkdirSync(candidate);
+		writeFileSync(join(candidate, "pid"), `${process.pid}\n`);
+		try {
+			renameSync(candidate, claim);
+			return true;
+		} catch {
+			rmSync(candidate, { recursive: true, force: true });
+			return false;
+		}
+	};
+	if (tryAcquire()) return true;
+	const owner = Number(
+		(() => {
+			try {
+				return readFileSync(join(claim, "pid"), "utf8");
+			} catch {
+				return "";
+			}
+		})(),
+	);
+	if (!Number.isFinite(owner) || owner <= 0 || processAlive(owner)) return false;
+	rmSync(claim, { recursive: true, force: true });
+	return tryAcquire();
+}
 
 function restartAgentProcess(
 	name: string,
 	prompt: string,
 	ctx: ExtensionContext,
+	expectedGeneration?: number,
+	recoveryStage: RecoveryStage = "restarted",
+	expectedProgressAt?: number,
 ): RestartOutcome {
-	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
-	if (!beacon) return { ok: false, message: `${name}: not found` };
-	if (beacon.state === "queued")
+	const claim = join(agentDir(name), ".restart");
+	if (!acquireRestartClaim(claim)) {
 		return {
 			ok: false,
-			message: `${name}: queued tasks have no conversation to resume`,
-		};
-	if (!latestSessionFile(name))
-		return {
-			ok: false,
-			message: `${name}: no persisted session is available to resume`,
-		};
-
-	const previousGeneration = beacon.generation ?? 1;
-	const nextGeneration = previousGeneration + 1;
-	const trackedChild = kids.get(name);
-	const pid = activePid(name) ?? trackedChild?.pid;
-	const live = Boolean(pid && processAlive(pid));
-
-	// Advance the generation before terminating the old process. Its exit callback
-	// then cannot overwrite the replacement process's lock or beacon.
-	writeBeacon(name, {
-		generation: nextGeneration,
-		state: "restarting",
-		activity: "restarting",
-		resultFile: "",
-		errorMessage: "",
-	});
-	if (live && pid && !killPidTree(pid) && processAlive(pid)) {
-		writeBeacon(name, {
-			generation: previousGeneration,
-			state: beacon.state,
-			activity: beacon.activity ?? "",
-			errorMessage: "restart failed: process could not be terminated",
-		});
-		return {
-			ok: false,
-			message: `${name}: process ${pid} could not be terminated`,
+			message: `${name}: restart already claimed`,
+			superseded: true,
 		};
 	}
 
-	if (kids.get(name) === trackedChild) kids.delete(name);
-	rmSync(activeLock(name), { recursive: true, force: true });
-	rmSync(launchFile(name), { force: true });
-	const accepted = runAgent(
-		name,
-		prompt,
-		ctx,
-		false,
-		beacon.taskName,
-		beacon.taskId,
-		beacon.thinking,
-		nextGeneration,
-	);
-	if (!accepted) {
+	try {
+		const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
+		if (!beacon) return { ok: false, message: `${name}: not found` };
+		const previousGeneration = beacon.generation ?? 1;
+		if (
+			expectedGeneration !== undefined &&
+			previousGeneration !== expectedGeneration
+		)
+			return {
+				ok: false,
+				message: `${name}: generation ${expectedGeneration} was superseded`,
+				superseded: true,
+			};
+		if (expectedGeneration !== undefined && INACTIVE.has(beacon.state))
+			return {
+				ok: false,
+				message: `${name}: already ${beacon.state}`,
+				superseded: true,
+			};
+		if (beacon.state === "queued")
+			return {
+				ok: false,
+				message: `${name}: queued tasks have no conversation to resume`,
+			};
+		if (
+			expectedProgressAt !== undefined &&
+			Math.max(beacon.updatedAt, sessionProgressAt(name)) > expectedProgressAt
+		)
+			return {
+				ok: false,
+				message: `${name}: progress resumed before restart`,
+				superseded: true,
+			};
+		if (!latestSessionFile(name))
+			return {
+				ok: false,
+				message: `${name}: no persisted session is available to resume`,
+			};
+
+		const nextGeneration = previousGeneration + 1;
+		const trackedChild = kids.get(name);
+		const pid = activePid(name) ?? trackedChild?.pid;
+		const live = Boolean(pid && processAlive(pid));
+
+		// Advance the generation before terminating the old process. Its exit
+		// callback then cannot mutate the replacement lock or beacon.
 		writeBeacon(name, {
-			state: "error",
-			activity: "",
-			errorMessage: "restart failed: replacement launch was rejected",
+			generation: nextGeneration,
+			state: recoveryStage === "summarizing" ? "summarizing" : "restarting",
+			activity:
+				recoveryStage === "summarizing" ? "summarizing" : "restarting",
+			recoveryStage,
+			resultFile: "",
+			errorMessage: "",
 		});
+		if (live && pid && !killPidTree(pid) && processAlive(pid)) {
+			writeBeacon(name, {
+				generation: previousGeneration,
+				state: beacon.state,
+				activity: beacon.activity ?? "",
+				recoveryStage: beacon.recoveryStage ?? "idle",
+				errorMessage: "restart failed: process could not be terminated",
+			});
+			return {
+				ok: false,
+				message: `${name}: process ${pid} could not be terminated`,
+			};
+		}
+
+		if (recoveryStage === "summarizing")
+			killDescendants(name, "parent recovery entered summary mode");
+		if (kids.get(name) === trackedChild) kids.delete(name);
+		rmSync(activeLock(name), { recursive: true, force: true });
+		rmSync(launchFile(name), { force: true });
+		const accepted = runAgent(
+			name,
+			prompt,
+			ctx,
+			false,
+			beacon.taskName,
+			beacon.taskId,
+			beacon.thinking,
+			nextGeneration,
+		);
+		if (!accepted) {
+			writeBeacon(name, {
+				state: "error",
+				activity: "",
+				errorMessage: "restart failed: replacement launch was rejected",
+			});
+			return {
+				ok: false,
+				message: `${name}: replacement launch was rejected`,
+			};
+		}
+		appendFeed(`${SELF}→${name}: restarted generation ${nextGeneration}`);
 		return {
-			ok: false,
-			message: `${name}: replacement launch was rejected`,
+			ok: true,
+			message: `${name}: resumed session in generation ${nextGeneration}`,
+			generation: nextGeneration,
 		};
+	} finally {
+		rmSync(claim, { recursive: true, force: true });
 	}
-	appendFeed(`${SELF}→${name}: restarted generation ${nextGeneration}`);
-	return {
-		ok: true,
-		message: `${name}: resumed session in generation ${nextGeneration}`,
-		generation: nextGeneration,
-	};
 }
 
 function removePendingFrom(sender: string, recipient = SELF): number {
@@ -1240,7 +1378,7 @@ function killOneAgent(name: string, reason: string): string {
 	const live = Boolean(pid && processAlive(pid));
 	rmSync(launchFile(name), { force: true });
 	kids.delete(name);
-	const removed = removePendingFrom(name);
+	const removed = removePendingFrom(name, beacon.parent ?? SELF);
 	if (pendingQuestion?.from === name) pendingQuestion = undefined;
 	const cleared = removed
 		? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}`
@@ -1262,6 +1400,18 @@ function killOneAgent(name: string, reason: string): string {
 		}, 250).unref();
 	appendFeed(`${SELF}→${name}: killed (${reason})`);
 	return `${name}: ${pid ? (killed ? `killed pid ${pid}` : `marked hard-killed; pid ${pid} did not terminate cleanly`) : "marked hard-killed; no live pid"}${cleared}`;
+}
+
+function killDescendants(name: string, reason: string): void {
+	const prefix = `${name}/`;
+	const descendants = listAgents()
+		.filter(
+			(agent) =>
+				agent.name.startsWith(prefix) && !INACTIVE.has(agent.state),
+		)
+		.sort((a, b) => b.name.length - a.name.length);
+	for (const descendant of descendants)
+		killOneAgent(descendant.name, reason);
 }
 
 function killAgents(selector: string, reason: string): string[] {
@@ -1730,11 +1880,12 @@ function registerTools(pi: ExtensionAPI): void {
 					"No agent work pending",
 				);
 			if (!IS_CHILD) {
-				const stalled = stalledActiveLeaves();
-				if (stalled.length > 0) return stalledWaitResult(stalled);
+				const stalled = restartStalledAgents(stalledActiveLeaves(), ctx);
+				if (stalled.length > 0)
+					postStalledAlert(failStalledAgents(stalled));
 			}
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
-			if (!IS_CHILD) scheduleStallWatchdog();
+			if (!IS_CHILD) scheduleStallWatchdog(ctx);
 			let event: TeamEvent | undefined;
 			try {
 				event = await waitForTeamEvent(signal);
@@ -1758,7 +1909,7 @@ function registerTools(pi: ExtensionAPI): void {
 					"Handle the user input with send_message, restart_agent, or kill_agent, then call wait_agent again if work remains.";
 			else if (stalledAttention)
 				nextAction =
-					"Decide now: call restart_agent to resume each stalled session in a fresh process, or kill_agent to abandon it. Do not call wait_agent again without acting.";
+					"Automatic recovery is exhausted; handle the reported task failure.";
 			else if (delegationPending)
 				nextAction =
 					"Call wait_agent again. Non-coordination tools remain blocked.";
@@ -1892,21 +2043,10 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 		pi.on("agent_end", (event) => {
 			lastMainRunMessages = (event as { messages?: unknown[] }).messages ?? [];
 		});
-		pi.on("agent_settled", (_event, ctx) => {
+		pi.on("agent_settled", () => {
 			const status = finalAssistantStatus(lastMainRunMessages);
 			if (status.stopReason === "aborted" || suppressNextCoordinationNudge) {
 				suppressNextCoordinationNudge = false;
-				return;
-			}
-			const backoff = providerBackoffMessage(status);
-			if (backoff) {
-				if (ctx.hasUI && now() - lastProviderBackoffNoticeAt > 60_000) {
-					lastProviderBackoffNoticeAt = now();
-					ctx.ui.notify(
-						`Subagent coordination paused after provider backoff: ${backoff}. Send a new message or use the collaboration tools when ready.`,
-						"warning",
-					);
-				}
 				return;
 			}
 			if (runDir && (pendingQuestion || hasTeamWork(SELF)))
@@ -1967,30 +2107,62 @@ function registerChildHooks(pi: ExtensionAPI): void {
 	pi.on("agent_settled", () => {
 		const messages = lastChildRunMessages;
 		const status = finalAssistantStatus(messages);
-		const interrupted = status.stopReason === "aborted";
-		const needsAttention = statusNeedsAttention(status);
-		const recoveryHint = needsAttention
-			? providerFailureHint(status)
-			: undefined;
+		const beacon = readJson<Beacon>(join(agentDir(SELF), "beacon.json"));
+		const recoveryStage = beacon?.recoveryStage ?? "idle";
+		const successful = isSuccessfulAssistantStatus(status);
+		if (
+			!successful &&
+			(recoveryStage === "idle" || recoveryStage === "continued_once")
+		) {
+			writeBeacon(SELF, {
+				state: "running",
+				activity: "recovering",
+				errorMessage: status.errorMessage,
+				recoveryStage:
+					recoveryStage === "idle"
+						? "continued_once"
+						: "continued_twice",
+			});
+			pi.sendUserMessage(AUTO_RECOVERY_PROMPT, { deliverAs: "followUp" });
+			return;
+		}
+		if (!successful && recoveryStage === "continued_twice") {
+			writeBeacon(SELF, {
+				state: "restart_requested",
+				activity: "restarting",
+				errorMessage: status.errorMessage,
+				recoveryStage: "continued_twice",
+			});
+			return;
+		}
+		if (!successful && recoveryStage === "restarted") {
+			writeBeacon(SELF, {
+				state: "summary_requested",
+				activity: "summarizing",
+				errorMessage: status.errorMessage,
+				recoveryStage: "restarted",
+			});
+			return;
+		}
 
-		if (hasTeamWork(SELF)) {
+		if (recoveryStage !== "summarizing" && hasTeamWork(SELF)) {
 			writeBeacon(SELF, { state: "running", activity: "must wait" });
 			pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
 			return;
 		}
 
+		const needsAttention = !successful;
+		const terminalError =
+			status.errorMessage ||
+			(needsAttention ? "subagent produced no successful assistant response" : undefined);
 		const finalText = collapseWhitespace(
-			lastAssistantText(messages) || status.errorMessage || "",
+			lastAssistantText(messages) || terminalError || "",
 		);
-		const resultFile =
-			NOTIFY && !interrupted ? writeResultFile(SELF, messages) : undefined;
+		const resultFile = NOTIFY ? writeResultFile(SELF, messages) : undefined;
 		const terminalPatch: Partial<Beacon> = {
-			state: interrupted
-				? "interrupted"
-				: needsAttention
-					? "error"
-					: "completed",
-			errorMessage: needsAttention ? status.errorMessage : undefined,
+			state: needsAttention ? "error" : "completed",
+			errorMessage: terminalError,
+			recoveryStage: successful ? "idle" : recoveryStage,
 			resultFile,
 		};
 		if (finalText)
@@ -2008,8 +2180,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 					SELF,
 					resultFile,
 					needsAttention ? "attention" : "completed",
-					status.errorMessage,
-					recoveryHint,
+					terminalError,
 				),
 				kind: needsAttention ? "attention" : "completion",
 				ts: now(),
@@ -2028,7 +2199,6 @@ let stallWatchdogTimer: ReturnType<typeof setTimeout> | undefined;
 let lastSig: string | undefined;
 let runDismissed = false;
 let suppressNextCoordinationNudge = false;
-let lastProviderBackoffNoticeAt = 0;
 let lastMainRunMessages: unknown[] = [];
 let lastChildRunMessages: unknown[] = [];
 
@@ -2229,7 +2399,9 @@ function activeLeafProgress(): ActiveLeafProgress[] {
 		(agent) =>
 			agent.name !== ROOT_TASK_PATH &&
 			!INACTIVE.has(agent.state) &&
-			(agent.state === "queued" || isActive(agent.name)),
+			(agent.state === "queued" ||
+				RECOVERING.has(agent.state) ||
+				isActive(agent.name)),
 	);
 	const liveParents = new Set(
 		active.flatMap((agent) => (agent.parent ? [agent.parent] : [])),
@@ -2268,18 +2440,6 @@ function durationText(durationMs: number): string {
 	return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
-function stalledAgentDetails(stalled: ActiveLeafProgress[], observedAt = now()) {
-	return stalled.map((item) => ({
-		task_path: item.taskPath,
-		inactive_for_ms: Math.max(0, observedAt - item.progressAt),
-		last_progress_at: new Date(item.progressAt).toISOString(),
-		state: item.agent.state,
-		activity: item.agent.activity || undefined,
-		pid: item.pid,
-		tokens: item.tokens,
-	}));
-}
-
 function stalledAlertBody(
 	stalled: ActiveLeafProgress[],
 	observedAt = now(),
@@ -2293,26 +2453,8 @@ function stalledAlertBody(
 				: "";
 			return `${item.taskPath}: no transcript, token, or runtime-event progress for ${inactive}${activity}; pid ${item.pid ?? "unknown"}, ${item.tokens} recorded tokens`;
 		}),
-		"The main agent must decide whether to restart each session in a fresh process or abandon it.",
+		"Automatic recovery is exhausted; the task was stopped and marked failed.",
 	].join("\n");
-}
-
-function stalledWaitResult(stalled: ActiveLeafProgress[]) {
-	const observedAt = now();
-	const message = stalledAlertBody(stalled, observedAt);
-	return structured(
-		{
-			message,
-			attention: {
-				type: "stalled_agents",
-				agents: stalledAgentDetails(stalled, observedAt),
-			},
-			delegation_pending: true,
-			next_action:
-				"Decide now: call restart_agent to resume each stalled session in a fresh process, or kill_agent to abandon it. Do not call wait_agent again without acting.",
-		},
-		`Stalled: ${stalled.map((item) => item.taskPath).join(", ")}`,
-	);
 }
 
 function rootIsBlocked(): boolean {
@@ -2324,30 +2466,90 @@ function rootIsBlocked(): boolean {
 }
 
 function postStalledAlert(stalled: ActiveLeafProgress[]): void {
-	if (stalled.length === 0) return;
-	const taskPaths = stalled.map((item) => item.taskPath);
-	const body = stalledAlertBody(stalled);
-	appendFeed(`liveness: stalled ${taskPaths.join(", ")}`);
-	post({
-		id: rid(),
-		from: taskPaths[0] ?? ROOT_TASK_PATH,
-		to: ROOT_TASK_PATH,
-		body,
-		kind: "attention",
-		topic: "stalled",
-		taskPaths,
-		ts: now(),
+	for (const item of stalled) {
+		appendFeed(`liveness: stalled ${item.taskPath}`);
+		post({
+			id: rid(),
+			from: item.taskPath,
+			to: item.agent.parent ?? ROOT_TASK_PATH,
+			body: stalledAlertBody([item]),
+			kind: "attention",
+			topic: "stalled",
+			taskPaths: [item.taskPath],
+			ts: now(),
+		});
+	}
+}
+
+function restartStalledAgents(
+	stalled: ActiveLeafProgress[],
+	ctx: ExtensionContext,
+): ActiveLeafProgress[] {
+	return stalled.filter((item) => {
+		const beacon = readJson<Beacon>(
+			join(agentDir(item.taskPath), "beacon.json"),
+		);
+		if (
+			!beacon ||
+			INACTIVE.has(beacon.state) ||
+			beacon.state === "queued" ||
+			beacon.state === "waiting" ||
+			activeDescendants(item.taskPath).length > 0
+		)
+			return false;
+		const progressAt = Math.max(
+			beacon.updatedAt,
+			sessionProgressAt(item.taskPath),
+		);
+		if (now() - progressAt < STALL_TIMEOUT_MS) return false;
+
+		const stage = beacon.recoveryStage ?? "idle";
+		if (stage === "summarizing") return true;
+		const summarize =
+			beacon.state === "summary_requested" || stage === "restarted";
+		const outcome = restartAgentProcess(
+			item.taskPath,
+			summarize ? RECOVERY_SUMMARY_PROMPT : AUTO_RECOVERY_PROMPT,
+			ctx,
+			beacon.generation ?? 1,
+			summarize ? "summarizing" : "restarted",
+			progressAt,
+		);
+		return !outcome.ok && !outcome.superseded;
 	});
 }
 
-function runStallWatchdog(): void {
+function failStalledAgents(
+	stalled: ActiveLeafProgress[],
+): ActiveLeafProgress[] {
+	return stalled.filter((item) => {
+		const beacon = readJson<Beacon>(
+			join(agentDir(item.taskPath), "beacon.json"),
+		);
+		if (
+			!beacon ||
+			INACTIVE.has(beacon.state) ||
+			beacon.recoveryStage !== "summarizing" ||
+			now() - Math.max(beacon.updatedAt, sessionProgressAt(item.taskPath)) <
+				STALL_TIMEOUT_MS
+		)
+			return false;
+		killOneAgent(item.taskPath, "automatic recovery exhausted");
+		writeBeacon(item.taskPath, {
+			state: "error",
+			activity: "",
+			errorMessage: "automatic recovery exhausted after the task stalled",
+		});
+		return true;
+	});
+}
+
+function runStallWatchdog(ctx: ExtensionContext): void {
 	if (!rootIsBlocked()) return;
-	const stalled = stalledActiveLeaves();
-	if (stalled.length > 0) {
-		postStalledAlert(stalled);
-		return;
-	}
-	scheduleStallWatchdog();
+	const stalled = restartStalledAgents(stalledActiveLeaves(), ctx);
+	if (stalled.length > 0)
+		postStalledAlert(failStalledAgents(stalled));
+	scheduleStallWatchdog(ctx);
 }
 
 function cancelStallWatchdog(): void {
@@ -2355,7 +2557,7 @@ function cancelStallWatchdog(): void {
 	stallWatchdogTimer = undefined;
 }
 
-function scheduleStallWatchdog(): void {
+function scheduleStallWatchdog(ctx: ExtensionContext): void {
 	if (stallWatchdogTimer || !rootIsBlocked()) return;
 	const leaves = activeLeafProgress();
 	const deadline = nextProgressDeadline(leaves, STALL_TIMEOUT_MS);
@@ -2363,7 +2565,7 @@ function scheduleStallWatchdog(): void {
 	const delay = Math.max(1, Math.min(deadline - now(), 2_147_483_647));
 	stallWatchdogTimer = setTimeout(() => {
 		stallWatchdogTimer = undefined;
-		runStallWatchdog();
+		runStallWatchdog(ctx);
 	}, delay);
 	stallWatchdogTimer.unref();
 }

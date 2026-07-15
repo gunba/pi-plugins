@@ -61,15 +61,24 @@ The dashboard provides:
 - **Resumable tasks.** Sending a message to a terminal task reopens the same
   isolated session. `restart_agent` also terminates an unresponsive active
   process and resumes that same session as a new result generation.
+- **Automatic error recovery.** After Pi exhausts its built-in retries, a child
+  sends `Continue` up to twice in the same process. If both attempts error, the
+  launcher resumes the same persisted session once in a fresh process with
+  `Continue`. Any successful assistant message resets this recovery budget.
+- **Fatal-result salvage.** If the fresh process produces no successful response,
+  one final fresh process reviews the same conversation and returns a concise
+  best-effort result for the original task. Unfinished descendants are stopped
+  before summarization, and the parent is notified only when that summary
+  completes or the summary process also fails.
 - **Result publication.** A result file is written atomically before completion
   mail is published.
 - **Programmatic stall detection.** While root is blocked in `wait_agent`, a
  deadline-driven watchdog tracks transcript writes, token-bearing responses,
  streamed model output, and tool lifecycle updates for each active leaf task.
- After ten minutes without observable progress it wakes the main agent with
- exact telemetry. The main agent must then restart the persisted conversation
- in a fresh process or kill the stalled task; no separate overseer model is
- involved.
+ After ten minutes without observable progress it advances through the same
+ fresh-process restart and fatal-result summary stages automatically. The main
+ agent is woken only when a final result or unrecoverable failure is available;
+ no separate overseer model is involved.
 
 ## Configuration
 
@@ -80,7 +89,7 @@ Environment variables:
 - `PI_SUBAGENTS_MAX_ACTIVE` — concurrent direct children per parent, default
   `12`.
 - `PI_SUBAGENTS_STALL_TIMEOUT_MS` — maximum time without observable progress
-  before the main agent is alerted, default `600000`.
+  before automatic recovery advances, default `600000`.
 - `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup,
   default `86400000`.
 - `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows, default `8`.

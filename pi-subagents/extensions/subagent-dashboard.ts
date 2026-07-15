@@ -49,6 +49,10 @@ const GLYPH: Record<string, string> = {
 	queued: "○",
 	spawning: "◌",
 	running: "●",
+	restart_requested: "↻",
+	restarting: "↻",
+	summary_requested: "≋",
+	summarizing: "≋",
 	waiting: "◐",
 	completed: "✓",
 	error: "✗",
@@ -59,6 +63,10 @@ const STATE_COLOR: Record<string, ThemeColor> = {
 	queued: "dim",
 	spawning: "dim",
 	running: "accent",
+	restart_requested: "warning",
+	restarting: "warning",
+	summary_requested: "warning",
+	summarizing: "warning",
 	waiting: "warning",
 	completed: "success",
 	error: "error",
@@ -163,8 +171,15 @@ export function flattenDashboardAgents(agents: DashboardAgent[]): AgentRow[] {
 
 export function orchestrationSummary(agents: DashboardAgent[]): string {
 	const workers = agents.filter((agent) => agent.name !== "/root");
-	const active = workers.filter(
-		(agent) => agent.state === "running" || agent.state === "spawning",
+	const active = workers.filter((agent) =>
+		[
+			"running",
+			"spawning",
+			"restart_requested",
+			"restarting",
+			"summary_requested",
+			"summarizing",
+		].includes(agent.state),
 	).length;
 	const waiting = workers.filter(
 		(agent) => agent.state === "waiting" || agent.state === "queued",
