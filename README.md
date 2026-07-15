@@ -32,7 +32,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-scheduler` — adds `/schedule <delay> <message>` and an agent-facing
   `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
   compact queued-message panel, countdowns, `ctrl+o` expansion, and
-  cancel/list command reminders.
+  cancel/list command reminders. Agent-created messages steer an active run;
+  user-created `/schedule` messages wait as follow-ups.
 - `pi-extension-freshness` — prints a startup extension freshness panel with
   last-updated dates, age-based color coding, and `/extension-freshness` for
   on-demand review of stale extension paths.
@@ -41,8 +42,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
   git repository, with generated package installs, sessions, caches, tmp files,
   and local auth state kept machine-local.
-- `pi-tab-title` — names terminal tabs from the first user message using the
-  current model and keeps the tab title synced with the session name.
 - `pi-system-context` — adds compact local environment context to the system
   prompt.
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`

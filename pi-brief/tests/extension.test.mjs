@@ -220,7 +220,7 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	assert.match(result.content[0].text, /Rendered brief revision 1/);
 	assert.equal(result.details.revision, 1);
 	assert.equal(result.details.status, "draft");
-	assert.match(result.details.filePath, /\.pi\/briefs\/.*-precise-task\.md$/);
+	assert.match(result.details.filePath, /\.pi[\\/]briefs[\\/].*-precise-task\.md$/);
 	assert.match(
 		readFileSync(result.details.filePath, "utf8"),
 		/^# Precise task/m,

@@ -17,6 +17,8 @@ const MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
 const SCHEDULE_CONTROLS = "Ctrl+Alt+S list · /schedule cancel <id> · /schedule clear";
 const WIDGET_PLACEMENT = process.env.PI_SCHEDULER_WIDGET_PLACEMENT === "aboveEditor" ? "aboveEditor" : "belowEditor";
 
+type DeliveryMode = "steer" | "followUp";
+
 type ScheduledMessage = {
   id: string;
   sessionId: string;
@@ -25,10 +27,11 @@ type ScheduledMessage = {
   createdAt: number;
   dueAt: number;
   message: string;
+  delivery: DeliveryMode;
 };
 
 type StoreFile = {
-  version: 1;
+  version: 2;
   messages: ScheduledMessage[];
 };
 
@@ -43,13 +46,13 @@ function ensureDir(): void {
 function readStore(): StoreFile {
   try {
     const parsed = JSON.parse(readFileSync(STORE_FILE, "utf8")) as Partial<StoreFile>;
-    if (parsed.version === 1 && Array.isArray(parsed.messages)) {
-      return { version: 1, messages: parsed.messages.filter(isScheduledMessage) };
+    if (parsed.version === 2 && Array.isArray(parsed.messages)) {
+      return { version: 2, messages: parsed.messages.filter(isScheduledMessage) };
     }
   } catch {
     // Missing or corrupt stores should not break Pi startup.
   }
-  return { version: 1, messages: [] };
+  return { version: 2, messages: [] };
 }
 
 function writeStore(store: StoreFile): void {
@@ -66,7 +69,8 @@ function isScheduledMessage(value: unknown): value is ScheduledMessage {
     && typeof v.cwd === "string"
     && Number.isFinite(v.createdAt)
     && Number.isFinite(v.dueAt)
-    && typeof v.message === "string";
+    && typeof v.message === "string"
+    && (v.delivery === "steer" || v.delivery === "followUp");
 }
 
 function sessionId(ctx: ExtensionContext): string {
@@ -92,7 +96,7 @@ function parseDelay(raw: string): number | undefined {
   return ms;
 }
 
-function scheduleMessage(ctx: ExtensionContext, delayMs: number, message: string): ScheduledMessage {
+function scheduleMessage(ctx: ExtensionContext, delayMs: number, message: string, delivery: DeliveryMode): ScheduledMessage {
   const store = readStore();
   const now = Date.now();
   const entry: ScheduledMessage = {
@@ -103,21 +107,23 @@ function scheduleMessage(ctx: ExtensionContext, delayMs: number, message: string
     createdAt: now,
     dueAt: now + delayMs,
     message,
+    delivery,
   };
   store.messages.push(entry);
   writeStore(store);
   return entry;
 }
 
-function scheduleAndNotify(ctx: ExtensionContext, delayMs: number, message: string): ScheduledMessage {
-  const entry = scheduleMessage(ctx, delayMs, message);
+function scheduleAndNotify(ctx: ExtensionContext, delayMs: number, message: string, delivery: DeliveryMode): ScheduledMessage {
+  const entry = scheduleMessage(ctx, delayMs, message, delivery);
   ctx.ui.notify(scheduleConfirmation(entry), "info");
   refreshWidget(ctx);
   return entry;
 }
 
 function scheduleConfirmation(entry: ScheduledMessage): string {
-  return `Scheduled #${entry.id} ${formatRemaining(entry.dueAt)} (${formatDueAt(entry.dueAt)}).`;
+  const delivery = entry.delivery === "steer" ? "steering" : "follow-up";
+  return `Scheduled #${entry.id} ${formatRemaining(entry.dueAt)} (${formatDueAt(entry.dueAt)}) as a ${delivery} message.`;
 }
 
 function invalidDelayMessage(): string {
@@ -150,7 +156,7 @@ function cancelMessages(ctx: ExtensionContext, selector: string): { cancelled: S
 
   if (cancelled.length > 0 && !ambiguous) {
     const cancelledIds = new Set(cancelled.map((message) => message.id));
-    writeStore({ version: 1, messages: store.messages.filter((message) => !cancelledIds.has(message.id)) });
+    writeStore({ version: 2, messages: store.messages.filter((message) => !cancelledIds.has(message.id)) });
   }
   return { cancelled, ambiguous };
 }
@@ -164,7 +170,7 @@ function removeMessages(messages: ScheduledMessage[]): void {
   if (!messages.length) return;
   const ids = new Set(messages.map((message) => message.id));
   const store = readStore();
-  writeStore({ version: 1, messages: store.messages.filter((message) => !ids.has(message.id)) });
+  writeStore({ version: 2, messages: store.messages.filter((message) => !ids.has(message.id)) });
 }
 
 function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
@@ -178,7 +184,7 @@ function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
     due.forEach((entry, index) => {
       ctx.ui.notify(`Sending scheduled message #${entry.id}`, "info");
       if (index === 0 && ctx.isIdle()) pi.sendUserMessage(entry.message);
-      else pi.sendUserMessage(entry.message, { deliverAs: "followUp" });
+      else pi.sendUserMessage(entry.message, { deliverAs: entry.delivery });
       delivered.push(entry);
     });
   } catch (error) {
@@ -388,11 +394,12 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "schedule",
     label: "Schedule message",
-    description: "Schedule a future user message back to this same Pi session. Useful as a delayed self-reminder or wait-until-later tool.",
+    description: "Schedule a future user message back to this same Pi session. When it becomes due during an active run, it is delivered as steering so it updates the current work instead of starting a delayed follow-up.",
     promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
     promptGuidelines: [
       "Use schedule when you need to be reminded or re-contacted after a real-world delay instead of polling manually.",
       "Write the scheduled message with enough context that you can resume the task when it is delivered.",
+      "Messages created with schedule always steer an active run rather than queueing a follow-up.",
       "Delays use minutes, hours, or days, for example `15m`, `5h`, `5.5h`, or `30d`.",
     ],
     parameters: Type.Object({
@@ -412,7 +419,7 @@ export default function (pi: ExtensionAPI): void {
         };
       }
 
-      const entry = scheduleAndNotify(ctx, delayMs, message);
+      const entry = scheduleAndNotify(ctx, delayMs, message, "steer");
       return {
         content: [{ type: "text", text: scheduleConfirmation(entry) }],
         details: {
@@ -422,6 +429,7 @@ export default function (pi: ExtensionAPI): void {
           dueAtDisplay: formatDueAt(entry.dueAt),
           delay: params.delay,
           message: entry.message,
+          delivery: entry.delivery,
         },
       };
     },
@@ -436,7 +444,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("schedule", {
-    description: "Schedule a user message for later, e.g. /schedule 5.5h check usage reset",
+    description: "Schedule a follow-up user message for later, e.g. /schedule 5.5h check usage reset",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed || /^list$/i.test(trimmed)) {
@@ -476,7 +484,7 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      scheduleAndNotify(ctx, delayMs, message);
+      scheduleAndNotify(ctx, delayMs, message, "followUp");
     },
   });
 

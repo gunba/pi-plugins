@@ -10,7 +10,7 @@
   "type": "module",
   "scripts": {
     "check": "npm run typecheck && npm test",
-    "test": "node --test pi-brief/tests/*.test.mjs pi-codex-compat/tests/*.test.mjs pi-subagents/tests/*.test.mjs",
+    "test": "node --test pi-brief/tests/*.test.mjs pi-codex-compat/tests/*.test.mjs pi-scheduler/tests/*.test.mjs pi-subagents/tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "pi": {
@@ -21,7 +21,6 @@
       "./pi-brief/extensions/brief.ts",
       "./pi-extension-freshness/extensions/extension-freshness.ts",
       "./pi-config/extensions/pi-config.ts",
-      "./pi-tab-title/extensions/tab-title.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",

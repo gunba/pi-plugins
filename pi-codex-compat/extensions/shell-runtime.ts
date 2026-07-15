@@ -342,14 +342,16 @@ export function createUnifiedExecEnvironment(
 	return { ...base, ...UNIFIED_EXEC_ENV_DEFAULTS };
 }
 
+function normalizedShellName(shellPath: string): string {
+	return basename(shellPath).toLowerCase().replace(/\.exe$/, "");
+}
+
 function shellArguments(
 	shellPath: string,
 	cmd: string,
 	login: boolean,
 ): string[] {
-	const name = basename(shellPath)
-		.toLowerCase()
-		.replace(/\.exe$/, "");
+	const name = normalizedShellName(shellPath);
 	if (/^(?:bash|zsh|sh|dash|ksh|fish)$/.test(name)) {
 		return [login ? "-lc" : "-c", cmd];
 	}
@@ -389,9 +391,7 @@ export function resolveShellLaunch(
 	const shellConfig = resolveDefaultShell();
 	if (shellConfig.commandTransport === "stdin") {
 		const args = [...shellConfig.args];
-		const name = basename(shellConfig.shell)
-			.toLowerCase()
-			.replace(/\.exe$/, "");
+		const name = normalizedShellName(shellConfig.shell);
 		if (
 			login &&
 			name === "bash" &&
@@ -959,9 +959,10 @@ function requestInterrupt(session: ExecSession): void {
 	if (isSessionDone(session)) return;
 	const pid = session.child.pid;
 	if (pid) {
+		const force = process.platform === "win32";
 		recordTerminationAttempt(
 			session,
-			terminateProcessTree(pid, "SIGINT", false),
+			terminateProcessTree(pid, force ? "SIGKILL" : "SIGINT", force),
 		);
 	}
 }
@@ -1033,12 +1034,12 @@ function buildSessionResult(
 	];
 	if (running) {
 		sections.push(`Process running with session ID ${session.id}`);
-	} else if (typeof session.exitCode === "number") {
-		sections.push(`Process exited with code ${session.exitCode}`);
 	} else if (session.exitSignal) {
 		sections.push(`Process exited with signal ${session.exitSignal}`);
 	} else if (session.aborted) {
 		sections.push("Process aborted");
+	} else if (typeof session.exitCode === "number") {
+		sections.push(`Process exited with code ${session.exitCode}`);
 	} else if (processError) {
 		sections.push(`Process failed: ${processError}`);
 	} else {
@@ -1230,6 +1231,9 @@ async function createExecSession(
 				detached: process.platform !== "win32",
 				env: createUnifiedExecEnvironment(),
 				stdio: "pipe",
+				windowsVerbatimArguments:
+					process.platform === "win32" &&
+					normalizedShellName(launch.shell) === "cmd",
 				windowsHide: true,
 			});
 		} catch (error) {

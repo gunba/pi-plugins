@@ -419,7 +419,7 @@ test("runtime owners isolate sessions and shutdown", async () => {
 		{
 			session_id: sessionB.details.session_id,
 			chars: "\u0003",
-			yield_time_ms: 1,
+			yield_time_ms: 2_000,
 		},
 		undefined,
 		undefined,
@@ -590,9 +590,12 @@ test("tty:false closes stdin, rejects non-exact interrupts, and accepts exact Ct
 });
 
 test("default empty polling drains only new output and releases completed sessions", async () => {
+	const initialWaitMs = effectiveExecCommandYieldMilliseconds(1);
+	const secondDelayMs = initialWaitMs + 1_000;
+	const exitDelayMs = secondDelayMs + 250;
 	const initial = await executeManagedExecCommand(
 		{
-			cmd: `node -e "process.stdout.write('first\\n'); setTimeout(() => process.stdout.write('second\\n'), 1200); setTimeout(() => process.exit(0), 1450)"`,
+			cmd: `node -e "process.stdout.write('first\\n'); setTimeout(() => process.stdout.write('second\\n'), ${secondDelayMs}); setTimeout(() => process.exit(0), ${exitDelayMs})"`,
 			workdir: process.cwd(),
 			login: false,
 			yield_time_ms: 1,

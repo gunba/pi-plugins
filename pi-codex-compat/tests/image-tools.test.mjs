@@ -226,6 +226,6 @@ test("image_gen uses semantic call and saved-path result rendering", () => {
 				{ args, cwd, isError: false, lastComponent: undefined },
 			),
 		),
-		"• Generated Image:\n  generated/result.png\nRevised prompt: person wearing a red hat",
+		`• Generated Image:\n  ${join("generated", "result.png")}\nRevised prompt: person wearing a red hat`,
 	);
 });

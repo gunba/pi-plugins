@@ -1,5 +1,12 @@
 import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import {
+	dirname,
+	extname,
+	isAbsolute,
+	relative,
+	resolve,
+	toNamespacedPath,
+} from "node:path";
 import {
 	type AgentToolResult,
 	type ExtensionAPI,
@@ -670,11 +677,11 @@ async function ensureParentDirectory(
 	const target = dirname(path);
 	const firstCreated = await mkdir(target, { recursive: true });
 	if (!firstCreated) return;
-	const boundary = resolve(firstCreated);
+	const boundary = toNamespacedPath(resolve(firstCreated));
 	let current = resolve(target);
 	while (true) {
 		createdDirectories.add(current);
-		if (current === boundary) break;
+		if (toNamespacedPath(current) === boundary) break;
 		const parent = dirname(current);
 		if (parent === current) break;
 		current = parent;
