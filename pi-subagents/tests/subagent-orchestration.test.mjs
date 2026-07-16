@@ -21,6 +21,7 @@ import {
 	orchestrationSummary,
 	taskPathLabel,
 } from "../extensions/subagent-dashboard.ts";
+import { publishedAssistantText } from "../extensions/session-transcript.ts";
 
 delete process.env.PI_SUBAGENT_TASK_PATH;
 delete process.env.PI_SUBAGENT_PARENT_PATH;
@@ -156,8 +157,11 @@ test("root registration exposes only the five orchestration primitives", () => {
 		"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
 	);
 	assert.deepEqual(byName.get("spawn_agent").promptGuidelines, [
+		"Use spawn_agent only for a new independent objective. For corrections, follow-ups, or retries of an existing task, call send_message with its exact task path so its persisted conversation is resumed.",
 		"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, restart_agent, wait_agent, and kill_agent are allowed.",
 	]);
+	assert.match(byName.get("send_message").description, /resuming.*persisted/i);
+	assert.match(byName.get("restart_agent").description, /unresponsive active/i);
 	assert.equal(
 		byName.get("wait_agent").promptSnippet,
 		"Wait for delegated work; repeat while delegation_pending is true",
@@ -275,8 +279,10 @@ test("child recovery continues twice, restarts, then salvages a summary", async 
 		on: (event, handler) => handlers.push({ event, handler }),
 		sendUserMessage: (message, options) => followUps.push({ message, options }),
 	});
-	const handler = (event) =>
-		handlers.find((entry) => entry.event === event).handler;
+	const emit = (event, ...args) => {
+		for (const entry of handlers.filter((candidate) => candidate.event === event))
+			entry.handler(...args);
+	};
 	const usage = {
 		input: 0,
 		output: 0,
@@ -305,9 +311,9 @@ test("child recovery continues twice, restarts, then salvages a summary", async 
 		usage,
 	};
 	const settle = (message) => {
-		handler("message_end")({ message });
-		handler("agent_end")({ messages: [message] });
-		handler("agent_settled")();
+		emit("message_end", { message });
+		emit("agent_end", { messages: [message] });
+		emit("agent_settled");
 	};
 	const beaconPath = join(
 		runDir,
@@ -329,7 +335,7 @@ test("child recovery continues twice, restarts, then salvages a summary", async 
 		false,
 	);
 
-	handler("message_end")({ message: successful });
+	emit("message_end", { message: successful });
 	const recovered = parseJson(readFileSync(beaconPath, "utf8"));
 	assert.equal(recovered.recoveryStage, "idle");
 	assert.equal(recovered.errorMessage, "");
@@ -380,8 +386,8 @@ test("child recovery continues twice, restarts, then salvages a summary", async 
 	beacon.recoveryStage = "restarted";
 	beacon.resultFile = "";
 	writeFileSync(beaconPath, JSON.stringify(beacon));
-	handler("agent_end")({ messages: [] });
-	handler("agent_settled")();
+	emit("agent_end", { messages: [] });
+	emit("agent_settled");
 	beacon = parseJson(readFileSync(beaconPath, "utf8"));
 	assert.equal(beacon.state, "summary_requested");
 	assert.equal(beacon.recoveryStage, "restarted");
@@ -402,6 +408,175 @@ test("child recovery continues twice, restarts, then salvages a summary", async 
 	assert.equal(summaryFailure.state, "error");
 	assert.equal(readdirSync(inbox).length, 2);
 	assert.equal(readdirSync(join(runDir, "results")).length, 2);
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("result publication preserves the task answer across trailing extension acknowledgements", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-result-branch-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/research",
+			taskId: "task-result-branch",
+			parent: "/root",
+			taskName: "Research the evidence",
+			task: "Research the evidence",
+			state: "running",
+			startedAt: 2,
+			updatedAt: 2,
+			recoveryStage: "idle",
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+
+	process.env.PI_SUBAGENT_TASK_PATH = "/root/research";
+	process.env.PI_SUBAGENT_PARENT_PATH = "/root";
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: resultSubagents } = await import(
+		`../extensions/subagents.ts?result-branch=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_TASK_PATH;
+	delete process.env.PI_SUBAGENT_PARENT_PATH;
+	delete process.env.PI_SUBAGENT_RUN;
+
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { total: 0 },
+	};
+	const answer = {
+		role: "assistant",
+		content: [{ type: "text", text: "The complete evidence-backed answer." }],
+		stopReason: "stop",
+		usage,
+	};
+	const acknowledgement = {
+		role: "assistant",
+		content: [{ type: "text", text: "Research complete; no files were edited." }],
+		stopReason: "stop",
+		usage,
+	};
+	const branch = [
+		{
+			type: "message",
+			id: "answer",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: answer,
+		},
+		{
+			type: "custom_message",
+			id: "content-ready",
+			parentId: "answer",
+			timestamp: new Date().toISOString(),
+			customType: "web-search-content-ready",
+			content: "Fetched content is now available.",
+			display: true,
+		},
+		{
+			type: "message",
+			id: "acknowledgement",
+			parentId: "content-ready",
+			timestamp: new Date().toISOString(),
+			message: acknowledgement,
+		},
+	];
+	assert.equal(
+		publishedAssistantText(branch),
+		"The complete evidence-backed answer.\n\n---\n\n## Extension-triggered follow-up\n\nResearch complete; no files were edited.",
+	);
+	const revised = {
+		role: "assistant",
+		content: [{ type: "text", text: "Revised answer after checking the tool." }],
+		stopReason: "stop",
+		usage,
+	};
+	assert.equal(
+		publishedAssistantText([
+			...branch.slice(0, 2),
+			{
+				type: "message",
+				id: "tool-call",
+				parentId: "content-ready",
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", name: "read", arguments: {} }],
+					stopReason: "toolUse",
+					usage,
+				},
+			},
+			{
+				type: "message",
+				id: "tool-result",
+				parentId: "tool-call",
+				timestamp: new Date().toISOString(),
+				message: { role: "toolResult", content: [{ type: "text", text: "evidence" }] },
+			},
+			{
+				type: "message",
+				id: "revised",
+				parentId: "tool-result",
+				timestamp: new Date().toISOString(),
+				message: revised,
+			},
+		]),
+		"Revised answer after checking the tool.",
+	);
+
+	const handlers = [];
+	resultSubagents({
+		registerTool: () => {},
+		on: (event, handler) => handlers.push({ event, handler }),
+		sendUserMessage: () => {},
+	});
+	const emit = (event, ...args) => {
+		for (const entry of handlers.filter((candidate) => candidate.event === event))
+			entry.handler(...args);
+	};
+	emit("message_end", { message: acknowledgement });
+	emit("agent_end", { messages: [acknowledgement] });
+	emit("agent_settled", {}, { sessionManager: { getBranch: () => branch } });
+
+	const resultName = readdirSync(join(runDir, "results"))[0];
+	const result = readFileSync(join(runDir, "results", resultName), "utf8");
+	assert.match(result, /complete evidence-backed answer/);
+	assert.match(result, /Extension-triggered follow-up/);
+	assert.match(result, /Research complete; no files were edited/);
+	assert.ok(
+		result.indexOf("complete evidence-backed answer") <
+			result.indexOf("Research complete; no files were edited"),
+	);
+	const beacon = parseJson(
+		readFileSync(
+			join(
+				runDir,
+				"tasks",
+				taskStorageKey("/root/research"),
+				"beacon.json",
+			),
+			"utf8",
+		),
+	);
+	assert.match(beacon.lastAssistantText, /^The complete evidence-backed answer\./);
 	rmSync(runDir, { recursive: true, force: true });
 });
 
@@ -543,7 +718,11 @@ renameSync(beaconTemp, beaconPath);
 		);
 		assert.match(thirdArgs[1], /best available result/i);
 		assert.ok(thirdArgs.includes("--session"));
-		assert.ok(thirdArgs.includes("--no-tools"));
+		assert.equal(thirdArgs.includes("--no-tools"), false);
+		assert.equal(
+			thirdArgs[thirdArgs.indexOf("--tools") + 1],
+			"read,send_message,restart_agent,wait_agent,kill_agent",
+		);
 		const descendant = parseJson(
 			readFileSync(
 				join(
@@ -555,7 +734,7 @@ renameSync(beaconTemp, beaconPath);
 				"utf8",
 			),
 		);
-		assert.equal(descendant.state, "hard_killed");
+		assert.equal(descendant.state, "queued");
 		assert.equal(
 			readdirSync(
 				join(
@@ -565,7 +744,7 @@ renameSync(beaconTemp, beaconPath);
 					"inbox",
 				),
 			).length,
-			0,
+			1,
 		);
 		assert.equal(existsSync(join(rootDir, "inbox")), false);
 	} finally {
@@ -838,6 +1017,214 @@ test("root decides nested spawn approval through send_message", async () => {
 	rmSync(runDir, { recursive: true, force: true });
 });
 
+test("a resumed parent restores a claimed child request from disk", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-pending-resume-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/research",
+			taskId: "task-pending-resume",
+			parent: "/root",
+			taskName: "Research",
+			state: "waiting",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(join(dir, "inbox"), { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+	const request = {
+		id: "durable-request",
+		from: "/root/research",
+		to: "/root",
+		body: "Which source should I use?",
+		kind: "request",
+		ts: Date.now(),
+	};
+	const rootDir = join(runDir, "tasks", taskStorageKey("/root"));
+	writeFileSync(
+		join(rootDir, "inbox", "request.json"),
+		JSON.stringify(request),
+	);
+
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: originalParent } = await import(
+		`../extensions/subagents.ts?pending-original=${Date.now()}`
+	);
+	const originalTools = [];
+	originalParent({
+		registerTool: (tool) => originalTools.push(tool),
+		on: () => {},
+	});
+	const claimed = await originalTools
+		.find((tool) => tool.name === "wait_agent")
+		.execute("wait", {}, undefined, undefined, {});
+	assert.match(toolPayload(claimed).message, /Which source should I use/);
+	assert.equal(existsSync(join(rootDir, "pending-request.json")), true);
+	writeFileSync(
+		join(rootDir, "inbox", "completion.json.2147483647.claim-id.claim"),
+		JSON.stringify({
+			id: "restored-completion",
+			from: "/root/research",
+			to: "/root",
+			body: "Recovered completion",
+			kind: "completion",
+			ts: Date.now(),
+		}),
+	);
+
+	const { default: resumedParent } = await import(
+		`../extensions/subagents.ts?pending-resumed=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const resumedTools = [];
+	const handlers = [];
+	resumedParent({
+		getThinkingLevel: () => "medium",
+		registerTool: (tool) => resumedTools.push(tool),
+		on: (event, handler) => handlers.push({ event, handler }),
+	});
+	handlers
+		.find(({ event }) => event === "session_start")
+		.handler({}, { cwd: process.cwd(), mode: "print" });
+	assert.equal(existsSync(join(rootDir, "inbox", "completion.json")), true);
+	const resumedWait = await resumedTools
+		.find((tool) => tool.name === "wait_agent")
+		.execute("wait", {}, undefined, undefined, {});
+	assert.match(toolPayload(resumedWait).message, /Reply to \/root\/research/);
+	const reply = await resumedTools
+		.find((tool) => tool.name === "send_message")
+		.execute(
+			"reply",
+			{ target: "/root/research", message: "Use the official source." },
+			undefined,
+			undefined,
+			{},
+		);
+	assert.equal(reply.details.display, "Replied to /root/research");
+	assert.equal(existsSync(join(rootDir, "pending-request.json")), false);
+	const childInbox = join(
+		runDir,
+		"tasks",
+		taskStorageKey("/root/research"),
+		"inbox",
+	);
+	const replyMail = parseJson(
+		readFileSync(join(childInbox, readdirSync(childInbox)[0]), "utf8"),
+	);
+	assert.equal(replyMail.replyTo, request.id);
+	assert.equal(replyMail.body, "Use the official source.");
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("descendant mail bypasses an unrecoverable terminal parent", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-mail-forward-"));
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: 1,
+			updatedAt: 1,
+		},
+		{
+			name: "/root/failed_parent",
+			taskId: "task-failed-parent",
+			parent: "/root",
+			taskName: "Failed parent",
+			state: "error",
+			startedAt: 2,
+			updatedAt: 2,
+		},
+		{
+			name: "/root/failed_parent/child",
+			taskId: "task-forwarded-child",
+			parent: "/root/failed_parent",
+			taskName: "Forwarded child",
+			task: "Return the child result",
+			state: "running",
+			recoveryStage: "idle",
+			startedAt: 3,
+			updatedAt: 3,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+	}
+	process.env.PI_SUBAGENT_TASK_PATH = "/root/failed_parent/child";
+	process.env.PI_SUBAGENT_PARENT_PATH = "/root/failed_parent";
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: forwardingChild } = await import(
+		`../extensions/subagents.ts?mail-forward=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_TASK_PATH;
+	delete process.env.PI_SUBAGENT_PARENT_PATH;
+	delete process.env.PI_SUBAGENT_RUN;
+	const handlers = [];
+	forwardingChild({
+		registerTool: () => {},
+		on: (event, handler) => handlers.push({ event, handler }),
+		sendUserMessage: () => {},
+	});
+	const answer = {
+		role: "assistant",
+		content: [{ type: "text", text: "Child result survives." }],
+		stopReason: "stop",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { total: 0 },
+		},
+	};
+	const emit = (event, ...args) => {
+		for (const entry of handlers.filter((candidate) => candidate.event === event))
+			entry.handler(...args);
+	};
+	emit("message_end", { message: answer });
+	emit("agent_end", { messages: [answer] });
+	emit("agent_settled", {}, { sessionManager: { getBranch: () => [] } });
+	const rootInbox = join(runDir, "tasks", taskStorageKey("/root"), "inbox");
+	const parentInbox = join(
+		runDir,
+		"tasks",
+		taskStorageKey("/root/failed_parent"),
+		"inbox",
+	);
+	assert.equal(readdirSync(rootInbox).length, 1);
+	assert.equal(existsSync(parentInbox), false);
+	const mail = parseJson(
+		readFileSync(join(rootInbox, readdirSync(rootInbox)[0]), "utf8"),
+	);
+	assert.equal(mail.from, "/root/failed_parent/child");
+	assert.equal(mail.to, "/root");
+	assert.equal(mail.kind, "completion");
+	rmSync(runDir, { recursive: true, force: true });
+});
+
 test("upward messages block for an automatic parent reply", async () => {
 	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-query-"));
 	writeFileSync(
@@ -1057,6 +1444,16 @@ test("model tools route exclusively by canonical task path", async () => {
 		next_action:
 			"Handle the user input with send_message, restart_agent, or kill_agent, then call wait_agent again if work remains.",
 	});
+	const terminalRestart = await byName
+		.get("restart_agent")
+		.execute(
+			"restart-terminal",
+			{ target: "/root/research", message: "Continue" },
+			undefined,
+			undefined,
+			{},
+		);
+	assert.match(toolPayload(terminalRestart).error, /use send_message to resume/i);
 	const killed = await byName
 		.get("kill_agent")
 		.execute("kill", { target: "/root/research" }, undefined, undefined, {});
@@ -1140,6 +1537,268 @@ test("an exhausted stalled task is stopped before failure is reported", async ()
 		"error",
 	);
 	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("an unavailable stalled restart fails once instead of rescheduling immediately", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-restart-failure-"));
+	const live = spawnProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+	const staleAt = Date.now() - 700_000;
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+		{
+			name: "/root/no_session",
+			taskId: "task-no-session",
+			parent: "/root",
+			taskName: "Missing session",
+			state: "running",
+			recoveryStage: "idle",
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+		if (beacon.name !== "/root") {
+			mkdirSync(join(dir, ".active"));
+			writeFileSync(join(dir, ".active", "pid"), String(live.pid));
+		}
+	}
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: failedRestartSubagents } = await import(
+		`../extensions/subagents.ts?restart-failure=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const tools = [];
+	failedRestartSubagents({
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
+	});
+	const result = await tools
+		.find((tool) => tool.name === "wait_agent")
+		.execute("wait", {}, undefined, undefined, {});
+	const payload = toolPayload(result);
+	assert.deepEqual(payload.attention.task_paths, ["/root/no_session"]);
+	assert.equal(payload.delegation_pending, false);
+	const beacon = parseJson(
+		readFileSync(
+			join(
+				runDir,
+				"tasks",
+				taskStorageKey("/root/no_session"),
+				"beacon.json",
+			),
+			"utf8",
+		),
+	);
+	assert.equal(beacon.state, "error");
+	assert.match(beacon.errorMessage, /no persisted session/i);
+	assert.throws(() => process.kill(live.pid, 0));
+	rmSync(runDir, { recursive: true, force: true });
+});
+
+test("watchdog restarts a stalled parent without terminating its live child", async () => {
+	const runDir = mkdtempSync(join(tmpdir(), "pi-subagents-parent-restart-"));
+	const fakeDir = mkdtempSync(join(tmpdir(), "pi-subagents-parent-cli-"));
+	const fakeCli = join(fakeDir, "fake-pi.mjs");
+	const childPidFile = join(fakeDir, "child.pid");
+	const ordinaryPidFile = join(fakeDir, "ordinary.pid");
+	const staleAt = Date.now() - 700_000;
+	writeFileSync(
+		join(runDir, "run.json"),
+		JSON.stringify({ schemaVersion: 2, rootPath: "/root" }),
+	);
+	writeFileSync(
+		fakeCli,
+		`import { readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const run = process.env.PI_SUBAGENT_RUN;
+const self = process.env.PI_SUBAGENT_TASK_PATH;
+const tasks = join(run, "tasks");
+const dir = readdirSync(tasks).map((entry) => join(tasks, entry)).find((candidate) => {
+  try { return JSON.parse(readFileSync(join(candidate, "beacon.json"), "utf8")).name === self; }
+  catch { return false; }
+});
+const beaconPath = join(dir, "beacon.json");
+const beacon = JSON.parse(readFileSync(beaconPath, "utf8"));
+writeFileSync(join(run, "resumed-parent-args.json"), JSON.stringify(process.argv.slice(2)));
+beacon.state = "completed";
+beacon.activity = "";
+beacon.updatedAt = Date.now();
+beacon.finishedAt = Date.now();
+const temp = beaconPath + ".replacement.tmp";
+writeFileSync(temp, JSON.stringify(beacon));
+renameSync(temp, beaconPath);
+`,
+	);
+	const parentProcess = spawnProcess(
+		process.execPath,
+		[
+			"-e",
+			`const { spawn } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true, detached: true });
+child.unref();
+const ordinary = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+writeFileSync(process.env.CHILD_PID_FILE, String(child.pid));
+writeFileSync(process.env.ORDINARY_PID_FILE, String(ordinary.pid));
+setInterval(() => {}, 1000);`,
+		],
+		{
+			env: {
+				...process.env,
+				CHILD_PID_FILE: childPidFile,
+				ORDINARY_PID_FILE: ordinaryPidFile,
+			},
+			stdio: "ignore",
+			windowsHide: true,
+			detached: true,
+		},
+	);
+	for (
+		let attempt = 0;
+		attempt < 100 &&
+		(!existsSync(childPidFile) || !existsSync(ordinaryPidFile));
+		attempt++
+	)
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(existsSync(childPidFile), true);
+	assert.equal(existsSync(ordinaryPidFile), true);
+	const childPid = Number(readFileSync(childPidFile, "utf8"));
+	const ordinaryPid = Number(readFileSync(ordinaryPidFile, "utf8"));
+
+	for (const beacon of [
+		{
+			name: "/root",
+			taskId: "main",
+			parent: null,
+			taskName: "",
+			state: "running",
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+		{
+			name: "/root/parent",
+			taskId: "task-live-parent",
+			parent: "/root",
+			taskName: "Coordinate child work",
+			task: "Coordinate child work",
+			state: "restart_requested",
+			recoveryStage: "continued_twice",
+			generation: 1,
+			startedAt: staleAt,
+			updatedAt: staleAt,
+		},
+		{
+			name: "/root/parent/child",
+			taskId: "task-live-child",
+			parent: "/root/parent",
+			taskName: "Live child",
+			state: "running",
+			generation: 1,
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+		},
+	]) {
+		const dir = join(runDir, "tasks", taskStorageKey(beacon.name));
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "beacon.json"), JSON.stringify(beacon));
+		if (beacon.name !== "/root") {
+			mkdirSync(join(dir, ".active"));
+			writeFileSync(
+				join(dir, ".active", "pid"),
+				String(
+					beacon.name === "/root/parent" ? parentProcess.pid : childPid,
+				),
+			);
+		}
+	}
+	const sessions = join(runDir, "sessions");
+	mkdirSync(sessions);
+	const sessionFile = join(sessions, "fake_task-live-parent.jsonl");
+	writeFileSync(sessionFile, "{}\n");
+	utimesSync(sessionFile, staleAt / 1000, staleAt / 1000);
+
+	process.env.PI_SUBAGENT_RUN = runDir;
+	const { default: parentRestartSubagents } = await import(
+		`../extensions/subagents.ts?parent-restart=${Date.now()}`
+	);
+	delete process.env.PI_SUBAGENT_RUN;
+	const tools = [];
+	parentRestartSubagents({
+		registerTool: (tool) => tools.push(tool),
+		on: () => {},
+	});
+	const originalEntry = process.argv[1];
+	process.argv[1] = fakeCli;
+	const controller = new AbortController();
+	const interrupt = setTimeout(() => controller.abort(), 750);
+	try {
+		await tools
+			.find((tool) => tool.name === "wait_agent")
+			.execute(
+				"wait-parent-restart",
+				{},
+				controller.signal,
+				undefined,
+				{ cwd: process.cwd() },
+			);
+		const parentBeacon = parseJson(
+			readFileSync(
+				join(
+					runDir,
+					"tasks",
+					taskStorageKey("/root/parent"),
+					"beacon.json",
+				),
+				"utf8",
+			),
+		);
+		assert.equal(parentBeacon.state, "completed");
+		assert.equal(parentBeacon.generation, 2);
+		assert.doesNotThrow(() => process.kill(childPid, 0));
+		assert.throws(() => process.kill(ordinaryPid, 0));
+		const childBeacon = parseJson(
+			readFileSync(
+				join(
+					runDir,
+					"tasks",
+					taskStorageKey("/root/parent/child"),
+					"beacon.json",
+				),
+				"utf8",
+			),
+		);
+		assert.equal(childBeacon.state, "running");
+		const args = parseJson(
+			readFileSync(join(runDir, "resumed-parent-args.json"), "utf8"),
+		);
+		assert.equal(args[1], "Continue");
+		assert.ok(args.includes("--session"));
+	} finally {
+		clearTimeout(interrupt);
+		process.argv[1] = originalEntry;
+		for (const pid of [parentProcess.pid, childPid, ordinaryPid]) {
+			if (!pid) continue;
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {}
+		}
+		rmSync(runDir, { recursive: true, force: true });
+		rmSync(fakeDir, { recursive: true, force: true });
+	}
 });
 
 test("fatal nested recovery is reported to the immediate parent only", async () => {

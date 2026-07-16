@@ -39,7 +39,10 @@ import {
 	type DashboardSnapshot,
 } from "./subagent-dashboard.ts";
 import { terminalRunCanHide } from "./run-lifecycle.ts";
-import { readSessionTranscript } from "./session-transcript.ts";
+import {
+	publishedAssistantText,
+	readSessionTranscript,
+} from "./session-transcript.ts";
 import {
 	nextProgressDeadline,
 	stalledProgress,
@@ -70,7 +73,9 @@ const FEED_TAIL = positiveEnvInt("PI_SUBAGENTS_FEED_TAIL") ?? 8;
 const MAX_ACTIVE_CHILDREN = positiveEnvInt("PI_SUBAGENTS_MAX_ACTIVE") ?? 12;
 const AUTO_RECOVERY_PROMPT = "Continue";
 const RECOVERY_SUMMARY_PROMPT =
-	"Review the conversation and return the best available result for the original delegated task. Summarize completed work, evidence, unresolved issues, and why execution stopped. Do not continue implementation or call tools.";
+	"Review the conversation and return the best available result for the original delegated task. Summarize completed work, evidence, unresolved issues, and why execution stopped. Do not continue implementation. If delegated work is still pending, use only the available coordination and read tools to collect it before returning.";
+const RECOVERY_SUMMARY_TOOLS =
+	"read,send_message,restart_agent,wait_agent,kill_agent";
 const ASSISTANT_PREVIEW_MAX = 2000;
 const ROOT_TASK_PATH = "/root";
 const RUN_SCHEMA_VERSION = 2;
@@ -289,7 +294,26 @@ export function taskSummary(task: string): string {
 function writeJsonAtomic(path: string, value: unknown): void {
 	const temp = `${path}.${process.pid}.${rid()}.tmp`;
 	writeFileSync(temp, JSON.stringify(value), { flag: "wx" });
-	renameSync(temp, path);
+	const wait = new Int32Array(new SharedArrayBuffer(4));
+	for (let attempt = 0; ; attempt++) {
+		try {
+			renameSync(temp, path);
+			return;
+		} catch (error) {
+			const code = (error as { code?: string }).code;
+			const transientWindowsReplace =
+				process.platform === "win32" &&
+				(code === "EPERM" || code === "EACCES" || code === "EBUSY");
+			if (!transientWindowsReplace || attempt === 24) {
+				rmSync(temp, { force: true });
+				throw error;
+			}
+			// Windows can briefly deny an atomic replacement while another process
+			// closes a read handle. Keep the operation atomic and retry for at most
+			// 100 ms rather than deleting the destination first.
+			Atomics.wait(wait, 0, 0, 4);
+		}
+	}
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -383,7 +407,11 @@ function resultDir(): string {
 	return join(runDir, "results");
 }
 
-function writeResultFile(name: string, messages: unknown[]): string {
+function writeResultFile(
+	name: string,
+	publishedText: string,
+	status: AssistantStatus,
+): string {
 	ensureDir(resultDir());
 	const beacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 	const task = beacon?.task || beacon?.taskName;
@@ -392,9 +420,8 @@ function writeResultFile(name: string, messages: unknown[]): string {
 		resultDir(),
 		`${stamp}_${safeFileSegment(name)}_g${beacon?.generation ?? 1}_${rid().slice(0, 8)}.md`,
 	);
-	const status = finalAssistantStatus(messages);
 	const body =
-		lastAssistantText(messages) ||
+		publishedText ||
 		status.errorMessage ||
 		(statusNeedsAttention(status) ? "(needs attention)" : "(completed)");
 	const header = [
@@ -450,6 +477,7 @@ const IS_CHILD = !!process.env.PI_SUBAGENT_TASK_PATH;
 
 let runDir = process.env.PI_SUBAGENT_RUN || "";
 const kids = new Map<string, ChildProcess>();
+const deliveredMailClaims = new Set<string>();
 let piThinkingLevel: ThinkingLevel = "medium";
 let pendingSpawnApprovals = 0;
 
@@ -495,6 +523,9 @@ function agentDir(name: string): string {
 function inboxDir(name: string): string {
 	return join(agentDir(name), "inbox");
 }
+function pendingRequestFile(name: string): string {
+	return join(agentDir(name), "pending-request.json");
+}
 function childrenDir(name: string): string {
 	return join(agentDir(name), "children");
 }
@@ -539,6 +570,8 @@ function isActive(name: string): boolean {
 }
 
 function writeBeacon(name: string, patch: Partial<Beacon>): void {
+	const restartClaim = join(agentDir(name), ".restart");
+	if (IS_CHILD && name === SELF && existsSync(restartClaim)) return;
 	const dir = agentDir(name);
 	ensureDir(dir);
 	const prev = readJson<Beacon>(join(dir, "beacon.json"));
@@ -572,6 +605,7 @@ function writeBeacon(name: string, patch: Partial<Beacon>): void {
 		errorMessage: patch.errorMessage ?? prev?.errorMessage,
 		recoveryStage: patch.recoveryStage ?? prev?.recoveryStage,
 	};
+	if (IS_CHILD && name === SELF && existsSync(restartClaim)) return;
 	writeJsonAtomic(join(dir, "beacon.json"), beacon);
 }
 
@@ -630,7 +664,11 @@ function hasPendingFresh(name: string): boolean {
 }
 
 function hasTeamWork(name: string): boolean {
-	return hasPendingFresh(name) || activeDescendants(name).length > 0;
+	return (
+		hasPendingFresh(name) ||
+		existsSync(pendingRequestFile(name)) ||
+		activeDescendants(name).length > 0
+	);
 }
 
 function noWaitWorkMessage(name: string): string {
@@ -749,14 +787,68 @@ function appendFeed(line: string): void {
 	appendFileSync(feedPath, `${collapseWhitespace(line).slice(0, 160)}\n`);
 }
 
+function mailboxRecipient(requested: string): string {
+	let recipient = requested;
+	const visited = new Set<string>();
+	while (!visited.has(recipient)) {
+		visited.add(recipient);
+		const beacon = readJson<Beacon>(join(agentDir(recipient), "beacon.json"));
+		if (!beacon || !INACTIVE.has(beacon.state) || !beacon.parent)
+			return recipient;
+		recipient = beacon.parent;
+	}
+	return requested;
+}
+
+function routeMailFile(
+	initialPath: string,
+	msg: Mail,
+	requested: string,
+): string | undefined {
+	let path = initialPath;
+	let recipient = requested;
+	for (let hop = 0; hop < 64; hop++) {
+		const currentRecipient = mailboxRecipient(recipient);
+		ensureDir(inboxDir(currentRecipient));
+		const nextPath = join(
+			inboxDir(currentRecipient),
+			`${msg.ts}-${msg.id}.json`,
+		);
+		if (path !== nextPath) {
+			try {
+				renameSync(path, nextPath);
+			} catch (error) {
+				const code = (error as { code?: string }).code;
+				if (code === "ENOENT") return undefined;
+				if (code === "EEXIST") {
+					rmSync(path, { force: true });
+					return currentRecipient;
+				}
+				throw error;
+			}
+			path = nextPath;
+		}
+		const nextRecipient = mailboxRecipient(currentRecipient);
+		if (nextRecipient === currentRecipient) return currentRecipient;
+		recipient = nextRecipient;
+	}
+	throw new Error(`Could not resolve mailbox recipient for ${msg.to}.`);
+}
+
 function post(msg: Mail): void {
-	ensureDir(inboxDir(msg.to));
-	writeFileSync(
-		join(inboxDir(msg.to), `${msg.ts}-${msg.id}.json`),
-		JSON.stringify(msg),
-		{ flag: "wx" },
-	);
-	appendFeed(`${msg.from}→${msg.to}: ${msg.body}`);
+	const recipient = mailboxRecipient(msg.to);
+	const delivered = { ...msg, to: recipient };
+	ensureDir(inboxDir(recipient));
+	const path = join(inboxDir(recipient), `${msg.ts}-${msg.id}.json`);
+	try {
+		writeFileSync(path, JSON.stringify(delivered), { flag: "wx" });
+	} catch (error) {
+		if ((error as { code?: string }).code === "EEXIST") return;
+		throw error;
+	}
+	const finalRecipient = routeMailFile(path, delivered, recipient);
+	if (finalRecipient)
+		appendFeed(`${delivered.from}→${finalRecipient}: ${delivered.body}`);
 }
 
 function inboxFiles(name: string): string[] {
@@ -765,6 +857,52 @@ function inboxFiles(name: string): string[] {
 	return readdirSync(dir)
 		.filter((f) => f.endsWith(".json"))
 		.sort();
+}
+
+function restoreMailboxClaims(name: string, force = false): void {
+	const dir = inboxDir(name);
+	if (!existsSync(dir)) return;
+	for (const file of readdirSync(dir)) {
+		if (!file.endsWith(".claim")) continue;
+		const marker = file.lastIndexOf(".json.");
+		if (marker < 0) continue;
+		const suffix = file.slice(marker + ".json.".length, -".claim".length);
+		const owner = Number(suffix.slice(0, suffix.indexOf(".")));
+		if (!force && Number.isFinite(owner) && owner > 0 && processAlive(owner))
+			continue;
+		const claimPath = join(dir, file);
+		const originalPath = join(dir, file.slice(0, marker + ".json".length));
+		try {
+			renameSync(claimPath, originalPath);
+		} catch (error) {
+			if ((error as { code?: string }).code === "EEXIST") {
+				rmSync(claimPath, { force: true });
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
+function acknowledgeDeliveredMail(): void {
+	for (const path of deliveredMailClaims) rmSync(path, { force: true });
+	deliveredMailClaims.clear();
+}
+
+function forwardMailbox(name: string, recipient: string): void {
+	restoreMailboxClaims(name, true);
+	for (const file of inboxFiles(name)) {
+		const path = join(inboxDir(name), file);
+		const msg = readJson<Mail>(path);
+		if (!msg) continue;
+		routeMailFile(path, msg, recipient);
+	}
+	const claimedPath = pendingRequestFile(name);
+	const claimed = readJson<Mail>(claimedPath);
+	if (claimed) {
+		routeMailFile(claimedPath, claimed, recipient);
+		if (name === SELF) pendingQuestion = undefined;
+	}
 }
 
 // Oldest fresh (non-reply) message, without consuming.
@@ -798,13 +936,16 @@ function takeReply(
 	return undefined;
 }
 
-// Atomically claim a fresh message. The claim file is not visible to inboxFiles().
+// Atomically claim a fresh message. Requests remain durable until answered so
+// a replacement parent process can reconstruct the pending coordination state.
 function claimFresh(name: string): { path: string; msg: Mail } | undefined {
 	for (const f of inboxFiles(name)) {
 		const path = join(inboxDir(name), f);
 		const msg = readJson<Mail>(path);
 		if (!msg || msg.replyTo) continue;
-		const claimPath = `${path}.${process.pid}.${rid()}.claim`;
+		const claimPath = pendingQuestionFor(msg)
+			? pendingRequestFile(name)
+			: `${path}.${process.pid}.${rid()}.claim`;
 		try {
 			renameSync(path, claimPath);
 			return { path: claimPath, msg };
@@ -829,6 +970,17 @@ function pendingQuestionFor(msg: Mail): PendingQuestion | undefined {
 		body: msg.body,
 		approval: spawnApprovalDetails(msg),
 	};
+}
+
+function restorePendingQuestion(): void {
+	if (!runDir) return;
+	const msg = readJson<Mail>(pendingRequestFile(SELF));
+	pendingQuestion = msg ? pendingQuestionFor(msg) : undefined;
+}
+
+function clearPendingQuestion(): void {
+	rmSync(pendingRequestFile(SELF), { force: true });
+	pendingQuestion = undefined;
 }
 
 async function pollFor<T>(
@@ -901,10 +1053,12 @@ async function waitForTeamEvent(
 	signal?: AbortSignal,
 ): Promise<TeamEvent | undefined> {
 	if (signal?.aborted) return undefined;
+	restoreMailboxClaims(SELF);
 	const fresh = claimFresh(SELF);
 	if (fresh) {
+		const question = pendingQuestionFor(fresh.msg);
 		try {
-			pendingQuestion = pendingQuestionFor(fresh.msg);
+			pendingQuestion = question;
 			return {
 				message: `${fresh.msg.from} (id ${fresh.msg.id}): ${fresh.msg.body}`,
 				kind: fresh.msg.kind,
@@ -913,7 +1067,7 @@ async function waitForTeamEvent(
 				taskPaths: fresh.msg.taskPaths,
 			};
 		} finally {
-			rmSync(fresh.path, { force: true });
+			if (!question) deliveredMailClaims.add(fresh.path);
 		}
 	}
 	if (activeDescendants(SELF).length === 0)
@@ -976,6 +1130,7 @@ function launchAgent(
 	const existingBeacon = readJson<Beacon>(join(agentDir(name), "beacon.json"));
 	const summarizing =
 		!request.fresh && existingBeacon?.recoveryStage === "summarizing";
+	const reconnectingSummary = summarizing && hasTeamWork(name);
 	const sessionFile = request.fresh ? undefined : latestSessionFile(name);
 	if (!request.fresh && !sessionFile) return false;
 	try {
@@ -1019,7 +1174,11 @@ function launchAgent(
 			: ["--session", sessionFile as string]),
 		"--session-dir",
 		sessionsDir(),
-		...(summarizing ? ["--no-tools"] : ["--exclude-tools", "ask_user"]),
+		...(summarizing
+			? reconnectingSummary
+				? ["--tools", RECOVERY_SUMMARY_TOOLS]
+				: ["--no-tools"]
+			: ["--exclude-tools", "ask_user"]),
 		"--thinking",
 		request.thinking,
 	];
@@ -1036,7 +1195,10 @@ function launchAgent(
 		},
 		stdio: "ignore",
 		windowsHide: true,
-		detached: process.platform !== "win32",
+		// Every agent is independently supervised from persisted run state. A
+		// parent runtime can therefore be replaced without taking its children
+		// down with the operating-system process tree.
+		detached: true,
 	});
 	if (typeof child.pid === "number")
 		writeFileSync(activePidFile(name), `${child.pid}\n`);
@@ -1200,6 +1362,30 @@ function killPidTree(pid: number): boolean {
 	}
 }
 
+// Process replacement must leave independently persisted descendant agents
+// alive. On POSIX each agent is its own detached process group, so terminating
+// the target group also cleans up its ordinary tool subprocesses. Windows has
+// no equivalent here: omitting taskkill /T is what preserves nested agents.
+function terminateAgentRuntime(pid: number): boolean {
+	if (process.platform === "win32") {
+		const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/F"], {
+			windowsHide: true,
+		});
+		return result.status === 0;
+	}
+	try {
+		process.kill(-pid, "SIGKILL");
+		return true;
+	} catch {
+		try {
+			process.kill(pid, "SIGKILL");
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
 type RestartOutcome = {
 	ok: boolean;
 	message: string;
@@ -1296,8 +1482,16 @@ function restartAgentProcess(
 		const pid = activePid(name) ?? trackedChild?.pid;
 		const live = Boolean(pid && processAlive(pid));
 
-		// Advance the generation before terminating the old process. Its exit
-		// callback then cannot mutate the replacement lock or beacon.
+		if (live && pid && !terminateAgentRuntime(pid) && processAlive(pid)) {
+			return {
+				ok: false,
+				message: `${name}: process ${pid} could not be terminated`,
+			};
+		}
+
+		// The restart claim makes the old launcher's exit callback a no-op. Wait
+		// until the old runtime is gone before publishing the new generation so
+		// both processes can never write the same beacon concurrently.
 		writeBeacon(name, {
 			generation: nextGeneration,
 			state: recoveryStage === "summarizing" ? "summarizing" : "restarting",
@@ -1307,22 +1501,6 @@ function restartAgentProcess(
 			resultFile: "",
 			errorMessage: "",
 		});
-		if (live && pid && !killPidTree(pid) && processAlive(pid)) {
-			writeBeacon(name, {
-				generation: previousGeneration,
-				state: beacon.state,
-				activity: beacon.activity ?? "",
-				recoveryStage: beacon.recoveryStage ?? "idle",
-				errorMessage: "restart failed: process could not be terminated",
-			});
-			return {
-				ok: false,
-				message: `${name}: process ${pid} could not be terminated`,
-			};
-		}
-
-		if (recoveryStage === "summarizing")
-			killDescendants(name, "parent recovery entered summary mode");
 		if (kids.get(name) === trackedChild) kids.delete(name);
 		rmSync(activeLock(name), { recursive: true, force: true });
 		rmSync(launchFile(name), { force: true });
@@ -1368,6 +1546,14 @@ function removePendingFrom(sender: string, recipient = SELF): number {
 			removed++;
 		}
 	}
+	const claimedPath = pendingRequestFile(recipient);
+	const claimed = readJson<Mail>(claimedPath);
+	if (claimed?.from === sender) {
+		rmSync(claimedPath, { force: true });
+		if (recipient === SELF && pendingQuestion?.from === sender)
+			pendingQuestion = undefined;
+		removed++;
+	}
 	return removed;
 }
 
@@ -1379,7 +1565,7 @@ function killOneAgent(name: string, reason: string): string {
 	rmSync(launchFile(name), { force: true });
 	kids.delete(name);
 	const removed = removePendingFrom(name, beacon.parent ?? SELF);
-	if (pendingQuestion?.from === name) pendingQuestion = undefined;
+	if (pendingQuestion?.from === name) clearPendingQuestion();
 	const cleared = removed
 		? `; cleared ${removed} pending message${removed === 1 ? "" : "s"}`
 		: "";
@@ -1400,18 +1586,6 @@ function killOneAgent(name: string, reason: string): string {
 		}, 250).unref();
 	appendFeed(`${SELF}→${name}: killed (${reason})`);
 	return `${name}: ${pid ? (killed ? `killed pid ${pid}` : `marked hard-killed; pid ${pid} did not terminate cleanly`) : "marked hard-killed; no live pid"}${cleared}`;
-}
-
-function killDescendants(name: string, reason: string): void {
-	const prefix = `${name}/`;
-	const descendants = listAgents()
-		.filter(
-			(agent) =>
-				agent.name.startsWith(prefix) && !INACTIVE.has(agent.state),
-		)
-		.sort((a, b) => b.name.length - a.name.length);
-	for (const descendant of descendants)
-		killOneAgent(descendant.name, reason);
 }
 
 function killAgents(selector: string, reason: string): string[] {
@@ -1494,7 +1668,7 @@ function sendAgentNotice(
 			kind: "notice",
 			ts: now(),
 		});
-		pendingQuestion = undefined;
+		clearPendingQuestion();
 		return `Replied to ${target.name}.`;
 	}
 	if (
@@ -1558,6 +1732,7 @@ function registerTools(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Start an isolated child agent; ordinary tools are blocked until delegated work completes",
 		promptGuidelines: [
+			"Use spawn_agent only for a new independent objective. For corrections, follow-ups, or retries of an existing task, call send_message with its exact task path so its persisted conversation is resumed.",
 			"After the final spawn_agent call, call wait_agent next. Do not batch or call ordinary tools while delegated work is pending; only spawn_agent, send_message, restart_agent, wait_agent, and kill_agent are allowed.",
 		],
 		parameters: Type.Object(
@@ -1658,7 +1833,7 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "send_message",
 		label: "Send message",
 		description:
-			"Send a message, or decide a pending nested spawn with approve_spawn.",
+			"Message an existing task, resuming its persisted conversation when terminal, or decide a pending nested spawn with approve_spawn.",
 		parameters: Type.Object(
 			{
 				target: Type.String({
@@ -1723,7 +1898,7 @@ function registerTools(pi: ExtensionAPI): void {
 					approved,
 					ts: now(),
 				});
-				pendingQuestion = undefined;
+				clearPendingQuestion();
 				refreshView(ctx);
 				if (pendingReply.approval)
 					return structured(
@@ -1743,10 +1918,19 @@ function registerTools(pi: ExtensionAPI): void {
 					kind: "request",
 					ts: now(),
 				});
-				const reply = await pollFor(
-					() => takeReply(SELF, requestId, target.name),
-					signal,
-				);
+				writeBeacon(SELF, {
+					state: "waiting",
+					activity: `awaiting ${target.name}`,
+				});
+				let reply: Mail | undefined;
+				try {
+					reply = await pollFor(
+						() => takeReply(SELF, requestId, target.name),
+						signal,
+					);
+				} finally {
+					writeBeacon(SELF, { state: "running", activity: "" });
+				}
 				if (!reply) return structured({ error: "Message wait interrupted." });
 				return structured({ message: reply.body }, `Reply from ${target.name}`);
 			}
@@ -1787,7 +1971,7 @@ function registerTools(pi: ExtensionAPI): void {
 		name: "restart_agent",
 		label: "Restart agent",
 		description:
-			"Terminate a stuck task process and resume its persisted conversation in a fresh process.",
+			"Replace an unresponsive active task process and resume its persisted conversation.",
 		parameters: Type.Object(
 			{
 				target: Type.String({
@@ -1819,6 +2003,10 @@ function registerTools(pi: ExtensionAPI): void {
 			if (!message) return structured({ error: "message must not be empty" });
 			if (message.length > 4000)
 				return structured({ error: "message must be at most 4000 characters" });
+			if (INACTIVE.has(target.state) && !isActive(target.name))
+				return structured({
+					error: `${target.name} is terminal; use send_message to resume it.`,
+				});
 			const outcome = restartAgentProcess(target.name, message, ctx);
 			refreshView(ctx);
 			if (!outcome.ok) return structured({ error: outcome.message });
@@ -1870,6 +2058,7 @@ function registerTools(pi: ExtensionAPI): void {
 					},
 					`Reply to ${pendingQuestion.from} before waiting`,
 				);
+			drainLaunchQueue(ctx);
 			if (!hasTeamWork(SELF))
 				return structured(
 					{
@@ -1880,9 +2069,8 @@ function registerTools(pi: ExtensionAPI): void {
 					"No agent work pending",
 				);
 			if (!IS_CHILD) {
-				const stalled = restartStalledAgents(stalledActiveLeaves(), ctx);
-				if (stalled.length > 0)
-					postStalledAlert(failStalledAgents(stalled));
+				const failed = recoverStalledAgents(stalledActiveAgents(), ctx);
+				if (failed.length > 0) postStalledAlert(failed);
 			}
 			writeBeacon(SELF, { state: "waiting", activity: "coordinating" });
 			if (!IS_CHILD) scheduleStallWatchdog(ctx);
@@ -1898,6 +2086,7 @@ function registerTools(pi: ExtensionAPI): void {
 			const message = interrupted
 				? "Wait interrupted by user input."
 				: (event?.message ?? "Wait completed.");
+			drainLaunchQueue(ctx);
 			const request = currentPendingQuestion();
 			const delegationPending = hasTeamWork(SELF);
 			const stalledAttention = event?.topic === "stalled";
@@ -2001,6 +2190,7 @@ function coordinationPrompt(): string {
 			`Nested spawn request from ${pendingQuestion.from}: ${approval.taskPath}`,
 			`Task: ${approval.message}`,
 			`Thinking: ${approval.thinking ?? "caller default"}`,
+			"Approve only genuinely new work. A correction, follow-up, or retry of an existing task must be denied and resumed with send_message to that task path.",
 			`Call send_message to ${pendingQuestion.from} with a brief reason and approve_spawn set to true or false.`,
 		].join("\n");
 	return `Question from ${pendingQuestion.from}: ${pendingQuestion.body}\nAnswer with send_message to ${pendingQuestion.from}.`;
@@ -2035,6 +2225,13 @@ function registerCoordinationHooks(pi: ExtensionAPI): void {
 			!coordinationTools.includes(toolName)
 		)
 			return { block: true, reason: coordinationPrompt() };
+	});
+	pi.on("message_end", (event) => {
+		const message = (event as {
+			message?: { role?: string; toolName?: string };
+		}).message;
+		if (message?.role === "toolResult" && message.toolName === "wait_agent")
+			acknowledgeDeliveredMail();
 	});
 
 	// If the agent fully settles without waiting while children are still live (or
@@ -2104,7 +2301,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 	// On settled completion the subagent pushes only a result-file notice to its parent.
 	// If it still has live children or unread child messages, it is not allowed to
 	// finish; continue the agent loop with an explicit wait-only nudge instead.
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (_event, ctx?: ExtensionContext) => {
 		const messages = lastChildRunMessages;
 		const status = finalAssistantStatus(messages);
 		const beacon = readJson<Beacon>(join(agentDir(SELF), "beacon.json"));
@@ -2145,7 +2342,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 			return;
 		}
 
-		if (recoveryStage !== "summarizing" && hasTeamWork(SELF)) {
+		if (successful && hasTeamWork(SELF)) {
 			writeBeacon(SELF, { state: "running", activity: "must wait" });
 			pi.sendUserMessage(coordinationPrompt(), { deliverAs: "followUp" });
 			return;
@@ -2155,10 +2352,16 @@ function registerChildHooks(pi: ExtensionAPI): void {
 		const terminalError =
 			status.errorMessage ||
 			(needsAttention ? "subagent produced no successful assistant response" : undefined);
-		const finalText = collapseWhitespace(
-			lastAssistantText(messages) || terminalError || "",
+		const publishedText = publishedAssistantText(
+			ctx?.sessionManager?.getBranch() ?? [],
+			lastAssistantText(messages),
 		);
-		const resultFile = NOTIFY ? writeResultFile(SELF, messages) : undefined;
+		const finalText = collapseWhitespace(
+			publishedText || terminalError || "",
+		);
+		const resultFile = NOTIFY
+			? writeResultFile(SELF, publishedText, status)
+			: undefined;
 		const terminalPatch: Partial<Beacon> = {
 			state: needsAttention ? "error" : "completed",
 			errorMessage: terminalError,
@@ -2171,6 +2374,7 @@ function registerChildHooks(pi: ExtensionAPI): void {
 				ASSISTANT_PREVIEW_MAX,
 			);
 		writeBeacon(SELF, terminalPatch);
+		if (needsAttention && NOTIFY) forwardMailbox(SELF, NOTIFY);
 		if (NOTIFY && resultFile) {
 			post({
 				id: rid(),
@@ -2368,7 +2572,7 @@ async function inspectSubagentCommand(
 	await runDashboard(ctx, target.name);
 }
 
-type ActiveLeafProgress = ProgressObservation & {
+type ActiveAgentProgress = ProgressObservation & {
 	agent: Beacon;
 	pid?: number;
 	tokens: number;
@@ -2393,7 +2597,7 @@ function sessionProgressAt(name: string): number {
 	}
 }
 
-function activeLeafProgress(): ActiveLeafProgress[] {
+function activeAgentProgress(): ActiveAgentProgress[] {
 	const agents = listAgents();
 	const active = agents.filter(
 		(agent) =>
@@ -2403,15 +2607,11 @@ function activeLeafProgress(): ActiveLeafProgress[] {
 				RECOVERING.has(agent.state) ||
 				isActive(agent.name)),
 	);
-	const liveParents = new Set(
-		active.flatMap((agent) => (agent.parent ? [agent.parent] : [])),
-	);
 	return active
 		.filter(
 			(agent) =>
 				agent.state !== "queued" &&
-				agent.state !== "waiting" &&
-				!liveParents.has(agent.name),
+				agent.state !== "waiting",
 		)
 		.map((agent) => ({
 			taskPath: agent.name,
@@ -2422,14 +2622,14 @@ function activeLeafProgress(): ActiveLeafProgress[] {
 		}));
 }
 
-function stalledActiveLeaves(observedAt = now()): ActiveLeafProgress[] {
-	const leaves = activeLeafProgress();
+function stalledActiveAgents(observedAt = now()): ActiveAgentProgress[] {
+	const agents = activeAgentProgress();
 	const stalled = new Set(
-		stalledProgress(leaves, observedAt, STALL_TIMEOUT_MS).map(
+		stalledProgress(agents, observedAt, STALL_TIMEOUT_MS).map(
 			(observation) => observation.taskPath,
 		),
 	);
-	return leaves.filter((leaf) => stalled.has(leaf.taskPath));
+	return agents.filter((agent) => stalled.has(agent.taskPath));
 }
 
 function durationText(durationMs: number): string {
@@ -2441,7 +2641,7 @@ function durationText(durationMs: number): string {
 }
 
 function stalledAlertBody(
-	stalled: ActiveLeafProgress[],
+	stalled: ActiveAgentProgress[],
 	observedAt = now(),
 ): string {
 	return [
@@ -2465,7 +2665,7 @@ function rootIsBlocked(): boolean {
 	);
 }
 
-function postStalledAlert(stalled: ActiveLeafProgress[]): void {
+function postStalledAlert(stalled: ActiveAgentProgress[]): void {
 	for (const item of stalled) {
 		appendFeed(`liveness: stalled ${item.taskPath}`);
 		post({
@@ -2481,11 +2681,54 @@ function postStalledAlert(stalled: ActiveLeafProgress[]): void {
 	}
 }
 
-function restartStalledAgents(
-	stalled: ActiveLeafProgress[],
+function failStalledAgent(
+	item: ActiveAgentProgress,
+	errorMessage: string,
+	expectedGeneration: number,
+	expectedProgressAt: number,
+): boolean {
+	const claim = join(agentDir(item.taskPath), ".restart");
+	if (!acquireRestartClaim(claim)) return false;
+	try {
+		const beacon = readJson<Beacon>(
+			join(agentDir(item.taskPath), "beacon.json"),
+		);
+		if (
+			!beacon ||
+			INACTIVE.has(beacon.state) ||
+			(beacon.generation ?? 1) !== expectedGeneration ||
+			Math.max(beacon.updatedAt, sessionProgressAt(item.taskPath)) >
+				expectedProgressAt
+		)
+			return false;
+		const pid = activePid(item.taskPath);
+		if (
+			pid &&
+			processAlive(pid) &&
+			!terminateAgentRuntime(pid) &&
+			processAlive(pid)
+		)
+			killAgents(item.taskPath, errorMessage);
+		kids.delete(item.taskPath);
+		rmSync(activeLock(item.taskPath), { recursive: true, force: true });
+		writeBeacon(item.taskPath, {
+			state: "error",
+			activity: "",
+			errorMessage,
+		});
+		if (beacon.parent) forwardMailbox(item.taskPath, beacon.parent);
+		return true;
+	} finally {
+		rmSync(claim, { recursive: true, force: true });
+	}
+}
+
+function recoverStalledAgents(
+	stalled: ActiveAgentProgress[],
 	ctx: ExtensionContext,
-): ActiveLeafProgress[] {
-	return stalled.filter((item) => {
+): ActiveAgentProgress[] {
+	const failed: ActiveAgentProgress[] = [];
+	for (const item of stalled) {
 		const beacon = readJson<Beacon>(
 			join(agentDir(item.taskPath), "beacon.json"),
 		);
@@ -2493,18 +2736,28 @@ function restartStalledAgents(
 			!beacon ||
 			INACTIVE.has(beacon.state) ||
 			beacon.state === "queued" ||
-			beacon.state === "waiting" ||
-			activeDescendants(item.taskPath).length > 0
+			beacon.state === "waiting"
 		)
-			return false;
+			continue;
 		const progressAt = Math.max(
 			beacon.updatedAt,
 			sessionProgressAt(item.taskPath),
 		);
-		if (now() - progressAt < STALL_TIMEOUT_MS) return false;
+		if (now() - progressAt < STALL_TIMEOUT_MS) continue;
 
 		const stage = beacon.recoveryStage ?? "idle";
-		if (stage === "summarizing") return true;
+		if (stage === "summarizing") {
+			if (
+				failStalledAgent(
+					item,
+					"automatic recovery exhausted after the task stalled",
+					beacon.generation ?? 1,
+					progressAt,
+				)
+			)
+				failed.push(item);
+			continue;
+		}
 		const summarize =
 			beacon.state === "summary_requested" || stage === "restarted";
 		const outcome = restartAgentProcess(
@@ -2515,40 +2768,25 @@ function restartStalledAgents(
 			summarize ? "summarizing" : "restarted",
 			progressAt,
 		);
-		return !outcome.ok && !outcome.superseded;
-	});
-}
-
-function failStalledAgents(
-	stalled: ActiveLeafProgress[],
-): ActiveLeafProgress[] {
-	return stalled.filter((item) => {
-		const beacon = readJson<Beacon>(
-			join(agentDir(item.taskPath), "beacon.json"),
-		);
 		if (
-			!beacon ||
-			INACTIVE.has(beacon.state) ||
-			beacon.recoveryStage !== "summarizing" ||
-			now() - Math.max(beacon.updatedAt, sessionProgressAt(item.taskPath)) <
-				STALL_TIMEOUT_MS
+			!outcome.ok &&
+			!outcome.superseded &&
+			failStalledAgent(
+				item,
+				`automatic recovery failed: ${outcome.message}`,
+				beacon.generation ?? 1,
+				progressAt,
+			)
 		)
-			return false;
-		killOneAgent(item.taskPath, "automatic recovery exhausted");
-		writeBeacon(item.taskPath, {
-			state: "error",
-			activity: "",
-			errorMessage: "automatic recovery exhausted after the task stalled",
-		});
-		return true;
-	});
+			failed.push(item);
+	}
+	return failed;
 }
 
 function runStallWatchdog(ctx: ExtensionContext): void {
 	if (!rootIsBlocked()) return;
-	const stalled = restartStalledAgents(stalledActiveLeaves(), ctx);
-	if (stalled.length > 0)
-		postStalledAlert(failStalledAgents(stalled));
+	const failed = recoverStalledAgents(stalledActiveAgents(), ctx);
+	if (failed.length > 0) postStalledAlert(failed);
 	scheduleStallWatchdog(ctx);
 }
 
@@ -2559,8 +2797,8 @@ function cancelStallWatchdog(): void {
 
 function scheduleStallWatchdog(ctx: ExtensionContext): void {
 	if (stallWatchdogTimer || !rootIsBlocked()) return;
-	const leaves = activeLeafProgress();
-	const deadline = nextProgressDeadline(leaves, STALL_TIMEOUT_MS);
+	const agents = activeAgentProgress();
+	const deadline = nextProgressDeadline(agents, STALL_TIMEOUT_MS);
 	if (deadline === undefined) return;
 	const delay = Math.max(1, Math.min(deadline - now(), 2_147_483_647));
 	stallWatchdogTimer = setTimeout(() => {
@@ -2601,6 +2839,8 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		piThinkingLevel = pi.getThinkingLevel() as ThinkingLevel;
+		restoreMailboxClaims(SELF, true);
+		restorePendingQuestion();
 		drainLaunchQueue(ctx);
 
 		if (IS_CHILD || ctx.mode !== "tui" || uiReady) return;
