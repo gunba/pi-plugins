@@ -15,4 +15,4 @@ Syncs the user's Pi setup directory (`~/.pi`) through git.
 - `/pi-sync remote <url>` — set the `origin` remote.
 - `/pi-sync ignore` — refresh the managed `.gitignore` block.
 
-The managed ignore rules keep generated package installs, sessions, caches, temporary files, and local auth state machine-local. Installable packages stay represented by `settings.json`, so `pi update --extensions` can recreate them on another machine.
+The managed ignore rules keep generated package installs, dynamic model catalogs, sessions, caches, temporary files, local environment values, and auth state machine-local. Installable packages stay represented by `settings.json`, so `pi update --extensions` can recreate them on another machine.
