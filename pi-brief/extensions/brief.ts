@@ -1,6 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	CONFIG_DIR_NAME,
@@ -39,7 +38,7 @@ Non-negotiable behaviour:
 - Do not solve the task, make implementation changes, or produce an implementation plan disguised as a brief. You may inspect the project and use research tools when that materially improves the brief.
 - On the first turn, use the present_brief tool to render a complete best-judgement draft. Do not postpone the draft until every uncertainty is answered; record material uncertainty under openQuestions.
 - The present_brief card in the chat is the primary review surface. A project-local Markdown copy is autosaved only for recovery or optional external editing. Never direct the user to the file instead of rendering the card. If the user says they edited the file, read it before the next revision.
-- After each user feedback turn, update every affected section and call present_brief again with the complete revised brief.
+- After each user feedback turn that requests changes, update every affected section and call present_brief again with the complete revised brief. Approval is not a revision.
 - Ask the clarifying questions needed to remove material ambiguity. Batch or sequence them according to the task and the user's feedback; do not impose an arbitrary question count. The user may answer, edit any section, or defer a decision back to the executing agent.
 - A required process belongs in every brief. If the user does not prescribe one, design a suitable process and make its decision and escalation points explicit.
 - A concrete time horizon belongs in every brief. Specify expected duration, a meaningful minimum effort or search horizon, persistence rules that prevent arbitrary early exit, and a return policy. Difficult autonomous tasks may require a minimum elapsed time as well as iteration or coverage thresholds.
@@ -49,8 +48,8 @@ Non-negotiable behaviour:
 - Preserve solution latitude: specify outcomes, boundaries, process, evidence, and stopping rules without inventing repository files or prematurely selecting an implementation.
 - End every draft and revision turn with present_brief. Do not add a normal assistant reply after the card.
 - A changed brief must be rendered with action="draft" before it can be approved. If one user message both requests changes and says to proceed, render the revised draft and wait for the user to approve that visible revision. Never approve an unseen revision.
-- Use action="approve" only after an approval-only user message explicitly approves the latest rendered revision. Include that complete message in approvalEvidence and pass the latest rendered brief unchanged. Never infer approval from silence or merely positive feedback.
-- When approval is explicit, call present_brief with the unchanged latest brief and action="approve". The extension will replace the current conversation directly and send the compiled brief there.
+- Use action="approve" only after an approval-only user message explicitly approves the latest rendered revision. Include that complete message in approvalEvidence and omit brief; approval always references the stored latest rendered revision. Never infer approval from silence or merely positive feedback.
+- When approval is explicit, call present_brief once with action="approve" and approvalEvidence only. Do not resubmit or rerender the brief. The extension will replace the current conversation directly and send the stored compiled brief there.
 
 The brief must be signal-dense. Every statement should define, constrain, prioritize, prescribe process, govern uncertainty, verify, or establish a stopping condition.`;
 
@@ -149,6 +148,9 @@ const briefSchema = Type.Object({
 	sourcesAndTools: stringArray(
 		"Permitted or required sources, tools, authority hierarchy, and privacy boundaries.",
 	),
+}, {
+	description:
+		"Required for draft and omitted for approve. The complete current task brief.",
 });
 
 const toolParameters = Type.Object({
@@ -162,7 +164,7 @@ const toolParameters = Type.Object({
 				"Required for approve: the user's complete latest message, which must contain approval only and no requested changes.",
 		}),
 	),
-	brief: briefSchema,
+	brief: Type.Optional(briefSchema),
 });
 
 function nonEmpty(values: string[]): string[] {
@@ -240,17 +242,14 @@ function expansionHint(): string {
 }
 
 function createBriefCard(
-	details: BriefRenderDetails,
+	details: BriefDraftRenderDetails,
 	expanded: boolean,
 	theme: Theme,
 ): Box {
 	const snapshot = details;
-	const approved = snapshot.status === "approved";
-	const statusColor = approved ? "success" : "warning";
-	const statusLabel = approved ? "APPROVED" : "DRAFT";
 	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 	const heading = [
-		theme.fg(statusColor, theme.bold(`◆ ${statusLabel}`)),
+		theme.fg("warning", theme.bold("◆ DRAFT")),
 		theme.fg("accent", theme.bold(snapshot.brief.title)),
 		theme.fg("dim", `revision ${snapshot.revision}`),
 	].join("  ");
@@ -267,19 +266,96 @@ function createBriefCard(
 		),
 	);
 	box.addChild(new Spacer(1));
-	const footer = approved
-		? details.handoff === "automatic"
-			? "Approved · starting a fresh execution conversation…"
-			: "Approved · run /brief approve to start the execution conversation"
-		: `Reply with changes or approve naturally · ${expansionHint()}`;
-	box.addChild(new Text(theme.fg("dim", footer), 0, 0));
+	box.addChild(
+		new Text(
+			theme.fg(
+				"dim",
+				`Reply with changes or approve naturally · ${expansionHint()}`,
+			),
+			0,
+			0,
+		),
+	);
 	return box;
 }
 
-type BriefHandoff = "none" | "automatic" | "manual";
+type BriefHandoff = "automatic" | "manual";
 
-interface BriefRenderDetails extends BriefSnapshot {
+interface BriefDraftRenderDetails extends BriefSnapshot {
+	kind: "draft";
+}
+
+interface BriefApprovalRenderDetails {
+	kind: "approval";
+	title: string;
+	revision: number;
+	status: "approved";
 	handoff: BriefHandoff;
+}
+
+type BriefRenderDetails =
+	| BriefDraftRenderDetails
+	| BriefApprovalRenderDetails;
+
+function createApprovalReceipt(
+	details: BriefApprovalRenderDetails,
+	theme: Theme,
+): Box {
+	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+	box.addChild(
+		new Text(
+			[
+				theme.fg("success", theme.bold("◆ APPROVED")),
+				theme.fg("accent", theme.bold(details.title)),
+				theme.fg("dim", `revision ${details.revision}`),
+			].join("  "),
+			0,
+			0,
+		),
+	);
+	box.addChild(new Spacer(1));
+	box.addChild(
+		new Text(
+			theme.fg(
+				"dim",
+				details.handoff === "automatic"
+					? "Starting a fresh execution conversation…"
+					: "Run /brief approve to start the execution conversation",
+			),
+			0,
+			0,
+		),
+	);
+	return box;
+}
+
+function toolResultText(content: Array<{ type: string; text?: string }>): string {
+	return content.find((part) => part.type === "text")?.text ?? "Brief unavailable";
+}
+
+function compactBriefError(text: string): string {
+	const diagnostics = text
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const receivedIndex = diagnostics.findIndex((line) =>
+		line.startsWith("Received arguments:"),
+	);
+	const visibleDiagnostics =
+		receivedIndex >= 0 ? diagnostics.slice(0, receivedIndex) : diagnostics;
+	const fieldErrors = visibleDiagnostics
+		.filter((line) => line.startsWith("- "))
+		.map((line) => line.slice(2).trim());
+	const primary = fieldErrors[0] ?? visibleDiagnostics[0] ?? "Brief unavailable";
+	const boundedPrimary =
+		primary.length > 180 ? `${primary.slice(0, 177)}…` : primary;
+	const remaining = fieldErrors.length - 1;
+	return [
+		"◆ Brief not accepted",
+		boundedPrimary,
+		...(remaining > 0 ? [`${remaining} more issue${remaining === 1 ? "" : "s"}`] : []),
+		expansionHint(),
+	].join(" · ");
 }
 
 function userMessageText(content: unknown): string {
@@ -430,7 +506,7 @@ class BriefPresenter {
 			name: TOOL_NAME,
 			label: "Task Brief",
 			description:
-				"Render the complete current task brief as a review card. Render every changed revision as draft; approve only the unchanged latest card after explicit user approval.",
+				"Render a complete draft as a review card, or approve the stored latest card after explicit user approval. For approve, send only action and approvalEvidence; omit brief.",
 			parameters: toolParameters,
 			executionMode: "sequential",
 			renderShell: "self",
@@ -440,13 +516,12 @@ class BriefPresenter {
 					throw new Error("No active brief. Start one with /brief <task>.");
 				}
 
-				const brief = params.brief as BriefDocument;
-				const errors = validateBrief(brief);
-				if (errors.length > 0) {
-					throw new Error(`Brief is incomplete:\n- ${errors.join("\n- ")}`);
-				}
-
 				if (params.action === "approve") {
+					if (params.brief !== undefined) {
+						throw new Error(
+							"Approval references the stored latest revision. Omit brief and send only action and approvalEvidence.",
+						);
+					}
 					const approvalEvidence = params.approvalEvidence?.trim();
 					if (!approvalEvidence) {
 						throw new Error(
@@ -458,10 +533,9 @@ class BriefPresenter {
 							"Render the brief as a draft card before asking the user to approve it.",
 						);
 					}
-					if (!isDeepStrictEqual(brief, state.draft)) {
-						throw new Error(
-							"The approval payload differs from the latest rendered draft. Render the changed brief with action=\"draft\", let the user review that card, then seek approval on a later turn.",
-						);
+					const errors = validateBrief(state.draft);
+					if (errors.length > 0) {
+						throw new Error(`Brief is incomplete:\n- ${errors.join("\n- ")}`);
 					}
 					const latestUserMessage = latestUserMessageText(ctx);
 					if (
@@ -474,6 +548,16 @@ class BriefPresenter {
 					}
 					state.status = "approved";
 				} else {
+					const brief = params.brief as BriefDocument | undefined;
+					if (!brief) {
+						throw new Error(
+							"Draft action requires the complete brief field.",
+						);
+					}
+					const errors = validateBrief(brief);
+					if (errors.length > 0) {
+						throw new Error(`Brief is incomplete:\n- ${errors.join("\n- ")}`);
+					}
 					state.draft = structuredClone(brief);
 					state.revision += 1;
 					state.status = "draft";
@@ -494,19 +578,28 @@ class BriefPresenter {
 				const snapshot = snapshotFromState(state);
 				if (!snapshot) throw new Error("Failed to create the brief snapshot.");
 
-				const handoff: BriefHandoff =
+				const handoff: BriefHandoff | undefined =
 					params.action === "approve"
 						? presenter.requestHandoff()
 							? "automatic"
 							: "manual"
-						: "none";
+						: undefined;
 				if (handoff === "manual") {
 					ctx.ui.notify(
 						"Brief approved. Run /brief approve to start the execution conversation.",
 						"info",
 					);
 				}
-				const details: BriefRenderDetails = { ...snapshot, handoff };
+				const details: BriefRenderDetails =
+					params.action === "approve"
+						? {
+								kind: "approval",
+								title: snapshot.brief.title,
+								revision: snapshot.revision,
+								status: "approved",
+								handoff: handoff ?? "manual",
+							}
+						: { ...snapshot, kind: "draft" };
 
 				return {
 					content: [
@@ -524,20 +617,35 @@ class BriefPresenter {
 					terminate: true,
 				};
 			},
-			renderCall(_args, theme) {
-				return new Text(theme.fg("dim", "◆ composing task brief…"), 0, 0);
+			renderCall(args, theme) {
+				return new Text(
+					theme.fg(
+						"dim",
+						args.action === "approve"
+							? "◆ approving latest brief…"
+							: "◆ composing task brief…",
+					),
+					0,
+					0,
+				);
 			},
-			renderResult(result, { expanded }, theme) {
+			renderResult(result, { expanded }, theme, context) {
 				const snapshot = result.details as BriefRenderDetails | undefined;
-				if (!snapshot?.brief) {
-					const first = result.content[0];
+				if (context?.isError) {
+					const text = toolResultText(result.content);
 					return new Text(
-						first?.type === "text" ? first.text : "Brief unavailable",
+						theme.fg("error", expanded ? text : compactBriefError(text)),
 						0,
 						0,
 					);
 				}
-				return createBriefCard(snapshot, expanded, theme);
+				if (snapshot?.kind === "approval") {
+					return createApprovalReceipt(snapshot, theme);
+				}
+				if (snapshot?.kind === "draft") {
+					return createBriefCard(snapshot, expanded, theme);
+				}
+				return new Text(toolResultText(result.content), 0, 0);
 			},
 		});
 	}

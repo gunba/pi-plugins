@@ -233,6 +233,8 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	assert.deepEqual(harness.setActiveToolsCalls, []);
 
 	const tool = harness.tools.get("present_brief");
+	assert.equal(tool.parameters.required.includes("action"), true);
+	assert.equal(tool.parameters.required.includes("brief"), false);
 	await assert.rejects(
 		tool.execute(
 			"call-inactive",
@@ -259,6 +261,16 @@ test("/brief keeps provider tool registration and active membership stable", asy
 		harness.userMessages[0].message[0].text,
 		/Build the intended capability/,
 	);
+	await assert.rejects(
+		tool.execute(
+			"call-missing-draft",
+			{ action: "draft" },
+			undefined,
+			undefined,
+			harness.ctx,
+		),
+		/complete brief field/,
+	);
 	const result = await tool.execute(
 		"call-1",
 		{ action: "draft", brief: completeBrief() },
@@ -269,7 +281,8 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	assert.match(result.content[0].text, /rendered in the review card/);
 	assert.equal(result.details.revision, 1);
 	assert.equal(result.details.status, "draft");
-	assert.equal(result.details.handoff, "none");
+	assert.equal(result.details.kind, "draft");
+	assert.equal(Object.hasOwn(result.details, "handoff"), false);
 	assert.equal(result.terminate, true);
 	assert.match(result.details.filePath, /\.pi[\\/]briefs[\\/].*-precise-task\.md$/);
 	assert.match(
@@ -303,16 +316,22 @@ test("/brief keeps provider tool registration and active membership stable", asy
 		{
 			action: "approve",
 			approvalEvidence: "Approved, continue.",
-			brief: completeBrief(),
 		},
 		undefined,
 		undefined,
 		harness.ctx,
 	);
 	assert.equal(approval.details.status, "approved");
+	assert.equal(approval.details.kind, "approval");
 	assert.equal(approval.details.revision, 1);
 	assert.equal(approval.details.handoff, "automatic");
+	assert.equal(Object.hasOwn(approval.details, "brief"), false);
 	assert.equal(approval.terminate, true);
+	const approvalCall = tool.renderCall(
+		{ action: "approve", approvalEvidence: "Approved, continue." },
+		harness.theme,
+	);
+	assert.match(approvalCall.render(120).join("\n"), /approving latest brief/);
 	const approvedCard = tool.renderResult(
 		approval,
 		{ expanded: false, isPartial: false },
@@ -320,7 +339,8 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	);
 	const approvedText = approvedCard.render(120).join("\n");
 	assert.match(approvedText, /APPROVED/);
-	assert.match(approvedText, /starting a fresh execution conversation/);
+	assert.match(approvedText, /Starting a fresh execution conversation/);
+	assert.doesNotMatch(approvedText, /Mission|Key requirements/);
 	assert.doesNotMatch(approvedText, /Draft file|\.pi[\\/]briefs/);
 	assert.equal(harness.newSessions.length, 0);
 	assert.equal(harness.userMessages.length, 1);
@@ -356,6 +376,55 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	assert.match(harness.newSessions[0].sent[0], /Do not return partial work/);
 });
 
+test("brief validation errors stay compact until expanded", (t) => {
+	const harness = createHarness();
+	t.after(harness.cleanup);
+	const tool = harness.tools.get("present_brief");
+	const errorText = [
+		'Validation failed for tool "present_brief":',
+		"  - brief.timeHorizon.returnPolicy: Expected required property",
+		"",
+		"Received arguments:",
+		JSON.stringify(
+			{
+				action: "draft",
+				brief: {
+					...completeBrief(),
+					mission: "This full existing brief must stay out of the collapsed view.",
+				},
+			},
+			null,
+			2,
+		),
+	].join("\n");
+	const result = {
+		content: [{ type: "text", text: errorText }],
+		details: undefined,
+	};
+
+	const compact = tool.renderResult(
+		result,
+		{ expanded: false, isPartial: false },
+		harness.theme,
+		{ isError: true },
+	);
+	const compactText = compact.render(120).join("\n");
+	assert.match(compactText, /Brief not accepted/);
+	assert.match(compactText, /brief\.timeHorizon\.returnPolicy/);
+	assert.match(compactText, /expand/);
+	assert.doesNotMatch(compactText, /Received arguments|full existing brief/);
+
+	const expanded = tool.renderResult(
+		result,
+		{ expanded: true, isPartial: false },
+		harness.theme,
+		{ isError: true },
+	);
+	const expandedText = expanded.render(120).join("\n");
+	assert.match(expandedText, /Received arguments/);
+	assert.match(expandedText, /full existing brief/);
+});
+
 test("changed briefs must be rendered before a later approval", async (t) => {
 	const harness = createHarness();
 	t.after(harness.cleanup);
@@ -375,7 +444,7 @@ test("changed briefs must be rendered before a later approval", async (t) => {
 	await assert.rejects(
 		tool.execute(
 			"call-1",
-			{ action: "approve", brief: firstDraft },
+			{ action: "approve" },
 			undefined,
 			undefined,
 			harness.ctx,
@@ -397,7 +466,7 @@ test("changed briefs must be rendered before a later approval", async (t) => {
 			undefined,
 			harness.ctx,
 		),
-		/differs from the latest rendered draft/,
+		/stored latest revision.*Omit brief/,
 	);
 
 	const revision = await tool.execute(
@@ -419,7 +488,6 @@ test("changed briefs must be rendered before a later approval", async (t) => {
 			{
 				action: "approve",
 				approvalEvidence: "approved earlier",
-				brief: revisedBrief,
 			},
 			undefined,
 			undefined,
@@ -433,7 +501,6 @@ test("changed briefs must be rendered before a later approval", async (t) => {
 		{
 			action: "approve",
 			approvalEvidence: "Approved, send it.",
-			brief: revisedBrief,
 		},
 		undefined,
 		undefined,
