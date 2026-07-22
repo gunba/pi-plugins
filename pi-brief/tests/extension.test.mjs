@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import briefExtension from "../extensions/brief.ts";
+
+initTheme("dark", false);
 
 function completeBrief() {
 	return {
@@ -61,12 +64,26 @@ function createHarness() {
 	const commands = new Map();
 	const tools = new Map();
 	const entries = [];
+	const branchEntries = [];
 	const userMessages = [];
 	const newSessions = [];
+	const notifications = [];
 	const registerToolCalls = [];
 	const setActiveToolsCalls = [];
 	let activeTools = ["read", "edit", "write", "ask_user"];
 	let extensionInitializing = true;
+	let agentIdle = false;
+	let nextEntryId = 1;
+	let idleWaiters = [];
+
+	const appendBranchEntry = (entry) => {
+		branchEntries.push({
+			id: `entry-${nextEntryId++}`,
+			parentId: branchEntries.at(-1)?.id ?? null,
+			timestamp: new Date().toISOString(),
+			...entry,
+		});
+	};
 
 	const pi = {
 		registerCommand(name, command) {
@@ -86,6 +103,7 @@ function createHarness() {
 		on() {},
 		appendEntry(customType, data) {
 			entries.push({ customType, data });
+			appendBranchEntry({ type: "custom", customType, data });
 		},
 		getActiveTools() {
 			return [...activeTools];
@@ -96,6 +114,11 @@ function createHarness() {
 		},
 		sendUserMessage(message, options) {
 			userMessages.push({ message, options });
+			appendBranchEntry({
+				type: "message",
+				message: { role: "user", content: message, timestamp: Date.now() },
+			});
+			agentIdle = false;
 		},
 	};
 
@@ -115,7 +138,7 @@ function createHarness() {
 			return "/sessions/parent.jsonl";
 		},
 		getBranch() {
-			return [];
+			return branchEntries;
 		},
 	};
 	const ctx = {
@@ -128,11 +151,16 @@ function createHarness() {
 			async confirm() {
 				return true;
 			},
-			notify() {},
+			notify(message, level) {
+				notifications.push({ message, level });
+			},
 			setStatus() {},
 			setWidget() {},
 		},
-		async waitForIdle() {},
+		async waitForIdle() {
+			if (agentIdle) return;
+			await new Promise((resolve) => idleWaiters.push(resolve));
+		},
 		async newSession(options) {
 			const setupNames = [];
 			const sent = [];
@@ -161,9 +189,30 @@ function createHarness() {
 		newSessions,
 		registerToolCalls,
 		setActiveToolsCalls,
+		notifications,
 		ctx,
+		theme,
 		cleanup: () => rmSync(cwd, { recursive: true, force: true }),
 		getActiveTools: () => [...activeTools],
+		addUserMessage(text) {
+			appendBranchEntry({
+				type: "message",
+				message: {
+					role: "user",
+					content: [{ type: "text", text }],
+					timestamp: Date.now(),
+				},
+			});
+			agentIdle = false;
+		},
+		async settleAgent() {
+			agentIdle = true;
+			const waiters = idleWaiters;
+			idleWaiters = [];
+			for (const resolve of waiters) resolve();
+			await new Promise((resolve) => setImmediate(resolve));
+			await new Promise((resolve) => setImmediate(resolve));
+		},
 	};
 }
 
@@ -217,16 +266,39 @@ test("/brief keeps provider tool registration and active membership stable", asy
 		undefined,
 		harness.ctx,
 	);
-	assert.match(result.content[0].text, /Rendered brief revision 1/);
+	assert.match(result.content[0].text, /rendered in the review card/);
 	assert.equal(result.details.revision, 1);
 	assert.equal(result.details.status, "draft");
+	assert.equal(result.details.handoff, "none");
+	assert.equal(result.terminate, true);
 	assert.match(result.details.filePath, /\.pi[\\/]briefs[\\/].*-precise-task\.md$/);
 	assert.match(
 		readFileSync(result.details.filePath, "utf8"),
 		/^# Precise task/m,
 	);
+	const compactCard = tool.renderResult(
+		result,
+		{ expanded: false, isPartial: false },
+		harness.theme,
+	);
+	const compactText = compactCard.render(120).join("\n");
+	assert.match(compactText, /DRAFT/);
+	assert.match(compactText, /Mission/);
+	assert.match(compactText, /Key requirements/);
+	assert.match(compactText, /Acceptance checks/);
+	assert.doesNotMatch(compactText, /Draft file|\.pi[\\/]briefs/);
+	const expandedCard = tool.renderResult(
+		result,
+		{ expanded: true, isPartial: false },
+		harness.theme,
+	);
+	const expandedText = expandedCard.render(120).join("\n");
+	assert.match(expandedText, /Required process/);
+	assert.match(expandedText, /Verification and adversarial audit/);
+	assert.doesNotMatch(expandedText, /Draft file|\.pi[\\/]briefs/);
 
-	await tool.execute(
+	harness.addUserMessage("Approved, continue.");
+	const approval = await tool.execute(
 		"call-2",
 		{
 			action: "approve",
@@ -237,7 +309,29 @@ test("/brief keeps provider tool registration and active membership stable", asy
 		undefined,
 		harness.ctx,
 	);
-	await command.handler("__approve-current-brief", harness.ctx);
+	assert.equal(approval.details.status, "approved");
+	assert.equal(approval.details.revision, 1);
+	assert.equal(approval.details.handoff, "automatic");
+	assert.equal(approval.terminate, true);
+	const approvedCard = tool.renderResult(
+		approval,
+		{ expanded: false, isPartial: false },
+		harness.theme,
+	);
+	const approvedText = approvedCard.render(120).join("\n");
+	assert.match(approvedText, /APPROVED/);
+	assert.match(approvedText, /starting a fresh execution conversation/);
+	assert.doesNotMatch(approvedText, /Draft file|\.pi[\\/]briefs/);
+	assert.equal(harness.newSessions.length, 0);
+	assert.equal(harness.userMessages.length, 1);
+	assert.equal(
+		harness.userMessages.some(({ message }) =>
+			typeof message === "string" && message.includes("__approve-current-brief"),
+		),
+		false,
+	);
+
+	await harness.settleAgent();
 
 	assert.deepEqual(harness.getActiveTools(), [
 		"read",
@@ -262,17 +356,26 @@ test("/brief keeps provider tool registration and active membership stable", asy
 	assert.match(harness.newSessions[0].sent[0], /Do not return partial work/);
 });
 
-test("tool approval requires explicit evidence and queues conversation replacement", async (t) => {
+test("changed briefs must be rendered before a later approval", async (t) => {
 	const harness = createHarness();
 	t.after(harness.cleanup);
 	const command = harness.commands.get("brief");
 	await command.handler("Build the intended capability", harness.ctx);
 	const tool = harness.tools.get("present_brief");
+	const firstDraft = completeBrief();
+	await tool.execute(
+		"call-draft-1",
+		{ action: "draft", brief: firstDraft },
+		undefined,
+		undefined,
+		harness.ctx,
+	);
+	harness.addUserMessage("Change the outcome to be clearer, then proceed.");
 
 	await assert.rejects(
 		tool.execute(
 			"call-1",
-			{ action: "approve", brief: completeBrief() },
+			{ action: "approve", brief: firstDraft },
 			undefined,
 			undefined,
 			harness.ctx,
@@ -280,12 +383,57 @@ test("tool approval requires explicit evidence and queues conversation replaceme
 		/approvalEvidence/,
 	);
 
+	const revisedBrief = completeBrief();
+	revisedBrief.userVisibleOutcome = "The requested capability works clearly from end to end.";
+	await assert.rejects(
+		tool.execute(
+			"call-2",
+			{
+				action: "approve",
+				approvalEvidence: "then proceed",
+				brief: revisedBrief,
+			},
+			undefined,
+			undefined,
+			harness.ctx,
+		),
+		/differs from the latest rendered draft/,
+	);
+
+	const revision = await tool.execute(
+		"call-3",
+		{ action: "draft", brief: revisedBrief },
+		undefined,
+		undefined,
+		harness.ctx,
+	);
+	assert.equal(revision.details.status, "draft");
+	assert.equal(revision.details.revision, 2);
+	assert.equal(revision.terminate, true);
+	assert.equal(harness.newSessions.length, 0);
+
+	harness.addUserMessage("Approved, send it.");
+	await assert.rejects(
+		tool.execute(
+			"call-4",
+			{
+				action: "approve",
+				approvalEvidence: "approved earlier",
+				brief: revisedBrief,
+			},
+			undefined,
+			undefined,
+			harness.ctx,
+		),
+		/complete latest message/,
+	);
+
 	const result = await tool.execute(
 		"call-2",
 		{
 			action: "approve",
 			approvalEvidence: "Approved, send it.",
-			brief: completeBrief(),
+			brief: revisedBrief,
 		},
 		undefined,
 		undefined,
@@ -293,8 +441,32 @@ test("tool approval requires explicit evidence and queues conversation replaceme
 	);
 
 	assert.equal(result.details.status, "approved");
-	assert.deepEqual(harness.userMessages.at(-1), {
-		message: "/brief __approve-current-brief",
-		options: { deliverAs: "followUp" },
-	});
+	assert.equal(result.details.revision, 2);
+	assert.equal(result.details.handoff, "automatic");
+	assert.equal(result.terminate, true);
+	assert.equal(harness.userMessages.length, 1);
+	assert.equal(harness.newSessions.length, 0);
+	await harness.settleAgent();
+	assert.equal(harness.newSessions.length, 1);
+});
+
+test("/brief approve directly retries an approved-session handoff", async (t) => {
+	const harness = createHarness();
+	t.after(harness.cleanup);
+	const command = harness.commands.get("brief");
+	const tool = harness.tools.get("present_brief");
+	await command.handler("Build the intended capability", harness.ctx);
+	await tool.execute(
+		"call-draft",
+		{ action: "draft", brief: completeBrief() },
+		undefined,
+		undefined,
+		harness.ctx,
+	);
+	await harness.settleAgent();
+	await command.handler("approve", harness.ctx);
+
+	assert.equal(harness.newSessions.length, 1);
+	assert.deepEqual(harness.newSessions[0].setupNames, ["Precise task"]);
+	assert.match(harness.newSessions[0].sent[0], /^# Precise task/m);
 });

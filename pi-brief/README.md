@@ -10,9 +10,9 @@ fresh Pi conversation with the approved brief.
 ```
 
 `/brief <task>` starts brief authoring and asks the current model to render a
-complete first draft in a structured chat card. Reply normally with corrections,
-answers, or approval; the model renders complete revised briefs as the conversation
-develops.
+complete first draft in a structured TUI card. The card is the review surface from
+the first draft onward. Reply normally with corrections or answers; every changed
+revision appears as another complete card before it can be approved.
 
 Every brief includes an execution process, explicit time horizon and minimum
 effort, persistence rules against arbitrary early exit, a partial-work policy,
@@ -20,13 +20,16 @@ acceptance criteria, near-miss exclusions, edge cases, adversarial verification,
 deliverables, and stopping conditions.
 
 The agent can inspect the project and use the existing research tools while refining
-the brief. Each rendered revision is also written to a project-local Markdown file
-under `.pi/briefs/`, so the prompt can be reviewed or edited outside the chat.
+the brief. Each rendered revision is also autosaved under `.pi/briefs/` as a recovery
+copy. You do not need to open that file to review the brief. You may edit it outside
+Pi if useful.
 
-When the user approves the result in normal conversation, the agent submits the
-approval through `present_brief`. Pi replaces the current conversation, names the
-new session after the brief, sends the compiled brief as its first user message,
-and begins execution there.
+When the user approves the latest visible revision in normal conversation, the agent
+submits the approval through `present_brief`. Pi waits for the brief turn to settle,
+replaces the current conversation directly, names the new session after the brief,
+sends the compiled brief as its first user message, and begins execution there. If
+an interrupted or reloaded session cannot complete that automatic handoff, run
+`/brief approve` to retry it.
 
 Press the normal tool-expansion key (usually `ctrl+o`) to switch a brief card
 between its compact summary and full specification.
