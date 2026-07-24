@@ -45,6 +45,7 @@ const MANAGED_GITIGNORE_LINES = [
 	"agent/pi-web/",
 	"agent/pi-web.sqlite*",
 	"agent/mcp-cache.json",
+	"agent/mcp-npx-cache.json",
 	"agent/mcp-onboarding.json",
 	"agent/run-history.jsonl",
 	"agent/codex-usage/",
