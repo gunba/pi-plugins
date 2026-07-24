@@ -12,7 +12,7 @@ import {
   type Theme,
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 
 const CUSTOM_TYPE = "pi-extension-freshness";
 const FRESH_DAYS = 30;
@@ -359,7 +359,7 @@ function formatRowText(row: ExtensionFreshnessRow, counts: Map<string, number>, 
 
 function wrapCommaParagraph(items: string[], width: number): string[] {
   const indent = "  ";
-  const maxWidth = Math.max(36, width);
+  const maxWidth = Math.max(1, width);
   const lines: string[] = [];
   let current = indent;
 
@@ -385,7 +385,12 @@ function renderPlain(report: ExtensionFreshnessReport): string {
     .join("\n");
 }
 
-function renderRows(report: ExtensionFreshnessReport, theme: Theme, width: number, expanded: boolean): string[] {
+export function renderRows(
+  report: ExtensionFreshnessReport,
+  theme: Theme,
+  width: number,
+  expanded: boolean,
+): string[] {
   const lines: string[] = [];
   const heading = theme.fg("mdHeading", "[Extension freshness]");
   const summary = theme.fg("dim", summaryText(report));
@@ -396,13 +401,13 @@ function renderRows(report: ExtensionFreshnessReport, theme: Theme, width: numbe
 
   if (report.rows.length === 0) {
     lines.push(theme.fg("muted", "  No extensions found."));
-    return lines;
+    return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
   }
 
   const counts = labelCounts(report.rows);
   const items = report.rows.map((row) => theme.fg(statusColor(row.status), formatRowText(row, counts, expanded)));
   lines.push(...wrapCommaParagraph(items, width));
-  return lines;
+  return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
 }
 
 function createFreshnessComponent(report: ExtensionFreshnessReport, theme: Theme, expanded: boolean): Component {
@@ -412,7 +417,7 @@ function createFreshnessComponent(report: ExtensionFreshnessReport, theme: Theme
     render(width: number): string[] {
       if (width !== cachedWidth) {
         cachedWidth = width;
-        cachedLines = renderRows(report, theme, Math.max(36, width), expanded);
+        cachedLines = renderRows(report, theme, width, expanded);
       }
       return cachedLines;
     },
