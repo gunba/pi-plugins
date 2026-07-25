@@ -21,6 +21,11 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   `$CODEX_HOME/generated_images`. A native footer status passively shows Codex
   5h/7d usage; `/pi-usage` shows the detailed token, cost, and rate-limit
   breakdown and controls that status.
+- `pi-web-search` — adds one `web_search` tool, labelled `web.run`, based on
+  Codex's standalone search client. It sends Codex-compatible commands directly
+  to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no
+  provider router, fallback provider, summary workflow, or separately selected
+  model.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that
   provides the interactive `ask_user` tool without loading the upstream
   mandatory decision-gate skill by default.
@@ -70,23 +75,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 ```bash
 pi install git:github.com/gunba/pi-plugins
 ```
-
-## Web Search
-
-Use `npm:pi-web-access` for web search, content fetching, GitHub repository
-cloning, PDFs, and video extraction. Configure it to use Perplexity in
-`~/.pi/web-search.json`:
-
-```json
-{
-  "perplexityApiKey": "pplx-...",
-  "provider": "perplexity",
-  "searchProvider": "perplexity",
-  "perplexityModel": "sonar"
-}
-```
-
-Keep the API key in the local user config file, not in this repository.
 
 Do not pin a ref if you want Pi startup/update checks to detect new commits.
 Use:
