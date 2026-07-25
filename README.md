@@ -32,8 +32,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-scheduler` — adds `/schedule <delay> <message>` and an agent-facing
   `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
   compact queued-message panel, countdowns, `ctrl+o` expansion, and
-  cancel/list command reminders. Agent-created messages steer an active run;
-  user-created `/schedule` messages wait as follow-ups.
+  cancel/list command reminders. Agents can cancel pending messages with
+  `cancel_scheduled_message`. Due reminders appear as labelled scheduler
+  messages instead of newly typed user messages. Agent-created messages steer
+  an active run; user-created `/schedule` messages wait as follow-ups.
 - `pi-extension-freshness` — prints a startup extension freshness panel with
   last-updated dates, age-based color coding, and `/extension-freshness` for
   on-demand review of stale extension paths.

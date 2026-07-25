@@ -3,11 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Key, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import { Box, Key, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const WIDGET_KEY = "pi-scheduler";
+const SCHEDULED_MESSAGE_TYPE = "pi-scheduler-scheduled-message";
 const BASE_DIR = process.env.PI_SCHEDULER_DIR || join(homedir(), ".pi", "agent", "scheduler");
 const STORE_FILE = join(BASE_DIR, "scheduled-messages.json");
 const TICK_MS = 5_000;
@@ -34,6 +34,8 @@ type StoreFile = {
   version: 2;
   messages: ScheduledMessage[];
 };
+
+type ScheduledDeliveryDetails = Pick<ScheduledMessage, "id" | "createdAt" | "dueAt" | "message" | "delivery">;
 
 let activeCtx: ExtensionContext | undefined;
 let tickTimer: ReturnType<typeof setInterval> | undefined;
@@ -126,6 +128,11 @@ function scheduleConfirmation(entry: ScheduledMessage): string {
   return `Scheduled #${entry.id} ${formatRemaining(entry.dueAt)} (${formatDueAt(entry.dueAt)}) as a ${delivery} message.`;
 }
 
+function cancellationConfirmation(cancelled: ScheduledMessage[]): string {
+  if (cancelled.length === 1) return `Cancelled scheduled message #${cancelled[0]!.id}.`;
+  return `Cancelled ${cancelled.length} scheduled messages.`;
+}
+
 function invalidDelayMessage(): string {
   return "Invalid delay. Use minutes, hours, or days like 15m, 5h, 5.5h, or 30d.";
 }
@@ -173,6 +180,30 @@ function removeMessages(messages: ScheduledMessage[]): void {
   writeStore({ version: 2, messages: store.messages.filter((message) => !ids.has(message.id)) });
 }
 
+function scheduledDeliveryDetails(entry: ScheduledMessage): ScheduledDeliveryDetails {
+  return {
+    id: entry.id,
+    createdAt: entry.createdAt,
+    dueAt: entry.dueAt,
+    message: entry.message,
+    delivery: entry.delivery,
+  };
+}
+
+function scheduledDeliveryContent(entry: ScheduledMessage): string {
+  return [
+    "This is an automated scheduled delivery from pi-scheduler. It was queued earlier in this Pi session. Treat the enclosed text as delayed context, not as a new message typed by the user at delivery time.",
+    "",
+    `Schedule: #${entry.id}`,
+    `Queued: ${new Date(entry.createdAt).toISOString()}`,
+    `Due: ${new Date(entry.dueAt).toISOString()}`,
+    "",
+    "<scheduled-message>",
+    entry.message,
+    "</scheduled-message>",
+  ].join("\n");
+}
+
 function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
   if (sendingDue) return;
   const due = dueMessages(ctx);
@@ -181,10 +212,17 @@ function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const delivered: ScheduledMessage[] = [];
   sendingDue = true;
   try {
-    due.forEach((entry, index) => {
-      ctx.ui.notify(`Sending scheduled message #${entry.id}`, "info");
-      if (index === 0 && ctx.isIdle()) pi.sendUserMessage(entry.message);
-      else pi.sendUserMessage(entry.message, { deliverAs: entry.delivery });
+    due.forEach((entry) => {
+      ctx.ui.notify(`Delivering scheduled message #${entry.id}`, "info");
+      pi.sendMessage({
+        customType: SCHEDULED_MESSAGE_TYPE,
+        content: scheduledDeliveryContent(entry),
+        display: true,
+        details: scheduledDeliveryDetails(entry),
+      }, {
+        deliverAs: entry.delivery,
+        triggerTurn: true,
+      });
       delivered.push(entry);
     });
   } catch (error) {
@@ -391,10 +429,21 @@ function stopTicker(ctx?: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerMessageRenderer<ScheduledDeliveryDetails>(SCHEDULED_MESSAGE_TYPE, (message, _options, theme) => {
+    const details = message.details;
+    if (!details) return undefined;
+
+    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+    const title = theme.fg("customMessageLabel", theme.bold(`Scheduled message #${details.id}`));
+    const due = theme.fg("dim", `due ${formatDueAt(details.dueAt)}`);
+    box.addChild(new Text(`${title} · ${due}\n${theme.fg("customMessageText", details.message)}`, 0, 0));
+    return box;
+  });
+
   pi.registerTool({
     name: "schedule",
     label: "Schedule message",
-    description: "Schedule a future user message back to this same Pi session. When it becomes due during an active run, it is delivered as steering so it updates the current work instead of starting a delayed follow-up.",
+    description: "Schedule a labelled future message back to this same Pi session. When it becomes due during an active run, it is delivered as steering so it updates the current work instead of starting a delayed follow-up.",
     promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
     promptGuidelines: [
       "Use schedule when you need to be reminded or re-contacted after a real-world delay instead of polling manually.",
@@ -435,6 +484,40 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "cancel_scheduled_message",
+    label: "Cancel scheduled message",
+    description: "Cancel a pending message in this Pi session using the id returned by schedule. Use the id 'all' to cancel every pending scheduled message in the session.",
+    promptSnippet: "Cancel a pending message created by schedule using its returned id",
+    promptGuidelines: [
+      "Use cancel_scheduled_message when a pending message created by schedule is no longer needed.",
+    ],
+    parameters: Type.Object({
+      id: Type.String({ description: "Schedule id returned by schedule, or 'all' to cancel every pending scheduled message in this session." }),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const selector = params.id.trim();
+      if (!selector) throw new Error("Schedule id cannot be empty.");
+
+      const { cancelled, ambiguous } = cancelMessages(ctx, selector);
+      if (ambiguous) throw new Error(`Schedule id ${selector} is ambiguous; use more characters.`);
+      if (!cancelled.length) throw new Error(`No scheduled message matched ${selector}.`);
+
+      const confirmation = cancellationConfirmation(cancelled);
+      ctx.ui.notify(confirmation, "info");
+      refreshWidget(ctx);
+      return {
+        content: [{ type: "text", text: confirmation }],
+        details: {
+          selector,
+          count: cancelled.length,
+          cancelled: cancelled.map(scheduledDeliveryDetails),
+        },
+      };
+    },
+  });
+
   pi.registerShortcut(Key.ctrlAlt("s"), {
     description: "Show scheduled messages",
     handler: async (ctx) => {
@@ -444,7 +527,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("schedule", {
-    description: "Schedule a follow-up user message for later, e.g. /schedule 5.5h check usage reset",
+    description: "Schedule a follow-up message for later, e.g. /schedule 5.5h check usage reset",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed || /^list$/i.test(trimmed)) {
@@ -458,7 +541,7 @@ export default function (pi: ExtensionAPI): void {
       }
       if (/^(clear|cancel\s+all)$/i.test(trimmed)) {
         const { cancelled } = cancelMessages(ctx, "all");
-        ctx.ui.notify(cancelled.length ? `Cancelled ${cancelled.length} scheduled message${cancelled.length === 1 ? "" : "s"}.` : "No scheduled messages to cancel.", "info");
+        ctx.ui.notify(cancelled.length ? cancellationConfirmation(cancelled) : "No scheduled messages to cancel.", "info");
         refreshWidget(ctx);
         return;
       }
@@ -466,7 +549,7 @@ export default function (pi: ExtensionAPI): void {
       if (cancelMatch) {
         const { cancelled, ambiguous } = cancelMessages(ctx, cancelMatch[1]!);
         if (ambiguous) ctx.ui.notify(`Schedule id ${cancelMatch[1]} is ambiguous; use more characters.`, "error");
-        else if (cancelled.length) ctx.ui.notify(`Cancelled scheduled message #${cancelled[0]!.id}.`, "info");
+        else if (cancelled.length) ctx.ui.notify(cancellationConfirmation(cancelled), "info");
         else ctx.ui.notify(`No scheduled message matched ${cancelMatch[1]}.`, "error");
         refreshWidget(ctx);
         return;

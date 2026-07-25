@@ -1,7 +1,7 @@
 {
   "name": "pi-scheduler",
   "version": "0.1.0",
-  "description": "Pi extension that schedules user messages for later delivery.",
+  "description": "Pi extension that schedules labelled messages for later delivery.",
   "private": true,
   "keywords": ["pi-package", "pi", "scheduler", "scheduled-messages"],
   "type": "module",
