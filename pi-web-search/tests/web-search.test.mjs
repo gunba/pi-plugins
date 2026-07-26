@@ -139,7 +139,7 @@ test("posts Codex commands with the selected Pi model and no model fallback", as
 			response_length: "medium",
 		},
 		settings: { allowed_callers: ["direct"], external_web_access: true },
-		max_output_tokens: 5_000,
+		max_output_tokens: 10_000,
 	});
 	assert.equal(body.model, CODEX_MODEL.id);
 	assert.equal(JSON.stringify(body).includes("gpt-5.4"), false);
@@ -155,6 +155,39 @@ test("posts Codex commands with the selected Pi model and no model fallback", as
 		model: "openai-codex/gpt-5.6-sol",
 		results: [{ type: "text_result", ref_id: "turn0search0" }],
 	});
+});
+
+test("accepts Codex search responses larger than 64 KiB", async () => {
+	const structuredResult = {
+		type: "text_result",
+		ref_id: "turn0search0",
+		metadata: "x".repeat(70 * 1024),
+	};
+	const responseBody = JSON.stringify({
+		encrypted_output: null,
+		output: "Small model-facing search output",
+		results: [structuredResult],
+	});
+	assert.ok(Buffer.byteLength(responseBody, "utf8") > 64 * 1024);
+
+	const result = await executeWebSearch(
+		{ search_query: [{ q: "large structured results" }] },
+		undefined,
+		mockContext({
+			model: CODEX_MODEL,
+			auth: { ok: true, apiKey: jwt("acct-42") },
+		}),
+		{
+			async fetchImpl() {
+				return new Response(responseBody, { status: 200 });
+			},
+		},
+	);
+
+	assert.deepEqual(result.content, [
+		{ type: "text", text: "Small model-facing search output" },
+	]);
+	assert.deepEqual(result.details.results, [structuredResult]);
 });
 
 test("normalizes Codex response base URLs", () => {

@@ -23,6 +23,8 @@ export const CODEX_COMPAT_TOOL_NAMES = [
 	"image_gen",
 ];
 
+export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
+
 /**
  * Pi's built-in bash remains visible by design. An extension cannot suppress it
  * and later distinguish its own suppression from a user's manual disablement.

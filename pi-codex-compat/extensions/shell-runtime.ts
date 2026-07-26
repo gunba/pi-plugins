@@ -14,6 +14,8 @@ import {
 	getShellConfig,
 } from "@earendil-works/pi-coding-agent";
 
+import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
+
 export type ExecCommandParams = {
 	cmd: string;
 	workdir?: string;
@@ -152,7 +154,7 @@ const DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS = 300_000;
 export const BACKGROUND_TERMINAL_MAX_TIMEOUT_ENV =
 	"PI_CODEX_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS";
 export const UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
-export const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+export const DEFAULT_MAX_OUTPUT_TOKENS = CODEX_TOOL_OUTPUT_TOKEN_BUDGET;
 export const MAX_UNIFIED_EXEC_PROCESSES = 64;
 export const MAX_RETAINED_EXEC_LOGS = 8;
 export const MAX_RETAINED_EXEC_LOG_BYTES = 64 * 1024 * 1024;

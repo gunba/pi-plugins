@@ -6,9 +6,11 @@ import type {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
-import { isChatGptCodexModel } from "../../pi-codex-compat/extensions/model-tools.ts";
+import {
+	CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
+	isChatGptCodexModel,
+} from "../../pi-codex-compat/extensions/model-tools.ts";
 
-const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_ERROR_CHARS = 2_000;
 
 const searchQuery = Type.Object(
@@ -264,35 +266,6 @@ function requestHeaders(apiKey: string, authHeaders?: Record<string, string>): H
 	return headers;
 }
 
-function maxOutputTokens(length: WebSearchParams["response_length"]): number {
-	if (length === "long") return 10_000;
-	if (length === "medium") return 5_000;
-	return 2_500;
-}
-
-async function readResponseText(response: Response): Promise<string> {
-	if (!response.body) return "";
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let bytes = 0;
-	let text = "";
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			bytes += value.byteLength;
-			if (bytes > MAX_RESPONSE_BYTES) {
-				await reader.cancel();
-				throw new Error(`Codex search response exceeded ${MAX_RESPONSE_BYTES} bytes`);
-			}
-			text += decoder.decode(value, { stream: true });
-		}
-		return text + decoder.decode();
-	} finally {
-		reader.releaseLock();
-	}
-}
-
 function responseError(response: Response, text: string): Error {
 	let message = text.trim();
 	try {
@@ -354,12 +327,12 @@ export async function executeWebSearch(
 					allowed_callers: ["direct"],
 					external_web_access: true,
 				},
-				max_output_tokens: maxOutputTokens(params.response_length),
+				max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
 			}),
 			signal,
 		},
 	);
-	const text = await readResponseText(response);
+	const text = await response.text();
 	if (!response.ok) throw responseError(response, text);
 	const result = parseSearchResponse(text);
 	return {
