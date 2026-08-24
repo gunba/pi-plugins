@@ -56,67 +56,16 @@ function publishableAssistantText(entry: SessionEntry): string {
 	return assistantText(message);
 }
 
-function isCustomOnlyTurn(
-	branch: readonly SessionEntry[],
-	previousAssistant: number,
-	currentAssistant: number,
-): boolean {
-	let customMessageSeen = false;
-	for (let index = previousAssistant + 1; index < currentAssistant; index++) {
-		const entry = branch[index];
-		if (!entry) continue;
-		if (entry.type === "custom_message") {
-			customMessageSeen = true;
-			continue;
-		}
-		// Session metadata does not make an extension-triggered acknowledgement a
-		// new delegated result. Any real conversation or tool activity does.
-		if (entry.type === "message") return false;
-	}
-	return customMessageSeen;
-}
-
-/**
- * Select the delegated result from the active session branch.
- *
- * Extension custom messages can arrive after a task has already answered and
- * trigger a second, tool-free acknowledgement. That lifecycle turn must not
- * replace the task answer. A user/parent message or any tool activity starts a
- * real new turn and its later answer remains eligible to replace the old one.
- */
+/** Select the last non-empty successful assistant message on the active branch. */
 export function publishedAssistantText(
 	branch: readonly SessionEntry[],
 	fallback = "",
 ): string {
-	const candidates: Array<{ index: number; text: string }> = [];
-	for (let index = 0; index < branch.length; index++) {
+	for (let index = branch.length - 1; index >= 0; index--) {
 		const text = publishableAssistantText(branch[index] as SessionEntry);
-		if (text) candidates.push({ index, text });
+		if (text) return text;
 	}
-	if (candidates.length === 0) return fallback;
-
-	let selected = candidates.length - 1;
-	while (selected > 0) {
-		const previous = candidates[selected - 1];
-		const current = candidates[selected];
-		if (
-			!previous ||
-			!current ||
-			!isCustomOnlyTurn(branch, previous.index, current.index)
-		)
-			break;
-		selected--;
-	}
-	const primary = candidates[selected]?.text;
-	if (!primary) return fallback;
-	const followUps = candidates.slice(selected + 1).map(({ text }) => text);
-	if (followUps.length === 0) return primary;
-	return [
-		primary,
-		...followUps.map(
-			(text) => `## Extension-triggered follow-up\n\n${text}`,
-		),
-	].join("\n\n---\n\n");
+	return fallback;
 }
 
 type CachedTranscript = {

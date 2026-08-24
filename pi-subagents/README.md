@@ -1,124 +1,121 @@
 # pi-subagents
 
-Run delegated work in isolated background `pi` processes. Each task has a
-canonical path under `/root`, a clean context, a shared working directory, and
-a resumable Pi session.
+DSH-style delegated agents for Pi 0.84.2. Children use in-process Pi SDK
+`AgentSession` instances with isolated context, durable Pi sessions, direct-parent
+control, and a bounded delegation depth.
 
 ## Tools
 
-- `spawn_agent(task_name, message, thinking?)` starts a direct child at
-  `<caller-path>/<task_name>`. It is only for a genuinely new objective and
-  creates a new task identity and conversation.
-- `send_message(target, message)` sends a short message. Downward messages
-  instruct a live child or resume a terminal child in its persisted
-  conversation; upward messages wait for the ancestor's answer. Corrections,
-  follow-ups, and retries use this tool against the original task path.
-- `restart_agent(target, message)` replaces an unresponsive active process and
-  resumes its persisted conversation with a recovery instruction.
-- `wait_agent()` waits until a child sends mail, finishes, stalls, or the user
-  interrupts.
-- `kill_agent(target)` stops one task subtree. Target `*` stops every direct
-  child subtree and clears their pending mail.
+- `subagent(description, prompt, run_in_background?)` starts a fresh child. The
+  child does not receive the parent conversation.
+- `subagent_fork(description, prompt, run_in_background?)` starts a child seeded
+  with completed parent turns. The current in-flight turn is excluded.
+- `send_message(subagent_id, message)` accepts a FIFO later turn for a direct
+  child. It does not redirect the active turn or return the child's answer.
+- `interrupt_agent(agent_id)` requests cancellation of a descendant's current
+  turn. Queued messages, descendants, identity, and durable session remain.
+- `list_agents(scope?)` lists continuable direct children or all descendants.
+- `report(output)` is available only inside a live continuable child. It sends
+  selected self-contained content to the direct parent without ending the turn.
 
-Task names contain lowercase ASCII letters, digits, and underscores. Targets
-may be canonical `/root/...` paths or paths relative to the caller. Root can
-address every descendant; child agents can address root, their parent, and
-their own subtree.
+`description` and `prompt` are required. Continuable delegation defaults to
+`run_in_background: true` and returns a durable child ID after inbox acceptance.
+Set it to `false` only when the next parent action requires the result; that
+route is a foreground one-shot run.
 
-The orchestration loop is `spawn_agent` → `wait_agent` → optionally
-`send_message` or `restart_agent` → `wait_agent`. After the user interrupts a
-wait, `kill_agent("*")` abandons all delegated work.
+## Lifecycle and authority
+
+- A fresh child receives no parent transcript.
+- A fork copies the parent's effective compaction-aware context through the last
+  completed assistant turn before the delegation call. Its seed is captured once.
+- Background work does not block the parent from using ordinary tools.
+- Each child has a versioned model-hidden descriptor in its Pi session.
+- Accepted child messages are persisted and processed in append-order FIFO.
+  A started message without a terminal delivery record is replayed after a crash,
+  which provides at-least-once rather than exactly-once execution.
+- A settled child releases its SDK activation but retains its session and ID.
+  The next direct-parent message cold-resumes it from the descriptor.
+- Only an exact live direct parent handle can send a follow-up.
+- An exact live ancestor can interrupt a resident descendant.
+- Only the exact resident continuable child can call `report`.
+- The default maximum child depth is 3.
+- Child model, effective provider configuration, resolved request auth exposed
+  by Pi, and thinking level inherit from the parent at activation. Durable model
+  identity and thinking level are restored from the descriptor.
+- Child resources include an explicit allowlist of enabled native coding tools,
+  project context, and skills. Interactive question tools are not loaded.
+- Reports and settlement notices become bounded later parent turns. A settlement
+  notice includes the outcome and final assistant text when available. Settlement
+  delivery uses a durable outbox and is acknowledged when the parent message is
+  admitted or the direct child's inbox accepts it.
+- Session shutdown aborts active turns child-first and disposes SDK activations.
+  It retains descriptors, inbox history, transcripts, and session files.
 
 ## Dashboard
 
-A compact line above the editor shows active, queued, completed, stopped, and
-attention-needed counts. `/subagents` opens a full-terminal overlay;
-`/subagents <task-path>` opens it on one task. `/subagent` supports inline
-messages and subtree stops.
+A compact background-activity widget appears above the editor while children
+exist. `/subagents` opens a full-terminal dashboard with:
 
-The dashboard provides:
+- a stable nested child tree;
+- running, waiting, settled, aborted, and error states;
+- fresh/fork and continuable/one-shot metadata;
+- model, thinking, usage, duration, transcript tail, and recent notices;
+- search and narrow/wide layouts;
+- `m` to send a direct-child message and `x` to interrupt the current turn.
 
-- a virtualized, searchable parent/child tree;
-- state, activity, model, thinking level, usage, duration, generation, and
-  task summary;
-- the selected task's live active-branch transcript and recent coordination
-  feed;
-- message and stop actions;
-- arrow or `j`/`k` navigation, `/` search, and Page Up/Page Down transcript
-  scrolling.
-
-## Behaviour
-
-- **Canonical identity.** `/root` is the root task. Each child adds one
-  validated path segment.
-- **Spawn configuration.** Each child receives its thinking level at spawn and
- keeps it for that run. Omission inherits the caller's current level.
-- **Bounded direct fan-out.** A parent runs at most 12 direct children
-  concurrently by default. Additional accepted tasks queue until a slot opens.
-- **Hard coordination waits.** Parents remain suspended while descendants are
-  active and wake only for mail, lifecycle changes, or user interruption.
-- **Directional messages.** Downward messages are instructions. Upward messages
-  are blocking questions. Completion and failure are runtime lifecycle events.
-- **Nested approval.** Root decides every nested `spawn_agent` request through a
-  structured `send_message` tool call before the child is created. Replacement
-  work is denied and resumed at its existing task path instead.
-- **Resumable tasks.** Sending a message to a terminal task reopens the same
-  isolated session. `restart_agent` also terminates an unresponsive active
-  process and resumes that same session as a new result generation. Running and
-  completed descendant state, pending requests, mail, queues, and result files
-  are reconstructed from run storage; replacing a parent process does not stop
-  its children. If parent recovery is ultimately exhausted, later descendant
-  mail is forwarded to the nearest live ancestor rather than orphaned.
-- **Automatic error recovery.** After Pi exhausts its built-in retries, a child
-  sends `Continue` up to twice in the same process. If both attempts error, the
-  launcher resumes the same persisted session once in a fresh process with
-  `Continue`. Any successful assistant message resets this recovery budget.
-- **Fatal-result salvage.** If the fresh process produces no successful response,
-  one final fresh process reviews the same conversation and returns a concise
-  best-effort result for the original task. A parent with unfinished descendants
-  reconnects to them with read-only coordination tools before summarizing. The
-  parent is notified only when that summary completes or also fails.
-- **Result publication.** A result file is written atomically before completion
-  mail is published. Its answer is selected from the persisted active session
-  branch, so a trailing extension-notification acknowledgement cannot replace
-  an earlier completed task answer.
-- **Programmatic stall detection.** While root is blocked in `wait_agent`, a
-  deadline-driven watchdog tracks transcript writes, token-bearing responses,
-  streamed model output, and tool lifecycle updates for every active,
-  non-waiting task. This includes a stalled parent whose children are still
-  running. After ten minutes without observable progress it advances through
-  the same fresh-process restart and fatal-result summary stages automatically.
-  The main agent is woken only when a final result or unrecoverable failure is
-  available; no separate overseer model is involved.
-
-## Configuration
-
-Environment variables:
-
-- `PI_SUBAGENTS_DIR` — run storage base, default
-  `~/.pi/agent/subagents`.
-- `PI_SUBAGENTS_MAX_ACTIVE` — concurrent direct children per parent, default
-  `12`.
-- `PI_SUBAGENTS_STALL_TIMEOUT_MS` — maximum time without observable progress
-  before automatic recovery advances, default `600000`.
-- `PI_SUBAGENTS_RUN_TTL_MS` — completed-run retention before startup cleanup,
-  default `86400000`.
-- `PI_SUBAGENTS_FEED_TAIL` — recent dashboard feed rows, default `8`.
+Pi branch navigation is blocked while the current session owns live children.
+Session replacement drains live SDK activations and reconstructs the durable
+catalog for the replacement root.
 
 ## Storage
 
+Child sessions use Pi's JSONL session format under:
+
 ```text
-~/.pi/agent/subagents/<run>/run.json
-~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/beacon.json
-~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/children/
-~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/inbox/
-~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/pending-request.json
-~/.pi/agent/subagents/<run>/tasks/<hashed-task-path>/launch.json
-~/.pi/agent/subagents/<run>/results/
-~/.pi/agent/subagents/<run>/sessions/
-~/.pi/agent/subagents/<run>/feed.log
+~/.pi/agent/subagents/sessions/*.jsonl
 ```
 
-Child processes receive `PI_SUBAGENT_TASK_PATH`, `PI_SUBAGENT_PARENT_PATH`,
-`PI_SUBAGENT_NOTIFY_PATH`, and `PI_SUBAGENT_RUN`. Their session identifiers
-remain inside the run-local session directory.
+The child session contains model-hidden custom entries for:
+
+- `pi-subagents/descriptor-v1` — identity, lineage, depth, model, thinking,
+  context mode, and tool profile;
+- `pi-subagents/inbox-v1` — accepted FIFO work;
+- `pi-subagents/delivery-v1` — started and finished delivery records;
+- `pi-subagents/launch-v1` — branch-aware child ownership;
+- `pi-subagents/settlement-v1` — pending and acknowledged terminal-notice outbox
+  records.
+
+Reading the catalog or a transcript does not activate a cold child. A corrupt or
+unsupported direct-child descriptor appears as a diagnostic row.
+
+## Pi 0.84.2 gaps
+
+The implementation keeps these boundaries explicit:
+
+1. Pi has no process-global agent registry, continuation inbox, or generic job
+   service. This extension owns the live registry and durable FIFO.
+2. Pi cannot attach DSH message-source metadata to a real user message.
+   Root reports and settlements use visible custom messages delivered as
+   follow-ups; child-to-child notices use the extension inbox.
+3. Pi has no public per-activation `maxTokens` override. Cold activations use the
+   restored model's normal token limit.
+4. Pi extensions cannot register a browser-side child catalog or composer. The
+   complete interface is available in the TUI; RPC mode receives notices but no
+   custom dashboard.
+5. Pi tears down the extension runtime for reload, new, resume, and fork. Active
+   turns are therefore aborted cleanly and durable sessions are reconstructed
+   instead of preserving in-memory activations across replacement.
+6. Pi does not expose executable parent tool definitions or extension event
+   policies through `getAllTools()`. Children therefore recreate only the native
+   built-ins that were enabled in the parent; parent tool overrides, sandboxes,
+   and permission hooks do not transfer. Restrict the native child allowlist when
+   those controls are required.
+7. Pi does not persist an exact `turn/end` marker. Fork boundaries use the last
+   completed assistant entry before the current delegation tool call.
+
+## Design attribution
+
+The lifecycle, tool semantics, descriptor model, authority rules, continuation
+states, reporting contract, and discovery vocabulary are adapted from the MIT
+licensed DeepSeek Harness design. See
+[`DSH-DESIGN-ATTRIBUTION.md`](./DSH-DESIGN-ATTRIBUTION.md).

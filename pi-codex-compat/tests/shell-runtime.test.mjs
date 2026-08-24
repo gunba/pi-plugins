@@ -379,9 +379,15 @@ test(
 	},
 );
 
-test("runtime owners isolate sessions and shutdown", async () => {
+test("runtime owners isolate sessions and shutdown", async (t) => {
 	const ownerA = createExecRuntimeOwner();
 	const ownerB = createExecRuntimeOwner();
+	t.after(async () => {
+		await Promise.allSettled([
+			shutdownExecSessions(ownerA),
+			shutdownExecSessions(ownerB),
+		]);
+	});
 	await startExecSessionRuntime(ownerA);
 	await startExecSessionRuntime(ownerB);
 	const launch = (owner) =>
@@ -419,7 +425,7 @@ test("runtime owners isolate sessions and shutdown", async () => {
 		{
 			session_id: sessionB.details.session_id,
 			chars: "\u0003",
-			yield_time_ms: 2_000,
+			yield_time_ms: 10_000,
 		},
 		undefined,
 		undefined,

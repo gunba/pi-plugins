@@ -48,7 +48,7 @@ export async function describeImageForTextModel(
 	let selectedModel: Model<string> | undefined;
 	let selectedAuth: {
 		apiKey: string;
-		headers?: Record<string, string>;
+		headers?: Record<string, string | null>;
 		env?: Record<string, string>;
 	} | undefined;
 	for (const candidate of descriptionCandidates(ctx)) {

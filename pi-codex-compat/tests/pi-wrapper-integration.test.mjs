@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
-	AuthStorage,
+	AssistantMessageEventStream,
+	InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
+import {
 	DefaultResourceLoader,
-	ModelRegistry,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	createAgentSession,
@@ -202,9 +204,12 @@ async function createHarness() {
 	await mkdir(agentDir, { recursive: true });
 
 	const fakeProvider = createFakeAssistantMessageEventStreamProvider();
-	const authStorage = AuthStorage.inMemory();
-	const modelRegistry = ModelRegistry.inMemory(authStorage);
-	modelRegistry.registerProvider(FAKE_PROVIDER, {
+	const modelRuntime = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	modelRuntime.registerProvider(FAKE_PROVIDER, {
 		name: "Pi Codex Compat Integration Provider",
 		baseUrl: "http://127.0.0.1:1",
 		apiKey: "integration-test-key",
@@ -223,7 +228,7 @@ async function createHarness() {
 			},
 		],
 	});
-	const model = modelRegistry.find(FAKE_PROVIDER, FAKE_MODEL_ID);
+	const model = modelRuntime.getModel(FAKE_PROVIDER, FAKE_MODEL_ID);
 	assert.ok(model);
 
 	const middlewareEvents = [];
@@ -270,8 +275,7 @@ async function createHarness() {
 		({ session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
-			authStorage,
-			modelRegistry,
+			modelRuntime,
 			model,
 			thinkingLevel: "off",
 			tools: CODEX_COMPAT_TOOL_NAMES,
@@ -281,7 +285,7 @@ async function createHarness() {
 		}));
 		await session.bindExtensions({ mode: "print" });
 	} catch (error) {
-		modelRegistry.unregisterProvider(FAKE_PROVIDER);
+		modelRuntime.unregisterProvider(FAKE_PROVIDER);
 		await rm(cwd, { recursive: true, force: true });
 		throw error;
 	}
@@ -344,7 +348,6 @@ async function createHarness() {
 		cwd,
 		extensionsResult,
 		invoke,
-		modelRegistry,
 		session,
 		async dispose() {
 			unsubscribe();
@@ -352,7 +355,7 @@ async function createHarness() {
 			await shutdownExecSessions();
 			extensionsResult.runtime.invalidate("Integration test runtime disposed");
 			session.dispose();
-			modelRegistry.unregisterProvider(FAKE_PROVIDER);
+			modelRuntime.unregisterProvider(FAKE_PROVIDER);
 			await rm(cwd, { recursive: true, force: true });
 		},
 	};

@@ -436,9 +436,12 @@ function endpointForModel(
 function requestHeaders(
 	model: NonNullable<ExtensionContext["model"]>,
 	apiKey: string,
-	authHeaders: Record<string, string> | undefined,
+	authHeaders: Record<string, string | null> | undefined,
 ): Headers {
-	const headers = new Headers(authHeaders);
+	const headers = new Headers();
+	for (const [key, value] of Object.entries(authHeaders ?? {})) {
+		if (value !== null) headers.set(key, value);
+	}
 	headers.set("accept", "application/json");
 	headers.set("content-type", "application/json");
 	headers.set("authorization", `Bearer ${apiKey}`);

@@ -61,14 +61,19 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   live context and the session log, including optional live continuation
   pruning during long runs; follows its global setting and is compatible with
   Anthropic OAuth prune calls.
-- `pi-subagents` — runs isolated background `pi` agents with five primitives:
-  `spawn_agent`, `send_message`, `restart_agent`, `wait_agent`, and
-  `kill_agent`. Parents wait event-first while delegated work is active; the
-  user can interrupt waiting and stop any subtree. Canonical `/root/...` paths,
-  nested approval, exact-session resumption with persisted descendant state,
-  file-backed results, a live transcript dashboard, and automatic bounded
-  recovery keep orchestration observable without expanding the model tool
-  surface.
+- `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
+  `get_goal`, `create_goal`, and `update_goal`. The agent may infer a substantial
+  goal from a direct human turn, continue it through bounded same-session rounds,
+  and mark it complete or blocked through revision-fenced state transitions.
+- `pi-subagents` — provides DSH-style fresh and forked Pi SDK children through
+  `subagent` and `subagent_fork`, plus FIFO `send_message`, current-turn
+  `interrupt_agent`, durable discovery, child reporting, cold resumption and a
+  live TUI dashboard. Background delegation returns immediately so parent work
+  can continue; foreground delegation remains available when the next action
+  depends on the child result.
+- `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
+  panel. Ordered three-state task snapshots are branch-aware, remain visible
+  through settlement, and clear at the next agent run.
 
 ## Install
 

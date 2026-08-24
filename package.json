@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -10,7 +10,7 @@
   "type": "module",
   "scripts": {
     "check": "npm run typecheck && npm test",
-    "test": "node --test pi-brief/tests/*.test.mjs pi-codex-compat/tests/*.test.mjs pi-extension-freshness/tests/*.test.mjs pi-scheduler/tests/*.test.mjs pi-subagents/tests/*.test.mjs pi-web-search/tests/*.test.mjs",
+    "test": "node --test pi-brief/tests/*.test.mjs pi-codex-compat/tests/*.test.mjs pi-extension-freshness/tests/*.test.mjs pi-goal/tests/*.test.mjs pi-scheduler/tests/*.test.mjs pi-subagents/tests/*.test.mjs pi-todo/tests/*.test.mjs pi-web-search/tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "pi": {
@@ -26,7 +26,9 @@
       "./pi-compaction-context/extensions/compaction-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-memedit/extensions/memedit.ts",
+      "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
+      "./pi-todo/extensions/todo.ts",
       "./pi-sync/extensions/pi-sync.ts"
     ]
   },
@@ -52,9 +54,9 @@
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.80.6",
-    "@earendil-works/pi-coding-agent": "0.80.6",
-    "@earendil-works/pi-tui": "0.80.6",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-tui": "0.84.2",
     "@types/node": "22.19.19",
     "typescript": "5.9.3"
   }

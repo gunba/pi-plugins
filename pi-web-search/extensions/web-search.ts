@@ -256,8 +256,14 @@ export function codexSearchEndpoint(
 	return `${codexBase}/alpha/search`;
 }
 
-function requestHeaders(apiKey: string, authHeaders?: Record<string, string>): Headers {
-	const headers = new Headers(authHeaders);
+function requestHeaders(
+	apiKey: string,
+	authHeaders?: Record<string, string | null>,
+): Headers {
+	const headers = new Headers();
+	for (const [key, value] of Object.entries(authHeaders ?? {})) {
+		if (value !== null) headers.set(key, value);
+	}
 	headers.set("accept", "application/json");
 	headers.set("authorization", `Bearer ${apiKey}`);
 	headers.set("chatgpt-account-id", chatGptAccountId(apiKey));
