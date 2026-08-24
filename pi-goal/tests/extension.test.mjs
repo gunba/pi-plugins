@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildSystemPrompt } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 import {
 	GOAL_CHANGE_ENTRY,
 	GOAL_COMMAND_ENTRY,
@@ -28,11 +29,29 @@ test("extension registers the exact command, three sequential tools, and present
 	for (const tool of harness.tools.values()) assert.equal(tool.executionMode, "sequential");
 	assert.equal(harness.entryRenderers.has(GOAL_COMMAND_ENTRY), true);
 	assert.equal(harness.messageRenderers.has(GOAL_ROUND_MESSAGE), true);
-	assert.match(harness.tools.get("get_goal").promptGuidelines[0], /at least 3 consecutive goal rounds/);
+	const goalGuidelines = [...harness.tools.values()].map((tool) => tool.promptGuidelines);
+	assert.equal(goalGuidelines.every((guidelines) => guidelines?.length === 1), true);
+	assert.equal(new Set(goalGuidelines.map((guidelines) => guidelines[0])).size, 1);
+	assert.match(goalGuidelines[0][0], /at least 3 consecutive goal rounds/);
 
 	const update = harness.tools.get("update_goal");
 	assert.equal(update.parameters.additionalProperties, false);
 	assert.deepEqual(update.parameters.required.sort(), ["action", "goal_id", "revision"]);
+});
+
+test("goal policy survives active-tool filtering without get_goal", () => {
+	const harness = createExtensionHarness();
+	for (const toolName of ["create_goal", "update_goal"]) {
+		const tool = harness.tools.get(toolName);
+		const prompt = buildSystemPrompt({
+			cwd: "C:/workspace",
+			selectedTools: [toolName],
+			toolSnippets: { [toolName]: tool.promptSnippet },
+			promptGuidelines: tool.promptGuidelines,
+		});
+		assert.match(prompt, /at least 3 consecutive goal rounds/);
+		assert.match(prompt, /Call get_goal before update_goal/);
+	}
 });
 
 test("/goal persists mutation before model-isolated command output and dispatches one round", async () => {
@@ -51,6 +70,20 @@ test("/goal persists mutation before model-isolated command output and dispatche
 	const card = renderer(harness.branch[1], { expanded: false }, harness.theme);
 	assert.match(textOf(card), /Goal created/);
 	assert.match(textOf(card), /Activation: armed/);
+});
+
+test("round admission follows Pi's message_end-before-session-persistence order", async () => {
+	const harness = createExtensionHarness({ persistSentMessages: false });
+	await harness.start();
+	await harness.commands.get("goal").handler("persist in production order", harness.ctx);
+	assert.equal(harness.branch.some((entry) => entry.customType === GOAL_ROUND_MESSAGE), false);
+	await harness.admitLastRound();
+	const admissionIndex = harness.branch.findIndex((entry) => entry.customType === GOAL_ROUND_ADMISSION_ENTRY);
+	const messageIndex = harness.branch.findIndex((entry) => entry.customType === GOAL_ROUND_MESSAGE);
+	assert.notEqual(admissionIndex, -1);
+	assert.ok(messageIndex > admissionIndex, "Pi persists the custom message after extension message_end handlers");
+	const current = await executeTool(harness, "get_goal");
+	assert.equal(current.details.goal.roundsStarted, 1);
 });
 
 test("status command is model-isolated and exact controls do not trigger agent runs", async () => {
@@ -197,6 +230,78 @@ test("queued human input authorizes only the later context that contains it", as
 	assert.equal(created.details.goal.objective, "authorized later");
 });
 
+test("an extension steer cannot consume an earlier queued human follow-up", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.emit("input", {
+		text: "queued human follow-up",
+		source: "interactive",
+		streamingBehavior: "followUp",
+	});
+	await harness.emit("input", {
+		text: "extension steer",
+		source: "extension",
+		streamingBehavior: "steer",
+	});
+	const extensionMessage = {
+		role: "user",
+		content: [{ type: "text", text: "extension steer" }],
+		timestamp: 1,
+	};
+	await harness.emit("context", { messages: [extensionMessage] });
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "stolen authority" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+	await harness.emit("context", {
+		messages: [
+			extensionMessage,
+			{
+				role: "user",
+				content: [{ type: "text", text: "queued human follow-up" }],
+				timestamp: 2,
+			},
+		],
+	});
+	const created = await executeTool(harness, "create_goal", { objective: "human authority" });
+	assert.equal(created.details.goal.objective, "human authority");
+});
+
+test("same-text extension steering remains distinguishable from queued human input", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.emit("input", { text: "same", source: "interactive", streamingBehavior: "followUp" });
+	await harness.emit("input", { text: "same", source: "extension", streamingBehavior: "steer" });
+	await harness.emit("context", {
+		messages: [{ role: "user", content: [{ type: "text", text: "same" }], timestamp: 1 }],
+	});
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "wrong same-text source" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+});
+
+test("transformed queued input fails closed when Pi exposes no expansion boundary", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.emit("input", {
+		text: "/skill:long-task",
+		source: "interactive",
+		streamingBehavior: "followUp",
+	});
+	await harness.emit("context", {
+		messages: [{
+			role: "user",
+			content: [{ type: "text", text: "Expanded long-running task instructions" }],
+			timestamp: 1,
+		}],
+	});
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "ambiguous expanded queue" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+});
+
 test("handled or stale input cannot authorize an extension custom turn", async () => {
 	const harness = createExtensionHarness({ idle: false });
 	await harness.start();
@@ -268,6 +373,81 @@ test("direct-human authority survives the user's tool-call turns", async () => {
 	});
 	const created = await executeTool(harness, "create_goal", { objective: "tool-backed work" });
 	assert.equal(created.details.goal.objective, "tool-backed work");
+});
+
+test("cyclic and BigInt context fails closed without escaping Pi-style handler containment", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.directInput("establish authority");
+	const details = { count: 1n };
+	details.self = details;
+	const outcome = await harness.emitContained("context", {
+		messages: [{
+			role: "custom",
+			customType: "other-extension",
+			content: "non-human continuation",
+			details,
+			timestamp: 2,
+		}],
+	});
+	assert.deepEqual(outcome.errors, []);
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "stale authority" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+});
+
+test("unfingerprintable context clears pending markers rather than deferring authority", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.emit("input", { text: "pending human", source: "interactive" });
+	const malformed = {
+		role: "custom",
+		customType: "other-extension",
+		content: "malformed",
+		timestamp: 1,
+	};
+	Object.defineProperty(malformed, "details", { enumerable: true, get() { return "unsafe"; } });
+	const outcome = await harness.emitContained("context", { messages: [malformed] });
+	assert.deepEqual(outcome.errors, []);
+	await harness.emit("context", {
+		messages: [{
+			role: "user",
+			content: [{ type: "text", text: "pending human" }],
+			timestamp: 2,
+		}],
+	});
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "deferred stale marker" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+});
+
+test("arbitrary cyclic context cannot suppress an already pending goal wrap-up", async () => {
+	const harness = createExtensionHarness();
+	await harness.start();
+	await harness.commands.get("goal").handler("finish with robust wrap-up", harness.ctx);
+	await harness.admitLastRound();
+	const current = await executeTool(harness, "get_goal");
+	await executeTool(harness, "update_goal", {
+		goal_id: current.details.goal.id,
+		revision: current.details.goal.revision,
+		action: "complete",
+	});
+	const details = { count: 1n };
+	details.self = details;
+	const outcome = await harness.emitContained("context", {
+		messages: [{
+			role: "custom",
+			customType: "other-extension",
+			content: "cyclic",
+			details,
+			timestamp: 2,
+		}],
+	});
+	assert.deepEqual(outcome.errors, []);
+	assert.equal(outcome.results.length, 1);
+	assert.match(outcome.results[0].messages.at(-1).content[0].text, /<goal_complete>/);
 });
 
 test("Pi Subagents child processes do not receive direct-human goal authority", async () => {

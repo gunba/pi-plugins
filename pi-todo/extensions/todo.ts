@@ -6,7 +6,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 
 import {
 	TODO_CLEAR_ENTRY,
@@ -14,18 +14,19 @@ import {
 	canonicaliseTodos,
 	countTodos,
 	describeTodoTool,
+	freezeTodoSnapshot,
 	progressSegments,
 	projectTodoState,
 	summaryFromToolArguments,
 	todoResultText,
 	type PlanItemLike,
 	type TodoItem,
+	type TodoSnapshot,
 	type TodoStatus,
 	type TodoWriteDetails,
 } from "../model.ts";
 
 const WIDGET_KEY = "pi-todo";
-const WIDGET_ITEM_LIMIT = 8;
 
 const TodoItemSchema = Type.Object(
 	{
@@ -43,8 +44,30 @@ export const TodoWriteParameters = Type.Object(
 			description: "The COMPLETE task list, replacing any previous list.",
 		}),
 	},
-	{ additionalProperties: false },
+	{ additionalProperties: true },
 );
+
+type TodoWriteArguments = Static<typeof TodoWriteParameters>;
+
+/** Reject primitive coercion before Pi applies TypeBox Value.Convert. */
+export function prepareTodoWriteArguments(args: unknown): TodoWriteArguments {
+	if (typeof args !== "object" || args === null || Array.isArray(args)) {
+		return args as TodoWriteArguments;
+	}
+	const todos = (args as { todos?: unknown }).todos;
+	if (!Array.isArray(todos)) return args as TodoWriteArguments;
+	for (const candidate of todos) {
+		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) continue;
+		const item = candidate as Record<string, unknown>;
+		if (Object.hasOwn(item, "content") && typeof item.content !== "string") {
+			throw new Error("invalid todo: `content` must be a non-empty string");
+		}
+		if (Object.hasOwn(item, "status") && typeof item.status !== "string") {
+			throw new Error("invalid todo: `status` must be pending, in_progress, or completed");
+		}
+	}
+	return args as TodoWriteArguments;
+}
 
 export interface TodoExtensionOptions {
 	allowParallelInProgress: boolean;
@@ -61,6 +84,36 @@ function expansionHint(expanded: boolean): string {
 		return keyHint("app.tools.expand", expanded ? "collapse" : "expand");
 	} catch {
 		return `ctrl+o ${expanded ? "collapse" : "expand"}`;
+	}
+}
+
+/** Encode terminal controls while leaving the durable task text unchanged. */
+export function terminalSafeTodoContent(content: string): string {
+	let safe = "";
+	for (const character of content) {
+		const codePoint = character.codePointAt(0)!;
+		if (character === "\n") safe += "\\n";
+		else if (character === "\r") safe += "\\r";
+		else if (character === "\t") safe += "\\t";
+		else if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+			safe += codePoint <= 0xff
+				? `\\x${codePoint.toString(16).padStart(2, "0")}`
+				: `\\u${codePoint.toString(16).padStart(4, "0")}`;
+		} else if (codePoint === 0x2028 || codePoint === 0x2029) {
+			safe += `\\u${codePoint.toString(16)}`;
+		} else {
+			safe += character;
+		}
+	}
+	return safe;
+}
+
+function terminalSafeUnknown(value: unknown): string {
+	if (typeof value === "string") return terminalSafeTodoContent(value);
+	try {
+		return terminalSafeTodoContent(JSON.stringify(value) ?? "");
+	} catch {
+		return terminalSafeTodoContent(String(value));
 	}
 }
 
@@ -81,17 +134,12 @@ export function todoWidgetLines(
 	const lines = [truncateToWidth(header, availableWidth)];
 	if (!expanded) return lines;
 
-	for (const todo of todos.slice(0, WIDGET_ITEM_LIMIT)) {
+	for (const todo of todos) {
+		const safeContent = terminalSafeTodoContent(todo.content);
 		const content = todo.status === "completed"
-			? theme.fg("dim", todo.content)
-			: theme.fg("text", todo.content);
+			? theme.fg("dim", safeContent)
+			: theme.fg("text", safeContent);
 		lines.push(truncateToWidth(`  ${statusGlyph(todo.status, theme)} ${content}`, availableWidth));
-	}
-	if (todos.length > WIDGET_ITEM_LIMIT) {
-		lines.push(truncateToWidth(
-			`  ${theme.fg("dim", `… ${todos.length - WIDGET_ITEM_LIMIT} more`)}`,
-			availableWidth,
-		));
 	}
 	return lines;
 }
@@ -99,7 +147,7 @@ export function todoWidgetLines(
 function toolSummaryText(summary: ReturnType<typeof summaryFromToolArguments>): string | null {
 	if (!summary) return null;
 	let text = `${summary.done}/${summary.total} completed`;
-	if (summary.activeContent !== null) text += ` · ${summary.activeContent}`;
+	if (summary.activeContent !== null) text += ` · ${terminalSafeTodoContent(summary.activeContent)}`;
 	if (summary.activeExtra > 0) text += ` +${summary.activeExtra}`;
 	return text;
 }
@@ -112,13 +160,13 @@ function expandedCallLines(args: unknown, theme: Theme): string[] {
 	for (const candidate of todos) {
 		if (typeof candidate !== "object" || candidate === null) continue;
 		const todo = candidate as PlanItemLike;
-		const content = typeof todo.content === "string" ? todo.content : JSON.stringify(todo.content);
+		const content = terminalSafeUnknown(todo.content);
 		const glyph = todo.status === "completed"
 			? theme.fg("success", "✓")
 			: todo.status === "in_progress"
 				? theme.fg("accent", "◉")
 				: theme.fg("dim", "○");
-		lines.push(`  ${glyph} ${theme.fg("muted", content ?? "")}`);
+		lines.push(`  ${glyph} ${theme.fg("muted", content)}`);
 	}
 	return lines;
 }
@@ -127,6 +175,9 @@ function resultText(result: { content?: readonly { type: string; text?: string }
 	return (result.content ?? [])
 		.filter((block) => block.type === "text")
 		.map((block) => block.text ?? "")
+		.join("\n")
+		.split("\n")
+		.map((line) => terminalSafeTodoContent(line))
 		.join("\n")
 		.trim();
 }
@@ -142,7 +193,7 @@ function isTodoWriteDetails(value: unknown): value is TodoWriteDetails {
 
 export function createTodoExtension(options: TodoExtensionOptions) {
 	return function todoExtension(pi: ExtensionAPI): void {
-		let currentTodos: TodoItem[] | null = null;
+		let currentTodos: TodoSnapshot | null = null;
 
 		const refreshWidget = (ctx: ExtensionContext): void => {
 			if (ctx.mode !== "tui") return;
@@ -174,6 +225,7 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 			label: "Update todo list",
 			description: describeTodoTool(options.allowParallelInProgress),
 			parameters: TodoWriteParameters,
+			prepareArguments: prepareTodoWriteArguments,
 			executionMode: "sequential",
 
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -181,14 +233,15 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 					throw new Error("todo_write requires an owning agent session");
 				}
 				const canonical = canonicaliseTodos(params.todos, options);
-				const snapshot = canonical.map((todo) => ({ ...todo }));
-				pi.appendEntry(TODO_WRITE_ENTRY, { todos: snapshot });
-				currentTodos = snapshot;
+				const durableSnapshot = freezeTodoSnapshot(canonical);
+				const liveSnapshot = freezeTodoSnapshot(canonical);
+				pi.appendEntry(TODO_WRITE_ENTRY, Object.freeze({ todos: durableSnapshot }));
+				currentTodos = liveSnapshot;
 				refreshWidget(ctx);
 
 				const details: TodoWriteDetails = {
-					todos: snapshot.map((todo) => ({ ...todo })),
-					counts: countTodos(snapshot),
+					todos: canonical.map((todo) => ({ ...todo })),
+					counts: countTodos(liveSnapshot),
 				};
 				return {
 					content: [{ type: "text", text: todoResultText(details.counts) }],
@@ -217,7 +270,9 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 				const firstLine = raw.split("\n").find((line) => line.trim().length > 0) ?? "Todo list not updated";
 				const compact = context.isError ? firstLine : raw;
 				const displayed = expanded && raw ? raw : compact;
-				return new Text(theme.fg("error", displayed || "Todo list not updated"), 0, 0);
+				const safeDisplayed = terminalSafeTodoContent(displayed || "Todo list not updated");
+				const colour = context.isError ? "error" : "dim";
+				return new Text(theme.fg(colour, safeDisplayed), 0, 0);
 			},
 		});
 

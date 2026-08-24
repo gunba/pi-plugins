@@ -10,6 +10,8 @@ export interface TodoItem {
 	status: TodoStatus;
 }
 
+export type TodoSnapshot = readonly Readonly<TodoItem>[];
+
 export interface TodoCounts {
 	pending: number;
 	inProgress: number;
@@ -62,10 +64,29 @@ export function isTodoStatus(value: unknown): value is TodoStatus {
 	return value === "pending" || value === "in_progress" || value === "completed";
 }
 
-export function canonicaliseTodos(
-	rawTodos: readonly { content: string; status: TodoStatus }[],
-	policy: TodoPolicy,
-): TodoItem[] {
+function todoRecord(value: unknown, error: string): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(error);
+	}
+	return value as Record<string, unknown>;
+}
+
+function assertExactTodoKeys(item: Record<string, unknown>, prefix: string): void {
+	const unknown = Object.keys(item).find((key) => key !== "content" && key !== "status");
+	if (unknown !== undefined) {
+		throw new Error(`${prefix} carries unknown field ${JSON.stringify(unknown)}`);
+	}
+}
+
+/** Detach and freeze a task snapshot before it becomes durable or live UI state. */
+export function freezeTodoSnapshot(todos: readonly TodoItem[]): TodoSnapshot {
+	return Object.freeze(todos.map((todo) => Object.freeze({
+		content: todo.content,
+		status: todo.status,
+	})));
+}
+
+export function canonicaliseTodos(rawTodos: unknown, policy: TodoPolicy): TodoItem[] {
 	if (!Array.isArray(rawTodos)) {
 		throw new Error("invalid todos: expected an array");
 	}
@@ -74,8 +95,10 @@ export function canonicaliseTodos(
 	const contents = new Set<string>();
 	let activeCount = 0;
 
-	for (const raw of rawTodos) {
-		if (!raw || typeof raw.content !== "string") {
+	for (const candidate of rawTodos) {
+		const raw = todoRecord(candidate, "invalid todo: expected an object");
+		assertExactTodoKeys(raw, "invalid todo");
+		if (typeof raw.content !== "string") {
 			throw new Error("invalid todo: `content` must be a non-empty string");
 		}
 		if (!isTodoStatus(raw.status)) {
@@ -101,18 +124,17 @@ export function canonicaliseTodos(
 	return canonical;
 }
 
-/** Validate durable snapshots without applying the current active-task policy. */
-export function validateTodoSnapshot(value: unknown): TodoItem[] {
+/** Validate, detach, and freeze durable snapshots without applying the current active-task policy. */
+export function validateTodoSnapshot(value: unknown): TodoSnapshot {
 	if (!Array.isArray(value)) {
 		throw new Error("todo/write todos must be an array");
 	}
 
+	const canonical: TodoItem[] = [];
 	const contents = new Set<string>();
 	for (const candidate of value) {
-		if (typeof candidate !== "object" || candidate === null) {
-			throw new Error("todo/write entries must be objects");
-		}
-		const item = candidate as Record<string, unknown>;
+		const item = todoRecord(candidate, "todo/write entries must be objects");
+		assertExactTodoKeys(item, "todo/write entry");
 		const content = item.content;
 		if (typeof content !== "string" || content.length === 0 || content.trim() !== content) {
 			throw new Error("todo/write content must be non-empty and already trimmed");
@@ -124,13 +146,16 @@ export function validateTodoSnapshot(value: unknown): TodoItem[] {
 		if (!isTodoStatus(item.status)) {
 			throw new Error(`todo/write carries unknown status ${JSON.stringify(item.status)}`);
 		}
+		canonical.push({ content, status: item.status });
 	}
 
-	return value as TodoItem[];
+	for (const candidate of value) Object.freeze(candidate as object);
+	Object.freeze(value);
+	return freezeTodoSnapshot(canonical);
 }
 
-export function projectTodoState(entries: readonly BranchEntryLike[]): TodoItem[] | null {
-	let projected: TodoItem[] | null = null;
+export function projectTodoState(entries: readonly BranchEntryLike[]): TodoSnapshot | null {
+	let projected: TodoSnapshot | null = null;
 	for (const entry of entries) {
 		if (entry.type !== "custom") continue;
 		if (entry.customType === TODO_CLEAR_ENTRY) {
@@ -140,6 +165,7 @@ export function projectTodoState(entries: readonly BranchEntryLike[]): TodoItem[
 		if (entry.customType !== TODO_WRITE_ENTRY) continue;
 		const data = entry.data as { todos?: unknown } | null | undefined;
 		projected = validateTodoSnapshot(data?.todos);
+		if (typeof data === "object" && data !== null) Object.freeze(data);
 	}
 	return projected;
 }

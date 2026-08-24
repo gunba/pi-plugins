@@ -62,18 +62,18 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   pruning during long runs; follows its global setting and is compatible with
   Anthropic OAuth prune calls.
 - `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
-  `get_goal`, `create_goal`, and `update_goal`. The agent may infer a substantial
-  goal from a direct human turn, continue it through bounded same-session rounds,
-  and mark it complete or blocked through revision-fenced state transitions.
+  `get_goal`, `create_goal`, and `update_goal`. Input-bound direct-human
+  authority protects mutations; bounded same-session rounds use revision-fenced
+  transitions and fail closed when Pi context cannot be authenticated.
 - `pi-subagents` — provides DSH-style fresh and forked Pi SDK children through
   `subagent` and `subagent_fork`, plus FIFO `send_message`, current-turn
   `interrupt_agent`, durable discovery, child reporting, cold resumption and a
-  live TUI dashboard. Background delegation returns immediately so parent work
-  can continue; foreground delegation remains available when the next action
-  depends on the child result.
+  live TUI dashboard. Background delegation returns immediately; report and
+  settlement outboxes survive runtime replacement, busy-parent settlements steer
+  the active turn, and enabled children retain the maintained `todo_write` tool.
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
-  panel. Ordered three-state task snapshots are branch-aware, remain visible
-  through settlement, and clear at the next agent run.
+  panel. Ordered immutable three-state snapshots are branch-aware, remain visible
+  through settlement, and render model-supplied text without terminal controls.
 
 ## Install
 

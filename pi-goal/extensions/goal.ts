@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -104,7 +105,9 @@ interface GoalAttempt extends GoalRoundIdentity {
 	admitted: boolean;
 }
 
-interface PendingHumanInput {
+interface PendingInput {
+	source: "human" | "extension";
+	contentFingerprint?: string;
 	streamingBehavior?: "steer" | "followUp";
 }
 
@@ -162,8 +165,75 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function messageFingerprint(value: unknown): string {
-	return JSON.stringify(value) ?? String(value);
+function valueFingerprint(value: unknown): string | undefined {
+	try {
+		const seen = new WeakMap<object, number>();
+		let nextReference = 0;
+		const encode = (candidate: unknown): string => {
+			if (candidate === null) return "null";
+			switch (typeof candidate) {
+				case "undefined": return "undefined";
+				case "boolean": return candidate ? "true" : "false";
+				case "string": return `string:${JSON.stringify(candidate)}`;
+				case "bigint": return `bigint:${candidate.toString(10)}`;
+				case "number": {
+					if (Number.isNaN(candidate)) return "number:NaN";
+					if (Object.is(candidate, -0)) return "number:-0";
+					return `number:${String(candidate)}`;
+				}
+				case "object": break;
+				default: throw new TypeError(`unsupported fingerprint value: ${typeof candidate}`);
+			}
+			const object = candidate as object;
+			const priorReference = seen.get(object);
+			if (priorReference !== undefined) return `reference:${priorReference}`;
+			const reference = nextReference;
+			nextReference += 1;
+			seen.set(object, reference);
+			if (Array.isArray(object)) {
+				return `array:${reference}:[${object.map((item) => encode(item)).join(",")}]`;
+			}
+			if (object instanceof Date) return `date:${reference}:${object.toISOString()}`;
+			if (object instanceof RegExp) return `regexp:${reference}:${object.source}/${object.flags}`;
+			if (object instanceof Map) {
+				return `map:${reference}:[${[...object].map(([key, item]) =>
+					`${encode(key)}=>${encode(item)}`).join(",")}]`;
+			}
+			if (object instanceof Set) {
+				return `set:${reference}:[${[...object].map((item) => encode(item)).join(",")}]`;
+			}
+			if (ArrayBuffer.isView(object)) {
+				const bytes = new Uint8Array(object.buffer, object.byteOffset, object.byteLength);
+				return `view:${reference}:${object.constructor.name}:${Buffer.from(bytes).toString("base64")}`;
+			}
+			if (object instanceof ArrayBuffer) {
+				return `buffer:${reference}:${Buffer.from(object).toString("base64")}`;
+			}
+			const keys = Reflect.ownKeys(object);
+			if (keys.some((key) => typeof key === "symbol")) {
+				throw new TypeError("symbol-keyed values cannot be fingerprinted");
+			}
+			const names = (keys as string[]).sort();
+			const fields = names.map((name) => {
+				const descriptor = Object.getOwnPropertyDescriptor(object, name);
+				if (descriptor === undefined || !("value" in descriptor)) {
+					throw new TypeError("accessor values cannot be fingerprinted");
+				}
+				return `${JSON.stringify(name)}:${encode(descriptor.value)}`;
+			});
+			return `object:${reference}:{${fields.join(",")}}`;
+		};
+		return createHash("sha256").update(encode(value)).digest("base64url");
+	} catch {
+		return undefined;
+	}
+}
+
+function userContentFingerprint(text: string, images: readonly unknown[] | undefined): string | undefined {
+	return valueFingerprint([
+		{ type: "text", text },
+		...(images ?? []),
+	]);
 }
 
 function hasRoundCap(value: number | undefined): value is number {
@@ -233,7 +303,7 @@ class GoalController {
 	private readonly store: GoalStore;
 	private readonly topLevel: boolean;
 	private authority: GoalAuthority = { kind: "none" };
-	private pendingHumanInputs: PendingHumanInput[] = [];
+	private pendingInputs: PendingInput[] = [];
 	private readonly seenContextMessages = new Map<string, number>();
 	private attempt: GoalAttempt | undefined;
 	private pendingWrapup: string | undefined;
@@ -279,11 +349,12 @@ class GoalController {
 		this.rememberContextMessages(messages);
 	}
 
-	private rememberContextMessages(messages: readonly unknown[]): unknown[] {
+	private rememberContextMessages(messages: readonly unknown[]): unknown[] | undefined {
 		const occurrences = new Map<string, number>();
 		const unseen: unknown[] = [];
 		for (const message of messages) {
-			const key = messageFingerprint(message);
+			const key = valueFingerprint(message);
+			if (key === undefined) return undefined;
 			const occurrence = (occurrences.get(key) ?? 0) + 1;
 			occurrences.set(key, occurrence);
 			if (occurrence > (this.seenContextMessages.get(key) ?? 0)) unseen.push(message);
@@ -292,6 +363,15 @@ class GoalController {
 			this.seenContextMessages.set(key, Math.max(count, this.seenContextMessages.get(key) ?? 0));
 		}
 		return unseen;
+	}
+
+	private dequeuePendingInput(): PendingInput | undefined {
+		for (const streamingBehavior of [undefined, "steer", "followUp"] as const) {
+			const index = this.pendingInputs.findIndex((pending) =>
+				pending.streamingBehavior === streamingBehavior);
+			if (index !== -1) return this.pendingInputs.splice(index, 1)[0];
+		}
+		return undefined;
 	}
 
 	private isAttemptMessage(value: unknown): boolean {
@@ -314,19 +394,28 @@ class GoalController {
 	}
 
 	private admitAuthorityFromContext(messages: readonly unknown[]): void {
-		const ingress = this.rememberContextMessages(messages).filter((message) =>
+		const unseen = this.rememberContextMessages(messages);
+		if (unseen === undefined) {
+			this.authority = { kind: "none" };
+			this.pendingInputs = [];
+			return;
+		}
+		const ingress = unseen.filter((message) =>
 			isRecord(message) && (message.role === "user" || message.role === "custom"));
 		if (ingress.length === 0) return;
 
-		let directHuman = false;
-		for (const message of ingress) {
-			if (!isRecord(message) || message.role !== "user" || this.pendingHumanInputs.length === 0)
-				continue;
-			this.pendingHumanInputs.shift();
-			directHuman = true;
-		}
-		if (directHuman) {
-			this.authority = { kind: "direct-human" };
+		const userMessages = ingress.filter((message) => isRecord(message) && message.role === "user");
+		if (userMessages.length > 0) {
+			let directHuman = false;
+			for (const message of userMessages) {
+				const pending = this.dequeuePendingInput();
+				const content = isRecord(message) ? message.content : undefined;
+				const contentFingerprint = valueFingerprint(content);
+				directHuman = pending?.source === "human"
+					&& pending.contentFingerprint !== undefined
+					&& contentFingerprint === pending.contentFingerprint;
+			}
+			this.authority = directHuman ? { kind: "direct-human" } : { kind: "none" };
 			return;
 		}
 
@@ -472,6 +561,7 @@ class GoalController {
 			label: "Create Goal",
 			description: CREATE_DESCRIPTION,
 			promptSnippet: "Create one long-running same-session completion goal",
+			promptGuidelines: [guidance],
 			parameters: createSchema,
 			executionMode: "sequential",
 			execute: async (_id, params: CreateParams, _signal, _onUpdate, ctx) => this.serialized(() => {
@@ -495,6 +585,7 @@ class GoalController {
 			label: "Update Goal",
 			description: UPDATE_DESCRIPTION,
 			promptSnippet: "Edit, pause, resume, complete, or block the exact current goal revision",
+			promptGuidelines: [guidance],
 			parameters: updateSchema,
 			executionMode: "sequential",
 			execute: async (_id, params: UpdateParams, _signal, _onUpdate, ctx) => this.serialized(() => {
@@ -587,7 +678,7 @@ class GoalController {
 			this.stopping = false;
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
-			this.pendingHumanInputs = [];
+			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			const branch = ctx.sessionManager.getBranch();
@@ -599,7 +690,7 @@ class GoalController {
 		this.pi.on("session_tree", (_event, ctx) => {
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
-			this.pendingHumanInputs = [];
+			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			const branch = ctx.sessionManager.getBranch();
 			this.resetContextTracking(branch);
@@ -612,7 +703,7 @@ class GoalController {
 			this.driveRequested = false;
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
-			this.pendingHumanInputs = [];
+			this.pendingInputs = [];
 			this.seenContextMessages.clear();
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
@@ -621,18 +712,25 @@ class GoalController {
 		});
 
 		this.pi.on("input", (event) => {
-			if (event.source === "extension") {
-				this.pendingHumanInputs = this.pendingHumanInputs.filter((pending) =>
-					pending.streamingBehavior !== undefined);
-				return;
-			}
-			this.pendingHumanInputs = this.pendingHumanInputs.filter((pending) =>
+			this.pendingInputs = this.pendingInputs.filter((pending) =>
 				pending.streamingBehavior !== undefined);
-			this.pendingHumanInputs.push({
+			this.pendingInputs.push({
+				source: event.source === "extension" ? "extension" : "human",
+				contentFingerprint: userContentFingerprint(event.text, event.images),
 				...(event.streamingBehavior === undefined
 					? {}
 					: { streamingBehavior: event.streamingBehavior }),
 			});
+		});
+
+		this.pi.on("before_agent_start", (event) => {
+			let index = this.pendingInputs.length - 1;
+			while (index >= 0 && this.pendingInputs[index]?.streamingBehavior !== undefined) index -= 1;
+			if (index === -1) return;
+			const pending = this.pendingInputs[index];
+			if (pending !== undefined) {
+				pending.contentFingerprint = userContentFingerprint(event.prompt, event.images);
+			}
 		});
 
 		this.pi.on("message_end", async (event, ctx) => {
@@ -664,7 +762,12 @@ class GoalController {
 		});
 
 		this.pi.on("context", (event) => {
-			this.admitAuthorityFromContext(event.messages);
+			try {
+				this.admitAuthorityFromContext(event.messages);
+			} catch {
+				this.authority = { kind: "none" };
+				this.pendingInputs = [];
+			}
 			if (this.pendingWrapup === undefined) return;
 			return {
 				messages: [
@@ -726,7 +829,7 @@ class GoalController {
 		}
 		this.attempt = undefined;
 		this.authority = { kind: "none" };
-		this.pendingHumanInputs = [];
+		this.pendingInputs = [];
 		this.pendingWrapup = undefined;
 		this.lastStopReason = undefined;
 		this.refreshUi(ctx);

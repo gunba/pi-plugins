@@ -20,6 +20,7 @@ export function createExtensionHarness(options = {}) {
 	const entryRenderers = new Map();
 	const messageRenderers = new Map();
 	const sentMessages = [];
+	const persistedSentMessages = new Set();
 	const contextMessages = [];
 	const statuses = new Map();
 	const widgets = new Map();
@@ -96,6 +97,19 @@ export function createExtensionHarness(options = {}) {
 		return results;
 	}
 
+	async function emitContained(type, event = {}) {
+		const results = [];
+		const errors = [];
+		for (const handler of handlers.get(type) ?? []) {
+			try {
+				results.push(await handler({ type, ...event }, ctx));
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		return { results, errors };
+	}
+
 	return {
 		branch,
 		commands,
@@ -108,6 +122,7 @@ export function createExtensionHarness(options = {}) {
 		theme,
 		ctx,
 		emit,
+		emitContained,
 		append,
 		setIdle(value) { idle = value; },
 		setPending(value) { pending = value; },
@@ -123,7 +138,8 @@ export function createExtensionHarness(options = {}) {
 			await emit("context", { messages: structuredClone(contextMessages) });
 		},
 		async admitLastRound() {
-			const sent = sentMessages.at(-1);
+			const sentIndex = sentMessages.length - 1;
+			const sent = sentMessages[sentIndex];
 			assert.ok(sent, "expected one sent round");
 			await emit("message_end", {
 				message: {
@@ -135,6 +151,16 @@ export function createExtensionHarness(options = {}) {
 					timestamp: Date.now(),
 				},
 			});
+			if (options.persistSentMessages === false && !persistedSentMessages.has(sentIndex)) {
+				persistedSentMessages.add(sentIndex);
+				append({
+					type: "custom_message",
+					customType: sent.message.customType,
+					content: structuredClone(sent.message.content),
+					display: sent.message.display,
+					details: structuredClone(sent.message.details),
+				});
+			}
 			return sent;
 		},
 	};

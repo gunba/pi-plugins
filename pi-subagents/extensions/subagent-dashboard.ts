@@ -201,10 +201,11 @@ export class SubagentDashboard implements Component {
 		if (
 			data === "m" &&
 			selected?.mode === "continuable" &&
+			!selected.diagnosticReason &&
 			selected.parentId === this.snapshot.rootSessionId
 		)
 			this.done({ action: "message", id: selected.id });
-		if (data === "x" && this.selectedId)
+		if (data === "x" && this.selectedId && !selected?.diagnosticReason)
 			this.done({ action: "interrupt", id: this.selectedId });
 	}
 
@@ -407,14 +408,16 @@ export class SubagentDashboard implements Component {
 	): string[] {
 		if (!selected) return [this.theme.fg("dim", "Select an agent to inspect it")];
 		const agent = selected.agent;
-		const duration = formatAge((agent.finishedAt ?? Date.now()) - agent.createdAt);
+		const duration = formatAge(
+			agent.activeDurationMs ?? Math.max(0, (agent.finishedAt ?? Date.now()) - agent.createdAt),
+		);
 		const usage = agent.usage
 			? `↑${formatTokens(agent.usage.input)} ↓${formatTokens(agent.usage.output)} · ctx ${formatTokens(agent.usage.contextTokens)} · $${agent.usage.cost.toFixed(4)}`
 			: undefined;
 		const metadata = [
 			this.theme.fg("accent", this.theme.bold(agent.label)),
 			agent.id,
-			`${agent.state}${agent.activity ? ` · ${agent.activity}` : ""} · ${agent.context} ${agent.mode} · ${duration}`,
+			`${agent.state}${agent.diagnosticReason ? ` · ${agent.diagnosticReason}` : ""}${agent.activity ? ` · ${agent.activity}` : ""} · ${agent.context} ${agent.mode} · ${duration}`,
 			`Parent: ${agent.parentId}`,
 			`Model: ${agent.model} · thinking ${agent.thinkingLevel}`,
 			usage,

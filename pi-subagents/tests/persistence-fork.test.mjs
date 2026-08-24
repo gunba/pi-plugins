@@ -485,6 +485,7 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 				sessionFile: manager.getSessionFile(),
 				lastOutput: "partial recovered output",
 				usage: { input: 2, output: 3, contextTokens: 5, cost: 0.25 },
+				activeDurationMs: 0,
 			});
 			assert.deepEqual(second.notices, [notice]);
 			const delivered = SessionManager.open(manager.getSessionFile(), first.childSessions)

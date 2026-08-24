@@ -6,6 +6,7 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { createChildTodoTool } from "./child-todo-tool.ts";
 import type {
 	ChildDriver,
 	ChildDriverFactory,
@@ -16,7 +17,12 @@ import { CHILD_BUILTIN_TOOL_NAMES } from "./subagent-runtime.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 
-const CHILD_CONTEXT = `You are a delegated subagent. Your permission and tool scope were fixed when you were started and cannot be widened from inside this session. Work independently in the shared working directory. Do not ask the user interactive questions; report blocked work or assumptions to your direct parent. Background children continue after you start them. Use report for self-contained findings that your direct parent should receive before your turn settles.`;
+const CHILD_CONTEXT = `You are a delegated subagent. Your permission and tool scope were fixed when you were started and cannot be widened from inside this session. Work independently in the shared working directory. Do not ask the user interactive questions; report blocked work or assumptions to your direct parent. Background children continue after you start them.`;
+const REPORT_CONTEXT = `Use report for self-contained findings that your direct parent should receive before your turn settles.`;
+
+export function childSystemContext(mode: "continuable" | "one-shot"): string {
+	return mode === "continuable" ? `${CHILD_CONTEXT} ${REPORT_CONTEXT}` : CHILD_CONTEXT;
+}
 
 function assistantText(message: AgentMessage): string {
 	if (message.role !== "assistant") return "";
@@ -52,23 +58,36 @@ export function outcomeFrom(
 	}
 	const output = (outputMessage ? assistantText(outputMessage) : "") || streamed;
 	const stopReason: RunOutcome["stopReason"] =
-		terminal.stopReason === "length"
-			? "max-tokens"
-			: terminal.stopReason === "aborted"
-				? "aborted"
-				: terminal.stopReason === "error"
-					? "error"
-					: "completed";
+		terminal.stopReason === "stop"
+			? "completed"
+			: terminal.stopReason === "length"
+				? "max-tokens"
+				: terminal.stopReason === "aborted"
+					? "aborted"
+					: "error";
+	const assistants = messages.filter(
+		(message): message is Extract<AgentMessage, { role: "assistant" }> =>
+			message.role === "assistant",
+	);
+	const usage = assistants.reduce(
+		(total, message) => ({
+			input: total.input + message.usage.input,
+			output: total.output + message.usage.output,
+			contextTokens: Math.max(total.contextTokens, message.usage.totalTokens),
+			cost: total.cost + message.usage.cost.total,
+		}),
+		{ input: 0, output: 0, contextTokens: 0, cost: 0 },
+	);
+	const unsupportedReason = stopReason === "error" && terminal.stopReason !== "error"
+		? `child stopped with non-final reason ${terminal.stopReason}`
+		: undefined;
 	return {
 		output,
 		stopReason,
-		...(terminal.errorMessage ? { errorMessage: terminal.errorMessage } : {}),
-		usage: {
-			input: terminal.usage.input,
-			output: terminal.usage.output,
-			contextTokens: terminal.usage.totalTokens,
-			cost: terminal.usage.cost.total,
-		},
+		...(terminal.errorMessage || unsupportedReason
+			? { errorMessage: terminal.errorMessage ?? unsupportedReason }
+			: {}),
+		usage,
 	};
 }
 
@@ -170,10 +189,18 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			settingsManager,
 			noExtensions: true,
 			noThemes: true,
-			appendSystemPromptOverride: (base) => [...base, CHILD_CONTEXT],
+			appendSystemPromptOverride: (base) => [
+				...base,
+				childSystemContext(input.descriptor.mode),
+			],
 		});
 		await loader.reload();
-		const customToolNames = input.customTools.map((tool) => tool.name);
+		const customTools = [...input.customTools];
+		if (
+			input.descriptor.toolNames.includes("todo_write") &&
+			!customTools.some((tool) => tool.name === "todo_write")
+		) customTools.push(createChildTodoTool(input.sessionManager));
+		const customToolNames = customTools.map((tool) => tool.name);
 		const builtinToolNames = input.descriptor.toolNames.filter((name) =>
 			CHILD_BUILTIN_TOOL_NAMES.has(name),
 		);
@@ -186,7 +213,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			settingsManager,
 			resourceLoader: loader,
 			sessionManager: input.sessionManager,
-			customTools: input.customTools,
+			customTools,
 			tools: [...new Set([...builtinToolNames, ...customToolNames])],
 			excludeTools: [
 				"ask_user",

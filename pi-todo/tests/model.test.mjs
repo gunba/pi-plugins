@@ -18,11 +18,18 @@ import {
 const parallelPolicy = { allowParallelInProgress: true };
 const singlePolicy = { allowParallelInProgress: false };
 
-test("canonicalisation trims content and constructs the minimal item shape", () => {
-	const input = [{ content: "  Build it  ", status: "in_progress", ignored: true }];
-	assert.deepEqual(canonicaliseTodos(input, parallelPolicy), [
+test("canonicalisation trims content and enforces the closed item shape", () => {
+	assert.deepEqual(canonicaliseTodos([
+		{ content: "  Build it  ", status: "in_progress" },
+	], parallelPolicy), [
 		{ content: "Build it", status: "in_progress" },
 	]);
+	assert.throws(
+		() => canonicaliseTodos([
+			{ content: "Build it", status: "in_progress", children: [] },
+		], parallelPolicy),
+		{ message: 'invalid todo carries unknown field "children"' },
+	);
 });
 
 test("canonicalisation accepts an empty list and imposes no size limits", () => {
@@ -104,7 +111,11 @@ test("projection is whole-list last-write-wins and clear is distinct from an emp
 		{ type: "message", message: { role: "assistant" } },
 		{ type: "custom", customType: TODO_WRITE_ENTRY, data: { todos: second } },
 	];
-	assert.equal(projectTodoState(base), second);
+	const projected = projectTodoState(base);
+	assert.deepEqual(projected, second);
+	assert.notEqual(projected, second);
+	assert.ok(Object.isFrozen(projected));
+	assert.ok(Object.isFrozen(projected[0]));
 	assert.equal(projectTodoState([
 		...base,
 		{ type: "custom", customType: TODO_CLEAR_ENTRY, data: {} },
@@ -116,12 +127,18 @@ test("projection is whole-list last-write-wins and clear is distinct from an emp
 	]), []);
 });
 
-test("durable validation accepts historical parallel items and extra item fields", () => {
+test("durable validation accepts historical parallel items but detaches and freezes them", () => {
 	const snapshot = [
-		{ content: "a", status: "in_progress", historicalMetadata: 1 },
+		{ content: "a", status: "in_progress" },
 		{ content: "b", status: "in_progress" },
 	];
-	assert.equal(validateTodoSnapshot(snapshot), snapshot);
+	const validated = validateTodoSnapshot(snapshot);
+	assert.deepEqual(validated, snapshot);
+	assert.notEqual(validated, snapshot);
+	assert.ok(Object.isFrozen(snapshot));
+	assert.ok(Object.isFrozen(snapshot[0]));
+	assert.ok(Object.isFrozen(validated));
+	assert.ok(Object.isFrozen(validated[0]));
 });
 
 test("durable validation rejects each malformed snapshot invariant", () => {
@@ -133,6 +150,7 @@ test("durable validation rejects each malformed snapshot invariant", () => {
 		[[{ content: " padded ", status: "pending" }], "todo/write content must be non-empty and already trimmed"],
 		[[{ content: "x", status: "pending" }, { content: "x", status: "completed" }], 'todo/write repeats content "x"'],
 		[[{ content: "x", status: "paused" }], 'todo/write carries unknown status "paused"'],
+		[[{ content: "x", status: "pending", metadata: true }], 'todo/write entry carries unknown field "metadata"'],
 	];
 	for (const [value, message] of cases) {
 		assert.throws(() => validateTodoSnapshot(value), { message });

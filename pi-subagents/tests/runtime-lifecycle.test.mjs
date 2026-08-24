@@ -358,7 +358,7 @@ test("one activation failure terminates every already-accepted message without s
 test("a one-shot parent activation is released after its background child settles", async () => {
 	let harness;
 	const factory = new FakeDriverFactory(async (driver, message) => {
-		if (driver.input.descriptor.depth === 1) {
+		if (driver.input.descriptor.depth === 1 && message === "parent") {
 			await harness.runtime.start({
 				description: "nested background work",
 				prompt: "nested",
@@ -372,6 +372,8 @@ test("a one-shot parent activation is released after its background child settle
 			});
 			return completedOutcome(`parent: ${message}`);
 		}
+		if (driver.input.descriptor.depth === 1)
+			return completedOutcome(`parent received: ${message}`);
 		return blockingPrompt(driver);
 	});
 	harness = createHarness({ factory });
@@ -386,7 +388,16 @@ test("a one-shot parent activation is released after its background child settle
 		assert.equal(result.kind, "foreground");
 		await waitUntil(() => factory.opens.length === 2, "nested child activation");
 		assert.equal(factory.opens[0].disposed, undefined, "parent waits for its descendant");
+		harness.runtime.report(factory.opens[1].input.authority, "nested accepted report");
+		await waitUntil(
+			() => factory.opens[0].prompts.some((prompt) => /nested accepted report/.test(prompt)),
+			"nested report delivery to one-shot parent",
+		);
 		factory.opens[1].pending.resolve(completedOutcome("nested done"));
+		await waitUntil(
+			() => factory.opens[0].prompts.some((prompt) => /nested done/.test(prompt)),
+			"nested settlement delivery to one-shot parent",
+		);
 		await waitUntil(() => factory.opens[0].disposed === true, "one-shot parent release");
 	} finally {
 		await harness.cleanup();

@@ -54,10 +54,10 @@ test("SDK output fold selects the last non-empty assistant text, not reasoning o
 	assert.equal(outcome.output, "final");
 	assert.equal(outcome.stopReason, "completed");
 	assert.deepEqual(outcome.usage, {
-		input: 3,
-		output: 2,
+		input: 9,
+		output: 6,
 		contextTokens: 5,
-		cost: 0.1,
+		cost: 0.30000000000000004,
 	});
 });
 

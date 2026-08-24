@@ -43,11 +43,14 @@ route is a foreground one-shot run.
   by Pi, and thinking level inherit from the parent at activation. Durable model
   identity and thinking level are restored from the descriptor.
 - Child resources include an explicit allowlist of enabled native coding tools,
-  project context, and skills. Interactive question tools are not loaded.
-- Reports and settlement notices become bounded later parent turns. A settlement
-  notice includes the outcome and final assistant text when available. Settlement
-  delivery uses a durable outbox and is acknowledged when the parent message is
-  admitted or the direct child's inbox accepts it.
+  the maintained `todo_write` tool when it was active in the parent, project
+  context, and skills. Interactive question tools are not loaded.
+- Reports and settlement notices use a durable outbox and become bounded direct-
+  parent turns. A settlement steers a busy root parent and follows up an idle root;
+  reports remain follow-ups. Retained one-shot parents also receive nested notices.
+  A settlement includes the outcome and last non-empty assistant text from the
+  activation. Delivery is acknowledged only when the root message is admitted or
+  the direct child's inbox durably accepts it.
 - Session shutdown aborts active turns child-first and disposes SDK activations.
   It retains descriptors, inbox history, transcripts, and session files.
 
@@ -77,16 +80,19 @@ Child sessions use Pi's JSONL session format under:
 
 The child session contains model-hidden custom entries for:
 
-- `pi-subagents/descriptor-v1` — identity, lineage, depth, model, thinking,
-  context mode, and tool profile;
+- `pi-subagents/descriptor-v1` — immutable first-authoritative identity, lineage,
+  depth, model, thinking, context mode, and tool profile;
 - `pi-subagents/inbox-v1` — accepted FIFO work;
 - `pi-subagents/delivery-v1` — started and finished delivery records;
+- `pi-subagents/control-v1` — durable explicit-interrupt parking and waking;
 - `pi-subagents/launch-v1` — branch-aware child ownership;
-- `pi-subagents/settlement-v1` — pending and acknowledged terminal-notice outbox
-  records.
+- `pi-subagents/settlement-v1` — pending and acknowledged report and settlement
+  outbox records.
 
-Reading the catalog or a transcript does not activate a cold child. A corrupt or
-unsupported direct-child descriptor appears as a diagnostic row.
+Reading the catalog or a transcript does not activate a cold child. Missing,
+corrupt, unsupported, and unavailable launched children appear as diagnostic rows
+in both discovery and the dashboard. Dashboard usage aggregates requests and its
+duration measures active prompt time rather than wall lifetime.
 
 ## Pi 0.84.2 gaps
 
@@ -95,8 +101,8 @@ The implementation keeps these boundaries explicit:
 1. Pi has no process-global agent registry, continuation inbox, or generic job
    service. This extension owns the live registry and durable FIFO.
 2. Pi cannot attach DSH message-source metadata to a real user message.
-   Root reports and settlements use visible custom messages delivered as
-   follow-ups; child-to-child notices use the extension inbox.
+   Root reports and settlements use visible custom messages; child-to-child
+   notices use the extension inbox.
 3. Pi has no public per-activation `maxTokens` override. Cold activations use the
    restored model's normal token limit.
 4. Pi extensions cannot register a browser-side child catalog or composer. The
@@ -106,10 +112,10 @@ The implementation keeps these boundaries explicit:
    turns are therefore aborted cleanly and durable sessions are reconstructed
    instead of preserving in-memory activations across replacement.
 6. Pi does not expose executable parent tool definitions or extension event
-   policies through `getAllTools()`. Children therefore recreate only the native
-   built-ins that were enabled in the parent; parent tool overrides, sandboxes,
-   and permission hooks do not transfer. Restrict the native child allowlist when
-   those controls are required.
+   policies through `getAllTools()`. Children therefore recreate the enabled
+   native built-ins and this package's maintained `todo_write` tool; other parent
+   tool overrides, sandboxes, and permission hooks do not transfer. Restrict the
+   native child allowlist when those controls are required.
 7. Pi does not persist an exact `turn/end` marker. Fork boundaries use the last
    completed assistant entry before the current delegation tool call.
 

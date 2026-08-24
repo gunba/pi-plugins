@@ -20,6 +20,7 @@ export const INBOX_ENTRY = "pi-subagents/inbox-v1";
 export const DELIVERY_ENTRY = "pi-subagents/delivery-v1";
 export const LAUNCH_ENTRY = "pi-subagents/launch-v1";
 export const SETTLEMENT_ENTRY = "pi-subagents/settlement-v1";
+export const CONTROL_ENTRY = "pi-subagents/control-v1";
 export const DESCRIPTOR_VERSION = 1;
 export const DEFAULT_MAX_DEPTH = 3;
 export const MAX_PARENT_NOTICE_BYTES = 32 * 1024;
@@ -127,6 +128,8 @@ export type RuntimeChildSnapshot = {
 	sessionFile?: string;
 	lastOutput?: string;
 	usage?: RunOutcome["usage"];
+	activeDurationMs?: number;
+	diagnosticReason?: DiagnosticRecord["reason"];
 };
 
 export type ParentInvocation = {
@@ -218,6 +221,7 @@ type QueueItem = {
 	source: QueueSource;
 	acceptedAt: number;
 	started: boolean;
+	startedAt?: number;
 	cancelled?: boolean;
 	resolve?: (outcome: RunOutcome) => void;
 	reject?: (error: unknown) => void;
@@ -239,6 +243,9 @@ type ChildRecord = {
 	pump?: Promise<void>;
 	parked: boolean;
 	lastOutcome?: RunOutcome;
+	settlementOutcome?: RunOutcome;
+	totalUsage?: RunOutcome["usage"];
+	activeDurationMs: number;
 	lastError?: string;
 	updatedAt: number;
 	finishedAt?: number;
@@ -305,7 +312,8 @@ export function copyCompletedParentTurns(
 			entry.type === "message" &&
 			(entry.message.role === "user" ||
 				entry.message.role === "assistant" ||
-				entry.message.role === "toolResult")
+				entry.message.role === "toolResult" ||
+				entry.message.role === "bashExecution")
 		) {
 			target.appendMessage(
 				entry.message as Parameters<SessionManager["appendMessage"]>[0],
@@ -472,9 +480,14 @@ function readHeaderFallback(file: string): { id?: string; parentSession?: string
 type RecoveredChildState = {
 	queue: QueueItem[];
 	lastOutcome?: RunOutcome;
+	settlementOutcome?: RunOutcome;
+	totalUsage?: RunOutcome["usage"];
+	activeDurationMs: number;
 	lastError?: string;
 	updatedAt?: number;
 	finishedAt?: number;
+	parked: boolean;
+	needsSettlement: boolean;
 	pendingSettlementNotices: ParentNotice[];
 };
 
@@ -488,6 +501,33 @@ function parseUsage(value: unknown): RunOutcome["usage"] | undefined {
 		typeof cost !== "number"
 	) return undefined;
 	return { input, output, contextTokens, cost };
+}
+
+function addUsage(
+	left: RunOutcome["usage"] | undefined,
+	right: RunOutcome["usage"] | undefined,
+): RunOutcome["usage"] | undefined {
+	if (!left) return right ? { ...right } : undefined;
+	if (!right) return { ...left };
+	return {
+		input: left.input + right.input,
+		output: left.output + right.output,
+		contextTokens: Math.max(left.contextTokens, right.contextTokens),
+		cost: left.cost + right.cost,
+	};
+}
+
+function mergeSettlementOutcome(
+	previous: RunOutcome | undefined,
+	current: RunOutcome,
+): RunOutcome {
+	const usage = addUsage(previous?.usage, current.usage);
+	return {
+		output: current.output || previous?.output || "",
+		stopReason: current.stopReason,
+		...(current.errorMessage ? { errorMessage: current.errorMessage } : {}),
+		...(usage ? { usage } : {}),
+	};
 }
 
 function parseParentNotice(value: unknown): ParentNotice | undefined {
@@ -509,90 +549,80 @@ function parseParentNotice(value: unknown): ParentNotice | undefined {
 function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildState {
 	const accepted = new Map<string, QueueItem>();
 	const consumed = new Set<string>();
+	const startedAt = new Map<string, number>();
 	const pendingNotices = new Map<string, ParentNotice>();
 	let lastOutcome: RunOutcome | undefined;
+	let settlementOutcome: RunOutcome | undefined;
+	let totalUsage: RunOutcome["usage"] | undefined;
+	let activeDurationMs = 0;
 	let lastError: string | undefined;
 	let updatedAt: number | undefined;
 	let finishedAt: number | undefined;
+	let parked = false;
+	let needsSettlement = false;
 	for (const entry of entries) {
 		if (entry.type !== "custom" || !isRecord(entry.data)) continue;
+		if (entry.customType === CONTROL_ENTRY && (entry.data.action === "parked" || entry.data.action === "unparked"))
+			parked = entry.data.action === "parked";
 		if (entry.customType === INBOX_ENTRY && entry.data.action === "accepted") {
-			const messageId = entry.data.messageId;
-			const content = entry.data.content;
-			const source = entry.data.source;
-			const acceptedAt = entry.data.acceptedAt;
-			if (
-				typeof messageId === "string" &&
-				typeof content === "string" &&
-				(source === "initial" ||
-					source === "followup" ||
-					source === "report" ||
-					source === "settlement") &&
-				typeof acceptedAt === "number"
-			) {
-				accepted.set(messageId, {
-					messageId,
-					content,
-					source,
-					acceptedAt,
-					started: false,
-				});
+			const { messageId, content, source, acceptedAt } = entry.data;
+			if (typeof messageId === "string" && typeof content === "string" &&
+				(source === "initial" || source === "followup" || source === "report" || source === "settlement") &&
+				typeof acceptedAt === "number") {
+				accepted.set(messageId, { messageId, content, source, acceptedAt, started: false });
 				updatedAt = Math.max(updatedAt ?? 0, acceptedAt);
 			}
 		}
-		if (
-			entry.customType === DELIVERY_ENTRY &&
-			typeof entry.data.messageId === "string" &&
-			(entry.data.action === "finished" || entry.data.action === "failed")
-		) {
+		if (entry.customType === DELIVERY_ENTRY && entry.data.action === "started" &&
+			typeof entry.data.messageId === "string" && typeof entry.data.startedAt === "number")
+			startedAt.set(entry.data.messageId, entry.data.startedAt);
+		if (entry.customType === DELIVERY_ENTRY && typeof entry.data.messageId === "string" &&
+			(entry.data.action === "finished" || entry.data.action === "failed")) {
 			consumed.add(entry.data.messageId);
-			const terminalAt = typeof entry.data.finishedAt === "number"
-				? entry.data.finishedAt
-				: undefined;
+			const terminalAt = typeof entry.data.finishedAt === "number" ? entry.data.finishedAt : undefined;
 			if (terminalAt !== undefined) {
 				updatedAt = Math.max(updatedAt ?? 0, terminalAt);
 				finishedAt = terminalAt;
+				const began = startedAt.get(entry.data.messageId);
+				if (began !== undefined) activeDurationMs += Math.max(0, terminalAt - began);
 			}
+			let terminalOutcome: RunOutcome;
 			if (entry.data.action === "failed") {
-				lastError = typeof entry.data.error === "string"
-					? entry.data.error
-					: "child activation failed";
-				lastOutcome = {
-					output: "",
-					stopReason: "error",
-					errorMessage: lastError,
-				};
+				lastError = typeof entry.data.error === "string" ? entry.data.error : "child activation failed";
+				terminalOutcome = { output: "", stopReason: "error", errorMessage: lastError };
 			} else {
 				const stopReason = entry.data.stopReason;
-				if (
-					stopReason === "completed" ||
-					stopReason === "aborted" ||
-					stopReason === "error" ||
-					stopReason === "max-tokens" ||
-					stopReason === "refusal"
-				) {
-					lastError = typeof entry.data.errorMessage === "string"
-						? entry.data.errorMessage
-						: undefined;
-					lastOutcome = {
+				if (stopReason === "completed" || stopReason === "aborted" || stopReason === "error" ||
+					stopReason === "max-tokens" || stopReason === "refusal") {
+					lastError = typeof entry.data.errorMessage === "string" ? entry.data.errorMessage : undefined;
+					const usage = parseUsage(entry.data.usage);
+					terminalOutcome = {
 						output: typeof entry.data.output === "string" ? entry.data.output : "",
 						stopReason,
 						...(lastError ? { errorMessage: lastError } : {}),
-						...(parseUsage(entry.data.usage)
-							? { usage: parseUsage(entry.data.usage) }
-							: {}),
+						...(usage ? { usage } : {}),
 					};
+				} else {
+					lastError = "persisted child delivery has an invalid terminal stop reason";
+					terminalOutcome = { output: "", stopReason: "error", errorMessage: lastError };
 				}
 			}
+			lastOutcome = terminalOutcome;
+			settlementOutcome = mergeSettlementOutcome(settlementOutcome, terminalOutcome);
+			totalUsage = addUsage(totalUsage, terminalOutcome.usage);
+			needsSettlement = true;
 		}
 		if (entry.customType === SETTLEMENT_ENTRY) {
 			if (entry.data.action === "pending") {
 				const notice = parseParentNotice(entry.data.notice);
-				if (notice) pendingNotices.set(notice.messageId, notice);
-			} else if (
-				entry.data.action === "delivered" &&
-				typeof entry.data.messageId === "string"
-			) {
+				if (notice) {
+					pendingNotices.set(notice.messageId, notice);
+					if (notice.kind === "settlement") {
+						needsSettlement = false;
+						settlementOutcome = undefined;
+					}
+				}
+			} else if (entry.data.action === "delivered" && typeof entry.data.messageId === "string") {
 				pendingNotices.delete(entry.data.messageId);
 			}
 		}
@@ -600,9 +630,14 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 	return {
 		queue: [...accepted.values()].filter((item) => !consumed.has(item.messageId)),
 		...(lastOutcome ? { lastOutcome } : {}),
+		...(settlementOutcome ? { settlementOutcome } : {}),
+		...(totalUsage ? { totalUsage } : {}),
+		activeDurationMs,
 		...(lastError ? { lastError } : {}),
 		...(updatedAt !== undefined ? { updatedAt } : {}),
 		...(finishedAt !== undefined ? { finishedAt } : {}),
+		parked,
+		needsSettlement,
 		pendingSettlementNotices: [...pendingNotices.values()],
 	};
 }
@@ -678,7 +713,9 @@ export function createDurableChildSession(
 }
 
 function normalizeToolNames(names: readonly string[]): string[] {
-	return [...new Set(names.filter((name) => CHILD_BUILTIN_TOOL_NAMES.has(name)))].sort();
+	return [...new Set(names.filter((name) =>
+		CHILD_BUILTIN_TOOL_NAMES.has(name) || name === "todo_write",
+	))].sort();
 }
 
 export class SubagentRuntime {
@@ -718,9 +755,11 @@ export class SubagentRuntime {
 		this.loadCatalog();
 		for (const record of this.records.values()) {
 			this.retryPendingSettlements(record);
-			if (record.queue.length > 0) {
-				record.parked = false;
+			if (record.queue.length > 0 && !record.parked) {
 				record.pendingSettlement = record.descriptor.mode === "continuable";
+				this.startPump(record);
+			} else if (record.queue.length === 0 && record.pendingSettlement) {
+				this.setParked(record, false);
 				this.startPump(record);
 			}
 		}
@@ -767,16 +806,18 @@ export class SubagentRuntime {
 				const manager = SessionManager.open(file, this.sessionDir);
 				const sessionId = manager.getSessionId();
 				const branch = manager.getBranch();
-				const descriptors = branch
-					.filter(
-						(entry) =>
-							entry.type === "custom" &&
-							entry.customType === DESCRIPTOR_ENTRY &&
-							isRecord(entry.data) &&
-							entry.data.childSessionId === sessionId,
-					);
-				const entry = descriptors.at(-1);
-				if (!entry || entry.type !== "custom") continue;
+				const entry = branch.find(
+					(candidate) => candidate.type === "custom" && candidate.customType === DESCRIPTOR_ENTRY,
+				);
+				if (!entry || entry.type !== "custom") {
+					if (this.host.activeRootLaunchIds.has(sessionId)) this.diagnostics.set(sessionId, {
+						id: sessionId,
+						parentSessionId: this.host.rootSessionId,
+						rootSessionId: this.host.rootSessionId,
+						reason: "corrupt",
+					});
+					continue;
+				}
 				let descriptor: ChildDescriptor;
 				try {
 					descriptor = parseDescriptor(entry.data);
@@ -797,20 +838,22 @@ export class SubagentRuntime {
 					}
 					continue;
 				}
+				if (descriptor.childSessionId !== sessionId) throw new Error("descriptor childSessionId does not match session");
 				if (descriptor.rootSessionId !== this.host.rootSessionId) continue;
 				const recovered = recoverChildState(branch);
 				candidates.push({
 					descriptor,
 					manager,
 					queue: recovered.queue,
-					parked: true,
+					parked: recovered.parked,
 					updatedAt: recovered.updatedAt ?? descriptor.createdAt,
-					...(recovered.finishedAt !== undefined
-						? { finishedAt: recovered.finishedAt }
-						: {}),
+					...(recovered.finishedAt !== undefined ? { finishedAt: recovered.finishedAt } : {}),
 					...(recovered.lastOutcome ? { lastOutcome: recovered.lastOutcome } : {}),
+					...(recovered.settlementOutcome ? { settlementOutcome: recovered.settlementOutcome } : {}),
+					...(recovered.totalUsage ? { totalUsage: recovered.totalUsage } : {}),
+					activeDurationMs: recovered.activeDurationMs,
 					...(recovered.lastError ? { lastError: recovered.lastError } : {}),
-					pendingSettlement: false,
+					pendingSettlement: descriptor.mode === "continuable" && recovered.needsSettlement,
 					pendingSettlementNotices: recovered.pendingSettlementNotices,
 				});
 			} catch {
@@ -872,18 +915,45 @@ export class SubagentRuntime {
 				}
 			}
 		}
+		const expectedParent = new Map<string, string>();
+		for (const id of this.host.activeRootLaunchIds) expectedParent.set(id, this.host.rootSessionId);
+		let discovered = true;
+		while (discovered) {
+			discovered = false;
+			for (const record of candidates) {
+				const id = record.descriptor.childSessionId;
+				if (!expectedParent.has(id)) continue;
+				for (const childId of launchIds(record.manager)) {
+					if (expectedParent.has(childId)) continue;
+					expectedParent.set(childId, id);
+					allowed.add(childId);
+					discovered = true;
+				}
+			}
+		}
+		for (const [id, diagnostic] of [...this.diagnostics]) {
+			const parentSessionId = expectedParent.get(id);
+			if (!parentSessionId) this.diagnostics.delete(id);
+			else diagnostic.parentSessionId = parentSessionId;
+		}
 		for (const record of candidates) {
 			const id = record.descriptor.childSessionId;
-			if (valid.has(id) && allowed.has(id)) {
-				this.records.set(record.descriptor.childSessionId, record);
-			} else if (allowed.has(id)) {
-				this.diagnostics.set(id, {
-					id,
-					parentSessionId: record.descriptor.parentSessionId,
-					rootSessionId: record.descriptor.rootSessionId,
-					reason: "corrupt",
-				});
-			}
+			if (valid.has(id) && allowed.has(id)) this.records.set(id, record);
+			else if (allowed.has(id)) this.diagnostics.set(id, {
+				id,
+				parentSessionId: record.descriptor.parentSessionId,
+				rootSessionId: record.descriptor.rootSessionId,
+				reason: "corrupt",
+			});
+		}
+		for (const [id, parentSessionId] of expectedParent) {
+			if (this.records.has(id) || this.diagnostics.has(id)) continue;
+			this.diagnostics.set(id, {
+				id,
+				parentSessionId,
+				rootSessionId: this.host.rootSessionId,
+				reason: "unavailable",
+			});
 		}
 	}
 
@@ -959,6 +1029,7 @@ export class SubagentRuntime {
 				manager,
 				queue: [],
 				parked: false,
+				activeDurationMs: 0,
 				updatedAt: descriptor.createdAt,
 				pendingSettlement: mode === "continuable",
 				pendingSettlementNotices: [],
@@ -1036,6 +1107,15 @@ export class SubagentRuntime {
 		return item;
 	}
 
+	private setParked(record: ChildRecord, parked: boolean): void {
+		if (record.parked === parked) return;
+		record.manager.appendCustomEntry(CONTROL_ENTRY, {
+			action: parked ? "parked" : "unparked",
+			at: Date.now(),
+		});
+		record.parked = parked;
+	}
+
 	sendMessage(caller: Authority, childId: string, message: string): string {
 		if (this.closing) throw new Error("subagent runtime is shutting down");
 		this.assertLive(caller);
@@ -1045,7 +1125,8 @@ export class SubagentRuntime {
 		if (record.descriptor.parentSessionId !== caller.sessionId)
 			throw new Error("send_message is restricted to the exact live direct parent");
 		const item = this.accept(record, normalizePrompt(message), "followup");
-		record.parked = false;
+		this.setParked(record, false);
+		if (!record.pendingSettlement) record.settlementOutcome = undefined;
 		record.pendingSettlement = true;
 		this.startPump(record);
 		this.emit();
@@ -1070,7 +1151,7 @@ export class SubagentRuntime {
 			throw new Error("interrupt_agent requires an exact live ancestor");
 		if (record.activation?.current) {
 			record.activation.interrupted = true;
-			record.parked = true;
+			this.setParked(record, true);
 			record.activation.driver.interrupt();
 		}
 		return true;
@@ -1085,16 +1166,22 @@ export class SubagentRuntime {
 			record.activation?.authority !== caller
 		)
 			throw new Error("report requires the exact live continuable child");
-		const messageId = randomUUID();
-		this.deliverNotice(record.descriptor.parentSessionId, {
-			messageId,
+		const notice: ParentNotice = {
+			messageId: randomUUID(),
 			kind: "report",
 			childId: caller.sessionId,
 			content: truncateForParent(
 				`Background subagent ${caller.sessionId} reported:\n${normalizePrompt(output)}`,
 			),
+		};
+		record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {
+			action: "pending",
+			notice,
+			createdAt: Date.now(),
 		});
-		return messageId;
+		record.pendingSettlementNotices.push(notice);
+		this.retryPendingSettlements(record);
+		return notice.messageId;
 	}
 
 	private deliverNotice(parentId: string, notice: ParentNotice): boolean {
@@ -1103,7 +1190,11 @@ export class SubagentRuntime {
 			return this.host.deliverRootNotice(notice);
 		}
 		const parent = this.records.get(parentId);
-		if (!parent || parent.descriptor.mode !== "continuable") return true;
+		if (!parent) return false;
+		if (parent.descriptor.mode === "one-shot" && !parent.activation) {
+			const sender = this.records.get(notice.childId);
+			if (sender?.descriptor.parentSessionId !== parentId) return false;
+		}
 		const alreadyAccepted = parent.manager.getBranch().some(
 			(entry) =>
 				entry.type === "custom" &&
@@ -1114,8 +1205,9 @@ export class SubagentRuntime {
 		);
 		if (alreadyAccepted) return true;
 		this.accept(parent, notice.content, notice.kind, notice.messageId);
-		parent.parked = false;
-		parent.pendingSettlement = true;
+		this.setParked(parent, false);
+		if (!parent.pendingSettlement) parent.settlementOutcome = undefined;
+		parent.pendingSettlement = parent.descriptor.mode === "continuable";
 		this.startPump(parent);
 		return true;
 	}
@@ -1155,11 +1247,59 @@ export class SubagentRuntime {
 
 	private startPump(record: ChildRecord): void {
 		if (record.pump || record.parked || this.closing) return;
-		record.pump = this.pump(record).finally(async () => {
-			record.pump = undefined;
-			await this.settleAncestors(record.descriptor.parentSessionId);
-			this.emit();
-		});
+		record.pump = this.pump(record)
+			.catch(async (error) => {
+				await this.handlePumpFailure(record, error);
+			})
+			.finally(async () => {
+				try {
+					record.pump = undefined;
+					if (record.queue.length > 0 && !record.parked && !this.closing) {
+						this.startPump(record);
+						this.emit();
+						return;
+					}
+					await this.maybeSettle(record);
+					await this.settleAncestors(record.descriptor.parentSessionId);
+					this.emit();
+				} catch (error) {
+					record.lastError = error instanceof Error ? error.message : String(error);
+				}
+			});
+	}
+
+	private async handlePumpFailure(record: ChildRecord, error: unknown): Promise<void> {
+		const message = error instanceof Error ? error.message : String(error);
+		const stranded = record.queue.splice(0);
+		record.lastError = message;
+		record.lastOutcome = { output: "", stopReason: "error", errorMessage: message };
+		record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, record.lastOutcome);
+		record.pendingSettlement = record.descriptor.mode === "continuable";
+		const failedAt = Date.now();
+		const failures = stranded.length > 0
+			? stranded.map((item) => ({ item, messageId: item.messageId }))
+			: [{ item: undefined, messageId: `runtime-${randomUUID()}` }];
+		for (const failure of failures) {
+			try {
+				record.manager.appendCustomEntry(DELIVERY_ENTRY, {
+					action: "failed",
+					messageId: failure.messageId,
+					finishedAt: failedAt,
+					error: message,
+				});
+			} catch {
+				// Keep the in-memory error; a failed durable append must not become an unhandled rejection.
+			}
+			failure.item?.reject?.(error);
+		}
+		await this.disposeActivation(record);
+		try {
+			await this.maybeSettle(record);
+		} catch (settlementError) {
+			record.lastError = settlementError instanceof Error
+				? settlementError.message
+				: String(settlementError);
+		}
 	}
 
 	private async settleAncestors(parentId: string): Promise<void> {
@@ -1214,12 +1354,11 @@ export class SubagentRuntime {
 	private finishCancelledItem(record: ChildRecord, item: QueueItem): void {
 		const outcome: RunOutcome = { output: "", stopReason: "aborted" };
 		const finishedAt = Date.now();
-		record.queue.shift();
 		record.lastOutcome = outcome;
 		record.lastError = undefined;
 		record.updatedAt = finishedAt;
 		record.finishedAt = finishedAt;
-		record.parked = true;
+		this.setParked(record, true);
 		record.manager.appendCustomEntry(DELIVERY_ENTRY, {
 			action: "finished",
 			messageId: item.messageId,
@@ -1227,6 +1366,8 @@ export class SubagentRuntime {
 			stopReason: outcome.stopReason,
 			output: outcome.output,
 		});
+		record.queue.shift();
+		record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, outcome);
 		item.resolve?.(outcome);
 	}
 
@@ -1242,14 +1383,23 @@ export class SubagentRuntime {
 		};
 		record.updatedAt = failedAt;
 		record.finishedAt = failedAt;
-		record.parked = true;
+		try {
+			this.setParked(record, true);
+		} catch {
+			record.parked = true;
+		}
+		record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, record.lastOutcome);
 		for (const item of queued) {
-			record.manager.appendCustomEntry(DELIVERY_ENTRY, {
-				action: "failed",
-				messageId: item.messageId,
-				finishedAt: failedAt,
-				error: message,
-			});
+			try {
+				record.manager.appendCustomEntry(DELIVERY_ENTRY, {
+					action: "failed",
+					messageId: item.messageId,
+					finishedAt: failedAt,
+					error: message,
+				});
+			} catch (appendError) {
+				record.lastError = appendError instanceof Error ? appendError.message : String(appendError);
+			}
 			item.reject?.(error);
 		}
 	}
@@ -1277,10 +1427,11 @@ export class SubagentRuntime {
 			activation.current = item;
 			activation.interrupted = false;
 			item.started = true;
+			item.startedAt = Date.now();
 			record.manager.appendCustomEntry(DELIVERY_ENTRY, {
 				action: "started",
 				messageId: item.messageId,
-				startedAt: Date.now(),
+				startedAt: item.startedAt,
 			});
 			record.updatedAt = Date.now();
 			this.emit();
@@ -1297,11 +1448,13 @@ export class SubagentRuntime {
 			if (activation.interrupted && outcome.stopReason === "completed")
 				outcome = { ...outcome, stopReason: "aborted" };
 			record.lastOutcome = outcome;
+			record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, outcome);
+			record.totalUsage = addUsage(record.totalUsage, outcome.usage);
 			record.lastError = outcome.errorMessage;
 			record.updatedAt = Date.now();
 			record.finishedAt = record.updatedAt;
-			record.queue.shift();
-			activation.current = undefined;
+			if (item.startedAt !== undefined)
+				record.activeDurationMs += Math.max(0, record.finishedAt - item.startedAt);
 			record.manager.appendCustomEntry(DELIVERY_ENTRY, {
 				action: "finished",
 				messageId: item.messageId,
@@ -1311,8 +1464,11 @@ export class SubagentRuntime {
 				...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
 				...(outcome.usage ? { usage: outcome.usage } : {}),
 			});
+			record.queue.shift();
+			activation.current = undefined;
 			item.resolve?.(outcome);
-			if (outcome.stopReason === "aborted") record.parked = true;
+			if (outcome.stopReason === "aborted" && activation.interrupted)
+				this.setParked(record, true);
 		}
 		await this.maybeSettle(record);
 	}
@@ -1321,11 +1477,31 @@ export class SubagentRuntime {
 		for (const record of this.records.values()) {
 			if (
 				record.descriptor.parentSessionId === parentId &&
-				(record.activation || record.pump || record.queue.length > 0)
+				(record.activation || record.queue.length > 0)
 			)
 				return true;
 		}
 		return false;
+	}
+
+	private async disposeActivation(record: ChildRecord): Promise<unknown | undefined> {
+		const activation = record.activation;
+		if (!activation) return undefined;
+		let failure: unknown;
+		try {
+			activation.unsubscribeActivity?.();
+		} catch (error) {
+			failure = error;
+		}
+		try {
+			activation.driver.dispose();
+		} catch (error) {
+			failure ??= error;
+		} finally {
+			this.authorities.delete(activation.authority.sessionId);
+			record.activation = undefined;
+		}
+		return failure;
 	}
 
 	private async maybeSettle(record: ChildRecord): Promise<void> {
@@ -1334,12 +1510,30 @@ export class SubagentRuntime {
 			return;
 		}
 		this.retryPendingSettlements(record);
+		const cleanupFailure = await this.disposeActivation(record);
+		if (cleanupFailure) {
+			const message = cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure);
+			record.lastError = message;
+			record.lastOutcome = {
+				output: record.settlementOutcome?.output ?? record.lastOutcome?.output ?? "",
+				stopReason: "error",
+				errorMessage: message,
+			};
+			record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, record.lastOutcome);
+			record.pendingSettlement = record.descriptor.mode === "continuable";
+			record.manager.appendCustomEntry(DELIVERY_ENTRY, {
+				action: "failed",
+				messageId: `cleanup-${randomUUID()}`,
+				finishedAt: Date.now(),
+				error: message,
+			});
+		}
 		if (record.pendingSettlement && record.descriptor.mode === "continuable") {
-			record.pendingSettlement = false;
-			const outcome = record.lastOutcome ?? { output: "", stopReason: "completed" as const };
-			const detail = outcome.output
-				? `\nFinal assistant message:\n${outcome.output}`
-				: "";
+			const outcome = record.settlementOutcome ?? record.lastOutcome ?? {
+				output: "",
+				stopReason: "completed" as const,
+			};
+			const detail = outcome.output ? `\nFinal assistant message:\n${outcome.output}` : "";
 			const notice: ParentNotice = {
 				messageId: randomUUID(),
 				kind: "settlement",
@@ -1354,13 +1548,9 @@ export class SubagentRuntime {
 				createdAt: Date.now(),
 			});
 			record.pendingSettlementNotices.push(notice);
+			record.pendingSettlement = false;
+			record.settlementOutcome = undefined;
 			this.retryPendingSettlements(record);
-		}
-		if (record.activation) {
-			record.activation.unsubscribeActivity?.();
-			record.activation.driver.dispose();
-			this.authorities.delete(record.activation.authority.sessionId);
-			record.activation = undefined;
 		}
 		this.emit();
 	}
@@ -1423,7 +1613,7 @@ export class SubagentRuntime {
 	}
 
 	snapshot(): RuntimeChildSnapshot[] {
-		return [...this.records.values()]
+		const children = [...this.records.values()]
 			.map((record): RuntimeChildSnapshot => {
 				let state: RuntimeChildSnapshot["state"];
 				if (record.activation?.current || record.activation?.driver.isRunning)
@@ -1437,6 +1627,10 @@ export class SubagentRuntime {
 				const activity =
 					record.activation?.driver.activity ??
 					record.activation?.current?.source;
+				const activeDurationMs = record.activeDurationMs +
+					(record.activation?.current?.startedAt !== undefined
+						? Math.max(0, Date.now() - record.activation.current.startedAt)
+						: 0);
 				return {
 					id: record.descriptor.childSessionId,
 					parentId: record.descriptor.parentSessionId,
@@ -1455,9 +1649,26 @@ export class SubagentRuntime {
 					...(record.lastOutcome?.output
 						? { lastOutput: record.lastOutcome.output }
 						: {}),
-					...(record.lastOutcome?.usage ? { usage: record.lastOutcome.usage } : {}),
+					...(record.totalUsage ? { usage: record.totalUsage } : {}),
+					activeDurationMs,
 				};
-			})
+			});
+		const diagnostics = [...this.diagnostics.values()].map((diagnostic): RuntimeChildSnapshot => ({
+			id: diagnostic.id,
+			parentId: diagnostic.parentSessionId ?? this.host.rootSessionId,
+			label: `${diagnostic.reason} subagent`,
+			depth: 1,
+			mode: "one-shot",
+			context: "fresh",
+			state: "error",
+			createdAt: 0,
+			updatedAt: 0,
+			model: "unavailable",
+			thinkingLevel: "off",
+			activeDurationMs: 0,
+			diagnosticReason: diagnostic.reason,
+		}));
+		return [...children, ...diagnostics]
 			.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 	}
 
@@ -1482,14 +1693,17 @@ export class SubagentRuntime {
 		const active = [...this.records.values()]
 			.filter((record) => record.activation || record.pump)
 			.sort((a, b) => b.descriptor.depth - a.descriptor.depth);
-		for (const record of active) record.activation?.driver.interrupt();
+		for (const record of active) {
+			try {
+				record.activation?.driver.interrupt();
+			} catch (error) {
+				record.lastError = error instanceof Error ? error.message : String(error);
+			}
+		}
 		await Promise.allSettled(active.map((record) => record.pump).filter(Boolean));
 		for (const record of active) {
-			record.activation?.unsubscribeActivity?.();
-			record.activation?.driver.dispose();
-			if (record.activation)
-				this.authorities.delete(record.activation.authority.sessionId);
-			record.activation = undefined;
+			const failure = await this.disposeActivation(record);
+			if (failure) record.lastError = failure instanceof Error ? failure.message : String(failure);
 		}
 		this.authorities.clear();
 		this.listeners.clear();

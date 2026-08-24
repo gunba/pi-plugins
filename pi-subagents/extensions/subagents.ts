@@ -47,6 +47,13 @@ function noticeLabel(notice: ParentNotice): string {
 	return `${notice.kind} · ${notice.childId.slice(0, 8)}`;
 }
 
+export function rootNoticeDelivery(
+	notice: Pick<ParentNotice, "kind">,
+	isIdle: boolean,
+): "steer" | "followUp" {
+	return notice.kind === "settlement" && !isIdle ? "steer" : "followUp";
+}
+
 function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 	const ids = new Set<string>();
 	for (const entry of ctx.sessionManager.getBranch()) {
@@ -138,7 +145,10 @@ export default function subagents(pi: ExtensionAPI): void {
 						display: true,
 						details: notice,
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					{
+						deliverAs: rootNoticeDelivery(notice, ctx.isIdle()),
+						triggerTurn: true,
+					},
 				);
 				queuedRootNotices.add(notice.messageId);
 				updateActivity(ctx);

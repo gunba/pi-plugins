@@ -49,7 +49,9 @@ The extension also registers three sequential model tools:
 
 ## Authority
 
-Pi Goal treats `interactive` and `rpc` input as pending direct-human work. It grants authority only when a matching user-role message enters model context, and preserves that authority through the user turn's tool calls. Those turns may let the model create, edit, pause, resume, complete, or block a goal. An automatic round may only complete or block the exact goal revision and admitted round that the extension reserved. Goal tools do not grant direct-human mutation authority inside Pi Subagents child processes.
+Pi Goal records ordered input markers for both human and extension sources. It grants direct-human authority only when the next message for that delivery class has content matching an `interactive` or `rpc` marker, and preserves that authority through the user turn's tool calls. Steering inputs are matched before queued follow-ups, mirroring Pi's queue order, so extension steering cannot consume an earlier human follow-up marker. Immediate skill and template expansion is rebound through `before_agent_start`. A transformed queued input fails closed because Pi exposes no equivalent boundary when it later leaves the queue.
+
+Direct-human turns may let the model create, edit, pause, resume, complete, or block a goal. An automatic round may only complete or block the exact goal revision and admitted round that the extension reserved. Goal tools do not grant direct-human mutation authority inside Pi Subagents child processes. Arbitrary context values are fingerprinted without JSON serialization; unsupported values clear authority instead of preserving an earlier grant or suppressing terminal wrap-up.
 
 This is the strongest authority boundary exposed by Pi 0.84.2. Extensions share the Pi process and are trusted code.
 
@@ -58,12 +60,14 @@ This is the strongest authority boundary exposed by Pi 0.84.2. Extensions share 
 Pi 0.84.2 does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
 
 - Custom messages lose typed source attribution when Pi converts them to model input. Another trusted extension can imitate a goal message.
+- Registered command handlers run before Pi emits `input` and receive no source metadata. A trusted extension can therefore invoke `/goal` controls through `sendUserMessage(..., { expandPromptTemplates: true })`; source isolation for `/goal` requires a Pi host change or replacing the registered command path.
 - Human queue priority and `hasPendingMessages()` are not atomic with continuation dispatch.
 - Extensions cannot reserve or reject a message at a cancellable pre-model-step fence.
 - `appendEntry()` has no explicit flush, and a brand-new session may not reach disk before its first assistant message.
 - `sendMessage()` returns no enqueue result. The driver relies on a matching `message_end` event for durable admission, and asynchronous queue failures cannot be distinguished from a delayed append.
 - Extensions cannot install pre-append session invariants or await a continuation-driver shutdown handle.
 - The wrap-up instruction is injected through Pi’s `context` event rather than a tool-bound deferred-context primitive.
+- Pi has no independent extension system-prompt section. The shared goal policy is attached identically to all three goal tools so filtering out `get_goal` alone cannot remove it; filtering out every goal tool necessarily removes the policy.
 - Command handlers have no portable return channel in print or JSON mode; transcript cards are a TUI feature.
 
 Run unattended goals only in an appropriately restricted environment.
