@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -54,9 +54,9 @@
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-coding-agent": "0.84.2",
-    "@earendil-works/pi-tui": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.3",
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "@earendil-works/pi-tui": "0.84.3",
     "@types/node": "22.19.19",
     "typescript": "5.9.3"
   }

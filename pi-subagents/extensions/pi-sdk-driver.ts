@@ -154,21 +154,19 @@ class PiSdkChildDriver implements ChildDriver {
 	}
 }
 
-/** Pi 0.84.2 in-process provider. The runtime, not this driver, owns continuation. */
+/** Pi 0.84.3 in-process provider. The runtime, not this driver, owns continuation. */
 export class PiSdkDriverFactory implements ChildDriverFactory {
-	private modelRuntime?: Promise<ModelRuntime>;
 	private readonly host: RuntimeHost;
 
 	constructor(host: RuntimeHost) {
 		this.host = host;
 	}
 
-	private getModelRuntime(): Promise<ModelRuntime> {
-		this.modelRuntime ??= ModelRuntime.create({
+	private createModelRuntime(): Promise<ModelRuntime> {
+		return ModelRuntime.create({
 			authPath: join(this.host.agentDir, "auth.json"),
 			modelsPath: join(this.host.agentDir, "models.json"),
 		});
-		return this.modelRuntime;
 	}
 
 	async open(input: Parameters<ChildDriverFactory["open"]>[0]): Promise<ChildDriver> {
@@ -177,7 +175,10 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			throw new Error(
 				`cannot restore child model ${input.descriptor.model.provider}/${input.descriptor.model.id}`,
 			);
-		const modelRuntime = await this.getModelRuntime();
+		// Each activation gets current credential and provider state. Sharing one
+		// ModelRuntime across durable children leaves OAuth state stale after the
+		// parent refreshes or replaces credentials.
+		const modelRuntime = await this.createModelRuntime();
 		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime);
 		const settingsManager = SettingsManager.create(
 			input.descriptor.cwd,

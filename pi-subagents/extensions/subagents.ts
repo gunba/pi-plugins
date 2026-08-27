@@ -2,6 +2,7 @@ import {
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { PiSdkDriverFactory } from "./pi-sdk-driver.ts";
 import {
@@ -47,6 +48,127 @@ function noticeLabel(notice: ParentNotice): string {
 	return `${notice.kind} · ${notice.childId.slice(0, 8)}`;
 }
 
+export type CachedProviderAuth = {
+	apiKey?: string;
+	headers: Record<string, string | null>;
+};
+
+const AUTH_HEADER_NAMES = new Set([
+	"authorization",
+	"api-key",
+	"x-api-key",
+	"x-goog-api-key",
+	"cf-aig-authorization",
+	"chatgpt-account-id",
+]);
+
+/** Keep only request authentication material, in memory, for immediate child inheritance. */
+export function captureProviderAuth(
+	headers: Record<string, string | null>,
+): CachedProviderAuth | undefined {
+	const captured: Record<string, string | null> = {};
+	let apiKey: string | undefined;
+	for (const [name, value] of Object.entries(headers)) {
+		const normalized = name.toLowerCase();
+		if (!AUTH_HEADER_NAMES.has(normalized) || value === null) continue;
+		captured[normalized] = value;
+		if (normalized === "authorization") {
+			const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+			if (match?.[1]) apiKey = match[1];
+		}
+	}
+	if (!apiKey && Object.keys(captured).length === 0) return undefined;
+	return { ...(apiKey ? { apiKey } : {}), headers: captured };
+}
+
+export async function inheritProviderRuntime(
+	ctx: Pick<ExtensionContext, "modelRegistry">,
+	ref: ModelRef,
+	modelRuntime: ModelRuntime,
+	fallback?: CachedProviderAuth,
+): Promise<void> {
+	const model = ctx.modelRegistry.find(ref.provider, ref.id);
+	const provider = ctx.modelRegistry.getProvider(ref.provider);
+	if (!model || !provider)
+		throw new Error(`cannot resolve parent provider ${ref.provider}/${ref.id}`);
+
+	const modelAuth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
+	try {
+		providerAuth = await ctx.modelRegistry.getProviderAuth(ref.provider);
+	} catch (error) {
+		if (!fallback?.apiKey) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(`cannot inherit authentication for ${ref.provider}: ${message}`);
+		}
+	}
+	const apiKey =
+		providerAuth?.auth.apiKey ??
+		(modelAuth.ok ? modelAuth.apiKey : undefined) ??
+		fallback?.apiKey;
+	if (!modelAuth.ok && !providerAuth && !apiKey)
+		throw new Error(
+			`cannot inherit authentication for ${ref.provider}: ${modelAuth.error}`,
+		);
+
+	const headers = {
+		...provider.headers,
+		...providerAuth?.auth.headers,
+		...(modelAuth.ok ? modelAuth.headers : undefined),
+		...fallback?.headers,
+	};
+	const env = {
+		...providerAuth?.env,
+		...(modelAuth.ok ? modelAuth.env : undefined),
+	};
+	const baseUrl =
+		providerAuth?.auth.baseUrl ??
+		(modelAuth.ok ? modelAuth.baseUrl : undefined) ??
+		provider.baseUrl;
+	const inherited = {
+		id: provider.id,
+		name: provider.name,
+		baseUrl,
+		headers,
+		auth: provider.auth,
+		getModels: () => provider.getModels(),
+		...(provider.refreshModels
+			? { refreshModels: provider.refreshModels.bind(provider) }
+			: {}),
+		...(provider.filterModels
+			? { filterModels: provider.filterModels.bind(provider) }
+			: {}),
+		stream: (
+			childModel: Parameters<typeof provider.stream>[0],
+			context: Parameters<typeof provider.stream>[1],
+			options: Parameters<typeof provider.stream>[2],
+		) => provider.stream(childModel, context, {
+			...options,
+			...(apiKey ? { apiKey } : {}),
+			headers: { ...headers, ...options?.headers },
+			env: { ...env, ...options?.env },
+		}),
+		streamSimple: (
+			childModel: Parameters<typeof provider.streamSimple>[0],
+			context: Parameters<typeof provider.streamSimple>[1],
+			options: Parameters<typeof provider.streamSimple>[2],
+		) => provider.streamSimple(childModel, context, {
+			...options,
+			...(apiKey ? { apiKey } : {}),
+			headers: { ...headers, ...options?.headers },
+			env: { ...env, ...options?.env },
+		}),
+		...(provider.fetchDeferred
+			? { fetchDeferred: provider.fetchDeferred.bind(provider) }
+			: {}),
+		...(provider.cancelDeferred
+			? { cancelDeferred: provider.cancelDeferred.bind(provider) }
+			: {}),
+	};
+	modelRuntime.registerNativeProvider(inherited);
+	if (apiKey) await modelRuntime.setRuntimeApiKey(ref.provider, apiKey);
+}
+
 export function rootNoticeDelivery(
 	notice: Pick<ParentNotice, "kind">,
 	isIdle: boolean,
@@ -67,13 +189,14 @@ function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 	return ids;
 }
 
-/** DSH-style subagents for Pi 0.84.2. */
+/** DSH-style subagents for Pi 0.84.3. */
 export default function subagents(pi: ExtensionAPI): void {
 	let runtime: SubagentRuntime | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
 	let toolsRegistered = false;
 	const feed: string[] = [];
+	const providerAuth = new Map<string, CachedProviderAuth>();
 
 	const requireRuntime = (): SubagentRuntime => {
 		if (!runtime) throw new Error("subagent runtime is not initialized");
@@ -158,47 +281,12 @@ export default function subagents(pi: ExtensionAPI): void {
 				return ctx.modelRegistry.find(ref.provider, ref.id);
 			},
 			async prepareModelRuntime(ref, modelRuntime) {
-				const model = ctx.modelRegistry.find(ref.provider, ref.id);
-				const provider = ctx.modelRegistry.getProvider(ref.provider);
-				if (!model || !provider) return;
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				const inherited = auth.ok
-					? {
-							id: provider.id,
-							name: provider.name,
-							baseUrl: auth.baseUrl ?? provider.baseUrl,
-							headers: { ...provider.headers, ...auth.headers },
-							auth: provider.auth,
-							getModels: () => provider.getModels(),
-							...(provider.refreshModels
-								? { refreshModels: provider.refreshModels.bind(provider) }
-								: {}),
-							...(provider.filterModels
-								? { filterModels: provider.filterModels.bind(provider) }
-								: {}),
-							stream: (childModel: Parameters<typeof provider.stream>[0], context: Parameters<typeof provider.stream>[1], options: Parameters<typeof provider.stream>[2]) =>
-								provider.stream(childModel, context, {
-									...options,
-									headers: { ...auth.headers, ...options?.headers },
-									env: { ...auth.env, ...options?.env },
-								}),
-							streamSimple: (childModel: Parameters<typeof provider.streamSimple>[0], context: Parameters<typeof provider.streamSimple>[1], options: Parameters<typeof provider.streamSimple>[2]) =>
-								provider.streamSimple(childModel, context, {
-									...options,
-									headers: { ...auth.headers, ...options?.headers },
-									env: { ...auth.env, ...options?.env },
-								}),
-							...(provider.fetchDeferred
-								? { fetchDeferred: provider.fetchDeferred.bind(provider) }
-								: {}),
-							...(provider.cancelDeferred
-								? { cancelDeferred: provider.cancelDeferred.bind(provider) }
-								: {}),
-						}
-					: provider;
-				modelRuntime.registerNativeProvider(inherited);
-				if (auth.ok && auth.apiKey)
-					await modelRuntime.setRuntimeApiKey(ref.provider, auth.apiKey);
+				await inheritProviderRuntime(
+					ctx,
+					ref,
+					modelRuntime,
+					providerAuth.get(ref.provider),
+				);
 			},
 		};
 		let created!: SubagentRuntime;
@@ -237,7 +325,14 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		feed.length = 0;
+		providerAuth.clear();
 		await startRuntime(ctx);
+	});
+
+	pi.on("before_provider_headers", (event, ctx) => {
+		if (!ctx.model) return;
+		const captured = captureProviderAuth(event.headers);
+		if (captured) providerAuth.set(ctx.model.provider, captured);
 	});
 
 	pi.on("session_before_tree", (_event, ctx) => {

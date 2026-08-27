@@ -421,6 +421,9 @@ export class SubagentDashboard implements Component {
 			`Parent: ${agent.parentId}`,
 			`Model: ${agent.model} · thinking ${agent.thinkingLevel}`,
 			usage,
+			agent.errorMessage
+				? this.theme.fg("error", `Error: ${agent.errorMessage}`)
+				: undefined,
 			"",
 			this.theme.fg("accent", "── session tail ──"),
 			"",

@@ -1,6 +1,6 @@
 # pi-subagents
 
-DSH-style delegated agents for Pi 0.84.2. Children use in-process Pi SDK
+DSH-style delegated agents for Pi 0.84.3. Children use in-process Pi SDK
 `AgentSession` instances with isolated context, durable Pi sessions, direct-parent
 control, and a bounded delegation depth.
 
@@ -51,6 +51,9 @@ route is a foreground one-shot run.
   A settlement includes the outcome and last non-empty assistant text from the
   activation. Delivery is acknowledged only when the root message is admitted or
   the direct child's inbox durably accepts it.
+- Each activation receives fresh model-runtime state. Provider authentication is
+  inherited from the parent resolver, with the parent request's in-memory auth
+  header as a non-persisted fallback for long-lived OAuth sessions.
 - Session shutdown aborts active turns child-first and disposes SDK activations.
   It retains descriptors, inbox history, transcripts, and session files.
 
@@ -64,6 +67,7 @@ exist. `/subagents` opens a full-terminal dashboard with:
 - fresh/fork and continuable/one-shot metadata;
 - model, thinking, usage, duration, transcript tail, and recent notices;
 - search and narrow/wide layouts;
+- the exact last activation error when a child fails before producing messages;
 - `m` to send a direct-child message and `x` to interrupt the current turn.
 
 Pi branch navigation is blocked while the current session owns live children.
@@ -94,7 +98,7 @@ corrupt, unsupported, and unavailable launched children appear as diagnostic row
 in both discovery and the dashboard. Dashboard usage aggregates requests and its
 duration measures active prompt time rather than wall lifetime.
 
-## Pi 0.84.2 gaps
+## Pi 0.84.3 gaps
 
 The implementation keeps these boundaries explicit:
 

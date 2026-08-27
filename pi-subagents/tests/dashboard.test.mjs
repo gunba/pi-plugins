@@ -129,3 +129,20 @@ test("dashboard search filters by label and preserves a valid selection", () => 
 	assert.match(dashboard.render(80).join("\n"), /diagnostic orphan/);
 	assert.doesNotMatch(dashboard.render(80).join("\n"), /first child/);
 });
+
+test("dashboard shows activation errors even when no message transcript exists", () => {
+	const failed = agent("failed-child", rootSessionId, "failed child", "error", 5, {
+		errorMessage: "No API key found for openai-codex",
+	});
+	const dashboard = new SubagentDashboard(
+		{ rootSessionId, agents: [failed], feed: [], transcript: [] },
+		failed.id,
+		theme,
+		() => {},
+		() => {},
+		() => 18,
+	);
+	const output = dashboard.render(100).join("\n");
+	assert.match(output, /Error: No API key found for openai-codex/);
+	assert.match(output, /No session entries yet/);
+});

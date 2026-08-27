@@ -100,6 +100,8 @@ export type AgentListEntry =
 			id: string;
 			label: string;
 			status: "running" | "idle" | "ready";
+			lastOutcome?: RunOutcome["stopReason"];
+			errorMessage?: string;
 			parent?: string;
 			depth?: number;
 	  }
@@ -130,6 +132,7 @@ export type RuntimeChildSnapshot = {
 	usage?: RunOutcome["usage"];
 	activeDurationMs?: number;
 	diagnosticReason?: DiagnosticRecord["reason"];
+	errorMessage?: string;
 };
 
 export type ParentInvocation = {
@@ -1533,13 +1536,14 @@ export class SubagentRuntime {
 				output: "",
 				stopReason: "completed" as const,
 			};
+			const errorDetail = outcome.errorMessage ? `\nError: ${outcome.errorMessage}` : "";
 			const detail = outcome.output ? `\nFinal assistant message:\n${outcome.output}` : "";
 			const notice: ParentNotice = {
 				messageId: randomUUID(),
 				kind: "settlement",
 				childId: record.descriptor.childSessionId,
 				content: truncateForParent(
-					`Background subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${detail}`,
+					`Background subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
 				),
 			};
 			record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {
@@ -1593,6 +1597,10 @@ export class SubagentRuntime {
 						id: descriptor.childSessionId,
 						label: descriptor.label,
 						status,
+						...(record.lastOutcome && record.lastOutcome.stopReason !== "completed"
+							? { lastOutcome: record.lastOutcome.stopReason }
+							: {}),
+						...(record.lastError ? { errorMessage: record.lastError } : {}),
 						...(scope === "descendants" ? { parent: parentId, depth } : {}),
 					});
 				}
@@ -1651,6 +1659,7 @@ export class SubagentRuntime {
 						: {}),
 					...(record.totalUsage ? { usage: record.totalUsage } : {}),
 					activeDurationMs,
+					...(record.lastError ? { errorMessage: record.lastError } : {}),
 				};
 			});
 		const diagnostics = [...this.diagnostics.values()].map((diagnostic): RuntimeChildSnapshot => ({

@@ -14,7 +14,7 @@ Source reviewed:
 - License: MIT
 
 No DeepSeek Harness runtime code is included. The implementation maps the design
-to Pi 0.84.2 `AgentSession`, `SessionManager`, extension tools, and TUI APIs.
+to Pi 0.84.3 `AgentSession`, `SessionManager`, extension tools, and TUI APIs.
 
 ## MIT License
 

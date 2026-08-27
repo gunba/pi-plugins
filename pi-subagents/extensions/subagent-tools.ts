@@ -184,8 +184,11 @@ function formatList(
 				scope === "descendants"
 					? ` parent=${String(entry.parent)} depth=${String(entry.depth)}`
 					: "";
+			const lastFailure = entry.kind === "child" && entry.lastOutcome
+				? ` · last=${entry.lastOutcome}${entry.errorMessage ? `: ${entry.errorMessage.replace(/\s+/g, " ").slice(0, 240)}` : ""}`
+				: "";
 			return entry.kind === "child"
-				? `${entry.id} [${entry.status}]${at} — ${entry.label}`
+				? `${entry.id} [${entry.status}]${at} — ${entry.label}${lastFailure}`
 				: `${entry.id} [diagnostic: ${entry.reason}]${at}`;
 		})
 		.join("\n");

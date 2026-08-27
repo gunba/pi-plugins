@@ -4,7 +4,11 @@ import { rmSync } from "node:fs";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { childSystemContext, outcomeFrom } from "../extensions/pi-sdk-driver.ts";
-import { rootNoticeDelivery } from "../extensions/subagents.ts";
+import {
+	captureProviderAuth,
+	inheritProviderRuntime,
+	rootNoticeDelivery,
+} from "../extensions/subagents.ts";
 import {
 	CONTROL_ENTRY,
 	DESCRIPTOR_ENTRY,
@@ -83,6 +87,90 @@ test("SDK terminal folding fails closed and child report guidance matches tool s
 	assert.equal(rootNoticeDelivery({ kind: "settlement" }, false), "steer");
 	assert.equal(rootNoticeDelivery({ kind: "settlement" }, true), "followUp");
 	assert.equal(rootNoticeDelivery({ kind: "report" }, false), "followUp");
+});
+
+test("parent request auth is inherited when a long-lived resolver has no current key", async () => {
+	const fallback = captureProviderAuth({
+		Authorization: "Bearer live-parent-token",
+		"chatgpt-account-id": "account-1",
+		"content-type": "application/json",
+	});
+	assert.deepEqual(fallback, {
+		apiKey: "live-parent-token",
+		headers: {
+			authorization: "Bearer live-parent-token",
+			"chatgpt-account-id": "account-1",
+		},
+	});
+
+	let inheritedProvider;
+	let runtimeKey;
+	let requestOptions;
+	const provider = {
+		id: "openai-codex",
+		name: "Codex",
+		baseUrl: "https://example.invalid",
+		headers: {},
+		auth: {},
+		getModels: () => [],
+		stream(_model, _context, options) {
+			requestOptions = options;
+			return {};
+		},
+		streamSimple(_model, _context, options) {
+			requestOptions = options;
+			return {};
+		},
+	};
+	const registry = {
+		find: () => ({ provider: "openai-codex", id: "gpt-test" }),
+		getProvider: () => provider,
+		getApiKeyAndHeaders: async () => ({ ok: false, error: "stored OAuth is stale" }),
+		getProviderAuth: async () => undefined,
+	};
+	const runtime = {
+		registerNativeProvider(value) { inheritedProvider = value; },
+		async setRuntimeApiKey(providerId, apiKey) { runtimeKey = [providerId, apiKey]; },
+	};
+	await inheritProviderRuntime(
+		{ modelRegistry: registry },
+		{ provider: "openai-codex", id: "gpt-test" },
+		runtime,
+		fallback,
+	);
+	assert.deepEqual(runtimeKey, ["openai-codex", "live-parent-token"]);
+	inheritedProvider.stream({}, {}, { headers: { "x-request": "kept" } });
+	assert.equal(requestOptions.apiKey, "live-parent-token");
+	assert.equal(requestOptions.headers.authorization, "Bearer live-parent-token");
+	assert.equal(requestOptions.headers["x-request"], "kept");
+});
+
+test("missing parent auth fails at activation with the resolver error", async () => {
+	const provider = {
+		id: "openai-codex",
+		name: "Codex",
+		baseUrl: "https://example.invalid",
+		headers: {},
+		auth: {},
+		getModels: () => [],
+		stream() {},
+		streamSimple() {},
+	};
+	await assert.rejects(
+		inheritProviderRuntime(
+			{
+				modelRegistry: {
+					find: () => ({ provider: "openai-codex", id: "gpt-test" }),
+					getProvider: () => provider,
+					getApiKeyAndHeaders: async () => ({ ok: false, error: "No OAuth credential" }),
+					getProviderAuth: async () => undefined,
+				},
+			},
+			{ provider: "openai-codex", id: "gpt-test" },
+			{ registerNativeProvider() {}, async setRuntimeApiKey() {} },
+		),
+		/cannot inherit authentication for openai-codex: No OAuth credential/,
+	);
 });
 
 test("explicitly interrupted queued work remains parked across runtime replacement", async () => {
@@ -204,6 +292,7 @@ test("cleanup failure settles as error without retaining an activation", async (
 		assert.equal(harness.runtime.snapshot()[0].state, "error");
 		assert.equal(harness.runtime.listAgents(harness.runtime.rootAuthority)[0].status, "ready");
 		assert.match(harness.notices.at(-1).content, /useful output/);
+		assert.match(harness.notices.at(-1).content, /Error: reap failed/);
 	} finally {
 		await harness.cleanup();
 	}
