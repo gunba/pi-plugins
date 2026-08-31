@@ -4,6 +4,12 @@ import {
 	type ExtensionContext,
 	type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
+import type {
+	ApiKeyAuth,
+	AuthResult,
+	ModelAuth,
+	Provider,
+} from "@earendil-works/pi-ai";
 import { PiSdkDriverFactory } from "./pi-sdk-driver.ts";
 import {
 	activitySummary,
@@ -65,20 +71,76 @@ const AUTH_HEADER_NAMES = new Set([
 /** Keep only request authentication material, in memory, for immediate child inheritance. */
 export function captureProviderAuth(
 	headers: Record<string, string | null>,
+	apiKey?: string,
 ): CachedProviderAuth | undefined {
 	const captured: Record<string, string | null> = {};
-	let apiKey: string | undefined;
+	let capturedApiKey = apiKey;
 	for (const [name, value] of Object.entries(headers)) {
 		const normalized = name.toLowerCase();
 		if (!AUTH_HEADER_NAMES.has(normalized) || value === null) continue;
 		captured[normalized] = value;
-		if (normalized === "authorization") {
+		if (!capturedApiKey && normalized === "authorization") {
 			const match = /^Bearer\s+(.+)$/i.exec(value.trim());
-			if (match?.[1]) apiKey = match[1];
+			if (match?.[1]) capturedApiKey = match[1];
 		}
 	}
-	if (!apiKey && Object.keys(captured).length === 0) return undefined;
-	return { ...(apiKey ? { apiKey } : {}), headers: captured };
+	if (!capturedApiKey && Object.keys(captured).length === 0) return undefined;
+	return {
+		...(capturedApiKey ? { apiKey: capturedApiKey } : {}),
+		headers: captured,
+	};
+}
+
+function providerWithRequestAuth(
+	provider: Provider,
+	requestAuth: ModelAuth,
+	env: AuthResult["env"],
+): Provider {
+	const original = provider.auth.apiKey;
+	const apiKey: ApiKeyAuth = {
+		name: original?.name ?? `${provider.name} parent-session authentication`,
+		...(original?.login ? { login: original.login.bind(original) } : {}),
+		async check(input) {
+			const resolved = await original?.check?.(input);
+			return resolved ?? { type: "api_key", source: "parent session" };
+		},
+		async resolve(input) {
+			const resolved = await original?.resolve(input);
+			return (
+				resolved ?? {
+					auth: requestAuth,
+					...(env && Object.keys(env).length > 0 ? { env } : {}),
+					source: "parent session",
+				}
+			);
+		},
+	};
+	return {
+		id: provider.id,
+		name: provider.name,
+		baseUrl: provider.baseUrl,
+		headers: provider.headers,
+		auth: { ...provider.auth, apiKey },
+		getModels: () => provider.getModels(),
+		...(provider.refreshModels
+			? { refreshModels: provider.refreshModels.bind(provider) }
+			: {}),
+		...(provider.filterModels
+			? { filterModels: provider.filterModels.bind(provider) }
+			: {}),
+		stream: provider.stream.bind(provider),
+		streamSimple: provider.streamSimple.bind(provider),
+		...(provider.fetchDeferred
+			? { fetchDeferred: provider.fetchDeferred.bind(provider) }
+			: {}),
+		...(provider.cancelDeferred
+			? { cancelDeferred: provider.cancelDeferred.bind(provider) }
+			: {}),
+	};
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 export async function inheritProviderRuntime(
@@ -92,25 +154,33 @@ export async function inheritProviderRuntime(
 	if (!model || !provider)
 		throw new Error(`cannot resolve parent provider ${ref.provider}/${ref.id}`);
 
+	// Register the effective parent provider, but let the fresh child runtime
+	// resolve its own stored credential first. In particular, an OAuth access
+	// token is not an API-key credential: converting it with setRuntimeApiKey()
+	// makes OAuth-only providers such as openai-codex unresolvable.
+	modelRuntime.registerNativeProvider(provider);
+	const childModel = modelRuntime.getModel(ref.provider, ref.id);
+	if (!childModel)
+		throw new Error(`cannot restore child model ${ref.provider}/${ref.id}`);
+	let childAuthError: string | undefined;
+	try {
+		if (await modelRuntime.getAuth(childModel)) return;
+	} catch (error) {
+		childAuthError = errorMessage(error);
+	}
+
 	const modelAuth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
+	let providerAuthError: string | undefined;
 	try {
 		providerAuth = await ctx.modelRegistry.getProviderAuth(ref.provider);
 	} catch (error) {
-		if (!fallback?.apiKey) {
-			const message = error instanceof Error ? error.message : String(error);
-			throw new Error(`cannot inherit authentication for ${ref.provider}: ${message}`);
-		}
+		providerAuthError = errorMessage(error);
 	}
 	const apiKey =
 		providerAuth?.auth.apiKey ??
 		(modelAuth.ok ? modelAuth.apiKey : undefined) ??
 		fallback?.apiKey;
-	if (!modelAuth.ok && !providerAuth && !apiKey)
-		throw new Error(
-			`cannot inherit authentication for ${ref.provider}: ${modelAuth.error}`,
-		);
-
 	const headers = {
 		...provider.headers,
 		...providerAuth?.auth.headers,
@@ -125,48 +195,32 @@ export async function inheritProviderRuntime(
 		providerAuth?.auth.baseUrl ??
 		(modelAuth.ok ? modelAuth.baseUrl : undefined) ??
 		provider.baseUrl;
-	const inherited = {
-		id: provider.id,
-		name: provider.name,
-		baseUrl,
-		headers,
-		auth: provider.auth,
-		getModels: () => provider.getModels(),
-		...(provider.refreshModels
-			? { refreshModels: provider.refreshModels.bind(provider) }
-			: {}),
-		...(provider.filterModels
-			? { filterModels: provider.filterModels.bind(provider) }
-			: {}),
-		stream: (
-			childModel: Parameters<typeof provider.stream>[0],
-			context: Parameters<typeof provider.stream>[1],
-			options: Parameters<typeof provider.stream>[2],
-		) => provider.stream(childModel, context, {
-			...options,
-			...(apiKey ? { apiKey } : {}),
-			headers: { ...headers, ...options?.headers },
-			env: { ...env, ...options?.env },
-		}),
-		streamSimple: (
-			childModel: Parameters<typeof provider.streamSimple>[0],
-			context: Parameters<typeof provider.streamSimple>[1],
-			options: Parameters<typeof provider.streamSimple>[2],
-		) => provider.streamSimple(childModel, context, {
-			...options,
-			...(apiKey ? { apiKey } : {}),
-			headers: { ...headers, ...options?.headers },
-			env: { ...env, ...options?.env },
-		}),
-		...(provider.fetchDeferred
-			? { fetchDeferred: provider.fetchDeferred.bind(provider) }
-			: {}),
-		...(provider.cancelDeferred
-			? { cancelDeferred: provider.cancelDeferred.bind(provider) }
-			: {}),
+	const requestAuth: ModelAuth = {
+		...(apiKey ? { apiKey } : {}),
+		...(Object.keys(headers).length > 0 ? { headers } : {}),
+		...(baseUrl ? { baseUrl } : {}),
 	};
-	modelRuntime.registerNativeProvider(inherited);
-	if (apiKey) await modelRuntime.setRuntimeApiKey(ref.provider, apiKey);
+	if (!apiKey) {
+		const reason =
+			childAuthError ??
+			providerAuthError ??
+			(modelAuth.ok
+				? `no request credential is available for ${ref.provider}`
+				: modelAuth.error);
+		throw new Error(`cannot inherit authentication for ${ref.provider}: ${reason}`);
+	}
+
+	// A parent may hold a runtime-only credential or a still-valid request token
+	// while the shared store cannot currently resolve. Add an in-memory API-key
+	// fallback only for that exceptional path, then make the credential type
+	// match the fallback resolver.
+	modelRuntime.registerNativeProvider(
+		providerWithRequestAuth(provider, requestAuth, env),
+	);
+	await modelRuntime.setRuntimeApiKey(ref.provider, apiKey);
+	const inheritedModel = modelRuntime.getModel(ref.provider, ref.id);
+	if (!inheritedModel || !(await modelRuntime.getAuth(inheritedModel)))
+		throw new Error(`cannot inherit authentication for ${ref.provider}`);
 }
 
 export function rootNoticeDelivery(
@@ -329,9 +383,19 @@ export default function subagents(pi: ExtensionAPI): void {
 		await startRuntime(ctx);
 	});
 
-	pi.on("before_provider_headers", (event, ctx) => {
+	pi.on("before_provider_headers", async (event, ctx) => {
 		if (!ctx.model) return;
-		const captured = captureProviderAuth(event.headers);
+		let resolved: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
+		try {
+			resolved = await ctx.modelRegistry.getProviderAuth(ctx.model.provider);
+		} catch {
+			// The request itself already resolved. Header-only capture remains useful
+			// for providers that place their complete credential in request headers.
+		}
+		const captured = captureProviderAuth(
+			{ ...resolved?.auth.headers, ...event.headers },
+			resolved?.auth.apiKey,
+		);
 		if (captured) providerAuth.set(ctx.model.provider, captured);
 	});
 
