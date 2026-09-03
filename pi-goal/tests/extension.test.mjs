@@ -196,6 +196,33 @@ test("expanded skill or template text retains direct-human authority", async () 
 	assert.equal(created.details.goal.objective, "expanded request");
 });
 
+test("a compaction batch with one admitted human marker authorizes the whole human run", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.emit("input", { text: "first queued human message", source: "interactive" });
+	await harness.emit("before_agent_start", {
+		prompt: "first queued human message",
+		systemPrompt: "",
+		systemPromptOptions: {},
+	});
+	await harness.emit("context", {
+		messages: [
+			{
+				role: "user",
+				content: [{ type: "text", text: "first queued human message" }],
+				timestamp: 1,
+			},
+			{
+				role: "user",
+				content: [{ type: "text", text: "second queued human message" }],
+				timestamp: 2,
+			},
+		],
+	});
+	const created = await executeTool(harness, "create_goal", { objective: "batched human request" });
+	assert.equal(created.details.goal.objective, "batched human request");
+});
+
 test("queued human input authorizes only the later context that contains it", async () => {
 	const harness = createExtensionHarness({ idle: false });
 	await harness.start();
@@ -375,7 +402,35 @@ test("direct-human authority survives the user's tool-call turns", async () => {
 	assert.equal(created.details.goal.objective, "tool-backed work");
 });
 
-test("cyclic and BigInt context fails closed without escaping Pi-style handler containment", async () => {
+test("direct-human authority survives unrelated custom messages in the same agent run", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.directInput("establish authority");
+	await harness.emit("context", {
+		messages: [{
+			role: "custom",
+			customType: "other-extension",
+			content: "subagent settlement notice",
+			display: true,
+			timestamp: 2,
+		}],
+	});
+	const created = await executeTool(harness, "create_goal", { objective: "notice-safe authority" });
+	assert.equal(created.details.goal.objective, "notice-safe authority");
+});
+
+test("admitted authority expires when the agent run settles", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.directInput("establish authority");
+	await harness.emit("agent_settled");
+	await assert.rejects(
+		executeTool(harness, "create_goal", { objective: "expired authority" }),
+		/GOAL_TOOL_AUTHORITY_REQUIRED/,
+	);
+});
+
+test("unfingerprintable later context cannot revoke admitted run authority", async () => {
 	const harness = createExtensionHarness({ idle: false });
 	await harness.start();
 	await harness.directInput("establish authority");
@@ -391,10 +446,8 @@ test("cyclic and BigInt context fails closed without escaping Pi-style handler c
 		}],
 	});
 	assert.deepEqual(outcome.errors, []);
-	await assert.rejects(
-		executeTool(harness, "create_goal", { objective: "stale authority" }),
-		/GOAL_TOOL_AUTHORITY_REQUIRED/,
-	);
+	const created = await executeTool(harness, "create_goal", { objective: "retained authority" });
+	assert.equal(created.details.goal.objective, "retained authority");
 });
 
 test("unfingerprintable context clears pending markers rather than deferring authority", async () => {
@@ -537,6 +590,29 @@ test("an exact admitted goal round may complete and receives one wrap-up model s
 	assert.equal(results[0].messages.length, 1);
 	assert.match(results[0].messages[0].content[0].text, /<goal_complete>/);
 	assert.match(results[0].messages[0].content[0].text, /Do not call any more tools/);
+});
+
+test("goal-round authority survives unrelated custom messages in the same agent run", async () => {
+	const harness = createExtensionHarness();
+	await harness.start();
+	await harness.commands.get("goal").handler("finish despite notices", harness.ctx);
+	await harness.admitLastRound();
+	await harness.emit("context", {
+		messages: [{
+			role: "custom",
+			customType: "pi-subagents/notice",
+			content: "A child settled while this round was running.",
+			display: true,
+			timestamp: 2,
+		}],
+	});
+	const current = await executeTool(harness, "get_goal");
+	const completed = await executeTool(harness, "update_goal", {
+		goal_id: current.details.goal.id,
+		revision: current.details.goal.revision,
+		action: "complete",
+	});
+	assert.equal(completed.details.goal.phase, "complete");
 });
 
 test("reconcile disarms when durable roundsStarted differs", async () => {

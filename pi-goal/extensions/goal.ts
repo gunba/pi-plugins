@@ -396,7 +396,6 @@ class GoalController {
 	private admitAuthorityFromContext(messages: readonly unknown[]): void {
 		const unseen = this.rememberContextMessages(messages);
 		if (unseen === undefined) {
-			this.authority = { kind: "none" };
 			this.pendingInputs = [];
 			return;
 		}
@@ -405,17 +404,17 @@ class GoalController {
 		if (ingress.length === 0) return;
 
 		const userMessages = ingress.filter((message) => isRecord(message) && message.role === "user");
-		if (userMessages.length > 0) {
-			let directHuman = false;
-			for (const message of userMessages) {
-				const pending = this.dequeuePendingInput();
-				const content = isRecord(message) ? message.content : undefined;
-				const contentFingerprint = valueFingerprint(content);
-				directHuman = pending?.source === "human"
-					&& pending.contentFingerprint !== undefined
-					&& contentFingerprint === pending.contentFingerprint;
-			}
-			this.authority = directHuman ? { kind: "direct-human" } : { kind: "none" };
+		let directHuman = false;
+		for (const message of userMessages) {
+			const pending = this.dequeuePendingInput();
+			const content = isRecord(message) ? message.content : undefined;
+			const contentFingerprint = valueFingerprint(content);
+			directHuman ||= pending?.source === "human"
+				&& pending.contentFingerprint !== undefined
+				&& contentFingerprint === pending.contentFingerprint;
+		}
+		if (directHuman) {
+			this.authority = { kind: "direct-human" };
 			return;
 		}
 
@@ -427,9 +426,9 @@ class GoalController {
 				revision: attempt.revision,
 				round: attempt.round,
 			};
-			return;
 		}
-		this.authority = { kind: "none" };
+		// Authority belongs to the current agent run. Later custom messages and
+		// context normalization cannot revoke an already admitted human or goal round.
 	}
 
 	private currentForUi(): GoalView | undefined {
@@ -765,7 +764,6 @@ class GoalController {
 			try {
 				this.admitAuthorityFromContext(event.messages);
 			} catch {
-				this.authority = { kind: "none" };
 				this.pendingInputs = [];
 			}
 			if (this.pendingWrapup === undefined) return;
