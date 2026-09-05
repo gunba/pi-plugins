@@ -50,6 +50,10 @@ export class FakeDriver {
 		}
 	}
 
+	receiveNotice(notice) {
+		(this.notices ??= []).push(notice);
+	}
+
 	interrupt() {
 		this.interruptions++;
 		this.pending?.resolve({ output: "partial", stopReason: "aborted" });
@@ -109,6 +113,7 @@ export function createHarness(options = {}) {
 		cwd,
 		agentDir: root,
 		activeRootLaunchIds: launches,
+		isProjectTrusted: () => options.projectTrusted ?? true,
 		recordRootLaunch(childId) {
 			launches.add(childId);
 			rootManager.appendCustomEntry(LAUNCH_ENTRY, {
@@ -139,7 +144,7 @@ export function createHarness(options = {}) {
 				},
 				mode,
 			),
-		{ sessionDir: childSessions, maxDepth: options.maxDepth },
+		{ sessionDir: childSessions, maxDepth: options.maxDepth, maxActive: options.maxActive, openTimeoutMs: options.openTimeoutMs },
 	);
 	runtime.initialize();
 	const parent = (overrides = {}) => ({
@@ -149,6 +154,7 @@ export function createHarness(options = {}) {
 		thinkingLevel: "high",
 		toolNames: ["read", "bash", "ask_user", "spawn_agent"],
 		toolCallId: "current-call",
+		projectTrusted: options.projectTrusted ?? true,
 		cwd,
 		...overrides,
 	});
@@ -182,10 +188,16 @@ export function childParent(harness, childId, authority, overrides = {}) {
 		toolNames: ["read", "bash", "ask_user"],
 		toolCallId: `call-${childId}`,
 		cwd: harness.cwd,
+		projectTrusted: harness.host.isProjectTrusted(),
 		...overrides,
 	};
 }
 
 export function completedOutcome(output = "done") {
 	return { output, stopReason: "completed" };
+}
+
+export function usageFor(input, output, contextTokens, total) {
+	return { input, output, contextTokens, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } };
 }

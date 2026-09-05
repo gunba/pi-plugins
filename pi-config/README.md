@@ -6,14 +6,14 @@ Pi-native configuration navigator for agentic CLI settings and resource files.
 
 - `/pi-config` — open the tabbed terminal settings modal.
 - `/pcfg` — alias.
-- `/pi-config <tab-or-filter>` — open a specific tab (`settings`, `md`, `skills`, `mcp`, `agents`, `extensions`) or start with a filter.
+- `/pi-config <tab-or-filter>` — open a specific tab (`settings`, `md`, `skills`, `mcp`, `prompts`, `extensions`) or start with a filter.
 
 ## What it surfaces
 
 - Pi settings only: `~/.pi/agent/settings.json`, `.pi/settings.json`, and Pi `models.json` files.
 - All documented Pi settings keys with type/default/choice metadata, insertable into user or project settings.
 - Pi context files using Pi's loading semantics: the first `AGENTS.md` / `CLAUDE.md` found in the user agent dir and each workspace ancestor, plus active `.pi/SYSTEM.md` and `.pi/APPEND_SYSTEM.md` files.
-- Loaded/discoverable Pi resources: skills, prompts, extensions, MCP configs, and pi-subagents definitions from Pi user/project paths plus `.agents/skills` compatibility paths.
+- Loaded/discoverable Pi resources: skills, prompts, extensions, and MCP configs from Pi user/project paths plus `.agents/skills` compatibility paths.
 
 ## Editing model
 
@@ -21,7 +21,7 @@ The extension stays inside the Pi terminal. The main navigator is a centered `ct
 
 - **Settings** — Pi JSON settings/model files and every supported Pi setting key with type/default metadata.
 - **.MD context** — Markdown files that Pi actually loads (`AGENTS.md`/`CLAUDE.md`, active `SYSTEM.md`, active `APPEND_SYSTEM.md`).
-- **Skills**, **Prompts**, **MCP**, **Agents**, and **Extensions** — focused Pi resource views with scope badges and resource icons.
+- **Skills**, **Prompts**, **MCP**, and **Extensions** — focused Pi resource views with scope badges and resource icons.
 
 Use `Tab`/arrow keys to switch tabs, type to filter within the active tab, and `Enter`/`Ctrl+E` to edit the selected file. The modal now uses nearly the full terminal (`96%` wide, `94%` high) with many more visible rows, a split-pane preview on wide terminals, and a stacked layout on narrow terminals.
 

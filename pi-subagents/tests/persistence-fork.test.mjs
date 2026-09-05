@@ -1,3 +1,4 @@
+import { usageFor } from "./helpers.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
@@ -242,7 +243,7 @@ test("fork before any completed assistant turn is fresh", async () => {
 			id: randomUUID(),
 		});
 		assert.equal(
-			copyCompletedParentTurns(harness.rootManager.getBranch(), target, "call"),
+			copyCompletedParentTurns(harness.rootManager, target, "call"),
 			undefined,
 		);
 		assert.deepEqual(target.getEntries(), []);
@@ -292,7 +293,7 @@ test("descriptor, model, thinking, tool scope, identity, and cold resume survive
 				() => second.runtime.listAgents(staleAuthority),
 				/exact live agent authority/,
 			);
-			second.runtime.sendMessage(second.runtime.rootAuthority, started.subagentId, "resume cold");
+			second.runtime.followupTask(second.runtime.rootAuthority, started.subagentId, "resume cold");
 			await waitUntil(() => secondFactory.opens.length === 1, "cold activation");
 			const restored = secondFactory.opens[0].input.descriptor;
 			assert.deepEqual(restored.model, { provider: "test", id: "model" });
@@ -352,7 +353,8 @@ test("restart replays started-but-unterminated inbox work in durable append orde
 			first.rootManager.getSessionFile(),
 		);
 		manager.appendCustomEntry(DESCRIPTOR_ENTRY, {
-			version: 1,
+			version: 2,
+			projectTrusted: true,
 			childSessionId: childId,
 			rootSessionId: first.rootManager.getSessionId(),
 			parentSessionId: first.rootManager.getSessionId(),
@@ -424,7 +426,8 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 			first.rootManager.getSessionFile(),
 		);
 		manager.appendCustomEntry(DESCRIPTOR_ENTRY, {
-			version: 1,
+			version: 2,
+			projectTrusted: true,
 			childSessionId: childId,
 			rootSessionId: first.rootManager.getSessionId(),
 			parentSessionId: first.rootManager.getSessionId(),
@@ -447,7 +450,7 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 			stopReason: "error",
 			output: "partial recovered output",
 			errorMessage: "recovered failure",
-			usage: { input: 2, output: 3, contextTokens: 5, cost: 0.25 },
+			usage: usageFor(2, 3, 5, 0.25),
 		});
 		const notice = {
 			messageId: "settlement-outbox",
@@ -484,7 +487,7 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 				thinkingLevel: "high",
 				sessionFile: manager.getSessionFile(),
 				lastOutput: "partial recovered output",
-				usage: { input: 2, output: 3, contextTokens: 5, cost: 0.25 },
+				usage: usageFor(2, 3, 5, 0.25),
 				activeDurationMs: 0,
 				errorMessage: "recovered failure",
 			});
@@ -556,7 +559,7 @@ test("clean shutdown aborts active turns child-first but retains durable session
 			runInBackground: true,
 			parent: harness.parent(),
 		});
-		await waitUntil(() => factory.opens.length === 1, "active child");
+		await waitUntil(() => factory.opens[0]?.isRunning, "active child");
 		const file = harness.runtime.getSessionFile(started.subagentId);
 		await harness.runtime.shutdown();
 		assert.equal(factory.opens[0].interruptions, 1);

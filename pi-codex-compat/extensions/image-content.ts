@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	MAX_LOCAL_IMAGE_BYTES,
 	decodedBase64ByteLength,
@@ -89,13 +90,13 @@ function ascii(bytes: Uint8Array, start: number, end: number): string {
 }
 
 function decodeBase64(data: string): Uint8Array {
-	try {
-		return Uint8Array.from(globalThis.atob(data), (character) =>
-			character.charCodeAt(0),
-		);
-	} catch {
+	// Buffer's decoder is permissive; retain atob's alphabet/padding rules.
+	const compact = data.replace(/[\t\n\f\r ]/g, "");
+	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) ||
+		compact.length % 4 === 1 ||
+		(compact.includes("=") && compact.length % 4 !== 0))
 		return new Uint8Array();
-	}
+	return Buffer.from(compact, "base64");
 }
 
 const IMAGE_SIGNATURES: Array<{
@@ -139,10 +140,23 @@ const IMAGE_SIGNATURES: Array<{
 	},
 ];
 
+// Cache only fixed-size content digests and signature results, never image data.
+// At most 512 entries (under 128 KiB of key/value string storage).
+const signatureCache = new Map<string, string | undefined>();
 function inferMimeType(data: string): string | undefined {
 	if (decodedBase64ByteLength(data) > MAX_LOCAL_IMAGE_BYTES) return undefined;
+	const key = createHash("sha256").update(data).digest("hex");
+	if (signatureCache.has(key)) {
+		const result = signatureCache.get(key);
+		signatureCache.delete(key);
+		signatureCache.set(key, result);
+		return result;
+	}
 	const bytes = decodeBase64(data);
-	return IMAGE_SIGNATURES.find(({ matches }) => matches(bytes))?.mimeType;
+	const result = IMAGE_SIGNATURES.find(({ matches }) => matches(bytes))?.mimeType;
+	if (signatureCache.size >= 512) signatureCache.delete(signatureCache.keys().next().value!);
+	signatureCache.set(key, result);
+	return result;
 }
 
 function imagePayload(block: UnknownRecord): {

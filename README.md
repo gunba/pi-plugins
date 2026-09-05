@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.84.3+.
 
 ## Extensions
 
@@ -10,8 +10,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   tools. Text-only Codex models receive saved image artifacts and delegate visual
   inspection to an authenticated image-capable model for concise descriptions.
   `apply_patch` accepts Codex envelopes, moves, and structurally recognized
-  heredoc bodies; environment IDs are rejected until Pi exposes real routing.
-  Managed shell sessions stream partial output, terminate
+  heredoc bodies, with native grammar input on supported models and cancellable,
+  alias-safe file mutation. Managed shell sessions launch independently, stream partial output, terminate
   process trees, retain complete logs when display output is truncated, and use
   compact tool rendering while preserving context-mode HTTP-output guardrails.
   `view_image` emits Pi-native image blocks and normalises older session images
@@ -40,12 +40,13 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
   cancel/list command reminders. Agents can cancel pending messages with
   `cancel_scheduled_message`. Due reminders appear as labelled scheduler
   messages instead of newly typed user messages. Agent-created messages steer
-  an active run; user-created `/schedule` messages wait as follow-ups.
+  an active run, as do user-created reminders. Session-scoped SQLite transactions
+  protect concurrent scheduling and delivery in live TUI and RPC sessions.
 - `pi-extension-freshness` — prints a startup extension freshness panel with
   last-updated dates, age-based color coding, and `/extension-freshness` for
   on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
-  skills, MCP, and subagent configuration.
+  skills, and MCP configuration.
 - `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
   git repository, with generated package installs, sessions, caches, tmp files,
   and local auth state kept machine-local.
@@ -57,20 +58,16 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
-- `pi-memedit` — automatically hard-deletes low-value conversation items from
-  live context and the session log, including optional live continuation
-  pruning during long runs; follows its global setting and is compatible with
-  Anthropic OAuth prune calls.
 - `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
   `get_goal`, `create_goal`, and `update_goal`. Input-bound direct-human
   authority protects mutations; bounded same-session rounds use revision-fenced
   transitions and fail closed when Pi context cannot be authenticated.
 - `pi-subagents` — provides DSH-style fresh and forked Pi SDK children through
-  `subagent` and `subagent_fork`, plus FIFO `send_message`, current-turn
-  `interrupt_agent`, durable discovery, child reporting, cold resumption and a
-  live TUI dashboard. Background delegation returns immediately; report and
-  settlement outboxes survive runtime replacement, busy-parent settlements steer
-  the active turn, and enabled children retain the maintained `todo_write` tool.
+  `subagent` and `subagent_fork`, steering `send_message`, FIFO `followup_task`,
+  current-turn interruption, durable discovery, cold resumption, and a live TUI
+  dashboard. Reports and settlements steer at every depth; late results may wake
+  an idle parent. Children inherit effective project trust and authentication,
+  with bounded depth, root-wide admission, and cancellable initialization.
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
   panel. Ordered immutable three-state snapshots are branch-aware, remain visible
   through settlement, and render model-supplied text without terminal controls.
@@ -101,7 +98,7 @@ The package manifest at the repository root loads the extension files from the
 `pi-`.
 
 Install the pinned development dependencies and run the same strict typecheck
-and unit tests as CI:
+and all discovered regression tests as CI:
 
 ```bash
 npm ci
@@ -109,12 +106,15 @@ npm run check
 ```
 
 The Pi packages remain optional runtime peers; their pinned development copies
-make extension API changes visible to TypeScript before release.
+make extension API changes visible to TypeScript before release. CI covers Linux
+and Windows with Node 22/Pi 0.84.3 and Node 24/Pi 0.85.0. The latter SDK fixture
+also installs `pi-server`, which Pi 0.85.0's standalone SDK entrypoint imports.
 
-The detailed Codex usage report derives its token breakdown from the per-message
-`usage` Pi records (input / cacheRead / cacheWrite / output and matching
-per-bucket cost). The native Pi footer remains intact; the extension contributes
-only the passive Codex 5h/7d rate-limit status.
+The detailed Codex usage report includes native assistant, tool, and summary
+usage, plus durable background-child charges deduplicated by invocation ID.
+Successful foreground children return native tool usage. The native Pi footer
+remains intact and does not include custom background billing; the extension also
+contributes the passive Codex 5h/7d rate-limit status.
 
 Codex plan-window tracking is passive: `x-codex-*` response headers and
 `codex.rate_limits` WebSocket events update the persisted snapshot and status

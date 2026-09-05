@@ -7,22 +7,27 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, Usage } from "@earendil-works/pi-ai";
 import {
 	SessionManager,
+	buildContextEntries,
 	type ModelRuntime,
 	type SessionEntry,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 export const DESCRIPTOR_ENTRY = "pi-subagents/descriptor-v1";
+export const NOTICE_ENTRY = "pi-subagents/notice-received-v1";
+export const BACKGROUND_USAGE_ENTRY = "pi-subagents/usage-v1";
 export const INBOX_ENTRY = "pi-subagents/inbox-v1";
 export const DELIVERY_ENTRY = "pi-subagents/delivery-v1";
 export const LAUNCH_ENTRY = "pi-subagents/launch-v1";
 export const SETTLEMENT_ENTRY = "pi-subagents/settlement-v1";
 export const CONTROL_ENTRY = "pi-subagents/control-v1";
-export const DESCRIPTOR_VERSION = 1;
+export const DESCRIPTOR_VERSION = 2;
 export const DEFAULT_MAX_DEPTH = 3;
+export const DEFAULT_MAX_ACTIVE = 8;
+export const DEFAULT_OPEN_TIMEOUT_MS = 30_000;
 export const MAX_PARENT_NOTICE_BYTES = 32 * 1024;
 
 export const CHILD_BUILTIN_TOOL_NAMES = new Set([
@@ -49,7 +54,8 @@ export type ChildContextMode = "fresh" | "fork";
 export type ModelRef = { provider: string; id: string };
 
 export type ChildDescriptor = {
-	version: 1;
+	version: 2;
+	projectTrusted: boolean;
 	childSessionId: string;
 	rootSessionId: string;
 	parentSessionId: string;
@@ -78,12 +84,7 @@ export type RunOutcome = {
 	output: string;
 	stopReason: RunStopReason;
 	errorMessage?: string;
-	usage?: {
-		input: number;
-		output: number;
-		contextTokens: number;
-		cost: number;
-	};
+	usage?: Usage & { contextTokens: number };
 };
 
 export type Authority = {
@@ -146,6 +147,7 @@ export type ParentInvocation = {
 	toolNames: string[];
 	toolCallId: string;
 	cwd: string;
+	projectTrusted: boolean;
 };
 
 export type StartRequest = {
@@ -184,11 +186,13 @@ export interface RuntimeHost {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly activeRootLaunchIds: ReadonlySet<string>;
+	isProjectTrusted(): boolean;
 	recordRootLaunch(childId: string): void;
 	/** Queue a root notice and return true only when that exact notice is already durable in the root branch. */
 	deliverRootNotice(notice: ParentNotice): boolean;
+	recordBackgroundUsage?(childId: string, messageId: string, usage: Usage): void;
 	resolveModel(ref: ModelRef): Model<any> | undefined;
-	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime): Promise<void>;
+	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime, signal: AbortSignal): Promise<void>;
 }
 
 export interface ChildDriver {
@@ -197,6 +201,7 @@ export interface ChildDriver {
 	readonly activity?: string;
 	subscribeActivity?(listener: () => void): () => void;
 	prompt(message: string): Promise<RunOutcome>;
+	receiveNotice(notice: ParentNotice): void;
 	interrupt(): void;
 	dispose(): void;
 }
@@ -207,6 +212,7 @@ export interface ChildDriverFactory {
 		sessionManager: SessionManager;
 		authority: Authority;
 		customTools: ToolDefinition[];
+		signal: AbortSignal;
 	}): Promise<ChildDriver>;
 }
 
@@ -243,6 +249,7 @@ type ChildRecord = {
 	manager: SessionManager;
 	queue: QueueItem[];
 	activation?: Activation;
+	opening?: AbortController;
 	pump?: Promise<void>;
 	parked: boolean;
 	lastOutcome?: RunOutcome;
@@ -294,10 +301,11 @@ function isCompletedAssistantEntry(entry: SessionEntry | undefined): boolean {
  * in-flight turn are excluded.
  */
 export function copyCompletedParentTurns(
-	contextEntries: readonly SessionEntry[],
+	parent: ParentInvocation["sessionManager"],
 	target: SessionManager,
 	toolCallId: string,
 ): string | undefined {
+	let contextEntries = parent.buildContextEntries();
 	let currentCall = contextEntries.findIndex((entry) => hasToolCall(entry, toolCallId));
 	if (currentCall < 0) currentCall = contextEntries.length;
 	let boundary = -1;
@@ -306,6 +314,31 @@ export function copyCompletedParentTurns(
 		if (isCompletedAssistantEntry(entry)) {
 			boundary = index;
 			break;
+		}
+	}
+	if (boundary < 0) {
+		const history = parent.getBranch();
+		let call = history.findIndex((entry) => hasToolCall(entry, toolCallId));
+		if (call < 0) call = history.length;
+		let completed = call - 1;
+		while (completed >= 0 && !isCompletedAssistantEntry(history[completed])) completed--;
+		const inheritedSummary = (entry: SessionEntry) => entry.type === "custom_message"
+			&& entry.customType === "pi-subagents/fork-summary-v1";
+		let firstCurrent = history.findIndex((entry, index) => index > completed && index < call
+			&& (entry.type === "message" || (entry.type === "custom_message" && !inheritedSummary(entry))));
+		if (firstCurrent < 0) firstCurrent = call;
+		for (let index = currentCall - 1; index >= 0; index--) {
+			const entry = contextEntries[index]!;
+			if (entry.type !== "compaction" && entry.type !== "branch_summary" && !inheritedSummary(entry)) continue;
+			const source = history.findIndex((raw) => raw.id === (entry.type === "compaction" ? entry.firstKeptEntryId : entry.id));
+			if (source >= 0 && (entry.type === "compaction" ? source <= firstCurrent : source < firstCurrent)) boundary = index;
+			break;
+		}
+		// A mid-turn summary may contain current work. Rebuild the completed
+		// historical branch instead of treating that summary as a safe seed.
+		if (boundary < 0 && completed >= 0) {
+			contextEntries = buildContextEntries(history, history[completed]!.id);
+			boundary = contextEntries.findIndex((entry) => entry.id === history[completed]!.id);
 		}
 	}
 	if (boundary < 0) return undefined;
@@ -384,6 +417,7 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 		value,
 		new Set([
 			"version",
+			"projectTrusted",
 			"childSessionId",
 			"rootSessionId",
 			"parentSessionId",
@@ -406,6 +440,7 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 		throw Object.assign(new Error("unsupported descriptor version"), {
 			code: "UNSUPPORTED",
 		});
+	if (typeof value.projectTrusted !== "boolean") throw new Error("descriptor projectTrusted is invalid");
 	const mode = value.mode;
 	if (mode !== "continuable" && mode !== "one-shot")
 		throw new Error("descriptor mode is invalid");
@@ -429,7 +464,8 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 	if (forkBoundaryEntryId !== undefined && typeof forkBoundaryEntryId !== "string")
 		throw new Error("descriptor forkBoundaryEntryId is invalid");
 	return {
-		version: 1,
+		version: DESCRIPTOR_VERSION,
+		projectTrusted: value.projectTrusted,
 		childSessionId: requiredString(value, "childSessionId"),
 		rootSessionId: requiredString(value, "rootSessionId"),
 		parentSessionId: requiredString(value, "parentSessionId"),
@@ -496,17 +532,14 @@ type RecoveredChildState = {
 
 function parseUsage(value: unknown): RunOutcome["usage"] | undefined {
 	if (!isRecord(value)) return undefined;
-	const { input, output, contextTokens, cost } = value;
-	if (
-		typeof input !== "number" ||
-		typeof output !== "number" ||
-		typeof contextTokens !== "number" ||
-		typeof cost !== "number"
-	) return undefined;
-	return { input, output, contextTokens, cost };
+	const { input, output, cacheRead, cacheWrite, totalTokens, contextTokens, cost } = value;
+	if (![input, output, cacheRead, cacheWrite, totalTokens, contextTokens].every((item) => typeof item === "number" && Number.isFinite(item)) ||
+		!isRecord(cost) || ![cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total].every((item) => typeof item === "number" && Number.isFinite(item))) return undefined;
+	if ([value.reasoning, value.cacheWrite1h].some((item) => item !== undefined && (typeof item !== "number" || !Number.isFinite(item)))) return undefined;
+	return value as unknown as RunOutcome["usage"];
 }
 
-function addUsage(
+export function addUsage(
 	left: RunOutcome["usage"] | undefined,
 	right: RunOutcome["usage"] | undefined,
 ): RunOutcome["usage"] | undefined {
@@ -515,8 +548,19 @@ function addUsage(
 	return {
 		input: left.input + right.input,
 		output: left.output + right.output,
+		cacheRead: left.cacheRead + right.cacheRead,
+		cacheWrite: left.cacheWrite + right.cacheWrite,
+		totalTokens: left.totalTokens + right.totalTokens,
 		contextTokens: Math.max(left.contextTokens, right.contextTokens),
-		cost: left.cost + right.cost,
+		...(left.reasoning !== undefined || right.reasoning !== undefined ? { reasoning: (left.reasoning ?? 0) + (right.reasoning ?? 0) } : {}),
+		...(left.cacheWrite1h !== undefined || right.cacheWrite1h !== undefined ? { cacheWrite1h: (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0) } : {}),
+		cost: {
+			input: left.cost.input + right.cost.input,
+			output: left.cost.output + right.cost.output,
+			cacheRead: left.cost.cacheRead + right.cost.cacheRead,
+			cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
+			total: left.cost.total + right.cost.total,
+		},
 	};
 }
 
@@ -547,6 +591,22 @@ function parseParentNotice(value: unknown): ParentNotice | undefined {
 		childId: value.childId,
 		content: value.content,
 	};
+}
+
+/** Recover the gap between durable inbox admission and Pi's message append. */
+export function undispatchedNotices(entries: readonly SessionEntry[]): ParentNotice[] {
+	const received = new Map<string, ParentNotice>();
+	const dispatched = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type === "custom" && entry.customType === NOTICE_ENTRY) {
+			const notice = parseParentNotice(entry.data);
+			if (notice) received.set(notice.messageId, notice);
+		} else if (entry.type === "custom_message" && entry.customType === "pi-subagents/notice") {
+			const notice = parseParentNotice(entry.details);
+			if (notice) dispatched.add(notice.messageId);
+		}
+	}
+	return [...received.values()].filter((notice) => !dispatched.has(notice.messageId));
 }
 
 function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildState {
@@ -721,9 +781,33 @@ function normalizeToolNames(names: readonly string[]): string[] {
 	))].sort();
 }
 
+function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSignal): Promise<ChildDriver> {
+	return new Promise((resolve, reject) => {
+		let cancelled = signal.aborted;
+		const abort = () => { cancelled = true; reject(signal.reason); };
+		if (cancelled) { reject(signal.reason); return; }
+		signal.addEventListener("abort", abort, { once: true });
+		void Promise.resolve().then(() => {
+			signal.throwIfAborted();
+			return open();
+		}).then((driver) => {
+			signal.removeEventListener("abort", abort);
+			if (cancelled) driver.dispose();
+			else resolve(driver);
+		}, (error) => {
+			signal.removeEventListener("abort", abort);
+			reject(error);
+		}).catch(() => {
+			// A late driver failed disposal after its cancelled opening was rejected.
+		});
+	});
+}
+
 export class SubagentRuntime {
 	readonly rootAuthority: Authority;
 	readonly maxDepth: number;
+	readonly maxActive: number;
+	private readonly openTimeoutMs: number;
 	private readonly records = new Map<string, ChildRecord>();
 	private readonly diagnostics = new Map<string, DiagnosticRecord>();
 	private readonly authorities = new Map<string, Authority>();
@@ -738,7 +822,7 @@ export class SubagentRuntime {
 		host: RuntimeHost,
 		driverFactory: ChildDriverFactory,
 		childToolFactory: ChildToolFactory,
-		options: { sessionDir?: string; maxDepth?: number } = {},
+		options: { sessionDir?: string; maxDepth?: number; maxActive?: number; openTimeoutMs?: number } = {},
 	) {
 		this.host = host;
 		this.driverFactory = driverFactory;
@@ -746,8 +830,14 @@ export class SubagentRuntime {
 		this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
 		if (!Number.isSafeInteger(this.maxDepth) || this.maxDepth < 0)
 			throw new Error("maxDepth must be a non-negative safe integer");
-		this.sessionDir =
-			options.sessionDir ?? join(host.agentDir, "subagents", "sessions");
+		this.maxActive = options.maxActive ?? DEFAULT_MAX_ACTIVE;
+		this.openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
+		if (!Number.isSafeInteger(this.maxActive) || this.maxActive < 1)
+			throw new Error("maxActive must be a positive safe integer");
+		if (!Number.isSafeInteger(this.openTimeoutMs) || this.openTimeoutMs < 1)
+			throw new Error("openTimeoutMs must be a positive safe integer");
+		this.sessionDir = options.sessionDir ??
+			join(host.agentDir, "subagents", "sessions", encodeURIComponent(host.rootSessionId));
 		this.rootAuthority = this.issueAuthority(host.rootSessionId, 0);
 	}
 
@@ -757,6 +847,12 @@ export class SubagentRuntime {
 		mkdirSync(this.sessionDir, { recursive: true });
 		this.loadCatalog();
 		for (const record of this.records.values()) {
+			for (const entry of record.manager.getBranch()) {
+				if (entry.type !== "custom" || entry.customType !== DELIVERY_ENTRY || !isRecord(entry.data) ||
+					entry.data.action !== "finished" || entry.data.backgroundBilling !== true || typeof entry.data.messageId !== "string") continue;
+				const usage = parseUsage(entry.data.usage);
+				if (usage) this.recordBackgroundUsage(record, entry.data.messageId, usage);
+			}
 			this.retryPendingSettlements(record);
 			if (record.queue.length > 0 && !record.parked) {
 				record.pendingSettlement = record.descriptor.mode === "continuable";
@@ -980,6 +1076,7 @@ export class SubagentRuntime {
 		if (request.parent.authority.depth >= this.maxDepth)
 			throw new Error(`subagent depth limit ${this.maxDepth} reached`);
 		if (!request.parent.model) throw new Error("subagent requires an active parent model");
+		this.requireCapacity();
 		if (request.signal?.aborted) throw abortError();
 		const label = normalizeLabel(request.description);
 		const prompt = normalizePrompt(request.prompt);
@@ -998,13 +1095,15 @@ export class SubagentRuntime {
 			const forkBoundaryEntryId =
 				request.context === "fork"
 					? copyCompletedParentTurns(
-							request.parent.sessionManager.buildContextEntries(),
+							request.parent.sessionManager,
 							manager,
 							request.parent.toolCallId,
 						)
 					: undefined;
 			const descriptor: ChildDescriptor = {
-				version: 1,
+				version: DESCRIPTOR_VERSION,
+				projectTrusted: request.parent.projectTrusted && this.host.isProjectTrusted() &&
+					(this.records.get(request.parent.authority.sessionId)?.descriptor.projectTrusted ?? true),
 				childSessionId: childId,
 				rootSessionId: this.host.rootSessionId,
 				parentSessionId: request.parent.authority.sessionId,
@@ -1068,7 +1167,7 @@ export class SubagentRuntime {
 		if (request.signal) {
 			abortListener = () => {
 				item.cancelled = true;
-				if (record.activation?.current === item)
+				if (record.activation?.current === item || record.opening)
 					this.interrupt(request.parent.authority, childId);
 			};
 			if (request.signal.aborted) abortListener();
@@ -1123,10 +1222,28 @@ export class SubagentRuntime {
 		if (this.closing) throw new Error("subagent runtime is shutting down");
 		this.assertLive(caller);
 		const record = this.records.get(childId);
+		if (!record) throw new Error(`unknown subagent "${childId}"`);
+		if (record.descriptor.parentSessionId !== caller.sessionId)
+			throw new Error("send_message is restricted to the exact live direct parent");
+		if (!record.activation?.driver.isRunning)
+			throw new Error("send_message updates running work only; use followup_task to request another turn");
+		const notice: ParentNotice = {
+			messageId: randomUUID(), kind: "report", childId: caller.sessionId,
+			content: `Direct parent ${caller.sessionId} sent an update:\n${normalizePrompt(message)}`,
+		};
+		record.manager.appendCustomEntry(NOTICE_ENTRY, notice);
+		record.activation.driver.receiveNotice(notice);
+		return notice.messageId;
+	}
+
+	followupTask(caller: Authority, childId: string, message: string): string {
+		if (this.closing) throw new Error("subagent runtime is shutting down");
+		this.assertLive(caller);
+		const record = this.records.get(childId);
 		if (!record || record.descriptor.mode !== "continuable")
 			throw new Error(`subagent "${childId}" is not resumable`);
 		if (record.descriptor.parentSessionId !== caller.sessionId)
-			throw new Error("send_message is restricted to the exact live direct parent");
+			throw new Error("followup_task is restricted to the exact live direct parent");
 		const item = this.accept(record, normalizePrompt(message), "followup");
 		this.setParked(record, false);
 		if (!record.pendingSettlement) record.settlementOutcome = undefined;
@@ -1152,7 +1269,12 @@ export class SubagentRuntime {
 		}
 		if (!authorized)
 			throw new Error("interrupt_agent requires an exact live ancestor");
-		if (record.activation?.current) {
+		if (record.opening) {
+			const item = record.queue[0];
+			if (item) item.cancelled = true;
+			this.setParked(record, true);
+			record.opening.abort();
+		} else if (record.activation?.current) {
 			record.activation.interrupted = true;
 			this.setParked(record, true);
 			record.activation.driver.interrupt();
@@ -1194,46 +1316,30 @@ export class SubagentRuntime {
 		}
 		const parent = this.records.get(parentId);
 		if (!parent) return false;
-		if (parent.descriptor.mode === "one-shot" && !parent.activation) {
-			const sender = this.records.get(notice.childId);
-			if (sender?.descriptor.parentSessionId !== parentId) return false;
-		}
 		const alreadyAccepted = parent.manager.getBranch().some(
-			(entry) =>
-				entry.type === "custom" &&
-				entry.customType === INBOX_ENTRY &&
-				isRecord(entry.data) &&
-				entry.data.action === "accepted" &&
-				entry.data.messageId === notice.messageId,
+			(entry) => entry.type === "custom" && isRecord(entry.data) &&
+				entry.data.messageId === notice.messageId &&
+				(entry.customType === NOTICE_ENTRY ||
+					(entry.customType === INBOX_ENTRY && entry.data.action === "accepted")),
 		);
 		if (alreadyAccepted) return true;
-		this.accept(parent, notice.content, notice.kind, notice.messageId);
-		this.setParked(parent, false);
-		if (!parent.pendingSettlement) parent.settlementOutcome = undefined;
-		parent.pendingSettlement = parent.descriptor.mode === "continuable";
-		this.startPump(parent);
-		return true;
-	}
-
-	acknowledgeRootNotice(messageId: string): void {
-		for (const record of this.records.values()) {
-			if (!record.pendingSettlementNotices.some((notice) => notice.messageId === messageId))
-				continue;
-			record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {
-				action: "delivered",
-				messageId,
-				deliveredAt: Date.now(),
-			});
-			record.pendingSettlementNotices = record.pendingSettlementNotices.filter(
-				(notice) => notice.messageId !== messageId,
-			);
+		if (parent.activation?.driver.isRunning) {
+			parent.manager.appendCustomEntry(NOTICE_ENTRY, notice);
+			parent.activation.driver.receiveNotice(notice);
+		} else {
+			this.accept(parent, notice.content, notice.kind, notice.messageId);
+			this.setParked(parent, false);
+			if (!parent.pendingSettlement) parent.settlementOutcome = undefined;
+			parent.pendingSettlement = parent.descriptor.mode === "continuable";
+			this.startPump(parent);
 		}
+		return true;
 	}
 
 	private retryPendingSettlements(record: ChildRecord): void {
 		for (const notice of [...record.pendingSettlementNotices]) {
 			try {
-				if (!this.deliverNotice(record.descriptor.parentSessionId, notice)) continue;
+				if (!this.deliverNotice(record.descriptor.parentSessionId, notice)) break;
 				record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {
 					action: "delivered",
 					messageId: notice.messageId,
@@ -1244,12 +1350,23 @@ export class SubagentRuntime {
 				);
 			} catch (error) {
 				record.lastError = error instanceof Error ? error.message : String(error);
+				break;
 			}
 		}
 	}
 
+	private activeCount(): number {
+		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump).length;
+	}
+
+	private requireCapacity(): void {
+		if (this.activeCount() >= this.maxActive)
+			throw new Error(`root-wide subagent limit ${this.maxActive} reached; wait for active children to settle`);
+	}
+
 	private startPump(record: ChildRecord): void {
 		if (record.pump || record.parked || this.closing) return;
+		if (!record.activation && record.queue.length > 0 && this.activeCount() >= this.maxActive) return;
 		record.pump = this.pump(record)
 			.catch(async (error) => {
 				await this.handlePumpFailure(record, error);
@@ -1264,6 +1381,9 @@ export class SubagentRuntime {
 					}
 					await this.maybeSettle(record);
 					await this.settleAncestors(record.descriptor.parentSessionId);
+					for (const waiting of this.records.values()) {
+						if (waiting.queue.length) this.startPump(waiting);
+					}
 					this.emit();
 				} catch (error) {
 					record.lastError = error instanceof Error ? error.message : String(error);
@@ -1324,18 +1444,22 @@ export class SubagentRuntime {
 			record.descriptor.childSessionId,
 			record.descriptor.depth,
 		);
+		const opening = new AbortController();
+		record.opening = opening;
+		const signal = AbortSignal.any([opening.signal, AbortSignal.timeout(this.openTimeoutMs)]);
 		try {
 			const customTools = this.childToolFactory(
 				this,
 				authority,
 				record.descriptor.mode,
 			);
-			const driver = await this.driverFactory.open({
+			const driver = await openWithCancellation(() => this.driverFactory.open({
 				descriptor: record.descriptor,
 				sessionManager: record.manager,
 				authority,
 				customTools,
-			});
+				signal,
+			}), signal);
 			if (this.closing) {
 				driver.dispose();
 				this.authorities.delete(authority.sessionId);
@@ -1351,6 +1475,8 @@ export class SubagentRuntime {
 		} catch (error) {
 			this.authorities.delete(authority.sessionId);
 			throw error;
+		} finally {
+			record.opening = undefined;
 		}
 	}
 
@@ -1361,7 +1487,6 @@ export class SubagentRuntime {
 		record.lastError = undefined;
 		record.updatedAt = finishedAt;
 		record.finishedAt = finishedAt;
-		this.setParked(record, true);
 		record.manager.appendCustomEntry(DELIVERY_ENTRY, {
 			action: "finished",
 			messageId: item.messageId,
@@ -1420,7 +1545,10 @@ export class SubagentRuntime {
 				activation = await this.ensureActivation(record);
 				if (this.closing) break;
 			} catch (error) {
-				this.failQueuedActivation(record, error);
+				if (!this.closing) {
+					if (item.cancelled) this.finishCancelledItem(record, item);
+					else this.failQueuedActivation(record, error);
+				}
 				break;
 			}
 			if (item.cancelled) {
@@ -1466,14 +1594,24 @@ export class SubagentRuntime {
 				output: outcome.output,
 				...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
 				...(outcome.usage ? { usage: outcome.usage } : {}),
+				backgroundBilling: !item.resolve || outcome.stopReason !== "completed",
 			});
+			if (outcome.usage && (!item.resolve || outcome.stopReason !== "completed"))
+				this.recordBackgroundUsage(record, item.messageId, outcome.usage);
 			record.queue.shift();
 			activation.current = undefined;
 			item.resolve?.(outcome);
-			if (outcome.stopReason === "aborted" && activation.interrupted)
-				this.setParked(record, true);
 		}
 		await this.maybeSettle(record);
+	}
+
+	private recordBackgroundUsage(record: ChildRecord, messageId: string, usage: Usage): void {
+		try {
+			this.host.recordBackgroundUsage?.(record.descriptor.childSessionId, messageId, usage);
+		} catch (error) {
+			// The child delivery record retains the charge for replay at startup.
+			record.lastError = `usage admission failed: ${error instanceof Error ? error.message : String(error)}`;
+		}
 	}
 
 	private hasLiveChildren(parentId: string): boolean {
@@ -1587,11 +1725,9 @@ export class SubagentRuntime {
 			for (const record of children.get(parentId) ?? []) {
 				const descriptor = record.descriptor;
 				if (descriptor.mode === "continuable") {
-					const status: "running" | "idle" | "ready" = record.activation
-						? record.activation.current || record.activation.driver.isRunning
-							? "running"
-							: "idle"
-						: "ready";
+					const status: "running" | "idle" | "ready" =
+						record.opening || record.pump || record.activation?.current || record.activation?.driver.isRunning
+							? "running" : record.activation || (!record.parked && record.queue.length) ? "idle" : "ready";
 					rows.push({
 						kind: "child",
 						id: descriptor.childSessionId,
@@ -1624,17 +1760,15 @@ export class SubagentRuntime {
 		const children = [...this.records.values()]
 			.map((record): RuntimeChildSnapshot => {
 				let state: RuntimeChildSnapshot["state"];
-				if (record.activation?.current || record.activation?.driver.isRunning)
+				if (record.opening || record.activation?.current || record.activation?.driver.isRunning)
 					state = "running";
-				else if (
-					record.activation &&
-					this.hasLiveChildren(record.descriptor.childSessionId)
-				)
+				else if ((!record.parked && record.queue.length) || (
+					record.activation && this.hasLiveChildren(record.descriptor.childSessionId)
+				))
 					state = "waiting";
 				else state = statusForOutcome(record.lastOutcome);
-				const activity =
-					record.activation?.driver.activity ??
-					record.activation?.current?.source;
+				const activity = record.opening ? "starting" :
+					record.activation?.driver.activity ?? record.activation?.current?.source;
 				const activeDurationMs = record.activeDurationMs +
 					(record.activation?.current?.startedAt !== undefined
 						? Math.max(0, Date.now() - record.activation.current.startedAt)
@@ -1704,6 +1838,7 @@ export class SubagentRuntime {
 			.sort((a, b) => b.descriptor.depth - a.descriptor.depth);
 		for (const record of active) {
 			try {
+				record.opening?.abort();
 				record.activation?.driver.interrupt();
 			} catch (error) {
 				record.lastError = error instanceof Error ? error.message : String(error);

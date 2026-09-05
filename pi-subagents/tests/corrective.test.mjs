@@ -1,3 +1,4 @@
+import { usageFor } from "./helpers.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
@@ -12,7 +13,6 @@ import { childSystemContext, outcomeFrom } from "../extensions/pi-sdk-driver.ts"
 import {
 	captureProviderAuth,
 	inheritProviderRuntime,
-	rootNoticeDelivery,
 } from "../extensions/subagents.ts";
 import {
 	CONTROL_ENTRY,
@@ -57,7 +57,8 @@ function assistant(stopReason) {
 
 function appendDescriptor(harness, childId, manager, overrides = {}) {
 	manager.appendCustomEntry(DESCRIPTOR_ENTRY, {
-		version: 1,
+		version: 2,
+		projectTrusted: true,
 		childSessionId: childId,
 		rootSessionId: harness.rootManager.getSessionId(),
 		parentSessionId: harness.rootManager.getSessionId(),
@@ -89,9 +90,6 @@ test("SDK terminal folding fails closed and child report guidance matches tool s
 	}
 	assert.match(childSystemContext("continuable"), /Use report/);
 	assert.doesNotMatch(childSystemContext("one-shot"), /Use report/);
-	assert.equal(rootNoticeDelivery({ kind: "settlement" }, false), "steer");
-	assert.equal(rootNoticeDelivery({ kind: "settlement" }, true), "followUp");
-	assert.equal(rootNoticeDelivery({ kind: "report" }, false), "followUp");
 });
 
 test("parent request auth is inherited when a long-lived resolver has no current key", async () => {
@@ -263,7 +261,7 @@ test("explicitly interrupted queued work remains parked across runtime replaceme
 			parent: first.parent(),
 		});
 		await waitUntil(() => firstFactory.promptLog.length === 1, "first prompt");
-		first.runtime.sendMessage(first.runtime.rootAuthority, started.subagentId, "parked");
+		first.runtime.followupTask(first.runtime.rootAuthority, started.subagentId, "parked");
 		first.runtime.interrupt(first.runtime.rootAuthority, started.subagentId);
 		await waitUntil(() => first.runtime.snapshot()[0]?.state === "aborted", "abort");
 		await first.runtime.shutdown();
@@ -273,7 +271,7 @@ test("explicitly interrupted queued work remains parked across runtime replaceme
 		try {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			assert.deepEqual(secondFactory.promptLog, []);
-			second.runtime.sendMessage(second.runtime.rootAuthority, started.subagentId, "wake");
+			second.runtime.followupTask(second.runtime.rootAuthority, started.subagentId, "wake");
 			await waitUntil(() => secondFactory.promptLog.length === 2, "woken queue");
 			assert.deepEqual(secondFactory.promptLog.map((item) => item.message), ["parked", "wake"]);
 			const branch = SessionManager.open(second.runtime.getSessionFile(started.subagentId), second.childSessions).getBranch();
@@ -304,7 +302,7 @@ test("recovery synthesizes a missing settlement after a terminal delivery", asyn
 		manager.appendCustomEntry(DELIVERY_ENTRY, {
 			action: "finished", messageId: "accepted", finishedAt: 13,
 			stopReason: "completed", output: "accepted result",
-			usage: { input: 2, output: 3, contextTokens: 5, cost: 0.2 },
+			usage: usageFor(2, 3, 5, 0.2),
 		});
 		const second = createHarness({ root: rootPath, rootManager: first.rootManager });
 		try {
@@ -335,7 +333,7 @@ test("reports are durable until root delivery accepts them", async () => {
 		const started = await first.runtime.start({
 			description: "durable report", prompt: "hold", context: "fresh", runInBackground: true, parent: first.parent(),
 		});
-		await waitUntil(() => factory.opens.length === 1, "activation");
+		await waitUntil(() => factory.opens[0]?.isRunning, "activation");
 		const reportId = first.runtime.report(factory.opens[0].input.authority, "persist this report");
 		const branch = SessionManager.open(first.runtime.getSessionFile(started.subagentId), first.childSessions).getBranch();
 		assert.ok(branch.some((entry) => entry.type === "custom" && entry.customType === SETTLEMENT_ENTRY && entry.data?.action === "pending" && entry.data.notice?.messageId === reportId));
@@ -422,7 +420,7 @@ test("the first descriptor is authoritative during cold resume", async () => {
 		const factory = new FakeDriverFactory(blockingPrompt);
 		const second = createHarness({ root: rootPath, rootManager: first.rootManager, factory });
 		try {
-			second.runtime.sendMessage(second.runtime.rootAuthority, started.subagentId, "resume");
+			second.runtime.followupTask(second.runtime.rootAuthority, started.subagentId, "resume");
 			await waitUntil(() => factory.opens.length === 1, "cold open");
 			assert.deepEqual(factory.opens[0].input.descriptor.model, { provider: "test", id: "model" });
 			assert.deepEqual(factory.opens[0].input.descriptor.toolNames, ["bash", "read"]);
@@ -440,7 +438,7 @@ test("settlement preserves earlier non-empty output and aggregates usage across 
 		if (firstPrompt) { firstPrompt = false; return blockingPrompt(driver); }
 		return Promise.resolve({
 			output: "", stopReason: "completed",
-			usage: { input: 7, output: 1, contextTokens: 9, cost: 0.7 },
+			usage: usageFor(7, 1, 9, 0.7),
 		});
 	});
 	const harness = createHarness({ factory });
@@ -449,16 +447,14 @@ test("settlement preserves earlier non-empty output and aggregates usage across 
 			description: "aggregate activation", prompt: "first", context: "fresh", runInBackground: true, parent: harness.parent(),
 		});
 		await waitUntil(() => factory.opens[0]?.pending, "first prompt");
-		harness.runtime.sendMessage(harness.runtime.rootAuthority, started.subagentId, "second");
+		harness.runtime.followupTask(harness.runtime.rootAuthority, started.subagentId, "second");
 		factory.opens[0].pending.resolve({
 			output: "useful accepted result", stopReason: "completed",
-			usage: { input: 3, output: 4, contextTokens: 6, cost: 0.3 },
+			usage: usageFor(3, 4, 6, 0.3),
 		});
 		await waitUntil(() => harness.notices.some((notice) => notice.kind === "settlement"), "settlement");
 		assert.match(harness.notices.at(-1).content, /useful accepted result/);
-		assert.deepEqual(harness.runtime.snapshot()[0].usage, {
-			input: 10, output: 5, contextTokens: 9, cost: 1,
-		});
+		assert.deepEqual(harness.runtime.snapshot()[0].usage, usageFor(10, 5, 9, 1));
 	} finally {
 		await harness.cleanup();
 	}
@@ -477,7 +473,7 @@ test("fork copies bash execution messages from completed context", async () => {
 			provider: "test", model: "model", usage: modelUsage, stopReason: "stop", timestamp: Date.now(),
 		});
 		const target = SessionManager.create(harness.cwd, harness.childSessions, { id: randomUUID() });
-		copyCompletedParentTurns(harness.rootManager.getBranch(), target, "not-present");
+		copyCompletedParentTurns(harness.rootManager, target, "not-present");
 		assert.equal(target.getBranch().find((entry) => entry.type === "message")?.message.role, "bashExecution");
 	} finally {
 		await harness.cleanup();
