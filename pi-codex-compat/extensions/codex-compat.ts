@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { lstat, readlink, realpath, mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import {
 	dirname,
 	extname,
@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { PATCH_GRAMMAR } from "./patch-grammar.ts";
 import {
 	normalizeProviderImageMessages,
 	prepareNativeImageContent,
@@ -724,6 +725,26 @@ function collectHunkPaths(baseDir: string, hunks: Hunk[]): string[] {
 	return paths;
 }
 
+// Resolve missing leaves through their existing parent too, so directory aliases
+// and dangling leaf symlinks share staged state as well as lock ownership.
+async function canonicalPath(path: string): Promise<string> {
+	path = resolve(path);
+	try {
+		return await realpath(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "ENOENT") throw error;
+		return undefined;
+	});
+	if (entry?.isSymbolicLink())
+		return canonicalPath(resolve(dirname(path), await readlink(path)));
+	const parent = dirname(path);
+	if (parent === path) throw new Error(`Cannot resolve filesystem root: ${path}`);
+	return resolve(await canonicalPath(parent), relative(parent, path));
+}
+
 async function withMutationQueues<T>(
 	paths: string[],
 	fn: () => Promise<T>,
@@ -806,6 +827,7 @@ async function applyParsedPatch(
 	ctx: ExtensionContext,
 	parsed: ParsedPatch,
 	requestedWorkdir?: string,
+	signal?: AbortSignal,
 ): Promise<{ changes: ChangeRecord[]; baseDir: string }> {
 	const outerBaseDir = requestedWorkdir
 		? resolveToolPath(ctx.cwd, requestedWorkdir)
@@ -813,9 +835,22 @@ async function applyParsedPatch(
 	const baseDir = parsed.workdir
 		? resolveToolPath(outerBaseDir, parsed.workdir)
 		: outerBaseDir;
-	const queuePaths = collectHunkPaths(baseDir, parsed.hunks);
+	const throwIfAborted = () => { if (signal?.aborted) throw new Error("Operation aborted"); };
+	throwIfAborted();
+	const identities = new Map(await Promise.all(
+		collectHunkPaths(baseDir, parsed.hunks).map(async (path) =>
+			[path, await canonicalPath(path)] as const),
+	));
+	const identity = (path: string) => identities.get(path)!;
 
-	return withMutationQueues(queuePaths, async () => {
+	return withMutationQueues([...identities.values()], async () => {
+		throwIfAborted();
+		// Do not follow a changed alias using locks acquired for its old target.
+		for (const [path, canonical] of identities) {
+			if (await canonicalPath(path) !== canonical)
+				throw new Error(`File identity changed while waiting: ${path}`);
+		}
+		throwIfAborted();
 		const originals = new Map<string, FileState>();
 		const states = new Map<string, FileState>();
 		const moves: MoveRecord[] = [];
@@ -840,7 +875,16 @@ async function applyParsedPatch(
 		};
 
 		for (const hunk of parsed.hunks) {
-			const sourcePath = resolveToolPath(baseDir, hunk.path);
+			const lexicalPath = resolveToolPath(baseDir, hunk.path);
+			const sourcePath = identity(lexicalPath);
+			if (hunk.type === "delete" || (hunk.type === "update" && hunk.movePath)) {
+				const entry = await lstat(lexicalPath).catch((error: NodeJS.ErrnoException) => {
+					if (error.code !== "ENOENT") throw error;
+					return undefined;
+				});
+				if (entry?.isSymbolicLink())
+					throw new Error(`Cannot delete or move a symbolic-link entry with apply_patch: ${hunk.path}. Unlink the entry explicitly rather than deleting its target.`);
+			}
 			if (hunk.type === "add") {
 				await setState(sourcePath, { exists: true, content: hunk.contents });
 				continue;
@@ -860,7 +904,7 @@ async function applyParsedPatch(
 				hunk.path,
 			);
 			if (hunk.movePath) {
-				const destPath = resolveToolPath(baseDir, hunk.movePath);
+				const destPath = identity(resolveToolPath(baseDir, hunk.movePath));
 				await setState(destPath, { exists: true, content: newContent });
 				if (destPath !== sourcePath)
 					await setState(sourcePath, { exists: false });
@@ -876,20 +920,27 @@ async function applyParsedPatch(
 		});
 
 		const changes = collectEffectiveChanges(originals, finalStates, moves);
+		const attempted = new Map<string, FileState>();
 
 		try {
+			throwIfAborted();
 			for (const [path, state] of finalStates) {
+				throwIfAborted();
 				if (state.exists) {
 					await ensureParentDirectory(path, createdDirectories);
+					throwIfAborted();
+					attempted.set(path, originals.get(path)!);
 					await writeFile(path, state.content ?? "", "utf8");
 				} else {
+					attempted.set(path, originals.get(path)!);
 					await rm(path, { force: true });
 				}
+				throwIfAborted();
 			}
 		} catch (error) {
 			const originalMessage =
 				error instanceof Error ? error.message : String(error);
-			const restoreFailures = await restoreOriginals(originals);
+			const restoreFailures = await restoreOriginals(attempted);
 			const directoryFailures =
 				await removeCreatedDirectories(createdDirectories);
 			const residualStates: Array<[string, FileState]> = [];
@@ -979,13 +1030,14 @@ async function executeApplyPatch(
 	input: string,
 	workdir: string | undefined,
 	ctx: ExtensionContext,
+	signal?: AbortSignal,
 ): Promise<AgentToolResult<ApplyPatchDetails>> {
 	const startedAt = process.hrtime.bigint();
 	const elapsedSeconds = () =>
 		Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
 	try {
 		const parsed = parsePatch(input);
-		const result = await applyParsedPatch(ctx, parsed, workdir);
+		const result = await applyParsedPatch(ctx, parsed, workdir, signal);
 		const wallTimeSeconds = elapsedSeconds();
 		return {
 			content: [
@@ -1123,6 +1175,7 @@ async function executeViewImage(
 						text: `Image description (${described.model}):\n${described.description}`,
 					},
 				],
+				usage: described.usage,
 				details: {
 					path: absolutePath,
 					mediaType: image.mimeType,
@@ -1431,6 +1484,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"Apply Codex-style file patches using the apply_patch patch envelope",
 		promptGuidelines: [
 			"Use apply_patch for manual file edits when a Codex-style patch is natural; pass the whole patch body as the `input` string.",
+			"Grammar-mode patches use the session cwd; use absolute paths for other directories. JSON calls may set workdir.",
 			"apply_patch input must use the Codex envelope: `*** Begin Patch`, one or more Add/Delete/Update File sections, and `*** End Patch`.",
 			"apply_patch supports `*** Move to:` and heredoc bodies copied from structurally valid `apply_patch <<'PATCH'` shell snippets.",
 			"Do not use apply_patch for generated outputs or broad mechanical rewrites where a script or formatter is the clearer tool.",
@@ -1451,10 +1505,11 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			},
 			{ additionalProperties: false },
 		),
+		constrainedSampling: { type: "grammar", variants: { openai_lark: PATCH_GRAMMAR } },
 		prepareArguments: prepareApplyPatchArguments,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeApplyPatch(params.input, params.workdir, ctx);
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			return executeApplyPatch(params.input, params.workdir, ctx, signal);
 		},
 		renderCall(args, theme, context) {
 			const text =
@@ -1537,7 +1592,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		prepareArguments: prepareExecCommandArguments,
-		executionMode: "sequential",
+		executionMode: "parallel",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const interceptedPatch = extractShellApplyPatch(params.cmd);
 			if (interceptedPatch) {
@@ -1549,6 +1604,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 						interceptedPatch.workdir,
 					),
 					ctx,
+					signal,
 				);
 			}
 
@@ -1686,7 +1742,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			{ additionalProperties: false },
 		),
 		prepareArguments: prepareWriteStdinArguments,
-		executionMode: "sequential",
+		executionMode: "parallel",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			return executeWriteStdin(
 				params,

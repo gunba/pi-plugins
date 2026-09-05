@@ -49,7 +49,7 @@ const sendParameters = Type.Object(
 		}),
 		message: Type.String({
 			minLength: 1,
-			description: "The message to queue as the child conversation's next turn.",
+			description: "The message for the direct child.",
 		}),
 	},
 	{ additionalProperties: false },
@@ -112,6 +112,7 @@ function parentInvocation(
 		toolNames: binding.getToolNames?.() ?? [],
 		toolCallId,
 		cwd: ctx.cwd,
+		projectTrusted: ctx.isProjectTrusted(),
 	};
 }
 
@@ -168,6 +169,7 @@ function delegationTool(
 			return {
 				content: [{ type: "text", text: truncateForParent(result.outcome.output) }],
 				details: result,
+				usage: result.outcome.usage,
 			};
 		},
 	});
@@ -207,7 +209,7 @@ export function createSubagentToolDefinitions(
 			name: "send_message",
 			label: "Send Message",
 			description:
-				"Send a message to a direct background child by durable id. It is a FIFO later turn: it cannot redirect the current turn and this call returns only acceptance, never the child's answer.",
+				"Steer a running direct child with an update to its current work. Delivered at the next tool-batch boundary. This does not request another task; use followup_task for new work or an idle child.",
 			parameters: sendParameters,
 			execute: async (_toolCallId, params) => {
 				const messageId = resolveRuntime(runtime).sendMessage(
@@ -219,9 +221,22 @@ export function createSubagentToolDefinitions(
 					content: [
 						{
 							type: "text",
-							text: `message queued as the next turn for subagent ${params.subagent_id}`,
+							text: `update steered to subagent ${params.subagent_id}`,
 						},
 					],
+					details: { messageId },
+				};
+			},
+		}),
+		defineTool({
+			name: "followup_task",
+			label: "Follow-up Task",
+			description: "Request another task from a direct background child. Queued FIFO after its current work, or starts an idle child. Returns acceptance, not the child's answer.",
+			parameters: sendParameters,
+			execute: async (_toolCallId, params) => {
+				const messageId = resolveRuntime(runtime).followupTask(binding.getAuthority(), params.subagent_id, params.message);
+				return {
+					content: [{ type: "text", text: `task queued for subagent ${params.subagent_id}` }],
 					details: { messageId },
 				};
 			},
@@ -230,7 +245,7 @@ export function createSubagentToolDefinitions(
 			name: "interrupt_agent",
 			label: "Interrupt Agent",
 			description:
-				"Request cancellation of a descendant's current turn. The agent identity, queued messages, and descendants remain; an idle or absent target is an accepted no-op.",
+				"Request cancellation of a descendant's current turn or initialization. The agent identity, queued messages, and descendants remain; an idle or absent target is an accepted no-op.",
 			parameters: interruptParameters,
 			execute: async (_toolCallId, params) => ({
 				content: [
@@ -251,7 +266,7 @@ export function createSubagentToolDefinitions(
 			name: "list_agents",
 			label: "List Agents",
 			description:
-				"List durable continuable children by id and label. Use this for discovery, not polling: settlement notices arrive automatically. running means active now, idle means resident between turns, and ready means cold but resumable. descendants includes parent and depth; only depth-1 entries accept send_message.",
+				"List durable continuable children by id and label. Use this for discovery, not polling: settlement notices arrive automatically. running means active now, idle means resident between turns, and ready means cold but resumable. descendants includes parent and depth; only depth-1 entries accept send_message and followup_task.",
 			parameters: listParameters,
 			execute: async (_toolCallId, params) => {
 				const scope = params.scope ?? "children";
@@ -273,7 +288,7 @@ export function createSubagentToolDefinitions(
 				promptSnippet:
 					"Report a self-contained result to the direct parent without ending the turn",
 				promptGuidelines: [
-					"Use report once before finishing with a self-contained result, and earlier when a finding changes what the direct parent should do next.",
+					"Use report when a finding changes what your direct parent should do next. Your final answer is delivered automatically; do not send it again through report.",
 				],
 				parameters: reportParameters,
 				execute: async (_toolCallId, params) => {

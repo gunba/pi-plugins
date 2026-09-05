@@ -8,9 +8,12 @@
     "pi-extension"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "check": "npm run typecheck && npm test",
-    "test": "node --test pi-brief/tests/*.test.mjs pi-codex-compat/tests/*.test.mjs pi-extension-freshness/tests/*.test.mjs pi-goal/tests/*.test.mjs pi-scheduler/tests/*.test.mjs pi-subagents/tests/*.test.mjs pi-todo/tests/*.test.mjs pi-web-search/tests/*.test.mjs",
+    "test": "node --test",
     "typecheck": "tsc --noEmit"
   },
   "pi": {
@@ -25,7 +28,6 @@
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
-      "./pi-memedit/extensions/memedit.ts",
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-todo/extensions/todo.ts",
@@ -33,9 +35,9 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-ai": ">=0.84.3",
+    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-tui": ">=0.84.3"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
@@ -50,7 +52,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "js-tiktoken": "^1.0.21",
     "typebox": "^1.1.38"
   },
   "devDependencies": {

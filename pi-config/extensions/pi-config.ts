@@ -4,9 +4,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
 
-type SurfaceTool = "pi" | "mcp" | "subagents";
+type SurfaceTool = "pi" | "mcp";
 type FileFormat = "json" | "toml" | "markdown" | "text";
-type EntryKind = "settings" | "context" | "skill" | "prompt" | "extension" | "mcp" | "agent" | "model";
+type EntryKind = "settings" | "context" | "skill" | "prompt" | "extension" | "mcp" | "model";
 type FieldType = "boolean" | "string" | "number" | "enum" | "stringArray" | "object";
 
 type ConfigEntry = {
@@ -367,7 +367,6 @@ function piAgentsSkillRoots(cwd: string): string[] {
 }
 
 function addKnownResourceEntries(add: (entry: ConfigEntryInput) => void, cwd: string, agentDir: string): void {
-  const hierarchy = ancestorDirs(cwd);
   const skillRoots = [
     { root: join(agentDir, "skills"), directMarkdown: true },
     { root: join(homedir(), ".agents", "skills"), directMarkdown: false },
@@ -398,16 +397,7 @@ function addKnownResourceEntries(add: (entry: ConfigEntryInput) => void, cwd: st
     }
   }
 
-  const agentRoots = [join(agentDir, "agents"), join(cwd, ".pi", "agents"), ...hierarchy.map((dir) => join(dir, ".agents")), join(homedir(), ".agents")];
-  for (const root of agentRoots) {
-    const scope = scopeForResourceRoot(root, cwd, agentDir);
-    for (const path of walkNamedFiles(root, (name) => name.endsWith(".md") && name !== "SKILL.md" && !name.endsWith(".chain.md"))) {
-      add({ title: `Agent ${basename(path, ".md")}`, group: "Subagent definitions", kind: "agent", tool: "subagents", path, format: "markdown", scope, loaded: false, note: "pi-subagents convention." });
-    }
-  }
-
   add({ title: "New project skill", group: "Create project resources", kind: "skill", tool: "pi", path: join(cwd, ".pi", "skills", "new-skill", "SKILL.md"), format: "markdown", scope: "project", createTemplate: () => skillTemplate("new-skill") });
-  add({ title: "New project subagent", group: "Create project resources", kind: "agent", tool: "subagents", path: join(cwd, ".pi", "agents", "new-agent.md"), format: "markdown", scope: "project", createTemplate: () => markdownTemplate("New Agent") });
 }
 
 function discoverSkillFiles(root: string, directMarkdown: boolean): string[] {
@@ -454,7 +444,7 @@ function matchesFilter(entry: ConfigEntry, filter: string, cwd: string): boolean
   return filter.toLowerCase().split(/\s+/).filter(Boolean).every((token) => haystack.includes(token));
 }
 
-type TabId = "settings" | "context" | "skills" | "prompts" | "mcp" | "agents" | "extensions";
+type TabId = "settings" | "context" | "skills" | "prompts" | "mcp" | "extensions";
 type PickerAction = "open" | "edit" | "addSetting" | "insertSetting";
 
 type TabDef = {
@@ -469,7 +459,6 @@ const TAB_DEFS: TabDef[] = [
   { id: "skills", label: "◆ Skills", description: "Skills loaded or discoverable from Pi's skills paths, including .agents/skills compatibility." },
   { id: "prompts", label: "✎ Prompts", description: "Prompt templates loaded from Pi user/project prompt paths." },
   { id: "mcp", label: "⛓ MCP", description: "MCP configuration files that Pi MCP adapters can use." },
-  { id: "agents", label: "☉ Agents", description: "pi-subagents definitions in Pi/user/project agent locations." },
   { id: "extensions", label: "✦ Extensions", description: "Pi extension entrypoints and command providers." },
 ];
 
@@ -529,7 +518,6 @@ function entryTabs(entry: ConfigEntry): TabId[] {
   if (entry.kind === "skill") tabs.push("skills");
   if (entry.kind === "prompt") tabs.push("prompts");
   if (entry.kind === "mcp") tabs.push("mcp");
-  if (entry.kind === "agent") tabs.push("agents");
   if (entry.kind === "extension") tabs.push("extensions");
   return tabs;
 }
@@ -559,10 +547,6 @@ function initialTabAndFilter(initialFilter: string): { tab: TabId; filter: strin
     prompt: "prompts",
     prompts: "prompts",
     mcp: "mcp",
-    agent: "agents",
-    agents: "agents",
-    subagent: "agents",
-    subagents: "agents",
     extension: "extensions",
     extensions: "extensions",
   };
@@ -594,7 +578,6 @@ function entryIcon(entry: ConfigEntry): string {
   if (entry.kind === "skill") return "◆";
   if (entry.kind === "prompt") return "✎";
   if (entry.kind === "mcp") return "⛓";
-  if (entry.kind === "agent") return "☉";
   if (entry.kind === "extension") return "✦";
   if (entry.kind === "model") return "◎";
   return "•";
@@ -1602,7 +1585,7 @@ export default function piConfig(pi: ExtensionAPI) {
   };
 
   pi.registerCommand("pi-config", {
-    description: "Open Pi-native config navigator for settings, context files, skills, MCPs, and agents",
+    description: "Open Pi-native config navigator for settings, context files, skills, prompts, MCPs, and extensions",
     handler,
   });
 

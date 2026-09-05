@@ -19,6 +19,7 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 		api: "openai-codex-responses",
 		input: ["text", "image"],
 	};
+	const usage = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 } };
 	let request;
 	const ctx = {
 		model: current,
@@ -44,6 +45,7 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 					role: "assistant",
 					content: [{ type: "text", text: "  A blue dialog with an OK button.  " }],
 					stopReason: "stop",
+					usage,
 				};
 			},
 		},
@@ -54,6 +56,7 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 	assert.equal(request.options.apiKey, "oauth-token");
 	assert.deepEqual(result, {
 		description: "A blue dialog with an OK button.",
+		usage,
 		model: "openai-codex/gpt-5.4-mini",
 	});
 });

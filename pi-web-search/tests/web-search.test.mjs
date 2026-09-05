@@ -97,6 +97,15 @@ test("exposes search only for ChatGPT Codex without overriding manual disablemen
 	);
 });
 
+test("manual re-enable restores eligibility across model suppression", () => {
+ const off = syncWebSearchTool(["read"], CODEX_MODEL, { enabled: true, eligible: true });
+ const on = syncWebSearchTool(["read", "web_search"], CODEX_MODEL, off.state);
+ assert.deepEqual(on.activeTools, ["read", "web_search"]);
+ const away = syncWebSearchTool(on.activeTools, { provider: "anthropic", id: "claude" }, on.state);
+ assert.deepEqual(away.activeTools, ["read"]);
+ assert.deepEqual(syncWebSearchTool(away.activeTools, CODEX_MODEL, away.state).activeTools, on.activeTools);
+});
+
 test("posts Codex commands with the selected Pi model and no model fallback", async () => {
 	const token = jwt("acct-42");
 	let request;
