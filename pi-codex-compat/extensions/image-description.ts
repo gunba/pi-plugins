@@ -1,6 +1,7 @@
 import {
 	complete,
 	type Message,
+	type Usage,
 	type Model,
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -44,7 +45,7 @@ export async function describeImageForTextModel(
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 	dependencies: DescriptionDependencies = {},
-): Promise<{ description: string; model: string }> {
+): Promise<{ description: string; model: string; usage: Usage }> {
 	let selectedModel: Model<string> | undefined;
 	let selectedAuth: {
 		apiKey: string;
@@ -92,6 +93,7 @@ export async function describeImageForTextModel(
 	if (!description) throw new Error("image-capable model returned no description");
 	return {
 		description,
+		usage: response.usage,
 		model: `${selectedModel.provider}/${selectedModel.id}`,
 	};
 }

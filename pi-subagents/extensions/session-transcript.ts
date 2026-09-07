@@ -1,6 +1,8 @@
-import { statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { stripVTControlCharacters } from "node:util";
 import {
-	SessionManager,
+	migrateSessionEntries,
+	parseSessionEntries,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
@@ -68,9 +70,18 @@ export function publishedAssistantText(
 	return fallback;
 }
 
+type TranscriptNode = { parentId: string | null; lines: string[] };
 type CachedTranscript = {
 	mtimeMs: number;
 	size: number;
+	dev: number;
+	ino: number;
+	maxChars: number;
+	maxEntries: number;
+	partial: boolean;
+	leaf: string | null;
+	chars: number;
+	nodes: Map<string, TranscriptNode>;
 	transcript: SessionTranscript;
 };
 
@@ -111,7 +122,7 @@ function cleanLines(lines: string[]): string[] {
 	const out: string[] = [];
 	let previousBlank = false;
 	for (const raw of lines) {
-		const line = raw.replaceAll("\t", "  ").trimEnd();
+		const line = stripVTControlCharacters(raw).replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "").replaceAll("\t", "  ").trimEnd();
 		const blank = line.length === 0;
 		if (blank && previousBlank) continue;
 		out.push(line);
@@ -203,6 +214,7 @@ function boundedTail(
 	blocks: string[][],
 	maxChars: number,
 	maxEntries: number,
+	hiddenBefore = false,
 ): string[] {
 	const selected: string[][] = [];
 	let chars = 0;
@@ -224,9 +236,59 @@ function boundedTail(
 	const lines = ordered.flatMap((block, index) =>
 		index === ordered.length - 1 ? block : [...block, ""],
 	);
-	if (ordered.length < blocks.filter((block) => block.length > 0).length)
+	if (hiddenBefore || ordered.length < blocks.filter((block) => block.length > 0).length)
 		lines.unshift("… earlier session entries hidden …", "");
-	return lines;
+	const text = lines.join("\n");
+	if (text.length <= maxChars) return lines;
+	if (maxChars <= 2) return maxChars > 0 ? ["…"] : [];
+	let tail = text.slice(-(maxChars - 2));
+	if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+	return ["…", ...splitLines(tail)];
+}
+
+function readBytes(file: string, offset: number, length: number): Buffer {
+	const fd = openSync(file, "r");
+	try {
+		const buffer = Buffer.allocUnsafe(length);
+		return buffer.subarray(0, readSync(fd, buffer, 0, length, offset));
+	} finally { closeSync(fd); }
+}
+
+function rememberEntry(state: CachedTranscript, entry: SessionEntry): void {
+	if (state.nodes.has(entry.id)) return;
+	const lines = boundedTail([entryLines(entry)], state.maxChars, 1);
+	state.nodes.set(entry.id, { parentId: entry.parentId, lines });
+	state.chars += lines.join("\n").length;
+	state.leaf = entry.id;
+	while (state.nodes.size > 512 || state.chars > 4 * state.maxChars) {
+		const id = state.nodes.keys().next().value!;
+		state.chars -= state.nodes.get(id)!.lines.join("\n").length;
+		state.nodes.delete(id);
+	}
+}
+
+function loadTranscript(file: string, maxChars: number, maxEntries: number): CachedTranscript {
+	// SessionManager.open may repair files. Preview through Pi's pure parser.
+	const parsed = parseSessionEntries(readFileSync(file, "utf8"));
+	if (parsed[0]?.type !== "session") throw new Error("Invalid session transcript header");
+	migrateSessionEntries(parsed);
+	const entries = new Map<string, SessionEntry>();
+	for (const entry of parsed) if (entry.type !== "session") entries.set(entry.id, entry);
+	const tail: SessionEntry[] = [];
+	const seen = new Set<string>();
+	let id: string | null = Array.from(entries.keys()).at(-1) ?? null;
+	while (id && tail.length < 512) {
+		if (seen.has(id)) throw new Error("Cyclic session transcript");
+		seen.add(id);
+		const entry = entries.get(id);
+		if (!entry) break;
+		tail.push(entry);
+		id = entry.parentId;
+	}
+	const state: CachedTranscript = { mtimeMs: 0, size: 0, dev: 0, ino: 0, maxChars, maxEntries,
+		partial: false, leaf: null, chars: 0, nodes: new Map(), transcript: { file, lines: [] } };
+	for (const entry of tail.reverse()) rememberEntry(state, entry);
+	return state;
 }
 
 export function readSessionTranscript(
@@ -235,6 +297,9 @@ export function readSessionTranscript(
 	maxEntries = 120,
 ): SessionTranscript {
 	if (!file) return { lines: [] };
+	maxChars = Math.max(0, Math.min(32_000, Math.floor(maxChars)));
+	maxEntries = Math.max(0, Math.min(120, Math.floor(maxEntries)));
+	if (!maxChars || !maxEntries) return { file, lines: [] };
 	let stat: ReturnType<typeof statSync>;
 	try {
 		stat = statSync(file);
@@ -247,18 +312,47 @@ export function readSessionTranscript(
 	}
 
 	const cached = cache.get(file);
-	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size)
+	const sameFile = cached && cached.dev === stat.dev && cached.ino === stat.ino
+		&& cached.maxChars === maxChars && cached.maxEntries === maxEntries;
+	if (sameFile && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+		cache.delete(file); cache.set(file, cached);
 		return cached.transcript;
+	}
 
 	try {
-		const manager = SessionManager.open(file);
-		const blocks = manager.getBranch().map(entryLines);
-		const transcript = {
-			file,
-			lines: boundedTail(blocks, maxChars, maxEntries),
-		} satisfies SessionTranscript;
-		cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, transcript });
-		return transcript;
+		let state: CachedTranscript;
+		if (sameFile && !cached.partial && stat.size > cached.size && stat.size - cached.size <= 16 * 1024 * 1024) {
+			state = cached;
+			try {
+				const bytes = readBytes(file, cached.size, stat.size - cached.size);
+				if (bytes.length !== stat.size - cached.size || bytes.at(-1) !== 10) throw new Error("Incomplete append");
+				for (const line of bytes.toString("utf8").split("\n")) {
+					if (!line.trim()) continue;
+					const entry = JSON.parse(line) as SessionEntry;
+					if (!entry || typeof entry.id !== "string" || !(entry.parentId === null || typeof entry.parentId === "string")
+						|| entry.id === entry.parentId) throw new Error("Invalid transcript entry");
+					if (entry.parentId && entry.parentId !== state.leaf && !state.nodes.has(entry.parentId))
+						throw new Error("Branch ancestor is outside the cached tail");
+					rememberEntry(state, entry);
+				}
+			} catch { state = loadTranscript(file, maxChars, maxEntries); }
+		} else state = loadTranscript(file, maxChars, maxEntries);
+		const blocks: string[][] = [];
+		const seen = new Set<string>();
+		let id = state.leaf;
+		while (id && state.nodes.has(id)) {
+			if (seen.has(id)) throw new Error("Cyclic session transcript");
+			seen.add(id);
+			const node = state.nodes.get(id)!;
+			blocks.push(node.lines);
+			id = node.parentId;
+		}
+		state.transcript = { file, lines: boundedTail(blocks.reverse(), maxChars, maxEntries, !!id) };
+		Object.assign(state, { mtimeMs: stat.mtimeMs, size: stat.size, dev: stat.dev, ino: stat.ino,
+			partial: stat.size > 0 && readBytes(file, stat.size - 1, 1)[0] !== 10 });
+		cache.delete(file); cache.set(file, state);
+		if (cache.size > 16) cache.delete(cache.keys().next().value!);
+		return state.transcript;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (cached) return { ...cached.transcript, error: message };

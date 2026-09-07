@@ -1,6 +1,8 @@
+import { usageFor } from "./helpers.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { appendFileSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,24 +55,19 @@ test("SDK output fold selects the last non-empty assistant text, not reasoning o
 	);
 	assert.equal(outcome.output, "final");
 	assert.equal(outcome.stopReason, "completed");
-	assert.deepEqual(outcome.usage, {
-		input: 9,
-		output: 6,
-		contextTokens: 5,
-		cost: 0.30000000000000004,
-	});
+	assert.deepEqual(outcome.usage, usageFor(9, 6, 5, 0.30000000000000004));
 });
 
 test("SDK output fold preserves streamed partial text and abnormal stop reason", () => {
 	assert.deepEqual(outcomeFrom([assistant([], "length")], "partial stream"), {
 		output: "partial stream",
 		stopReason: "max-tokens",
-		usage: { input: 3, output: 2, contextTokens: 5, cost: 0.1 },
+		usage: usageFor(3, 2, 5, 0.1),
 	});
 	assert.deepEqual(outcomeFrom([assistant([], "aborted")], "cancelled partial"), {
 		output: "cancelled partial",
 		stopReason: "aborted",
-		usage: { input: 3, output: 2, contextTokens: 5, cost: 0.1 },
+		usage: usageFor(3, 2, 5, 0.1),
 	});
 });
 
@@ -111,4 +108,46 @@ test("published transcript answer is the last non-empty successful assistant mes
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("transcript previews parse appends incrementally, follow branches, and enforce display bounds", t => {
+	const root = mkdtempSync(join(tmpdir(), "pi-transcript-cache-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const manager = SessionManager.create(root, join(root, "sessions"));
+	const first = manager.appendMessage(assistant([{ type: "text", text: "first" }]));
+	const file = manager.getSessionFile();
+	const read = fs.readFileSync;
+	let fullReads = 0;
+	t.mock.method(fs, "readFileSync", (...args) => { if (args[0] === file) fullReads++; return read(...args); });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	assert.match(readSessionTranscript(file).lines.join("\n"), /first/);
+	manager.appendMessage(assistant([{ type: "text", text: "abandoned branch" }]));
+	assert.match(readSessionTranscript(file).lines.join("\n"), /abandoned branch/);
+	assert.equal(fullReads, 1, "an append does not reread and parse the full session");
+	manager.branch(first);
+	manager.appendMessage(assistant([{ type: "text", text: "selected branch" }]));
+	const branch = readSessionTranscript(file).lines.join("\n");
+	assert.match(branch, /first/);
+	assert.match(branch, /selected branch/);
+	assert.doesNotMatch(branch, /abandoned branch/);
+	manager.appendMessage(assistant([{ type: "text", text: "x".repeat(80_000) + "\x1b]52;c;secret\x07tail" }]));
+	for (const limit of [0, 1, 2, 3, 64]) {
+		const bounded = readSessionTranscript(file, limit).lines.join("\n");
+		assert.ok(bounded.length <= limit);
+		assert.doesNotMatch(bounded, /\x1b|\x07|secret/);
+	}
+	const entry = { type: "message", id: randomUUID(), parentId: manager.getLeafId(), timestamp: new Date().toISOString(),
+		message: assistant([{ type: "text", text: "completed fragment" }]) };
+	const line = JSON.stringify(entry) + "\n", half = Math.floor(line.length / 2);
+	appendFileSync(file, line.slice(0, half));
+	const partialSize = fs.statSync(file).size;
+	readSessionTranscript(file, 64);
+	assert.equal(fs.statSync(file).size, partialSize, "a preview cannot repair or alter a partial append");
+	appendFileSync(file, line.slice(half));
+	assert.match(readSessionTranscript(file, 64).lines.join("\n"), /completed fragment/);
+	const replacement = SessionManager.create(root, join(root, "replacement"));
+	replacement.appendMessage(assistant([{ type: "text", text: "replacement" }]));
+	copyFileSync(replacement.getSessionFile(), file);
+	assert.match(readSessionTranscript(file, 64).lines.join("\n"), /replacement/);
 });

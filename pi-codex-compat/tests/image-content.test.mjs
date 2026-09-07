@@ -24,6 +24,17 @@ test("createImageContent returns Pi's native image block", () => {
 	});
 });
 
+test("native decoding retains strict base64 validation across content-cache hits", async () => {
+	const convert = async () => { throw new Error("PNG should not require conversion"); };
+	for (let i = 0; i < 2; i++) {
+		const result = await prepareNativeImageContent({ data: `${PNG_DATA}`, mimeType: "image/png" }, convert);
+		assert.equal(result.data, PNG_DATA);
+	}
+	for (const data of [`!${PNG_DATA}`, `${PNG_DATA}=`, PNG_DATA.replace(/=/g, "") + "-"]) {
+		await assert.rejects(prepareNativeImageContent({ data }, convert), /invalid image data/);
+	}
+});
+
 test("native image blocks retain their identity", () => {
 	const native = createImageContent(PNG_DATA, "image/png");
 	assert.equal(normalizeLegacyImageBlock(native), native);

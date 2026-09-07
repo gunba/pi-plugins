@@ -506,9 +506,11 @@ function formatTokens(count: number): string {
 
 function usageFromEntry(entry: unknown): AssistantUsage | undefined {
   if (!entry || typeof entry !== "object") return undefined;
-  const candidate = entry as { type?: unknown; message?: { role?: unknown; usage?: AssistantUsage } };
-  if (candidate.type !== "message" || candidate.message?.role !== "assistant") return undefined;
-  return candidate.message.usage;
+  const candidate = entry as { type?: unknown; customType?: unknown; data?: { usage?: AssistantUsage }; usage?: AssistantUsage; message?: { role?: unknown; usage?: AssistantUsage } };
+  if (candidate.type === "custom" && candidate.customType === "pi-subagents/usage-v1") return candidate.data?.usage;
+  if (candidate.type === "compaction" || candidate.type === "branch_summary") return candidate.usage;
+  if (candidate.type !== "message" || !["assistant", "toolResult"].includes(String(candidate.message?.role))) return undefined;
+  return candidate.message?.usage;
 }
 
 function emptySessionStats(): SessionStats {
@@ -525,9 +527,17 @@ function emptySessionStats(): SessionStats {
   };
 }
 
-function computeSessionStats(entries: readonly unknown[]): SessionStats {
+export function computeSessionStats(entries: readonly unknown[]): SessionStats {
   const stats = emptySessionStats();
+  const backgroundCharges = new Set<string>();
   for (const entry of entries) {
+    if (entry && typeof entry === "object" && "customType" in entry && entry.customType === "pi-subagents/usage-v1") {
+      const data = "data" in entry ? entry.data as { childId?: unknown; messageId?: unknown } : undefined;
+      if (typeof data?.childId !== "string" || typeof data.messageId !== "string") continue;
+      const id = `${data.childId}:${data.messageId}`;
+      if (backgroundCharges.has(id)) continue;
+      backgroundCharges.add(id);
+    }
     const usage = usageFromEntry(entry);
     if (!usage) continue;
     stats.totalInput += usage.input || 0;

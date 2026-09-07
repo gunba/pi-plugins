@@ -122,10 +122,29 @@ remain usable.
 
 ## Host boundaries
 
-Pi extensions expose flat JSON function tools only. Freeform custom
-`apply_patch` grammar calls, custom-tool result wire types, namespaced
-`image_gen.imagegen`, provider output schemas, per-image detail metadata,
-provider capability flags, attached-environment routing, native PTY/ConPTY,
+Pi 0.84.3 provides native `constrainedSampling`: `apply_patch` supplies a Lark
+patch grammar, selected by Pi when model metadata enables OpenAI grammar tools.
+Pi also handles custom-tool results; unsupported metadata uses the JSON schema.
+Grammar calls resolve relative paths from the session cwd; use absolute paths
+for other directories. JSON calls may set `workdir`.
+
+Patch locks and staged state use canonical paths, including missing files under
+symlinked directories. Aliases address target content; moving a regular file to
+its own alias is an update. Deleting or moving a symbolic-link entry is rejected:
+unlink that entry explicitly so its target cannot be removed accidentally.
+Cancellation is checked after locks and filesystem operations; rollback settles before locks
+release. Locks coordinate this Pi process, not external filesystem writers or
+adversarial symlink replacement.
+
+Independent exec commands run concurrently; polls sharing a process serialize
+access to its output cursor. Historical image signature checks use native base64
+decoding and a bounded digest-key cache. Vision-description usage passes through
+tool results, and `/pi-usage` includes tool, compaction, branch-summary, and
+background-child usage. Background charges are durable custom records deduplicated
+by invocation ID; the native Pi footer does not count those custom records.
+
+Namespaced `image_gen.imagegen`, provider output schemas, per-image detail metadata,
+attached-environment routing, native PTY/ConPTY,
 Windows Job Object ownership, sandbox/approval ownership, and remote execution
 require Pi core support and are not emulated here.
 

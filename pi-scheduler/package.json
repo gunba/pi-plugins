@@ -5,6 +5,7 @@
   "private": true,
   "keywords": ["pi-package", "pi", "scheduler", "scheduled-messages"],
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "pi": {
     "extensions": ["./extensions/scheduler.ts"]
   },

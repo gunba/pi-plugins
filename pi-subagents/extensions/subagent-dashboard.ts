@@ -293,7 +293,7 @@ export class SubagentDashboard implements Component {
 					? ` Search: ${this.filter || this.theme.fg("dim", "type an id, label, state, or model")}`
 					: this.theme.fg(
 							"dim",
-							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m message · x interrupt · Esc close",
+							" ↑↓/jk agents · / search · PgUp/PgDn transcript · m new task · x interrupt · Esc close",
 						),
 				safeWidth,
 				color,
@@ -412,7 +412,7 @@ export class SubagentDashboard implements Component {
 			agent.activeDurationMs ?? Math.max(0, (agent.finishedAt ?? Date.now()) - agent.createdAt),
 		);
 		const usage = agent.usage
-			? `↑${formatTokens(agent.usage.input)} ↓${formatTokens(agent.usage.output)} · ctx ${formatTokens(agent.usage.contextTokens)} · $${agent.usage.cost.toFixed(4)}`
+			? `↑${formatTokens(agent.usage.input)} ↓${formatTokens(agent.usage.output)} · ctx ${formatTokens(agent.usage.contextTokens)} · $${agent.usage.cost.total.toFixed(4)}`
 			: undefined;
 		const metadata = [
 			this.theme.fg("accent", this.theme.bold(agent.label)),

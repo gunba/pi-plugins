@@ -28,9 +28,10 @@ import {
    truncateToWidth,
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { renderSingleSelectRows } from "./single-select-layout.js";
+import { renderSingleSelectRows } from "./single-select-layout.ts";
 
 import { createRequire } from "node:module";
+import { stripVTControlCharacters } from "node:util";
 const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
@@ -125,14 +126,18 @@ interface AskToolDetails {
 
 type AskUIResult = AskResponse;
 
+function displayText(text: string): string {
+   return stripVTControlCharacters(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
 function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
    return options
       .map((option): QuestionOption | null => {
          if (typeof option === "string") {
-            return { title: option };
+            return { title: displayText(option) };
          }
          if (option && typeof option === "object" && typeof option.title === "string") {
-            return { title: option.title, description: option.description };
+            return { title: displayText(option.title), description: option.description === undefined ? undefined : displayText(option.description) };
          }
          return null;
       })
@@ -1135,7 +1140,7 @@ class AskComponent extends Container {
          }
          const padded = truncateToWidth(line, innerWidth, "", true);
          return `${borderColor(BOX_BORDER_LEFT)}${padded}${borderColor(BOX_BORDER_RIGHT)}`;
-      });
+      }).map((line) => truncateToWidth(line, Math.max(0, width), ""));
    }
 
    private countWrappedLines(text: string, width: number): number {
@@ -1558,7 +1563,7 @@ export default function(pi: ExtensionAPI) {
          }
 
          const {
-            question,
+            question: rawQuestion,
             context,
             options: rawOptions = [],
             allowMultiple = false,
@@ -1585,8 +1590,9 @@ export default function(pi: ExtensionAPI) {
                DEFAULT_COMMENT_TOGGLE_KEY,
             ),
          };
+         const question = displayText(rawQuestion);
          const options = normalizeOptions(rawOptions);
-         const normalizedContext = context?.trim() || undefined;
+         const normalizedContext = context ? displayText(context).trim() || undefined : undefined;
 
          if (!ctx.hasUI || !ctx.ui) {
             const optionText = options.length > 0 ? `\n\nOptions:\n${formatOptionsForMessage(options)}` : "";

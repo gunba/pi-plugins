@@ -84,6 +84,7 @@ test("Pi SDK driver runs a real isolated AgentSession with inherited provider co
 		cwd,
 		agentDir,
 		activeRootLaunchIds: new Set(),
+		isProjectTrusted: () => true,
 		recordRootLaunch() {},
 		deliverRootNotice() { return true; },
 		resolveModel: () => model,
@@ -111,8 +112,10 @@ test("Pi SDK driver runs a real isolated AgentSession with inherited provider co
 	try {
 		const factory = new PiSdkDriverFactory(host);
 		driver = await factory.open({
+			signal: new AbortController().signal,
 			descriptor: {
-				version: 1,
+				version: 2,
+				projectTrusted: true,
 				childSessionId: "offline-child",
 				rootSessionId: "root",
 				parentSessionId: "root",

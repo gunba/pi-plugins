@@ -61,12 +61,12 @@ test("send_message queues strict FIFO later turns and returns no child answer", 
 			parent: harness.parent(),
 		});
 		await waitUntil(() => factory.promptLog.length === 1, "first prompt");
-		const second = harness.runtime.sendMessage(
+		const second = harness.runtime.followupTask(
 			harness.runtime.rootAuthority,
 			started.subagentId,
 			"second",
 		);
-		const third = harness.runtime.sendMessage(
+		const third = harness.runtime.followupTask(
 			harness.runtime.rootAuthority,
 			started.subagentId,
 			"third",
@@ -105,7 +105,7 @@ test("interrupt affects only the current turn and parks queued work until a late
 			parent: harness.parent(),
 		});
 		await waitUntil(() => factory.promptLog.length === 1, "current prompt");
-		harness.runtime.sendMessage(harness.runtime.rootAuthority, started.subagentId, "parked");
+		harness.runtime.followupTask(harness.runtime.rootAuthority, started.subagentId, "parked");
 		assert.equal(
 			harness.runtime.interrupt(harness.runtime.rootAuthority, started.subagentId),
 			true,
@@ -113,7 +113,7 @@ test("interrupt affects only the current turn and parks queued work until a late
 		await waitUntil(() => harness.runtime.snapshot()[0]?.state === "aborted", "aborted turn");
 		assert.deepEqual(factory.promptLog.map((entry) => entry.message), ["current"]);
 		assert.equal(factory.opens[0].interruptions, 1);
-		harness.runtime.sendMessage(harness.runtime.rootAuthority, started.subagentId, "wake");
+		harness.runtime.followupTask(harness.runtime.rootAuthority, started.subagentId, "wake");
 		await waitUntil(() => factory.promptLog.length === 3, "parked queue wake");
 		assert.deepEqual(factory.promptLog.map((entry) => entry.message), [
 			"current",
@@ -142,7 +142,7 @@ test("foreground delegation returns the selected result and is not continuable",
 		});
 		assert.deepEqual(harness.runtime.listAgents(harness.runtime.rootAuthority), []);
 		assert.throws(
-			() => harness.runtime.sendMessage(harness.runtime.rootAuthority, result.runId, "again"),
+			() => harness.runtime.followupTask(harness.runtime.rootAuthority, result.runId, "again"),
 			/not resumable/,
 		);
 		assert.deepEqual(harness.notices, [], "foreground result is not duplicated as a notice");
@@ -162,7 +162,7 @@ test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scop
 			runInBackground: true,
 			parent: harness.parent(),
 		});
-		await waitUntil(() => factory.opens.length === 1, "child activation");
+		await waitUntil(() => factory.opens[0]?.isRunning, "child activation");
 		const childAuthority = factory.opens[0].input.authority;
 		const grandchild = await harness.runtime.start({
 			description: "nested durable worker",
@@ -171,7 +171,7 @@ test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scop
 			runInBackground: true,
 			parent: childParent(harness, child.subagentId, childAuthority),
 		});
-		await waitUntil(() => factory.opens.length === 2, "grandchild activation");
+		await waitUntil(() => factory.opens[1]?.isRunning, "grandchild activation");
 		assert.deepEqual(
 			harness.runtime
 				.listAgents(harness.runtime.rootAuthority, "descendants")
@@ -187,11 +187,11 @@ test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scop
 		);
 
 		assert.throws(
-			() => harness.runtime.sendMessage(harness.runtime.rootAuthority, grandchild.subagentId, "wrong owner"),
+			() => harness.runtime.followupTask(harness.runtime.rootAuthority, grandchild.subagentId, "wrong owner"),
 			/direct parent/,
 		);
 		assert.equal(
-			typeof harness.runtime.sendMessage(childAuthority, grandchild.subagentId, "right owner"),
+			typeof harness.runtime.followupTask(childAuthority, grandchild.subagentId, "right owner"),
 			"string",
 		);
 		assert.equal(
@@ -341,7 +341,7 @@ test("one activation failure terminates every already-accepted message without s
 			runInBackground: true,
 			parent: harness.parent(),
 		});
-		harness.runtime.sendMessage(harness.runtime.rootAuthority, started.subagentId, "second");
+		harness.runtime.followupTask(harness.runtime.rootAuthority, started.subagentId, "second");
 		opening.reject(new Error("model unavailable"));
 		await waitUntil(
 			() => harness.notices.some((notice) => notice.kind === "settlement"),

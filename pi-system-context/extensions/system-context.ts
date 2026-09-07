@@ -1,25 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import { delimiter, extname, join } from "node:path";
-
-type BeforeAgentStartEvent = {
-  systemPrompt: string;
-  systemPromptOptions?: {
-    cwd?: string;
-  };
-};
-
-type BeforeAgentStartResult = {
-  systemPrompt: string;
-};
-
-type PiLike = {
-  on(
-    event: "before_agent_start",
-    handler: (event: BeforeAgentStartEvent) => BeforeAgentStartResult | Promise<BeforeAgentStartResult>,
-  ): void;
-};
 
 type ToolProbe = {
   label: string;
@@ -33,7 +16,7 @@ const TOOL_PROBE_TIMEOUT_MS = 350;
 const MAX_PROMPT_VALUE_LENGTH = 180;
 const MAX_PROMPT_PATH_LENGTH = 240;
 
-let toolCache: { expiresAt: number; summary: string } | undefined;
+let toolCache: { expiresAt: number; summary: Promise<string> } | undefined;
 
 function sanitizePromptValue(value: unknown, fallback = "unknown", maxLength = MAX_PROMPT_VALUE_LENGTH): string {
   const raw = typeof value === "string" ? value : value == null ? "" : String(value);
@@ -138,27 +121,24 @@ function readSettingsShellPath(settingsPath: string): string | undefined {
   }
 }
 
-function configuredShellPath(cwd: string): string | undefined {
+function configuredShellPath(cwd: string, trusted: boolean): string | undefined {
   return (
-    readSettingsShellPath(join(cwd, ".pi", "settings.json")) ??
+    (trusted ? readSettingsShellPath(join(cwd, ".pi", "settings.json")) : undefined) ??
     readSettingsShellPath(join(os.homedir(), ".pi", "agent", "settings.json"))
   );
 }
 
-function versionLine(command: string, args: string[] = ["--version"]): string | undefined {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    timeout: TOOL_PROBE_TIMEOUT_MS,
-    windowsHide: true,
+export function versionLine(command: string, args: string[] = ["--version"]): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile(command, args, {
+      encoding: "utf8", timeout: TOOL_PROBE_TIMEOUT_MS, killSignal: "SIGKILL",
+      maxBuffer: 16_384, windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) return resolve(undefined);
+      const line = `${stdout}\n${stderr}`.split(/\r?\n/).map((item) => item.trim()).find(Boolean);
+      resolve(!line || /not found|not recognized|no such file/i.test(line) ? undefined : line);
+    });
   });
-  if (result.error || result.signal || result.status !== 0) return undefined;
-
-  const line = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .find(Boolean);
-  if (!line || /not found|not recognized|no such file/i.test(line)) return undefined;
-  return line;
 }
 
 function formatPythonVersion(line: string): string | undefined {
@@ -182,7 +162,7 @@ function formatPowerShellVersion(line: string): string | undefined {
   return line ? `ps ${line}` : undefined;
 }
 
-function detectedTools(): string {
+function detectedTools(): Promise<string> {
   const now = Date.now();
   if (toolCache && toolCache.expiresAt > now) return toolCache.summary;
 
@@ -199,15 +179,13 @@ function detectedTools(): string {
     },
   ];
 
-  const tools = probes.flatMap((probe) => {
+  const summary = Promise.all(probes.map(async (probe) => {
     const executable = findExecutable(probe.names);
-    if (!executable) return [];
-    const line = versionLine(executable, probe.args);
-    if (!line) return [];
-    return [sanitizePromptValue(probe.format?.(line) ?? probe.label, probe.label, 80)];
-  });
-
-  const summary = tools.length ? tools.join(", ") : "none detected";
+    if (!executable) return undefined;
+    const line = await versionLine(executable, probe.args);
+    if (!line) return undefined;
+    return sanitizePromptValue(probe.format?.(line) ?? probe.label, probe.label, 80);
+  })).then((results) => results.filter(Boolean).join(", ") || "none detected");
   toolCache = { expiresAt: now + TOOL_CACHE_MS, summary };
   return summary;
 }
@@ -217,13 +195,15 @@ function eventCwd(event: BeforeAgentStartEvent): string {
   return typeof cwd === "string" && cwd.trim() ? cwd : process.cwd();
 }
 
-export default function (pi: PiLike) {
-  pi.on("before_agent_start", (event) => {
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ;
-    const shell = envFirst("SHELL", "ComSpec", "COMSPEC") ?? "unknown";
+export default function (pi: ExtensionAPI) {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ;
+  const shell = envFirst("SHELL", "ComSpec", "COMSPEC") ?? "unknown";
+  const bashPath = findExecutable(["bash"]);
+  const terminal = terminalName();
+  const platform = `${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)} ${sanitizePromptValue(os.release(), "unknown", 80)}`;
+  pi.on("before_agent_start", async (event, ctx) => {
     const cwd = eventCwd(event);
-    const configuredShell = configuredShellPath(cwd);
-    const bashPath = findExecutable(["bash"]);
+    const configuredShell = configuredShellPath(cwd, ctx.isProjectTrusted());
     const shellParts = [`shell: ${compactPromptPath(shell)}`];
     if (configuredShell) shellParts.push(`configured shell: ${compactPromptPath(configuredShell)}`);
     if (bashPath) shellParts.push(`bash: ${compactPromptPath(bashPath)}`);
@@ -231,10 +211,10 @@ export default function (pi: PiLike) {
     const context = [
       "### Local env",
       `- timezone: ${sanitizePromptValue(timeZone)}`,
-      `- os: ${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)} ${sanitizePromptValue(os.release(), "unknown", 80)}`,
-      `- term: ${sanitizePromptValue(terminalName())}; ${shellParts.join("; ")}`,
+      `- os: ${platform}`,
+      `- term: ${sanitizePromptValue(terminal)}; ${shellParts.join("; ")}`,
       `- cwd: ${compactPromptPath(cwd)}`,
-      `- path tools: ${sanitizePromptValue(detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
+      `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 
     return {

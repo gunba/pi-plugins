@@ -358,6 +358,7 @@ export function syncWebSearchTool(
 	const currentlyActive = activeTools.includes("web_search");
 	let eligible = state.eligible ?? currentlyActive;
 	if (state.enabled && !currentlyActive) eligible = false;
+	if (!state.enabled && currentlyActive) eligible = true;
 	const base = activeTools.filter((name) => name !== "web_search");
 	const enabled = eligible && isChatGptCodexModel(model);
 	return {

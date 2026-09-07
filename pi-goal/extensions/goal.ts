@@ -305,6 +305,7 @@ class GoalController {
 	private authority: GoalAuthority = { kind: "none" };
 	private pendingInputs: PendingInput[] = [];
 	private readonly seenContextMessages = new Map<string, number>();
+	private latestIngress: readonly unknown[] = [];
 	private attempt: GoalAttempt | undefined;
 	private pendingWrapup: string | undefined;
 	private lastStopReason: AssistantStopReason | undefined;
@@ -337,6 +338,7 @@ class GoalController {
 	}
 
 	private resetContextTracking(entries: readonly unknown[]): void {
+		this.latestIngress = [];
 		this.seenContextMessages.clear();
 		const messages: unknown[] = [];
 		for (const candidate of entries) {
@@ -353,6 +355,8 @@ class GoalController {
 		const occurrences = new Map<string, number>();
 		const unseen: unknown[] = [];
 		for (const message of messages) {
+			// Tool/model payloads cannot grant authority, including their images.
+			if (!isRecord(message) || (message.role !== "user" && message.role !== "custom")) continue;
 			const key = valueFingerprint(message);
 			if (key === undefined) return undefined;
 			const occurrence = (occurrences.get(key) ?? 0) + 1;
@@ -394,7 +398,10 @@ class GoalController {
 	}
 
 	private admitAuthorityFromContext(messages: readonly unknown[]): void {
-		const unseen = this.rememberContextMessages(messages);
+		this.latestIngress = messages.filter((message) => isRecord(message) && (message.role === "user" || message.role === "custom"));
+		// Authority lasts for this run. Recheck only when new input may change it.
+		if (this.authority.kind !== "none" && this.pendingInputs.length === 0) return;
+		const unseen = this.rememberContextMessages(this.latestIngress);
 		if (unseen === undefined) {
 			this.pendingInputs = [];
 			return;
@@ -704,6 +711,7 @@ class GoalController {
 			this.authority = { kind: "none" };
 			this.pendingInputs = [];
 			this.seenContextMessages.clear();
+			this.latestIngress = [];
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			this.store.disarm();
@@ -825,6 +833,8 @@ class GoalController {
 		) {
 			this.store.disarm();
 		}
+		this.rememberContextMessages(this.latestIngress);
+		this.latestIngress = [];
 		this.attempt = undefined;
 		this.authority = { kind: "none" };
 		this.pendingInputs = [];

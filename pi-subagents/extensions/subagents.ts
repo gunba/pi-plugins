@@ -19,6 +19,9 @@ import {
 } from "./subagent-dashboard.ts";
 import {
 	LAUNCH_ENTRY,
+	BACKGROUND_USAGE_ENTRY,
+	NOTICE_ENTRY,
+	undispatchedNotices,
 	SubagentRuntime,
 	type ModelRef,
 	type ParentNotice,
@@ -26,6 +29,7 @@ import {
 } from "./subagent-runtime.ts";
 import { createSubagentToolDefinitions } from "./subagent-tools.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -100,19 +104,15 @@ function providerWithRequestAuth(
 	const apiKey: ApiKeyAuth = {
 		name: original?.name ?? `${provider.name} parent-session authentication`,
 		...(original?.login ? { login: original.login.bind(original) } : {}),
-		async check(input) {
-			const resolved = await original?.check?.(input);
-			return resolved ?? { type: "api_key", source: "parent session" };
+		async check() {
+			return { type: "api_key", source: "parent session" };
 		},
-		async resolve(input) {
-			const resolved = await original?.resolve(input);
-			return (
-				resolved ?? {
-					auth: requestAuth,
-					...(env && Object.keys(env).length > 0 ? { env } : {}),
-					source: "parent session",
-				}
-			);
+		async resolve() {
+			return {
+				auth: requestAuth,
+				...(env && Object.keys(env).length > 0 ? { env } : {}),
+				source: "parent session",
+			};
 		},
 	};
 	return {
@@ -148,27 +148,20 @@ export async function inheritProviderRuntime(
 	ref: ModelRef,
 	modelRuntime: ModelRuntime,
 	fallback?: CachedProviderAuth,
+	signal?: AbortSignal,
 ): Promise<void> {
+	signal?.throwIfAborted();
 	const model = ctx.modelRegistry.find(ref.provider, ref.id);
 	const provider = ctx.modelRegistry.getProvider(ref.provider);
 	if (!model || !provider)
 		throw new Error(`cannot resolve parent provider ${ref.provider}/${ref.id}`);
 
-	// Register the effective parent provider, but let the fresh child runtime
-	// resolve its own stored credential first. In particular, an OAuth access
-	// token is not an API-key credential: converting it with setRuntimeApiKey()
-	// makes OAuth-only providers such as openai-codex unresolvable.
+	// Preserve native OAuth refresh. API-key inheritance below must instead
+	// use the parent's effective credential, even when the child store resolves.
 	modelRuntime.registerNativeProvider(provider);
 	const childModel = modelRuntime.getModel(ref.provider, ref.id);
 	if (!childModel)
 		throw new Error(`cannot restore child model ${ref.provider}/${ref.id}`);
-	let childAuthError: string | undefined;
-	try {
-		if (await modelRuntime.getAuth(childModel)) return;
-	} catch (error) {
-		childAuthError = errorMessage(error);
-	}
-
 	const modelAuth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
 	let providerAuthError: string | undefined;
@@ -177,23 +170,29 @@ export async function inheritProviderRuntime(
 	} catch (error) {
 		providerAuthError = errorMessage(error);
 	}
+	if (providerAuth?.source === "OAuth") {
+		const childAuth = await modelRuntime.getAuth(childModel, { signal });
+		if (childAuth?.source !== "OAuth" || childAuth.auth.apiKey !== providerAuth.auth.apiKey)
+			throw new Error(`cannot inherit OAuth for ${ref.provider}: parent and child must resolve the same OAuth credential store`);
+		return;
+	}
 	const apiKey =
-		providerAuth?.auth.apiKey ??
 		(modelAuth.ok ? modelAuth.apiKey : undefined) ??
+		providerAuth?.auth.apiKey ??
 		fallback?.apiKey;
 	const headers = {
+		...fallback?.headers,
 		...provider.headers,
 		...providerAuth?.auth.headers,
 		...(modelAuth.ok ? modelAuth.headers : undefined),
-		...fallback?.headers,
 	};
 	const env = {
 		...providerAuth?.env,
 		...(modelAuth.ok ? modelAuth.env : undefined),
 	};
 	const baseUrl =
-		providerAuth?.auth.baseUrl ??
 		(modelAuth.ok ? modelAuth.baseUrl : undefined) ??
+		providerAuth?.auth.baseUrl ??
 		provider.baseUrl;
 	const requestAuth: ModelAuth = {
 		...(apiKey ? { apiKey } : {}),
@@ -202,7 +201,6 @@ export async function inheritProviderRuntime(
 	};
 	if (!apiKey) {
 		const reason =
-			childAuthError ??
 			providerAuthError ??
 			(modelAuth.ok
 				? `no request credential is available for ${ref.provider}`
@@ -210,35 +208,26 @@ export async function inheritProviderRuntime(
 		throw new Error(`cannot inherit authentication for ${ref.provider}: ${reason}`);
 	}
 
-	// A parent may hold a runtime-only credential or a still-valid request token
-	// while the shared store cannot currently resolve. Add an in-memory API-key
-	// fallback only for that exceptional path, then make the credential type
-	// match the fallback resolver.
+	// Runtime API keys and effective request configuration take precedence over
+	// shared stored keys. This override is in memory and rebuilt on activation.
 	modelRuntime.registerNativeProvider(
 		providerWithRequestAuth(provider, requestAuth, env),
 	);
-	await modelRuntime.setRuntimeApiKey(ref.provider, apiKey);
+	await modelRuntime.setRuntimeApiKey(ref.provider, apiKey, { signal });
 	const inheritedModel = modelRuntime.getModel(ref.provider, ref.id);
-	if (!inheritedModel || !(await modelRuntime.getAuth(inheritedModel)))
+	if (!inheritedModel || !(await modelRuntime.getAuth(inheritedModel, { signal })))
 		throw new Error(`cannot inherit authentication for ${ref.provider}`);
-}
-
-export function rootNoticeDelivery(
-	notice: Pick<ParentNotice, "kind">,
-	isIdle: boolean,
-): "steer" | "followUp" {
-	return notice.kind === "settlement" && !isIdle ? "steer" : "followUp";
 }
 
 function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 	const ids = new Set<string>();
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (
-			entry.type === "custom_message" &&
-			entry.customType === "pi-subagents/notice" &&
-			isRecord(entry.details) &&
-			typeof entry.details.messageId === "string"
-		) ids.add(entry.details.messageId);
+			entry.type === "custom" &&
+			entry.customType === NOTICE_ENTRY &&
+			isRecord(entry.data) &&
+			typeof entry.data.messageId === "string"
+		) ids.add(entry.data.messageId);
 	}
 	return ids;
 }
@@ -248,7 +237,6 @@ export default function subagents(pi: ExtensionAPI): void {
 	let runtime: SubagentRuntime | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
-	let toolsRegistered = false;
 	const feed: string[] = [];
 	const providerAuth = new Map<string, CachedProviderAuth>();
 
@@ -296,13 +284,25 @@ export default function subagents(pi: ExtensionAPI): void {
 		currentContext = ctx;
 		const launches = activeLaunchIds(ctx);
 		const rootNotices = deliveredRootNoticeIds(ctx);
-		const queuedRootNotices = new Set<string>();
+		const billed = new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
+			entry.type === "custom" && entry.customType === BACKGROUND_USAGE_ENTRY && isRecord(entry.data)
+				? [`${entry.data.childId}:${entry.data.messageId}`] : []));
+		const recoveredNotices = undispatchedNotices(ctx.sessionManager.getBranch());
+		const steerNotice = (notice: ParentNotice): void => {
+			pi.sendMessage({
+				customType: "pi-subagents/notice",
+				content: notice.content,
+				display: true,
+				details: notice,
+			}, { deliverAs: "steer", triggerTurn: true });
+		};
 		const host: RuntimeHost = {
 			rootSessionId: ctx.sessionManager.getSessionId(),
 			rootSessionFile: ctx.sessionManager.getSessionFile(),
 			cwd: ctx.cwd,
 			agentDir: getAgentDir(),
 			activeRootLaunchIds: launches,
+			isProjectTrusted: () => ctx.isProjectTrusted(),
 			recordRootLaunch(childId: string) {
 				launches.add(childId);
 				pi.appendEntry(LAUNCH_ENTRY, {
@@ -313,33 +313,32 @@ export default function subagents(pi: ExtensionAPI): void {
 			},
 			deliverRootNotice(notice: ParentNotice) {
 				if (rootNotices.has(notice.messageId)) return true;
-				if (queuedRootNotices.has(notice.messageId)) return false;
+				// appendEntry is synchronous: a failed durable append must leave the
+				// sender's outbox pending. Never ACK from message_end (pre-persistence).
+				pi.appendEntry(NOTICE_ENTRY, notice);
+				rootNotices.add(notice.messageId);
+				steerNotice(notice);
 				feed.push(`${new Date().toISOString()} ${noticeLabel(notice)}`);
-				pi.sendMessage(
-					{
-						customType: "pi-subagents/notice",
-						content: notice.content,
-						display: true,
-						details: notice,
-					},
-					{
-						deliverAs: rootNoticeDelivery(notice, ctx.isIdle()),
-						triggerTurn: true,
-					},
-				);
-				queuedRootNotices.add(notice.messageId);
+				if (feed.length > 100) feed.splice(0, feed.length - 100);
 				updateActivity(ctx);
-				return false;
+				return true;
+			},
+			recordBackgroundUsage(childId, messageId, usage) {
+				const id = `${childId}:${messageId}`;
+				if (billed.has(id)) return;
+				pi.appendEntry(BACKGROUND_USAGE_ENTRY, { childId, messageId, usage });
+				billed.add(id);
 			},
 			resolveModel(ref: ModelRef) {
 				return ctx.modelRegistry.find(ref.provider, ref.id);
 			},
-			async prepareModelRuntime(ref, modelRuntime) {
+			async prepareModelRuntime(ref, modelRuntime, signal) {
 				await inheritProviderRuntime(
 					ctx,
 					ref,
 					modelRuntime,
 					providerAuth.get(ref.provider),
+					signal,
 				);
 			},
 		};
@@ -361,21 +360,17 @@ export default function subagents(pi: ExtensionAPI): void {
 		runtime = created;
 		unsubscribeRuntime = created.subscribe(() => updateActivity(ctx));
 		created.initialize();
+		for (const notice of recoveredNotices) steerNotice(notice);
 
-		if (!toolsRegistered) {
-			for (const tool of createSubagentToolDefinitions(
-				requireRuntime,
-				{
-					getAuthority: () => requireRuntime().rootAuthority,
-					getToolNames: () => pi.getActiveTools(),
-				},
-				"root",
-			))
-				pi.registerTool(tool);
-			toolsRegistered = true;
-		}
 		updateActivity(ctx);
 	};
+
+	// Register during discovery, before the SDK snapshots its tool definitions.
+	// Resolve session identity lazily at execution, including after replacement.
+	for (const tool of createSubagentToolDefinitions(requireRuntime, {
+		getAuthority: () => requireRuntime().rootAuthority,
+		getToolNames: () => pi.getActiveTools(),
+	}, "root")) pi.registerTool(tool);
 
 	pi.on("session_start", async (_event, ctx) => {
 		feed.length = 0;
@@ -413,16 +408,6 @@ export default function subagents(pi: ExtensionAPI): void {
 	pi.on("session_tree", async (_event, ctx) => {
 		feed.length = 0;
 		await startRuntime(ctx);
-	});
-
-	pi.on("message_end", (event) => {
-		if (
-			event.message.role !== "custom" ||
-			event.message.customType !== "pi-subagents/notice" ||
-			!isRecord(event.message.details) ||
-			typeof event.message.details.messageId !== "string"
-		) return;
-		runtime?.acknowledgeRootNotice(event.message.details.messageId);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -473,11 +458,11 @@ export default function subagents(pi: ExtensionAPI): void {
 				if (!action) return;
 				if (action.action === "message") {
 					const message = await ctx.ui.editor(
-						`Message ${action.id.slice(0, 8)}`,
+						`New task for ${action.id.slice(0, 8)}`,
 						"",
 					);
 					if (message?.trim()) {
-						const messageId = requireRuntime().sendMessage(
+						const messageId = requireRuntime().followupTask(
 							requireRuntime().rootAuthority,
 							action.id,
 							message,

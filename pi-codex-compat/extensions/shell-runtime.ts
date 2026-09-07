@@ -1303,6 +1303,37 @@ function createExecCall(maxOutputTokens?: number): ExecCall {
 	};
 }
 
+// Independent processes can wait concurrently. A process has one consuming
+// output cursor, so its initial call and subsequent polls must not overlap.
+const cursorQueues = new Map<number, Promise<void>>();
+async function acquireOutputCursor(id: number, signal?: AbortSignal): Promise<() => void> {
+	signal?.throwIfAborted();
+	const previous = cursorQueues.get(id) ?? Promise.resolve();
+	let releaseGate!: () => void;
+	const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+	// A cancelled waiter releases its gate, not the previous owner's cursor.
+	const tail = previous.then(() => gate);
+	cursorQueues.set(id, tail);
+	const release = () => {
+		releaseGate();
+		void tail.then(() => { if (cursorQueues.get(id) === tail) cursorQueues.delete(id); });
+	};
+	let abort: (() => void) | undefined;
+	try {
+		await (signal ? Promise.race([previous, new Promise<never>((_resolve, reject) => {
+			abort = () => reject(signal.reason);
+			signal.addEventListener("abort", abort, { once: true });
+		})]) : previous);
+		signal?.throwIfAborted();
+		return release;
+	} catch (error) {
+		release();
+		throw error;
+	} finally {
+		if (signal && abort) signal.removeEventListener("abort", abort);
+	}
+}
+
 export async function executeManagedExecCommand(
 	params: ExecCommandParams,
 	signal: AbortSignal | undefined,
@@ -1317,7 +1348,9 @@ export async function executeManagedExecCommand(
 		const call = createExecCall(params.max_output_tokens);
 		const workdir = params.workdir ?? ctx.cwd;
 		const session = await createExecSession(params, workdir, signal, owner);
+		let releaseCursor: (() => void) | undefined;
 		try {
+			releaseCursor = await acquireOutputCursor(session.id, signal);
 			const updater = createOutputUpdater(session, call, onUpdate);
 			try {
 				const waitMs = effectiveExecCommandYieldMilliseconds(
@@ -1358,6 +1391,7 @@ export async function executeManagedExecCommand(
 			throw error;
 		} finally {
 			session.activeCalls -= 1;
+			releaseCursor?.();
 			await cleanupSessionLog(session);
 		}
 	} finally {
@@ -1373,7 +1407,15 @@ export async function executeWriteStdin(
 ): Promise<AgentToolResult<ExecCommandDetails>> {
 	validateWriteStdinParams(params);
 	const leaveOperation = await enterExecOperation(signal, owner);
+	let releaseCursor: (() => void) | undefined;
 	try {
+		// Reject foreign and missing handles before waiting for their cursor.
+		await withManagerLock(() => {
+			if (execSessions.get(params.session_id)?.owner !== owner)
+				throw new Error(`write_stdin failed: no unified exec session ${params.session_id}`);
+		});
+		releaseCursor = await acquireOutputCursor(params.session_id, signal);
+		signal?.throwIfAborted();
 		const call = createExecCall(params.max_output_tokens);
 		const session = await withManagerLock(() => {
 			const current = execSessions.get(params.session_id);
@@ -1414,6 +1456,7 @@ export async function executeWriteStdin(
 			await cleanupSessionLog(session);
 		}
 	} finally {
+		releaseCursor?.();
 		leaveOperation();
 	}
 }

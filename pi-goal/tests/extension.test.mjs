@@ -430,6 +430,21 @@ test("admitted authority expires when the agent run settles", async () => {
 	);
 });
 
+test("admitted runs fingerprint new ingress once at settlement, not every provider request", async () => {
+	const harness = createExtensionHarness({ idle: false });
+	await harness.start();
+	await harness.directInput("work on this goal");
+	let traversals = 0;
+	const details = new Proxy({}, { ownKeys() { traversals++; return []; } });
+	for (let i = 0; i < 5; i++) await harness.emit("context", { messages: [
+		{ role: "toolResult", content: details, timestamp: 2 },
+		{ role: "custom", customType: "report", content: "finding", details, timestamp: 3 },
+	] });
+	assert.equal(traversals, 0);
+	await harness.emit("agent_settled");
+	assert.equal(traversals, 1, "only ingress is fingerprinted, once, before authority expires");
+});
+
 test("unfingerprintable later context cannot revoke admitted run authority", async () => {
 	const harness = createExtensionHarness({ idle: false });
 	await harness.start();

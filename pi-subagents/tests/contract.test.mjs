@@ -47,6 +47,7 @@ function extensionHarness() {
 		modelRegistry: { find: (provider, id) => ({ provider, id }) },
 		ui,
 		mode: "tui",
+		isProjectTrusted: () => true,
 	};
 	subagents(pi);
 	return { root, manager, tools, handlers, commands, ctx };
@@ -55,7 +56,7 @@ function extensionHarness() {
 test("root exposes only the DSH-standard subagent contract", async () => {
 	const harness = extensionHarness();
 	try {
-		assert.deepEqual(harness.tools, [], "tools register after session identity is known");
+		assert.equal(harness.tools.length, 6, "tools register during discovery and resolve runtime identity lazily");
 		await harness.handlers.get("session_start")[0]({}, harness.ctx);
 		assert.deepEqual(
 			harness.tools.map((tool) => tool.name),
@@ -63,6 +64,7 @@ test("root exposes only the DSH-standard subagent contract", async () => {
 				"subagent",
 				"subagent_fork",
 				"send_message",
+				"followup_task",
 				"interrupt_agent",
 				"list_agents",
 			],
@@ -126,8 +128,8 @@ test("control schemas pin FIFO, current-turn interrupt, and discovery semantics"
 			Object.keys(byName.get("send_message").parameters.properties),
 			["subagent_id", "message"],
 		);
-		assert.match(byName.get("send_message").description, /FIFO later turn/i);
-		assert.match(byName.get("send_message").description, /never the child's answer/i);
+		assert.match(byName.get("send_message").description, /Steer a running direct child/i);
+		assert.match(byName.get("followup_task").description, /Queued FIFO/i);
 		assert.deepEqual(
 			Object.keys(byName.get("interrupt_agent").parameters.properties),
 			["agent_id"],
@@ -171,11 +173,11 @@ test("report is child-scoped and appears only for continuable children", () => {
 	const binding = { getAuthority: () => ({}) };
 	assert.deepEqual(
 		createSubagentToolDefinitions(runtime, binding, "root").map((tool) => tool.name),
-		["subagent", "subagent_fork", "send_message", "interrupt_agent", "list_agents"],
+		["subagent", "subagent_fork", "send_message", "followup_task", "interrupt_agent", "list_agents"],
 	);
 	assert.deepEqual(
 		createSubagentToolDefinitions(runtime, binding, "one-shot").map((tool) => tool.name),
-		["subagent", "subagent_fork", "send_message", "interrupt_agent", "list_agents"],
+		["subagent", "subagent_fork", "send_message", "followup_task", "interrupt_agent", "list_agents"],
 	);
 	const continuable = createSubagentToolDefinitions(runtime, binding, "continuable");
 	assert.equal(continuable.at(-1).name, "report");

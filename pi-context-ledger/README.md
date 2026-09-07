@@ -3,10 +3,9 @@
 A TUI-only breakdown of everything Pi loaded *before* you started talking.
 
 When you launch a Pi session you see startup rows (`[Context]`, `[Skills]`, …)
-and then type your first message. Pi has many guards against context bloat
-*during* a conversation (e.g. `pi-memedit`) but none for the context you pay for
-on turn one. This extension fills that gap: right after your first message it
-inserts a compact card summarising the initial context budget.
+and then type your first message. This extension inserts a compact card
+summarising the initial context budget, so you can see what contributes to
+context use on turn one.
 
 Collapsed (default) — one bar per category, biggest-first, with a teaser of the
 top contributor in each:
