@@ -1484,6 +1484,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"Apply Codex-style file patches using the apply_patch patch envelope",
 		promptGuidelines: [
 			"Use apply_patch for manual file edits when a Codex-style patch is natural; pass the whole patch body as the `input` string.",
+			"Use surrounding unchanged lines in apply_patch hunks to target repeated text precisely; do not replace manual edits with Python, PowerShell, or shell text-rewrite scripts.",
 			"Grammar-mode patches use the session cwd; use absolute paths for other directories. JSON calls may set workdir.",
 			"apply_patch input must use the Codex envelope: `*** Begin Patch`, one or more Add/Delete/Update File sections, and `*** End Patch`.",
 			"apply_patch supports `*** Move to:` and heredoc bodies copied from structurally valid `apply_patch <<'PATCH'` shell snippets.",

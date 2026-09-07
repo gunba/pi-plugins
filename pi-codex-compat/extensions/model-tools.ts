@@ -13,6 +13,7 @@ export type ToolActivationState = {
 	enabled: boolean;
 	eligibleToolNames?: string[];
 	managedToolNames?: string[];
+	suppressedEditWasActive?: boolean;
 };
 
 export const CODEX_COMPAT_TOOL_NAMES = [
@@ -32,6 +33,7 @@ export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
  * host-owned bash behavior while Unified Exec remains a plain-pipe fallback.
  */
 export const PRESERVE_BUILTIN_BASH = true;
+export const PREFER_APPLY_PATCH_OVER_EDIT = true;
 
 function mergeToolNames(...groups: string[][]): string[] {
 	return [...new Set(groups.flat())];
@@ -141,16 +143,29 @@ export function syncCodexCompatTools(
 	}
 	eligibleToolNames = mergeToolNames(eligibleToolNames, activeOwnedTools);
 
-	const base = withoutCodexCompatTools(activeTools);
 	const adapterTools = toolsForModel(model, capabilities).filter((name) =>
 		eligibleToolNames.includes(name),
 	);
+	let base = withoutCodexCompatTools(activeTools);
+	let suppressedEditWasActive = state.suppressedEditWasActive === true;
+	if (
+		PREFER_APPLY_PATCH_OVER_EDIT &&
+		adapterTools.includes("apply_patch")
+	) {
+		suppressedEditWasActive =
+			suppressedEditWasActive || base.includes("edit");
+		base = base.filter((name) => name !== "edit");
+	} else if (suppressedEditWasActive) {
+		base = mergeToolNames(base, ["edit"]);
+		suppressedEditWasActive = false;
+	}
 	return {
 		activeTools: mergeToolNames(base, adapterTools),
 		state: {
 			enabled: adapterTools.length > 0,
 			eligibleToolNames,
 			managedToolNames: adapterTools,
+			...(suppressedEditWasActive && { suppressedEditWasActive: true }),
 		},
 	};
 }

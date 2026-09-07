@@ -3,7 +3,11 @@
 Codex-shaped `apply_patch`, `exec_command`, `write_stdin`, `view_image`, and
 `image_gen` tools for Pi. The overlay activates for compatible Codex/OpenAI
 models with exact provider/API checks and preserves the rest of the active tool
-set without resurrecting tools removed while the overlay is active. Pi's
+set without resurrecting tools removed while the overlay is active. When
+`apply_patch` is active, the overlay suppresses built-in `edit` so Codex models
+use contextual patch hunks for repeated text instead of falling back to
+text-rewrite scripts. Disabling `apply_patch` or changing to another model
+restores `edit` if it was previously active. Pi's
 built-in `bash` deliberately remains visible beside `exec_command`: suppressing
 it would lose host-owned behavior, and Pi does not expose enough state to later
 distinguish extension suppression from a manual disable. Generated images are
@@ -16,7 +20,8 @@ Text-only Codex models use an authenticated image-capable model for concise
 `apply_patch` accepts the Codex Begin/End Patch envelope through Pi's JSON
 function fallback. Add, delete, update, move, CRLF, EOF markers, blank context,
 and the four Codex context-matching tiers are supported. Repeated pure additions
-at the same location retain patch order. Shell interception uses a structural
+at the same location retain patch order. Unchanged hunk context targets repeated
+text precisely. Shell interception uses a structural
 recognizer for the complete `apply_patch <<DELIMITER` and
 `cd <one argument> && apply_patch <<DELIMITER` forms; extra commands, arguments,
 connectors, redirects, or expansions are left to the normal shell.

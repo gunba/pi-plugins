@@ -130,6 +130,49 @@ test("direct apply_patch expanded rendering shows its effective diff", async (t)
 	assert.doesNotMatch(expanded, /Applied patch\./);
 });
 
+test("apply_patch uses unchanged hunk context to target repeated text", async (t) => {
+	const cwd = await makeWorkspace(t);
+	await writeFile(
+		join(cwd, "repeated.txt"),
+		[
+			"first section",
+			"target",
+			"first ending",
+			"second section",
+			"target",
+			"second ending",
+			"",
+		].join("\n"),
+	);
+	const result = await executePatch(
+		cwd,
+		[
+			"*** Begin Patch",
+			"*** Update File: repeated.txt",
+			"@@",
+			" second section",
+			"-target",
+			"+changed",
+			" second ending",
+			"*** End Patch",
+		].join("\n"),
+	);
+
+	assert.equal(result.details.exitCode, 0);
+	assert.equal(
+		await readFile(join(cwd, "repeated.txt"), "utf8"),
+		[
+			"first section",
+			"target",
+			"first ending",
+			"second section",
+			"changed",
+			"second ending",
+			"",
+		].join("\n"),
+	);
+});
+
 test("apply_patch reports one original-to-final change and omits net no-ops", async (t) => {
 	const cwd = await makeWorkspace(t);
 	await writeFile(join(cwd, "changed.txt"), "original\n");

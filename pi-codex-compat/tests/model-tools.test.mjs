@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+	PREFER_APPLY_PATCH_OVER_EDIT,
 	PRESERVE_BUILTIN_BASH,
 	isCodexLikeModel,
 	isImageGenerationModel,
@@ -100,12 +101,14 @@ test("image activation requires configured auth while retaining the text-only Pi
 	);
 });
 
-test("activation preserves unrelated tools and explicitly keeps built-in bash", () => {
+test("activation preserves unrelated tools, keeps bash, and prefers apply_patch over edit", () => {
 	assert.equal(PRESERVE_BUILTIN_BASH, true);
+	assert.equal(PREFER_APPLY_PATCH_OVER_EDIT, true);
 	const enabled = syncCodexCompatTools(
 		[
 			"read",
 			"bash",
+			"edit",
 			"custom_search",
 			"apply_patch",
 			"exec_command",
@@ -134,7 +137,12 @@ test("activation preserves unrelated tools and explicitly keeps built-in bash", 
 		enabled.state,
 		AUTHENTICATED,
 	);
-	assert.deepEqual(disabled.activeTools, ["read", "bash", "custom_search"]);
+	assert.deepEqual(disabled.activeTools, [
+		"read",
+		"bash",
+		"custom_search",
+		"edit",
+	]);
 });
 
 test("resynchronization never resurrects manually disabled base or compatibility tools", () => {
@@ -142,6 +150,7 @@ test("resynchronization never resurrects manually disabled base or compatibility
 		[
 			"read",
 			"bash",
+			"edit",
 			"custom_search",
 			"apply_patch",
 			"exec_command",
@@ -194,6 +203,8 @@ test("resynchronization never resurrects manually disabled base or compatibility
 	);
 	assert.equal(back.activeTools.includes("custom_search"), false);
 	assert.equal(back.activeTools.includes("view_image"), false);
+	assert.equal(away.activeTools.includes("edit"), true);
+	assert.equal(back.activeTools.includes("edit"), false);
 });
 
 test("activation never widens an explicit active-tool allowlist", () => {
@@ -204,4 +215,36 @@ test("activation never widens an explicit active-tool allowlist", () => {
 		AUTHENTICATED,
 	);
 	assert.deepEqual(restricted.activeTools, ["read", "bash"]);
+
+	const editOnly = syncCodexCompatTools(
+		["read", "edit"],
+		{ provider: "openai-codex", id: "gpt-5.6" },
+		EMPTY_STATE,
+	);
+	assert.deepEqual(editOnly.activeTools, ["read", "edit"]);
+});
+
+test("disabling apply_patch restores edit and re-enabling it suppresses edit again", () => {
+	const enabled = syncCodexCompatTools(
+		["read", "edit", "apply_patch", "exec_command", "write_stdin"],
+		{ provider: "openai-codex", id: "gpt-5.6" },
+		EMPTY_STATE,
+	);
+	assert.equal(enabled.activeTools.includes("edit"), false);
+
+	const applyPatchDisabled = syncCodexCompatTools(
+		enabled.activeTools.filter((name) => name !== "apply_patch"),
+		{ provider: "openai-codex", id: "gpt-5.6" },
+		enabled.state,
+	);
+	assert.equal(applyPatchDisabled.activeTools.includes("apply_patch"), false);
+	assert.equal(applyPatchDisabled.activeTools.includes("edit"), true);
+
+	const applyPatchRestored = syncCodexCompatTools(
+		[...applyPatchDisabled.activeTools, "apply_patch"],
+		{ provider: "openai-codex", id: "gpt-5.6" },
+		applyPatchDisabled.state,
+	);
+	assert.equal(applyPatchRestored.activeTools.includes("apply_patch"), true);
+	assert.equal(applyPatchRestored.activeTools.includes("edit"), false);
 });
