@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -28,6 +28,7 @@
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
+      "./pi-session-memory/extensions/session-memory.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",

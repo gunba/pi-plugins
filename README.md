@@ -55,6 +55,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
+- `pi-session-memory` — bounds long-running Pi processes by releasing obsolete
+  message, tool-result, image, and old-summary payloads from memory after
+  compaction. The active context and current-branch extension state remain
+  available, while the append-only JSONL session archive stays complete.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
