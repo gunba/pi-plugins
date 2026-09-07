@@ -135,6 +135,14 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadI
     throw new TypeError("Native model metadata.slug must exactly match body.model");
   }
   const result = structuredClone(body);
+  for (const value of array(result.input ?? [], "input")) {
+    const item = object(value, "input item");
+    const prefix = item.type === "custom_tool_call" ? "ctc_" : item.type === "function_call" ? "fc_" : undefined;
+    // Pi can replay a stored function call as a grammar/custom call. Item IDs
+    // belong to their original wire type; never invent a replacement server ID.
+    // The optional item ID can be omitted without changing call_id/result pairing.
+    if (prefix && (typeof item.id !== "string" || !item.id.startsWith(prefix))) delete item.id;
+  }
   const lite = booleanField(metadata.use_responses_lite, false, "use_responses_lite");
   const sourceReasoning = result.reasoning == null ? {} : object(result.reasoning, "reasoning");
   const effort = requestEffort(sourceReasoning.effort ?? metadata.default_reasoning_level, metadata);

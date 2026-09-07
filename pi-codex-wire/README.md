@@ -46,7 +46,7 @@ For another OS, or to reproduce a captured native profile exactly, supply `--cod
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
 - Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Effort mapping follows the 0.153.4 rules; parallel calls follow the prompt and are disabled in Lite mode.
 - Allowance counters from WebSocket upgrades, stream events and SSE responses are forwarded to `pi-codex-compat` through `pi-codex-wire:allowance`. The event contains only allowlisted counters and plan labels. The footer updates passively, including when the 7-day window is reported as the primary window.
-- Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON.
+- Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
 On the first model request, the plugin reads `/codex/models?client_version=0.153.4` using the existing account credential and the selected native identity profile. It keeps only capability fields, not model instructions. Both emulation modes use this same catalog identity deliberately, so the client-label comparison holds capabilities constant.
 

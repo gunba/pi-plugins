@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import { shapeModelBody as shape, normalizeLiteEvent } from '../extensions/model-shape.ts';
 const shapeModelBody = (body, metadata, threadId = 'test-thread') => shape(body, metadata, threadId);
 
@@ -14,6 +15,48 @@ function freeze(value) {
   }
   return value;
 }
+
+for (const lite of [false, true]) test(`replayed tool item IDs match their wire type (Lite=${lite})`, () => {
+  const input = [
+    { type: 'custom_tool_call', id: 'fc_legacy', call_id: 'call_1', name: 'apply_patch', input: 'patch' },
+    { type: 'custom_tool_call_output', call_id: 'call_1', output: 'done' },
+    { type: 'custom_tool_call', id: 'ctc_original', call_id: 'call_2', name: 'apply_patch', input: 'patch' },
+    { type: 'function_call', id: 'ctc_old', call_id: 'call_3', name: 'read', arguments: '{}' },
+    { type: 'function_call', id: 'fc_original', call_id: 'call_4', name: 'read', arguments: '{}' },
+    { type: 'reasoning', id: 'rs_original', encrypted_content: 'opaque' },
+  ];
+  const original = freeze(body({ input }));
+  const result = shapeModelBody(original, metadata({ use_responses_lite: lite })).input;
+  const calls = result.filter(item => item.call_id);
+  assert.equal('id' in calls[0], false);
+  assert.equal(calls[0].call_id, calls[1].call_id);
+  assert.equal(calls[2].id, 'ctc_original');
+  assert.equal('id' in calls[3], false);
+  assert.equal(calls[4].id, 'fc_original');
+  assert.equal(result.find(item => item.type === 'reasoning').id, 'rs_original');
+  assert.equal(original.input[0].id, 'fc_legacy');
+});
+
+test('real Pi serializer replays saved apply_patch calls with valid custom IDs and paired results', () => {
+  const model = { id: 'test', provider: 'openai-codex', api: 'openai-codex-responses', reasoning: true, input: ['text'] };
+  for (const id of ['call_saved|fc_original', 'call_saved|ctc_original']) {
+    const messages = JSON.parse(JSON.stringify([
+      { role: 'assistant', provider: model.provider, api: model.api, model: model.id, timestamp: 1,
+        stopReason: 'toolUse', content: [{ type: 'toolCall', id, name: 'apply_patch', arguments: { input: 'patch' } }] },
+      { role: 'toolResult', toolCallId: id, toolName: 'apply_patch', timestamp: 2,
+        content: [{ type: 'text', text: 'done' }], isError: false },
+    ]));
+    const serialized = convertResponsesMessages(model, { messages }, new Set(['openai-codex']),
+      { grammarToolInputProperties: new Map([['apply_patch', 'input']]), includeSystemPrompt: false });
+    const result = shapeModelBody(body({ input: serialized }), metadata({ use_responses_lite: true })).input;
+    const call = result.find(item => item.type === 'custom_tool_call');
+    assert.ok(call);
+    assert.ok(call.id === undefined || call.id.startsWith('ctc_'));
+    assert.equal(call.input, 'patch');
+    assert.equal(result.find(item => item.type === 'custom_tool_call_output').call_id, call.call_id);
+    assert.equal(messages[0].content[0].id, id);
+  }
+});
 
 test('native defaults, encrypted reasoning include, strict false, no mutation', () => {
   const input = freeze(body({ temperature: 0.7 }));

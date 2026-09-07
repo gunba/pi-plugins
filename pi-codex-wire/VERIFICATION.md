@@ -3,6 +3,15 @@
 Environment: Windows 10.0.26100, Node 22.22.3, Pi 0.84.3.
 Protocol reference: Codex 0.153.4, commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
 
+## Tool-call replay ID correction
+
+A saved `apply_patch` function call was reproduced locally through Pi's actual serializer: grammar-tool replay produced a `custom_tool_call` retaining an incompatible `fc_` item ID. The request shaper now omits optional item IDs whose prefix does not match the outgoing call type, for both standard Responses and Responses Lite. It preserves compatible IDs, `call_id`/result pairing, reasoning items and stored messages rather than inventing replacement server IDs. Native `protocol/src/models.rs` defines the custom-call item ID as optional.
+
+- Repository TypeScript check: passed.
+- Model shaping, extension and transport regressions: **45 passed, 0 failed**.
+- Read-only reproduction using the reported saved call and result: mismatch reproduced; both formats corrected; pairing and source objects unchanged.
+- No session-file edits or network inference requests were used for verification.
+
 ## Allowance and connection reliability update
 
 The allowance display observed Pi's global WebSocket implementation, but Wire uses the separate `ws` package. Wire now forwards allowlisted counters and plan labels through the extension event bus, including upgrades, prewarm events, normal WebSocket events and SSE. Tests cover a primary 7-day window, persisted values, footer updates, privacy filtering and listener cleanup.
