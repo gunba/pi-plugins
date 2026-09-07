@@ -1,0 +1,24 @@
+{
+  "name": "pi-codex-wire",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Opt-in Codex wire-protocol emulation and controlled identity diagnostics for Pi",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extensions/index.ts"] },
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "dependencies": {
+    "https-proxy-agent": "7.0.6",
+    "ws": "8.21.0"
+  },
+  "devDependencies": { "@types/ws": "^8.18.1" },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true }
+  }
+}

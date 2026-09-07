@@ -77,6 +77,16 @@ Custom Pi extensions packaged as one auto-updatable Pi package.
 
 ## Install
 
+### Opt-in transport comparison
+
+[`pi-codex-wire`](pi-codex-wire/README.md) is a separate, disabled-by-default
+workspace package. It keeps Pi's agent loop while reproducing the verified
+Codex 0.147.0 transport and providing controlled client-identity comparisons.
+The linked guide covers activation, privacy-safe diagnostics and testing.
+It is not part of the automatic extension manifest.
+
+### Standard extensions
+
 ```bash
 pi install git:github.com/gunba/pi-plugins
 ```
