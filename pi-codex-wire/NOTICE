@@ -1,7 +1,7 @@
 OpenAI Codex
 Copyright 2025 OpenAI
 
-Pi Codex Wire adapts the Codex 0.147.0 protocol algorithms into TypeScript.
+Pi Codex Wire adapts the Codex 0.153.4 protocol algorithms into TypeScript.
 The implementation is modified for Pi's provider, tool and session interfaces.
 
 The native Windows identity helper follows the APIs and architecture mapping

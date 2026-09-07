@@ -31,7 +31,7 @@ const body = { model: "gpt-6-astra", input: [{ role: "user", content: "PRIVATE P
 const completed = id => ({ type: "response.completed", response: { id, status: "completed", output: [], service_tier: "default", usage: { input_tokens: 100, output_tokens: 2, input_tokens_details: { cached_tokens: 98 } } } });
 function exchange(f, overrides = {}) { return { url: f.url, body: f.protocol.shapeBody(body), headers: f.protocol.headers(new Headers({ authorization: "Bearer SECRET", "chatgpt-account-id": "PRIVATE ACCOUNT" })), requestId: "test", timeoutMs: 3000, ...overrides }; }
 
-test("WebSocket prewarms, sends deltas and captures per-frame sticky token", async t => {
+test("WebSocket prewarms per connection, continues across turns and renews warmup on reconnect", async t => {
   const f = await fixture(t);
   const wss = new WebSocketServer({ server: f.server });
   t.after(() => wss.close());
@@ -45,6 +45,7 @@ test("WebSocket prewarms, sends deltas and captures per-frame sticky token", asy
     });
   });
   await (await f.transport.request(exchange(f))).text();
+  f.protocol.beginTurn();
   await (await f.transport.request(exchange(f))).text();
   assert.equal(frames.length, 3);
   assert.equal(frames[0].generate, false);
@@ -52,6 +53,11 @@ test("WebSocket prewarms, sends deltas and captures per-frame sticky token", asy
   assert.deepEqual(frames[1].input, []);
   assert.equal(frames[1].client_metadata["x-codex-turn-state"], "PRIVATE ROUTING TOKEN");
   assert.equal(frames[2].previous_response_id, "resp_2");
+  assert.equal(frames[2].client_metadata["x-codex-turn-state"], undefined);
+  f.transport.close();
+  await (await f.transport.request(exchange(f))).text();
+  assert.equal(frames.length, 5);
+  assert.equal(frames[3].generate, false);
   const log = readFileSync(f.log, "utf8");
   for (const secret of ["PRIVATE PROMPT", "SECRET", "PRIVATE ACCOUNT", "PRIVATE ROUTING TOKEN"]) assert.equal(log.includes(secret), false);
   assert.match(log, /"cached_tokens":98/);
@@ -227,7 +233,7 @@ test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over We
   async function call(requestId) {
     let outgoing;
     const response = streamSimple(model, context, { apiKey: jwt, reasoning: "medium", transport: "sse",
-      onPayload: value => { outgoing = shapeModelBody(f.protocol.shapeBody(value), metadata); return value; },
+      onPayload: value => { outgoing = shapeModelBody(f.protocol.shapeBody(value), metadata, f.protocol.threadId); return value; },
       fetch: async () => {
         const request = exchange(f, { body: outgoing, requestId, normalizeEvent: normalizeLiteEvent });
         request.headers.set("x-openai-internal-codex-responses-lite", "true");
@@ -238,7 +244,7 @@ test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over We
     assert.equal(message.stopReason, "toolUse", message.errorMessage);
     const replay = convertResponsesMessages(model, { messages: [message] }, new Set(["openai-codex"]), { includeSystemPrompt: false })
       .filter(item => !["function_call_output", "custom_tool_call_output"].includes(item.type));
-    f.transport.setReplayOutput(requestId, shapeModelBody({ model: model.id, tools: [], input: replay }, metadata).input.slice(1));
+    f.transport.setReplayOutput(requestId, shapeModelBody({ model: model.id, tools: [], input: replay }, metadata, f.protocol.threadId).input.slice(1));
     return message;
   }
   const message = await call("first");

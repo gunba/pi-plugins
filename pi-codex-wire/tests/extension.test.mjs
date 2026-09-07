@@ -7,25 +7,29 @@ import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
+import { saveDefaultMode } from "../extensions/settings.ts";
 
 const model = { id: "gpt-6-astra", name: "Astra", api: "openai-codex-responses", provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api",
   reasoning: true, input: ["text"], cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 };
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "FAKE ACCOUNT" } })).toString("base64url")}.x`;
 
-function harness(t, mode = "codex") {
+function harness(t, mode = "codex", savedDefault) {
   const directory = mkdtempSync(join(tmpdir(), "pi-wire-ext-"));
   const old = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = directory;
   t.after(() => { if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old; rmSync(directory, { recursive: true, force: true }); });
   const events = new Map(), commands = new Map(), flags = new Map([["codex-wire", mode], ["codex-wire-transport", "sse"], ["codex-wire-user-agent", identity.userAgent]]);
+  if (mode === null) flags.delete("codex-wire");
+  if (savedDefault) saveDefaultMode(join(directory, "codex-wire"), savedDefault);
   const original = { id: "openai-codex", name: "OpenAI Codex", stream, streamSimple, getModels: () => [model] };
   let provider = original;
   const entries = [];
   const api = { appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on: (name, fn) => events.set(name, fn), registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
-  const ctx = { ui: { notify() {}, setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries }, isIdle: () => true };
+  const notices = [];
+  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));
-  return { directory, events, commands, ctx, original, flags, provider: () => provider };
+  return { directory, events, commands, ctx, original, flags, notices, provider: () => provider };
 }
 
 function decode(init) {
@@ -65,6 +69,7 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
   assert.equal(result.usage.cacheRead, 90);
   assert.equal(catalogCalls, 1);
   assert.equal(captured[0].headers.get("originator"), "codex_cli_rs");
+  assert.equal(captured[0].headers.get("x-codex-routing-hint"), "model=gpt-6-astra");
   assert.equal(captured[0].body.reasoning.effort, "medium");
   assert.equal(captured[0].body.text.verbosity, "medium");
   assert.equal(captured[0].body.tools[0].strict, false);
@@ -124,4 +129,52 @@ test("invalid identity/compression flags cannot replace an active provider", asy
   h.flags.set("codex-wire-compression", "invalid");
   await h.commands.get("codex-wire").handler("pi", h.ctx);
   assert.strictEqual(h.provider(), active);
+});
+
+test("a saved default is reused on startup, reload, resume, fork and new sessions", async t => {
+  const h = harness(t, null);
+  assert.strictEqual(h.provider(), h.original);
+  await h.commands.get("codex-wire").handler("default codex", h.ctx);
+  assert.strictEqual(h.provider(), h.original, "saving alone must not replace the active provider");
+  for (const reason of ["startup", "reload", "resume", "fork", "new"]) {
+    h.events.get("session_shutdown")({}, h.ctx);
+    h.events.get("session_start")({ reason }, h.ctx);
+    assert.notStrictEqual(h.provider(), h.original);
+  }
+  await h.commands.get("codex-wire").handler("default off", h.ctx);
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({}, h.ctx);
+  assert.strictEqual(h.provider(), h.original);
+});
+
+test("an explicit off flag overrides a saved codex default", t => {
+  const h = harness(t, "off", "codex");
+  assert.strictEqual(h.provider(), h.original);
+});
+
+test("real Pi streaming accepts an unlisted model with native fallback and truthful status", async t => {
+  const h = harness(t);
+  const command = h.commands.get("codex-wire");
+  await command.handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /Last request: not tested/);
+  let sent = 0;
+  const fakeFetch = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: "gpt-5.6-sol", use_responses_lite: true }] });
+    const body = decode(init); sent++;
+    assert.equal(body.model, "gpt-6-astra");
+    assert.equal(body.reasoning.effort, "medium");
+    assert.equal(body.reasoning.summary, "auto");
+    assert.equal(body.parallel_tool_calls, true);
+    assert.equal(body.text, undefined);
+    assert.equal(new Headers(init.headers).get("x-openai-internal-codex-responses-lite"), null);
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[]}}\n\n', { headers: { "content-type": "text/event-stream" } });
+  };
+  for (let i = 0; i < 2; i++) {
+    const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoning: "medium", fetch: fakeFetch }).result();
+    assert.equal(result.stopReason, "stop", result.errorMessage);
+  }
+  assert.equal(sent, 2);
+  assert.equal(h.notices.filter(text => text.includes("unlisted")).length, 1);
+  await command.handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /Last request: succeeded \(stop\)/);
 });

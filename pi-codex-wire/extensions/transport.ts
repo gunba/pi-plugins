@@ -84,8 +84,6 @@ export class WireTransport {
     fetcher: typeof fetch = globalThis.fetch, env: NodeJS.ProcessEnv = process.env,
   ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; }
 
-  beginTurn(): void { this.prewarmed = false; }
-
   setReplayOutput(requestId: string, output: unknown[]): void {
     if (this.continuation?.requestId !== requestId) return;
     // Unknown/lost response items must not be silently bypassed by a delta.
@@ -102,6 +100,7 @@ export class WireTransport {
     this.socket?.terminate();
     this.socket = undefined;
     this.continuation = undefined;
+    this.prewarmed = false;
   }
 
   private recordHeaders(headers: Headers, status: number, requestId: string): void {

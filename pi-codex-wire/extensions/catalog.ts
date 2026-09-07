@@ -4,7 +4,33 @@ import type { Identity } from "./identity.ts";
 
 const fields = ["slug", "use_responses_lite", "supports_reasoning_summaries", "supports_reasoning_summary_parameter",
   "default_reasoning_summary", "default_reasoning_level", "supported_reasoning_levels", "support_verbosity", "default_verbosity",
-  "supports_parallel_tool_calls", "supports_image_detail_original", "service_tiers", "default_service_tier"];
+  "multi_agent_reasoning_effort", "supports_image_detail_original", "service_tiers", "default_service_tier"];
+
+/** Codex 0.153.4 models-manager/src/{manager,model_info}.rs.
+ * Metadata lookup is not an entitlement check and never changes the model ID.
+ */
+export function resolveModelMetadata(id: string, entries: JsonObject[]): JsonObject {
+  const longestPrefix = (name: string) => {
+    let best: JsonObject | undefined;
+    for (const candidate of entries) {
+      const slug = candidate.slug;
+      if (typeof slug === "string" && name.startsWith(slug) &&
+        (!best || slug.length > (best.slug as string).length)) best = candidate;
+    }
+    return best;
+  };
+  const namespaced = /^[a-zA-Z0-9_-]+\/([^/]*)$/.exec(id);
+  const match = longestPrefix(id) ?? (namespaced ? longestPrefix(namespaced[1]) : undefined);
+  if (match) return { ...structuredClone(match), slug: id, used_fallback_model_metadata: false };
+  return {
+    slug: id, used_fallback_model_metadata: true,
+    default_reasoning_level: null, supported_reasoning_levels: [],
+    supports_reasoning_summary_parameter: true, default_reasoning_summary: "auto",
+    support_verbosity: false, default_verbosity: null,
+    supports_image_detail_original: false,
+    service_tiers: [], default_service_tier: null, use_responses_lite: false,
+  };
+}
 
 /** Freeze native model capabilities for a comparison, not the model's instructions. */
 export class Catalog {
@@ -37,6 +63,7 @@ export class Catalog {
       if (!Array.isArray(payload.models)) throw new Error("Invalid Codex model catalog; no inference was sent");
       const fetched = payload.models.map(value => {
         const model = object(value);
+        if (typeof model.slug !== "string" || !model.slug) throw new Error("Invalid Codex model catalog; no inference was sent");
         return Object.fromEntries(fields.filter(key => key in model).map(key => [key, model[key]]));
       });
       // Concurrent requests have independent cancellation. First successful completion
@@ -45,8 +72,6 @@ export class Catalog {
       this.snapshots.set(key, entries);
       if (this.snapshots.size > 16) this.snapshots.delete(this.snapshots.keys().next().value!);
     }
-    const metadata = entries.find(model => model.slug === id);
-    if (!metadata) throw new Error("Selected model is absent from the native Codex catalog; no inference was sent");
-    return structuredClone(metadata);
+    return resolveModelMetadata(id, entries);
   }
 }

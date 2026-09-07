@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { shapeModelBody, normalizeLiteEvent } from '../extensions/model-shape.ts';
+import { shapeModelBody as shape, normalizeLiteEvent } from '../extensions/model-shape.ts';
+const shapeModelBody = (body, metadata, threadId = 'test-thread') => shape(body, metadata, threadId);
 
 const metadata = (extra = {}) => ({ slug: 'test', default_reasoning_level: 'medium', supports_reasoning_summary_parameter: true, support_verbosity: true, default_verbosity: 'medium', service_tiers: [{ id: 'default', is_default: true }, { id: 'priority' }], ...extra });
 const tool = (name = 'bash') => ({ type: 'function', name, description: 'Run', parameters: { type: 'object', properties: {} }, strict: null });
@@ -27,8 +28,8 @@ test('native defaults, encrypted reasoning include, strict false, no mutation', 
   assert.notEqual(result.input, input.input);
 });
 
-test('explicit controls win, ultra maps max, unsupported summary/verbosity removed', () => {
-  let result = shapeModelBody(body({ reasoning: { effort: 'ultra', summary: 'detailed', context: 'current_turn' }, text: { verbosity: 'low' } }), metadata());
+test('explicit controls win, ultra uses supported max, unsupported summary/verbosity removed', () => {
+  let result = shapeModelBody(body({ reasoning: { effort: 'ultra', summary: 'detailed', context: 'current_turn' }, text: { verbosity: 'low' } }), metadata({ supported_reasoning_levels: [{ effort: 'max' }] }));
   assert.deepEqual(result.reasoning, { effort: 'max', summary: 'detailed' });
   assert.deepEqual(result.text, { verbosity: 'low' });
   result = shapeModelBody(body({ reasoning: { summary: 'none' }, text: { verbosity: 'low', format: { type: 'json_schema', schema: {} } } }), metadata({ supports_reasoning_summary_parameter: false, support_verbosity: false }));
@@ -47,6 +48,39 @@ test('tier uses only explicit supported id, never catalog default', () => {
   assert.equal('service_tier' in shapeModelBody(body(), metadata({ service_tiers: [{ id: 'priority', is_default: true }] })), false);
 });
 
+test('0.153.4 effort mappings follow native Ultra selection and persistent wire naming', () => {
+  const shape = (effort, extra = {}) => shapeModelBody(body({ reasoning: { effort } }), metadata(extra)).reasoning.effort;
+  const supported_reasoning_levels = [{ effort: 'medium' }, { effort: 'high' }, { effort: 'ultra' }];
+  assert.equal(shape('ultra', { supported_reasoning_levels }), 'high');
+  assert.equal(shape('ultra', { supported_reasoning_levels, multi_agent_reasoning_effort: 'medium' }), 'medium');
+  assert.equal(shape('ultra', { supported_reasoning_levels, multi_agent_reasoning_effort: 'ultra' }), 'high');
+  assert.equal(shape('ultra', { supported_reasoning_levels, multi_agent_reasoning_effort: 'not-supported' }), 'high');
+  assert.equal(shape('ultra'), 'medium');
+  assert.equal(shape('persistent'), 'disabled');
+  assert.equal(shape('future-model-effort'), 'future-model-effort');
+});
+
+test('0.153.4 parallel calls follow the prompt and Lite mode rather than removed catalog field', () => {
+  assert.equal(shapeModelBody(body(), metadata({ supports_parallel_tool_calls: false })).parallel_tool_calls, true);
+  assert.equal(shapeModelBody(body({ parallel_tool_calls: false }), metadata()).parallel_tool_calls, false);
+  assert.equal(shapeModelBody(body(), metadata({ use_responses_lite: true })).parallel_tool_calls, false);
+});
+
+test('0.153.4 Lite prefix IDs hash visible payloads within the thread and survive resume', () => {
+  const m = metadata({ use_responses_lite: true });
+  const result = shapeModelBody(body(), m);
+  // Independently calculated with Python uuid.uuid5 and insertion-ordered compact JSON.
+  assert.equal(result.input[0].id, 'at_c2e9c151-19d0-5d74-882c-e5d3926478f8');
+  assert.equal(result.input[1].id, 'msg_7f21a37e-a281-5127-98df-0a8cbb5f585c');
+  const reorderedTool = Object.fromEntries(Object.entries(tool()).reverse());
+  assert.notEqual(shapeModelBody(body({ tools: [reorderedTool] }), m).input[0].id, result.input[0].id);
+  assert.equal(shapeModelBody(body(), m).input[0].id, result.input[0].id);
+  assert.equal(shapeModelBody(body(), m).input[1].id, result.input[1].id);
+  assert.notEqual(shapeModelBody(body(), m, 'other-thread').input[0].id, result.input[0].id);
+  assert.notEqual(shapeModelBody(body({ instructions: 'changed' }), m).input[1].id, result.input[1].id);
+  assert.notEqual(shapeModelBody(body({ tools: [tool('read')] }), m).input[0].id, result.input[0].id);
+});
+
 test('lite moves tools and instructions to input and retains native reasoning/include', () => {
   const input = freeze(body({
     input: [
@@ -61,8 +95,8 @@ test('lite moves tools and instructions to input and retains native reasoning/in
   assert.equal(result.parallel_tool_calls, false);
   assert.deepEqual(result.include, ['reasoning.encrypted_content']);
   assert.deepEqual(result.reasoning, { effort: 'medium', summary: 'auto', context: 'all_turns' });
-  assert.deepEqual(result.input[0], { type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'functions', description: '', tools: [{ ...tool(), strict: false }] }] });
-  assert.deepEqual(result.input[1], { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Pi system' }] });
+  assert.deepEqual(result.input[0], { type: 'additional_tools', id: result.input[0].id, role: 'developer', tools: [{ type: 'namespace', name: 'functions', description: '', tools: [{ ...tool(), strict: false }] }] });
+  assert.deepEqual(result.input[1], { type: 'message', id: result.input[1].id, role: 'developer', content: [{ type: 'input_text', text: 'Pi system' }] });
   assert.equal(result.input[2].content[0].detail, undefined);
   assert.deepEqual(result.input[3], { ...input.input[1], namespace: 'functions' });
   assert.equal(result.input[4].output[0].detail, undefined);
@@ -96,7 +130,7 @@ test('reject mismatched catalog, invalid controls, ambiguous or unmappable tools
   assert.throws(() => shapeModelBody(body(), {}), /exactly match/);
   assert.throws(() => shapeModelBody(body(), metadata({ slug: 'other' })), /exactly match/);
   assert.throws(() => shapeModelBody(body(), metadata({ use_responses_lite: 'true' })), /boolean/);
-  assert.throws(() => shapeModelBody(body({ reasoning: { effort: 'guess' } }), metadata()), /Unsupported/);
+  assert.throws(() => shapeModelBody(body({ reasoning: { effort: '' } }), metadata()), /non-empty string/);
   assert.throws(() => shapeModelBody(body({ tools: [tool(), tool()] }), metadata()), /Duplicate/);
   assert.throws(() => shapeModelBody(body({ tools: [{ type: 'web_search' }] }), metadata()), /Unsupported Pi tool/);
   assert.throws(() => shapeModelBody(body({ tools: [{ type: 'namespace', name: 'other', tools: [] }] }), metadata()), /Only the functions/);

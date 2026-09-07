@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export const CODEX_VERSION = "0.147.0";
+export const CODEX_VERSION = "0.153.4";
 export interface Identity { originator: string; userAgent: string; version: string }
 export interface NativeSystem { osType: string; version: string; architecture: string }
 export interface IdentityOptions {

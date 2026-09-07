@@ -5,7 +5,7 @@ import { identity } from "./fixtures.mjs";
 import { incrementalBody } from "../extensions/transport.ts";
 
 test("identity modes preserve credentials and use native session/header projections", () => {
-  const identity = { originator: "codex_cli_rs", userAgent: "codex_cli_rs/0.147.0 (Windows 10.0.26100; x86_64) WezTerm", version: "0.147.0" };
+  const identity = { originator: "codex_cli_rs", userAgent: "codex_cli_rs/0.153.4 (Windows 10.0.26100; x86_64) WezTerm", version: "0.153.4" };
   for (const profile of ["pi", "codex"]) {
     const p = new Protocol(profile, "thread", "install", identity);
     const headers = p.headers(new Headers({ authorization: "Bearer secret", "chatgpt-account-id": "account", originator: "pi", "user-agent": "pi/0.84.3", "OpenAI-Beta": "responses=experimental" }));

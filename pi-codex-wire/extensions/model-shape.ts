@@ -1,13 +1,23 @@
-/** Native model shaping, pinned to openai/codex rust-v0.147.0.
- * https://github.com/openai/codex/tree/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs
- * Sources: core/src/client.rs:816-935; core/src/client_common.rs:52-108;
- * codex-api/src/common.rs:249-333 (serde omission matters);
- * tools/src/tool_spec.rs:95-141; protocol/src/openai_models.rs:769-781.
+/** Native model shaping, pinned to openai/codex rust-v0.153.4.
+ * https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs
+ * Sources: core/src/client.rs; core/src/client_common.rs;
+ * codex-api/src/common.rs (serde omission matters);
+ * tools/src/tool_spec.rs; protocol/src/openai_models.rs.
  * This module supports Pi's flat function/custom tools, including the native
  * `functions` namespace. Other namespaces/hosted tools need an executor mapping
  * and are rejected rather than silently dispatched to the wrong Pi tool.
  */
+import { createHash } from "node:crypto";
+
 type ObjectValue = Record<string, unknown>;
+
+function uuid5(namespace: string, text: string): string {
+  const bytes = createHash("sha1").update(Buffer.from(namespace.replaceAll("-", ""), "hex")).update(text).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function object(value: unknown, label: string): ObjectValue {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -31,7 +41,17 @@ function choice(value: unknown, values: string[], label: string): string | undef
   }
   return value;
 }
-const efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+function requestEffort(value: unknown, metadata: ObjectValue): string | undefined {
+  if (value == null) return;
+  if (typeof value !== "string" || !value) throw new TypeError("Reasoning effort must be a non-empty string");
+  if (value === "persistent") return "disabled";
+  if (value !== "ultra") return value;
+  const supported = array(metadata.supported_reasoning_levels ?? [], "supported reasoning levels")
+    .map(item => object(item, "reasoning level").effort).filter((effort): effort is string => typeof effort === "string" && effort.length > 0);
+  const preferred = metadata.multi_agent_reasoning_effort;
+  if (typeof preferred === "string" && preferred !== "ultra" && supported.includes(preferred)) return preferred;
+  return supported.includes("max") ? "max" : supported.reverse().find(effort => effort !== "ultra") ?? "medium";
+}
 
 function functionTool(value: unknown): ObjectValue {
   const tool = object(value, "tool");
@@ -106,21 +126,21 @@ function liteInput(value: unknown): ObjectValue {
   return item;
 }
 
-/** Shape a Pi-serialized body using one matching native /models entry.
- * Returns a deep clone. Caller must skip this function when no metadata exists.
+/** Shape a Pi-serialized body using matching catalog or native fallback metadata.
+ * Returns a deep clone and retains the requested model ID.
  * Pi's existing explicit effort/verbosity wins; catalog defaults fill absence.
  */
-export function shapeModelBody(body: ObjectValue, metadata: ObjectValue): ObjectValue {
+export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadId: string): ObjectValue {
   if (typeof metadata.slug !== "string" || metadata.slug !== body.model) {
     throw new TypeError("Native model metadata.slug must exactly match body.model");
   }
   const result = structuredClone(body);
   const lite = booleanField(metadata.use_responses_lite, false, "use_responses_lite");
   const sourceReasoning = result.reasoning == null ? {} : object(result.reasoning, "reasoning");
-  const effort = choice(sourceReasoning.effort ?? metadata.default_reasoning_level, efforts, "reasoning effort");
+  const effort = requestEffort(sourceReasoning.effort ?? metadata.default_reasoning_level, metadata);
   const summary = choice(sourceReasoning.summary ?? "auto", ["none", "auto", "concise", "detailed"], "reasoning summary");
   const reasoning: ObjectValue = {};
-  if (effort !== undefined) reasoning.effort = effort === "ultra" ? "max" : effort;
+  if (effort !== undefined) reasoning.effort = effort;
   if (booleanField(metadata.supports_reasoning_summary_parameter, true, "supports_reasoning_summary_parameter") && summary !== "none") {
     reasoning.summary = summary;
   }
@@ -150,19 +170,20 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue): Object
   const tools = toolCatalog(array(result.tools ?? [], "tools"), lite);
   if (lite) {
     const input = array(result.input, "input").map(liteInput);
-    const prefix: ObjectValue[] = [{ type: "additional_tools", role: "developer", tools }];
+    const namespace = uuid5("6ba7b812-9dad-11d1-80b4-00c04fd430c8", threadId);
+    // The native CLI enables serde_json/preserve_order: hash the serialized visible payload.
+    const prefix: ObjectValue[] = [{ type: "additional_tools", id: `at_${uuid5(namespace, JSON.stringify(tools))}`, role: "developer", tools }];
     if (result.instructions != null && typeof result.instructions !== "string") {
       throw new TypeError("instructions must be a string");
     }
-    if (result.instructions) prefix.push({ role: "developer", type: "message", content: [{ type: "input_text", text: result.instructions }] });
+    if (result.instructions) prefix.push({ role: "developer", type: "message", id: `msg_${uuid5(namespace, result.instructions as string)}`, content: [{ type: "input_text", text: result.instructions }] });
     result.input = [...prefix, ...input];
     delete result.instructions; // Empty native string is skipped by serde.
     delete result.tools;
     result.parallel_tool_calls = false;
   } else {
     result.tools = tools;
-    result.parallel_tool_calls = result.parallel_tool_calls === true &&
-      booleanField(metadata.supports_parallel_tool_calls, true, "supports_parallel_tool_calls");
+    result.parallel_tool_calls = result.parallel_tool_calls === true;
     if (result.instructions === "") delete result.instructions;
   }
   return result;
