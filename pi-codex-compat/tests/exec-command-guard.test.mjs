@@ -6,6 +6,7 @@ import codexCompat from "../extensions/codex-compat.ts";
 function registeredTools() {
 	const tools = new Map();
 	codexCompat({
+		events: { on: () => () => {} },
 		getActiveTools: () => [],
 		setActiveTools() {},
 		on() {},

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +11,13 @@ import { Protocol } from "./protocol.ts";
 import { CODEX_VERSION, codexIdentity } from "./identity.ts";
 import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
+import { ALLOWANCE_EVENT } from "./allowance.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
 import { readDefaultMode, readMode, saveDefaultMode, type Mode } from "./settings.ts";
 
 type Options = StreamOptions | SimpleStreamOptions;
+type WireSession = { protocol: Protocol; transport: WireTransport; turnKey?: string; beganTurn?: boolean };
 
 function installationId(directory: string): string {
   mkdirSync(directory, { recursive: true });
@@ -45,15 +47,23 @@ export default function codexWire(pi: ExtensionAPI): void {
   let catalog: Catalog | undefined;
   let lastRequest = "not tested";
   const directory = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "codex-wire");
-  const pending = new Set<AbortController>();
+  const pending = new Map<AbortController, string>();
+  let sessions = new Map<string, WireSession>();
+  let lifetime: AbortController | undefined;
 
-  function abortPending(): void {
-    for (const controller of pending) controller.abort();
-    pending.clear();
+  function abortPending(threadId?: string): void {
+    for (const [controller, owner] of pending) {
+      if (threadId !== undefined && owner !== threadId) continue;
+      controller.abort();
+      pending.delete(controller);
+    }
   }
 
   function stop(): void {
+    lifetime?.abort(); lifetime = undefined;
     abortPending();
+    for (const session of sessions.values()) session.transport.close();
+    sessions.clear();
     transport?.close(); transport = undefined; protocol = undefined; beganTurn = false;
     if (original) pi.registerProvider(original);
     original = undefined;
@@ -70,6 +80,8 @@ export default function codexWire(pi: ExtensionAPI): void {
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
     stop(); mode = next; lastRequest = "not tested";
+    const currentLifetime = lifetime = new AbortController();
+    const currentSessions = sessions = new Map<string, WireSession>();
     const provider = ctx.modelRegistry.getProvider("openai-codex");
     if (!provider) throw new Error("The openai-codex provider is unavailable");
     original = provider;
@@ -84,12 +96,48 @@ export default function codexWire(pi: ExtensionAPI): void {
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
       protocol = new Protocol(mode as Profile, ctx.sessionManager.getSessionId(), installationId(directory), identity, typeof window === "string" ? window : undefined);
       if (!window) pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });
-      transport = new WireTransport(diagnostics, protocol, selectedTransport);
+      transport = new WireTransport(diagnostics, protocol, selectedTransport, globalThis.fetch, process.env,
+        headers => pi.events.emit(ALLOWANCE_EVENT, headers));
+      currentSessions.set(protocol.threadId, { protocol, transport });
     }
     const currentDiagnostics = diagnostics;
-    const currentProtocol = protocol;
-    const currentTransport = transport;
+    const primaryProtocol = protocol;
+    const primarySession = protocol ? currentSessions.get(protocol.threadId) : undefined;
     const fallbackWarnings = new Set<string>();
+    const primaryThreadId = ctx.sessionManager.getSessionId();
+
+    function sessionFor(threadId: string): WireSession | undefined {
+      if (!identity || !primaryProtocol) return;
+      // Retired provider copies must remain aborted, not recreate orphan sockets.
+      if (currentLifetime.signal.aborted) return primarySession;
+      let session = currentSessions.get(threadId);
+      if (!session) {
+        const saved = ctx.sessionManager.getBranch().filter(entry =>
+          entry.type === "custom" && entry.customType === "codex-wire-session-window"
+          && object(entry.data).threadId === threadId).at(-1);
+        const window = object(saved?.type === "custom" ? saved.data : undefined).id;
+        const childProtocol = new Protocol(next as Profile, threadId, installationId(directory), identity,
+          typeof window === "string" ? window : undefined);
+        session = {
+          protocol: childProtocol,
+          transport: new WireTransport(currentDiagnostics, childProtocol, selectedTransport as "auto" | "sse",
+            globalThis.fetch, process.env, headers => pi.events.emit(ALLOWANCE_EVENT, headers)),
+        };
+        if (!window) pi.appendEntry("codex-wire-session-window", { threadId, id: childProtocol.getWindowId() });
+      }
+      currentSessions.delete(threadId);
+      currentSessions.set(threadId, session);
+      return session;
+    }
+
+    function trimIdleSessions(): void {
+      const active = new Set(pending.values());
+      const idle = [...currentSessions].filter(([id]) => id !== primaryProtocol?.threadId && !active.has(id));
+      for (const [id, session] of idle.slice(0, Math.max(0, idle.length - 16))) {
+        session.transport.close();
+        currentSessions.delete(id);
+      }
+    }
 
     function wrapped(model: Model<Api>, context: Context, options: Options | undefined, simple: boolean) {
       const call = (opts: Options) => simple ? provider!.streamSimple(model, context, opts as SimpleStreamOptions)
@@ -97,10 +145,16 @@ export default function codexWire(pi: ExtensionAPI): void {
       // Do not attach subscription credentials or Codex metadata to custom endpoints.
       const endpoint = new URL(model.baseUrl);
       if (endpoint.protocol !== "https:" || endpoint.hostname !== "chatgpt.com") return call(options ?? {});
-      lastRequest = "in progress";
+      const threadId = options?.sessionId ?? primaryThreadId;
+      const session = sessionFor(threadId);
+      const currentProtocol = session?.protocol;
+      const currentTransport = session?.transport;
+      const isPrimary = threadId === primaryThreadId;
+      if (isPrimary && !currentLifetime.signal.aborted) lastRequest = "in progress";
       const controller = new AbortController();
-      pending.add(controller);
-      const requestSignal = options?.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+      pending.set(controller, threadId);
+      trimIdleSessions();
+      const requestSignal = AbortSignal.any([currentLifetime.signal, controller.signal, ...(options?.signal ? [options.signal] : [])]);
       const requestId = randomUUID();
       let body: JsonObject;
       let metadataForRequest: JsonObject | undefined;
@@ -115,7 +169,15 @@ export default function codexWire(pi: ExtensionAPI): void {
         },
       };
       if (currentTransport && currentProtocol) {
-        if (!beganTurn) { currentProtocol.beginTurn(); beganTurn = true; }
+        if (isPrimary) {
+          if (!beganTurn) { currentProtocol.beginTurn(); beganTurn = true; }
+        } else if (session) {
+          // SDK children inherit the provider, not the parent's extension lifecycle hooks.
+          const user = context.messages.filter(message => message.role === "user").at(-1);
+          const turnKey = createHash("sha256").update(JSON.stringify(user ?? null)).digest("hex");
+          if (!session.beganTurn || session.turnKey !== turnKey) currentProtocol.beginTurn();
+          session.turnKey = turnKey; session.beganTurn = true;
+        }
         // Reuse Pi's mature serializer and event decoder. This selects the decoder's local SSE
         // interface; WireTransport independently chooses the actual network transport.
         opts.transport = "sse";
@@ -159,7 +221,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       const result = call(opts);
       void result.result().then(message => {
         pending.delete(controller);
-        if (diagnostics === currentDiagnostics && mode !== "off") {
+        if (isPrimary && diagnostics === currentDiagnostics && mode !== "off") {
           lastRequest = ["error", "aborted"].includes(message.stopReason) ? message.stopReason : `succeeded (${message.stopReason})`;
         }
         if (currentTransport && metadataForRequest && !["error", "aborted"].includes(message.stopReason)) {
@@ -181,10 +243,12 @@ export default function codexWire(pi: ExtensionAPI): void {
         currentDiagnostics.write({ kind: "usage", requestId, stopReason: message.stopReason,
           input: message.usage.input, cached: message.usage.cacheRead, output: message.usage.output,
           reasoning: message.usage.reasoning ?? 0 });
+        trimIdleSessions();
       }).catch(() => {
         pending.delete(controller);
-        if (diagnostics === currentDiagnostics && mode !== "off") lastRequest = "error";
+        if (isPrimary && diagnostics === currentDiagnostics && mode !== "off") lastRequest = "error";
         currentDiagnostics.write({ kind: "usage-unavailable", requestId });
+        trimIdleSessions();
       });
       return result;
     }
@@ -202,10 +266,10 @@ export default function codexWire(pi: ExtensionAPI): void {
     protocol?.beginTurn(); beganTurn = true;
   });
   pi.on("agent_settled", () => { beganTurn = false; });
-  pi.on("model_select", () => { abortPending(); transport?.close(); beganTurn = false; });
+  pi.on("model_select", (_event, ctx) => { abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; });
   const newWindow = (_event: unknown, ctx: ExtensionContext) => {
     if (!protocol) return;
-    abortPending(); transport?.close(); protocol.rotateWindow(); beganTurn = false;
+    abortPending(protocol.threadId); transport?.close(); protocol.rotateWindow(); beganTurn = false;
     pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });
     diagnostics?.write({ kind: "context-window-replaced" });
   };

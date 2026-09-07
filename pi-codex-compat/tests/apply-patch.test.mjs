@@ -25,6 +25,7 @@ const identityTheme = {
 function registeredTools() {
 	const tools = new Map();
 	codexCompat({
+		events: { on: () => () => {} },
 		getActiveTools: () => [],
 		setActiveTools() {},
 		on() {},

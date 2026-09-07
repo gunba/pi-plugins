@@ -22,14 +22,143 @@ async function fixture(t, mode = "auto", handler) {
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const url = `http://127.0.0.1:${server.address().port}/codex/responses`;
   const protocol = new Protocol("codex", "thread", "install", identity);
-  const transport = new WireTransport(new Diagnostics(log), protocol, mode, fetch, {});
+  const allowances = [];
+  const transport = new WireTransport(new Diagnostics(log), protocol, mode, fetch, {}, headers => allowances.push(headers));
   t.after(() => { transport.close(); server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { server, url, protocol, transport, log };
+  return { server, url, protocol, transport, log, allowances };
 }
 
 const body = { model: "gpt-6-astra", input: [{ role: "user", content: "PRIVATE PROMPT" }], tools: [], store: false, stream: true };
 const completed = id => ({ type: "response.completed", response: { id, status: "completed", output: [], service_tier: "default", usage: { input_tokens: 100, output_tokens: 2, input_tokens_details: { cached_tokens: 98 } } } });
 function exchange(f, overrides = {}) { return { url: f.url, body: f.protocol.shapeBody(body), headers: f.protocol.headers(new Headers({ authorization: "Bearer SECRET", "chatgpt-account-id": "PRIVATE ACCOUNT" })), requestId: "test", timeoutMs: 3000, ...overrides }; }
+
+const expired = { type: "error", status: 400, error: { code: "websocket_connection_limit_reached" } };
+const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
+const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
+
+for (const phase of ["prewarm", "stream"]) test(`expired WebSocket reconnects once in the same request (${phase})`, async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  const connections = [];
+  wss.on("connection", socket => {
+    const frames = [];
+    connections.push(frames);
+    const number = connections.length;
+    socket.on("message", data => {
+      const frame = JSON.parse(data.toString()); frames.push(frame);
+      socket.send(JSON.stringify(number === 1 && (phase === "prewarm" || frame.generate !== false)
+        ? expired : completed(`c${number}-${frames.length}`)));
+    });
+  });
+  const text = await (await f.transport.request(exchange(f))).text();
+  assert.match(text, /response.completed/);
+  assert.doesNotMatch(text, /websocket_connection_limit_reached/);
+  assert.equal(connections.length, 2);
+  assert.equal(connections[1][0].generate, false);
+  assert.equal(connections[1][0].previous_response_id, undefined);
+  assert.deepEqual(connections[1][0].input, body.input);
+  assert.match(readFileSync(f.log, "utf8"), /"kind":"websocket-reconnect"/);
+  assert.doesNotMatch(readFileSync(f.log, "utf8"), /"kind":"fallback"/);
+});
+
+test("expiry recovery is bounded and never falls back to an extra SSE inference", async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  let connections = 0;
+  wss.on("connection", socket => {
+    connections++;
+    socket.on("message", () => socket.send(JSON.stringify(expired)));
+  });
+  const result = await streamSimple(model, { messages: [] }, {
+    apiKey: jwt, transport: "sse", maxRetries: 3,
+    fetch: () => f.transport.request(exchange(f)),
+  }).result();
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /connection limit reached/);
+  assert.equal(connections, 2);
+  assert.doesNotMatch(readFileSync(f.log, "utf8"), /"kind":"fallback"/);
+});
+
+test("expiry after model output stops without replaying the request", async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  let connections = 0;
+  wss.on("connection", socket => {
+    connections++;
+    socket.on("message", data => {
+      if (JSON.parse(data.toString()).generate === false) socket.send(JSON.stringify(completed("warm")));
+      else {
+        socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "partial" }));
+        socket.send(JSON.stringify(expired));
+      }
+    });
+  });
+  await assert.rejects(async () => (await f.transport.request(exchange(f))).text(), /connection limit reached/);
+  assert.equal(connections, 1);
+});
+
+test("cancelling the response body also cancels an expiry reconnect", { timeout: 10000 }, async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  let connected;
+  const secondConnection = new Promise(resolve => { connected = resolve; });
+  let count = 0;
+  wss.on("connection", socket => {
+    if (++count === 2) { connected(socket); return; }
+    socket.on("message", data => socket.send(JSON.stringify(JSON.parse(data.toString()).generate === false ? completed("warm") : expired)));
+  });
+  const response = await f.transport.request(exchange(f));
+  const socket = await secondConnection;
+  const closed = once(socket, "close");
+  await response.body.cancel();
+  await closed;
+  assert.equal(count, 2);
+});
+
+test("allowance updates cross the WS boundary without accepting upgrade routing tokens", async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server });
+  t.after(() => wss.close());
+  wss.on("headers", headers => headers.push(
+    "x-codex-secondary-used-percent: 91",
+    "x-codex-secondary-window-minutes: 10080",
+    "x-codex-turn-state: PRIVATE UPGRADE TOKEN",
+  ));
+  let used = 91;
+  wss.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(data.toString());
+    assert.equal(frame.client_metadata?.["x-codex-turn-state"], undefined);
+    socket.send(JSON.stringify({
+      type: "codex.rate_limits", plan_type: "pro", active_limit: "premium",
+      rate_limits: { primary: { used_percent: ++used, window_minutes: 10080, reset_after_seconds: 3600 } },
+      account_id: "PRIVATE ACCOUNT",
+    }));
+    socket.send(JSON.stringify(completed(`r${used}`)));
+  }));
+  await (await f.transport.request(exchange(f))).text();
+  await (await f.transport.request(exchange(f))).text();
+  assert.equal(f.allowances[0]["x-codex-secondary-used-percent"], 91);
+  assert.deepEqual(f.allowances.slice(1).map(x => x["x-codex-primary-used-percent"]), [92, 93, 94]);
+  assert.equal(f.allowances.at(-1)["x-codex-primary-window-minutes"], 10080);
+  assert.equal(f.allowances.at(-1)["x-codex-primary-reset-after-seconds"], 3600);
+  assert.equal(JSON.stringify(f.allowances).includes("PRIVATE"), false);
+});
+
+for (const lite of [false, true]) test(`allowance events cross SSE observation (Lite=${lite})`, async t => {
+  const event = { type: "codex.rate_limits", rate_limits: {
+    primary: { used_percent: 10, window_minutes: 300 },
+    secondary: { used_percent: 95, window_minutes: 10080 },
+  } };
+  const f = await fixture(t, "sse", (req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream", "x-codex-secondary-used-percent": "94" });
+    res.end(`data: ${JSON.stringify(event)}\n\ndata: ${JSON.stringify(completed("r"))}\n\n`);
+  });
+  await (await f.transport.request(exchange(f, { normalizeEvent: lite ? normalizeLiteEvent : undefined }))).text();
+  assert.equal(f.allowances[0]["x-codex-secondary-used-percent"], 94);
+  assert.equal(f.allowances[1]["x-codex-secondary-used-percent"], 95);
+  assert.equal(f.allowances[1]["x-codex-primary-used-percent"], 10);
+});
 
 test("WebSocket prewarms per connection, continues across turns and renews warmup on reconnect", async t => {
   const f = await fixture(t);
@@ -199,11 +328,16 @@ test("SSE header timeout aborts a stalled request", async t => {
 });
 
 test("SSE body idle timeout aborts a stalled stream", async t => {
-  const f = await fixture(t, "sse", (req, res) => {
-    req.resume(); res.writeHead(200, { "content-type": "text/event-stream" }); res.write("data: {}\n\n");
-  });
-  const response = await f.transport.request(exchange(f, { timeoutMs: 100 }));
-  await assert.rejects(response.text());
+  const f = await fixture(t, "sse");
+  // Supply headers immediately so this tests body idleness, not TCP setup latency.
+  const fetcher = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("data: {}\n\n"));
+      init.signal.addEventListener("abort", () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { "content-type": "text/event-stream" } });
+  const response = await f.transport.request(exchange(f, { timeoutMs: 100, fetcher }));
+  await assert.rejects(response.text(), /timed out/);
 });
 
 test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over WebSocket", async t => {
@@ -225,9 +359,7 @@ test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over We
     }
     socket.send(JSON.stringify(event));
   }));
-  const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
   const metadata = { slug: model.id, use_responses_lite: true, support_verbosity: false };
-  const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
   const messages = [{ role: "user", content: "Read a", timestamp: Date.now() }];
   const context = { systemPrompt: "Test", messages, tools: [{ name: "read", description: "Read", parameters: { type: "object", properties: { path: { type: "string" } } } }] };
   async function call(requestId) {

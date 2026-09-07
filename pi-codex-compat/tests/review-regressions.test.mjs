@@ -13,7 +13,7 @@ import { createExecRuntimeOwner, executeManagedExecCommand, executeWriteStdin, s
 
 function tools() {
  const result = new Map();
- compat({ getActiveTools: () => [], setActiveTools() {}, on() {}, registerCommand() {}, registerTool: tool => result.set(tool.name, tool) });
+ compat({ events: { on: () => () => {} }, getActiveTools: () => [], setActiveTools() {}, on() {}, registerCommand() {}, registerTool: tool => result.set(tool.name, tool) });
  return result;
 }
 async function workspace(t) {

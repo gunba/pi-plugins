@@ -642,6 +642,11 @@ export default function codexUsage(pi: ExtensionAPI): void {
   };
   installWebSocketCapture();
   getGlobalState().onWebSocketMessage = handleWebSocketMessage;
+  // Wire uses its own ws transport, bypassing the process-global WebSocket wrapper.
+  const unsubscribeWire = pi.events.on("pi-codex-wire:allowance", data => {
+    const snapshot = parseUsageHeaders(recordValue(data));
+    if (snapshot) recordSnapshot(snapshot);
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     installWebSocketCapture();
@@ -665,6 +670,7 @@ export default function codexUsage(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    unsubscribeWire();
     const state = getGlobalState();
     if (state.onWebSocketMessage === handleWebSocketMessage) state.onWebSocketMessage = undefined;
     ctx.ui.setStatus(STATUS_KEY, undefined);

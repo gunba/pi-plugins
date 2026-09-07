@@ -22,14 +22,14 @@ function harness(t, mode = "codex", savedDefault) {
   if (savedDefault) saveDefaultMode(join(directory, "codex-wire"), savedDefault);
   const original = { id: "openai-codex", name: "OpenAI Codex", stream, streamSimple, getModels: () => [model] };
   let provider = original;
-  const entries = [];
-  const api = { appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on: (name, fn) => events.set(name, fn), registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
+  const entries = [], published = [];
+  const api = { events: { emit: (name, data) => published.push({ name, data }) }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on: (name, fn) => events.set(name, fn), registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
   const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));
-  return { directory, events, commands, ctx, original, flags, notices, provider: () => provider };
+  return { directory, events, commands, ctx, original, flags, notices, published, provider: () => provider };
 }
 
 function decode(init) {
@@ -38,6 +38,81 @@ function decode(init) {
   if (encoding === "gzip") return JSON.parse(gunzipSync(init.body).toString());
   return JSON.parse(init.body);
 }
+
+function concurrentFetch(t, expected) {
+  const requests = [], releases = [];
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  let released = false;
+  const release = () => { released = true; releases.splice(0).forEach(fn => fn()); };
+  t.after(release);
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id, use_responses_lite: false }] });
+    const headers = new Headers(init.headers);
+    const thread = headers.get("session-id");
+    requests.push({ headers, body: decode(init) });
+    if (requests.length === expected) ready();
+    if (!released) await new Promise((resolve, reject) => {
+      const abort = () => reject(new DOMException("aborted", "AbortError"));
+      init.signal.addEventListener("abort", abort, { once: true });
+      releases.push(() => { init.signal.removeEventListener("abort", abort); resolve(); });
+      if (init.signal.aborted) abort();
+    });
+    const event = { type: "response.completed", response: {
+      id: `resp_${thread}`, status: "completed", output: [],
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+    } };
+    return new Response(`data: ${JSON.stringify(event)}\n\n`, { headers: {
+      "content-type": "text/event-stream", "x-codex-turn-state": `sticky-${thread}`,
+    } });
+  };
+  return { fetcher, requests, started, release };
+}
+
+for (const cancelParent of [false, true]) test(`inherited provider isolates parent and concurrent SDK sessions (cancelParent=${cancelParent})`, { timeout: 10000 }, async t => {
+  const h = harness(t);
+  const f = concurrentFetch(t, 3);
+  const ids = ["pi-thread", "child-a", "child-b"];
+  const contexts = ids.map(id => ({ messages: [{ role: "user", content: id, timestamp: 1 }] }));
+  const streams = ids.map((id, i) => h.provider().streamSimple(model, contexts[i], {
+    apiKey: jwt, sessionId: id, fetch: f.fetcher,
+  }));
+  await f.started;
+  if (cancelParent) h.events.get("model_select")({}, h.ctx);
+  f.release();
+  const results = await Promise.all(streams.map(s => s.result()));
+  assert.deepEqual(results.map(r => r.stopReason), [cancelParent ? "aborted" : "stop", "stop", "stop"]);
+  assert.deepEqual(new Set(f.requests.map(r => r.body.prompt_cache_key)), new Set(ids));
+  assert.equal(new Set(f.requests.map(r => r.headers.get("x-codex-window-id"))).size, 3);
+  for (const request of f.requests) {
+    assert.equal(request.body.client_metadata.thread_id, request.headers.get("session-id"));
+    assert.equal(request.headers.get("x-codex-turn-state"), null);
+  }
+  // The child's next tool round trip retains only its own routing state.
+  await h.provider().streamSimple(model, contexts[1], { apiKey: jwt, sessionId: "child-a", fetch: f.fetcher }).result();
+  assert.equal(f.requests.at(-1).headers.get("x-codex-turn-state"), "sticky-child-a");
+  // A new user turn resets sticky state even though child extensions are disabled.
+  await h.provider().streamSimple(model, { messages: [{ role: "user", content: "next", timestamp: 2 }] },
+    { apiKey: jwt, sessionId: "child-a", fetch: f.fetcher }).result();
+  assert.equal(f.requests.at(-1).headers.get("x-codex-turn-state"), null);
+});
+
+test("retired inherited providers stay aborted; child window identity survives reactivation", async t => {
+  const h = harness(t);
+  const f = concurrentFetch(t, 1);
+  f.release();
+  const options = { apiKey: jwt, sessionId: "child-a", fetch: f.fetcher };
+  const context = { messages: [{ role: "user", content: "child", timestamp: 1 }] };
+  const inherited = h.provider();
+  assert.equal((await inherited.streamSimple(model, context, options).result()).stopReason, "stop");
+  const window = f.requests[0].headers.get("x-codex-window-id");
+  await h.commands.get("codex-wire").handler("off", h.ctx);
+  assert.equal((await inherited.streamSimple(model, context, options).result()).stopReason, "aborted");
+  assert.equal(f.requests.length, 1);
+  await h.commands.get("codex-wire").handler("codex", h.ctx);
+  assert.equal((await h.provider().streamSimple(model, context, options).result()).stopReason, "stop");
+  assert.equal(f.requests.at(-1).headers.get("x-codex-window-id"), window);
+});
 
 test("real Pi serializer/parser integrates with emulated SSE and does not send secrets to logs", async t => {
   const h = harness(t);
@@ -51,6 +126,7 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
     captured.push({ headers: new Headers(init.headers), body: decode(init) });
     const item = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: '{"path":"test.txt"}', status: "completed" };
     const events = [
+      { type: "codex.rate_limits", rate_limits: { primary: { used_percent: 95, window_minutes: 10080 } } },
       { type: "response.created", response: { id: "resp_1" } },
       { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
       { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 0, delta: item.arguments },
@@ -67,6 +143,9 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
   assert.equal(result.content[0].name, "read");
   assert.deepEqual(result.content[0].arguments, { path: "test.txt" });
   assert.equal(result.usage.cacheRead, 90);
+  assert.deepEqual(h.published, [{ name: "pi-codex-wire:allowance", data: {
+    "x-codex-primary-used-percent": 95, "x-codex-primary-window-minutes": 10080,
+  } }]);
   assert.equal(catalogCalls, 1);
   assert.equal(captured[0].headers.get("originator"), "codex_cli_rs");
   assert.equal(captured[0].headers.get("x-codex-routing-hint"), "model=gpt-6-astra");

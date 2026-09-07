@@ -4,6 +4,7 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import WebSocket from "ws";
 import { Diagnostics, eventDiagnostics, object, allowanceHeaders, type JsonObject } from "./diagnostics.ts";
 import type { Compression } from "./compression.ts";
+import { allowanceFromHeaders, allowanceFromEvent } from "./allowance.ts";
 
 const require = createRequire(import.meta.url);
 const zlib = require("node:zlib") as {
@@ -12,6 +13,14 @@ const zlib = require("node:zlib") as {
 };
 const encoder = new TextEncoder();
 const terminal = new Set(["response.completed", "response.done", "response.incomplete", "response.failed"]);
+
+class WebSocketExpired extends Error {
+  readonly replaySafe: boolean;
+  constructor(replaySafe: boolean) {
+    super("Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.");
+    this.replaySafe = replaySafe;
+  }
+}
 
 export interface Exchange {
   url: string;
@@ -78,11 +87,22 @@ export class WireTransport {
   private readonly mode: "auto" | "sse";
   private readonly fetcher: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly onAllowance: (headers: JsonObject) => void;
 
   constructor(
     diagnostics: Diagnostics, hooks: WireHooks, mode: "auto" | "sse",
     fetcher: typeof fetch = globalThis.fetch, env: NodeJS.ProcessEnv = process.env,
-  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; }
+    onAllowance: (headers: JsonObject) => void = () => {},
+  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; this.onAllowance = onAllowance; }
+
+  private publishAllowance(headers: JsonObject): void {
+    if (Object.keys(headers).length) this.onAllowance(headers);
+  }
+
+  private observeEvent(event: JsonObject): void {
+    this.hooks.observeEvent(event);
+    this.publishAllowance(allowanceFromEvent(event));
+  }
 
   setReplayOutput(requestId: string, output: unknown[]): void {
     if (this.continuation?.requestId !== requestId) return;
@@ -105,6 +125,7 @@ export class WireTransport {
 
   private recordHeaders(headers: Headers, status: number, requestId: string): void {
     if (status !== 101) this.hooks.observeHeaders(headers);
+    this.publishAllowance(allowanceFromHeaders(headers));
     this.diagnostics.write({ kind: "headers", requestId, status, allowance: allowanceHeaders(headers),
       turnStatePresent: headers.has("x-codex-turn-state") });
   }
@@ -150,7 +171,7 @@ export class WireTransport {
     return socket;
   }
 
-  private websocketResponse(socket: WebSocket, exchange: Exchange, prewarm: boolean): Response {
+  private websocketResponse(socket: WebSocket, exchange: Exchange, prewarm: boolean, reconnects: number): Response {
     const fullBody = prewarm ? { ...exchange.body, generate: false } : exchange.body;
     const body = this.hooks.websocketBody(incrementalBody(fullBody, this.continuation));
     if (exchange.headers.get("x-openai-internal-codex-responses-lite") === "true") {
@@ -187,6 +208,33 @@ export class WireTransport {
           try { event = object(JSON.parse(data.toString())); }
           catch { fail(new Error("Invalid Codex WebSocket event")); return; }
           const code = event.code ?? object(event.error).code;
+          if (event.type === "error" && code === "websocket_connection_limit_reached") {
+            this.observeEvent(event);
+            const expired = new WebSocketExpired(!sawOutput);
+            if (prewarm || sawOutput || reconnects >= 1) { fail(expired); return; }
+            finished = true; cleanup(); this.continuation = undefined; socket.terminate();
+            const retry = new AbortController();
+            cancel = () => retry.abort();
+            const signal = AbortSignal.any([retry.signal, ...(exchange.signal ? [exchange.signal] : [])]);
+            void (async () => {
+              const response = await this.reconnectExpired({ ...exchange, signal }, reconnects, "stream");
+              if (!response.ok || !response.body) throw new Error(`Codex reconnect failed (HTTP ${response.status})`);
+              const reader = response.body.getReader();
+              try {
+                while (true) {
+                  const next = await reader.read();
+                  signal.throwIfAborted();
+                  if (next.done) break;
+                  controller.enqueue(next.value);
+                }
+                controller.close();
+              } finally {
+                await reader.cancel().catch(() => {});
+                reader.releaseLock();
+              }
+            })().catch(error => controller.error(error));
+            return;
+          }
           if (event.type === "error" && code === "previous_response_not_found" && !sawOutput && !retriedMissingResponse && body.previous_response_id) {
             retriedMissingResponse = true; this.continuation = undefined;
             const retryBody = this.hooks.websocketBody(fullBody);
@@ -199,8 +247,8 @@ export class WireTransport {
             });
             return;
           }
-          if (String(event.type).startsWith("response.output")) sawOutput = true;
-          this.hooks.observeEvent(event);
+          if (/^response\.(output|reasoning|function_call|custom_tool)/.test(String(event.type))) sawOutput = true;
+          this.observeEvent(event);
           const diagnostic = eventDiagnostics(event);
           if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, prewarm });
           if (prewarm && (event.type === "error" || event.type === "response.failed")) {
@@ -236,6 +284,22 @@ export class WireTransport {
   }
 
   async request(exchange: Exchange): Promise<Response> {
+    try { return await this.requestAttempt(exchange, 0); }
+    catch (error) {
+      if (!(error instanceof WebSocketExpired)) throw error;
+      // Surface exhausted prewarm recovery through the decoder, not Pi's HTTP-fetch
+      // retry loop, which could otherwise start another reconnect budget.
+      return new Response(new ReadableStream({ start(controller) { controller.error(error); } }),
+        { headers: { "content-type": "text/event-stream" } });
+    }
+  }
+
+  private reconnectExpired(exchange: Exchange, reconnects: number, phase: string): Promise<Response> {
+    this.diagnostics.write({ kind: "websocket-reconnect", requestId: exchange.requestId, reason: "connection-expired", phase });
+    return this.requestAttempt(exchange, reconnects + 1);
+  }
+
+  private async requestAttempt(exchange: Exchange, reconnects: number): Promise<Response> {
     exchange.signal?.throwIfAborted();
     if (this.busy) throw new Error("Concurrent requests require separate Codex wire sessions");
     const binding = createHash("sha256").update(JSON.stringify([exchange.url,
@@ -262,7 +326,7 @@ export class WireTransport {
       }
       if (!this.prewarmed) {
         this.prewarmed = true;
-        const warmup = this.websocketResponse(socket, { ...exchange, requestId: randomUUID() }, true);
+        const warmup = this.websocketResponse(socket, { ...exchange, requestId: randomUUID() }, true, reconnects);
         try {
           // Drain prewarm events without forwarding them as an assistant response.
           const reader = warmup.body!.getReader();
@@ -270,13 +334,17 @@ export class WireTransport {
         } catch (error) {
           this.busy = false;
           if (exchange.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+          if (error instanceof WebSocketExpired) {
+            if (!error.replaySafe || reconnects >= 1) throw error;
+            return this.reconnectExpired(exchange, reconnects, "prewarm");
+          }
           this.close(); this.fallback = true;
           this.diagnostics.write({ kind: "fallback", requestId: exchange.requestId, phase: "prewarm", to: "sse" });
           return this.sse(exchange);
         }
         this.busy = true;
       }
-      return this.websocketResponse(socket, exchange, false);
+      return this.websocketResponse(socket, exchange, false, reconnects);
     }
     return this.sse(exchange);
   }
@@ -334,7 +402,7 @@ export class WireTransport {
               const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
               if (!data || data === "[DONE]") { controller.enqueue(encoder.encode(`${block}\n\n`)); continue; }
               const event = object(JSON.parse(data));
-              this.hooks.observeEvent(event);
+              this.observeEvent(event);
               const diagnostic = eventDiagnostics(event);
               if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId });
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent(event))}\n\n`));
@@ -348,7 +416,7 @@ export class WireTransport {
             if (!line.startsWith("data:")) continue;
             try {
               const event = object(JSON.parse(line.slice(5)));
-              this.hooks.observeEvent(event);
+              this.observeEvent(event);
               const diagnostic = eventDiagnostics(event);
               if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId });
             } catch { /* Pi's parser remains responsible for protocol errors. */ }
