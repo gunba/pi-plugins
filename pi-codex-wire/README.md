@@ -2,7 +2,7 @@
 
 An opt-in Pi transport plugin for comparing subscription consumption with Codex-compatible requests. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Requires Pi **0.85.1+** and Node **22.19+**.
+Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Requires Pi **0.84.3+** and Node **22.19+**.
 
 ## Start a test session
 

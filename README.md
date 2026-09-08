@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.85.1+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.84.3+.
 
 ## Extensions
 
@@ -123,7 +123,9 @@ npm run check
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. CI covers Linux
-and Windows with Node 22 and Node 24, using Pi 0.85.1.
+and Windows using Pi 0.84.3, 0.84.4, and 0.85.1 on Node 22, plus Pi 0.85.1 on
+Node 24. Codex Wire carries its own serializer dependency; this does not upgrade
+the installed Pi application.
 
 The detailed Codex usage report includes native assistant, tool, and summary
 usage, plus durable background-child charges deduplicated by invocation ID.

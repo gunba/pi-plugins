@@ -610,7 +610,6 @@ test("default empty polling drains only new output and releases completed sessio
 		{ cwd: process.cwd() },
 	);
 	assert.equal(initial.details.running, true);
-	assert.match(initial.details.output, /first/);
 
 	const pollStartedAt = Date.now();
 	const completed = await executeWriteStdin(
@@ -620,7 +619,9 @@ test("default empty polling drains only new output and releases completed sessio
 	assert.equal(completed.details.running, false);
 	assert.equal(completed.details.exit_code, 0);
 	assert.ok(Date.now() - pollStartedAt >= 800);
-	assert.doesNotMatch(completed.details.output, /first/);
+	// A busy host may not start Node before the first yield. Both chunks must
+	// still contain the first line exactly once, regardless of when it arrives.
+	assert.equal((initial.details.output + completed.details.output).match(/first/g)?.length, 1);
 	assert.match(completed.details.output, /second/);
 
 	await assert.rejects(

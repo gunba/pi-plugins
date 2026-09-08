@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Provider, StreamOptions, SimpleStreamOptions, Model, Api, Context } from "@earendil-works/pi-ai";
+import type { StreamOptions, SimpleStreamOptions, Model, Api, Context } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertResponsesMessages, createGrammarToolInputProperties } from "./serializer.ts";
 import { Diagnostics, object, type JsonObject, type Profile } from "./diagnostics.ts";
@@ -16,6 +16,8 @@ import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
 import { readDefaultMode, readMode, saveDefaultMode, readUserAgent, saveUserAgent, type Mode } from "./settings.ts";
 
 type Options = StreamOptions | SimpleStreamOptions;
+// Providers belong to the host runtime, which may differ from our serializer SDK.
+type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
 type WireSession = { protocol: Protocol; transport: WireTransport; turnKey?: string; beganTurn?: boolean };
 
 function installationId(directory: string): string {
