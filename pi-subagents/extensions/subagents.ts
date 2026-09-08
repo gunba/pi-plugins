@@ -29,6 +29,7 @@ import {
 } from "./subagent-runtime.ts";
 import { createSubagentToolDefinitions } from "./subagent-tools.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
+import { ConversationModelPermissions } from "./model-permissions.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -237,6 +238,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	let runtime: SubagentRuntime | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
+	let modelPermissions: ConversationModelPermissions | undefined;
 	const feed: string[] = [];
 	const providerAuth = new Map<string, CachedProviderAuth>();
 
@@ -273,6 +275,8 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		modelPermissions?.dispose();
+		modelPermissions = undefined;
 		unsubscribeRuntime?.();
 		unsubscribeRuntime = undefined;
 		await runtime?.shutdown();
@@ -282,6 +286,10 @@ export default function subagents(pi: ExtensionAPI): void {
 	const startRuntime = async (ctx: ExtensionContext): Promise<void> => {
 		await stopRuntime();
 		currentContext = ctx;
+		const permissions = modelPermissions = new ConversationModelPermissions(getAgentDir(), ctx.sessionManager.getSessionId(), {
+			available: ctx.mode === "tui" || ctx.mode === "rpc",
+			confirm: (title, message, options) => ctx.ui.confirm(title, message, options),
+		});
 		const launches = activeLaunchIds(ctx);
 		const rootNotices = deliveredRootNoticeIds(ctx);
 		const billed = new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
@@ -332,6 +340,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			resolveModel(ref: ModelRef) {
 				return ctx.modelRegistry.find(ref.provider, ref.id);
 			},
+			authorizeModelOverrides: (selection, signal) => permissions.authorize(selection, signal),
 			async prepareModelRuntime(ref, modelRuntime, signal) {
 				await inheritProviderRuntime(
 					ctx,
@@ -420,8 +429,19 @@ export default function subagents(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("subagents", {
-		description: "Inspect and control durable background subagents",
+		description: "Inspect subagents; permissions [status|allow|revoke] controls conversation-level model and thinking overrides",
 		handler: async (args, ctx) => {
+			if (/^permissions(?:\s|$)/.test(args.trim())) {
+				if (!modelPermissions) throw new Error("subagent runtime is not initialized");
+				const action = args.trim().split(/\s+/).slice(1).join(" ") || "status";
+				try {
+					if (action === "allow") await modelPermissions.allow();
+					else if (action === "revoke") modelPermissions.revoke();
+					else if (action !== "status") throw new Error("Usage: /subagents permissions [status|allow|revoke]");
+					ctx.ui.notify(`Subagent model and thinking overrides: ${modelPermissions.status()} for this conversation. Applies to new children and descendants; existing children retain their settings.`, "info");
+				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
+				return;
+			}
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("The subagent dashboard requires TUI mode.", "warning");
 				return;

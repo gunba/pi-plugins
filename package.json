@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -8,7 +8,9 @@
     "pi-extension"
   ],
   "type": "module",
-  "workspaces": ["pi-codex-wire"],
+  "workspaces": [
+    "pi-codex-wire"
+  ],
   "engines": {
     "node": ">=22.19.0"
   },
@@ -37,9 +39,9 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.84.3",
-    "@earendil-works/pi-coding-agent": ">=0.84.3",
-    "@earendil-works/pi-tui": ">=0.84.3"
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-tui": ">=0.85.1"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
@@ -57,10 +59,11 @@
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.3",
-    "@earendil-works/pi-coding-agent": "0.84.3",
-    "@earendil-works/pi-tui": "0.84.3",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "22.19.19",
+    "jiti": "2.7.0",
     "typescript": "5.9.3"
   }
 }

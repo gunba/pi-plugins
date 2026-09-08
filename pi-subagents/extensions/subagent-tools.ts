@@ -37,6 +37,13 @@ function delegationParameters(context: ChildContextMode) {
 						"Run independently and return a durable subagent id. Defaults to true. Set false only when the next action needs the result.",
 				}),
 			),
+			model: Type.Optional(Type.String({
+				minLength: 1,
+				description: "Exact provider/model id. Omit to inherit the parent model. Requires user approval once for this conversation.",
+			})),
+			thinking_level: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, {
+				description: "Thinking effort supported by the selected model. Omit to inherit parent effort, adjusted to model capabilities. Requires user approval once for this conversation.",
+			})),
 		},
 		{ additionalProperties: false },
 	);
@@ -139,6 +146,7 @@ function delegationTool(
 		promptGuidelines: [
 			`Use ${name} in the background by default; set run_in_background to false only when your next action depends on the result.`,
 			`Start independent ${name} delegations together and continue useful work while they run.`,
+			"Model and thinking overrides require the user's conversation-level approval. The first override opens an approval dialog; after approval you may choose without asking again. If approval is denied, inherit the parent settings.",
 		],
 		parameters: delegationParameters(context),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -148,6 +156,8 @@ function delegationTool(
 				context,
 				runInBackground: params.run_in_background ?? true,
 				parent: parentInvocation(binding, toolCallId, ctx),
+				model: params.model,
+				thinkingLevel: params.thinking_level,
 				signal,
 			});
 			if (result.kind === "continuable") {

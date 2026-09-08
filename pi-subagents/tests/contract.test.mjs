@@ -97,6 +97,8 @@ test("delegation schemas require description and prompt and default to backgroun
 				"description",
 				"prompt",
 				"run_in_background",
+				"model",
+				"thinking_level",
 			]);
 			assert.deepEqual(schema.required, ["description", "prompt"]);
 			assert.equal(schema.additionalProperties, false);

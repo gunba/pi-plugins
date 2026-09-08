@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.84.3+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.85.1+.
 
 ## Extensions
 
@@ -74,6 +74,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   dashboard. Reports and settlements steer at every depth; late results may wake
   an idle parent. Children inherit effective project trust and authentication,
   with bounded depth, root-wide admission, and cancellable initialization.
+  Optional model and thinking overrides require one user approval for the root
+  conversation; descendants share that approval. `/subagents permissions`
+  shows its status, and `/subagents permissions revoke` revokes future overrides.
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
   panel. Ordered immutable three-state snapshots are branch-aware, remain visible
   through settlement, and render model-supplied text without terminal controls.
@@ -101,11 +104,8 @@ Use:
 pi update --extensions
 ```
 
-or plain:
-
-```bash
-pi update
-```
+Plain `pi update` updates Pi itself. Use `pi update --extensions` for these
+packages, or `pi update --all` to update both.
 
 ## Development
 
@@ -123,8 +123,7 @@ npm run check
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. CI covers Linux
-and Windows with Node 22/Pi 0.84.3 and Node 24/Pi 0.85.0. The latter SDK fixture
-also installs `pi-server`, which Pi 0.85.0's standalone SDK entrypoint imports.
+and Windows with Node 22 and Node 24, using Pi 0.85.1.
 
 The detailed Codex usage report includes native assistant, tool, and summary
 usage, plus durable background-child charges deduplicated by invocation ID.

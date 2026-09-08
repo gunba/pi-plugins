@@ -7,7 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { Model, Usage } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Model, type Usage } from "@earendil-works/pi-ai";
 import {
 	SessionManager,
 	buildContextEntries,
@@ -52,6 +52,7 @@ export type ThinkingLevel =
 export type ChildMode = "continuable" | "one-shot";
 export type ChildContextMode = "fresh" | "fork";
 export type ModelRef = { provider: string; id: string };
+export type ModelSelection = { model: ModelRef; thinkingLevel: ThinkingLevel };
 
 export type ChildDescriptor = {
 	version: 2;
@@ -156,6 +157,8 @@ export type StartRequest = {
 	context: ChildContextMode;
 	runInBackground: boolean;
 	parent: ParentInvocation;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
 	signal?: AbortSignal;
 };
 
@@ -192,6 +195,7 @@ export interface RuntimeHost {
 	deliverRootNotice(notice: ParentNotice): boolean;
 	recordBackgroundUsage?(childId: string, messageId: string, usage: Usage): void;
 	resolveModel(ref: ModelRef): Model<any> | undefined;
+	authorizeModelOverrides?(selection: ModelSelection, signal?: AbortSignal): Promise<void>;
 	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime, signal: AbortSignal): Promise<void>;
 }
 
@@ -1080,6 +1084,34 @@ export class SubagentRuntime {
 		if (request.signal?.aborted) throw abortError();
 		const label = normalizeLabel(request.description);
 		const prompt = normalizePrompt(request.prompt);
+		let model = request.parent.model;
+		let thinkingLevel = request.parent.thinkingLevel ?? "medium";
+		const hasOverride = request.model !== undefined || request.thinkingLevel !== undefined;
+		if (request.model !== undefined) {
+			const separator = request.model.indexOf("/");
+			if (separator <= 0 || separator === request.model.length - 1 || /\s/.test(request.model))
+				throw new Error("subagent model must be an exact provider/model id");
+			const ref = { provider: request.model.slice(0, separator), id: request.model.slice(separator + 1) };
+			const selected = this.host.resolveModel(ref);
+			if (!selected) throw new Error(`subagent model is unavailable: ${request.model}`);
+			model = selected;
+			thinkingLevel = clampThinkingLevel(model, thinkingLevel);
+		}
+		if (request.thinkingLevel !== undefined) {
+			const available = getSupportedThinkingLevels(model);
+			if (!available.includes(request.thinkingLevel))
+				throw new Error(`thinking level ${request.thinkingLevel} is unavailable for ${model.provider}/${model.id}; choose ${available.join(", ")}`);
+			thinkingLevel = request.thinkingLevel;
+		}
+		const selection: ModelSelection = { model: { provider: model.provider, id: model.id }, thinkingLevel };
+		if (hasOverride) {
+			if (!this.host.authorizeModelOverrides) throw new Error("Subagent model and thinking overrides need user approval for this conversation");
+			await this.host.authorizeModelOverrides(selection, request.signal);
+			if (this.closing) throw new Error("subagent runtime is shutting down");
+			this.assertLive(request.parent.authority);
+			this.requireCapacity();
+			if (request.signal?.aborted) throw abortError();
+		}
 		const childId = randomUUID();
 		const mode: ChildMode = request.runInBackground ? "continuable" : "one-shot";
 		let manager: SessionManager | undefined;
@@ -1117,11 +1149,8 @@ export class SubagentRuntime {
 				depth: request.parent.authority.depth + 1,
 				cwd: request.parent.cwd,
 				createdAt: Date.now(),
-				model: {
-					provider: request.parent.model.provider,
-					id: request.parent.model.id,
-				},
-				thinkingLevel: request.parent.thinkingLevel ?? "medium",
+				model: selection.model,
+				thinkingLevel: selection.thinkingLevel,
 				toolNames: normalizeToolNames(request.parent.toolNames),
 				...(forkBoundaryEntryId ? { forkBoundaryEntryId } : {}),
 			};

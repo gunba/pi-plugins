@@ -257,3 +257,16 @@ test("real Pi streaming accepts an unlisted model with native fallback and truth
   await command.handler("status", h.ctx);
   assert.match(h.notices.at(-1), /Last request: succeeded \(stop\)/);
 });
+
+test('saved native profile activates without a CLI flag and explicit flags take precedence', async t => {
+  const h = harness(t, 'off');
+  await h.commands.get('codex-wire').handler(`user-agent ${identity.userAgent}`, h.ctx);
+  h.flags.delete('codex-wire-user-agent');
+  await h.commands.get('codex-wire').handler('codex', h.ctx);
+  assert.notEqual(h.provider(), h.original);
+  await h.commands.get('codex-wire').handler('off', h.ctx);
+  h.flags.set('codex-wire-user-agent', 'invalid-profile');
+  await h.commands.get('codex-wire').handler('codex', h.ctx);
+  assert.equal(h.provider(), h.original);
+  assert.match(h.notices.at(-1), /single-line/);
+});

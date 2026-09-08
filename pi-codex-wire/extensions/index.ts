@@ -4,8 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Provider, StreamOptions, SimpleStreamOptions, Model, Api, Context } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
-import { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
+import { convertResponsesMessages, createGrammarToolInputProperties } from "./serializer.ts";
 import { Diagnostics, object, type JsonObject, type Profile } from "./diagnostics.ts";
 import { Protocol } from "./protocol.ts";
 import { CODEX_VERSION, codexIdentity } from "./identity.ts";
@@ -14,7 +13,7 @@ import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
-import { readDefaultMode, readMode, saveDefaultMode, type Mode } from "./settings.ts";
+import { readDefaultMode, readMode, saveDefaultMode, readUserAgent, saveUserAgent, type Mode } from "./settings.ts";
 
 type Options = StreamOptions | SimpleStreamOptions;
 type WireSession = { protocol: Protocol; transport: WireTransport; turnKey?: string; beganTurn?: boolean };
@@ -76,7 +75,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     const compression = pi.getFlag("codex-wire-compression") ?? "on";
     if (compression !== "on" && compression !== "off") throw new Error("codex-wire-compression must be on or off");
     const identity = next === "stock" ? undefined : codexIdentity({
-      userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined,
+      userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory),
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
     stop(); mode = next; lastRequest = "not tested";
@@ -277,13 +276,22 @@ export default function codexWire(pi: ExtensionAPI): void {
   pi.on("session_tree", newWindow);
   pi.on("session_shutdown", () => { stop(); });
   pi.registerCommand("codex-wire", {
-    description: "Codex wire mode, default <off/stock/pi/codex>, status, or mark <used-percent> <reset-id>",
+    description: "Codex wire mode, default <off/stock/pi/codex>, user-agent <profile>, status, or mark <used-percent> <reset-id>",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (!args.trim() || parts[0] === "status") {
         ctx.ui.notify(`Codex wire: ${mode}\nSaved default: ${readDefaultMode(directory)}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
       }
       if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing or marking a comparison run.", "warning"); return; }
+      if (parts[0] === "user-agent") {
+        try {
+          const userAgent = args.trim().slice("user-agent".length).trim();
+          codexIdentity({ userAgent, originator: pi.getFlag("codex-wire-originator") as string | undefined });
+          saveUserAgent(directory, userAgent);
+          ctx.ui.notify("Saved Codex wire User-Agent. Applies on the next activation, resume or reload.", "info");
+        } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot save Codex wire User-Agent", "error"); }
+        return;
+      }
       if (parts[0] === "default") {
         try {
           if (parts.length !== 2) throw new Error("Use /codex-wire default <off|stock|pi|codex>");

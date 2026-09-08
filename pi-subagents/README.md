@@ -1,14 +1,14 @@
 # pi-subagents
 
-DSH-style delegated agents for Pi 0.84.3. Children use in-process Pi SDK
+DSH-style delegated agents for Pi 0.85.1+. Children use in-process Pi SDK
 `AgentSession` instances with isolated context, durable Pi sessions, direct-parent
 control, bounded delegation depth, and root-wide admission limits.
 
 ## Tools
 
-- `subagent(description, prompt, run_in_background?)` starts a fresh child. The
+- `subagent(description, prompt, run_in_background?, model?, thinking_level?)` starts a fresh child. The
   child does not receive the parent conversation.
-- `subagent_fork(description, prompt, run_in_background?)` starts a child seeded
+- `subagent_fork(description, prompt, run_in_background?, model?, thinking_level?)` starts a child seeded
   with completed parent turns. The current in-flight turn is excluded.
 - `send_message(subagent_id, message)` steers a running direct child with an
   update at its next tool-batch boundary.
@@ -24,6 +24,39 @@ control, bounded delegation depth, and root-wide admission limits.
 `run_in_background: true` and returns a durable child ID after inbox acceptance.
 Set it to `false` only when the next parent action requires the result; that
 route is a foreground one-shot run.
+
+## Model and thinking permission
+
+Children inherit the parent model and thinking level by default. To choose a
+different configuration, pass an exact `provider/model` ID in `model`, a
+supported `thinking_level`, or both. For example:
+
+```json
+{"description":"Review the parser","prompt":"Check the parser for edge cases.","model":"openai-codex/gpt-5.6-sol","thinking_level":"high"}
+```
+
+The first override opens a user approval dialog. Approving permits agents and
+their descendants to choose available models and thinking levels for new
+subagents throughout the current root conversation. Further calls do not ask
+again. A denial blocks overrides without repeated prompts; ordinary inheritance
+continues to work. Headless runs cannot grant approval.
+
+- `/subagents permissions` shows the current decision.
+- `/subagents permissions allow` opens the user approval dialog, including after a denial.
+- `/subagents permissions revoke` blocks future overrides. Existing children
+  retain their selected settings, including when they resume for a follow-up.
+
+Permission survives resume, compaction and branch navigation in the same
+conversation. New conversations and forks have different IDs and need their own
+approval. The decision is stored separately from the transcript under
+`~/.pi/agent/subagents/permissions/<root-session-id>.json`, so copied or compacted
+conversation text cannot grant or restore permission.
+
+The runtime enforces permission before creating a child. Tool parameters cannot
+claim approval. Invalid model IDs and unsupported explicit thinking levels fail
+before prompting or creating a session. When only `model` is provided, inherited
+thinking is adjusted to that model's supported levels. The selected model and
+effective thinking level are saved in the child's durable descriptor.
 
 ## Lifecycle and authority
 
@@ -42,9 +75,10 @@ route is a foreground one-shot run.
 - Only the exact resident continuable child can call `report`.
 - The defaults are depth 3, eight live child activations per root, and a
   30-second activation-opening deadline. Opening children count toward the cap.
-- Child model, effective provider configuration, resolved request auth exposed
-  by Pi, and thinking level inherit from the parent at activation. Durable model
-  identity and thinking level are restored from the descriptor.
+- Child model and thinking level inherit from the parent unless the user has
+  approved creation-time overrides. Effective provider configuration and resolved
+  authentication come from the parent's registry for the selected provider.
+  Durable model identity and thinking level are restored from the descriptor.
 - Child resources include an explicit allowlist of enabled native coding tools
   and the maintained `todo_write` tool when active in the parent. Project settings,
   context, skills, and shell prefixes follow the parent's effective trust decision.
@@ -122,7 +156,7 @@ corrupt, unsupported, and unavailable launched children appear as diagnostic row
 in both discovery and the dashboard. Dashboard usage aggregates requests and its
 duration measures active prompt time rather than wall lifetime.
 
-## Pi 0.84.3 gaps
+## SDK boundaries
 
 The implementation keeps these boundaries explicit:
 

@@ -19,9 +19,26 @@ export function readDefaultMode(directory: string): Mode {
 
 export function saveDefaultMode(directory: string, value: unknown): void {
   const mode = readMode(value);
+  saveSetting(directory, "default-mode", mode);
+}
+
+export function readUserAgent(directory: string): string | undefined {
+  try { return readFileSync(join(directory, "user-agent"), "utf8").trim(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
+export function saveUserAgent(directory: string, value: string): void {
+  if (!value || !/^[\x20-\x7e]+$/.test(value)) throw new Error("User-Agent must be a nonempty printable single line");
+  saveSetting(directory, "user-agent", value);
+}
+
+function saveSetting(directory: string, name: string, value: string): void {
   mkdirSync(directory, { recursive: true });
-  const temporary = join(directory, `default-mode.${randomUUID()}.tmp`);
-  writeFileSync(temporary, `${mode}\n`, { flag: "wx", mode: 0o600 });
-  try { renameSync(temporary, join(directory, "default-mode")); }
+  const temporary = join(directory, `${name}.${randomUUID()}.tmp`);
+  writeFileSync(temporary, `${value}\n`, { flag: "wx", mode: 0o600 });
+  try { renameSync(temporary, join(directory, name)); }
   finally { rmSync(temporary, { force: true }); }
 }

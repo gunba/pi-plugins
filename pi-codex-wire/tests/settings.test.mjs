@@ -21,3 +21,15 @@ test("saved defaults roundtrip, remain opt-in and reject invalid values without 
   writeFileSync(join(directory, "default-mode"), "broken");
   assert.throws(() => readDefaultMode(directory), /must be/);
 });
+
+test('saved native user-agent survives reload and rejects multiline values', async t => {
+  const { readUserAgent, saveUserAgent } = await import('../extensions/settings.ts');
+  const directory = mkdtempSync(join(tmpdir(), 'wire-profile-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  assert.equal(readUserAgent(directory), undefined);
+  const profile = 'codex_cli_rs/0.153.4 (Fedora 43.0.0; x86_64) ghostty/1.2.3';
+  saveUserAgent(directory, profile);
+  assert.equal(readUserAgent(directory), profile);
+  assert.throws(() => saveUserAgent(directory, profile + '\nheader: value'));
+  assert.equal(readUserAgent(directory), profile);
+});

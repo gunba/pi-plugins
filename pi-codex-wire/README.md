@@ -2,7 +2,7 @@
 
 An opt-in Pi transport plugin for comparing subscription consumption with Codex-compatible requests. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Tested against Pi **0.84.3** and Node **22.22.3**.
+Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Requires Pi **0.85.1+** and Node **22.19+**.
 
 ## Start a test session
 
@@ -14,6 +14,10 @@ pi -e ./extensions/index.ts --codex-wire codex --model openai-codex/gpt-6-astra 
 ```
 
 This package is separate from the parent repository's auto-loaded extension manifest. To register the local package globally, run `pi install /absolute/path/to/pi-codex-wire`. Your saved model and authentication are unchanged.
+
+The package installs its Pi serializer dependency explicitly. A native ESM module
+loads its public subpaths independently of the extension loader's root-module
+aliases, supporting both the bundled CLI and SDK child runtimes.
 
 The initial default is off. To enable automatic activation, run `/codex-wire default codex` once. This saves the startup mode in `~/.pi/agent/codex-wire/default-mode` (or under `PI_CODING_AGENT_DIR`) for new, resumed, forked and reloaded sessions. An explicit `--codex-wire` flag overrides it. `/codex-wire default off` removes automatic activation; saving a default does not change the current session's mode.
 
@@ -33,6 +37,12 @@ Use `/codex-wire status` to see the active mode, saved default, last request out
 On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. Terminal detection follows the native precedence and sanitization rules, including Windows Terminal and tmux client detection. It does not launch Codex.
 
 For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.153.4 (...) terminal"`. It must match the selected originator and pinned version. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
+
+You can save a verified native profile for this machine with
+`/codex-wire user-agent codex_cli_rs/0.153.4 (...) terminal`. The profile is stored
+under `~/.pi/agent/codex-wire/user-agent` and is used on activation, resume, and
+reload. An explicit `--codex-wire-user-agent` overrides the saved profile. This
+lets Linux sessions activate the saved default mode without repeating flags.
 
 ## Implemented behaviour
 
