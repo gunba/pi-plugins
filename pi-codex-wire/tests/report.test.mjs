@@ -4,7 +4,7 @@ import { summarize } from "../report.mjs";
 import { allowanceHeaders, eventDiagnostics } from "../extensions/diagnostics.ts";
 
 const rows = [
-  { kind: "run", profile: "codex" },
+  { kind: "run", profile: "codex", client: "desktop" },
   { kind: "allowance-mark", usedPercent: 10, resetId: "5h:1", time: "a" },
   { kind: "request", requestId: "warm", prewarm: true },
   { kind: "request", requestId: "r", model: "gpt-6-astra", effort: "medium", serviceTier: "omitted", transport: "websocket" },
@@ -14,6 +14,8 @@ const rows = [
 ];
 test("report counts model usage once and excludes prewarm", () => {
   const [result] = summarize(rows).intervals;
+  assert.equal(summarize(rows).client, "desktop");
+  assert.equal(result.client, "desktop");
   assert.equal(result.usable, true);
   assert.equal(result.requests, 1);
   assert.equal(result.uncachedInput, 20);

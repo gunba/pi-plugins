@@ -5,6 +5,20 @@ import { identity } from "./fixtures.mjs";
 
 const system = { osType: "Windows", version: "10.0.26100", architecture: "x86_64" };
 
+test("Desktop app-server identity uses Desktop originator and initialized client suffix", () => {
+  const options = { client: "desktop", system, env: {} };
+  const desktop = codexIdentity(options);
+  assert.equal(desktop.originator, "Codex Desktop");
+  assert.equal(desktop.version, "0.153.4");
+  assert.equal(desktop.userAgent, "Codex Desktop/0.153.4 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.903.61454)");
+  assert.deepEqual(codexIdentity({ ...options, userAgent: desktop.userAgent }), desktop);
+  assert.match(codexIdentity({ ...options, desktopVersion: "26.904.12345" }).userAgent, /26\.904\.12345\)$/);
+  assert.throws(() => codexIdentity({ ...options, desktopVersion: "bad\nheader" }), /application version/);
+  assert.throws(() => codexIdentity({ ...options, userAgent: identity.userAgent }), /single-line/);
+  assert.throws(() => codexIdentity({ ...options, userAgent: desktop.userAgent.replace(/ \([^()]+\)$/, "") }), /suffix/);
+  assert.throws(() => codexIdentity({ ...options, env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "codex_cli_rs" } }), /conflicting override/);
+});
+
 test("native terminal precedence, presence, version and sanitization fixtures", () => {
   const cases = [
     [{ TERM_PROGRAM: "WezTerm", TERM_PROGRAM_VERSION: "2026.1", WT_SESSION: "yes" }, "WezTerm/2026.1"],

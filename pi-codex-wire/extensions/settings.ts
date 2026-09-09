@@ -1,38 +1,33 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Client } from "./identity.ts";
 
-export type Mode = "off" | "stock" | "pi" | "codex";
-
-export function readMode(value: unknown): Mode {
-  if (typeof value === "string" && ["off", "stock", "pi", "codex"].includes(value)) return value as Mode;
-  throw new Error("codex-wire must be off, stock, pi or codex");
+export function readClient(value: unknown): Client {
+  if (value === "cli" || value === "desktop") return value;
+  throw new Error("Codex wire client must be cli or desktop");
 }
 
-export function readDefaultMode(directory: string): Mode {
-  try { return readMode(readFileSync(join(directory, "default-mode"), "utf8").trim()); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "off";
-    throw error;
-  }
+export function savedClient(directory: string): Client {
+  try { return readClient(readFileSync(join(directory, "client"), "utf8").trim()); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "cli"; throw error; }
 }
 
-export function saveDefaultMode(directory: string, value: unknown): void {
-  const mode = readMode(value);
-  saveSetting(directory, "default-mode", mode);
+export function saveClient(directory: string, client: Client): void {
+  saveSetting(directory, "client", readClient(client));
 }
 
-export function readUserAgent(directory: string): string | undefined {
-  try { return readFileSync(join(directory, "user-agent"), "utf8").trim(); }
+export function readUserAgent(directory: string, client: Client = "cli"): string | undefined {
+  try { return readFileSync(join(directory, client === "desktop" ? "user-agent-desktop" : "user-agent"), "utf8").trim(); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
 }
 
-export function saveUserAgent(directory: string, value: string): void {
+export function saveUserAgent(directory: string, value: string, client: Client = "cli"): void {
   if (!value || !/^[\x20-\x7e]+$/.test(value)) throw new Error("User-Agent must be a nonempty printable single line");
-  saveSetting(directory, "user-agent", value);
+  saveSetting(directory, client === "desktop" ? "user-agent-desktop" : "user-agent", value);
 }
 
 function saveSetting(directory: string, name: string, value: string): void {

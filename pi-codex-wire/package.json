@@ -1,10 +1,10 @@
 {
   "name": "pi-codex-wire",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Opt-in Codex wire-protocol emulation and controlled identity diagnostics for Pi",
+  "description": "Always-enabled Codex transport with CLI and Desktop request identities for Pi",
   "keywords": [
     "pi-package"
   ],

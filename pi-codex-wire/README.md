@@ -1,38 +1,38 @@
 # Pi Codex Wire
 
-An opt-in Pi transport plugin for comparing subscription consumption with Codex-compatible requests. Pi retains its prompts, tools, agent loop and session interface.
+The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
 Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Requires Pi **0.84.3+** and Node **22.19+**.
 
-## Start a test session
+## Installation and activation
 
-From this directory:
+Install or update the main package:
 
 ```sh
-npm ci --ignore-scripts
-pi -e ./extensions/index.ts --codex-wire codex --model openai-codex/gpt-6-astra --thinking medium
+pi install https://github.com/gunba/pi-plugins
 ```
 
-This package is separate from the parent repository's auto-loaded extension manifest. To register the local package globally, run `pi install /absolute/path/to/pi-codex-wire`. Your saved model and authentication are unchanged.
+The parent manifest loads Wire automatically. Do not register this subdirectory separately. Remove any old standalone Wire registration, then reload Pi. Your saved model and authentication are unchanged. For a checkout whose dependencies were removed, run `npm ci --omit=dev --legacy-peer-deps` at the repository root.
 
 The package installs its Pi serializer dependency explicitly. A native ESM module
 loads its public subpaths independently of the extension loader's root-module
 aliases, supporting both the bundled CLI and SDK child runtimes.
 
-The initial default is off. To enable automatic activation, run `/codex-wire default codex` once. This saves the startup mode in `~/.pi/agent/codex-wire/default-mode` (or under `PI_CODING_AGENT_DIR`) for new, resumed, forked and reloaded sessions. An explicit `--codex-wire` flag overrides it. `/codex-wire default off` removes automatic activation; saving a default does not change the current session's mode.
+Codex mode is mandatory on startup, resume, fork and reload. The old mode flag, mode-switch commands and saved `default-mode` setting are no longer used. If activation fails after loading, Codex requests are blocked rather than sent through the original provider.
 
-Use `/codex-wire status` to see the active mode, saved default, last request outcome and diagnostic file. Enabling a mode is not itself a successful request. `/codex-wire off` restores the original provider for this session. Mode changes require an idle session and do not change the saved default. The plugin reuses Pi's existing `openai-codex` authentication.
+Use `/codex-wire status` to see the client identity, last request outcome and diagnostic file. `/codex-wire reconnect` creates fresh transport state without disabling Wire. Activation is not itself a successful request. Changes require an idle session. The plugin reuses Pi's existing `openai-codex` authentication.
 
-| Mode | Behaviour |
-|---|---|
-| `off` | Original provider, no experiment logging |
-| `stock` | Original provider with request/usage observations |
-| `pi` | Codex-compatible transport, Pi originator and User-Agent |
-| `codex` | Same transport, Codex CLI originator and User-Agent |
+## CLI and Desktop identities
 
-`--codex-wire-transport auto` uses WebSockets with HTTP/SSE fallback. `--codex-wire-transport sse` fixes the experiment to HTTP/SSE. Both identity profiles use the same protocol implementation and Codex version header.
+CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header.
 
-`--codex-wire-compression on` matches Codex 0.153.4's default `enable_request_compression` feature. `off` disables it. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE; it does not depend on the client identity label. If zstd is selected but unavailable in Node, the request stops before inference. These controls do not change the `stock` provider.
+The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. This models Desktop initialization of Wire's pinned **0.153.4** app-server protocol; it does not claim to reproduce the installed Desktop binary's exact core version.
+
+Desktop identity applies to both catalog and inference requests. Switching clients discards the old catalog and connections. Conflicting Desktop originator overrides are rejected. This is request-identity emulation, not the Desktop runtime, its attestation or a guarantee of Desktop allowance treatment.
+
+`--codex-wire-transport auto` uses WebSockets with HTTP/SSE fallback. `--codex-wire-transport sse` fixes the transport to HTTP/SSE.
+
+`--codex-wire-compression on` matches Codex 0.153.4's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
 On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. Terminal detection follows the native precedence and sanitization rules, including Windows Terminal and tmux client detection. It does not launch Codex.
 
@@ -42,7 +42,7 @@ You can save a verified native profile for this machine with
 `/codex-wire user-agent codex_cli_rs/0.153.4 (...) terminal`. The profile is stored
 under `~/.pi/agent/codex-wire/user-agent` and is used on activation, resume, and
 reload. An explicit `--codex-wire-user-agent` overrides the saved profile. This
-lets Linux sessions activate the saved default mode without repeating flags.
+lets Linux sessions activate Wire without repeating flags. CLI and Desktop User-Agent profiles are saved separately; the current client determines which profile is written.
 
 ## Implemented behaviour
 
@@ -58,15 +58,15 @@ lets Linux sessions activate the saved default mode without repeating flags.
 - Allowance counters from WebSocket upgrades, stream events and SSE responses are forwarded to `pi-codex-compat` through `pi-codex-wire:allowance`. The event contains only allowlisted counters and plan labels. The footer updates passively, including when the 7-day window is reported as the primary window.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
-On the first model request, the plugin reads `/codex/models?client_version=0.153.4` using the existing account credential and the selected native identity profile. It keeps only capability fields, not model instructions. Both emulation modes use this same catalog identity deliberately, so the client-label comparison holds capabilities constant.
+On the first model request, the plugin reads `/codex/models?client_version=0.153.4` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions.
 
-Snapshots are scoped to endpoint, account and credential. Reversed completion order cannot replace another scope's capabilities. Concurrent lookups have independent cancellation; the first successful result freezes that scope, and returned metadata is detached from the cache. Aborted or failed requests do not publish snapshots. The cache retains up to 16 scopes across mode switches. Catalog fetch failures or malformed entries stop the request before inference.
+Snapshots are scoped to endpoint, account and credential. Reversed completion order cannot replace another scope's capabilities. Concurrent lookups have independent cancellation; the first successful result freezes that scope, and returned metadata is detached from the cache. Aborted or failed requests do not publish snapshots. Each activation retains up to 16 catalog scopes. Catalog fetch failures or malformed entries stop the request before inference.
 
 Model lookup follows native Codex: longest matching prefix, then a single simple provider-namespace suffix. If neither matches, the plugin uses Codex 0.153.4's fallback capabilities, displays a warning and records `nativeFallback: true`. It keeps the requested model ID and reasoning effort. The catalog is not an allowlist: a model can accept requests without appearing there. The backend still decides whether the account can use that model.
 
 ## Controlled comparison
 
-First compare **`pi` versus `codex`**. This tests client identity while keeping the transport implementation constant. Compare **`stock` versus `pi`** separately to test implementation effects.
+Compare **CLI versus Desktop** identity with the same Wire transport. This does not compare the full native applications.
 
 1. Pause other use of the shared allowance, including other Pi sessions, native Codex, Work and background tools. Keep the account, model, reasoning, transport, tools and workload constant.
 2. Start each run with fresh conversation history. Use an identical read-only task or fixed fixture. Avoid workloads that change files between runs.
@@ -77,11 +77,11 @@ First compare **`pi` versus `codex`**. This tests client identity while keeping 
    ```
 
 4. Submit the task. After Pi settles and the allowance display updates, record another mark with the same reset label.
-5. Repeat in alternating order: `pi`, `codex`, `codex`, `pi`. Keep cold-start and warm-context measurements separate. Use enough repeated work to exceed the allowance display's rounding resolution; agree a budget before doing so.
+5. Repeat in alternating order: CLI, Desktop, Desktop, CLI. Keep cold-start and warm-context measurements separate. Use enough repeated work to exceed the allowance display's rounding resolution; agree a budget before doing so.
 6. Summarize the diagnostic files locally:
 
    ```sh
-   node report.mjs path/to/pi-run.jsonl path/to/codex-run.jsonl
+   node report.mjs path/to/cli-run.jsonl path/to/desktop-run.jsonl
    ```
 
 The report separates uncached input, cached input, output, reasoning, wire attempts and allowance percentage points. It flags reset changes, failed requests, missing coverage and transport fallback. It does not treat API dollar estimates as subscription accounting or count response usage twice.
@@ -92,7 +92,7 @@ A repeatable difference between the identity profiles supports **client-correlat
 
 Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime. Remove the log files when no longer needed.
 
-Requests through the registered `openai-codex` provider are covered, including SDK children that inherit it. Concurrent callers must supply distinct Pi session IDs. Auxiliary window IDs are persisted in the host session's custom entries and survive provider reactivation. Independently created runtimes need the plugin loaded and active; the saved default applies where they share the same agent directory. Proxy environment settings apply to WebSockets; SSE continues through Pi's supplied fetch implementation.
+Requests through the registered `openai-codex` provider are covered, including SDK children that inherit it. Concurrent callers must supply distinct Pi session IDs. Auxiliary window IDs are persisted in the host session's custom entries and survive provider reactivation. Independently created runtimes need the bundle loaded; client selection is shared through the agent directory. Proxy environment settings apply to WebSockets; SSE continues through Pi's supplied fetch implementation.
 
 This is application-protocol emulation, not byte-for-byte native execution. It uses Pi's runtime and Node's networking stack. The transport is pinned to a source version. Unsupported tool namespaces fail explicitly. The model-visible Pi prompt and tools are deliberately retained so identity comparisons hold the workload constant. New native protocol features require a source review and tests before adoption.
 

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
-import { saveDefaultMode } from "../extensions/settings.ts";
+import { saveUserAgent } from "../extensions/settings.ts";
 
 const model = { id: "gpt-6-astra", name: "Astra", api: "openai-codex-responses", provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api",
   reasoning: true, input: ["text"], cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 };
@@ -19,7 +19,10 @@ function harness(t, mode = "codex", savedDefault) {
   t.after(() => { if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old; rmSync(directory, { recursive: true, force: true }); });
   const events = new Map(), commands = new Map(), flags = new Map([["codex-wire", mode], ["codex-wire-transport", "sse"], ["codex-wire-user-agent", identity.userAgent]]);
   if (mode === null) flags.delete("codex-wire");
-  if (savedDefault) saveDefaultMode(join(directory, "codex-wire"), savedDefault);
+  if (savedDefault) {
+    mkdirSync(join(directory, "codex-wire"), { recursive: true });
+    writeFileSync(join(directory, "codex-wire", "default-mode"), savedDefault);
+  }
   const original = { id: "openai-codex", name: "OpenAI Codex", stream, streamSimple, getModels: () => [model] };
   let provider = original;
   const entries = [], published = [];
@@ -38,6 +41,41 @@ function decode(init) {
   if (encoding === "gzip") return JSON.parse(gunzipSync(init.body).toString());
   return JSON.parse(init.body);
 }
+
+test("Desktop selection changes both catalog and inference identity and persists across reload", async t => {
+  const h = harness(t);
+  const directory = join(h.directory, "codex-wire");
+  saveUserAgent(directory, identity.userAgent);
+  saveUserAgent(directory, identity.userAgent.replace("codex_cli_rs/", "Codex Desktop/") + " (Codex Desktop; 26.903.61454)", "desktop");
+  h.flags.delete("codex-wire-user-agent");
+  const requests = [];
+  const fetcher = async (url, init) => {
+    requests.push({ catalog: String(url).includes("/models?"), headers: new Headers(init.headers) });
+    if (requests.at(-1).catalog) return Response.json({ models: [{ slug: model.id }] });
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  for (const client of ["desktop", "cli"]) {
+    await h.commands.get("codex-wire").handler(`client ${client}`, h.ctx);
+    h.events.get("session_shutdown")({}, h.ctx);
+    h.events.get("session_start")({ reason: "reload" }, h.ctx);
+    const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+    assert.equal(result.stopReason, "stop", result.errorMessage);
+    const originator = client === "desktop" ? "Codex Desktop" : "codex_cli_rs";
+    assert.equal(requests.at(-2).catalog, true);
+    for (const request of requests.slice(-2)) {
+      assert.equal(request.headers.get("originator"), originator);
+      assert.ok(request.headers.get("user-agent").startsWith(`${originator}/0.153.4 `));
+    }
+  }
+  assert.equal(requests.length, 4, "each client must refresh its own catalog identity");
+  h.flags.set("codex-wire-client", "desktop");
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({ reason: "reload" }, h.ctx);
+  await h.commands.get("codex-wire").handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /Client: desktop/);
+  assert.equal(readFileSync(join(directory, "client"), "utf8").trim(), "cli", "startup override must not rewrite the saved client");
+});
 
 function concurrentFetch(t, expected) {
   const requests = [], releases = [];
@@ -106,10 +144,10 @@ test("retired inherited providers stay aborted; child window identity survives r
   const inherited = h.provider();
   assert.equal((await inherited.streamSimple(model, context, options).result()).stopReason, "stop");
   const window = f.requests[0].headers.get("x-codex-window-id");
-  await h.commands.get("codex-wire").handler("off", h.ctx);
+  h.events.get("session_shutdown")({}, h.ctx);
   assert.equal((await inherited.streamSimple(model, context, options).result()).stopReason, "aborted");
   assert.equal(f.requests.length, 1);
-  await h.commands.get("codex-wire").handler("codex", h.ctx);
+  h.events.get("session_start")({}, h.ctx);
   assert.equal((await h.provider().streamSimple(model, context, options).result()).stopReason, "stop");
   assert.equal(f.requests.at(-1).headers.get("x-codex-window-id"), window);
 });
@@ -156,13 +194,24 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
   for (const secret of [jwt, "PRIVATE INSTRUCTIONS", "PRIVATE QUESTION", "PRIVATE TOKEN", "FAKE ACCOUNT"]) assert.equal(logs.includes(secret), false);
 });
 
-test("loading default off is inert and switching off restores provider", async t => {
-  const h = harness(t, "off");
-  assert.strictEqual(h.provider(), h.original);
-  await h.commands.get("codex-wire").handler("pi", h.ctx);
+test("Wire wraps the provider without flags and restores it only on shutdown", async t => {
+  const h = harness(t, null);
   assert.notStrictEqual(h.provider(), h.original);
-  await h.commands.get("codex-wire").handler("off", h.ctx);
+  h.events.get("session_shutdown")({}, h.ctx);
   assert.strictEqual(h.provider(), h.original);
+});
+
+test("startup failure blocks Codex requests instead of silently using the original provider", async t => {
+  const h = harness(t);
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.flags.set("codex-wire-user-agent", "invalid");
+  assert.throws(() => h.events.get("session_start")({}, h.ctx), /single-line/);
+  assert.throws(() => h.provider().streamSimple(model, { messages: [] }, {}), /activation failed/);
+  h.flags.set("codex-wire-user-agent", identity.userAgent);
+  h.events.get("session_start")({}, h.ctx);
+  const f = concurrentFetch(t, 1);
+  f.release();
+  assert.equal((await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: f.fetcher }).result()).stopReason, "stop");
 });
 
 test("catalog errors stop before inference, not a silent protocol downgrade", async t => {
@@ -187,11 +236,11 @@ test("shutdown cancels catalog lookup before inference", async t => {
   assert.equal((await response.result()).stopReason, "aborted");
 });
 
-test("context windows persist through mode switches and rotate after compaction", async t => {
+test("context windows persist through reconnection and rotate after compaction", async t => {
   const h = harness(t);
   const entries = h.ctx.sessionManager.getBranch();
   const initial = entries.at(-1).data.id;
-  await h.commands.get("codex-wire").handler("pi", h.ctx);
+  await h.commands.get("codex-wire").handler("reconnect", h.ctx);
   assert.equal(entries.length, 1);
   h.events.get("session_compact")({}, h.ctx);
   assert.notEqual(entries.at(-1).data.id, initial);
@@ -202,33 +251,33 @@ test("invalid identity/compression flags cannot replace an active provider", asy
   const h = harness(t);
   const active = h.provider();
   h.flags.set("codex-wire-user-agent", "invalid profile");
-  await h.commands.get("codex-wire").handler("pi", h.ctx);
+  await h.commands.get("codex-wire").handler("reconnect", h.ctx);
   assert.strictEqual(h.provider(), active);
   h.flags.set("codex-wire-user-agent", identity.userAgent);
   h.flags.set("codex-wire-compression", "invalid");
-  await h.commands.get("codex-wire").handler("pi", h.ctx);
+  await h.commands.get("codex-wire").handler("reconnect", h.ctx);
   assert.strictEqual(h.provider(), active);
 });
 
-test("a saved default is reused on startup, reload, resume, fork and new sessions", async t => {
-  const h = harness(t, null);
-  assert.strictEqual(h.provider(), h.original);
-  await h.commands.get("codex-wire").handler("default codex", h.ctx);
-  assert.strictEqual(h.provider(), h.original, "saving alone must not replace the active provider");
+test("Codex is enabled on startup, reload, resume, fork and new sessions despite obsolete defaults", async t => {
+  const h = harness(t, null, "off");
+  assert.notStrictEqual(h.provider(), h.original);
   for (const reason of ["startup", "reload", "resume", "fork", "new"]) {
     h.events.get("session_shutdown")({}, h.ctx);
     h.events.get("session_start")({ reason }, h.ctx);
     assert.notStrictEqual(h.provider(), h.original);
   }
-  await h.commands.get("codex-wire").handler("default off", h.ctx);
-  h.events.get("session_shutdown")({}, h.ctx);
-  h.events.get("session_start")({}, h.ctx);
-  assert.strictEqual(h.provider(), h.original);
+  const active = h.provider();
+  for (const command of ["off", "pi", "stock", "default off"]) {
+    await h.commands.get("codex-wire").handler(command, h.ctx);
+    assert.strictEqual(h.provider(), active);
+    assert.match(h.notices.at(-1), /always enabled/);
+  }
 });
 
-test("an explicit off flag overrides a saved codex default", t => {
-  const h = harness(t, "off", "codex");
-  assert.strictEqual(h.provider(), h.original);
+test("obsolete mode flags cannot disable bundled Wire", t => {
+  const h = harness(t, "off", "off");
+  assert.notStrictEqual(h.provider(), h.original);
 });
 
 test("real Pi streaming accepts an unlisted model with native fallback and truthful status", async t => {
@@ -262,11 +311,11 @@ test('saved native profile activates without a CLI flag and explicit flags take 
   const h = harness(t, 'off');
   await h.commands.get('codex-wire').handler(`user-agent ${identity.userAgent}`, h.ctx);
   h.flags.delete('codex-wire-user-agent');
-  await h.commands.get('codex-wire').handler('codex', h.ctx);
+  await h.commands.get('codex-wire').handler('reconnect', h.ctx);
   assert.notEqual(h.provider(), h.original);
-  await h.commands.get('codex-wire').handler('off', h.ctx);
+  const active = h.provider();
   h.flags.set('codex-wire-user-agent', 'invalid-profile');
-  await h.commands.get('codex-wire').handler('codex', h.ctx);
-  assert.equal(h.provider(), h.original);
+  await h.commands.get('codex-wire').handler('reconnect', h.ctx);
+  assert.equal(h.provider(), active);
   assert.match(h.notices.at(-1), /single-line/);
 });

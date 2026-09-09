@@ -3,6 +3,21 @@
 Environment: Windows 10.0.26100, Node 22.22.3, Pi 0.84.3.
 Protocol reference: Codex 0.153.4, commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
 
+## Always-enabled bundle and Desktop identity — 8 September 2026
+
+`pi-plugins` 0.17.0 includes Wire 0.2.0 directly in its extension manifest. Codex mode is mandatory; old activation defaults and mode commands are removed. Startup activation errors install a blocking provider rather than silently restoring unadapted inference. The local standalone registration was removed, leaving only the main package.
+
+The Desktop option sets originator `Codex Desktop` and the app-server client-name/version suffix. Evidence: the installed official Desktop Electron package reports application version `26.903.61454` and initializes its app-server with the Desktop client name; the pinned native `app-server/src/request_processors/initialize_processor.rs` derives the originator and User-Agent suffix from that initialization. The Windows Store package version is distinct. Wire retains protocol/core version **0.153.4**, so this is Desktop-style initialization of that protocol, not a claim that its core version matches the installed app binary.
+
+CLI/Desktop selection is persisted, explicit startup flags override the saved client, and saved User-Agents are client-specific. Switching clients creates a fresh catalog and transport; local tests verify both catalog and inference headers. Conflicting Desktop identities are rejected. Diagnostics and reports retain the client selection. No Desktop attestation or allowance parity is claimed.
+
+- TypeScript: passed.
+- Wire, usage and host-loading suite: **81 passed, 0 failed**.
+- Final report assertions: **3 passed, 0 failed**.
+- After pruning development dependencies, installed Pi 0.84.3 loaded **all 16 bundled extensions**, including Wire, without errors.
+- Production dependency tree and Git whitespace checks: passed.
+- No inference probes; Pi runtime and saved conversations unchanged.
+
 ## Tool-call replay ID correction
 
 A saved `apply_patch` function call was reproduced locally through Pi's actual serializer: grammar-tool replay produced a `custom_tool_call` retaining an incompatible `fc_` item ID. The request shaper now omits optional item IDs whose prefix does not match the outgoing call type, for both standard Responses and Responses Lite. It preserves compatible IDs, `call_id`/result pairing, reasoning items and stored messages rather than inventing replacement server IDs. Native `protocol/src/models.rs` defines the custom-call item ID as optional.

@@ -11,7 +11,8 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const root = new URL('../', import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
-  const paths = [...manifest.pi.extensions, './pi-codex-wire/extensions/index.ts']
+  assert.equal(manifest.pi.extensions.filter(path => path === './pi-codex-wire/extensions/index.ts').length, 1);
+  const paths = manifest.pi.extensions
     .map(path => fileURLToPath(new URL(path, root)));
   const loader = new DefaultResourceLoader({
     cwd: directory, agentDir: directory, settingsManager: SettingsManager.inMemory(),

@@ -7,13 +7,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { convertResponsesMessages, createGrammarToolInputProperties } from "./serializer.ts";
 import { Diagnostics, object, type JsonObject, type Profile } from "./diagnostics.ts";
 import { Protocol } from "./protocol.ts";
-import { CODEX_VERSION, codexIdentity } from "./identity.ts";
+import { CODEX_VERSION, codexIdentity, type Client } from "./identity.ts";
 import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
-import { readDefaultMode, readMode, saveDefaultMode, readUserAgent, saveUserAgent, type Mode } from "./settings.ts";
+import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient } from "./settings.ts";
 
 type Options = StreamOptions | SimpleStreamOptions;
 // Providers belong to the host runtime, which may differ from our serializer SDK.
@@ -34,12 +34,14 @@ function installationId(directory: string): string {
 }
 
 export default function codexWire(pi: ExtensionAPI): void {
-  pi.registerFlag("codex-wire", { type: "string", description: "Codex wire mode: off, stock, pi, codex (overrides saved default)" });
+  pi.registerFlag("codex-wire-client", { type: "string", description: "Codex client identity: cli or desktop (overrides saved client)" });
+  pi.registerFlag("codex-wire-desktop-version", { type: "string", description: "Desktop application version for the app-server User-Agent suffix" });
   pi.registerFlag("codex-wire-transport", { type: "string", default: "auto", description: "Wire transport: auto (WebSocket with SSE fallback) or sse" });
   pi.registerFlag("codex-wire-compression", { type: "string", default: "on", description: "Native request-compression feature: on (Codex default) or off" });
   pi.registerFlag("codex-wire-user-agent", { type: "string", description: "Exact native User-Agent profile; required outside Windows" });
   pi.registerFlag("codex-wire-originator", { type: "string", description: "Native originator override (default codex_cli_rs)" });
-  let mode: Mode = "off";
+  let mode: "off" | "codex" = "off";
+  let client: Client = "cli";
   let original: Provider | undefined;
   let transport: WireTransport | undefined;
   let protocol: Protocol | undefined;
@@ -68,19 +70,22 @@ export default function codexWire(pi: ExtensionAPI): void {
     transport?.close(); transport = undefined; protocol = undefined; beganTurn = false;
     if (original) pi.registerProvider(original);
     original = undefined;
+    mode = "off";
   }
 
-  function activate(next: Mode, ctx: ExtensionContext): void {
-    if (next === "off") { stop(); mode = "off"; lastRequest = "not tested"; ctx.ui.setStatus("codex-wire", undefined); return; }
+  function activate(ctx: ExtensionContext, selectedClient = readClient(pi.getFlag("codex-wire-client") ?? savedClient(directory))): void {
+    const next = "codex";
     const selectedTransport = pi.getFlag("codex-wire-transport") ?? "auto";
     if (selectedTransport !== "auto" && selectedTransport !== "sse") throw new Error("codex-wire-transport must be auto or sse");
     const compression = pi.getFlag("codex-wire-compression") ?? "on";
     if (compression !== "on" && compression !== "off") throw new Error("codex-wire-compression must be on or off");
-    const identity = next === "stock" ? undefined : codexIdentity({
-      userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory),
+    const identity = codexIdentity({
+      client: selectedClient,
+      desktopVersion: pi.getFlag("codex-wire-desktop-version") as string | undefined,
+      userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory, selectedClient),
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
-    stop(); mode = next; lastRequest = "not tested";
+    stop(); mode = next; client = selectedClient; lastRequest = "not tested";
     const currentLifetime = lifetime = new AbortController();
     const currentSessions = sessions = new Map<string, WireSession>();
     const provider = ctx.modelRegistry.getProvider("openai-codex");
@@ -89,9 +94,9 @@ export default function codexWire(pi: ExtensionAPI): void {
     diagnostics = new Diagnostics(join(directory, "logs", `${randomUUID()}.jsonl`),
       () => ctx.ui.notify("Codex wire diagnostics could not be written; this run cannot support an allowance comparison.", "warning"));
     diagnostics.write({ kind: "run", profile: mode, referenceVersion: CODEX_VERSION, transport: selectedTransport,
-      compression: mode === "stock" ? "provider-default" : compression });
+      compression, client });
     if (identity) {
-      catalog ??= new Catalog(identity);
+      catalog = new Catalog(identity);
       const windows = ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "codex-wire-window");
       const lastWindow = windows.at(-1);
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
@@ -258,11 +263,24 @@ export default function codexWire(pi: ExtensionAPI): void {
       stream: (model, context, options) => wrapped(model, context, options, false),
       streamSimple: (model, context, options) => wrapped(model, context, options, true),
     });
-    ctx.ui.setStatus("codex-wire", `wire:${mode}`);
+    ctx.ui.setStatus("codex-wire", `wire:${client}`);
     ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
   }
 
-  pi.on("session_start", (_event, ctx) => activate(readMode(pi.getFlag("codex-wire") ?? readDefaultMode(directory)), ctx));
+  pi.on("session_start", (_event, ctx) => {
+    try { activate(ctx); }
+    catch (error) {
+      stop();
+      const base = ctx.modelRegistry.getProvider("openai-codex");
+      if (base) {
+        original = base;
+        const fail = (): never => { throw new Error("Codex Wire activation failed. Correct the startup error and reload before sending requests."); };
+        pi.registerProvider({ ...base, stream: fail, streamSimple: fail });
+      }
+      ctx.ui.setStatus("codex-wire", "wire:error");
+      throw error;
+    }
+  });
   pi.on("before_agent_start", () => {
     protocol?.beginTurn(); beganTurn = true;
   });
@@ -278,28 +296,31 @@ export default function codexWire(pi: ExtensionAPI): void {
   pi.on("session_tree", newWindow);
   pi.on("session_shutdown", () => { stop(); });
   pi.registerCommand("codex-wire", {
-    description: "Codex wire mode, default <off/stock/pi/codex>, user-agent <profile>, status, or mark <used-percent> <reset-id>",
+    description: "Always-on Codex wire: status, reconnect, client <cli|desktop>, user-agent <profile>, or mark <used-percent> <reset-id>",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (!args.trim() || parts[0] === "status") {
-        ctx.ui.notify(`Codex wire: ${mode}\nSaved default: ${readDefaultMode(directory)}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
+        ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
       }
       if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing or marking a comparison run.", "warning"); return; }
+      if (parts[0] === "client") {
+        try {
+          if (parts.length !== 2) throw new Error("Use /codex-wire client <cli|desktop>");
+          const selected = readClient(parts[1]);
+          activate(ctx, selected);
+          saveClient(directory, selected);
+          ctx.ui.notify(`Codex wire client: ${selected}; saved for future sessions.`, "info");
+        } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot select Codex client", "error"); }
+        return;
+      }
       if (parts[0] === "user-agent") {
         try {
           const userAgent = args.trim().slice("user-agent".length).trim();
-          codexIdentity({ userAgent, originator: pi.getFlag("codex-wire-originator") as string | undefined });
-          saveUserAgent(directory, userAgent);
+          codexIdentity({ client, desktopVersion: pi.getFlag("codex-wire-desktop-version") as string | undefined,
+            userAgent, originator: pi.getFlag("codex-wire-originator") as string | undefined });
+          saveUserAgent(directory, userAgent, client);
           ctx.ui.notify("Saved Codex wire User-Agent. Applies on the next activation, resume or reload.", "info");
         } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot save Codex wire User-Agent", "error"); }
-        return;
-      }
-      if (parts[0] === "default") {
-        try {
-          if (parts.length !== 2) throw new Error("Use /codex-wire default <off|stock|pi|codex>");
-          saveDefaultMode(directory, parts[1]);
-          ctx.ui.notify(`Saved Codex wire default: ${parts[1]}. Applies to new, resumed and reloaded sessions; the current mode is unchanged.`, "info");
-        } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot save Codex wire default", "error"); }
         return;
       }
       if (parts[0] === "mark") {
@@ -311,7 +332,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         diagnostics.write({ kind: "allowance-mark", usedPercent: used, resetId: parts[2] });
         ctx.ui.notify("Recorded allowance snapshot. No model request was made.", "info"); return;
       }
-      try { activate(readMode(parts[0]), ctx); }
+      if (parts.length !== 1 || parts[0] !== "reconnect") {
+        ctx.ui.notify("Codex Wire is always enabled. Use status, reconnect, client, user-agent, or mark.", "error"); return;
+      }
+      try { activate(ctx, client); }
       catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot activate Codex wire", "error"); }
     },
   });

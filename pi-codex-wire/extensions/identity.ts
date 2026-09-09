@@ -2,9 +2,14 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const CODEX_VERSION = "0.153.4";
+// Electron package.json version, not the Windows Store package version.
+export const DESKTOP_APP_VERSION = "26.903.61454";
+export type Client = "cli" | "desktop";
 export interface Identity { originator: string; userAgent: string; version: string }
 export interface NativeSystem { osType: string; version: string; architecture: string }
 export interface IdentityOptions {
+  client?: Client;
+  desktopVersion?: string;
   userAgent?: string;
   originator?: string;
   env?: NodeJS.ProcessEnv;
@@ -69,16 +74,23 @@ export function windowsSystem(): NativeSystem {
 /** Pinned default_client.rs:40-79, 159-212. Full explicit profiles never use OS guesses. */
 export function codexIdentity(options: IdentityOptions = {}): Identity {
   const env = options.env ?? process.env;
-  const requested = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? options.originator ?? "codex_cli_rs";
+  const desktop = options.client === "desktop";
+  const desktopVersion = options.desktopVersion ?? DESKTOP_APP_VERSION;
+  if (desktop && !/^\d+\.\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.-]+)?$/.test(desktopVersion)) {
+    throw new Error("codex-wire-desktop-version must be an application version");
+  }
+  const requested = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? options.originator ?? (desktop ? "Codex Desktop" : "codex_cli_rs");
+  if (desktop && requested !== "Codex Desktop") throw new Error("Desktop identity requires originator Codex Desktop; remove the conflicting override");
   const originator = /^[\t\x20-\x7e]*$/.test(requested) ? requested : "codex_cli_rs";
+  const suffix = desktop ? `Codex Desktop; ${desktopVersion}` : options.suffix?.trim();
   if (options.userAgent !== undefined) {
     if (!options.userAgent.startsWith(`${originator}/${CODEX_VERSION} `) || !/^[\x20-\x7e]+$/.test(options.userAgent)) {
       throw new Error(`codex-wire-user-agent must be a single-line ${originator}/${CODEX_VERSION} profile`);
     }
+    if (desktop && !options.userAgent.endsWith(` (${suffix})`)) throw new Error("Desktop User-Agent must include the selected Desktop application version suffix");
     return { originator, version: CODEX_VERSION, userAgent: options.userAgent };
   }
   const system = options.system ?? windowsSystem();
-  const suffix = options.suffix?.trim();
   const userAgent = `${originator}/${CODEX_VERSION} (${system.osType} ${system.version}; ${system.architecture}) ${terminalToken(env)}${suffix ? ` (${suffix})` : ""}`;
   return { originator, version: CODEX_VERSION, userAgent: userAgent.replace(/[^\t\x20-\x7e]/gu, "_") };
 }

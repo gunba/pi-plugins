@@ -1,25 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readDefaultMode, readMode, saveDefaultMode } from "../extensions/settings.ts";
+import { savedClient, saveClient, readClient, readUserAgent, saveUserAgent } from "../extensions/settings.ts";
 
-test("saved defaults roundtrip, remain opt-in and reject invalid values without overwriting", t => {
-  const root = mkdtempSync(join(tmpdir(), "pi-wire-settings-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const directory = join(root, "codex-wire");
-  assert.equal(readDefaultMode(directory), "off");
-  for (const mode of ["codex", "stock", "pi", "off"]) {
-    saveDefaultMode(directory, mode);
-    assert.equal(readDefaultMode(directory), mode);
-    assert.deepEqual(readdirSync(directory), ["default-mode"]);
-  }
-  assert.throws(() => saveDefaultMode(directory, "invalid"), /must be/);
-  assert.equal(readDefaultMode(directory), "off");
-  assert.throws(() => readMode({ toString: () => "codex" }), /must be/);
-  writeFileSync(join(directory, "default-mode"), "broken");
-  assert.throws(() => readDefaultMode(directory), /must be/);
+test("client selection persists and saved User-Agents are isolated by client", t => {
+  const directory = mkdtempSync(join(tmpdir(), "wire-client-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  assert.equal(savedClient(directory), "cli");
+  saveClient(directory, "desktop");
+  assert.equal(savedClient(directory), "desktop");
+  assert.throws(() => readClient("off"), /cli or desktop/);
+  saveUserAgent(directory, "cli-profile");
+  assert.equal(readUserAgent(directory, "desktop"), undefined);
+  saveUserAgent(directory, "desktop-profile", "desktop");
+  assert.equal(readUserAgent(directory), "cli-profile");
+  assert.equal(readUserAgent(directory, "desktop"), "desktop-profile");
 });
 
 test('saved native user-agent survives reload and rejects multiline values', async t => {

@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -21,6 +21,7 @@
   },
   "pi": {
     "extensions": [
+      "./pi-codex-wire/extensions/index.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",

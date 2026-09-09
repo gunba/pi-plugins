@@ -83,13 +83,14 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 
 ## Install
 
-### Opt-in transport comparison
+### Always-enabled Codex transport
 
-[`pi-codex-wire`](pi-codex-wire/README.md) is a separate, disabled-by-default
-workspace package. It keeps Pi's agent loop while reproducing the verified
-Codex 0.153.4 transport and providing controlled client-identity comparisons.
-The linked guide covers activation, privacy-safe diagnostics and testing.
-It is not part of the automatic extension manifest.
+[`pi-codex-wire`](pi-codex-wire/README.md) is included in the automatic extension
+manifest and always activates in Codex mode. It keeps Pi's agent loop and offers
+CLI or Desktop request identity through `/codex-wire client cli|desktop`.
+No separate package registration or saved activation setting is needed. Remove
+any old standalone Wire registration to avoid loading it twice. The linked guide
+covers identity limits, privacy-safe diagnostics and testing.
 
 ### Standard extensions
 

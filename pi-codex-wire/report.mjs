@@ -23,7 +23,7 @@ export function summarize(records) {
     if (sample.some(record => record.kind === "context-window-replaced")) reasons.push("context-window-replaced");
     const sum = key => usage.reduce((total, record) => total + (record[key] ?? 0), 0);
     intervals.push({
-      profile: run?.profile, from: before.time, to: after.time,
+      profile: run?.profile, client: run?.client, from: before.time, to: after.time,
       usable: reasons.length === 0, warnings: reasons,
       allowancePercentagePoints: reasons.includes("allowance-window-changed") ? null : Number((after.usedPercent - before.usedPercent).toFixed(6)),
       requests: ids.size, wireAttempts: requests.length,
@@ -34,7 +34,7 @@ export function summarize(records) {
       uncachedInput: sum("input"), cachedInput: sum("cached"), output: sum("output"), reasoning: sum("reasoning"),
     });
   }
-  return { profile: run?.profile, intervals, note: "Compare repeated, isolated, matched workloads. A client-correlated difference does not establish intent." };
+  return { profile: run?.profile, client: run?.client, intervals, note: "Compare repeated, isolated, matched workloads. A client-correlated difference does not establish intent." };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
