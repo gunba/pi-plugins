@@ -93,9 +93,15 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
 		case "branch_summary":
 			return clearField(mutableEntry, "summary", "")
 				+ clearField(mutableEntry, "details");
-		case "custom_message":
+		case "custom_message": {
+			// Delivery IDs are durable recovery state, not transcript payload.
+			// Keep only the ID; retaining the whole notice would retain its content.
+			const messageId = entry.customType === "pi-subagents/notice"
+				? record(mutableEntry.details)?.messageId : undefined;
 			return clearField(mutableEntry, "content", [])
-				+ clearField(mutableEntry, "details");
+				+ clearField(mutableEntry, "details",
+					typeof messageId === "string" ? { messageId } : undefined);
+		}
 		case "custom":
 			return preserveCustomState ? 0 : clearField(mutableEntry, "data");
 		default:

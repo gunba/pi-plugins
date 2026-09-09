@@ -94,6 +94,9 @@ effective thinking level are saved in the child's durable descriptor.
   A receipt is written before steering; recovery replays receipts missing their
   matching Pi custom message. Root `message_end` is not an acknowledgement boundary.
   Crash recovery is at-least-once, with message IDs preventing duplicate admission.
+  Compacted notice messages keep a minimal delivery ID so reload does not replay
+  completed reports and settlements. Recovery still delivers receipts whose
+  custom message was never appended.
 - Each activation receives fresh model-runtime state. Provider authentication is
   inherited from the parent resolver, with the parent request's in-memory auth
   header as a non-persisted fallback for long-lived OAuth sessions. Effective

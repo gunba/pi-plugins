@@ -606,8 +606,11 @@ export function undispatchedNotices(entries: readonly SessionEntry[]): ParentNot
 			const notice = parseParentNotice(entry.data);
 			if (notice) received.set(notice.messageId, notice);
 		} else if (entry.type === "custom_message" && entry.customType === "pi-subagents/notice") {
-			const notice = parseParentNotice(entry.details);
-			if (notice) dispatched.add(notice.messageId);
+			// Compacted resident messages retain only their delivery identifier.
+			// Dispatch proof does not require the archived content/child/kind.
+			if (isRecord(entry.details) && typeof entry.details.messageId === "string") {
+				dispatched.add(entry.details.messageId);
+			}
 		}
 	}
 	return [...received.values()].filter((notice) => !dispatched.has(notice.messageId));

@@ -18,6 +18,14 @@ entries remain available so extension state, including goals and todos, can
 continue. Message metadata, usage accounting, ids, parent links, labels, and
 session information also remain resident.
 
+Compacted subagent notifications retain only their `details.messageId` delivery
+marker, not their content. Reload recovery needs this marker to distinguish
+delivered notices from genuinely pending reports.
+
+After upgrading from a version that removed these markers, restart affected Pi
+processes once and resume the saved session. `/reload` alone cannot reconstruct
+fields already removed from the resident objects; the complete JSONL archive can.
+
 Pruning changes memory only. The append-only JSONL session file remains complete
 and new entries continue appending to it normally.
 
@@ -34,3 +42,11 @@ Pi to disable it.
 
 In the running process, `/tree` and exports cannot show payloads that an earlier
 compaction made obsolete. The complete payloads remain in the JSONL archive.
+
+## Delivery-recovery verification
+
+9 September 2026: TypeScript and all 93 memory/subagent tests passed. The
+regression covers compaction, repeated pruning, session reopening, pending
+reports and unchanged JSONL bytes. A read-only replay of an affected session
+reproduced 166 false recoveries with the former cleanup and zero with the fix.
+No inference probes or session-file edits were used.

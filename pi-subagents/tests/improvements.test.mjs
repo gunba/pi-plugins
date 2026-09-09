@@ -11,6 +11,7 @@ import subagents, { inheritProviderRuntime } from "../extensions/subagents.ts";
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
 import { createSubagentToolDefinitions } from "../extensions/subagent-tools.ts";
 import { copyCompletedParentTurns, NOTICE_ENTRY, SETTLEMENT_ENTRY, undispatchedNotices } from "../extensions/subagent-runtime.ts";
+import { pruneCompactedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 import { blockingPrompt, childParent, completedOutcome, createHarness, deferred, FakeDriverFactory, usageFor, waitUntil } from "./helpers.mjs";
 
 const model = {
@@ -169,6 +170,40 @@ test("durable receipt recovers a crash before message append and deduplicates af
 		assert.deepEqual(undispatchedNotices(restored.getBranch()), [notice]);
 		restored.appendCustomMessageEntry("pi-subagents/notice", notice.content, true, notice);
 		assert.deepEqual(undispatchedNotices(SessionManager.open(sm.getSessionFile()).getBranch()), []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("compaction and reload retain delivery IDs without retaining notice payloads or losing pending reports", () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-notice-compaction-"));
+	try {
+		const sm = SessionManager.create(root, join(root, "sessions"));
+		sm.appendMessage(assistant("started"));
+		const delivered = { kind: "settlement", childId: "child", messageId: "delivered", content: "result ".repeat(20_000) };
+		const pending = { kind: "report", childId: "child", messageId: "pending", content: "new finding" };
+		sm.appendCustomEntry(NOTICE_ENTRY, delivered);
+		sm.appendCustomMessageEntry("pi-subagents/notice", delivered.content, true, delivered);
+		sm.appendCustomEntry(NOTICE_ENTRY, pending);
+		const kept = sm.appendMessage(assistant("keep"));
+		sm.appendCompaction("summary", kept, 100);
+		const file = sm.getSessionFile();
+		const archive = readFileSync(file, "utf8");
+		assert.deepEqual(undispatchedNotices(sm.getBranch()), [pending]);
+		for (const manager of [sm, SessionManager.open(file)]) {
+			const report = pruneCompactedSession(manager);
+			assert.ok(report.estimatedBytesReleased > 100_000);
+			const message = manager.getBranch().find(entry => entry.type === "custom_message");
+			assert.deepEqual(message.details, { messageId: delivered.messageId });
+			assert.deepEqual(message.content, []);
+			assert.deepEqual(undispatchedNotices(manager.getBranch()), [pending]);
+			assert.equal(pruneCompactedSession(manager).estimatedBytesReleased, 0);
+			assert.deepEqual(undispatchedNotices(manager.getBranch()), [pending]);
+		}
+		assert.equal(readFileSync(file, "utf8"), archive);
+		sm.appendCustomMessageEntry("pi-subagents/notice", pending.content, true, pending);
+		const next = sm.appendMessage(assistant("next kept turn"));
+		sm.appendCompaction("next summary", next, 200);
+		pruneCompactedSession(sm);
+		assert.deepEqual(undispatchedNotices(sm.getBranch()), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
