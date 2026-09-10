@@ -79,10 +79,16 @@ const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex" };
 const USAGE_SOURCES: readonly UsageSource[] = ["codex"];
 
 let snapshots: UsageSnapshots = readPersistedSnapshots();
-let statusContext: ExtensionContext | undefined;
-let statusEnabled = !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_STATUS_ENV] || "");
-let tickTimer: ReturnType<typeof setInterval> | undefined;
-let sessionStatsCache: SessionStatsCache | undefined;
+// Factories can share this module across reloads. Never share captured contexts,
+// timers or per-session preferences between extension instances.
+type UsageState = {
+  context?: ExtensionContext;
+  enabled: boolean;
+  timer?: ReturnType<typeof setInterval>;
+  statsCache?: SessionStatsCache;
+  disposed: boolean;
+  dispose(): void;
+};
 
 type UsageGlobalState = {
   onWebSocketMessage?: (data: unknown) => void;
@@ -559,18 +565,18 @@ function sessionEntries(ctx: ExtensionContext): { manager: unknown; entries: unk
   return entries ? { manager, entries } : undefined;
 }
 
-function cachedSessionStats(ctx: ExtensionContext): SessionStats {
+function cachedSessionStats(ctx: ExtensionContext, state: UsageState): SessionStats {
   const current = sessionEntries(ctx);
   if (!current) return emptySessionStats();
-  const cache = sessionStatsCache;
+  const cache = state.statsCache;
   if (cache && cache.manager === current.manager && cache.entryCount === current.entries.length) return cache.stats;
   const stats = computeSessionStats(current.entries);
-  sessionStatsCache = { manager: current.manager, entryCount: current.entries.length, stats };
+  state.statsCache = { manager: current.manager, entryCount: current.entries.length, stats };
   return stats;
 }
 
-function formatSessionCostDetails(ctx: ExtensionContext): string {
-  const stats = cachedSessionStats(ctx);
+function formatSessionCostDetails(ctx: ExtensionContext, state: UsageState): string {
+  const stats = cachedSessionStats(ctx, state);
   const cachedInput = stats.totalCacheRead;
   const freshInput = stats.totalInput + stats.totalCacheWrite;
   const allInput = cachedInput + freshInput;
@@ -599,31 +605,48 @@ function formatSessionCostDetails(ctx: ExtensionContext): string {
   ].join("\n");
 }
 
-function updateUsageStatus(ctx: ExtensionContext): void {
-  statusContext = ctx;
-  const status = statusEnabled && isCodexLikeModel(ctx.model)
-    ? formatUsageStatus(ctx.ui.theme, currentUsageSource(ctx.model))
+function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
+  if (state.disposed) return;
+  const model = ctx.model, ui = ctx.ui;
+  const status = state.enabled && isCodexLikeModel(model)
+    ? formatUsageStatus(ui.theme, currentUsageSource(model))
     : undefined;
-  ctx.ui.setStatus(STATUS_KEY, status);
-  if (status) ensureTickTimer();
-  else disposeTickTimer();
+  ui.setStatus(STATUS_KEY, status);
+  // Do not retain a stale ctx if any of its guarded getters or UI calls failed.
+  if (state.disposed) return;
+  state.context = ctx;
+  if (status) ensureTickTimer(state);
+  else disposeTickTimer(state);
 }
 
-function ensureTickTimer(): void {
-  if (tickTimer) return;
-  tickTimer = setInterval(() => {
-    if (statusContext) updateUsageStatus(statusContext);
-  }, 30_000);
-  tickTimer.unref?.();
+function refreshUsageStatus(state: UsageState): void {
+  if (state.disposed || !state.context) return;
+  try {
+    updateUsageStatus(state.context, state);
+  } catch (error) {
+    // SDK invalidation/disposal need not emit shutdown. An optional footer
+    // must stop, rather than throw an uncaught exception from a timer/socket.
+    state.dispose();
+    if (!(error instanceof Error && error.message.includes("extension ctx is stale"))) {
+      console.warn("Codex usage footer disabled after a status update failed:", error);
+    }
+  }
 }
 
-function disposeTickTimer(): void {
-  if (!tickTimer) return;
-  clearInterval(tickTimer);
-  tickTimer = undefined;
+function ensureTickTimer(state: UsageState): void {
+  if (state.timer || state.disposed) return;
+  state.timer = setInterval(() => refreshUsageStatus(state), 30_000);
+  state.timer.unref?.();
 }
 
-function recordSnapshot(snapshot: UsageSnapshot): void {
+function disposeTickTimer(state: UsageState): void {
+  if (!state.timer) return;
+  clearInterval(state.timer);
+  state.timer = undefined;
+}
+
+function recordSnapshot(snapshot: UsageSnapshot, state: UsageState, ctx?: ExtensionContext): void {
+  if (state.disposed) return;
   const previous = snapshots[snapshot.source];
   snapshots[snapshot.source] = {
     ...snapshot,
@@ -632,74 +655,97 @@ function recordSnapshot(snapshot: UsageSnapshot): void {
   };
   pruneExpiredSnapshots(Date.now());
   persistSnapshots();
-  if (statusContext) updateUsageStatus(statusContext);
+  if (ctx) updateUsageStatus(ctx, state);
+  else refreshUsageStatus(state);
 }
 
 export default function codexUsage(pi: ExtensionAPI): void {
-  const handleWebSocketMessage = (data: unknown) => {
-    const snapshot = parseCodexWebSocketMessage(data);
-    if (snapshot) recordSnapshot(snapshot);
+  const state: UsageState = {
+    enabled: !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_STATUS_ENV] || ""),
+    disposed: false,
+    dispose,
   };
-  installWebSocketCapture();
-  getGlobalState().onWebSocketMessage = handleWebSocketMessage;
+  const handleWebSocketMessage = (data: unknown) => {
+    if (state.disposed) return;
+    const snapshot = parseCodexWebSocketMessage(data);
+    if (snapshot) recordSnapshot(snapshot, state);
+  };
   // Wire uses its own ws transport, bypassing the process-global WebSocket wrapper.
   const unsubscribeWire = pi.events.on("pi-codex-wire:allowance", data => {
+    if (state.disposed) return;
     const snapshot = parseUsageHeaders(recordValue(data));
-    if (snapshot) recordSnapshot(snapshot);
+    if (snapshot) recordSnapshot(snapshot, state);
   });
 
+  function dispose(): void {
+    if (state.disposed) return;
+    state.disposed = true;
+    disposeTickTimer(state);
+    state.context = undefined;
+    state.statsCache = undefined;
+    try { unsubscribeWire(); }
+    finally {
+      const capture = getGlobalState();
+      if (capture.onWebSocketMessage === handleWebSocketMessage) {
+        capture.onWebSocketMessage = undefined;
+        uninstallWebSocketCapture();
+      }
+    }
+  }
+
   pi.on("session_start", async (_event, ctx) => {
+    if (state.disposed) return;
+    updateUsageStatus(ctx, state);
     installWebSocketCapture();
-    updateUsageStatus(ctx);
+    getGlobalState().onWebSocketMessage = handleWebSocketMessage;
   });
 
   pi.on("before_provider_request", async (_event, ctx) => {
+    if (state.disposed) return;
+    updateUsageStatus(ctx, state);
     installWebSocketCapture();
-    updateUsageStatus(ctx);
   });
 
   pi.on("model_select", async (_event, ctx) => {
-    updateUsageStatus(ctx);
+    updateUsageStatus(ctx, state);
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
-    statusContext = ctx;
+    if (state.disposed) return;
     const snapshot = parseUsageHeaders(event.headers as HeaderMap | undefined);
-    if (snapshot) recordSnapshot(snapshot);
-    else updateUsageStatus(ctx);
+    if (snapshot) recordSnapshot(snapshot, state, ctx);
+    else updateUsageStatus(ctx, state);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    unsubscribeWire();
-    const state = getGlobalState();
-    if (state.onWebSocketMessage === handleWebSocketMessage) state.onWebSocketMessage = undefined;
-    ctx.ui.setStatus(STATUS_KEY, undefined);
-    statusContext = undefined;
-    sessionStatsCache = undefined;
-    disposeTickTimer();
-    uninstallWebSocketCapture();
+    if (state.disposed) return;
+    const ownsCapture = getGlobalState().onWebSocketMessage === handleWebSocketMessage;
+    // Release resources before touching UI: a stale/failed UI cannot skip cleanup.
+    dispose();
+    if (ownsCapture) ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 
   pi.registerCommand("pi-usage", {
     description: "Show passive Codex usage and control its footer status",
     handler: async (args, ctx) => {
+      if (state.disposed) return;
       const command = args.trim().toLowerCase();
       if (command === "off") {
-        statusEnabled = false;
-        updateUsageStatus(ctx);
+        state.enabled = false;
+        updateUsageStatus(ctx, state);
         ctx.ui.notify("Codex usage status disabled for this session", "info");
         return;
       }
       if (command === "on") {
-        statusEnabled = true;
-        updateUsageStatus(ctx);
+        state.enabled = true;
+        updateUsageStatus(ctx, state);
         ctx.ui.notify("Codex usage status enabled", "info");
         return;
       }
 
       ctx.ui.notify(
         [
-          formatSessionCostDetails(ctx),
+          formatSessionCostDetails(ctx, state),
           "",
           formatUsageDetails(),
           "",

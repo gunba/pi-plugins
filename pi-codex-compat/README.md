@@ -127,6 +127,18 @@ remain usable.
 
 ## Host boundaries
 
+### Passive usage footer
+
+The usage footer reads allowance information from actual provider responses;
+it makes no usage-polling requests. Its 30-second timer only refreshes local
+reset countdowns. Each extension instance owns its context, timer and on/off
+preference. Shutdown cancels the timer before clearing the UI, and retired
+callbacks cannot restart it or change a replacement instance. If Pi invalidates
+the context without a shutdown event, the next refresh disposes the footer
+instead of throwing an uncaught timer exception.
+
+### Tool integration
+
 Pi 0.84.3 provides native `constrainedSampling`: `apply_patch` supplies a Lark
 patch grammar, selected by Pi when model metadata enables OpenAI grammar tools.
 Pi also handles custom-tool results; unsupported metadata uses the JSON schema.

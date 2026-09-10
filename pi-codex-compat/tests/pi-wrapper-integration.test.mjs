@@ -352,6 +352,9 @@ async function createHarness() {
 		async dispose() {
 			unsubscribe();
 			if (!session.isIdle) await session.abort();
+			// Context-owned processes must be closed through their extension owner,
+			// not just the standalone default runtime (especially after a failure).
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });
 			await shutdownExecSessions();
 			extensionsResult.runtime.invalidate("Integration test runtime disposed");
 			session.dispose();
@@ -464,8 +467,19 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 			assertErrorOutcome(run, true);
 			assertMiddlewareRun(run, true);
 			assert.equal(run.end.result.details.aborted, true);
+			// Windows taskkill can outlast the initial cancellation response.
+			// A still-running result must retain a handle and reach a terminal
+			// aborted result within one bounded collection, not leak a server.
+			const terminal = run.end.result.details.session_id
+				? (await harness.invoke("write_stdin", {
+					session_id: run.end.result.details.session_id,
+					yield_time_ms: 30_000,
+				})).end.result
+				: run.end.result;
+			assert.equal(terminal.details.aborted, true);
+			assert.equal(terminal.details.session_id, undefined);
 			assert.match(
-				textContent(run.end.result),
+				textContent(terminal),
 				/Process (?:aborted|exited with signal)/,
 			);
 		});
