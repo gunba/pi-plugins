@@ -48,6 +48,43 @@ export interface WireHooks {
 
 type Continuation = { body: JsonObject; responseId: string; output: unknown[]; requestId?: string; expectedReplayOutput?: unknown[] };
 
+/** Lite may finish with output:[] after streaming complete items separately. */
+class CompletedResponseOutput {
+  private readonly seen = new Set<number>();
+  private readonly items = new Map<number, JsonObject>();
+  private invalid = false;
+
+  observe(event: JsonObject): void {
+    if (!/^response\.(output|reasoning|function_call|custom_tool)/.test(String(event.type))) return;
+    const index = event.output_index;
+    if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) {
+      this.invalid = true; return;
+    }
+    this.seen.add(index);
+    if (event.type !== "response.output_item.done") return;
+    const item = object(event.item);
+    if (typeof item.type !== "string" || (this.items.has(index) && stable(this.items.get(index)) !== stable(item))) {
+      this.invalid = true; return;
+    }
+    this.items.set(index, item);
+  }
+
+  resolve(terminalOutput: unknown): unknown[] | undefined {
+    if (this.invalid) return;
+    if (Array.isArray(terminalOutput) && terminalOutput.length) {
+      // A populated terminal snapshot is authoritative, but conflicting completed
+      // stream items cannot safely describe the same server-side response.
+      if ([...this.seen].some(index => index >= terminalOutput.length) ||
+        [...this.items].some(([index, item]) => stable(item) !== stable(terminalOutput[index]))) return;
+      return terminalOutput;
+    }
+    if (terminalOutput !== undefined && !Array.isArray(terminalOutput)) return;
+    const sorted = [...this.items].sort(([a], [b]) => a - b);
+    if (this.seen.size !== sorted.length || sorted.some(([index], position) => index !== position)) return;
+    return sorted.map(([, item]) => item);
+  }
+}
+
 function stable(value: unknown): string {
   // Native Codex compares typed JSON values, not insertion order of object keys.
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -123,8 +160,13 @@ export class WireTransport {
   setReplayOutput(requestId: string, output: unknown[]): void {
     if (this.continuation?.requestId !== requestId) return;
     // Unknown/lost response items must not be silently bypassed by a delta.
-    if (output.length !== this.continuation.output.length || this.continuation.output.some(item =>
-      !["reasoning", "message", "function_call", "custom_tool_call"].includes(String(object(item).type)))) {
+    const reason = output.length !== this.continuation.output.length ? "replay-item-count-mismatch"
+      : this.continuation.output.some(item =>
+        !["reasoning", "message", "function_call", "custom_tool_call"].includes(String(object(item).type)))
+        ? "unsupported-response-item" : undefined;
+    if (reason) {
+      this.diagnostics.write({ kind: "continuation-state", requestId, retained: false, reason,
+        responseItems: this.continuation.output.length, replayItems: output.length });
       this.continuation = undefined; return;
     }
     this.continuation.expectedReplayOutput = output;
@@ -200,6 +242,7 @@ export class WireTransport {
     let finished = false;
     let retriedMissingResponse = false;
     let sawOutput = false;
+    const completedOutput = new CompletedResponseOutput();
     let cancel = () => {};
     const stream = new ReadableStream<Uint8Array>({
       start: controller => {
@@ -270,6 +313,7 @@ export class WireTransport {
             return;
           }
           if (/^response\.(output|reasoning|function_call|custom_tool)/.test(String(event.type))) sawOutput = true;
+          completedOutput.observe(event);
           this.observeEvent(event);
           const diagnostic = eventDiagnostics(event);
           if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId, prewarm });
@@ -280,9 +324,14 @@ export class WireTransport {
           catch { fail(new Error("Unsupported Codex response tool namespace")); return; }
           if (terminal.has(String(event.type)) || event.type === "error") {
             const response = object(event.response);
-            if (["response.completed", "response.done"].includes(String(event.type)) && typeof response.id === "string" && Array.isArray(response.output)) {
-              this.continuation = { body: exchange.body, responseId: response.id, output: response.output, requestId: exchange.requestId };
+            const output = completedOutput.resolve(response.output);
+            if (["response.completed", "response.done"].includes(String(event.type)) && typeof response.id === "string" && output !== undefined) {
+              this.continuation = { body: exchange.body, responseId: response.id, output, requestId: exchange.requestId };
             } else this.continuation = undefined;
+            this.diagnostics.write({ kind: "continuation-state", requestId: exchange.requestId,
+              retained: !!this.continuation, outputItems: output?.length,
+              outputSource: Array.isArray(response.output) && response.output.length ? "terminal" : "stream",
+              ...(!this.continuation ? { reason: "missing-or-inconsistent-completion" } : {}) });
             finished = true; cleanup(); controller.close();
           }
         };

@@ -363,8 +363,8 @@ test("SSE body idle timeout aborts a stalled stream", async t => {
   await assert.rejects(response.text(), /timed out/);
 });
 
-test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over WebSocket", async t => {
-  const f = await fixture(t);
+for (const prewarm of [false, true]) for (const terminalOutput of ["full", "empty", "omitted"]) test(`real Pi decoder roundtrips Lite tool calls and encrypted reasoning over WebSocket (terminal output ${terminalOutput}, prewarm ${prewarm})`, async t => {
+  const f = await fixture(t, "auto", undefined, prewarm);
   const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
   const frames = [];
   const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "PRIVATE ENCRYPTED REASONING" };
@@ -380,6 +380,8 @@ test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over We
         socket.send(JSON.stringify({ type: "response.output_item.done", output_index: i, item }));
       }
     }
+    if (terminalOutput === "empty") event.response.output = [];
+    if (terminalOutput === "omitted") delete event.response.output;
     socket.send(JSON.stringify(event));
   }));
   const metadata = { slug: model.id, use_responses_lite: true, support_verbosity: false };
@@ -406,10 +408,47 @@ test("real Pi decoder roundtrips Lite tool calls and encrypted reasoning over We
   assert.match(message.content.find(item => item.type === "thinking").thinkingSignature, /PRIVATE ENCRYPTED REASONING/);
   messages.push(message, { role: "toolResult", toolCallId: message.content.find(item => item.type === "toolCall").id, toolName: "read", content: [{ type: "text", text: "done" }], isError: false, timestamp: Date.now() });
   await call("second");
-  assert.equal(frames.length, 3);
-  assert.equal(frames[2].previous_response_id, "resp_2");
-  assert.equal(frames[2].input.length, 1);
-  assert.equal(frames[2].input[0].type, "function_call_output");
-  assert.equal(frames[2].client_metadata.ws_request_header_x_openai_internal_codex_responses_lite, "true");
+  assert.equal(frames.length, prewarm ? 3 : 2);
+  assert.equal(frames.at(-1).previous_response_id, prewarm ? "resp_2" : "resp_1");
+  assert.equal(frames.at(-1).input.length, 1);
+  assert.equal(frames.at(-1).input[0].type, "function_call_output");
+  assert.equal(frames.at(-1).client_metadata.ws_request_header_x_openai_internal_codex_responses_lite, "true");
   assert.equal(readFileSync(f.log, "utf8").includes("PRIVATE ENCRYPTED REASONING"), false);
 });
+
+for (const scenario of ["out-of-order", "missing-done", "gap", "conflicting-duplicate", "conflicting-terminal", "malformed-index", "unsupported-item", "replay-count"]) {
+  test(`streamed continuation items preserve lossless fallback (${scenario})`, async t => {
+    const f = await fixture(t, "auto", undefined, false);
+    const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+    const frames = [];
+    const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "PRIVATE REASONING" };
+    const tool = { type: "function_call", id: "fc_1", call_id: "c1", name: "read", arguments: "{}" };
+    let replay = [reasoning, tool];
+    wss.on("connection", socket => socket.on("message", data => {
+      frames.push(JSON.parse(data.toString()));
+      const event = completed(`r${frames.length}`);
+      const emit = (type, index, item) => socket.send(JSON.stringify({ type, output_index: index, item }));
+      const done = (index, item) => emit("response.output_item.done", index, item);
+      if (frames.length === 1) {
+        if (scenario === "out-of-order") { done(1, tool); done(0, reasoning); }
+        if (scenario === "missing-done") { emit("response.output_item.added", 1, tool); done(0, reasoning); }
+        if (scenario === "gap") done(1, tool);
+        if (scenario === "conflicting-duplicate") { done(0, reasoning); done(0, { ...reasoning, id: "rs_other" }); }
+        if (scenario === "conflicting-terminal") { done(0, reasoning); event.response.output = [{ ...reasoning, id: "rs_other" }]; }
+        if (scenario === "malformed-index") done("0", reasoning);
+        if (scenario === "unsupported-item") { replay = [{ type: "unknown", id: "unsupported" }]; done(0, replay[0]); }
+        if (scenario === "replay-count") { replay = []; done(0, reasoning); }
+      }
+      socket.send(JSON.stringify(event));
+    }));
+    await (await f.transport.request(exchange(f, { requestId: "first" }))).text();
+    f.transport.setReplayOutput("first", replay);
+    const next = { role: "user", content: "next" };
+    const full = [...body.input, ...replay, next];
+    await (await f.transport.request(exchange(f, { requestId: "second", body: f.protocol.shapeBody({ ...body, input: full }) }))).text();
+    const delta = scenario === "out-of-order";
+    assert.equal(frames[1].previous_response_id, delta ? "r1" : undefined);
+    assert.deepEqual(frames[1].input, delta ? [next] : full);
+    assert.equal(readFileSync(f.log, "utf8").includes("PRIVATE REASONING"), false);
+  });
+}
