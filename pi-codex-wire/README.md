@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). Requires Pi **0.84.3+** and Node **22.19+**.
+Protocol reference: **Codex CLI 0.153.4**, commit [`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`](https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a). The bundle requires Pi **0.85.1+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -32,6 +32,11 @@ Desktop identity applies to both catalog and inference requests. Switching clien
 
 `--codex-wire-transport auto` uses WebSockets with HTTP/SSE fallback. `--codex-wire-transport sse` fixes the transport to HTTP/SSE.
 
+Full-prompt WebSocket prewarming is **off by default**. `/codex-wire prewarm on|off`
+saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. This
+controls only the extra `generate:false` request, not Wire, Codex identity,
+WebSocket reuse or continuation. Reconnects follow the same setting.
+
 `--codex-wire-compression on` matches Codex 0.153.4's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
 On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. Terminal detection follows the native precedence and sanitization rules, including Windows Terminal and tmux client detection. It does not launch Codex.
@@ -50,8 +55,8 @@ lets Linux sessions activate Wire without repeating flags. CLI and Desktop User-
 - Native root identity lifetime: session ID and prompt-cache key equal the persistent Pi thread ID. Reactivation and resume retain them; new and forked Pi threads receive their own identity. The context window is persisted separately and rotates on context replacement. Canonical `client_metadata` and compatibility headers use the same state.
 - Inherited provider calls use separate transports keyed by Pi's request `sessionId`. SDK children have independent sockets, continuation, turn state and cache identity. Parent model changes cancel only parent requests. Retired provider copies cannot reopen connections; at most 16 idle auxiliary transports are retained.
 - A user turn spans its tool round trips. Server-issued turn state is retained within that turn and cleared for the next turn. HTTP headers and WebSocket `response.metadata` events provide the state.
-- Persistent WebSocket connection, `generate:false` prewarming on fresh connections, incremental input with `previous_response_id`, metadata-insensitive continuation comparison, and one full-input recovery for a missing previous response.
-- The server's one-hour WebSocket expiry triggers one internal reconnect when no model output has arrived. A fresh connection is prewarmed and the request is replayed. Partial output is not replayed, cancellation still works during recovery, and an exhausted recovery is surfaced rather than retried by Pi's HTTP-fetch loop.
+- Persistent WebSocket connection, optional `generate:false` prewarming on fresh connections, incremental input with `previous_response_id`, metadata-insensitive continuation comparison, and one full-input recovery for a missing previous response.
+- The server's one-hour WebSocket expiry triggers one internal reconnect when no model output has arrived. A fresh connection follows the selected prewarm setting and the request is replayed. Partial output is not replayed, cancellation still works during recovery, and an exhausted recovery is surfaced rather than retried by Pi's HTTP-fetch loop.
 - Native `x-codex-routing-hint` on HTTP requests and WebSocket handshakes, using the final model and explicitly selected service tier.
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
 - Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Effort mapping follows the 0.153.4 rules; parallel calls follow the prompt and are disabled in Lite mode.
@@ -92,7 +97,16 @@ A repeatable difference between the identity profiles supports **client-correlat
 
 Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime. Remove the log files when no longer needed.
 
-Requests through the registered `openai-codex` provider are covered, including SDK children that inherit it. Concurrent callers must supply distinct Pi session IDs. Auxiliary window IDs are persisted in the host session's custom entries and survive provider reactivation. Independently created runtimes need the bundle loaded; client selection is shared through the agent directory. Proxy environment settings apply to WebSockets; SSE continues through Pi's supplied fetch implementation.
+New records also include root/child session IDs, lifecycle-derived request
+purpose/origin, per-attempt IDs, prewarm-to-inference links and full-input
+fallback reasons. `node ledger.mjs <run.jsonl> [...]` aggregates terminal
+provider usage once per attempt. It does not add the overlapping decoder usage.
+Legacy records without attempt IDs are identified and excluded from these
+attempt totals. Missing coverage and conflicting response usage are reported.
+Allowance reset counters are retained for comparison, not assigned causally to
+individual concurrent requests.
+
+Requests through the registered `openai-codex` provider are covered, including SDK children that inherit it. The child adapter fills in its session ID for SDK summary calls that omit one. Child launch fails closed if the root Wire registration is absent or replaced. Auxiliary window IDs are persisted in the host session's custom entries and survive provider reactivation. Independently created runtimes need the bundle loaded; client selection is shared through the agent directory. Proxy environment settings apply to WebSockets; SSE continues through Pi's supplied fetch implementation.
 
 This is application-protocol emulation, not byte-for-byte native execution. It uses Pi's runtime and Node's networking stack. The transport is pinned to a source version. Unsupported tool namespaces fail explicitly. The model-visible Pi prompt and tools are deliberately retained so identity comparisons hold the workload constant. New native protocol features require a source review and tests before adoption.
 

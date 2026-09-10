@@ -17,7 +17,7 @@ control, bounded delegation depth, and root-wide admission limits.
 - `interrupt_agent(agent_id)` requests cancellation of a descendant's current
   turn or initialization. Queued messages, descendants, identity, and durable session remain.
 - `list_agents(scope?)` lists continuable direct children or all descendants.
-- `report(output)` is available only inside a live continuable child. It sends
+- `report(output, priority?)` is available only inside a live continuable child. It sends
   selected self-contained content to the direct parent without ending the turn.
 
 `description` and `prompt` are required. Continuable delegation defaults to
@@ -84,17 +84,24 @@ effective thinking level are saved in the child's durable descriptor.
   context, skills, and shell prefixes follow the parent's effective trust decision.
   The descriptor preserves that ceiling; cold activations also respect the current
   root's trust. Interactive question tools are not loaded.
-- Reports and settlements use steering at every depth, in per-child order. Late
-  results may start an idle-parent turn. Pi's `steeringMode` controls batching:
-  `all` admits queued notices together; `one-at-a-time` admits one per turn.
-  Retained one-shot parents also receive nested notices.
+- Reports and settlements use steering at every depth, in per-child order. Routine
+  notices received within 50 ms are coalesced into one message; a root tool boundary
+  flushes admitted notices before its next model request. `urgent` errors and
+  `action-required` reports bypass that delay. Retained one-shot parents also receive
+  nested notices. Settlement retains status/errors but omits final output identical
+  to an earlier report.
+- `wait_for_work` explicitly yields for selected existing children, managed processes
+  or timers. Merely starting children never forces a wait. Goal rounds stop during
+  an explicit wait; a matching event resumes work once. SDK children suspend their
+  prompt instead of treating terminating wait tools as failed final answers. See
+  [work coordination](../pi-work-coordination/README.md).
 - Use reports for actionable changes, not routine progress. The final answer is
   delivered automatically in settlement and should not be reported again.
 - The sender keeps a durable outbox until the receiver durably accepts the notice.
   A receipt is written before steering; recovery replays receipts missing their
   matching Pi custom message. Root `message_end` is not an acknowledgement boundary.
   Crash recovery is at-least-once, with message IDs preventing duplicate admission.
-  Compacted notice messages keep a minimal delivery ID so reload does not replay
+  Compacted notice messages keep every batched delivery ID (`messageIds`) so reload does not replay
   completed reports and settlements. Recovery still delivers receipts whose
   custom message was never appended.
 - Each activation receives fresh model-runtime state. Provider authentication is

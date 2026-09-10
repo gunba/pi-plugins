@@ -25,11 +25,12 @@ function successfulAgentMessages() {
 test("extension registers the exact command, three sequential tools, and presentation renderers", () => {
 	const harness = createExtensionHarness();
 	assert.deepEqual([...harness.commands.keys()], ["goal"]);
-	assert.deepEqual([...harness.tools.keys()], ["get_goal", "create_goal", "update_goal"]);
-	for (const tool of harness.tools.values()) assert.equal(tool.executionMode, "sequential");
+	assert.deepEqual([...harness.tools.keys()], ["wait_for_work", "cancel_work_wait", "get_goal", "create_goal", "update_goal"]);
+	const goalTools = ["get_goal", "create_goal", "update_goal"].map((name) => harness.tools.get(name));
+	for (const tool of goalTools) assert.equal(tool.executionMode, "sequential");
 	assert.equal(harness.entryRenderers.has(GOAL_COMMAND_ENTRY), true);
 	assert.equal(harness.messageRenderers.has(GOAL_ROUND_MESSAGE), true);
-	const goalGuidelines = [...harness.tools.values()].map((tool) => tool.promptGuidelines);
+	const goalGuidelines = goalTools.map((tool) => tool.promptGuidelines);
 	assert.equal(goalGuidelines.every((guidelines) => guidelines?.length === 1), true);
 	assert.equal(new Set(goalGuidelines.map((guidelines) => guidelines[0])).size, 1);
 	assert.match(goalGuidelines[0][0], /at least 3 consecutive goal rounds/);

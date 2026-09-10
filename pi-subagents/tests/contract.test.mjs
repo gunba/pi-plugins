@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, createEventBus } from "@earendil-works/pi-coding-agent";
 import subagents from "../extensions/subagents.ts";
 import { createSubagentToolDefinitions } from "../extensions/subagent-tools.ts";
 
@@ -17,6 +17,7 @@ function extensionHarness() {
 	const handlers = new Map();
 	const commands = new Map();
 	const pi = {
+		events: createEventBus(),
 		on(name, handler) {
 			const list = handlers.get(name) ?? [];
 			list.push(handler);
@@ -56,11 +57,13 @@ function extensionHarness() {
 test("root exposes only the DSH-standard subagent contract", async () => {
 	const harness = extensionHarness();
 	try {
-		assert.equal(harness.tools.length, 6, "tools register during discovery and resolve runtime identity lazily");
-		await harness.handlers.get("session_start")[0]({}, harness.ctx);
+		assert.equal(harness.tools.length, 8, "subagent and explicit-wait tools register during discovery");
+		for (const handler of harness.handlers.get("session_start")) await handler({}, harness.ctx);
 		assert.deepEqual(
 			harness.tools.map((tool) => tool.name),
 			[
+				"wait_for_work",
+				"cancel_work_wait",
 				"subagent",
 				"subagent_fork",
 				"send_message",
@@ -77,7 +80,7 @@ test("root exposes only the DSH-standard subagent contract", async () => {
 		])
 			assert.equal(harness.tools.some((tool) => tool.name === removed), false);
 		assert.equal(harness.handlers.has("tool_call"), false, "no ordinary-tool gate");
-		assert.equal(harness.handlers.has("agent_settled"), false, "no forced wait loop");
+		assert.equal(harness.handlers.has("agent_settled"), true, "settled hook flushes already-admitted notices without creating a wait loop");
 		assert.ok(harness.commands.has("subagents"));
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
@@ -152,9 +155,9 @@ test("control schemas pin FIFO, current-turn interrupt, and discovery semantics"
 test("registered root tools resolve the replacement runtime after branch navigation", async () => {
 	const harness = extensionHarness();
 	try {
-		await harness.handlers.get("session_start")[0]({}, harness.ctx);
+		for (const handler of harness.handlers.get("session_start")) await handler({}, harness.ctx);
 		const listTool = harness.tools.find((tool) => tool.name === "list_agents");
-		await harness.handlers.get("session_tree")[0]({}, harness.ctx);
+		for (const handler of harness.handlers.get("session_tree")) await handler({}, harness.ctx);
 		const result = await listTool.execute(
 			"list-after-tree",
 			{},

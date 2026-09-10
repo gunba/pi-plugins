@@ -85,6 +85,7 @@ const listParameters = Type.Object(
 
 const reportParameters = Type.Object(
 	{
+		priority: Type.Optional(StringEnum(["routine", "urgent", "action-required"] as const, { description: "Routine reports are briefly coalesced. Urgent errors and requests requiring immediate parent action bypass batching." })),
 		output: Type.String({
 			minLength: 1,
 			maxLength: MAX_PARENT_NOTICE_BYTES,
@@ -305,6 +306,7 @@ export function createSubagentToolDefinitions(
 					const messageId = resolveRuntime(runtime).report(
 						binding.getAuthority(),
 						params.output,
+						params.priority,
 					);
 					return {
 						content: [

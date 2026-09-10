@@ -63,7 +63,7 @@ async function sdkDriver(t, { respond, projectTrusted = false, rootTrusted = tru
 	return { driver, manager };
 }
 
-for (const steeringMode of ["all", "one-at-a-time"]) test(`real SDK root preserves notice order with ${steeringMode} steering`, async (t) => {
+for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false], ["all", true]]) test(`real SDK root preserves notice order with ${steeringMode} steering (same final: ${sameFinal})`, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "pi-steering-fix-"));
 	const previousDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
@@ -84,7 +84,7 @@ for (const steeringMode of ["all", "one-at-a-time"]) test(`real SDK root preserv
 	runtime.registerNativeProvider(provider((context) => {
 		const isChild = context.messages.some((message) => message.role === "user" &&
 			(typeof message.content === "string" ? message.content === "child work" : message.content.some((block) => block.type === "text" && block.text === "child work")));
-		if (isChild) return ++childCalls === 1 ? toolCall("report", { output: "EARLY FINDING" }) : assistant("FINAL RESULT");
+		if (isChild) return ++childCalls === 1 ? toolCall("report", { output: "EARLY FINDING" }) : assistant(sameFinal ? "EARLY FINDING" : "FINAL RESULT");
 		contexts.push(context.messages);
 		if (++rootCalls === 1) return toolCall("subagent", { description: "offline child", prompt: "child work" });
 		if (rootCalls === 2) return toolCall("hold", {});
@@ -96,8 +96,7 @@ for (const steeringMode of ["all", "one-at-a-time"]) test(`real SDK root preserv
 		noExtensions: true, noSkills: true, noThemes: true, extensionFactories: [subagents, (pi) => {
 			pi.on("message_end", (event, ctx) => {
 				if (event.message.role !== "custom" || event.message.customType !== "pi-subagents/notice") return;
-				const id = event.message.details.messageId;
-				durableAdmissions.push(SessionManager.open(ctx.sessionManager.getSessionFile()).getEntries().some((entry) =>
+				for (const id of event.message.details.messageIds) durableAdmissions.push(SessionManager.open(ctx.sessionManager.getSessionFile()).getEntries().some((entry) =>
 					entry.type === "custom" && entry.customType === NOTICE_ENTRY && entry.data.messageId === id));
 			});
 		}] });
@@ -112,12 +111,18 @@ for (const steeringMode of ["all", "one-at-a-time"]) test(`real SDK root preserv
 		sessionManager: manager, settingsManager: settings, resourceLoader: loader, customTools: [hold], tools: ["hold", "subagent"] }));
 	await session.bindExtensions({ mode: "rpc" });
 	await session.prompt("parent work");
-	assert.equal(rootCalls, steeringMode === "all" ? 3 : 4);
+	assert.equal(rootCalls, 3, "one coalesced message under either Pi steering mode");
 	assert.match(JSON.stringify(contexts[2]), /EARLY FINDING/);
 	assert.equal(childCalls, 2, JSON.stringify(contexts));
 	const last = JSON.stringify(contexts.at(-1));
 	assert.ok(last.indexOf("EARLY FINDING") >= 0);
-	assert.ok(last.indexOf("FINAL RESULT") > last.indexOf("EARLY FINDING"));
+	if (sameFinal) {
+		assert.match(last, /settled with completed/);
+		assert.match(last, /identical to the previously delivered report/);
+		// Context content excludes details (where exact receipts remain for audit).
+		const content = contexts.at(-1).filter((item) => item.role === "user").map((item) => JSON.stringify(item.content)).join("\n");
+		assert.equal((content.match(/EARLY FINDING/g) ?? []).length, 1);
+	} else assert.ok(last.indexOf("FINAL RESULT") > last.indexOf("EARLY FINDING"));
 	assert.deepEqual(undispatchedNotices(SessionManager.open(manager.getSessionFile()).getBranch()), []);
 	assert.equal(session.getFollowUpMessages().length, 0);
 	assert.deepEqual(durableAdmissions, [true, true], "receipts are on disk before Pi's pre-append message_end hooks");

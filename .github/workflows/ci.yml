@@ -14,8 +14,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         runtime:
-          - { node: 22, pi: "0.84.3" }
-          - { node: 22, pi: "0.84.4" }
           - { node: 22, pi: "0.85.1" }
           - { node: 24, pi: "0.85.1" }
     runs-on: ${{ matrix.os }}
@@ -30,6 +28,4 @@ jobs:
           cache: npm
           node-version: ${{ matrix.runtime.node }}
       - run: npm ci
-      - if: matrix.runtime.pi != '0.85.1'
-        run: npm install --no-save "@earendil-works/pi-ai@${{ matrix.runtime.pi }}" "@earendil-works/pi-coding-agent@${{ matrix.runtime.pi }}" "@earendil-works/pi-tui@${{ matrix.runtime.pi }}"
       - run: npm run check

@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import { Diagnostics, eventDiagnostics, object, allowanceHeaders, type JsonObject } from "./diagnostics.ts";
 import type { Compression } from "./compression.ts";
 import { allowanceFromHeaders, allowanceFromEvent } from "./allowance.ts";
+import type { RequestTrace } from "./request-trace.ts";
 
 const require = createRequire(import.meta.url);
 const zlib = require("node:zlib") as {
@@ -32,6 +33,8 @@ export interface Exchange {
   fetcher?: typeof fetch;
   normalizeEvent?: (event: JsonObject) => JsonObject;
   compression?: Compression;
+  trace?: RequestTrace;
+  inferenceRequestId?: string;
 }
 
 export interface WireHooks {
@@ -54,15 +57,26 @@ function stable(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function incrementalBody(body: JsonObject, previous?: Continuation): JsonObject {
-  if (!previous) return body;
+export function continuationReason(body: JsonObject, previous?: Continuation): string {
+  if (!previous) return "no-previous-response";
   const properties = (value: JsonObject) => Object.fromEntries(Object.entries(value)
     .filter(([key]) => !["input", "previous_response_id", "client_metadata", "stream_options", "access_programs", "generate"].includes(key)));
-  if (stable(properties(body)) !== stable(properties(previous.body))) return body;
+  if (stable(properties(body)) !== stable(properties(previous.body))) return "request-shape-changed";
   const input = Array.isArray(body.input) ? body.input : [];
   const baseline = [...(Array.isArray(previous.body.input) ? previous.body.input : []), ...(previous.expectedReplayOutput ?? previous.output)];
-  if (input.length < baseline.length || stable(input.slice(0, baseline.length)) !== stable(baseline)) return body;
-  return { ...body, previous_response_id: previous.responseId, input: input.slice(baseline.length) };
+  if (input.length < baseline.length || stable(input.slice(0, baseline.length)) !== stable(baseline)) return "history-changed";
+  return "continuation";
+}
+
+export function incrementalBody(body: JsonObject, previous?: Continuation): JsonObject {
+  return applyContinuation(body, previous, continuationReason(body, previous));
+}
+
+function applyContinuation(body: JsonObject, previous: Continuation | undefined, reason: string): JsonObject {
+  if (!previous || reason !== "continuation") return body;
+  const baselineLength = (Array.isArray(previous.body.input) ? previous.body.input.length : 0)
+    + (previous.expectedReplayOutput ?? previous.output).length;
+  return { ...body, previous_response_id: previous.responseId, input: (body.input as unknown[]).slice(baselineLength) };
 }
 
 function proxyFor(url: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -88,12 +102,14 @@ export class WireTransport {
   private readonly fetcher: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
   private readonly onAllowance: (headers: JsonObject) => void;
+  private readonly prewarmEnabled: boolean;
 
   constructor(
     diagnostics: Diagnostics, hooks: WireHooks, mode: "auto" | "sse",
     fetcher: typeof fetch = globalThis.fetch, env: NodeJS.ProcessEnv = process.env,
     onAllowance: (headers: JsonObject) => void = () => {},
-  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; this.onAllowance = onAllowance; }
+    prewarmEnabled = false,
+  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; this.onAllowance = onAllowance; this.prewarmEnabled = prewarmEnabled; }
 
   private publishAllowance(headers: JsonObject): void {
     if (Object.keys(headers).length) this.onAllowance(headers);
@@ -173,11 +189,14 @@ export class WireTransport {
 
   private websocketResponse(socket: WebSocket, exchange: Exchange, prewarm: boolean, reconnects: number): Response {
     const fullBody = prewarm ? { ...exchange.body, generate: false } : exchange.body;
-    const body = this.hooks.websocketBody(incrementalBody(fullBody, this.continuation));
+    const reason = continuationReason(fullBody, this.continuation);
+    let attemptId = randomUUID();
+    const body = this.hooks.websocketBody(applyContinuation(fullBody, this.continuation, reason));
     if (exchange.headers.get("x-openai-internal-codex-responses-lite") === "true") {
       object(body.client_metadata).ws_request_header_x_openai_internal_codex_responses_lite = "true";
     }
-    this.diagnostics.request(body, { requestId: exchange.requestId, transport: "websocket" });
+    this.diagnostics.request(body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
+      inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId, transport: "websocket", continuationReason: reason });
     let finished = false;
     let retriedMissingResponse = false;
     let sawOutput = false;
@@ -241,7 +260,10 @@ export class WireTransport {
             if (exchange.headers.get("x-openai-internal-codex-responses-lite") === "true") {
               object(retryBody.client_metadata).ws_request_header_x_openai_internal_codex_responses_lite = "true";
             }
-            this.diagnostics.request(retryBody, { requestId: exchange.requestId, transport: "websocket", retry: "missing-continuation" });
+            attemptId = randomUUID();
+            this.diagnostics.request(retryBody, { ...exchange.trace, requestId: exchange.requestId, attemptId,
+              inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
+              transport: "websocket", retry: "missing-continuation", continuationReason: "missing-continuation" });
             socket.send(JSON.stringify({ type: "response.create", ...retryBody }), sendError => {
               if (sendError) fail(new Error("Codex WebSocket retry failed"));
             });
@@ -250,7 +272,7 @@ export class WireTransport {
           if (/^response\.(output|reasoning|function_call|custom_tool)/.test(String(event.type))) sawOutput = true;
           this.observeEvent(event);
           const diagnostic = eventDiagnostics(event);
-          if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, prewarm });
+          if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId, prewarm });
           if (prewarm && (event.type === "error" || event.type === "response.failed")) {
             fail(new Error("Codex WebSocket prewarm failed")); return;
           }
@@ -324,9 +346,10 @@ export class WireTransport {
         this.diagnostics.write({ kind: "fallback", requestId: exchange.requestId, phase: "connect", to: "sse" });
         return this.sse(exchange);
       }
-      if (!this.prewarmed) {
+      if (this.prewarmEnabled && !this.prewarmed) {
         this.prewarmed = true;
-        const warmup = this.websocketResponse(socket, { ...exchange, requestId: randomUUID() }, true, reconnects);
+        const warmup = this.websocketResponse(socket, { ...exchange, requestId: randomUUID(),
+          inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId }, true, reconnects);
         try {
           // Drain prewarm events without forwarding them as an assistant response.
           const reader = warmup.body!.getReader();
@@ -374,7 +397,10 @@ export class WireTransport {
     };
     resetTimer();
     this.activeCancel = () => controller.abort();
-    this.diagnostics.request(exchange.body, { requestId: exchange.requestId, transport: "sse", compressed: typeof body !== "string" });
+    const attemptId = randomUUID();
+    this.diagnostics.request(exchange.body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
+      inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
+      transport: "sse", continuationReason: "sse-full-input", compressed: typeof body !== "string" });
     let response: Response;
     try {
       response = await (exchange.fetcher ?? this.fetcher)(exchange.url, { method: "POST", headers, body: body as BodyInit, signal });
@@ -404,7 +430,7 @@ export class WireTransport {
               const event = object(JSON.parse(data));
               this.observeEvent(event);
               const diagnostic = eventDiagnostics(event);
-              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId });
+              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent(event))}\n\n`));
             }
             if (pending.length > 50 * 1024 * 1024) throw new Error("Codex event exceeds the transport frame limit");
@@ -418,7 +444,7 @@ export class WireTransport {
               const event = object(JSON.parse(line.slice(5)));
               this.observeEvent(event);
               const diagnostic = eventDiagnostics(event);
-              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId });
+              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
             } catch { /* Pi's parser remains responsible for protocol errors. */ }
           }
           // This observer need not retain arbitrarily large event lines.

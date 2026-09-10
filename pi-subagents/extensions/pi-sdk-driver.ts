@@ -7,6 +7,12 @@ import {
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { createChildTodoTool } from "./child-todo-tool.ts";
+import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
+import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
+import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
+import outputBudget from "../../pi-output-budget/extensions/index.ts";
+import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
+import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	ChildDriver,
 	ChildDriverFactory,
@@ -17,6 +23,20 @@ import type {
 import { addUsage, CHILD_BUILTIN_TOOL_NAMES, undispatchedNotices } from "./subagent-runtime.ts";
 
 type AgentMessage = AgentSession["messages"][number];
+
+/** Summarizer requests may omit sessionId; never fall back to the root thread. */
+export function bindChildProvider(provider: Provider, sessionId: string): Provider {
+	return {
+		...provider,
+		getModels: provider.getModels.bind(provider),
+		...(provider.refreshModels ? { refreshModels: provider.refreshModels.bind(provider) } : {}),
+		...(provider.filterModels ? { filterModels: provider.filterModels.bind(provider) } : {}),
+		...(provider.fetchDeferred ? { fetchDeferred: provider.fetchDeferred.bind(provider) } : {}),
+		...(provider.cancelDeferred ? { cancelDeferred: provider.cancelDeferred.bind(provider) } : {}),
+		stream: (model, context, options) => provider.stream(model, context, { ...options, sessionId: options?.sessionId ?? sessionId } as typeof options),
+		streamSimple: (model, context, options) => provider.streamSimple(model, context, { ...options, sessionId: options?.sessionId ?? sessionId }),
+	};
+}
 
 const CHILD_CONTEXT = `You are a delegated subagent. Your permission and tool scope were fixed when you were started and cannot be widened from inside this session. Work independently in the shared working directory. Do not ask the user interactive questions; report blocked work or assumptions to your direct parent. Background children continue after you start them.`;
 const REPORT_CONTEXT = `Use report for actionable findings that change what your parent should do next. Ordinary progress belongs in the dashboard. Your final answer is delivered automatically; do not report it again.`;
@@ -85,10 +105,15 @@ export function outcomeFrom(
 
 class PiSdkChildDriver implements ChildDriver {
 	private readonly session: AgentSession;
+	private readonly noticeState: { received: number; consumed: number };
 	private currentActivity = "idle";
+	private runAbort?: AbortController;
+	private disposal?: Promise<void>;
+	private readonly noticeIds = new Set<string>();
 
-	constructor(session: AgentSession) {
+	constructor(session: AgentSession, noticeState: { received: number; consumed: number }) {
 		this.session = session;
+		this.noticeState = noticeState;
 	}
 
 	get sessionFile(): string | undefined {
@@ -96,7 +121,7 @@ class PiSdkChildDriver implements ChildDriver {
 	}
 
 	get isRunning(): boolean {
-		return this.session.isStreaming;
+		return this.runAbort !== undefined || this.session.isStreaming;
 	}
 
 	get activity(): string {
@@ -118,15 +143,30 @@ class PiSdkChildDriver implements ChildDriver {
 	}
 
 	receiveNotice(notice: ParentNotice): void {
-		this.session.sendCustomMessage({
+		this.receiveNotices([notice]);
+	}
+
+	receiveNotices(notices: ParentNotice[]): void {
+		notices = notices.filter((notice) => !this.noticeIds.has(notice.messageId));
+		if (!notices.length) return;
+		for (const notice of notices) this.noticeIds.add(notice.messageId);
+		this.noticeState.received++;
+		if (notices.some((notice) => notice.priority === "urgent" || notice.priority === "action-required")) getWorkCoordinator(this.session.sessionId)?.cancel("urgent-notice");
+		void this.session.sendCustomMessage({
 			customType: "pi-subagents/notice",
-			content: notice.content,
+			content: noticeBatchContent(notices),
 			display: true,
-			details: notice,
-		}, { deliverAs: "steer", triggerTurn: false });
+			details: noticeBatch(notices),
+		}, { deliverAs: "steer", triggerTurn: false }).catch(() => {
+			for (const notice of notices) this.noticeIds.delete(notice.messageId);
+			// The individual durable receipts remain replayable; never emit an
+			// unhandled rejection from the SDK's asynchronous append API.
+			this.currentActivity = "notice delivery failed; durable receipt retained";
+		});
 	}
 
 	async prompt(message: string): Promise<RunOutcome> {
+		const abort = this.runAbort = new AbortController();
 		const finalized: AgentMessage[] = [];
 		const priorEntries = new Set(this.session.sessionManager.getEntries().map((entry) => entry.id));
 		let streamed = "";
@@ -140,31 +180,65 @@ class PiSdkChildDriver implements ChildDriver {
 				streamed += event.assistantMessageEvent.delta;
 		});
 		try {
-			await this.session.prompt(message, {
-				expandPromptTemplates: false,
-				source: "extension",
-			});
+			let prompt = message;
+			while (true) {
+				const start = finalized.length;
+				await this.session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+				const messages = finalized.slice(start);
+				const lastAssistant = latestAssistant(messages);
+				const waitResult = [...messages].reverse().find((item) => item.role === "toolResult" && item.toolName === "wait_for_work" && lastAssistant?.role === "assistant" && lastAssistant.content.some((block) => block.type === "toolCall" && block.id === item.toolCallId));
+				const yielded = lastAssistant?.role === "assistant" && lastAssistant.stopReason === "toolUse" && waitResult?.role === "toolResult" && waitResult.details?.waiting === true;
+				if (abort.signal.aborted) break;
+				if (!yielded) {
+					// triggerTurn:false notices arriving after the final provider
+					// context are durable but were not seen by that response.
+					if (this.noticeState.received > this.noticeState.consumed && lastAssistant?.role === "assistant" && lastAssistant.stopReason === "stop") {
+						prompt = "Review the newly delivered child notices and continue the assigned task.";
+						continue;
+					}
+					break;
+				}
+				const coordinator = getWorkCoordinator(this.session.sessionId);
+				if (!coordinator) throw new Error("Explicit child wait lost its session coordinator");
+				this.currentActivity = "waiting for explicit event";
+				await coordinator?.untilReady(abort.signal);
+				if (abort.signal.aborted) break;
+				prompt = "The explicit wait has ended. Review the delivered event and continue the assigned task.";
+			}
 			const outcome = outcomeFrom(finalized, streamed);
+			if (abort.signal.aborted) { outcome.stopReason = "aborted"; delete outcome.errorMessage; }
 			for (const entry of this.session.sessionManager.getEntries()) {
 				if (!priorEntries.has(entry.id) && (entry.type === "compaction" || entry.type === "branch_summary") && entry.usage)
 					outcome.usage = addUsage(outcome.usage, { ...entry.usage, contextTokens: 0 });
 			}
 			return outcome;
+		} catch (error) {
+			if (!abort.signal.aborted) throw error;
+			return { ...outcomeFrom(finalized, streamed), stopReason: "aborted", errorMessage: undefined };
 		} finally {
+			this.runAbort = undefined;
 			unsubscribe();
 		}
 	}
 
 	interrupt(): void {
+		this.runAbort?.abort();
+		getWorkCoordinator(this.session.sessionId)?.cancel("child-interrupted");
 		void this.session.abort();
 	}
 
-	dispose(): void {
-		this.session.dispose();
+	dispose(): Promise<void> {
+		if (this.disposal) return this.disposal;
+		this.runAbort?.abort();
+		this.disposal = (async () => {
+			try { await this.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); }
+			finally { releaseWorkCoordinator(this.session.sessionId); this.session.dispose(); }
+		})();
+		return this.disposal;
 	}
 }
 
-/** Pi 0.84.3 in-process provider. The runtime, not this driver, owns continuation. */
+/** Pi 0.85.1 in-process provider. Runtime queues own tasks; this driver owns explicit event waits. */
 export class PiSdkDriverFactory implements ChildDriverFactory {
 	private readonly host: RuntimeHost;
 
@@ -192,17 +266,28 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		// parent refreshes or replaces credentials.
 		const modelRuntime = await this.createModelRuntime(input.signal);
 		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime, input.signal);
+		const provider = modelRuntime.getProvider(input.descriptor.model.provider);
+		if (provider) modelRuntime.registerNativeProvider(bindChildProvider(provider, input.descriptor.childSessionId));
 		input.signal.throwIfAborted();
 		const settingsManager = SettingsManager.create(
 			input.descriptor.cwd,
 			this.host.agentDir,
 			{ projectTrusted: input.descriptor.projectTrusted && this.host.isProjectTrusted() },
 		);
+		const noticeState = { received: 0, consumed: 0 };
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,
 			agentDir: this.host.agentDir,
 			settingsManager,
 			noExtensions: true,
+			extensionFactories: [
+				{ name: "work-coordination", factory: (pi) => {
+					ensureWorkCoordination(pi, { child: true });
+					pi.on("context", () => { noticeState.consumed = noticeState.received; });
+				} },
+				{ name: "output-budget", factory: outputBudget },
+				{ name: "request-tracing", factory: requestTracing },
+			],
 			noThemes: true,
 			appendSystemPromptOverride: (base) => [
 				...base,
@@ -230,7 +315,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			resourceLoader: loader,
 			sessionManager: input.sessionManager,
 			customTools,
-			tools: [...new Set([...builtinToolNames, ...customToolNames])],
+			tools: [...new Set([...builtinToolNames, ...customToolNames, "wait_for_work", "cancel_work_wait", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])])],
 			excludeTools: [
 				"ask_user",
 				"ask_question",
@@ -241,12 +326,14 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				"kill_agent",
 			],
 		});
+		await session.bindExtensions({ mode: "json" });
+		const driver = new PiSdkChildDriver(session, noticeState);
 		if (input.signal.aborted) {
-			session.dispose();
+			await driver.dispose();
 			input.signal.throwIfAborted();
 		}
-		const driver = new PiSdkChildDriver(session);
-		for (const notice of undispatchedNotices(input.sessionManager.getBranch())) driver.receiveNotice(notice);
+		const recovered = undispatchedNotices(input.sessionManager.getBranch());
+		if (recovered.length) driver.receiveNotices(recovered);
 		return driver;
 	}
 }

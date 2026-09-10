@@ -148,7 +148,7 @@ test("Pi SDK driver runs a real isolated AgentSession with inherited provider co
 			["user", "assistant"],
 		);
 	} finally {
-		driver?.dispose();
+		await driver?.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

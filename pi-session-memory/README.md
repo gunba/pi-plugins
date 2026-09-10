@@ -18,7 +18,8 @@ entries remain available so extension state, including goals and todos, can
 continue. Message metadata, usage accounting, ids, parent links, labels, and
 session information also remain resident.
 
-Compacted subagent notifications retain only their `details.messageId` delivery
+Compacted subagent notifications retain only their `details.messageId` or batched
+`details.messageIds` delivery
 marker, not their content. Reload recovery needs this marker to distinguish
 delivered notices from genuinely pending reports.
 

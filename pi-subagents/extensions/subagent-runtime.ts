@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { NoticeBatcher } from "./notice-batcher.ts";
+import { completeWorkResource, getWorkCoordinator, registerWorkResource } from "../../pi-work-coordination/core.ts";
 import {
 	mkdirSync,
 	readdirSync,
@@ -39,6 +41,7 @@ export const CHILD_BUILTIN_TOOL_NAMES = new Set([
 	"find",
 	"ls",
 ]);
+export const CHILD_OUTPUT_TOOL_NAMES = new Set(["read_artifact", "inspect_files"]);
 
 export type ThinkingLevel =
 	| "off"
@@ -181,6 +184,9 @@ export type ParentNotice = {
 	kind: "report" | "settlement";
 	childId: string;
 	content: string;
+	priority?: "routine" | "urgent" | "action-required";
+	outputHash?: string;
+	workId?: string;
 };
 
 export interface RuntimeHost {
@@ -206,8 +212,9 @@ export interface ChildDriver {
 	subscribeActivity?(listener: () => void): () => void;
 	prompt(message: string): Promise<RunOutcome>;
 	receiveNotice(notice: ParentNotice): void;
+	receiveNotices?(notices: ParentNotice[]): void;
 	interrupt(): void;
-	dispose(): void;
+	dispose(): void | Promise<void>;
 }
 
 export interface ChildDriverFactory {
@@ -249,6 +256,8 @@ type Activation = {
 };
 
 type ChildRecord = {
+	workId?: string;
+	disposing?: Promise<unknown | undefined>;
 	descriptor: ChildDescriptor;
 	manager: SessionManager;
 	queue: QueueItem[];
@@ -594,6 +603,9 @@ function parseParentNotice(value: unknown): ParentNotice | undefined {
 		kind: value.kind,
 		childId: value.childId,
 		content: value.content,
+		...(value.priority === "urgent" || value.priority === "action-required" || value.priority === "routine" ? { priority: value.priority } : {}),
+		...(typeof value.outputHash === "string" ? { outputHash: value.outputHash } : {}),
+		...(typeof value.workId === "string" ? { workId: value.workId } : {}),
 	};
 }
 
@@ -610,6 +622,9 @@ export function undispatchedNotices(entries: readonly SessionEntry[]): ParentNot
 			// Dispatch proof does not require the archived content/child/kind.
 			if (isRecord(entry.details) && typeof entry.details.messageId === "string") {
 				dispatched.add(entry.details.messageId);
+			}
+			if (isRecord(entry.details) && Array.isArray(entry.details.messageIds)) {
+				for (const id of entry.details.messageIds) if (typeof id === "string") dispatched.add(id);
 			}
 		}
 	}
@@ -784,7 +799,7 @@ export function createDurableChildSession(
 
 function normalizeToolNames(names: readonly string[]): string[] {
 	return [...new Set(names.filter((name) =>
-		CHILD_BUILTIN_TOOL_NAMES.has(name) || name === "todo_write",
+		CHILD_BUILTIN_TOOL_NAMES.has(name) || name === "todo_write" || (names.includes("read") && CHILD_OUTPUT_TOOL_NAMES.has(name)),
 	))].sort();
 }
 
@@ -797,9 +812,9 @@ function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSig
 		void Promise.resolve().then(() => {
 			signal.throwIfAborted();
 			return open();
-		}).then((driver) => {
+		}).then(async (driver) => {
 			signal.removeEventListener("abort", abort);
-			if (cancelled) driver.dispose();
+			if (cancelled) await driver.dispose();
 			else resolve(driver);
 		}, (error) => {
 			signal.removeEventListener("abort", abort);
@@ -819,6 +834,7 @@ export class SubagentRuntime {
 	private readonly diagnostics = new Map<string, DiagnosticRecord>();
 	private readonly authorities = new Map<string, Authority>();
 	private readonly listeners = new Set<() => void>();
+	private readonly noticeBatchers = new Map<string, NoticeBatcher>();
 	private readonly generation = randomUUID();
 	private closing = false;
 	readonly host: RuntimeHost;
@@ -854,6 +870,8 @@ export class SubagentRuntime {
 		mkdirSync(this.sessionDir, { recursive: true });
 		this.loadCatalog();
 		for (const record of this.records.values()) {
+			registerWorkResource(record.descriptor.parentSessionId, { kind: "child", id: record.descriptor.childSessionId }, record.pendingSettlement || record.queue.length > 0, record.workId);
+			for (const notice of undispatchedNotices(record.manager.getBranch())) this.batchFor(record).add(notice);
 			for (const entry of record.manager.getBranch()) {
 				if (entry.type !== "custom" || entry.customType !== DELIVERY_ENTRY || !isRecord(entry.data) ||
 					entry.data.action !== "finished" || entry.data.backgroundBilling !== true || typeof entry.data.messageId !== "string") continue;
@@ -947,7 +965,9 @@ export class SubagentRuntime {
 				if (descriptor.childSessionId !== sessionId) throw new Error("descriptor childSessionId does not match session");
 				if (descriptor.rootSessionId !== this.host.rootSessionId) continue;
 				const recovered = recoverChildState(branch);
+				const accepted = [...branch].reverse().find((entry) => entry.type === "custom" && entry.customType === INBOX_ENTRY && isRecord(entry.data) && entry.data.action === "accepted");
 				candidates.push({
+					...(accepted?.type === "custom" && isRecord(accepted.data) && typeof accepted.data.messageId === "string" ? { workId: typeof accepted.data.workId === "string" ? accepted.data.workId : accepted.data.messageId } : {}),
 					descriptor,
 					manager,
 					queue: recovered.queue,
@@ -1172,6 +1192,7 @@ export class SubagentRuntime {
 			if (request.signal?.aborted) throw abortError();
 			this.recordLaunch(request.parent, childId);
 			this.records.set(childId, record);
+			registerWorkResource(record.descriptor.parentSessionId, { kind: "child", id: childId }, true, item.messageId);
 		} catch (error) {
 			const file = manager?.getSessionFile();
 			if (file) {
@@ -1229,14 +1250,17 @@ export class SubagentRuntime {
 			acceptedAt: Date.now(),
 			started: false,
 		};
+		const workId = !record.workId || !record.pendingSettlement ? item.messageId : record.workId;
 		record.manager.appendCustomEntry(INBOX_ENTRY, {
 			action: "accepted",
 			messageId: item.messageId,
 			content,
 			source,
 			acceptedAt: item.acceptedAt,
+			workId,
 		});
 		record.queue.push(item);
+		record.workId = workId;
 		record.updatedAt = item.acceptedAt;
 		return item;
 	}
@@ -1261,6 +1285,7 @@ export class SubagentRuntime {
 			throw new Error("send_message updates running work only; use followup_task to request another turn");
 		const notice: ParentNotice = {
 			messageId: randomUUID(), kind: "report", childId: caller.sessionId,
+			priority: "action-required",
 			content: `Direct parent ${caller.sessionId} sent an update:\n${normalizePrompt(message)}`,
 		};
 		record.manager.appendCustomEntry(NOTICE_ENTRY, notice);
@@ -1277,6 +1302,7 @@ export class SubagentRuntime {
 		if (record.descriptor.parentSessionId !== caller.sessionId)
 			throw new Error("followup_task is restricted to the exact live direct parent");
 		const item = this.accept(record, normalizePrompt(message), "followup");
+		registerWorkResource(caller.sessionId, { kind: "child", id: childId }, true, record.workId);
 		this.setParked(record, false);
 		if (!record.pendingSettlement) record.settlementOutcome = undefined;
 		record.pendingSettlement = true;
@@ -1314,7 +1340,7 @@ export class SubagentRuntime {
 		return true;
 	}
 
-	report(caller: Authority, output: string): string {
+	report(caller: Authority, output: string, priority: ParentNotice["priority"] = "routine"): string {
 		this.assertLive(caller);
 		const record = this.records.get(caller.sessionId);
 		if (
@@ -1327,6 +1353,9 @@ export class SubagentRuntime {
 			messageId: randomUUID(),
 			kind: "report",
 			childId: caller.sessionId,
+			priority,
+			outputHash: createHash("sha256").update(output).digest("hex"),
+			workId: record.workId,
 			content: truncateForParent(
 				`Background subagent ${caller.sessionId} reported:\n${normalizePrompt(output)}`,
 			),
@@ -1355,17 +1384,47 @@ export class SubagentRuntime {
 					(entry.customType === INBOX_ENTRY && entry.data.action === "accepted")),
 		);
 		if (alreadyAccepted) return true;
-		if (parent.activation?.driver.isRunning) {
-			parent.manager.appendCustomEntry(NOTICE_ENTRY, notice);
-			parent.activation.driver.receiveNotice(notice);
-		} else {
-			this.accept(parent, notice.content, notice.kind, notice.messageId);
+		// ACK each individual notice only after its inbox receipt is durable.
+		parent.manager.appendCustomEntry(NOTICE_ENTRY, notice);
+		this.batchFor(parent).add(notice);
+		return true;
+	}
+
+	private batchFor(parent: ChildRecord): NoticeBatcher {
+		const id = parent.descriptor.childSessionId;
+		let batcher = this.noticeBatchers.get(id);
+		if (batcher) return batcher;
+		batcher = new NoticeBatcher((notices) => {
+			const pendingIds = new Set(undispatchedNotices(parent.manager.getBranch()).map((notice) => notice.messageId));
+			notices = notices.filter((notice) => pendingIds.has(notice.messageId));
+			if (!notices.length) return;
+			const coordinator = getWorkCoordinator(id);
+			if (notices.some((notice) => notice.priority === "urgent" || notice.priority === "action-required")) coordinator?.cancel("urgent-notice");
+			let matched = false;
+			for (const notice of notices) if (notice.kind === "settlement")
+				matched = completeWorkResource(id, { kind: "child", id: notice.childId }, notice.content, { notify: false, generation: notice.workId }) || matched;
+			const driver = parent.activation?.driver;
+			if (driver) {
+				if (driver.receiveNotices) driver.receiveNotices(notices);
+				else for (const notice of notices) driver.receiveNotice(notice);
+			}
+			// A parked SDK prompt resumes itself on the matching completion. Do
+			// not queue a second activation while that prompt remains outstanding.
+			if (parent.activation?.current || driver?.isRunning) return;
+			if (coordinator?.blocked && !matched && !notices.some((notice) => notice.priority && notice.priority !== "routine")) return;
+			const batchId = `notices-${createHash("sha256").update(notices.map((notice) => notice.messageId).join(":" )).digest("hex")}`;
+			this.accept(parent, "Review the newly delivered child notices.", "report", batchId);
+			registerWorkResource(parent.descriptor.parentSessionId, { kind: "child", id }, true, parent.workId);
 			this.setParked(parent, false);
 			if (!parent.pendingSettlement) parent.settlementOutcome = undefined;
 			parent.pendingSettlement = parent.descriptor.mode === "continuable";
 			this.startPump(parent);
-		}
-		return true;
+		}, (error) => { parent.lastError = error instanceof Error ? error.message : String(error); }, () => {
+			if (parent.pump || this.closing) return;
+			void this.maybeSettle(parent).then(() => this.settleAncestors(parent.descriptor.parentSessionId)).catch((error) => { parent.lastError = error instanceof Error ? error.message : String(error); });
+		});
+		this.noticeBatchers.set(id, batcher);
+		return batcher;
 	}
 
 	private retryPendingSettlements(record: ChildRecord): void {
@@ -1388,7 +1447,7 @@ export class SubagentRuntime {
 	}
 
 	private activeCount(): number {
-		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump).length;
+		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump || record.disposing).length;
 	}
 
 	private requireCapacity(): void {
@@ -1471,6 +1530,8 @@ export class SubagentRuntime {
 	}
 
 	private async ensureActivation(record: ChildRecord): Promise<Activation> {
+		if (record.disposing) await record.disposing;
+		if (this.closing) throw new Error("subagent runtime is shutting down");
 		if (record.activation) return record.activation;
 		const authority = this.issueAuthority(
 			record.descriptor.childSessionId,
@@ -1493,7 +1554,7 @@ export class SubagentRuntime {
 				signal,
 			}), signal);
 			if (this.closing) {
-				driver.dispose();
+				await driver.dispose();
 				this.authorities.delete(authority.sessionId);
 				throw new Error("subagent runtime shut down while opening a child activation");
 			}
@@ -1503,6 +1564,8 @@ export class SubagentRuntime {
 				this.emit();
 			});
 			record.activation = activation;
+			for (const child of this.records.values()) if (child.descriptor.parentSessionId === record.descriptor.childSessionId)
+				registerWorkResource(record.descriptor.childSessionId, { kind: "child", id: child.descriptor.childSessionId }, child.pendingSettlement || child.queue.length > 0, child.workId);
 			return activation;
 		} catch (error) {
 			this.authorities.delete(authority.sessionId);
@@ -1650,7 +1713,7 @@ export class SubagentRuntime {
 		for (const record of this.records.values()) {
 			if (
 				record.descriptor.parentSessionId === parentId &&
-				(record.activation || record.queue.length > 0)
+				(record.activation || record.disposing || record.queue.length > 0)
 			)
 				return true;
 		}
@@ -1658,32 +1721,32 @@ export class SubagentRuntime {
 	}
 
 	private async disposeActivation(record: ChildRecord): Promise<unknown | undefined> {
+		if (record.disposing) return record.disposing;
 		const activation = record.activation;
 		if (!activation) return undefined;
-		let failure: unknown;
-		try {
-			activation.unsubscribeActivity?.();
-		} catch (error) {
-			failure = error;
-		}
-		try {
-			activation.driver.dispose();
-		} catch (error) {
-			failure ??= error;
-		} finally {
-			this.authorities.delete(activation.authority.sessionId);
-			record.activation = undefined;
-		}
-		return failure;
+		// Detach authority before async extension shutdown. New accepted work
+		// waits for disposal and cannot prompt a driver being invalidated.
+		this.authorities.delete(activation.authority.sessionId);
+		record.activation = undefined;
+		const disposing = (async () => {
+			let failure: unknown;
+			try { activation.unsubscribeActivity?.(); } catch (error) { failure = error; }
+			try { await activation.driver.dispose(); } catch (error) { failure ??= error; }
+			return failure;
+		})();
+		record.disposing = disposing;
+		try { return await disposing; }
+		finally { if (record.disposing === disposing) record.disposing = undefined; }
 	}
 
 	private async maybeSettle(record: ChildRecord): Promise<void> {
-		if (record.queue.length > 0 || this.hasLiveChildren(record.descriptor.childSessionId)) {
+		if (record.queue.length > 0 || this.noticeBatchers.get(record.descriptor.childSessionId)?.size || this.hasLiveChildren(record.descriptor.childSessionId)) {
 			this.emit();
 			return;
 		}
 		this.retryPendingSettlements(record);
 		const cleanupFailure = await this.disposeActivation(record);
+		if (record.queue.length > 0 || record.opening || record.activation?.current || this.hasLiveChildren(record.descriptor.childSessionId)) return;
 		if (cleanupFailure) {
 			const message = cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure);
 			record.lastError = message;
@@ -1707,10 +1770,14 @@ export class SubagentRuntime {
 				stopReason: "completed" as const,
 			};
 			const errorDetail = outcome.errorMessage ? `\nError: ${outcome.errorMessage}` : "";
-			const detail = outcome.output ? `\nFinal assistant message:\n${outcome.output}` : "";
+			const hash = createHash("sha256").update(outcome.output).digest("hex");
+			const reported = [...record.manager.getBranch()].reverse().find((entry) => entry.type === "custom" && entry.customType === SETTLEMENT_ENTRY && isRecord(entry.data) && entry.data.action === "pending" && isRecord(entry.data.notice) && entry.data.notice.kind === "report" && entry.data.notice.outputHash === hash && entry.data.notice.workId === record.workId);
+			const detail = outcome.output ? reported ? "\nFinal output is identical to the previously delivered report." : `\nFinal assistant message:\n${outcome.output}` : "";
 			const notice: ParentNotice = {
 				messageId: randomUUID(),
 				kind: "settlement",
+				priority: outcome.stopReason === "completed" ? "routine" : "urgent",
+				workId: record.workId,
 				childId: record.descriptor.childSessionId,
 				content: truncateForParent(
 					`Background subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
@@ -1792,7 +1859,8 @@ export class SubagentRuntime {
 		const children = [...this.records.values()]
 			.map((record): RuntimeChildSnapshot => {
 				let state: RuntimeChildSnapshot["state"];
-				if (record.opening || record.activation?.current || record.activation?.driver.isRunning)
+				if (getWorkCoordinator(record.descriptor.childSessionId)?.waiting) state = "waiting";
+				else if (record.opening || record.activation?.current || record.activation?.driver.isRunning)
 					state = "running";
 				else if ((!record.parked && record.queue.length) || (
 					record.activation && this.hasLiveChildren(record.descriptor.childSessionId)
@@ -1865,8 +1933,10 @@ export class SubagentRuntime {
 	async shutdown(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
+		for (const batcher of this.noticeBatchers.values()) batcher.close();
+		this.noticeBatchers.clear();
 		const active = [...this.records.values()]
-			.filter((record) => record.activation || record.pump)
+			.filter((record) => record.activation || record.pump || record.disposing)
 			.sort((a, b) => b.descriptor.depth - a.descriptor.depth);
 		for (const record of active) {
 			try {

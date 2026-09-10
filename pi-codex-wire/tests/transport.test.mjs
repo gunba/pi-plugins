@@ -15,7 +15,7 @@ import { shapeModelBody, normalizeLiteEvent } from "../extensions/model-shape.ts
 import { identity } from "./fixtures.mjs";
 import { zstdDecompressSync } from "node:zlib";
 
-async function fixture(t, mode = "auto", handler) {
+async function fixture(t, mode = "auto", handler, prewarm = true) {
   const directory = mkdtempSync(join(tmpdir(), "pi-wire-test-"));
   const log = join(directory, "log.jsonl");
   const server = createServer(handler);
@@ -23,7 +23,8 @@ async function fixture(t, mode = "auto", handler) {
   const url = `http://127.0.0.1:${server.address().port}/codex/responses`;
   const protocol = new Protocol("codex", "thread", "install", identity);
   const allowances = [];
-  const transport = new WireTransport(new Diagnostics(log), protocol, mode, fetch, {}, headers => allowances.push(headers));
+  // These legacy recovery fixtures explicitly exercise opt-in prewarming.
+  const transport = new WireTransport(new Diagnostics(log), protocol, mode, fetch, {}, headers => allowances.push(headers), prewarm);
   t.after(() => { transport.close(); server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
   return { server, url, protocol, transport, log, allowances };
 }
@@ -35,6 +36,28 @@ function exchange(f, overrides = {}) { return { url: f.url, body: f.protocol.sha
 const expired = { type: "error", status: 400, error: { code: "websocket_connection_limit_reached" } };
 const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
+
+test("default transport sends no prewarm and retains WebSocket continuation", async t => {
+  const f = await fixture(t, "auto", undefined, false);
+  // Omit the prewarm argument: verify the constructor default, not just false.
+  const defaultTransport = new WireTransport(new Diagnostics(f.log), f.protocol, "auto", fetch, {});
+  f.transport = defaultTransport;
+  t.after(() => defaultTransport.close());
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  const frames = [];
+  wss.on("connection", socket => socket.on("message", data => {
+    frames.push(JSON.parse(data.toString()));
+    socket.send(JSON.stringify(completed(`response-${frames.length}`)));
+  }));
+  await (await f.transport.request(exchange(f))).text();
+  await (await f.transport.request(exchange(f, {
+    body: f.protocol.shapeBody({ ...body, input: [...body.input, { role: "user", content: "next" }] }),
+  }))).text();
+  assert.equal(frames.length, 2);
+  assert.ok(frames.every(frame => frame.generate !== false));
+  assert.equal(frames[1].previous_response_id, "response-1");
+  assert.equal(frames[1].input.length, 1);
+});
 
 for (const phase of ["prewarm", "stream"]) test(`expired WebSocket reconnects once in the same request (${phase})`, async t => {
   const f = await fixture(t);

@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.84.3+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.85.1+.
 
 ## Extensions
 
@@ -61,6 +61,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
+- [`pi-output-budget`](pi-output-budget/README.md) — bounded text previews,
+  immutable complete-output artifacts, character paging and batched read-only
+  file inspection. The same explicit policy is installed in SDK children;
+  unrelated extension discovery remains disabled.
 - `pi-session-memory` — bounds long-running Pi processes by releasing obsolete
   message, tool-result, image, and old-summary payloads from memory after
   compaction. The active context and current-branch extension state remain
@@ -128,8 +132,8 @@ npm run check
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. CI covers Linux
-and Windows using Pi 0.84.3, 0.84.4, and 0.85.1 on Node 22, plus Pi 0.85.1 on
-Node 24. Codex Wire carries its own serializer dependency; this does not upgrade
+and Windows using Pi 0.85.1 on Node 22 and Node 24.
+Codex Wire carries its own serializer dependency; this does not upgrade
 the installed Pi application.
 
 The detailed Codex usage report includes native assistant, tool, and summary
@@ -144,3 +148,41 @@ countdowns during the conversation.
 
 The root `.npmrc` prevents npm from auto-installing Pi peer dependencies when
 Pi installs this git package; Pi provides those packages at runtime.
+
+## Context and request controls
+
+Use one global native compaction setting, not a maintained model table:
+
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 72000,
+    "keepRecentTokens": 20000
+  }
+}
+```
+
+With the current 272,000-token model windows, this starts compaction at about
+200,000 tokens. Pi 0.85.1 checks between tool rounds as well as around prompts.
+The setting also applies to SDK children through their normal settings loader.
+It is a reserve, so a model with a different context window has a different
+threshold. Existing processes need a reload to read changed settings.
+
+Wire remains mandatory. Full-prompt prewarming is **off by default** and can be
+changed independently with `/codex-wire prewarm on|off`. Provider replacement or
+failed reactivation cannot silently route Codex work through the stock provider.
+The SDK child adapter inherits Wire rather than rediscovering all extensions.
+
+`exec_command` selects an explicit `shell`, then Pi's trusted `shellPath` setting,
+then Pi's platform shell discovery. It no longer selects Windows CMD merely
+because `ComSpec` exists.
+
+`wait_for_work` yields to registered child, process or timer completion events
+without repeated model polling. It must name existing session-owned resources;
+it does not infer waiting from prose or suspend independent useful work.
+
+Use `node pi-codex-wire/ledger.mjs <run.jsonl> [...]` to group provider-reported
+usage by root/child session, request purpose and origin. Request attempts,
+prewarms, summaries and allowance observations remain separate; decoder usage is
+not added again. These records do not establish a subscription charging formula.

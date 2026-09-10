@@ -7,6 +7,7 @@ import type {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import {
 	DEFAULT_BLOCKED_AFTER_ROUNDS,
 	GOAL_COMMAND_ENTRY,
@@ -531,6 +532,7 @@ class GoalController {
 						};
 					}
 					const input = args.length === 0 ? "/goal" : `/goal ${args}`;
+					if (args.trim() && result.kind === "success") getWorkCoordinator(ctx.sessionManager.getSessionId())?.cancel("goal-command");
 					this.pi.appendEntry(GOAL_COMMAND_ENTRY, {
 						version: GOAL_COMMAND_VERSION,
 						input,
@@ -860,6 +862,7 @@ class GoalController {
 	}
 
 	private drive(ctx: ExtensionContext): void {
+		if (getWorkCoordinator(ctx.sessionManager.getSessionId())?.blocked) return;
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || this.attempt !== undefined) return;
 		this.refresh(ctx);
 		if (this.store.corruptionReason !== undefined) {
@@ -921,6 +924,7 @@ class GoalController {
 }
 
 export default function goalExtension(pi: ExtensionAPI): void {
+	ensureWorkCoordination(pi);
 	const controller = new GoalController(pi);
 	controller.register();
 }

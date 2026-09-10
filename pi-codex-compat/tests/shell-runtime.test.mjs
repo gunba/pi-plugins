@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { WorkCoordinator, registry } from "../../pi-work-coordination/core.ts";
+import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
 
 import {
 	DEFAULT_MAX_OUTPUT_TOKENS,
@@ -28,6 +30,77 @@ import {
 
 after(async () => {
 	await shutdownExecSessions();
+});
+
+test("exec_command uses configured shellPath before the operating-system shell", async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-configured-shell-"));
+	const old = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = directory;
+	t.after(async () => {
+		if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old;
+		await rm(directory, { recursive: true, force: true });
+	});
+	// An executable fixture makes default-shell selection observable without a real login shell.
+	await writeFile(join(directory, "settings.json"), JSON.stringify({ shellPath: process.execPath }));
+	const script = join(directory, "probe.cjs");
+	await writeFile(script, "console.log('configured-shell-selected')");
+	const result = await executeManagedExecCommand({ cmd: script, login: false, yield_time_ms: 5000 }, undefined, { cwd: directory });
+	assert.match(result.content[0].text, /configured-shell-selected/);
+	assert.equal(result.details.exit_code, 0);
+	// Explicit selection must not even attempt to resolve an invalid configured path.
+	await writeFile(join(directory, "settings.json"), JSON.stringify({ shellPath: "/nonexistent/configured-shell" }));
+	const explicit = await executeManagedExecCommand({ cmd: script, shell: process.execPath, yield_time_ms: 5000 }, undefined, { cwd: directory });
+	assert.equal(explicit.details.exit_code, 0);
+});
+
+test("managed process completion satisfies a registered wait without polling", async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-process-wait-"));
+	const owner = createExecRuntimeOwner();
+	await startExecSessionRuntime(owner);
+	const wakeups = [];
+	const coordinator = new WorkCoordinator("exec-wait-test", () => {}, content => wakeups.push(content));
+	registry.sessions.set("exec-wait-test", coordinator);
+	t.after(async () => {
+		coordinator.close(); registry.sessions.delete("exec-wait-test");
+		await shutdownExecSessions(owner);
+		await rm(directory, { recursive: true, force: true });
+	});
+	const script = join(directory, "wait.cjs");
+	await writeFile(script, "setTimeout(() => console.log('finished-event'), 4000)");
+	const result = await executeManagedExecCommand({ cmd: script, shell: process.execPath, yield_time_ms: 2000 }, undefined,
+		{ cwd: directory, sessionManager: { getSessionId: () => "exec-wait-test" } }, undefined, owner);
+	assert.equal(result.details.running, true);
+	const target = { kind: "process", id: String(result.details.session_id) };
+	assert.equal(coordinator.begin([target]).waiting, true);
+	await coordinator.untilReady(AbortSignal.timeout(10000));
+	assert.equal(wakeups.length, 1);
+	assert.match(wakeups[0], /exited with code 0/);
+	const final = await executeWriteStdin({ session_id: result.details.session_id }, undefined, undefined, owner);
+	assert.equal(final.details.exit_code, 0);
+	assert.match(final.content[0].text, /finished-event/);
+	assert.equal(wakeups.length, 1);
+});
+
+test("complete truncated command output survives native log cleanup as an immutable artifact", async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-command-artifact-"));
+	const old = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = directory;
+	const owner = createExecRuntimeOwner();
+	await startExecSessionRuntime(owner);
+	t.after(async () => {
+		await shutdownExecSessions(owner);
+		if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old;
+		await rm(directory, { recursive: true, force: true });
+	});
+	const script = join(directory, "large.cjs");
+	await writeFile(script, "process.stdout.write('START' + 'x'.repeat(80000) + 'END')");
+	const result = await executeManagedExecCommand({ cmd: script, shell: process.execPath, max_output_tokens: 20, yield_time_ms: 5000 },
+		undefined, { cwd: directory, sessionManager: { getSessionId: () => "artifact-test" } }, undefined, owner);
+	assert.equal(result.details.truncated, true);
+	assert.match(result.details.full_output_artifact, /^sha256-/);
+	await shutdownExecSessions(owner);
+	const store = new ArtifactStore(join(directory, "tool-output"));
+	assert.equal(await store.get(result.details.full_output_artifact), "START" + "x".repeat(80000) + "END");
 });
 
 test("shell launch defaults to login semantics and preserves explicit shell behavior", () => {
@@ -678,7 +751,17 @@ test("retained complete-output logs are bounded by an in-session LRU", async () 
 			),
 		),
 	);
-	const paths = results.map((result) => result.details.full_output_path);
+	// A slow Windows launch can still be running at the first yield. Active
+	// process logs are intentionally not subject to the retained-log LRU.
+	const paths = await Promise.all(results.map(async (initial) => {
+		let result = initial;
+		let path = result.details.full_output_path;
+		while (result.details.running) {
+			result = await executeWriteStdin({ session_id: result.details.session_id, yield_time_ms: 30_000 }, undefined);
+			path ??= result.details.full_output_path;
+		}
+		return path;
+	}));
 	assert.equal(
 		paths.every((path) => typeof path === "string"),
 		true,

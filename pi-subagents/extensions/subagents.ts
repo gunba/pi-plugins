@@ -30,6 +30,9 @@ import {
 import { createSubagentToolDefinitions } from "./subagent-tools.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
 import { ConversationModelPermissions } from "./model-permissions.ts";
+import { requireCodexWire } from "../../pi-codex-wire/extensions/required.ts";
+import { ensureWorkCoordination, getWorkCoordinator, completeWorkResource } from "../../pi-work-coordination/index.ts";
+import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -233,9 +236,11 @@ function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 	return ids;
 }
 
-/** DSH-style subagents for Pi 0.84.3. */
+/** DSH-style subagents for Pi 0.85.1. */
 export default function subagents(pi: ExtensionAPI): void {
+	ensureWorkCoordination(pi);
 	let runtime: SubagentRuntime | undefined;
+	let notices: NoticeBatcher | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
 	let modelPermissions: ConversationModelPermissions | undefined;
@@ -275,6 +280,8 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		notices?.close();
+		notices = undefined;
 		modelPermissions?.dispose();
 		modelPermissions = undefined;
 		unsubscribeRuntime?.();
@@ -296,14 +303,20 @@ export default function subagents(pi: ExtensionAPI): void {
 			entry.type === "custom" && entry.customType === BACKGROUND_USAGE_ENTRY && isRecord(entry.data)
 				? [`${entry.data.childId}:${entry.data.messageId}`] : []));
 		const recoveredNotices = undispatchedNotices(ctx.sessionManager.getBranch());
-		const steerNotice = (notice: ParentNotice): void => {
+		notices = new NoticeBatcher((batch) => {
+			const coordinator = getWorkCoordinator(ctx.sessionManager.getSessionId());
+			let matched = false;
+			for (const notice of batch) if (notice.kind === "settlement")
+				matched = completeWorkResource(ctx.sessionManager.getSessionId(), { kind: "child", id: notice.childId }, notice.content, { notify: false, generation: notice.workId }) || matched;
+			const urgent = batch.some((notice) => notice.priority === "urgent" || notice.priority === "action-required");
+			if (urgent) coordinator?.cancel("urgent-notice");
 			pi.sendMessage({
 				customType: "pi-subagents/notice",
-				content: notice.content,
+				content: noticeBatchContent(batch),
 				display: true,
-				details: notice,
-			}, { deliverAs: "steer", triggerTurn: true });
-		};
+				details: noticeBatch(batch),
+			}, { deliverAs: "steer", triggerTurn: urgent || matched || !coordinator?.blocked });
+		}, (error) => ctx.ui.notify(`Subagent notice delivery failed; receipts remain recoverable: ${error instanceof Error ? error.message : String(error)}`, "error"));
 		const host: RuntimeHost = {
 			rootSessionId: ctx.sessionManager.getSessionId(),
 			rootSessionFile: ctx.sessionManager.getSessionFile(),
@@ -325,7 +338,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				// sender's outbox pending. Never ACK from message_end (pre-persistence).
 				pi.appendEntry(NOTICE_ENTRY, notice);
 				rootNotices.add(notice.messageId);
-				steerNotice(notice);
+				notices!.add(notice);
 				feed.push(`${new Date().toISOString()} ${noticeLabel(notice)}`);
 				if (feed.length > 100) feed.splice(0, feed.length - 100);
 				updateActivity(ctx);
@@ -342,6 +355,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			},
 			authorizeModelOverrides: (selection, signal) => permissions.authorize(selection, signal),
 			async prepareModelRuntime(ref, modelRuntime, signal) {
+				if (ref.provider === "openai-codex") requireCodexWire(ctx.sessionManager.getSessionId());
 				await inheritProviderRuntime(
 					ctx,
 					ref,
@@ -369,7 +383,7 @@ export default function subagents(pi: ExtensionAPI): void {
 		runtime = created;
 		unsubscribeRuntime = created.subscribe(() => updateActivity(ctx));
 		created.initialize();
-		for (const notice of recoveredNotices) steerNotice(notice);
+		for (const notice of recoveredNotices) notices.add(notice);
 
 		updateActivity(ctx);
 	};
@@ -386,6 +400,8 @@ export default function subagents(pi: ExtensionAPI): void {
 		providerAuth.clear();
 		await startRuntime(ctx);
 	});
+	pi.on("agent_settled", () => { notices?.flush(); });
+	pi.on("turn_end", () => { notices?.flush(); });
 
 	pi.on("before_provider_headers", async (event, ctx) => {
 		if (!ctx.model) return;

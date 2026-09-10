@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 import goalExtension from "../extensions/goal.ts";
 
@@ -13,6 +15,7 @@ export function makeTheme() {
 }
 
 export function createExtensionHarness(options = {}) {
+	const sessionId = randomUUID();
 	const branch = structuredClone(options.branch ?? []);
 	const commands = new Map();
 	const tools = new Map();
@@ -39,6 +42,7 @@ export function createExtensionHarness(options = {}) {
 	}
 
 	const pi = {
+		events: createEventBus(),
 		registerCommand(name, value) { commands.set(name, value); },
 		registerTool(value) { tools.set(value.name, value); },
 		registerEntryRenderer(type, renderer) { entryRenderers.set(type, renderer); },
@@ -69,8 +73,9 @@ export function createExtensionHarness(options = {}) {
 		mode: "tui",
 		hasUI: true,
 		cwd: "C:/workspace",
-		sessionManager: { getBranch: () => branch },
+		sessionManager: { getBranch: () => branch, getSessionId: () => sessionId },
 		ui: {
+			notify() {},
 			theme,
 			setStatus(key, value) { statuses.set(key, value); },
 			setWidget(key, value) { widgets.set(key, value); },
@@ -94,7 +99,7 @@ export function createExtensionHarness(options = {}) {
 		for (const handler of handlers.get(type) ?? []) {
 			results.push(await handler({ type, ...event }, ctx));
 		}
-		return results;
+		return type === "context" ? results.filter((result) => result !== undefined).concat(results.every((result) => result === undefined) ? [undefined] : []) : results;
 	}
 
 	async function emitContained(type, event = {}) {
@@ -107,7 +112,7 @@ export function createExtensionHarness(options = {}) {
 				errors.push(error);
 			}
 		}
-		return { results, errors };
+		return { results: type === "context" ? results.filter((result) => result !== undefined) : results, errors };
 	}
 
 	return {

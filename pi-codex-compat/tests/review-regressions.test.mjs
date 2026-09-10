@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import fs, { mkdir, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import fs, { mkdir, mkdtemp, writeFile, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,11 +16,18 @@ function tools() {
  compat({ events: { on: () => () => {} }, getActiveTools: () => [], setActiveTools() {}, on() {}, registerCommand() {}, registerTool: tool => result.set(tool.name, tool) });
  return result;
 }
-async function workspace(t) {
- const cwd = await mkdtemp(join(tmpdir(), 'compat-identity-'));
+async function workspace(t, aliases = true) {
+ const cwd = await realpath(await mkdtemp(join(tmpdir(), 'compat-identity-')));
  t.after(() => rm(cwd, {recursive:true, force:true}));
  await writeFile(join(cwd, 'a'), 'old\n');
- await symlink('a', join(cwd, 'b'));
+ if (aliases) {
+  try { await symlink('a', join(cwd, 'b')); }
+  catch (error) {
+   if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+   t.skip(`File symlink capability unavailable (${error.code})`);
+   return;
+  }
+ }
  return cwd;
 }
 const update = (path, before, after, move = '') => `*** Update File: ${path}\n${move ? `*** Move to: ${move}\n` : ''}@@\n-${before}\n+${after}\n`;
@@ -29,6 +36,7 @@ const execute = (tool, cwd, input, signal) => tool.execute('test', {input}, sign
 
 test('aliases share staged content and same-target moves never delete the target', {timeout: 2000}, async t => {
  const cwd = await workspace(t);
+ if (!cwd) return;
  const tool = tools().get('apply_patch');
  const result = await execute(tool, cwd, patch(update('b','old','middle'), update('a','middle','new','b')));
  assert.equal(result.details.exitCode, 0);
@@ -39,6 +47,7 @@ test('aliases share staged content and same-target moves never delete the target
 
 test('deleting or moving a symbolic-link entry cannot delete its target', async t => {
  const cwd = await workspace(t);
+ if (!cwd) return;
  for (const input of [patch('*** Delete File: b\n'), patch(update('b','old','new','elsewhere'))]) {
   const result = await execute(tools().get('apply_patch'),cwd,input);
   assert.equal(result.details.exitCode,1);
@@ -50,6 +59,7 @@ test('deleting or moving a symbolic-link entry cannot delete its target', async 
 
 test('new leaves under directory aliases share staged state; moves into aliases preserve the destination', {timeout:2000}, async t => {
  const cwd = await workspace(t);
+ if (!cwd) return;
  await mkdir(join(cwd,'dir'));
  await symlink(join(cwd,'dir'),join(cwd,'dir-alias'), process.platform === 'win32' ? 'junction' : 'dir');
  const tool = tools().get('apply_patch');
@@ -65,6 +75,7 @@ test('new leaves under directory aliases share staged state; moves into aliases 
 
 test('reversed multi-file alias order does not deadlock', {timeout: 2000}, async t => {
  const cwd = await workspace(t);
+ if (!cwd) return;
  await writeFile(join(cwd,'c'), 'old\n');
  await symlink('c', join(cwd,'d'));
  const tool = tools().get('apply_patch');
@@ -79,6 +90,7 @@ test('reversed multi-file alias order does not deadlock', {timeout: 2000}, async
 
 for (const name of ['apply_patch','exec_command']) test(`${name} observes cancellation after queued alias locks`, {timeout:2000}, async t => {
  const cwd = await workspace(t);
+ if (!cwd) return;
  let release, ready;
  const acquired = new Promise(resolve => {ready=resolve;});
  const lock = withFileMutationQueue(join(cwd,'a'), () => {ready(); return new Promise(resolve => {release=resolve;});});
@@ -96,7 +108,7 @@ for (const name of ['apply_patch','exec_command']) test(`${name} observes cancel
 });
 
 test('in-flight cancellation rolls back before releasing mutation ownership', {timeout:2000}, async t => {
- const cwd = await workspace(t);
+ const cwd = await workspace(t, false);
  const originalWrite = fs.writeFile;
  let written, proceed, restoring, finishRollback;
  const didWrite = new Promise(resolve => {written=resolve;});
@@ -139,14 +151,14 @@ test('native SDK selects grammar only with supported metadata and uses native cu
  assert.equal(result[0].type,'custom_tool_call_output');
 });
 
-test('independent launches overlap and same-process polls serialize their cursor', {timeout:10000}, async t => {
- const cwd = await workspace(t);
+test('independent launches overlap and same-process polls serialize their cursor', {timeout:30000}, async t => {
+ const cwd = await workspace(t, false);
  const owner = createExecRuntimeOwner();
  t.after(() => shutdownExecSessions(owner));
  assert.equal(tools().get('exec_command').executionMode,'parallel');
  assert.equal(tools().get('write_stdin').executionMode,'parallel');
  const command = code => `${JSON.stringify(process.execPath)} -e ${JSON.stringify(code)}`;
- const launch = (name, other) => executeManagedExecCommand({cmd:command(`const fs=require('fs');fs.writeFileSync('${name}','');const timer=setInterval(()=>{if(fs.existsSync('${other}')){clearInterval(timer);console.log('both started')}},10)`),yield_time_ms:1000},undefined,{cwd},undefined,owner);
+ const launch = (name, other) => executeManagedExecCommand({cmd:command(`const fs=require('fs');fs.writeFileSync('${name}','');const timer=setInterval(()=>{if(fs.existsSync('${other}')){clearInterval(timer);console.log('both started')}},10)`),yield_time_ms:10000},undefined,{cwd},undefined,owner);
  const starts = await Promise.all([launch('one','two'),launch('two','one')]);
  assert.ok(starts.every(result => result.details.exit_code === 0));
  const lifetime = process.platform === 'win32' ? 2500 : 700;
@@ -180,7 +192,7 @@ test('usage fold matches pinned native totals including billed tools and summari
 });
 
 test('a cancelled queued poll returns without waiting for the cursor owner', {timeout:10000}, async t => {
- const cwd = await workspace(t);
+ const cwd = await workspace(t, false);
  const owner = createExecRuntimeOwner();
  t.after(() => shutdownExecSessions(owner));
  const command = `${JSON.stringify(process.execPath)} -e "setInterval(()=>{},1000)"`;

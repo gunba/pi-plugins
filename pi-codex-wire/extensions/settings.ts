@@ -17,6 +17,25 @@ export function saveClient(directory: string, client: Client): void {
   saveSetting(directory, "client", readClient(client));
 }
 
+export function readPrewarm(value: unknown): boolean {
+  if (value === "on") return true;
+  if (value === "off") return false;
+  throw new Error("Codex Wire prewarm must be on or off");
+}
+
+export function savedPrewarm(directory: string): "on" | "off" {
+  try {
+    return readPrewarm(readFileSync(join(directory, "prewarm"), "utf8").trim()) ? "on" : "off";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "off";
+    throw error;
+  }
+}
+
+export function savePrewarm(directory: string, enabled: boolean): void {
+  saveSetting(directory, "prewarm", enabled ? "on" : "off");
+}
+
 export function readUserAgent(directory: string, client: Client = "cli"): string | undefined {
   try { return readFileSync(join(directory, client === "desktop" ? "user-agent-desktop" : "user-agent"), "utf8").trim(); }
   catch (error) {

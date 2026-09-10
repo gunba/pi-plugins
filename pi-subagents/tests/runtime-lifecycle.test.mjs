@@ -42,6 +42,31 @@ test("background continuable start returns at acceptance and does not block pare
 	}
 });
 
+test("follow-up accepted during async policy shutdown waits for disposal and does not settle early", async () => {
+	const gate = deferred(); let disposing = false;
+	const factory = new FakeDriverFactory();
+	const open = factory.open.bind(factory);
+	factory.open = async (input) => {
+		const driver = await open(input);
+		if (factory.opens.length === 1) driver.dispose = async () => { disposing = true; await gate.promise; driver.disposed = true; };
+		return driver;
+	};
+	const h = createHarness({ factory });
+	try {
+		const child = await h.runtime.start({ description: "first", prompt: "first", context: "fresh", runInBackground: true, parent: h.parent() });
+		await waitUntil(() => disposing);
+		h.runtime.followupTask(h.runtime.rootAuthority, child.subagentId, "second");
+		assert.equal(factory.opens.length, 1); assert.equal(h.notices.length, 0);
+		gate.resolve();
+		await waitUntil(() => factory.promptLog.length === 2 && h.notices.length > 0);
+		assert.equal(factory.opens[0].disposed, true);
+		assert.deepEqual(factory.opens[0].prompts, ["first"]);
+		assert.deepEqual(factory.opens[1].prompts, ["second"]);
+		assert.equal(h.notices.filter((notice) => notice.kind === "settlement").length, 1);
+		assert.match(h.notices[0].content, /done: second/);
+	} finally { gate.resolve(); await h.cleanup(); }
+});
+
 test("send_message queues strict FIFO later turns and returns no child answer", async () => {
 	let first = true;
 	const factory = new FakeDriverFactory((driver, message) => {
@@ -390,12 +415,12 @@ test("a one-shot parent activation is released after its background child settle
 		assert.equal(factory.opens[0].disposed, undefined, "parent waits for its descendant");
 		harness.runtime.report(factory.opens[1].input.authority, "nested accepted report");
 		await waitUntil(
-			() => factory.opens[0].prompts.some((prompt) => /nested accepted report/.test(prompt)),
+			() => factory.opens[0].notices?.some((notice) => /nested accepted report/.test(notice.content)) && factory.opens[0].prompts.length >= 2,
 			"nested report delivery to one-shot parent",
 		);
 		factory.opens[1].pending.resolve(completedOutcome("nested done"));
 		await waitUntil(
-			() => factory.opens[0].prompts.some((prompt) => /nested done/.test(prompt)),
+			() => factory.opens[0].notices?.some((notice) => /nested done/.test(notice.content)) && factory.opens[0].prompts.length >= 3,
 			"nested settlement delivery to one-shot parent",
 		);
 		await waitUntil(() => factory.opens[0].disposed === true, "one-shot parent release");

@@ -15,9 +15,9 @@ Schedule a message to be sent back to the current Pi session later, from either 
 
 Delays use minutes, hours, or days: `15m`, `5h`, `5.5h`, `30d`.
 
-Scheduled messages are persisted for the current session. Delivery runs every five seconds in a live TUI or RPC session. Print and JSON runs reject scheduling because they exit after their prompts. If Pi is restarted or the session is resumed later, overdue messages for that same session are sent after startup.
+Scheduled messages are persisted for the current session. A one-shot timer runs at the next due time in a live TUI or RPC session; there is no recurring delivery poll. Print and JSON runs reject scheduling because they exit after their prompts. If Pi is restarted or the session is resumed later, overdue messages for that same session are sent after startup.
 
-Due messages are delivered as labelled Pi custom messages, not as newly typed user messages. Their model-facing content states that the scheduler queued and delivered them automatically. All reminders steer an active run, so they update work already in progress rather than wait for a separate follow-up. When the session is idle, a reminder starts a turn immediately.
+Due messages are delivered as labelled Pi custom messages, not as newly typed user messages. All reminders steer an active run. When idle, a reminder starts a turn unless an explicit wait is awaiting other work. Use `wait_for_work` with a `timer` target and the schedule ID to yield until delivery; partial events in an `all` wait do not start extra turns. Cancelling an awaited timer releases the wait with a cancellation event.
 
 When any messages are queued, a borderless compact scheduler display appears below the editor with countdowns and command reminders. Press `ctrl+o` to expand scheduled entries and read the full messages. Set `PI_SCHEDULER_WIDGET_PLACEMENT=aboveEditor` for a bordered above-editor panel.
 
@@ -27,7 +27,7 @@ Agents can call `schedule` with the same delay syntax to send a future steering 
 
 Requires Node.js 22.19 or newer with built-in `node:sqlite`. Each session has a SQLite database in `~/.pi/agent/scheduler` (override with `PI_SCHEDULER_DIR`). Use a local filesystem on one machine: process ownership is checked by PID, and SQLite transactions serialize scheduling, cancellation, and exclusive delivery claims. Corruption is reported rather than treated as an empty queue.
 
-A reminder stays claimed until its ID appears in the saved session transcript. A crashed process's claims are recovered on the next delivery tick; graceful shutdown releases unacknowledged claims. PID reuse can conservatively delay recovery until that process exits. SQLite rolls back interrupted storage transactions. Ephemeral sessions use in-memory admission and cannot recover their transcript after exit.
+A reminder stays claimed until its ID appears in the saved session transcript. A crashed process's claims are recovered on startup or the next due-time delivery; graceful shutdown releases unacknowledged claims. PID reuse can conservatively delay recovery until that process exits. SQLite rolls back interrupted storage transactions. Ephemeral sessions use in-memory admission and cannot recover their transcript after exit.
 
 Pi's `sendMessage` API returns before durable admission and does not expose asynchronous delivery failures to this extension. A claim with no transcript acknowledgement therefore remains pending until the owning session reloads or exits; it is not silently deleted or repeatedly sent. Recovery is at-least-once, not an exactly-once guarantee across delivery and transcript persistence. The stable schedule ID identifies a repeated delivery.
 

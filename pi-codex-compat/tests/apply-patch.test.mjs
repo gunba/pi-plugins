@@ -3,6 +3,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	realpath,
 	rm,
 	stat,
 	writeFile,
@@ -50,7 +51,8 @@ function renderContext(cwd, args) {
 }
 
 async function makeWorkspace(t) {
-	const cwd = await mkdtemp(join(tmpdir(), "pi-codex-compat-"));
+	// Windows may expose TEMP through an 8.3 alias; mutation paths are canonical.
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-codex-compat-")));
 	t.after(() => rm(cwd, { recursive: true, force: true }));
 	return cwd;
 }

@@ -16,7 +16,7 @@
   },
   "scripts": {
     "check": "npm run typecheck && npm test",
-    "test": "node --test",
+    "test": "node --test --test-concurrency=4",
     "typecheck": "tsc --noEmit"
   },
   "pi": {
@@ -37,13 +37,14 @@
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-todo/extensions/todo.ts",
+      "./pi-output-budget/extensions/index.ts",
       "./pi-sync/extensions/pi-sync.ts"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.84.3",
-    "@earendil-works/pi-coding-agent": ">=0.84.3",
-    "@earendil-works/pi-tui": ">=0.84.3"
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-tui": ">=0.85.1"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {

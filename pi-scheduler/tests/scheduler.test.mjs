@@ -10,6 +10,7 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { wrapRegisteredTool } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/wrapper.js";
 import { ScheduleStore } from "../extensions/store.ts";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 
 const theme = { bg: (_, s) => s, bold: (s) => s, fg: (_, s) => s };
 function harness(directory, mode = "tui") {
@@ -19,22 +20,24 @@ function harness(directory, mode = "tui") {
   const file = join(directory, "session.jsonl");
   const ctx = {
     mode, cwd: directory, isIdle: () => false,
-    sessionManager: { getSessionId: () => "session", getSessionFile: () => file, getEntries: () => [] },
+    sessionManager: { getSessionId: () => "session", getSessionFile: () => file, getEntries: () => [], getBranch: () => [] },
     ui: { notify: (...args) => notifications.push(args), getToolsExpanded: () => false,
       setWidget: (_, factory) => { widget = factory?.({}, theme); } },
   };
   const pi = {
+    events: createEventBus(),
     registerTool: (tool) => tools.set(tool.name, wrapRegisteredTool({ definition: tool }, { createContext: () => ctx, getActiveTools: () => [] })),
     registerMessageRenderer: (name, fn) => renderers.set(name, fn),
     registerCommand: (name, cmd) => commands.set(name, cmd), registerShortcut() {},
-    on: (name, fn) => events.set(name, fn),
+    on: (name, fn) => { const previous = events.get(name); events.set(name, async (...args) => { await previous?.(...args); return fn(...args); }); },
+    appendEntry() {},
     sendMessage: (message, options) => sent.push({ message, options }),
   };
   return { ctx, pi, tools, events, renderers, commands, sent, notifications, file, widget: () => widget };
 }
 
 for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, durable acknowledgement, and widths 1–45 (${placement})`, async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const dir = mkdtempSync(join(tmpdir(), "scheduler-"));
   const old = process.env.PI_SCHEDULER_DIR, oldPlacement = process.env.PI_SCHEDULER_WIDGET_PLACEMENT;
   process.env.PI_SCHEDULER_DIR = dir;
@@ -67,12 +70,15 @@ for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, 
     h.ctx.mode = "rpc";
     await h.events.get("session_start")({}, h.ctx);
     assert.equal(h.sent.length, 0);
+    const wait = await h.tools.get("wait_for_work").execute("wait", { targets: store.list().map((entry) => ({ kind: "timer", id: entry.id })), mode: "all" });
+    assert.equal(wait.terminate, true);
     const db = new DatabaseSync(join(dir, readdirSync(dir).find((name) => name.endsWith(".sqlite"))));
     db.exec("UPDATE messages SET payload=json_set(payload, '$.dueAt', 0)");
     db.close();
-    t.mock.timers.tick(5000);
+    t.mock.timers.tick(60_000);
     assert.equal(h.sent.length, 2, "RPC timer delivers without a TUI");
-    assert.ok(h.sent.every(({ options }) => options.deliverAs === "steer" && options.triggerTurn));
+    assert.ok(h.sent.every(({ options }) => options.deliverAs === "steer"));
+    assert.equal(h.sent.filter(({ options }) => options.triggerTurn).length, 1, "all-timer wait wakes only on the final selected event");
     assert.equal(store.list().length, 2, "void sendMessage is not a durable acknowledgement");
     const second = harness(dir, "rpc");
     extension(second.pi);

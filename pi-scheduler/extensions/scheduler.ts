@@ -7,12 +7,12 @@ import { randomUUID } from "node:crypto";
 import { keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Key, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { ensureWorkCoordination, registerWorkResource, completeWorkResource, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 
 const WIDGET_KEY = "pi-scheduler";
 const SCHEDULED_MESSAGE_TYPE = "pi-scheduler-scheduled-message";
 const BASE_DIR = process.env.PI_SCHEDULER_DIR || join(homedir(), ".pi", "agent", "scheduler");
 
-const TICK_MS = 5_000;
 const MAX_WIDGET_ROWS = 4;
 const MAX_MESSAGE_PREVIEW = 90;
 const MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
@@ -24,8 +24,11 @@ type DeliveryMode = "steer" | "followUp";
 type ScheduledDeliveryDetails = Pick<ScheduledMessage, "id" | "createdAt" | "dueAt" | "message" | "delivery">;
 
 export default function (pi: ExtensionAPI): void {
+  ensureWorkCoordination(pi);
   let activeCtx: ExtensionContext | undefined;
-  let tickTimer: ReturnType<typeof setInterval> | undefined;
+  let tickTimer: ReturnType<typeof setTimeout> | undefined;
+  const attempted = new Set<string>();
+  let timerEpoch = 0;
   let sendingDue = false;
   let admissionCache: { key: string; ids: Set<string> } | undefined;
   let lastError: string | undefined;
@@ -87,6 +90,8 @@ export default function (pi: ExtensionAPI): void {
       delivery,
     };
     storeFor(ctx).add(entry);
+    registerWorkResource(sessionId(ctx), { kind: "timer", id: entry.id });
+    armTimer(ctx);
     return entry;
   }
 
@@ -116,7 +121,11 @@ export default function (pi: ExtensionAPI): void {
     if (!normalized) throw new Error("Schedule id cannot be empty.");
     const store = storeFor(ctx);
     store.claimDue(-Infinity, admittedMessages(ctx));
-    return store.cancel(normalized);
+    const result = store.cancel(normalized);
+    for (const entry of result.cancelled)
+      completeWorkResource(sessionId(ctx), { kind: "timer", id: entry.id }, `Scheduled timer #${entry.id} was cancelled.`);
+    armTimer(ctx);
+    return result;
   }
 
   function admittedMessages(ctx: ExtensionContext): Set<string> {
@@ -176,9 +185,12 @@ export default function (pi: ExtensionAPI): void {
     try {
       const now = Date.now();
       if (!storeFor(ctx).list().some((entry) => entry.dueAt <= now)) return;
+      for (const entry of storeFor(ctx).list()) if (entry.dueAt <= now) attempted.add(entry.id);
       const due = storeFor(ctx).claimDue(now, admittedMessages(ctx));
       for (const entry of due) {
+        attempted.add(entry.id);
         try {
+          const matched = completeWorkResource(sessionId(ctx), { kind: "timer", id: entry.id }, scheduledDeliveryContent(entry), { notify: false });
           pi.sendMessage({
             customType: SCHEDULED_MESSAGE_TYPE,
             content: scheduledDeliveryContent(entry),
@@ -186,7 +198,7 @@ export default function (pi: ExtensionAPI): void {
             details: scheduledDeliveryDetails(entry),
           }, {
             deliverAs: ctx.isIdle() ? entry.delivery : "steer",
-            triggerTurn: true,
+            triggerTurn: matched || !getWorkCoordinator(sessionId(ctx))?.blocked,
           });
         } catch (error) {
           storeFor(ctx).release(entry.id);
@@ -374,24 +386,36 @@ export default function (pi: ExtensionAPI): void {
     ctx.ui.notify("Usage: /schedule <15m|5h|5.5h|30d> <message> · /schedule list · /schedule cancel <id> · /schedule clear", type);
   }
 
+  function armTimer(ctx: ExtensionContext): void {
+    if (tickTimer) clearTimeout(tickTimer);
+    tickTimer = undefined;
+    if (!activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
+    const epoch = timerEpoch;
+    const next = sessionMessages(ctx).find((entry) => !attempted.has(entry.id));
+    if (!next) return;
+    tickTimer = setTimeout(() => {
+      tickTimer = undefined;
+      if (!activeCtx || epoch !== timerEpoch || sessionId(activeCtx) !== sessionId(ctx)) return;
+      try { deliverDue(pi, ctx); refreshWidget(ctx); armTimer(ctx); }
+      catch (error) { reportError(ctx, error); }
+    }, Math.min(2_147_483_647, Math.max(0, next.dueAt - Date.now())));
+  }
+
   function startTicker(pi: ExtensionAPI, ctx: ExtensionContext): void {
+    timerEpoch++;
     activeCtx = ctx;
-    if (tickTimer) clearInterval(tickTimer);
-    const tick = () => {
-      if (!activeCtx) return;
-      try {
-        deliverDue(pi, activeCtx);
-        refreshWidget(activeCtx);
-      } catch (error) {
-        reportError(activeCtx, error);
-      }
-    };
-    tick();
-    tickTimer = setInterval(tick, TICK_MS);
+    attempted.clear();
+    try {
+      for (const entry of sessionMessages(ctx)) registerWorkResource(sessionId(ctx), { kind: "timer", id: entry.id });
+      deliverDue(pi, ctx);
+      refreshWidget(ctx);
+      armTimer(ctx);
+    } catch (error) { reportError(ctx, error); }
   }
 
   function stopTicker(ctx?: ExtensionContext): void {
-    if (tickTimer) clearInterval(tickTimer);
+    timerEpoch++;
+    if (tickTimer) clearTimeout(tickTimer);
     tickTimer = undefined;
     const current = ctx ?? activeCtx;
     activeCtx = undefined;
@@ -565,5 +589,13 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", (_event, ctx) => {
     stopTicker(ctx);
+  });
+  pi.on("session_tree", (_event, ctx) => {
+    if (ctx.mode === "tui" || ctx.mode === "rpc") startTicker(pi, ctx);
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
+    try { storeFor(ctx).claimDue(-Infinity, admittedMessages(ctx)); refreshWidget(ctx); armTimer(ctx); }
+    catch (error) { reportError(ctx, error); }
   });
 }

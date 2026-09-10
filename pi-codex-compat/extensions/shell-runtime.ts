@@ -12,9 +12,13 @@ import {
 	type AgentToolResult,
 	type ExtensionContext,
 	getShellConfig,
+	getAgentDir,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
 import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
+import { registerWorkResource, completeWorkResource } from "../../pi-work-coordination/index.ts";
+import { ArtifactStore, OUTPUT_CHARS } from "../../pi-output-budget/extensions/artifacts.ts";
 
 export type ExecCommandParams = {
 	cmd: string;
@@ -49,6 +53,8 @@ export type ExecCommandDetails = {
 	truncated?: boolean;
 	omitted_bytes?: number;
 	full_output_path?: string;
+	full_output_artifact?: string;
+	artifact_error?: string;
 	log_error?: string;
 	error?: string;
 };
@@ -56,7 +62,7 @@ export type ExecCommandDetails = {
 export type ExecUpdate = (
 	result: AgentToolResult<ExecCommandDetails | undefined>,
 ) => void;
-export type ExecExecutionContext = Pick<ExtensionContext, "cwd">;
+export type ExecExecutionContext = Pick<ExtensionContext, "cwd"> & Partial<Pick<ExtensionContext, "isProjectTrusted" | "sessionManager" | "ui">>;
 export type ExecRuntimeOwner = symbol;
 
 type TerminationReason = "abort" | "prune" | "shutdown";
@@ -91,6 +97,14 @@ type ExecSession = {
 	shutdownRequested: boolean;
 	activeCalls: number;
 	lastUsed: number;
+	workSessionId?: string;
+	workGeneration?: string;
+	workCompleted?: boolean;
+	workCompletionError?: string;
+	workNotifyError?: (message: string) => void;
+	outputArtifact?: string;
+	outputArtifactDirectory?: string;
+	artifactError?: string;
 };
 
 type ExecCall = {
@@ -366,19 +380,14 @@ function shellArguments(
 	return [cmd];
 }
 
-function getUnifiedExecDefaultShell(): ReturnType<typeof getShellConfig> {
-	const userShell =
-		process.platform === "win32"
-			? process.env.ComSpec?.trim()
-			: process.env.SHELL?.trim();
-	return userShell
-		? { shell: userShell, args: ["-c"], commandTransport: "argv" }
-		: getShellConfig();
+function getUnifiedExecDefaultShell(configuredShell?: string): ReturnType<typeof getShellConfig> {
+	return getShellConfig(configuredShell);
 }
 
 export function resolveShellLaunch(
 	params: Pick<ExecCommandParams, "cmd" | "login" | "shell">,
 	resolveDefaultShell: typeof getShellConfig = getUnifiedExecDefaultShell,
+	configuredShell?: string,
 ): ShellLaunch {
 	const login = params.login ?? true;
 	const explicitShell = params.shell?.trim();
@@ -390,7 +399,7 @@ export function resolveShellLaunch(
 		};
 	}
 
-	const shellConfig = resolveDefaultShell();
+	const shellConfig = resolveDefaultShell(configuredShell);
 	if (shellConfig.commandTransport === "stdin") {
 		const args = [...shellConfig.args];
 		const name = normalizedShellName(shellConfig.shell);
@@ -861,6 +870,25 @@ function closeSessionLog(session: ExecSession): Promise<void> {
 	return session.logClose;
 }
 
+function completeExecWork(session: ExecSession): void {
+	if (!session.workSessionId || !session.workGeneration || session.workCompleted || !isSessionDone(session)) return;
+	const status = session.error ? "failed to launch"
+		: session.terminationReason ? `ended (${session.terminationReason})`
+		: `exited with code ${session.exitCode ?? "unknown"}${session.exitSignal ? ` (${session.exitSignal})` : ""}`;
+	const preview = formatUnifiedExecOutput(session.pendingOutput.snapshot(), 1000);
+	const content = `Managed process ${session.id} ${status}.\n${preview.output}\n`
+		+ (session.released ? "Its handle has been released; see the previous tool result."
+			: `Use write_stdin session_id=${session.id} once to collect the final output and release the handle.`);
+	try {
+		completeWorkResource(session.workSessionId, { kind: "process", id: String(session.id) }, content,
+			{ generation: session.workGeneration });
+		session.workCompleted = true;
+	} catch (error) {
+		session.workCompletionError = error instanceof Error ? error.message : String(error);
+		session.workNotifyError?.(`Could not persist completion of process ${session.id}: ${session.workCompletionError}`);
+	}
+}
+
 async function cleanupSessionLog(session: ExecSession): Promise<void> {
 	if (!isSessionDone(session) || !session.released || session.activeCalls > 0)
 		return;
@@ -1060,6 +1088,8 @@ function buildSessionResult(
 		}
 	}
 	sections.push("Output:", formatted.output);
+	if (session.outputArtifact) sections.push(`Complete output artifact: ${session.outputArtifact}. Use read_artifact to inspect it.`);
+	if (session.artifactError) sections.push(`Output archive failed; native log remains available: ${session.artifactError}`);
 
 	return {
 		content: [{ type: "text", text: sections.join("\n") }],
@@ -1082,9 +1112,11 @@ function buildSessionResult(
 			...(formatted.omittedBytes > 0
 				? { omitted_bytes: formatted.omittedBytes }
 				: {}),
-			...(formatted.truncated && !session.logError && !session.shutdownRequested
+			...((formatted.truncated || (!running && session.preserveLog)) && !session.logError && !session.shutdownRequested
 				? { full_output_path: session.logPath }
 				: {}),
+			...(session.outputArtifact ? { full_output_artifact: session.outputArtifact } : {}),
+			...(session.artifactError ? { artifact_error: session.artifactError } : {}),
 			...(session.logError ? { log_error: session.logError } : {}),
 			...(processError ? { error: processError } : {}),
 		},
@@ -1098,6 +1130,20 @@ async function sessionResult(
 ): Promise<AgentToolResult<ExecCommandDetails>> {
 	if (isSessionDone(session)) await closeSessionLog(session);
 	else await session.logWrites;
+	// Also retain output that the shared, smaller preview budget may truncate.
+	if (session.outputArtifactDirectory && snapshot.totalBytes > OUTPUT_CHARS && !session.logError && !session.shutdownRequested) {
+		session.preserveLog = true;
+	}
+	// Archive before release/retention pruning. Earlier partial output may have
+	// been truncated even when the final polling result is small.
+	if (session.outputArtifactDirectory && isSessionDone(session) && !session.logError && !session.shutdownRequested && !session.outputArtifact
+		&& (session.preserveLog || formatUnifiedExecOutput(snapshot, call.maxOutputTokens).truncated)) {
+		try {
+			session.outputArtifact = await new ArtifactStore(session.outputArtifactDirectory).putFile(session.logPath);
+		} catch (error) {
+			session.artifactError = error instanceof Error ? error.message : String(error);
+		}
+	}
 	return buildSessionResult(session, call, snapshot, true);
 }
 
@@ -1201,6 +1247,7 @@ async function createExecSession(
 	workdir: string,
 	signal: AbortSignal | undefined,
 	owner: ExecRuntimeOwner,
+	configuredShell?: string,
 ): Promise<ExecSession> {
 	if (params.tty === true) {
 		throw new Error(
@@ -1214,7 +1261,7 @@ async function createExecSession(
 		}
 		await pruneExecSessionsForCapacity(owner);
 		throwIfLaunchAborted(signal);
-		const launch = resolveShellLaunch(params);
+		const launch = resolveShellLaunch(params, getUnifiedExecDefaultShell, configuredShell);
 		const logDirectory = await mkdtemp(join(tmpdir(), "pi-codex-exec-"));
 		const logPath = join(logDirectory, "output.log");
 		let logFile: FileHandle;
@@ -1278,6 +1325,7 @@ async function createExecSession(
 		child.stdin.on("error", () => {});
 		child.once("error", (error) => {
 			session.error = error instanceof Error ? error.message : String(error);
+			completeExecWork(session);
 			void cleanupSessionLog(session);
 		});
 		child.once("close", (code, exitSignal) => {
@@ -1285,7 +1333,10 @@ async function createExecSession(
 			session.exitCode = code;
 			session.exitSignal = exitSignal;
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
-			void closeSessionLog(session).then(() => cleanupSessionLog(session));
+			void closeSessionLog(session).then(() => {
+				completeExecWork(session);
+				return cleanupSessionLog(session);
+			});
 		});
 
 		if (launch.commandFromStdin && !signal?.aborted)
@@ -1347,7 +1398,13 @@ export async function executeManagedExecCommand(
 	try {
 		const call = createExecCall(params.max_output_tokens);
 		const workdir = params.workdir ?? ctx.cwd;
-		const session = await createExecSession(params, workdir, signal, owner);
+		const configuredShell = params.shell?.trim() ? undefined : SettingsManager.create(
+			ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted?.() ?? false },
+		).getShellPath();
+		const session = await createExecSession(
+			params, workdir, signal, owner, configuredShell,
+		);
+		if (ctx.sessionManager) session.outputArtifactDirectory = join(getAgentDir(), "tool-output");
 		let releaseCursor: (() => void) | undefined;
 		try {
 			releaseCursor = await acquireOutputCursor(session.id, signal);
@@ -1366,6 +1423,16 @@ export async function executeManagedExecCommand(
 					call,
 					session.pendingOutput.drain(),
 				);
+				if (result.details?.running && ctx.sessionManager) {
+					session.workSessionId = ctx.sessionManager.getSessionId();
+					session.workGeneration = registerWorkResource(session.workSessionId,
+						{ kind: "process", id: String(session.id) });
+					session.workNotifyError = message => {
+						try { ctx.ui?.notify(message, "error"); } catch { /* A retired UI cannot receive notifications. */ }
+					};
+					// Close may have happened while sessionResult was awaiting log I/O.
+					completeExecWork(session);
+				}
 				if (!result.details?.running) await releaseSession(session);
 				return result;
 			} finally {

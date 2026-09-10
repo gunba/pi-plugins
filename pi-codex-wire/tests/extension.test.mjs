@@ -8,6 +8,7 @@ import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-res
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
 import { saveUserAgent } from "../extensions/settings.ts";
+import { requireCodexWire } from "../extensions/required.ts";
 
 const model = { id: "gpt-6-astra", name: "Astra", api: "openai-codex-responses", provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api",
   reasoning: true, input: ["text"], cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 };
@@ -41,6 +42,29 @@ function decode(init) {
   if (encoding === "gzip") return JSON.parse(gunzipSync(init.body).toString());
   return JSON.parse(init.body);
 }
+
+test("failed manual reactivation remains fail-closed rather than restoring stock Codex", async t => {
+  const h = harness(t);
+  h.ctx.sessionManager.getBranch = () => { throw new Error("fixture activation failure"); };
+  await h.commands.get("codex-wire").handler("reconnect", h.ctx);
+  assert.notEqual(h.provider(), h.original);
+  assert.throws(() => h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt }), /Wire activation failed/);
+  assert.throws(() => requireCodexWire("pi-thread"), /without.*Codex Wire/);
+});
+
+test("prewarm is off by default and command changes persist independently of mandatory Wire", async t => {
+  const h = harness(t);
+  await h.commands.get("codex-wire").handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /Prewarm: off/);
+  await h.commands.get("codex-wire").handler("prewarm on", h.ctx);
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({}, h.ctx);
+  await h.commands.get("codex-wire").handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /Prewarm: on/);
+  await h.commands.get("codex-wire").handler("prewarm off", h.ctx);
+  requireCodexWire("pi-thread");
+  assert.equal(readFileSync(join(h.directory, "codex-wire", "prewarm"), "utf8").trim(), "off");
+});
 
 test("Desktop selection changes both catalog and inference identity and persists across reload", async t => {
   const h = harness(t);

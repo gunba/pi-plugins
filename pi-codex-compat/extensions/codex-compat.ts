@@ -1580,7 +1580,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				shell: Type.Optional(
 					Type.String({
 						description:
-							"Shell binary to launch. Defaults to the user's default shell.",
+							"Shell binary to launch. Defaults to Pi's configured shellPath, then Pi's platform shell discovery.",
 					}),
 				),
 				login: Type.Optional(
