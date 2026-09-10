@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -22,6 +22,7 @@
   "pi": {
     "extensions": [
       "./pi-codex-wire/extensions/index.ts",
+      "./pi-local-links/extensions/local-links.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",
@@ -57,6 +58,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "mdast-util-from-markdown": "^2.0.2",
     "typebox": "^1.1.38"
   },
   "devDependencies": {

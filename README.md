@@ -23,6 +23,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   `$CODEX_HOME/generated_images`. A native footer status passively shows Codex
   5h/7d usage; `/pi-usage` shows the detailed token, cost, and rate-limit
   breakdown and controls that status.
+- [`pi-local-links`](pi-local-links/README.md) — resolves relative file hyperlinks
+  in assistant Markdown against the session working directory, using absolute
+  file URLs for terminal Ctrl+click. Applies during streaming and history
+  restoration without changing saved messages or model context.
 - `pi-web-search` — adds one `web_search` tool, labelled `web.run`, based on
   Codex's standalone search client. It sends Codex-compatible commands directly
   to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no

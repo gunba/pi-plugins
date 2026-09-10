@@ -12,6 +12,7 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   const root = new URL('../', import.meta.url);
   const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
   assert.equal(manifest.pi.extensions.filter(path => path === './pi-codex-wire/extensions/index.ts').length, 1);
+  assert.equal(manifest.pi.extensions.filter(path => path === './pi-local-links/extensions/local-links.ts').length, 1);
   const paths = manifest.pi.extensions
     .map(path => fileURLToPath(new URL(path, root)));
   const loader = new DefaultResourceLoader({
@@ -25,4 +26,6 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   assert.equal(result.extensions.length, paths.length);
   assert.ok(result.extensions.some(extension => extension.commands.has('codex-wire')));
   assert.ok(result.extensions.some(extension => extension.tools.has('subagent')));
+  const links = result.extensions.find(extension => extension.path.replaceAll('\\', '/').endsWith('/pi-local-links/extensions/local-links.ts'));
+  assert.equal(typeof links?.markdownTransformer, 'function');
 });
