@@ -59,6 +59,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "jiti": "2.7.0",
     "mdast-util-from-markdown": "^2.0.2",
     "typebox": "^1.1.38"
   },
@@ -67,7 +68,6 @@
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "22.19.19",
-    "jiti": "2.7.0",
     "typescript": "5.9.3"
   }
 }

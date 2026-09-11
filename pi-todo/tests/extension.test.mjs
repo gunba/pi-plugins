@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateToolArguments } from "@earendil-works/pi-ai";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createEventBus, initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import todoExtension, {
 	TodoWriteParameters,
 	createTodoExtension,
 	prepareTodoWriteArguments,
 	terminalSafeTodoContent,
-	todoWidgetLines,
 } from "../extensions/todo.ts";
+import { workPanelLines } from "../../pi-work-ui/view.ts";
+import { todoWorkSection } from "../../pi-work-ui/sections.ts";
 import { TODO_CLEAR_ENTRY, TODO_WRITE_ENTRY } from "../model.ts";
 
 initTheme("dark", false);
@@ -25,6 +26,8 @@ function createHarness(extension = todoExtension) {
 	let expanded = false;
 
 	const pi = {
+		events: createEventBus(),
+		registerCommand() {},
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
@@ -57,13 +60,15 @@ function createHarness(extension = todoExtension) {
 		},
 		ui: {
 			setWidget(key, value, options) {
-				widgetCalls.push({ key, value, options });
+				widgetCalls.push({ key, value: typeof value === "function" ? (_tui, theme) => value({ requestRender() {} }, theme) : value, options });
 			},
 			getToolsExpanded() { return expanded; },
 		},
 	};
 
 	extension(pi);
+	for (const handler of events.get("session_start") ?? []) handler({}, ctx);
+	widgetCalls.length = 0;
 	return {
 		tools,
 		events,
@@ -137,7 +142,7 @@ test("default policy permits parallel active work and returns the exact canonica
 		customType: TODO_WRITE_ENTRY,
 		data: { todos: result.details.todos },
 	}]);
-	assert.equal(harness.currentWidget().key, "pi-todo");
+	assert.equal(harness.currentWidget().key, "pi-work");
 	assert.deepEqual(harness.currentWidget().options, { placement: "aboveEditor" });
 });
 
@@ -250,7 +255,7 @@ test("restored widget state is detached from mutable branch-entry data", async (
 	const rendered = harness.currentWidget().value(null, harness.theme).render(100).join("\n");
 	assert.match(rendered, /restored/);
 	assert.match(rendered, /1 pending/);
-	assert.doesNotMatch(rendered, /changed after restore|1 completed/);
+	assert.doesNotMatch(rendered, /changed after restore|1\/1 done/);
 });
 
 test("a successful second write replaces the projected widget value", async () => {
@@ -259,7 +264,7 @@ test("a successful second write replaces the projected widget value", async () =
 	await execute(tool, { todos: [{ content: "old", status: "pending" }] }, harness.ctx);
 	await execute(tool, { todos: [{ content: "new", status: "completed" }] }, harness.ctx);
 	const widget = harness.currentWidget().value(null, harness.theme);
-	assert.match(widget.render(100).join("\n"), /1 completed/);
+	assert.match(widget.render(100).join("\n"), /1\/1 done/);
 	assert.doesNotMatch(widget.render(100).join("\n"), /old/);
 	harness.setExpanded(true);
 	assert.match(widget.render(100).join("\n"), /new/);
@@ -329,6 +334,8 @@ test("restore rejects malformed durable writes and clears a previous widget firs
 
 test("empty replacement is durable but hides the widget", async () => {
 	const harness = createHarness();
+	await execute(harness.tools.get("todo_write"), { todos: [{ content: "visible task", status: "pending" }] }, harness.ctx);
+	assert.equal(typeof harness.currentWidget().value, "function");
 	const result = await execute(harness.tools.get("todo_write"), { todos: [] }, harness.ctx);
 	assert.deepEqual(result.details.todos, []);
 	assert.equal(result.content[0].text, "Updated todo list: 0 pending, 0 in progress, 0 completed.");
@@ -351,7 +358,7 @@ test("terminal rendering encodes controls without changing durable todo content"
 	harness.setExpanded(true);
 	const widgetLines = harness.currentWidget().value(null, harness.theme).render(200);
 	assert.equal(widgetLines.length, 2);
-	assert.match(widgetLines[1], /first\\nsecond\\x1b\[2J\\x9b31m\\tend\\u2028tail/);
+	assert.match(widgetLines[1], /first second\\u001b\[2J\\u009b31m end\\u2028tail/);
 	assert.doesNotMatch(widgetLines[1], /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
 
 	for (const expanded of [false, true]) {
@@ -365,7 +372,7 @@ test("terminal rendering encodes controls without changing durable todo content"
 	}
 });
 
-test("standing widget starts compact, expands every item in order, and respects width", () => {
+test("standing panel remains compact regardless of native tool expansion and respects width", () => {
 	const theme = {
 		fg(_colour, text) { return text; },
 		bold(text) { return text; },
@@ -379,15 +386,12 @@ test("standing widget starts compact, expands every item in order, and respects 
 			status: "pending",
 		})),
 	];
-	const compact = todoWidgetLines(theme, 80, todos, false);
-	assert.equal(compact.length, 1);
-	assert.match(compact[0], /1 completed · 1 active · 7 pending/);
-	assert.doesNotMatch(compact[0], /done/);
-	const expanded = todoWidgetLines(theme, 24, todos, true);
-	assert.equal(expanded.length, todos.length + 1);
-	assert.match(expanded.join("\n"), /done[\s\S]*active[\s\S]*pending[\s\S]*extra 9/);
-	assert.doesNotMatch(expanded.join("\n"), /more/);
-	for (const line of expanded) assert.ok(visibleWidth(line) <= 24, line);
+	const snapshot = [["todos", todoWorkSection(todos)]];
+	const compact = workPanelLines(snapshot, theme, 80);
+	assert.equal(compact.length, 2);
+	assert.match(compact[1], /1\/9 done · 1 active · 7 pending/);
+	assert.doesNotMatch(compact.join("\n"), /extra 9|ctrl\+o/);
+	for (const line of workPanelLines(snapshot, theme, 24)) assert.ok(visibleWidth(line) <= 24, line);
 });
 
 test("tool rendering is compact, preserves parallel summary, and reveals details on expansion", async () => {
@@ -462,6 +466,6 @@ test("shutdown always removes the widget", async () => {
 	const harness = createHarness();
 	await execute(harness.tools.get("todo_write"), { todos: [{ content: "x", status: "pending" }] }, harness.ctx);
 	await harness.emit("session_shutdown", { reason: "reload" });
-	assert.equal(harness.currentWidget().key, "pi-todo");
+	assert.equal(harness.currentWidget().key, "pi-work");
 	assert.equal(harness.currentWidget().value, undefined);
 });

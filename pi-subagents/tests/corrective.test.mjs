@@ -423,7 +423,7 @@ test("the first descriptor is authoritative during cold resume", async () => {
 			second.runtime.followupTask(second.runtime.rootAuthority, started.subagentId, "resume");
 			await waitUntil(() => factory.opens.length === 1, "cold open");
 			assert.deepEqual(factory.opens[0].input.descriptor.model, { provider: "test", id: "model" });
-			assert.deepEqual(factory.opens[0].input.descriptor.toolNames, ["bash", "read"]);
+			assert.deepEqual(factory.opens[0].input.descriptor.toolNames, ["ask_user", "bash", "read", "spawn_agent"]);
 		} finally {
 			await second.runtime.shutdown();
 		}

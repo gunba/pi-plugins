@@ -57,7 +57,7 @@ test("isolated children receive the maintained strict Todo tool", async () => {
 	}
 });
 
-test("Todo availability is captured in the durable child tool profile", async () => {
+test("the durable launch snapshot retains parent tools without a local-tool whitelist", async () => {
 	const factory = new FakeDriverFactory(blockingPrompt);
 	const harness = createHarness({ factory });
 	try {
@@ -73,7 +73,7 @@ test("Todo availability is captured in the durable child tool profile", async ()
 		await waitUntil(() => factory.opens.length === 1, "Todo child activation");
 		assert.deepEqual(
 			factory.opens[0].input.descriptor.toolNames,
-			["read", "todo_write"],
+			["ask_user", "read", "todo_write", "unavailable_extension"],
 		);
 	} finally {
 		await harness.cleanup();

@@ -58,6 +58,29 @@ before prompting or creating a session. When only `model` is provided, inherited
 thinking is adjusted to that model's supported levels. The selected model and
 effective thinking level are saved in the child's durable descriptor.
 
+## Tool availability
+
+Children follow the root session's current enabled tools, without a coding-tool
+whitelist. This includes tools such as `web_search`, MCP tools and custom file-based
+providers. Parent revocations are checked again at execution; source-provider
+restrictions remain effective.
+
+Provider factories are recreated against the child's API, cwd, session and model.
+Their lifecycle and permission hooks are retained, and flag values come from the
+parent configuration. Parent execution closures are never copied. Descendants use
+the original root source catalog, not synthetic child-tool metadata.
+
+Each activation uses a private JavaScript module graph, shared across its provider
+entrypoints but not other activations. An audited, pinned Jiti adapter also isolates
+CommonJS, ESM and JSON dependencies; see [loader details](loader/README.md).
+This is module-state isolation, not an OS sandbox. Native framework APIs and native
+addons remain shared.
+
+Missing or synthetic provider sources fail explicitly rather than silently hiding
+tools. SDK hosts can supply child-bound definitions for tools without source files.
+Tools requiring human interaction must be escalated to the parent; tool availability
+does not confer human approval or permission to create a root goal.
+
 ## Lifecycle and authority
 
 - A fresh child receives no parent transcript.
@@ -79,11 +102,10 @@ effective thinking level are saved in the child's durable descriptor.
   approved creation-time overrides. Effective provider configuration and resolved
   authentication come from the parent's registry for the selected provider.
   Durable model identity and thinking level are restored from the descriptor.
-- Child resources include an explicit allowlist of enabled native coding tools
-  and the maintained `todo_write` tool when active in the parent. Project settings,
-  context, skills, and shell prefixes follow the parent's effective trust decision.
-  The descriptor preserves that ceiling; cold activations also respect the current
-  root's trust. Interactive question tools are not loaded.
+- Project settings, context, skills and shell prefixes follow the parent's effective
+  trust decision. The descriptor preserves the project-trust ceiling; cold
+  activations also respect the current root's trust. The saved tool list records the
+  launch selection, not a permanent restriction on future activations.
 - Reports and settlements use steering at every depth, in per-child order. Routine
   notices received within 50 ms are coalesced into one message; a root tool boundary
   flushes admitted notices before its next model request. `urgent` errors and
@@ -118,8 +140,9 @@ effective thinking level are saved in the child's durable descriptor.
 
 ## Dashboard
 
-A compact background-activity widget appears above the editor while children
-exist. `/subagents` opens a full-terminal dashboard with:
+Subagent counts, activity and attention states appear in the shared Work panel
+above the editor while children exist. `/work subagents` opens a compact detail
+overlay; `d` opens the dashboard. `/subagents` still opens the full-terminal dashboard with:
 
 - a stable nested child tree;
 - running, waiting, settled, aborted, and error states;
@@ -144,7 +167,7 @@ Child sessions use Pi's JSONL session format under:
 The child session contains model-hidden custom entries for:
 
 - `pi-subagents/descriptor-v1` — immutable first-authoritative identity, lineage,
-  depth, model, thinking, context mode, tool allowlist, and project-trust ceiling
+  depth, model, thinking, context mode, launch tool snapshot, and project-trust ceiling
   (descriptor payload version 2);
 - `pi-subagents/inbox-v1` — accepted FIFO work;
 - `pi-subagents/delivery-v1` — started and finished delivery records;
@@ -182,11 +205,11 @@ The implementation keeps these boundaries explicit:
 5. Pi tears down the extension runtime for reload, new, resume, and fork. Active
    turns are therefore aborted cleanly and durable sessions are reconstructed
    instead of preserving in-memory activations across replacement.
-6. Pi does not expose executable parent tool definitions or extension event
-   policies through `getAllTools()`. Children therefore recreate the enabled
-   native built-ins and this package's maintained `todo_write` tool; other parent
-   tool overrides, sandboxes, and permission hooks do not transfer. Restrict the
-   native child allowlist when those controls are required.
+6. `getAllTools()` exposes source metadata, not executable definitions. Children
+   therefore load source factories with their own API and retain those providers'
+   hooks. Unrelated non-tool extensions are not automatically copied. Synthetic
+   providers need explicit child-bound definitions; source, trust and initialization
+   failures stop activation.
 7. Pi does not persist an exact `turn/end` marker. Fork boundaries use the last
    completed assistant before delegation, or a summary verified against durable
    turn boundaries. Forks reconstruct completed history when a summary includes

@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { isManagedChild } from "../../pi-work-coordination/index.ts";
 import {
 	type BriefDocument,
 	type BriefSessionState,
@@ -511,6 +512,9 @@ class BriefPresenter {
 			executionMode: "sequential",
 			renderShell: "self",
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				if (params.action === "approve" && isManagedChild(presenter.pi)) {
+					throw new Error("Brief approval requires a direct human approval in the top-level session. Report the draft to your parent.");
+				}
 				const state = presenter.getState();
 				if (!state.active || !state.task) {
 					throw new Error("No active brief. Start one with /brief <task>.");

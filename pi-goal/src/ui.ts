@@ -1,9 +1,9 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
+import type { WorkUiSource } from "../../pi-work-ui/index.ts";
+import { goalWorkSection } from "../../pi-work-ui/sections.ts";
 import {
 	GOAL_COMMAND_VERSION,
-	GOAL_STATUS_KEY,
-	GOAL_WIDGET_KEY,
 } from "./constants.ts";
 import type { GoalCommandResult } from "./command.ts";
 import type { GoalView } from "./domain.ts";
@@ -67,53 +67,13 @@ export function renderGoalRoundMessage(
 }
 
 export function updateGoalUi(
-	ctx: ExtensionContext,
+	source: WorkUiSource | undefined,
 	goal: GoalView | undefined,
 	corruption?: string,
 ): void {
-	if (corruption !== undefined) {
-		ctx.ui.setStatus(GOAL_STATUS_KEY, ctx.ui.theme.fg("error", "goal corrupt"));
-		ctx.ui.setWidget(GOAL_WIDGET_KEY, [
-			ctx.ui.theme.fg("error", "Goal history is corrupt."),
-			ctx.ui.theme.fg("dim", corruption),
-		]);
-		return;
-	}
-	if (goal === undefined) {
-		ctx.ui.setStatus(GOAL_STATUS_KEY, undefined);
-		ctx.ui.setWidget(GOAL_WIDGET_KEY, undefined);
-		return;
-	}
-	const phaseColor = goal.phase === "blocked"
-		? "warning"
-		: goal.phase === "complete"
-			? "success"
-			: "accent";
-	const activation = goal.phase === "active" ? ` · ${goal.activation}` : "";
-	ctx.ui.setStatus(
-		GOAL_STATUS_KEY,
-		ctx.ui.theme.fg(
-			phaseColor,
-			`goal ${goal.phase}${activation} · ${goal.roundsStarted}/${goal.maxGoalRounds}`,
-		),
-	);
-	if (goal.phase === "complete") {
-		ctx.ui.setWidget(GOAL_WIDGET_KEY, undefined);
-		return;
-	}
-	const lines = [
-		`${ctx.ui.theme.fg("accent", ctx.ui.theme.bold("Goal"))} ${goal.objective}`,
-	];
-	if (goal.phase === "blocked") {
-		lines.push(ctx.ui.theme.fg(
-			"warning",
-			`Blocked: ${goal.blockedReason.code}: ${goal.blockedReason.message}`,
-		));
-	}
-	ctx.ui.setWidget(GOAL_WIDGET_KEY, lines);
+	source?.set(goalWorkSection(goal, corruption));
 }
 
-export function clearGoalUi(ctx: ExtensionContext): void {
-	ctx.ui.setStatus(GOAL_STATUS_KEY, undefined);
-	ctx.ui.setWidget(GOAL_WIDGET_KEY, undefined);
+export function clearGoalUi(source: WorkUiSource | undefined): void {
+	source?.dispose();
 }

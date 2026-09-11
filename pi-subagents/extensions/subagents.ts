@@ -1,6 +1,7 @@
 import {
 	getAgentDir,
 	type ExtensionAPI,
+	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
@@ -12,7 +13,6 @@ import type {
 } from "@earendil-works/pi-ai";
 import { PiSdkDriverFactory } from "./pi-sdk-driver.ts";
 import {
-	activitySummary,
 	SubagentDashboard,
 	type DashboardAction,
 	type DashboardSnapshot,
@@ -33,6 +33,8 @@ import { ConversationModelPermissions } from "./model-permissions.ts";
 import { requireCodexWire } from "../../pi-codex-wire/extensions/required.ts";
 import { ensureWorkCoordination, getWorkCoordinator, completeWorkResource } from "../../pi-work-coordination/index.ts";
 import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
+import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
+import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -239,6 +241,9 @@ function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 /** DSH-style subagents for Pi 0.85.1. */
 export default function subagents(pi: ExtensionAPI): void {
 	ensureWorkCoordination(pi);
+	const workUi = ensureWorkUi(pi);
+	let activityUi: WorkUiSource | undefined;
+	let closeDashboard: (() => void) | undefined;
 	let runtime: SubagentRuntime | undefined;
 	let notices: NoticeBatcher | undefined;
 	let currentContext: ExtensionContext | undefined;
@@ -252,17 +257,11 @@ export default function subagents(pi: ExtensionAPI): void {
 		return runtime;
 	};
 
-	const updateActivity = (ctx: ExtensionContext): void => {
-		if (!runtime) return;
-		const agents = runtime.snapshot();
-		if (agents.length === 0) {
-			ctx.ui.setWidget("pi-subagents", undefined);
-			ctx.ui.setStatus("pi-subagents", undefined);
-			return;
-		}
-		const summary = activitySummary(agents);
-		ctx.ui.setWidget("pi-subagents", [summary]);
-		ctx.ui.setStatus("pi-subagents", summary.replace(/  —.*/, ""));
+	const updateActivity = (source: WorkUiSource, active: SubagentRuntime): void => {
+		if (runtime !== active) return;
+		source.set(subagentWorkSection(active.snapshot(), {
+			label: "dashboard", run: (ctx) => handleSubagents("", ctx),
+		}));
 	};
 
 	const dashboardSnapshot = (selectedId?: string): DashboardSnapshot => {
@@ -280,18 +279,25 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		const active = runtime;
+		runtime = undefined;
+		const close = closeDashboard;
+		closeDashboard = undefined;
+		try { close?.(); } catch (error) { console.warn("Subagent dashboard close failed:", error); }
+		activityUi?.dispose();
+		activityUi = undefined;
 		notices?.close();
 		notices = undefined;
 		modelPermissions?.dispose();
 		modelPermissions = undefined;
 		unsubscribeRuntime?.();
 		unsubscribeRuntime = undefined;
-		await runtime?.shutdown();
-		runtime = undefined;
+		await active?.shutdown();
 	};
 
 	const startRuntime = async (ctx: ExtensionContext): Promise<void> => {
 		await stopRuntime();
+		const activity = activityUi = workUi.source("subagents");
 		currentContext = ctx;
 		const permissions = modelPermissions = new ConversationModelPermissions(getAgentDir(), ctx.sessionManager.getSessionId(), {
 			available: ctx.mode === "tui" || ctx.mode === "rpc",
@@ -324,6 +330,9 @@ export default function subagents(pi: ExtensionAPI): void {
 			agentDir: getAgentDir(),
 			activeRootLaunchIds: launches,
 			isProjectTrusted: () => ctx.isProjectTrusted(),
+			getActiveToolNames: () => pi.getActiveTools(),
+			getToolInfo: () => pi.getAllTools(),
+			getFlag: (name) => pi.getFlag(name),
 			recordRootLaunch(childId: string) {
 				launches.add(childId);
 				pi.appendEntry(LAUNCH_ENTRY, {
@@ -341,7 +350,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				notices!.add(notice);
 				feed.push(`${new Date().toISOString()} ${noticeLabel(notice)}`);
 				if (feed.length > 100) feed.splice(0, feed.length - 100);
-				updateActivity(ctx);
+				updateActivity(activity, created);
 				return true;
 			},
 			recordBackgroundUsage(childId, messageId, usage) {
@@ -381,11 +390,11 @@ export default function subagents(pi: ExtensionAPI): void {
 				),
 		);
 		runtime = created;
-		unsubscribeRuntime = created.subscribe(() => updateActivity(ctx));
+		unsubscribeRuntime = created.subscribe(() => updateActivity(activity, created));
 		created.initialize();
 		for (const notice of recoveredNotices) notices.add(notice);
 
-		updateActivity(ctx);
+		updateActivity(activity, created);
 	};
 
 	// Register during discovery, before the SDK snapshots its tool definitions.
@@ -436,17 +445,11 @@ export default function subagents(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (currentContext) {
-			currentContext.ui.setWidget("pi-subagents", undefined);
-			currentContext.ui.setStatus("pi-subagents", undefined);
-		}
 		await stopRuntime();
 		currentContext = undefined;
 	});
 
-	pi.registerCommand("subagents", {
-		description: "Inspect subagents; permissions [status|allow|revoke] controls conversation-level model and thinking overrides",
-		handler: async (args, ctx) => {
+	const handleSubagents = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
 			if (/^permissions(?:\s|$)/.test(args.trim())) {
 				if (!modelPermissions) throw new Error("subagent runtime is not initialized");
 				const action = args.trim().split(/\s+/).slice(1).join(" ") || "status";
@@ -463,10 +466,12 @@ export default function subagents(pi: ExtensionAPI): void {
 				return;
 			}
 			let selectedId = args.trim() || undefined;
-			while (runtime) {
+			const active = runtime;
+			while (active && runtime === active) {
 				let dashboard: SubagentDashboard | undefined;
 				let unsubscribe: (() => void) | undefined;
 				const action = await ctx.ui.custom<DashboardAction | null>((tui, theme, _keybindings, done) => {
+					closeDashboard = () => done(null);
 					dashboard = new SubagentDashboard(
 						dashboardSnapshot(selectedId),
 						selectedId,
@@ -490,6 +495,8 @@ export default function subagents(pi: ExtensionAPI): void {
 					return dashboard;
 				});
 				unsubscribe?.();
+				if (runtime !== active) return;
+				closeDashboard = undefined;
 				selectedId = dashboard?.getSelectedId();
 				if (!action) return;
 				if (action.action === "message") {
@@ -497,6 +504,7 @@ export default function subagents(pi: ExtensionAPI): void {
 						`New task for ${action.id.slice(0, 8)}`,
 						"",
 					);
+					if (runtime !== active) return;
 					if (message?.trim()) {
 						const messageId = requireRuntime().followupTask(
 							requireRuntime().rootAuthority,
@@ -517,6 +525,9 @@ export default function subagents(pi: ExtensionAPI): void {
 					);
 				}
 			}
-		},
+	};
+	pi.registerCommand("subagents", {
+		description: "Inspect subagents; permissions [status|allow|revoke] controls conversation-level model and thinking overrides",
+		handler: handleSubagents,
 	});
 }

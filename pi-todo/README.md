@@ -1,6 +1,6 @@
 # pi-todo
 
-A Pi 0.84.2 extension that provides the DSH-compatible `todo_write` tool and a compact standing task list above the editor.
+A Pi 0.85.1 extension that provides the DSH-compatible `todo_write` tool and a compact task summary in the shared Work panel above the editor.
 
 ## Behaviour
 
@@ -9,8 +9,8 @@ A Pi 0.84.2 extension that provides the DSH-compatible `todo_write` tool and a c
 - Content is trimmed, blank content is rejected, and trimmed content must be unique with case-sensitive comparison.
 - Parallel `in_progress` items are allowed by default.
 - Successful writes and next-agent-run clears are stored as hidden custom session entries. Detached, frozen snapshots prevent later argument, result, or branch-entry mutation from changing the projected list. State therefore follows `/resume`, `/reload`, and `/tree` branch navigation without entering model context.
-- The standing widget remains visible after the agent settles and clears when the next agent run starts. Use Pi's tool expansion control (normally `Ctrl+O`) to show or hide every item row.
-- Stored content remains exact. TUI renderers visibly encode terminal controls, embedded line breaks, tabs, and Unicode line separators before display.
+- The task summary remains visible after the agent settles and clears when the next agent run starts. `/work todos` opens every item in a bounded, scrollable overlay. Native `Ctrl+O` continues to expand tool transcript output only.
+- Stored content remains exact. Summaries flatten whitespace and encode terminal controls; the detail overlay preserves line breaks and safely displays control characters. Tool transcript renderers retain their existing safe encoding.
 - Empty lists and cleared state do not show a widget.
 
 Pi 0.84.2 does not expose an event that distinguishes a queued follow-up turn from an ordinary tool or steering continuation. The extension therefore clears at the next `before_agent_start` boundary; a queued follow-up within the same low-level run can retain the standing list longer than DSH.

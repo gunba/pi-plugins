@@ -7,7 +7,8 @@ import type {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
+import { ensureWorkCoordination, getWorkCoordinator, isManagedChild } from "../../pi-work-coordination/index.ts";
+import { ensureWorkUi, type WorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import {
 	DEFAULT_BLOCKED_AFTER_ROUNDS,
 	GOAL_COMMAND_ENTRY,
@@ -301,6 +302,8 @@ function lastAssistantStopReason(messages: readonly unknown[]): AssistantStopRea
 
 class GoalController {
 	private readonly pi: ExtensionAPI;
+	private readonly workUi: WorkUi;
+	private goalUi: WorkUiSource | undefined;
 	private readonly store: GoalStore;
 	private readonly topLevel: boolean;
 	private authority: GoalAuthority = { kind: "none" };
@@ -317,8 +320,9 @@ class GoalController {
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
+		this.workUi = ensureWorkUi(pi);
 		this.store = new GoalStore(pi);
-		this.topLevel = !process.env.PI_SUBAGENT_TASK_PATH;
+		this.topLevel = !process.env.PI_SUBAGENT_TASK_PATH && !isManagedChild(pi);
 	}
 
 	register(): void {
@@ -449,7 +453,8 @@ class GoalController {
 	}
 
 	private refreshUi(ctx: ExtensionContext): void {
-		updateGoalUi(ctx, this.currentForUi(), this.store.corruptionReason);
+		if (this.stopping) return;
+		updateGoalUi(this.goalUi, this.currentForUi(), this.store.corruptionReason);
 	}
 
 	private requireDirectHuman(): void {
@@ -684,6 +689,7 @@ class GoalController {
 	private registerEvents(): void {
 		this.pi.on("session_start", (_event, ctx) => {
 			this.stopping = false;
+			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
 			this.pendingInputs = [];
@@ -696,6 +702,7 @@ class GoalController {
 		});
 
 		this.pi.on("session_tree", (_event, ctx) => {
+			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
 			this.pendingInputs = [];
@@ -717,7 +724,8 @@ class GoalController {
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			this.store.disarm();
-			clearGoalUi(ctx);
+			clearGoalUi(this.goalUi);
+			this.goalUi = undefined;
 		});
 
 		this.pi.on("input", (event) => {

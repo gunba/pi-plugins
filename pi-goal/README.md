@@ -45,7 +45,7 @@ The extension also registers three sequential model tools:
 - Visible continuation messages carry the model prompt and transcript presentation. Their objective is JSON-quoted, so multiline and tag-like text remains data inside `<goal_round>`.
 - `agent_settled` drives at most one next round. An in-memory reservation prevents duplicate dispatch.
 - Autonomous completion and blocking add one no-tools closing instruction for the model’s user-facing wrap-up.
-- `/goal` output is a non-model custom entry. Goal state, commands, rounds, and tool calls have compact TUI renderers, status, and widget presentation.
+- `/goal` output is a non-model custom entry. Commands, rounds and tool calls retain their transcript renderers. Goal state appears collapsed in the shared Work panel, alongside todos and subagents. `/work goal` shows the full objective, phase, activation, round count and blocker in a bounded, scrollable overlay without changing or re-arming the goal.
 
 ## Authority
 

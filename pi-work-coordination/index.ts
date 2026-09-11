@@ -8,6 +8,13 @@ export const WAIT_ENTRY = "pi-work/wait-v1";
 export const WAKE_MESSAGE = "pi-work/wake-v1";
 const DISCOVER_COORDINATION = "pi-work/discover-coordination-v1";
 
+/** Runtime role comes from the child-owned event bus, never model-supplied text. */
+export function isManagedChild(pi: ExtensionAPI): boolean {
+  const probe = { installed: false, child: false };
+  pi.events.emit(DISCOVER_COORDINATION, probe);
+  return probe.installed && probe.child;
+}
+
 /** Install once per event bus; SDK children own their continuation. */
 export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: boolean } = {}): void {
   // Each ExtensionAPI has a different events facade. Probe through the actual
@@ -20,6 +27,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   const releaseClaim = pi.events.on(DISCOVER_COORDINATION, (value) => {
     if (value && typeof value === "object" && "installed" in value) {
       (value as { installed: boolean }).installed = true;
+      (value as { child?: boolean }).child = options.child === true;
     }
   });
   let coordinator: WorkCoordinator | undefined;

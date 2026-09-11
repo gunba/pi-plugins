@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { createAgentSession, DefaultResourceLoader, defineTool, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { computeSessionStats } from "../../pi-codex-compat/extensions/usage.ts";
 import subagents, { inheritProviderRuntime } from "../extensions/subagents.ts";
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
@@ -92,8 +91,22 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 	}));
 	await runtime.setRuntimeApiKey(model.provider, "test");
 	const settings = SettingsManager.inMemory({ steeringMode, compaction: { enabled: false }, retry: { enabled: false } });
+	// Inheritable tools need real source ownership, not a parent execute closure.
+	const holdSource = join(root, "hold.ts");
+	writeFileSync(holdSource, `import { Type } from "typebox";
+		export default pi => pi.registerTool({
+			name: "hold", label: "Hold", description: "Wait for this offline fixture", parameters: Type.Object({}),
+			async execute(_id, _args, _signal, _update, ctx) {
+				const deadline = Date.now() + 10000;
+				while (ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === ${JSON.stringify(NOTICE_ENTRY)}).length !== 2) {
+					if (Date.now() > deadline) throw Error("Timed out waiting for both root receipts");
+					await new Promise(resolve => setTimeout(resolve, 10));
+				}
+				return { content: [{ type: "text", text: "done" }], details: {} };
+			}
+		});`);
 	const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
-		noExtensions: true, noSkills: true, noThemes: true, extensionFactories: [subagents, (pi) => {
+		additionalExtensionPaths: [holdSource], noSkills: true, noThemes: true, extensionFactories: [subagents, (pi) => {
 			pi.on("message_end", (event, ctx) => {
 				if (event.message.role !== "custom" || event.message.customType !== "pi-subagents/notice") return;
 				for (const id of event.message.details.messageIds) durableAdmissions.push(SessionManager.open(ctx.sessionManager.getSessionFile()).getEntries().some((entry) =>
@@ -102,13 +115,8 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 		}] });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
-	const hold = defineTool({ name: "hold", label: "Hold", description: "Wait for this offline fixture", parameters: Type.Object({}),
-		async execute() {
-			await waitUntil(() => manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === NOTICE_ENTRY).length === 2, "both root receipts");
-			return { content: [{ type: "text", text: "done" }], details: {} };
-		} });
 	({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
-		sessionManager: manager, settingsManager: settings, resourceLoader: loader, customTools: [hold], tools: ["hold", "subagent"] }));
+		sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["hold", "subagent"] }));
 	await session.bindExtensions({ mode: "rpc" });
 	await session.prompt("parent work");
 	assert.equal(rootCalls, 3, "one coalesced message under either Pi steering mode");
@@ -130,6 +138,32 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 	assert.equal(charge.data.usage.output, childCalls);
 	manager.appendCustomEntry(charge.customType, charge.data);
 	assert.equal(computeSessionStats(manager.getEntries()).totalOutput, session.getSessionStats().tokens.output + childCalls, "durable child invocation is charged once, including after replay");
+	if (steeringMode === "all" && !sameFinal) {
+		const warnings = t.mock.method(console, "warn", () => {});
+		const errors = [];
+		const runner = session.extensionRunner;
+		runner.onError(error => errors.push(error));
+		let openings = 0;
+		const theme = { fg: (_color, text) => text, bg: (_color, text) => text,
+			bold: text => text, italic: text => text, strikethrough: text => text };
+		runner.setUIContext({ theme, notify() {}, setWidget() {},
+			custom(factory) {
+				openings++;
+				return new Promise(resolve => factory({ requestRender() {} }, theme, {}, () => {
+					resolve(null); throw Error("fixture dashboard close failure");
+				}));
+			},
+		}, "tui");
+		const command = runner.getCommand("subagents");
+		const open = command.handler("", runner.createCommandContext());
+		await waitUntil(() => openings === 1, "dashboard opening");
+		await runner.emit({ type: "session_shutdown", reason: "quit" });
+		await open;
+		assert.equal(warnings.mock.calls.length, 1);
+		assert.deepEqual(errors, [], "failed optional UI must not interrupt runtime shutdown");
+		await command.handler("", runner.createCommandContext());
+		assert.equal(openings, 1, "shutdown must retire the old runtime even when dashboard close throws");
+	}
 });
 
 test("busy nested parents receive steering without another queued child prompt", async (t) => {

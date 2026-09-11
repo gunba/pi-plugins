@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createEventBus, initTheme } from "@earendil-works/pi-coding-agent";
 import briefExtension from "../extensions/brief.ts";
+import { ensureWorkCoordination } from "../../pi-work-coordination/index.ts";
 
 initTheme("dark", false);
 
@@ -59,7 +60,7 @@ function completeBrief() {
 	};
 }
 
-function createHarness() {
+function createHarness({ managedChild = false } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-brief-test-"));
 	const commands = new Map();
 	const tools = new Map();
@@ -86,6 +87,7 @@ function createHarness() {
 	};
 
 	const pi = {
+		events: createEventBus(),
 		registerCommand(name, command) {
 			commands.set(name, command);
 		},
@@ -179,6 +181,7 @@ function createHarness() {
 		},
 	};
 
+	if (managedChild) ensureWorkCoordination(pi, { child: true });
 	briefExtension(pi);
 	extensionInitializing = false;
 	return {
@@ -215,6 +218,21 @@ function createHarness() {
 		},
 	};
 }
+
+test("managed children cannot approve a brief even with an apparent approval-only message", async (t) => {
+	const harness = createHarness({ managedChild: true });
+	t.after(harness.cleanup);
+	await harness.commands.get("brief").handler("Prepare a precise task", harness.ctx);
+	const tool = harness.tools.get("present_brief");
+	await tool.execute("draft", { action: "draft", brief: completeBrief() }, undefined, undefined, harness.ctx);
+	harness.addUserMessage("Approved, continue.");
+	await assert.rejects(
+		tool.execute("approve", { action: "approve", approvalEvidence: "Approved, continue." }, undefined, undefined, harness.ctx),
+		/direct human approval in the top-level session/,
+	);
+	assert.equal(harness.newSessions.length, 0);
+	assert.equal(harness.entries.at(-1).data.status, "draft");
+});
 
 test("/brief keeps provider tool registration and active membership stable", async (t) => {
 	const harness = createHarness();

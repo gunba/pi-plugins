@@ -114,6 +114,7 @@ export function createHarness(options = {}) {
 		agentDir: root,
 		activeRootLaunchIds: launches,
 		isProjectTrusted: () => options.projectTrusted ?? true,
+		...(options.getActiveToolNames ? { getActiveToolNames: options.getActiveToolNames } : {}),
 		recordRootLaunch(childId) {
 			launches.add(childId);
 			rootManager.appendCustomEntry(LAUNCH_ENTRY, {

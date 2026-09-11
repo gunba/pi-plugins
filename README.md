@@ -88,6 +88,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
   panel. Ordered immutable three-state snapshots are branch-aware, remain visible
   through settlement, and render model-supplied text without terminal controls.
+- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo and subagent state
+  in one width-aware panel above the editor. `/work` expands a section into a
+  bounded, scrollable overlay; goals start collapsed. Native Ctrl+O still controls
+  tool output. The shared UI loads with any of its consumers, not a separate manifest entry.
 
 ## Install
 

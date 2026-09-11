@@ -16,6 +16,7 @@ import {
 	type ModelRuntime,
 	type SessionEntry,
 	type ToolDefinition,
+	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 
 export const DESCRIPTOR_ENTRY = "pi-subagents/descriptor-v1";
@@ -31,17 +32,6 @@ export const DEFAULT_MAX_DEPTH = 3;
 export const DEFAULT_MAX_ACTIVE = 8;
 export const DEFAULT_OPEN_TIMEOUT_MS = 30_000;
 export const MAX_PARENT_NOTICE_BYTES = 32 * 1024;
-
-export const CHILD_BUILTIN_TOOL_NAMES = new Set([
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-]);
-export const CHILD_OUTPUT_TOOL_NAMES = new Set(["read_artifact", "inspect_files"]);
 
 export type ThinkingLevel =
 	| "off"
@@ -203,6 +193,11 @@ export interface RuntimeHost {
 	resolveModel(ref: ModelRef): Model<any> | undefined;
 	authorizeModelOverrides?(selection: ModelSelection, signal?: AbortSignal): Promise<void>;
 	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime, signal: AbortSignal): Promise<void>;
+	/** Current root selection is authoritative, including explicit tool revocations. */
+	getActiveToolNames?(): string[];
+	/** Metadata identifies factories to recreate against the child, not parent execution closures. */
+	getToolInfo?(): ToolInfo[];
+	getFlag?(name: string): boolean | string | undefined;
 }
 
 export interface ChildDriver {
@@ -223,6 +218,8 @@ export interface ChildDriverFactory {
 		sessionManager: SessionManager;
 		authority: Authority;
 		customTools: ToolDefinition[];
+		/** Deliberately child-only capabilities, not inherited root tools. */
+		intrinsicToolNames?: string[];
 		signal: AbortSignal;
 	}): Promise<ChildDriver>;
 }
@@ -798,9 +795,7 @@ export function createDurableChildSession(
 }
 
 function normalizeToolNames(names: readonly string[]): string[] {
-	return [...new Set(names.filter((name) =>
-		CHILD_BUILTIN_TOOL_NAMES.has(name) || name === "todo_write" || (names.includes("read") && CHILD_OUTPUT_TOOL_NAMES.has(name)),
-	))].sort();
+	return [...new Set(names.filter((name) => typeof name === "string" && name.length > 0))].sort();
 }
 
 function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSignal): Promise<ChildDriver> {
@@ -1551,6 +1546,7 @@ export class SubagentRuntime {
 				sessionManager: record.manager,
 				authority,
 				customTools,
+				intrinsicToolNames: record.descriptor.mode === "continuable" ? ["report"] : [],
 				signal,
 			}), signal);
 			if (this.closing) {
@@ -1926,6 +1922,7 @@ export class SubagentRuntime {
 
 	toolNamesFor(caller: Authority): string[] {
 		this.assertLive(caller);
+		if (this.host.getActiveToolNames) return normalizeToolNames(this.host.getActiveToolNames());
 		if (caller.sessionId === this.host.rootSessionId) return [];
 		return [...(this.records.get(caller.sessionId)?.descriptor.toolNames ?? [])];
 	}

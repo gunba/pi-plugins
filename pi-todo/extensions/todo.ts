@@ -1,12 +1,13 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
-	keyHint,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
+import { todoWorkSection } from "../../pi-work-ui/sections.ts";
 
 import {
 	TODO_CLEAR_ENTRY,
@@ -15,18 +16,13 @@ import {
 	countTodos,
 	describeTodoTool,
 	freezeTodoSnapshot,
-	progressSegments,
 	projectTodoState,
 	summaryFromToolArguments,
 	todoResultText,
 	type PlanItemLike,
-	type TodoItem,
 	type TodoSnapshot,
-	type TodoStatus,
 	type TodoWriteDetails,
 } from "../model.ts";
-
-const WIDGET_KEY = "pi-todo";
 
 const TodoItemSchema = Type.Object(
 	{
@@ -73,20 +69,6 @@ export interface TodoExtensionOptions {
 	allowParallelInProgress: boolean;
 }
 
-function statusGlyph(status: TodoStatus, theme: Theme): string {
-	if (status === "completed") return theme.fg("success", "✓");
-	if (status === "in_progress") return theme.fg("accent", "◉");
-	return theme.fg("dim", "○");
-}
-
-function expansionHint(expanded: boolean): string {
-	try {
-		return keyHint("app.tools.expand", expanded ? "collapse" : "expand");
-	} catch {
-		return `ctrl+o ${expanded ? "collapse" : "expand"}`;
-	}
-}
-
 /** Encode terminal controls while leaving the durable task text unchanged. */
 export function terminalSafeTodoContent(content: string): string {
 	let safe = "";
@@ -115,33 +97,6 @@ function terminalSafeUnknown(value: unknown): string {
 	} catch {
 		return terminalSafeTodoContent(String(value));
 	}
-}
-
-export function todoWidgetLines(
-	theme: Theme,
-	width: number,
-	todos: readonly TodoItem[],
-	expanded: boolean,
-): string[] {
-	const availableWidth = Math.max(1, width);
-	const summary = progressSegments(todos).join(" · ");
-	const header = [
-		theme.bold(theme.fg("accent", "Todos")),
-		theme.fg("dim", "·"),
-		theme.fg("muted", summary),
-		theme.fg("dim", `· ${expansionHint(expanded)}`),
-	].join(" ");
-	const lines = [truncateToWidth(header, availableWidth)];
-	if (!expanded) return lines;
-
-	for (const todo of todos) {
-		const safeContent = terminalSafeTodoContent(todo.content);
-		const content = todo.status === "completed"
-			? theme.fg("dim", safeContent)
-			: theme.fg("text", safeContent);
-		lines.push(truncateToWidth(`  ${statusGlyph(todo.status, theme)} ${content}`, availableWidth));
-	}
-	return lines;
 }
 
 function toolSummaryText(summary: ReturnType<typeof summaryFromToolArguments>): string | null {
@@ -193,27 +148,16 @@ function isTodoWriteDetails(value: unknown): value is TodoWriteDetails {
 
 export function createTodoExtension(options: TodoExtensionOptions) {
 	return function todoExtension(pi: ExtensionAPI): void {
+		const workUi = ensureWorkUi(pi);
+		let uiSource: WorkUiSource | undefined;
 		let currentTodos: TodoSnapshot | null = null;
 
-		const refreshWidget = (ctx: ExtensionContext): void => {
-			if (ctx.mode !== "tui") return;
-			if (currentTodos === null || currentTodos.length === 0) {
-				ctx.ui.setWidget(WIDGET_KEY, undefined);
-				return;
-			}
-			const snapshot = currentTodos;
-			ctx.ui.setWidget(WIDGET_KEY, (_tui, theme): Component => ({
-				render: (width: number) => todoWidgetLines(
-					theme,
-					width,
-					snapshot,
-					ctx.ui.getToolsExpanded(),
-				),
-				invalidate() {},
-			}), { placement: "aboveEditor" });
+		const refreshWidget = (_ctx: ExtensionContext): void => {
+			uiSource?.set(todoWorkSection(currentTodos));
 		};
 
 		const restore = (ctx: ExtensionContext): void => {
+			uiSource = workUi.source("todos");
 			currentTodos = null;
 			refreshWidget(ctx);
 			currentTodos = projectTodoState(ctx.sessionManager.getBranch());
@@ -287,7 +231,8 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 
 		pi.on("session_shutdown", (_event, ctx) => {
 			currentTodos = null;
-			ctx.ui.setWidget(WIDGET_KEY, undefined);
+			uiSource?.dispose();
+			uiSource = undefined;
 		});
 	};
 }

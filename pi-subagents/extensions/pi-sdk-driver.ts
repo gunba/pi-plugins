@@ -2,9 +2,12 @@ import { join } from "node:path";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
+	ExtensionRunner,
+	ModelRegistry,
 	ModelRuntime,
 	SettingsManager,
 	type AgentSession,
+	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { createChildTodoTool } from "./child-todo-tool.ts";
 import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
@@ -12,6 +15,7 @@ import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import outputBudget from "../../pi-output-budget/extensions/index.ts";
 import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
+import { loadChildToolExtensions } from "./child-tool-extensions.ts";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	ChildDriver,
@@ -20,7 +24,7 @@ import type {
 	RuntimeHost,
 	ParentNotice,
 } from "./subagent-runtime.ts";
-import { addUsage, CHILD_BUILTIN_TOOL_NAMES, undispatchedNotices } from "./subagent-runtime.ts";
+import { addUsage, undispatchedNotices } from "./subagent-runtime.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 
@@ -38,7 +42,7 @@ export function bindChildProvider(provider: Provider, sessionId: string): Provid
 	};
 }
 
-const CHILD_CONTEXT = `You are a delegated subagent. Your permission and tool scope were fixed when you were started and cannot be widened from inside this session. Work independently in the shared working directory. Do not ask the user interactive questions; report blocked work or assumptions to your direct parent. Background children continue after you start them.`;
+const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Report questions requiring human input to your direct parent. Background children continue after you start them.`;
 const REPORT_CONTEXT = `Use report for actionable findings that change what your parent should do next. Ordinary progress belongs in the dashboard. Your final answer is delivered automatically; do not report it again.`;
 
 export function childSystemContext(mode: "continuable" | "one-shot"): string {
@@ -106,14 +110,16 @@ export function outcomeFrom(
 class PiSdkChildDriver implements ChildDriver {
 	private readonly session: AgentSession;
 	private readonly noticeState: { received: number; consumed: number };
+	private readonly extensionErrors: string[];
 	private currentActivity = "idle";
 	private runAbort?: AbortController;
 	private disposal?: Promise<void>;
 	private readonly noticeIds = new Set<string>();
 
-	constructor(session: AgentSession, noticeState: { received: number; consumed: number }) {
+	constructor(session: AgentSession, noticeState: { received: number; consumed: number }, extensionErrors: string[]) {
 		this.session = session;
 		this.noticeState = noticeState;
+		this.extensionErrors = extensionErrors;
 	}
 
 	get sessionFile(): string | undefined {
@@ -166,6 +172,7 @@ class PiSdkChildDriver implements ChildDriver {
 	}
 
 	async prompt(message: string): Promise<RunOutcome> {
+		if (this.extensionErrors.length) throw new Error(`Child extension lifecycle failed: ${this.extensionErrors.join("; ")}`);
 		const abort = this.runAbort = new AbortController();
 		const finalized: AgentMessage[] = [];
 		const priorEntries = new Set(this.session.sessionManager.getEntries().map((entry) => entry.id));
@@ -184,6 +191,7 @@ class PiSdkChildDriver implements ChildDriver {
 			while (true) {
 				const start = finalized.length;
 				await this.session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
+				if (this.extensionErrors.length) break;
 				const messages = finalized.slice(start);
 				const lastAssistant = latestAssistant(messages);
 				const waitResult = [...messages].reverse().find((item) => item.role === "toolResult" && item.toolName === "wait_for_work" && lastAssistant?.role === "assistant" && lastAssistant.content.some((block) => block.type === "toolCall" && block.id === item.toolCallId));
@@ -206,6 +214,10 @@ class PiSdkChildDriver implements ChildDriver {
 				prompt = "The explicit wait has ended. Review the delivered event and continue the assigned task.";
 			}
 			const outcome = outcomeFrom(finalized, streamed);
+			if (this.extensionErrors.length) {
+				outcome.stopReason = "error";
+				outcome.errorMessage = `Child extension lifecycle failed: ${this.extensionErrors.join("; ")}`;
+			}
 			if (abort.signal.aborted) { outcome.stopReason = "aborted"; delete outcome.errorMessage; }
 			for (const entry of this.session.sessionManager.getEntries()) {
 				if (!priorEntries.has(entry.id) && (entry.type === "compaction" || entry.type === "branch_summary") && entry.usage)
@@ -267,13 +279,51 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		const modelRuntime = await this.createModelRuntime(input.signal);
 		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime, input.signal);
 		const provider = modelRuntime.getProvider(input.descriptor.model.provider);
-		if (provider) modelRuntime.registerNativeProvider(bindChildProvider(provider, input.descriptor.childSessionId));
+		const boundProvider = provider && bindChildProvider(provider, input.descriptor.childSessionId);
+		if (boundProvider) modelRuntime.registerNativeProvider(boundProvider);
 		input.signal.throwIfAborted();
+		const projectTrusted = input.descriptor.projectTrusted && this.host.isProjectTrusted();
 		const settingsManager = SettingsManager.create(
 			input.descriptor.cwd,
 			this.host.agentDir,
-			{ projectTrusted: input.descriptor.projectTrusted && this.host.isProjectTrusted() },
+			{ projectTrusted },
 		);
+		const toolInfo = this.host.getToolInfo?.();
+		const customTools = [...input.customTools];
+		// SDK hosts without source metadata may still supply their own child-bound
+		// definitions. Normal extension sessions reconstruct the actual providers.
+		if (!toolInfo && input.descriptor.toolNames.includes("todo_write")
+			&& !customTools.some((tool) => tool.name === "todo_write")) {
+			customTools.push(createChildTodoTool(input.sessionManager));
+		}
+		const customToolNames = customTools.map((tool) => tool.name);
+		// Absence from getAllTools can mean an explicit SDK exclusion, not a
+		// child-only capability. Only the caller may declare intrinsic tools.
+		const childOnlyTools = (input.intrinsicToolNames ?? (!toolInfo ? customToolNames : []))
+			.filter((name) => customToolNames.includes(name));
+		const fallbackHelpers = !toolInfo
+			? ["wait_for_work", "cancel_work_wait", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])]
+			: [];
+		const enabledTools = () => [...new Set([
+			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
+			...childOnlyTools, ...fallbackHelpers,
+		])];
+		const inheritedExtensions = toolInfo ? await loadChildToolExtensions({
+			tools: toolInfo,
+			handledToolNames: [...customToolNames, "wait_for_work", "cancel_work_wait"],
+			signal: input.signal,
+			projectTrusted,
+			getFlag: this.host.getFlag ? (name) => this.host.getFlag!(name) : undefined,
+		}) : [];
+		const localDenied = new Set<string>();
+		const extensionErrors: string[] = [];
+		let factoryFailure: unknown;
+		const checkProvider = () => {
+			if (input.descriptor.model.provider === "openai-codex"
+				&& modelRuntime.getProvider(input.descriptor.model.provider) !== boundProvider) {
+				throw new Error("A child tool extension replaced the required Codex Wire provider.");
+			}
+		};
 		const noticeState = { received: 0, consumed: 0 };
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,
@@ -285,8 +335,47 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 					ensureWorkCoordination(pi, { child: true });
 					pi.on("context", () => { noticeState.consumed = noticeState.received; });
 				} },
-				{ name: "output-budget", factory: outputBudget },
+				...inheritedExtensions.map((extension) => ({ name: extension.name, factory: async (pi: ExtensionAPI) => {
+					const factory = typeof extension === "function" ? extension : extension.factory;
+					const setActiveTools: ExtensionAPI["setActiveTools"] = (names) => {
+						const selected = new Set(names);
+						for (const name of pi.getActiveTools()) if (!selected.has(name)) localDenied.add(name);
+						for (const name of selected) localDenied.delete(name);
+						pi.setActiveTools(names.filter((name) => enabledTools().includes(name)));
+					};
+					try {
+						await factory(new Proxy(pi, { get(target, property, receiver) {
+							return property === "setActiveTools" ? setActiveTools : Reflect.get(target, property, receiver);
+						} }));
+					} catch (error) {
+						// Keep registered shutdown hooks until the child runner can
+						// release partial initialization with a real child context.
+						factoryFailure = error;
+					}
+				} })),
+				...(!toolInfo ? [{ name: "output-budget", factory: outputBudget }] : []),
 				{ name: "request-tracing", factory: requestTracing },
+				{ name: "parent-tool-selection", factory: (pi) => {
+					const syncTools = () => {
+						checkProvider();
+						const available = new Set(pi.getAllTools().map((tool) => tool.name));
+						pi.setActiveTools(extensionErrors.length ? [] : enabledTools().filter((name) => available.has(name) && !localDenied.has(name)));
+					};
+					pi.on("session_start", syncTools);
+					pi.on("before_agent_start", syncTools);
+					pi.on("context", syncTools);
+					pi.on("before_provider_headers", checkProvider);
+					pi.on("tool_call", (event) => {
+						checkProvider();
+						if (extensionErrors.length) return { block: true, reason: `Child extension lifecycle failed: ${extensionErrors.join("; ")}` };
+						if (!enabledTools().includes(event.toolName)) {
+							return { block: true, reason: `Tool "${event.toolName}" is not enabled in the parent session.` };
+						}
+						if (localDenied.has(event.toolName)) {
+							return { block: true, reason: `Tool "${event.toolName}" is disabled by a child extension policy.` };
+						}
+					});
+				} },
 			],
 			noThemes: true,
 			appendSystemPromptOverride: (base) => [
@@ -294,18 +383,22 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				childSystemContext(input.descriptor.mode),
 			],
 		});
-		await loader.reload();
-		input.signal.throwIfAborted();
-		const customTools = [...input.customTools];
-		if (
-			input.descriptor.toolNames.includes("todo_write") &&
-			!customTools.some((tool) => tool.name === "todo_write")
-		) customTools.push(createChildTodoTool(input.sessionManager));
-		const customToolNames = customTools.map((tool) => tool.name);
-		const builtinToolNames = input.descriptor.toolNames.filter((name) =>
-			CHILD_BUILTIN_TOOL_NAMES.has(name),
-		);
-		const { session } = await createAgentSession({
+		const cleanupUnbound = async () => {
+			const loaded = loader.getExtensions();
+			const runner = new ExtensionRunner(loaded.extensions, loaded.runtime,
+				input.descriptor.cwd, input.sessionManager, new ModelRegistry(modelRuntime));
+			runner.setUIContext(undefined, "json");
+			try { await runner.emit({ type: "session_shutdown", reason: "quit" }); }
+			finally { runner.invalidate(); releaseWorkCoordinator(input.descriptor.childSessionId); }
+		};
+		let session: AgentSession;
+		try {
+			await loader.reload();
+			input.signal.throwIfAborted();
+			if (factoryFailure) throw factoryFailure;
+			const loadErrors = loader.getExtensions().errors;
+			if (loadErrors.length) throw new Error(`Cannot load child tool extensions: ${loadErrors.map((error) => `${error.path}: ${error.error}`).join("; ")}`);
+			({ session } = await createAgentSession({
 			cwd: input.descriptor.cwd,
 			agentDir: this.host.agentDir,
 			model,
@@ -315,19 +408,30 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			resourceLoader: loader,
 			sessionManager: input.sessionManager,
 			customTools,
-			tools: [...new Set([...builtinToolNames, ...customToolNames, "wait_for_work", "cancel_work_wait", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])])],
-			excludeTools: [
-				"ask_user",
-				"ask_question",
-				"question",
-				"spawn_agent",
-				"restart_agent",
-				"wait_agent",
-				"kill_agent",
-			],
-		});
-		await session.bindExtensions({ mode: "json" });
-		const driver = new PiSdkChildDriver(session, noticeState);
+			// `tools` is an immutable SDK allowlist, not merely initial selection.
+			// Keep the registry available and enforce the live parent selection
+			// through the session's public active-tool API and tool-call gate.
+			noTools: "builtin",
+			}));
+		} catch (error) {
+			await cleanupUnbound();
+			throw error;
+		}
+		const driver = new PiSdkChildDriver(session, noticeState, extensionErrors);
+		try {
+			session.setActiveToolsByName(enabledTools());
+			await session.bindExtensions({ mode: "json", onError: (error) => {
+				if (extensionErrors.length < 16) extensionErrors.push(`${error.extensionPath}: ${error.error}`);
+			} });
+			checkProvider();
+			if (extensionErrors.length) throw new Error(`Child extension lifecycle failed: ${extensionErrors.join("; ")}`);
+			const available = new Set(session.getAllTools().map((tool) => tool.name));
+			const missing = enabledTools().filter((name) => !available.has(name));
+			if (missing.length) throw new Error(`Parent tools could not be recreated in the child: ${missing.join(", ")}`);
+		} catch (error) {
+			await driver.dispose();
+			throw error;
+		}
 		if (input.signal.aborted) {
 			await driver.dispose();
 			input.signal.throwIfAborted();

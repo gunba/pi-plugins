@@ -298,7 +298,7 @@ test("descriptor, model, thinking, tool scope, identity, and cold resume survive
 			const restored = secondFactory.opens[0].input.descriptor;
 			assert.deepEqual(restored.model, { provider: "test", id: "model" });
 			assert.equal(restored.thinkingLevel, "high");
-			assert.deepEqual(restored.toolNames, ["bash", "read"]);
+			assert.deepEqual(restored.toolNames, ["ask_user", "bash", "read", "spawn_agent"]);
 			assert.equal(secondFactory.opens[0].input.customTools.at(-1).name, "report");
 		} finally {
 			await second.runtime.shutdown();
