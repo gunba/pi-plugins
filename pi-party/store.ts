@@ -89,7 +89,7 @@ export class PartyStore {
 		return this.db.prepare("SELECT * FROM members WHERE room=? ORDER BY label,session").all(self.room) as unknown as Member[];
 	}
 	send(session: string, owner: string, target: string, text: string, wake: boolean): PartyMessage[] {
-		if (!text.trim() || text.length > 8_000) throw Error("Party messages must contain 1–8000 characters.");
+		if (!text.trim()) throw Error("Party messages must contain non-whitespace text.");
 		return this.tx(() => {
 			const self = this.owned(session, owner);
 			const peers = this.members(session, owner).filter(member => member.session !== session);

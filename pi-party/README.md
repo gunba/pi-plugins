@@ -36,8 +36,8 @@ Membership, process leases and per-recipient queues live in
 `~/.pi/agent/party/party.sqlite`, independently of scheduler storage.
 The directory is excluded from configuration sync.
 
-Messages are limited to 8,000 characters; inboxes to 64 pending messages;
-broadcasts to 16 peers. A live process owns a membership through a
+Inboxes hold up to 64 pending messages; broadcasts reach up to 16 peers.
+A live process owns a membership through a
 45-second heartbeat lease. Room changes and leave/rejoin rotate membership
 epochs, preventing delivery into a different room. Native message IDs are
 retained through memory pruning to avoid replay after reload.

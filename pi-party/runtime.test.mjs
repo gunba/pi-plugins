@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
 import party, { deliveredPartyIds, PARTY_MESSAGE } from "./index.ts";
 import { pruneCompactedSession } from "../pi-session-memory/extensions/session-memory.ts";
@@ -85,6 +86,28 @@ test("reload reconnects membership but cannot wake inference until the human rea
 	await resumed.emit("input", { source: "terminal" });
 	await resumed.emit("before_agent_start");
 	assert.equal(resumed.sent.length, 1);
+});
+
+test("party_send accepts and delivers large messages without a schema or runtime length cap", async t => {
+	environment(t);
+	const a = harness(t, "first"), b = harness(t, "second");
+	await a.emit("session_start"); await b.emit("session_start");
+	await a.command("1"); await b.command("1");
+	const tool = a.tools.get("party_send");
+	assert.equal(tool.parameters.properties.message.maxLength, undefined);
+	const text = "Detailed findings 🧪\n".repeat(10_000);
+	const args = { to: "second", message: text, wake: false };
+	assert.deepEqual(validateToolArguments(tool, {
+		type: "toolCall", id: "large-party-message", name: "party_send", arguments: args,
+	}), args);
+	await a.call("party_send", args);
+	await b.command("resume");
+	assert.equal(b.sent.length, 1);
+	assert.equal(b.sent[0].message.content, `Party 1 · first (first)\n\n${text}`);
+	assert.equal(b.sent[0].options.triggerTurn, false);
+	await b.emit("context", { messages: b.branch.map(x => x.message) });
+	await b.command("resume");
+	assert.equal(b.sent.length, 1);
 });
 
 test("silent messages do not wake idle peers and compact delivery IDs suppress replay", async t => {

@@ -87,11 +87,27 @@ test("room and message validation, ambiguity, and receipt ownership", t => {
 	for (const id of ["first", "peer-a", "peer-b"]) a.join(id, id, "CASE", id);
 	assert.equal(a.member("first").room, "case");
 	assert.throws(() => a.send("first", "first", "peer", "ambiguous", false), /unambiguous/);
-	assert.throws(() => a.send("first", "first", "all", "", false), /8000/);
-	assert.throws(() => a.send("first", "first", "all", "x".repeat(8_001), false), /8000/);
+	for (const text of ["", " \t\n"]) {
+		assert.throws(() => a.send("first", "first", "all", text, false), /non-whitespace/);
+	}
 	const [sent] = a.send("first", "first", "peer-a", "private", false);
 	a.admit("peer-b", "peer-b", [sent.id]);
 	assert.equal(a.pending("peer-a", "peer-a").length, 1);
+});
+
+test("large Unicode messages survive broadcast and independent database reads intact", t => {
+	const { a, b } = fixture(t);
+	for (const id of ["first", "second", "third"]) a.join(id, id, "1", id);
+	const text = "Detailed findings 🧪\n".repeat(10_000);
+	const sent = a.send("first", "first", "all", text, false);
+	assert.equal(sent.length, 2);
+	for (const recipient of ["second", "third"]) {
+		const [message] = b.pending(recipient, recipient);
+		assert.equal(message.text, text);
+		assert.equal(message.wake, 0);
+		b.admit(recipient, recipient, [message.id]);
+		assert.deepEqual(b.pending(recipient, recipient), []);
+	}
 });
 
 test("independent Node processes commit messages through the shared SQLite store", { timeout: 30000 }, async t => {
