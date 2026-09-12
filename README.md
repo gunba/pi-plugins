@@ -72,6 +72,13 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
+- [`pi-context-limit`](pi-context-limit/README.md) — `/context-limit 200k`
+  changes the native compaction threshold and applies it through an automatic
+  extension reload, without restarting Pi.
+- [`pi-party`](pi-party/README.md) — explicitly links independent main-agent
+  sessions through `/party <id>` and provides bounded peer messaging.
+- [`pi-browser-context`](pi-browser-context/README.md) — archived accessibility
+  snapshot diffs and a focused browser skill for the existing Playwright backend.
 - `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
   `get_goal`, `create_goal`, and `update_goal`. Input-bound direct-human
   authority protects mutations; bounded same-session rounds use revision-fenced
@@ -88,10 +95,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
   panel. Ordered immutable three-state snapshots are branch-aware, remain visible
   through settlement, and render model-supplied text without terminal controls.
-- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo and subagent state
-  in one width-aware panel above the editor. `/work` expands a section into a
-  bounded, scrollable overlay; goals start collapsed. Native Ctrl+O still controls
-  tool output. The shared UI loads with any of its consumers, not a separate manifest entry.
+- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo, subagent and party
+  state above the editor. Fullscreen mouse clicks expand sections independently;
+  Alt+1–4 provides keyboard access. Native tool expansion remains separate.
+  The shared UI loads with any consumer, not a separate manifest entry.
 
 ## Install
 
@@ -171,7 +178,9 @@ With the current 272,000-token model windows, this starts compaction at about
 200,000 tokens. Pi 0.85.1 checks between tool rounds as well as around prompts.
 The setting also applies to SDK children through their normal settings loader.
 It is a reserve, so a model with a different context window has a different
-threshold. Existing processes need a reload to read changed settings.
+threshold. `/context-limit 200k` calculates and saves the reserve for the current
+model, then reloads extensions automatically. Other processes apply the setting
+when they reload.
 
 Wire remains mandatory. Full-prompt prewarming is **off by default** and can be
 changed independently with `/codex-wire prewarm on|off`. Provider replacement or

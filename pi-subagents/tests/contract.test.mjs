@@ -29,6 +29,7 @@ function extensionHarness() {
 		registerCommand(name, command) {
 			commands.set(name, command);
 		},
+		registerShortcut() {},
 		appendEntry(type, data) {
 			manager.appendCustomEntry(type, data);
 		},

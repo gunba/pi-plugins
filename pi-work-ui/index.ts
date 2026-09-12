@@ -1,6 +1,7 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SECTION_ORDER, WorkDetailView, workPanelLines, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
-export { safeWorkText, workPanelLines, WorkDetailView } from "./view.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SECTION_ORDER, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
+import { InlineWorkView } from "./inline.ts";
+export { safeWorkText, workPanelLines } from "./view.ts";
 export type { WorkSection, WorkSectionId, WorkSnapshot } from "./view.ts";
 
 export const WORK_WIDGET_KEY = "pi-work";
@@ -26,7 +27,8 @@ export class WorkUi {
 	private sections = new Map<WorkSectionId, Readonly<WorkSection>>();
 	private owners = new Map<WorkSectionId, symbol>();
 	private listeners = new Set<() => void>();
-	private overlay: { view: WorkDetailView; close: () => void } | undefined;
+	private inline = new InlineWorkView();
+	private currentSnapshot: WorkSnapshot = [];
 
 	start(ctx: ExtensionContext): void {
 		if (this.closed) return;
@@ -42,13 +44,11 @@ export class WorkUi {
 		this.generation += 1;
 		this.owners.clear();
 		this.sections.clear();
+		this.currentSnapshot = [];
+		this.inline.reset();
 		this.listeners.clear();
-		const overlay = this.overlay;
-		this.overlay = undefined;
 		const widgetInstalled = this.widgetInstalled;
 		this.widgetInstalled = false;
-		overlay?.view.dispose();
-		try { overlay?.close(); } catch (error) { reportUiFailure(error); }
 		if (touchUi && widgetInstalled) {
 			try { ctx?.ui.setWidget(WORK_WIDGET_KEY, undefined); }
 			catch (error) { reportUiFailure(error); }
@@ -85,7 +85,7 @@ export class WorkUi {
 		return {
 			set: (section) => {
 				if (!current()) return;
-				if (section) this.sections.set(id, Object.freeze({ ...section, ...(section.action ? { action: Object.freeze({ ...section.action }) } : {}) }));
+				if (section) this.sections.set(id, Object.freeze({ ...section }));
 				else this.sections.delete(id);
 				this.refresh();
 			},
@@ -114,7 +114,8 @@ export class WorkUi {
 	private refreshUi(): void {
 		const ctx = this.ctx;
 		if (this.closed || !ctx || ctx.mode !== "tui") return;
-		this.overlay?.view.update(this.snapshot());
+		this.currentSnapshot = this.snapshot();
+		this.inline.invalidate();
 		if (!this.sections.size) {
 			if (this.widgetInstalled) ctx.ui.setWidget(WORK_WIDGET_KEY, undefined);
 			this.widgetInstalled = false;
@@ -128,8 +129,11 @@ export class WorkUi {
 				const changed = () => { if (!disposed && this.active(generation)) tui.requestRender(); };
 				if (this.active(generation)) this.listeners.add(changed);
 				return {
-					render: (width) => disposed || !this.active(generation) ? [] : workPanelLines(this.snapshot(), theme, width),
-					invalidate() {},
+					render: (width) => disposed || !this.active(generation) ? [] : this.inline.render(
+						this.currentSnapshot, theme, width, Math.max(3, Math.min(24, Math.floor(tui.terminal.rows / 2))),
+					),
+					handleMouse: (event) => disposed || !this.active(generation) ? undefined : this.inline.handleMouse(event),
+					invalidate: () => this.inline.invalidate(),
 					dispose: () => { disposed = true; this.listeners.delete(changed); },
 				};
 			}, { placement: "aboveEditor" });
@@ -137,40 +141,16 @@ export class WorkUi {
 		for (const listener of this.listeners) listener();
 	}
 
-	private forgetOverlay(view: WorkDetailView | undefined): void {
-		if (this.overlay?.view === view) this.overlay = undefined;
+	page(direction: number): void {
+		if (!this.ctx || this.closed || this.ctx.mode !== "tui") return;
+		this.inline.page(direction);
+		for (const listener of this.listeners) listener();
 	}
 
-	async open(ctx: ExtensionCommandContext, initialSection?: WorkSectionId): Promise<void> {
-		const generation = this.generation;
-		if (!this.active(generation)) return;
-		if (ctx.mode !== "tui") {
-			if (ctx.hasUI) ctx.ui.notify("The work panel requires TUI mode.", "info");
-			return;
-		}
-		if (this.overlay) return;
-		let opened: WorkDetailView | undefined;
-		try {
-			const action = await ctx.ui.custom<WorkSectionId | undefined>((tui, theme, keybindings, done) => {
-				const view = new WorkDetailView(this.snapshot(), {
-					theme, keybindings, initialSection,
-					getHeight: () => Math.max(1, Math.min(24, Math.floor(tui.terminal.rows * 0.7))),
-					requestRender: () => { if (this.active(generation)) tui.requestRender(); },
-					done,
-				});
-				opened = view;
-				if (!this.active(generation)) view.dispose();
-				else this.overlay = { view, close: () => done(undefined) };
-				return view;
-			}, { overlay: true, overlayOptions: { width: "90%", maxHeight: "70%", anchor: "center" } });
-			if (!this.active(generation)) return;
-			this.forgetOverlay(opened);
-			opened?.dispose();
-			if (action) await this.sections.get(action)?.action?.run(ctx);
-		} finally {
-			this.forgetOverlay(opened);
-			opened?.dispose();
-		}
+	toggle(id: WorkSectionId): void {
+		if (!this.ctx || this.closed || this.ctx.mode !== "tui" || !this.sections.has(id)) return;
+		this.inline.toggle(id);
+		for (const listener of this.listeners) listener();
 	}
 }
 
@@ -187,17 +167,11 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	pi.on("session_start", (_event, ctx) => ui.start(ctx));
 	pi.on("session_tree", (_event, ctx) => ui.start(ctx));
 	pi.on("session_shutdown", () => { try { ui.close(); } finally { release(); } });
-	pi.registerCommand("work", {
-		description: "Expand goal, todos and subagents in a scrollable work panel",
-		getArgumentCompletions: (prefix) => SECTION_ORDER.filter((id) => id.startsWith(prefix)).map((id) => ({ value: id, label: id })),
-		handler: async (args, ctx) => {
-			const section = args.trim().toLowerCase();
-			if (section && !SECTION_ORDER.includes(section as WorkSectionId)) {
-				if (ctx.hasUI) ctx.ui.notify("Usage: /work [goal|todos|subagents]", "info");
-				return;
-			}
-			await ui.open(ctx, section ? section as WorkSectionId : undefined);
-		},
-	});
+	pi.registerShortcut("alt+pageUp", { description: "Scroll expanded work panel up", handler: async () => ui.page(-1) });
+	pi.registerShortcut("alt+pageDown", { description: "Scroll expanded work panel down", handler: async () => ui.page(1) });
+	const keys = ["alt+1", "alt+2", "alt+3", "alt+4"] as const;
+	for (const [index, id] of SECTION_ORDER.entries()) {
+		pi.registerShortcut(keys[index]!, { description: `Expand or collapse ${id}`, handler: async () => ui.toggle(id) });
+	}
 	return ui;
 }

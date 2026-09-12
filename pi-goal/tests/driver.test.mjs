@@ -137,7 +137,7 @@ test("session shutdown disarms, removes UI, and suppresses later continuation", 
 	const harness = createExtensionHarness({ pending: true });
 	await harness.start();
 	await harness.commands.get("goal").handler("clean lifecycle", harness.ctx);
-	assert.match(harness.widgets.get("pi-work")({ requestRender() {} }, harness.theme).render(120).join("\n"), /Goal active/);
+	assert.match(harness.widgets.get("pi-work")({ terminal: { rows: 40 }, requestRender() {} }, harness.theme).render(120).join("\n"), /Goal active/);
 	await harness.emit("session_shutdown", { reason: "quit" });
 	assert.equal(harness.statuses.get("pi-goal"), undefined);
 	assert.equal(harness.widgets.get("pi-work"), undefined);

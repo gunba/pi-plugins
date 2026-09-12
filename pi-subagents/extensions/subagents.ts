@@ -259,9 +259,7 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	const updateActivity = (source: WorkUiSource, active: SubagentRuntime): void => {
 		if (runtime !== active) return;
-		source.set(subagentWorkSection(active.snapshot(), {
-			label: "dashboard", run: (ctx) => handleSubagents("", ctx),
-		}));
+		source.set(subagentWorkSection(active.snapshot()));
 	};
 
 	const dashboardSnapshot = (selectedId?: string): DashboardSnapshot => {

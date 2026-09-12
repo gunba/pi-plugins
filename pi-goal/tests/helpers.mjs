@@ -45,6 +45,7 @@ export function createExtensionHarness(options = {}) {
 	const pi = {
 		events: createEventBus(),
 		registerCommand(name, value) { commands.set(name, value); },
+		registerShortcut() {},
 		registerTool(value) { tools.set(value.name, value); },
 		registerEntryRenderer(type, renderer) { entryRenderers.set(type, renderer); },
 		registerMessageRenderer(type, renderer) { messageRenderers.set(type, renderer); },

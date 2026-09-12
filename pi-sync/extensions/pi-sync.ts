@@ -25,6 +25,7 @@ const MANAGED_GITIGNORE_LINES = [
 	"# Local runtime state",
 	"agent/tmp/",
 	"agent/tool-output/",
+	"agent/party/",
 	"agent/sessions/",
 	"agent/session-status/",
 	"agent/subagents/*/",

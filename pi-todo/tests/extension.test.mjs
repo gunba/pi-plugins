@@ -28,6 +28,7 @@ function createHarness(extension = todoExtension) {
 	const pi = {
 		events: createEventBus(),
 		registerCommand() {},
+		registerShortcut() {},
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
@@ -60,7 +61,7 @@ function createHarness(extension = todoExtension) {
 		},
 		ui: {
 			setWidget(key, value, options) {
-				widgetCalls.push({ key, value: typeof value === "function" ? (_tui, theme) => value({ requestRender() {} }, theme) : value, options });
+				widgetCalls.push({ key, value: typeof value === "function" ? (_tui, theme) => value({ terminal: { rows: 40 }, requestRender() {} }, theme) : value, options });
 			},
 			getToolsExpanded() { return expanded; },
 		},

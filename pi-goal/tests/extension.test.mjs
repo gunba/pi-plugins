@@ -24,7 +24,7 @@ function successfulAgentMessages() {
 
 test("extension registers the exact command, three sequential tools, and presentation renderers", () => {
 	const harness = createExtensionHarness();
-	assert.deepEqual([...harness.commands.keys()], ["work", "goal"]);
+	assert.deepEqual([...harness.commands.keys()], ["goal"]);
 	assert.deepEqual([...harness.tools.keys()], ["wait_for_work", "cancel_work_wait", "get_goal", "create_goal", "update_goal"]);
 	const goalTools = ["get_goal", "create_goal", "update_goal"].map((name) => harness.tools.get(name));
 	for (const tool of goalTools) assert.equal(tool.executionMode, "sequential");
@@ -719,5 +719,5 @@ test("corrupt selected-branch state blocks tools and renders a command error", a
 	const entry = harness.branch.filter((candidate) => candidate.customType === GOAL_COMMAND_ENTRY).at(-1);
 	assert.equal(entry.data.result.kind, "error");
 	assert.match(entry.data.result.text, /branch history is corrupt/);
-	assert.match(harness.widgets.get("pi-work")({ requestRender() {} }, harness.theme).render(120).join("\n"), /Goal ! corrupt/);
+	assert.match(harness.widgets.get("pi-work")({ terminal: { rows: 40 }, requestRender() {} }, harness.theme).render(120).join("\n"), /Goal ! corrupt/);
 });

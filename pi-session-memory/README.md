@@ -18,10 +18,11 @@ entries remain available so extension state, including goals and todos, can
 continue. Message metadata, usage accounting, ids, parent links, labels, and
 session information also remain resident.
 
-Compacted subagent notifications retain only their `details.messageId` or batched
-`details.messageIds` delivery
-marker, not their content. Reload recovery needs this marker to distinguish
-delivered notices from genuinely pending reports.
+Compacted subagent and party notifications retain only their `details.messageId`
+or batched `details.messageIds` delivery markers, not their content.
+`party_read` tool results retain only `details.partyMessageIds`.
+Reload recovery uses these markers to distinguish delivered messages from
+genuinely pending reports.
 
 After upgrading from a version that removed these markers, restart affected Pi
 processes once and resume the saved session. `/reload` alone cannot reconstruct

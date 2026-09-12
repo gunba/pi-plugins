@@ -57,7 +57,7 @@ interface AgentState {
 	diagnosticReason?: string;
 	errorMessage?: string;
 }
-export function subagentWorkSection(agents: readonly AgentState[], action?: WorkSection["action"]): WorkSection | undefined {
+export function subagentWorkSection(agents: readonly AgentState[]): WorkSection | undefined {
 	if (!agents.length) return undefined;
 	const attention = agents.filter((agent) => agent.state === "error" || agent.state === "aborted" || agent.diagnosticReason);
 	const running = agents.filter((agent) => agent.state === "running");
@@ -78,6 +78,5 @@ export function subagentWorkSection(agents: readonly AgentState[], action?: Work
 			"/subagents opens the dashboard with transcripts, follow-up and interrupt actions.", "",
 			...agents.map((agent) => `${agent.label} · ${agent.state} · ${agent.id}${agent.activity ? `\n${agent.activity}` : ""}${agent.diagnosticReason ? `\nDiagnostic: ${agent.diagnosticReason}` : ""}${agent.errorMessage ? `\nError: ${agent.errorMessage}` : ""}`),
 		].join("\n\n"),
-		...(action ? { action } : {}),
 	};
 }

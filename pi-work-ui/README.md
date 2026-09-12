@@ -1,25 +1,43 @@
 # Work panel
 
-Goal, Todos and Subagents share one compact panel above Pi's editor. Each present section gets one row: state first, then a width-clipped preview. The panel uses at most four rows, including its `/work` hint. It does not replace the editor, working indicator or footer.
+Goal, Todos, Subagents and Party share one compact panel above Pi's editor.
+Each section starts collapsed, with its state before the clipped preview.
 
-## Read the details
+In Pi's fullscreen mode, click a section header to expand or collapse just that
+section. Other sections keep their state. Tool results elsewhere in the
+transcript use Pi's native per-result mouse expansion.
 
-- `/work` opens a collapsed section selector.
-- `/work goal`, `/work todos` or `/work subagents` opens that section directly.
-- In the selector, Up/Down selects a section; Enter or Space expands it.
-- In a section, Up/Down and Page Up/Page Down scroll; Home/End jumps; Enter or Space collapses.
-- Escape closes the overlay. Selection, confirmation, cancellation and page keys respect Pi's configured selection bindings.
-- `d` in the expanded Subagents section opens the existing dashboard. `/subagents` remains available directly, including its permissions commands, transcripts and actions.
+Keyboard controls work in either terminal mode:
 
-Details use a fresh overlay, capped at 24 rows and 70% of terminal height. Full goal text remains reachable by scrolling, regardless of its length. Viewing never changes, resumes or re-arms a goal. Native Ctrl+O still controls tool transcript output, not the standing panel. No global shortcut is registered.
+- **Alt+1**: Goal
+- **Alt+2**: Todos
+- **Alt+3**: Subagents
+- **Alt+4**: Party
+- **Alt+Page Up/Down**: page the last selected section
+
+Use the mouse wheel over expanded details, or click the left/right halves of
+the page indicator. Section headers remain visible while details are paged.
+Text selection and editor focus remain with Pi. Ctrl+O controls native tool
+output, not this panel. `/subagents` still opens its full management dashboard.
+
+Pi 0.85.1 supports experimental fullscreen mode. Select it through `/settings`
+for an immediate change, or start with `pi --tui-mode fullscreen`.
 
 ## Integration
 
-This module is bundled with the repository, not a separate auto-loaded extension. Each consumer calls `ensureWorkUi(pi)` during factory registration. A synchronous event-bus discovery claim registers `/work` and lifecycle hooks once per underlying bus, even though Pi gives extensions distinct event facades. An individual goal/todo/subagents package can be loaded alone from the checkout; it still imports this sibling module.
+This shared module is not a separate auto-loaded extension. Consumers call
+`ensureWorkUi(pi)` during factory registration. Event-bus discovery installs
+one set of lifecycle hooks and shortcuts per underlying bus.
 
-After the shared `session_start` or `session_tree` hook, a consumer calls `ui.source("goal" | "todos" | "subagents")` and publishes a factual `WorkSection`. Async producers must capture that source lease in their runtime closure. Replacing a source, changing branches, or shutting down invalidates its old lease. No model calls, timers or persistence writes are used. Only TUI mode installs component factories; RPC and non-interactive modes retain source tool behavior without a terminal panel.
+After `session_start` or `session_tree`, obtain a generation-bound source with
+`ui.source("goal" | "todos" | "subagents" | "party")`. Replacing a source,
+changing branches, or shutting down invalidates old publishers and pointer
+callbacks. Expansion is display state only: viewing does not resume goals,
+write session history or start inference.
 
-Do not restore UI expansion from session entries, or reuse disposed overlays. Source packages retain sole responsibility for their durable state and permissions.
+Expanded details occupy at most 24 rows and half the terminal height, shared
+between open sections. Full text remains reachable through paging. Only TUI
+mode mounts the component; RPC and non-interactive tools behave unchanged.
 
 ## Checks
 

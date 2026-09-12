@@ -86,7 +86,12 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
 			let released = 0;
 			if ("content" in message) released += clearField(message, "content", []);
 			if ("output" in message) released += clearField(message, "output", "");
-			if ("details" in message) released += clearField(message, "details");
+			if ("details" in message) {
+				const ids = message.role === "toolResult" && message.toolName === "party_read"
+					? record(message.details)?.partyMessageIds : undefined;
+				released += clearField(message, "details", Array.isArray(ids)
+					? { partyMessageIds: ids.filter((id): id is string => typeof id === "string") } : undefined);
+			}
 			return released;
 		}
 		case "compaction":
@@ -96,7 +101,7 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
 		case "custom_message": {
 			// Delivery IDs are durable recovery state, not transcript payload.
 			// Keep individual/batch IDs, never the report bodies.
-			const details = entry.customType === "pi-subagents/notice" ? record(mutableEntry.details) : undefined;
+			const details = entry.customType === "pi-subagents/notice" || entry.customType === "pi-party/message" ? record(mutableEntry.details) : undefined;
 			const receipt = {
 				...(typeof details?.messageId === "string" ? { messageId: details.messageId } : {}),
 				...(Array.isArray(details?.messageIds) ? { messageIds: details.messageIds.filter((id): id is string => typeof id === "string") } : {}),

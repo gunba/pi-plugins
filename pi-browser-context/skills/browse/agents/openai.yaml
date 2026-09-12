@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browse"
+  short_description: "Control the browser with focused observations"
+  default_prompt: "Use $browse to inspect the open web application."

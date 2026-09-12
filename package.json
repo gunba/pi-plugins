@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -34,11 +34,17 @@
       "./pi-compaction-context/extensions/compaction-context.ts",
       "./pi-session-memory/extensions/session-memory.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
+      "./pi-context-limit/index.ts",
+      "./pi-party/index.ts",
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-todo/extensions/todo.ts",
+      "./pi-browser-context/index.ts",
       "./pi-output-budget/extensions/index.ts",
       "./pi-sync/extensions/pi-sync.ts"
+    ],
+    "skills": [
+      "./pi-browser-context/skills/browse"
     ]
   },
   "peerDependencies": {
@@ -59,6 +65,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "diff": "8.0.2",
     "jiti": "2.7.0",
     "mdast-util-from-markdown": "^2.0.2",
     "typebox": "^1.1.38"

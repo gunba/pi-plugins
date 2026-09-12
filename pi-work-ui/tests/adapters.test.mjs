@@ -18,8 +18,8 @@ function harness() {
 		isIdle() { return false; }, hasPendingMessages() { return false; },
 		ui: {
 			notify() {},
-			getToolsExpanded() { toolExpansionReads++; throw Error("native tool expansion must not control the work panel"); },
-			setWidget(key, factory) { widgets.get(key)?.dispose(); if (factory) widgets.set(key, factory({ requestRender() {} }, theme)); else widgets.delete(key); },
+			getToolsExpanded() { toolExpansionReads++; throw Error("work sections must not follow global tool expansion"); },
+			setWidget(key, factory) { widgets.get(key)?.dispose(); if (factory) widgets.set(key, factory({ terminal: { rows: 40 }, requestRender() {} }, theme)); else widgets.delete(key); },
 		},
 	};
 	const api = () => ({
@@ -27,7 +27,7 @@ function harness() {
 		on(name, callback) { const callbacks = handlers.get(name) ?? []; callbacks.push(callback); handlers.set(name, callbacks); },
 		registerTool(tool) { assert.ok(!tools.has(tool.name), tool.name); tools.set(tool.name, tool); },
 		registerCommand(name, command) { assert.ok(!commands.has(name), name); commands.set(name, command); },
-		registerEntryRenderer() {}, registerMessageRenderer() {},
+		registerEntryRenderer() {}, registerMessageRenderer() {}, registerShortcut() {},
 		appendEntry(customType, data) { branch.push({ id: `entry-${branch.length}`, type: "custom", customType, data, timestamp: new Date().toISOString() }); },
 	});
 	goalExtension(api()); todoExtension(api());
@@ -44,7 +44,7 @@ function harness() {
 test("actual goal and todo adapters share one compact panel without changing stored text or goal authority", async () => {
 	const h = harness();
 	await h.emit("session_start");
-	assert.deepEqual([...h.commands.keys()], ["work", "goal"]);
+	assert.deepEqual([...h.commands.keys()], ["goal"]);
 	const objective = Array.from({ length: 80 }, (_, i) => `Complete stage ${i}`).join("\n\n");
 	await h.goal(objective);
 	await h.todos([{ content: "Current verification", status: "in_progress" }]);

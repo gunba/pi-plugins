@@ -29,4 +29,5 @@ test("managed configuration sync excludes confidential output artifacts", async 
  extension({registerCommand:(name, command)=>commands[name]=command, exec(){throw Error("No git/network needed");}});
  await commands["pi-sync"].handler("ignore", {hasUI:true, ui:{notify(){}}});
  assert.match(readFileSync(join(root, ".gitignore"), "utf8"), /^agent\/tool-output\/$/m);
+ assert.match(readFileSync(join(root, ".gitignore"), "utf8"), /^agent\/party\/$/m);
 });

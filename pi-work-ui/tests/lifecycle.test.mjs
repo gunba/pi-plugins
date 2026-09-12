@@ -19,6 +19,7 @@ function harness(mode = "tui") {
 	let renders = 0;
 	const tui = { terminal: { rows: 40 }, requestRender() { renders++; } };
 	const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", ui: {
+		getToolsExpanded() { return false; },
 		setWidget(key, factory, options) {
 			widgets.at(-1)?.component?.dispose();
 			widgets.push({ key, factory, options, component: factory?.(tui, theme) });
@@ -74,40 +75,35 @@ test("source snapshots are detached from the producer and superseded leases cann
 	assert.doesNotMatch(h.lines().join("\n"), /stale/);
 });
 
-test("branch replacement retires old publishers, renders and overlays before accepting restored state", async () => {
+test("branch replacement retires old publishers and mouse handlers before accepting restored state", () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const old = ui.source("goal"); old.set(section("Abandoned branch"));
 	const widget = h.widgets.at(-1).component;
-	const open = ui.open(h.ctx, "goal");
-	const overlay = h.overlays.at(-1).component;
+	ui.toggle("goal");
 	ui.start(h.ctx);
 	const current = ui.source("goal"); current.set(section("Selected branch"));
-	await open;
 	old.set(section("Abandoned late update"));
-	old.dispose(); overlay.update([["goal", section("stale overlay")]]);
+	old.dispose();
 	assert.match(h.lines().join("\n"), /Selected branch/);
 	assert.deepEqual(widget.render(100), []);
-	assert.deepEqual(overlay.render(100), []);
-	assert.equal(h.overlays.length, 1);
+	assert.equal(widget.handleMouse({ type: "click", button: "left", y: 1 }), undefined);
+	assert.equal(h.overlays.length, 0);
 });
 
-test("shutdown gates callbacks before old context reads and is idempotent", async () => {
+test("shutdown gates callbacks before old context reads and is idempotent", () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const source = ui.source("goal"); source.set(section());
 	const widget = h.widgets.at(-1).component;
-	const open = ui.open(h.ctx, "goal");
-	const oldView = h.overlays.at(-1).component;
+	ui.toggle("goal");
 	ui.close();
 	Object.defineProperty(h.ctx, "ui", { get() { throw Error("retired UI read"); } });
 	Object.defineProperty(h.ctx, "mode", { get() { throw Error("retired mode read"); } });
 	ui.close(); ui.start(h.ctx); source.set(section("stale")); source.dispose();
-	oldView.handleInput("\r"); oldView.update([["goal", section("stale")]]);
+	ui.toggle("goal"); ui.page(1);
 	assert.deepEqual(widget.render(80), []);
-	assert.deepEqual(oldView.render(80), []);
-	await open;
-	await ui.open(h.ctx);
+	assert.equal(widget.handleMouse({ type: "click", button: "left", y: 1 }), undefined);
 	assert.deepEqual(ui.snapshot(), []);
 });
 
@@ -171,46 +167,25 @@ test("unexpected passive rendering failures remain visible but cannot fail a tas
 	assert.deepEqual(ui.snapshot(), []);
 });
 
-test("view updates while open, closes to collapsed panel, and routes dashboard without stale continuations", async () => {
+test("expanded sections update inline without overlays or editor focus", () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const source = ui.source("subagents");
-	let actions = 0;
-	source.set({ ...section("First"), label: "Subagents", action: { label: "dashboard", run: async (ctx) => { assert.equal(ctx, h.ctx); actions++; } } });
-	const open = ui.open(h.ctx, "subagents");
-	assert.equal(h.overlays[0].options.overlay, true);
-	assert.equal(h.overlays[0].options.overlayOptions.maxHeight, "70%");
-	const view = h.overlays[0].component;
-	source.set({ ...section("Second"), label: "Subagents", action: { label: "dashboard", run: async () => { actions++; } } });
-	assert.match(view.render(100).join("\n"), /Second/);
-	view.handleInput("d"); await open;
-	assert.equal(actions, 1);
-	assert.deepEqual(view.render(100), []);
-	const secondOpen = ui.open(h.ctx);
-	assert.doesNotMatch(h.overlays[1].component.render(100).join("\n"), /Second/);
-	h.overlays[1].resolve("subagents");
-	ui.start(h.ctx); // branch changes after selection, before the async continuation
-	await secondOpen;
-	assert.equal(actions, 1);
-});
-
-test("old overlay completion cannot erase a new-branch overlay", async () => {
-	const h = harness(); const ui = new WorkUi(); ui.start(h.ctx);
-	ui.source("goal").set(section());
-	const oldOpen = ui.open(h.ctx, "goal");
-	ui.start(h.ctx); ui.source("goal").set(section("New branch"));
-	const newOpen = ui.open(h.ctx, "goal");
-	await oldOpen;
-	ui.close(); // must still know which new overlay to close
-	await newOpen;
-	assert.deepEqual(h.overlays[1].component.render(80), []);
+	source.set({ ...section("First"), summary: "State", label: "Subagents" });
+	ui.toggle("subagents");
+	assert.match(h.lines().join("\n"), /First/);
+	source.set({ ...section("Second"), summary: "State", label: "Subagents" });
+	assert.match(h.lines().join("\n"), /Second/);
+	ui.toggle("subagents");
+	assert.doesNotMatch(h.lines().join("\n"), /Second/);
+	assert.equal(h.overlays.length, 0);
 });
 
 test("RPC/print modes never instantiate terminal widgets or overlays", async () => {
 	for (const mode of ["rpc", "print", "json"]) {
 		const h = harness(mode); const ui = new WorkUi(); ui.start(h.ctx);
 		ui.source("goal").set(section());
-		await ui.open(h.ctx);
+		ui.toggle("goal"); ui.page(1);
 		assert.equal(h.widgets.length, 0); assert.equal(h.overlays.length, 0);
 		ui.close();
 	}
@@ -230,10 +205,10 @@ async function load(t, factories, bus = createEventBus()) {
 }
 function assertOneRegistration(result) {
 	const commands = result.extensions.flatMap((extension) => [...extension.commands.keys()]);
-	assert.deepEqual(commands, ["work"]);
+	assert.deepEqual(commands, []);
 	assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_start")).length, 1);
 	assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_tree")).length, 1);
-	assert.equal(result.extensions.flatMap((extension) => [...extension.shortcuts.keys()]).length, 0);
+	assert.equal(result.extensions.flatMap((extension) => [...extension.shortcuts.keys()]).length, 6);
 }
 
 test("real loader registers once for distinct API facades on the same underlying event bus", async (t) => {
@@ -271,7 +246,7 @@ test("loader invalidation and failed factories release the discovery claim", asy
 test("shutdown releases registration on a shared bus and old publishers cannot affect reload", async () => {
 	const bus = createEventBus();
 	const handlers = new Map(); const commands = [];
-	const pi = { events: bus, on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand(name) { commands.push(name); } };
+	const pi = { events: bus, on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand(name) { commands.push(name); }, registerShortcut() {} };
 	const old = ensureWorkUi(pi); const oldCtx = harness(); old.start(oldCtx.ctx);
 	const publisher = old.source("goal"); publisher.set(section("old"));
 	for (const handler of handlers.get("session_shutdown")) handler({}, oldCtx.ctx);
@@ -279,7 +254,7 @@ test("shutdown releases registration on a shared bus and old publishers cannot a
 	current.source("goal").set(section("new"));
 	publisher.set(section("stale"));
 	assert.notEqual(old, current);
-	assert.deepEqual(commands, ["work", "work"]);
+	assert.deepEqual(commands, []);
 	assert.match(newCtx.lines().join("\n"), /new/);
 	assert.doesNotMatch(newCtx.lines().join("\n"), /stale/);
 	current.close();
