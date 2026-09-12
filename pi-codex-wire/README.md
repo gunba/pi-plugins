@@ -45,6 +45,32 @@ responses, model error responses and invalid payloads do not activate stream fal
 `websocket-failure` diagnostics record the close code, elapsed/idle milliseconds,
 event count and whether output began—not close-reason text, error text or content.
 
+### Diagnosing interrupted requests
+
+Request records include the effective timeout and whether streaming was requested.
+Pi's `httpIdleTimeoutMs` setting controls the default header/idle wait; an explicit
+provider timeout takes precedence. Neither is a limit on total generation time.
+
+WebSocket failures include the last allowlisted event type, event counts, byte
+counts, largest frame, longest gap, negotiated compression, and TCP end/close/error
+state. `websocket-progress` records the first event and first text delta.
+HTTP upgrade/response records retain only allowlisted server request IDs for
+support correlation, not credentials, routing tokens, or arbitrary headers.
+
+SSE requests record Undici's request-created, headers-ready, body-sent and
+response-headers stages, followed by fetch return/error. These are matched by
+request identity and endpoint, including across pooled callbacks; unrelated
+requests are excluded. `headers-ready` occurs before the header write;
+`body-sent` is a client-side observation, not proof the
+server accepted or processed the request. Non-Undici fetchers may expose only the
+fetch return/error stage. Body failures and EOF records distinguish received
+bytes/events from a missing terminal event. Error codes are allowlisted; raw
+errors, payloads, addresses and TLS keys are not recorded.
+
+These observations separate a local timeout or decoder failure from an
+interrupted transport. They cannot by themselves distinguish a backend failure
+from every possible network intermediary, or establish why the server stopped.
+
 Full-prompt WebSocket prewarming is **off by default**. `/codex-wire prewarm on|off`
 saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. This
 controls only the extra `generate:false` request, not Wire, Codex identity,

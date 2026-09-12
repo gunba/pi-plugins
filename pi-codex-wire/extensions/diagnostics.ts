@@ -85,6 +85,7 @@ export class Diagnostics {
       serviceTier: ["auto", "default", "flex", "priority", "scale"].includes(String(body.service_tier)) ? body.service_tier : "omitted",
       inputItems: Array.isArray(body.input) ? body.input.length : 0,
       tools: Array.isArray(body.tools) ? body.tools.length : 0,
+      streamRequested: body.stream === true,
       bytes: Buffer.byteLength(encode(body)),
       instructionBytes: Buffer.byteLength(encode(body.instructions)),
       toolBytes: Buffer.byteLength(encode(body.tools)),

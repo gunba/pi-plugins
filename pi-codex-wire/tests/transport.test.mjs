@@ -39,6 +39,23 @@ const expired = { type: "error", status: 400, error: { code: "websocket_connecti
 const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
 
+test("SSE diagnostics distinguish an uploaded request waiting for headers from a stream failure", async t => {
+  let requests = 0;
+  const f = await fixture(t, "sse", req => { requests++; req.resume(); });
+  await assert.rejects(f.transport.request(exchange(f, { timeoutMs: 200 })), /SSE stream timed out/);
+  const rows = readFileSync(f.log, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(requests, 1);
+  assert.equal(rows.some(row => row.kind === "http-network" && row.stage === "body-sent"), true);
+  assert.equal(rows.some(row => row.kind === "headers"), false);
+  const failure = rows.find(row => row.kind === "sse-failure");
+  assert.equal(failure.phase, "headers");
+  assert.equal(failure.abortSource, "timeout");
+  assert.equal(failure.receivedBytes, 0);
+  assert.equal(failure.timeoutMs, 200);
+  assert.equal(rows.find(row => row.kind === "request").streamRequested, true);
+  assert.doesNotMatch(JSON.stringify(rows), /PRIVATE|SECRET/);
+});
+
 for (const partial of [false, true]) for (const failure of ["close", "terminate", "idle"]) {
   test(`broken WebSocket selects SSE only for the caller's next request (${failure}, partial=${partial})`, async t => {
     const posts = [];
@@ -78,6 +95,11 @@ for (const partial of [false, true]) for (const failure of ["close", "terminate"
     assert.equal(diagnostic.reason, failure === "idle" ? "idle-timeout" : "closed");
     assert.equal(diagnostic.closeCode, failure === "close" ? 1011 : failure === "terminate" ? 1006 : undefined);
     assert.ok(diagnostic.elapsedMs >= diagnostic.idleMs);
+    assert.equal(diagnostic.timeoutMs, failure === "idle" ? 100 : 3000);
+    assert.equal(diagnostic.lastEventType, partial ? "response.output_text.delta" : undefined);
+    assert.deepEqual(diagnostic.eventCounts, partial ? { "response.output_text.delta": 1 } : {});
+    assert.equal(diagnostic.receivedBytes > 0, partial);
+    if (failure !== "idle") assert.equal(diagnostic.network.tcpClosed, true);
     for (const secret of ["PRIVATE", "SECRET"]) assert.equal(log.includes(secret), false);
   });
 }

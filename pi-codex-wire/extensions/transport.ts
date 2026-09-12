@@ -6,6 +6,7 @@ import { Diagnostics, eventDiagnostics, object, allowanceHeaders, type JsonObjec
 import type { Compression } from "./compression.ts";
 import { allowanceFromHeaders, allowanceFromEvent } from "./allowance.ts";
 import type { RequestTrace } from "./request-trace.ts";
+import { diagnosticEventType, HttpNetworkTrace, networkErrorCodes, observeWebSocketNetwork, responseRequestIds } from "./network-diagnostics.ts";
 
 const require = createRequire(import.meta.url);
 const zlib = require("node:zlib") as {
@@ -128,6 +129,7 @@ function proxyFor(url: string, env: NodeJS.ProcessEnv): string | undefined {
 /** A transport adapter; Pi still serializes tools/messages and decodes model events. */
 export class WireTransport {
   private socket?: WebSocket;
+  private socketNetwork?: () => JsonObject;
   private continuation?: Continuation;
   private fallback = false;
   private busy = false;
@@ -178,6 +180,7 @@ export class WireTransport {
     this.activeCancel = undefined;
     this.socket?.terminate();
     this.socket = undefined;
+    this.socketNetwork = undefined;
     this.continuation = undefined;
     this.prewarmed = false;
   }
@@ -186,7 +189,7 @@ export class WireTransport {
     if (status !== 101) this.hooks.observeHeaders(headers);
     this.publishAllowance(allowanceFromHeaders(headers));
     this.diagnostics.write({ kind: "headers", requestId, status, allowance: allowanceHeaders(headers),
-      turnStatePresent: headers.has("x-codex-turn-state") });
+      turnStatePresent: headers.has("x-codex-turn-state"), requestIds: responseRequestIds(headers) });
   }
 
   private useSse(exchange: Exchange, phase: "connect" | "prewarm" | "stream"): void {
@@ -213,11 +216,14 @@ export class WireTransport {
     // A socket can fail between exchanges; always retain an error listener.
     socket.on("error", () => {});
     socket.on("upgrade", response => {
+      this.socketNetwork = observeWebSocketNetwork(response.socket);
       const result = new Headers();
       for (const [key, value] of Object.entries(response.headers)) {
         if (value !== undefined) result.set(key, Array.isArray(value) ? value.join(", ") : value);
       }
       this.recordHeaders(result, response.statusCode ?? 101, exchange.requestId);
+      this.diagnostics.write({ kind: "websocket-upgrade", requestId: exchange.requestId,
+        proxyUsed: !!proxy });
     });
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -247,13 +253,20 @@ export class WireTransport {
       object(body.client_metadata).ws_request_header_x_openai_internal_codex_responses_lite = "true";
     }
     this.diagnostics.request(body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
-      inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId, transport: "websocket", continuationReason: reason });
+      inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId, transport: "websocket",
+      timeoutMs: exchange.timeoutMs, continuationReason: reason });
     let finished = false;
     let retriedMissingResponse = false;
     let sawOutput = false;
     const startedAt = Date.now();
     let lastEventAt = startedAt;
     let events = 0;
+    let receivedBytes = 0, maxEventBytes = 0, maxGapMs = 0;
+    let firstEventMs: number | undefined;
+    let lastEventType: string | undefined;
+    let firstText = false;
+    const eventCounts: Record<string, number> = {};
+    const network = this.socketNetwork;
     const completedOutput = new CompletedResponseOutput();
     let cancel = () => {};
     const stream = new ReadableStream<Uint8Array>({
@@ -266,13 +279,16 @@ export class WireTransport {
           this.activeCancel = undefined;
           this.busy = false;
         };
-        const fail = (error: Error, reason = "protocol", closeCode?: number) => {
+        const fail = (error: Error, reason = "protocol", closeCode?: number, sourceError?: unknown) => {
           if (finished) return;
           finished = true; cleanup(); this.continuation = undefined;
           const failedAt = Date.now();
           this.diagnostics.write({ kind: "websocket-failure", ...exchange.trace,
             requestId: exchange.requestId, attemptId, prewarm, reason, closeCode,
-            elapsedMs: failedAt - startedAt, idleMs: failedAt - lastEventAt, events, sawOutput });
+            elapsedMs: failedAt - startedAt, idleMs: failedAt - lastEventAt, events, sawOutput,
+            timeoutMs: exchange.timeoutMs, firstEventMs, maxGapMs, lastEventType, eventCounts,
+            receivedBytes, maxEventBytes, perMessageDeflate: socket.extensions.includes("permessage-deflate"),
+            network: network?.(), errorCodes: networkErrorCodes(sourceError) });
           // Do not replay this failed stream. The caller owns retries and any
           // partial output; its next request can use HTTPS within that budget.
           if (!prewarm && !exchange.signal?.aborted &&
@@ -287,11 +303,24 @@ export class WireTransport {
         };
         const message = (data: WebSocket.RawData) => {
           if (finished) return;
-          lastEventAt = Date.now(); events++;
+          const now = Date.now();
+          maxGapMs = Math.max(maxGapMs, now - lastEventAt);
+          firstEventMs ??= now - startedAt;
+          lastEventAt = now; events++;
+          const bytes = Array.isArray(data) ? data.reduce((sum, chunk) => sum + chunk.length, 0) : data.byteLength;
+          receivedBytes += bytes; maxEventBytes = Math.max(maxEventBytes, bytes);
           resetTimer();
           let event: JsonObject;
           try { event = object(JSON.parse(data.toString())); }
           catch { fail(new Error("Invalid Codex WebSocket event")); return; }
+          lastEventType = diagnosticEventType(event);
+          eventCounts[lastEventType] = (eventCounts[lastEventType] ?? 0) + 1;
+          if (events === 1 || (!firstText && event.type === "response.output_text.delta")) {
+            this.diagnostics.write({ kind: "websocket-progress", requestId: exchange.requestId, attemptId,
+              milestone: events === 1 ? "first-event" : "first-text", event: lastEventType,
+              elapsedMs: now - startedAt });
+          }
+          if (event.type === "response.output_text.delta") firstText = true;
           const code = event.code ?? object(event.error).code;
           if (event.type === "error" && code === "websocket_connection_limit_reached") {
             this.observeEvent(event);
@@ -358,7 +387,7 @@ export class WireTransport {
             finished = true; cleanup(); controller.close();
           }
         };
-        const error = () => fail(new Error("Codex WebSocket stream failed"), "socket-error");
+        const error = (source: Error) => fail(new Error("Codex WebSocket stream failed"), "socket-error", undefined, source);
         const closed = (code: number) => fail(new Error("Codex WebSocket closed before completion"), "closed", code);
         const aborted = () => fail(new DOMException("Request aborted", "AbortError"), "aborted");
         cancel = () => fail(new DOMException("Request cancelled", "AbortError"), "cancelled");
@@ -444,6 +473,9 @@ export class WireTransport {
 
   private async sse(exchange: Exchange): Promise<Response> {
     this.busy = true;
+    const startedAt = Date.now();
+    let receivedBytes = 0, events = 0, terminalSeen = false;
+    let lastEventType: string | undefined;
     const headers = new Headers(exchange.headers);
     headers.set("content-type", "application/json"); headers.set("accept", "text/event-stream");
     headers.delete("content-encoding");
@@ -461,26 +493,46 @@ export class WireTransport {
     const controller = new AbortController();
     const signal = exchange.signal ? AbortSignal.any([exchange.signal, controller.signal]) : controller.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     const resetTimer = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => controller.abort(new Error("Codex SSE stream timed out")), exchange.timeoutMs);
+      timer = setTimeout(() => { timedOut = true; controller.abort(new Error("Codex SSE stream timed out")); }, exchange.timeoutMs);
     };
     resetTimer();
     this.activeCancel = () => controller.abort();
     const attemptId = randomUUID();
     this.diagnostics.request(exchange.body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
       inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
-      transport: "sse", continuationReason: "sse-full-input", compressed: typeof body !== "string" });
+      transport: "sse", continuationReason: "sse-full-input", compressed: typeof body !== "string",
+      timeoutMs: exchange.timeoutMs, encodedBytes: typeof body === "string" ? Buffer.byteLength(body) : body.byteLength });
+    const headerTrace = new HttpNetworkTrace(this.diagnostics, {
+      ...exchange.trace, requestId: exchange.requestId, attemptId,
+    }, exchange.url);
+    const failure = (phase: "headers" | "body", error: unknown) => {
+      this.diagnostics.write({ kind: "sse-failure", ...exchange.trace, requestId: exchange.requestId, attemptId,
+        phase, timeoutMs: exchange.timeoutMs, errorCodes: networkErrorCodes(error),
+        elapsedMs: Date.now() - startedAt, receivedBytes, events, lastEventType, terminalSeen,
+        abortSource: exchange.signal?.aborted ? "request-signal" : timedOut ? "timeout"
+          : controller.signal.aborted ? "transport-close" : "none" });
+    };
     let response: Response;
     try {
-      response = await (exchange.fetcher ?? this.fetcher)(exchange.url, { method: "POST", headers, body: body as BodyInit, signal });
+      response = await headerTrace.run(() =>
+        (exchange.fetcher ?? this.fetcher)(exchange.url, { method: "POST", headers, body: body as BodyInit, signal }), signal);
       this.recordHeaders(response.headers, response.status, exchange.requestId);
-    } catch (error) { clearTimeout(timer); this.activeCancel = undefined; this.busy = false; throw error; }
+    } catch (error) { failure("headers", error); clearTimeout(timer); this.activeCancel = undefined; this.busy = false; throw error; }
     if (!response.ok || !response.body) { clearTimeout(timer); this.activeCancel = undefined; this.busy = false; return response; }
     // Observe only complete JSON events; forward original bytes unchanged to Pi's parser.
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
+    const recordEvent = (event: JsonObject) => {
+      events++; lastEventType = diagnosticEventType(event);
+      terminalSeen ||= terminal.has(String(event.type)) || event.type === "error";
+      this.observeEvent(event);
+      const diagnostic = eventDiagnostics(event);
+      if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
+    };
     const release = () => { clearTimeout(timer); this.busy = false; this.activeCancel = undefined; reader.releaseLock(); };
     this.activeCancel = () => { controller.abort(); void reader.cancel().catch(() => {}); };
     const observed = new ReadableStream<Uint8Array>({
@@ -488,7 +540,14 @@ export class WireTransport {
         try {
           const next = await reader.read();
           resetTimer();
-          if (next.done) { release(); controller.close(); return; }
+          if (next.done) {
+            this.diagnostics.write({ kind: "sse-end", requestId: exchange.requestId, attemptId,
+              receivedBytes, events, lastEventType, terminalSeen, pendingCharacters: pending.length });
+            release(); controller.close(); return;
+          }
+          if (receivedBytes === 0) this.diagnostics.write({ kind: "sse-progress",
+            requestId: exchange.requestId, attemptId, milestone: "first-body", elapsedMs: Date.now() - startedAt });
+          receivedBytes += next.value.byteLength;
           pending += decoder.decode(next.value, { stream: true });
           if (exchange.normalizeEvent) {
             let boundary: RegExpExecArray | null;
@@ -498,9 +557,7 @@ export class WireTransport {
               const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
               if (!data || data === "[DONE]") { controller.enqueue(encoder.encode(`${block}\n\n`)); continue; }
               const event = object(JSON.parse(data));
-              this.observeEvent(event);
-              const diagnostic = eventDiagnostics(event);
-              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
+              recordEvent(event);
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent(event))}\n\n`));
             }
             if (pending.length > 50 * 1024 * 1024) throw new Error("Codex event exceeds the transport frame limit");
@@ -512,15 +569,13 @@ export class WireTransport {
             if (!line.startsWith("data:")) continue;
             try {
               const event = object(JSON.parse(line.slice(5)));
-              this.observeEvent(event);
-              const diagnostic = eventDiagnostics(event);
-              if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
+              recordEvent(event);
             } catch { /* Pi's parser remains responsible for protocol errors. */ }
           }
           // This observer need not retain arbitrarily large event lines.
           if (pending.length > 8 * 1024 * 1024) pending = "";
           controller.enqueue(next.value);
-        } catch (error) { release(); controller.error(error); }
+        } catch (error) { failure("body", error); release(); controller.error(error); }
       },
       cancel: async reason => { try { await reader.cancel(reason); } finally { release(); } },
     });
