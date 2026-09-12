@@ -36,6 +36,7 @@ export interface Exchange {
   compression?: Compression;
   trace?: RequestTrace;
   inferenceRequestId?: string;
+  skipPrewarm?: boolean;
   onFallback?: (phase: "connect" | "prewarm" | "stream") => void;
 }
 
@@ -446,7 +447,7 @@ export class WireTransport {
         this.useSse(exchange, "connect");
         return this.sse(exchange);
       }
-      if (this.prewarmEnabled && !this.prewarmed) {
+      if (this.prewarmEnabled && !exchange.skipPrewarm && !this.prewarmed) {
         this.prewarmed = true;
         const warmup = this.websocketResponse(socket, { ...exchange, requestId: randomUUID(),
           inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId }, true, reconnects);

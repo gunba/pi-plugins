@@ -362,21 +362,25 @@ export function copyCompletedParentTurns(
 				entry.message.role === "bashExecution")
 		) {
 			target.appendMessage(
-				entry.message as Parameters<SessionManager["appendMessage"]>[0],
+				structuredClone(entry.message) as Parameters<SessionManager["appendMessage"]>[0],
 			);
 		} else if (entry.type === "custom_message") {
 			target.appendCustomMessageEntry(
 				entry.customType,
-				entry.content,
+				structuredClone(entry.content),
 				entry.display,
-				entry.details,
+				structuredClone(entry.details),
 			);
 		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 			target.appendCustomMessageEntry(
 				"pi-subagents/fork-summary-v1",
 				`Parent context summary:\n${entry.summary}`,
 				false,
-				{ sourceEntryId: entry.id, sourceType: entry.type },
+				{
+					sourceEntryId: entry.id,
+					sourceType: entry.type,
+					...(entry.details !== undefined ? { sourceDetails: structuredClone(entry.details) } : {}),
+				},
 			);
 		}
 	}

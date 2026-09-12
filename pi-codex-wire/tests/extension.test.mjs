@@ -27,9 +27,17 @@ function harness(t, mode = "codex", savedDefault) {
   const original = { id: "openai-codex", name: "OpenAI Codex", stream, streamSimple, getModels: () => [model] };
   let provider = original;
   const entries = [], published = [];
-  const api = { events: { emit: (name, data) => published.push({ name, data }) }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on: (name, fn) => events.set(name, fn), registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
+  const on = (name, fn) => {
+    const previous = events.get(name);
+    events.set(name, (...args) => {
+      const result = previous?.(...args);
+      const next = value => value?.cancel ? value : fn(...args) ?? value;
+      return result?.then ? result.then(next) : next(result);
+    });
+  };
+  const api = { events: { emit: (name, data) => published.push({ name, data }) }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
-  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries }, isIdle: () => true };
+  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildContextEntries: () => [] }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));

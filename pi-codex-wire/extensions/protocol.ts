@@ -6,6 +6,7 @@ import type { Identity } from "./identity.ts";
 /** State is scoped to one Pi session. A Codex turn spans all its tool round trips. */
 export class Protocol {
   private turnState?: string;
+  private compactionReason?: "manual" | "threshold" | "overflow";
   private turnId = randomUUID();
   private turnStarted = Date.now();
   readonly sessionId: string;
@@ -21,17 +22,21 @@ export class Protocol {
   getWindowId(): string { return this.windowId; }
   rotateWindow(): void { this.windowId = uuidv7(); this.beginTurn(); }
 
-  beginTurn(): void { this.turnState = undefined; this.turnId = randomUUID(); this.turnStarted = Date.now(); }
+  beginTurn(reason?: "manual" | "threshold" | "overflow"): void { this.turnState = undefined; this.turnId = randomUUID(); this.turnStarted = Date.now(); this.compactionReason = reason; }
 
   observeHeaders(headers: Headers): void {
     this.turnState ??= headers.get("x-codex-turn-state") ?? undefined;
   }
 
-  private metadata(kind: "turn" | "prewarm"): JsonObject {
+  private metadata(kind: "turn" | "prewarm" | "compaction"): JsonObject {
     return {
       installation_id: this.installationId, session_id: this.sessionId, thread_id: this.threadId,
       turn_id: this.turnId, window_id: this.windowId, request_kind: kind,
       thread_source: "user", sandbox: "none", turn_started_at_unix_ms: this.turnStarted,
+      ...(kind === "compaction" && this.compactionReason === "manual" ? { compaction: {
+        trigger: "manual", reason: "user_requested", implementation: "responses_compaction_v2",
+        phase: "standalone_turn", strategy: "memento",
+      } } : {}),
     };
   }
 
@@ -42,7 +47,7 @@ export class Protocol {
       "x-codex-installation-id": this.installationId,
       session_id: this.sessionId, thread_id: this.threadId, turn_id: this.turnId,
       "x-codex-window-id": this.windowId,
-      "x-codex-turn-metadata": JSON.stringify(this.metadata("turn")),
+      "x-codex-turn-metadata": JSON.stringify(this.metadata(Array.isArray(body.input) && body.input.some(item => object(item).type === "compaction_trigger") ? "compaction" : "turn")),
     } };
   }
 
@@ -65,10 +70,21 @@ export class Protocol {
     return headers;
   }
 
+  compactHeaders(original: Headers, reason: "manual" | "threshold" | "overflow"): Headers {
+    const headers = this.headers(original);
+    headers.set("x-codex-turn-metadata", JSON.stringify({ ...this.metadata("compaction"),
+      ...(reason === "manual" ? { compaction: {
+        trigger: "manual", reason: "user_requested",
+        implementation: "responses_compaction_v2", phase: "standalone_turn", strategy: "memento",
+      } } : {}),
+    }));
+    return headers;
+  }
+
   websocketBody(body: JsonObject): JsonObject {
     return { ...body, client_metadata: {
       ...object(body.client_metadata),
-      "x-codex-turn-metadata": JSON.stringify(this.metadata(body.generate === false ? "prewarm" : "turn")),
+      "x-codex-turn-metadata": JSON.stringify(this.metadata(body.generate === false ? "prewarm" : Array.isArray(body.input) && body.input.some(item => object(item).type === "compaction_trigger") ? "compaction" : "turn")),
       "x-codex-ws-stream-request-start-ms": String(Date.now()),
       ...(this.turnState ? { "x-codex-turn-state": this.turnState } : {}),
     } };

@@ -45,11 +45,58 @@ responses, model error responses and invalid payloads do not activate stream fal
 `websocket-failure` diagnostics record the close code, elapsed/idle milliseconds,
 event count and whether output began—not close-reason text, error text or content.
 
+## Native compaction
+
+Codex sessions use native compaction through Responses, with the
+`compaction_trigger` input used by Codex CLI 0.153.4. Pi still chooses the cut
+point and recent messages to retain. Existing context-limit settings, including
+the reserve and recent-token settings, are unchanged. The history prefix and
+any split-turn prefix are sent together using the selected model and effort.
+
+Wire collects exactly one encrypted compaction item and requires a successful
+`response.completed` event before saving it in the compaction entry's `details`.
+The caption identifies the entry; it is not a prose summary. A partial stream,
+invalid checkpoint, error or cancellation cannot replace the previous context.
+The dedicated `/responses/compact` route is not used; its authorized live probe
+returned HTTP 404.
+
+The checkpoint replaces prior assistant/tool history and earlier checkpoints.
+User messages are retained ahead of it, newest first within Codex's 64,000-token
+text-retention estimate; the boundary message preserves its beginning and end
+with a truncation marker. Images within retained messages remain intact. Pi's
+recent tail is kept separately. Original session records are not rewritten.
+
+Wire replays the checkpoint after reopening or forking the session. It is bound
+to the Codex account and endpoint. A different provider is blocked while that
+checkpoint is in context; navigating to a branch before it remains possible.
+Native-checkpoint branches can also be summarized into text when navigating
+elsewhere. Forked children receive independent copies of checkpoint details.
+
+Compaction uses Pi's public message serializers and active tool schemas. These
+schemas describe functions for compaction; ordinary response requests retain
+their existing grammar and deferred-tool behavior. Tool arguments and results
+keep their pairing. SDK children inherit the compactor with their own session,
+routing state and settings.
+
+Compaction shares Wire's WebSocket/SSE transport, compression, idle deadlines,
+allowance observations and cancellation. Prewarming is skipped for compaction.
+Pi's configured caller retry budget and backoff still apply. An interrupted
+WebSocket is not replayed immediately; the caller's next attempt uses SSE.
+Errors explicitly cancel Pi's compaction hook, preventing prose fallback.
+Usage is recorded when the response supplies counters; absent usage stays unknown.
+
+An authorized two-request Astra/xhigh check completed native compaction and
+recovered the exact synthetic test code through its encrypted checkpoint, with
+no retries. Local installed-Pi tests cover persistence, resume, forks, tree
+navigation, failed streams and retry boundaries. This verifies the compaction
+path; the original active-stream WebSocket disconnect remains unexplained.
+
 ### Diagnosing interrupted requests
 
 Request records include the effective timeout and whether streaming was requested.
 Pi's `httpIdleTimeoutMs` setting controls the default header/idle wait; an explicit
-provider timeout takes precedence. Neither is a limit on total generation time.
+provider timeout takes precedence. For streaming responses these are not limits
+on total generation time; native compaction uses the same idle deadline.
 
 WebSocket failures include the last allowlisted event type, event counts, byte
 counts, largest frame, longest gap, negotiated compression, and TCP end/close/error

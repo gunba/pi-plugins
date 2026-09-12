@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { existsSync, readFileSync } from "node:fs";
+import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -10,7 +12,7 @@ const NOTICE_THRESHOLD_BYTES = 1024 * 1024;
 type MutableRecord = Record<string, unknown>;
 type ResidentSessionManager = Pick<
 	ExtensionContext["sessionManager"],
-	"getEntries" | "getBranch" | "buildContextEntries"
+	"getEntries" | "getBranch" | "buildContextEntries" | "getSessionFile" | "getSessionId"
 >;
 
 export interface ResidentPruneReport {
@@ -138,7 +140,8 @@ export function pruneCompactedSession(
 		estimatedBytesReleased: 0,
 		compactionId: compaction?.id,
 	};
-	if (!compaction) return report;
+	const file = sessionManager.getSessionFile();
+	if (!compaction || !file || !existsSync(file)) return report;
 
 	const activeIds = new Set(active.map((entry) => entry.id));
 	const currentBranchIds = new Set(sessionManager.getBranch().map((entry) => entry.id));
@@ -155,6 +158,67 @@ export function pruneCompactedSession(
 	}
 
 	return report;
+}
+
+/** Restore released payloads in place so existing tree/preparation references remain valid. */
+export function restorePrunedSession(sessionManager: ResidentSessionManager): number {
+	const file = sessionManager.getSessionFile();
+	if (!file) return 0;
+	const active = new Set(sessionManager.buildContextEntries().map(entry => entry.id));
+	const branch = new Set(sessionManager.getBranch().map(entry => entry.id));
+	const candidates = sessionManager.getEntries().filter(entry => {
+		if (active.has(entry.id)) return false;
+		switch (entry.type) {
+			case "message": {
+				const message = entry.message as unknown as MutableRecord;
+				return (Array.isArray(message.content) && message.content.length === 0)
+					|| message.output === "";
+			}
+			case "compaction":
+			case "branch_summary":
+				return entry.summary === "";
+			case "custom_message":
+				return Array.isArray(entry.content) && entry.content.length === 0;
+			case "custom":
+				return !branch.has(entry.id) && entry.data === undefined;
+			default:
+				return false;
+		}
+	});
+	if (!candidates.length) return 0;
+	const saved = parseSessionEntries(readFileSync(file, "utf8"));
+	const header = saved[0];
+	if (header?.type !== "session" || header.id !== sessionManager.getSessionId()) {
+		throw new Error("The session archive does not match the resident session.");
+	}
+	const byId = new Map(saved.filter(entry => entry.type !== "session").map(entry => [entry.id, entry]));
+	// Validate the complete restoration before changing any resident payload.
+	const pairs = candidates.map(entry => {
+		const source = byId.get(entry.id);
+		if (!source || source.type !== entry.type || source.parentId !== entry.parentId
+			|| (entry.type === "message" && source.type === "message"
+				&& entry.message.role !== source.message.role)) {
+			throw new Error("A released session payload is unavailable in the archive.");
+		}
+		return [entry, source] as const;
+	});
+	const restore = (target: MutableRecord, source: MutableRecord, fields: string[]) => {
+		for (const field of fields) {
+			if (Object.hasOwn(source, field)) target[field] = structuredClone(source[field]);
+			else delete target[field];
+		}
+	};
+	for (const [entry, source] of pairs) {
+		if (entry.type === "message" && source.type === "message") {
+			restore(entry.message as unknown as MutableRecord, source.message as unknown as MutableRecord,
+				["content", "output", "details"]);
+		} else {
+			const fields = entry.type === "custom" ? ["data"]
+				: entry.type === "custom_message" ? ["content", "details"] : ["summary", "details"];
+			restore(entry as unknown as MutableRecord, source as unknown as MutableRecord, fields);
+		}
+	}
+	return pairs.length;
 }
 
 function formatBytes(bytes: number): string {
@@ -200,11 +264,25 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		if (enabled) prune(ctx, true);
 	});
 
+	const restoreBeforeNavigation = (_event: unknown, ctx: ExtensionContext) => {
+		try { restorePrunedSession(ctx.sessionManager); }
+		catch {
+			ctx.ui.notify("Cannot restore released session history. Navigation was cancelled; check the session archive.", "error");
+			return { cancel: true };
+		}
+	};
+	pi.on("session_before_tree", restoreBeforeNavigation);
+	pi.on("session_before_fork", restoreBeforeNavigation);
+	pi.on("session_tree", (_event, ctx) => {
+		if (enabled) prune(ctx, false);
+	});
+
 	pi.registerCommand("session-memory", {
 		description: "Show, run, or toggle compacted-session resident pruning",
 		handler: async (args, ctx) => {
 			const command = args.trim().toLowerCase();
 			if (command === "on" || command === "off") {
+				if (command === "off") restorePrunedSession(ctx.sessionManager);
 				enabled = command === "on";
 				if (enabled) prune(ctx, false);
 				ctx.ui.notify(`Resident session pruning ${enabled ? "enabled" : "disabled"}`, "info");

@@ -86,6 +86,8 @@ does not confer human approval or permission to create a root goal.
 - A fresh child receives no parent transcript.
 - A fork copies the parent's effective compaction-aware context through the last
   completed assistant turn before the delegation call. Its seed is captured once.
+  Checkpoint details survive nested forks and reopening. Copied message and
+  detail objects are independent, so child pruning cannot clear parent history.
 - Background work does not block the parent from using ordinary tools.
 - Each child has a versioned model-hidden descriptor in its Pi session.
 - Accepted new tasks are persisted and processed in append-order FIFO.

@@ -15,6 +15,7 @@ import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import outputBudget from "../../pi-output-budget/extensions/index.ts";
 import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
+import nativeCompaction, { inheritCompactor, guardCheckpointContext } from "../../pi-codex-wire/extensions/native-compaction.ts";
 import { loadChildToolExtensions } from "./child-tool-extensions.ts";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
@@ -30,16 +31,24 @@ type AgentMessage = AgentSession["messages"][number];
 
 /** Summarizer requests may omit sessionId; never fall back to the root thread. */
 export function bindChildProvider(provider: Provider, sessionId: string): Provider {
-	return {
+	const bound: Provider = {
 		...provider,
 		getModels: provider.getModels.bind(provider),
 		...(provider.refreshModels ? { refreshModels: provider.refreshModels.bind(provider) } : {}),
 		...(provider.filterModels ? { filterModels: provider.filterModels.bind(provider) } : {}),
 		...(provider.fetchDeferred ? { fetchDeferred: provider.fetchDeferred.bind(provider) } : {}),
 		...(provider.cancelDeferred ? { cancelDeferred: provider.cancelDeferred.bind(provider) } : {}),
-		stream: (model, context, options) => provider.stream(model, context, { ...options, sessionId: options?.sessionId ?? sessionId } as typeof options),
-		streamSimple: (model, context, options) => provider.streamSimple(model, context, { ...options, sessionId: options?.sessionId ?? sessionId }),
+		stream: (model, context, options) => {
+			guardCheckpointContext(context, model.provider, options?.sessionId ?? sessionId);
+			return provider.stream(model, context, { ...options, sessionId: options?.sessionId ?? sessionId } as typeof options);
+		},
+		streamSimple: (model, context, options) => {
+			guardCheckpointContext(context, model.provider, options?.sessionId ?? sessionId);
+			return provider.streamSimple(model, context, { ...options, sessionId: options?.sessionId ?? sessionId });
+		},
 	};
+	inheritCompactor(provider, bound);
+	return bound;
 }
 
 const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Report questions requiring human input to your direct parent. Background children continue after you start them.`;
@@ -355,6 +364,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				} })),
 				...(!toolInfo ? [{ name: "output-budget", factory: outputBudget }] : []),
 				{ name: "request-tracing", factory: requestTracing },
+				{ name: "native-compaction", factory: (pi) => nativeCompaction(pi, settingsManager) },
 				{ name: "parent-tool-selection", factory: (pi) => {
 					const syncTools = () => {
 						checkProvider();

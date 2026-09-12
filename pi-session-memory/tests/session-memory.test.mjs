@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
 	SessionManager,
 	buildContextEntries,
 } from "@earendil-works/pi-coding-agent";
 import extension, {
 	pruneCompactedSession,
+	restorePrunedSession,
 } from "../extensions/session-memory.ts";
 
 const text = (value) => [{ type: "text", text: value }];
+const fixtures = mkdtempSync(join(tmpdir(), "pi-memory-fixtures-"));
+after(() => rmSync(fixtures, { recursive: true, force: true }));
+let fixtureId = 0;
 
 function user(id, parentId, value) {
 	return {
@@ -49,7 +53,15 @@ function assistant(id, parentId, value) {
 }
 
 function manager(entries, leafId) {
+	const id = `fixture-${++fixtureId}`;
+	const file = join(fixtures, `${id}.jsonl`);
+	writeFileSync(file, [
+		{ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: fixtures },
+		...entries,
+	].map(entry => JSON.stringify(entry)).join("\n") + "\n");
 	return {
+		getSessionFile: () => file,
+		getSessionId: () => id,
 		getEntries: () => entries.slice(),
 		getBranch: () => {
 			const byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -207,4 +219,67 @@ test("extension prunes on startup and compaction and supports runtime toggles", 
 	hooks.session_compact({}, ctx);
 	await commands["session-memory"].handler("status", ctx);
 	assert.match(notifications.at(-1).message, /3 active \/ 4 total/);
+});
+
+test("restores old branches and checkpoint details before navigation without writing the archive", () => {
+	const sm = SessionManager.create(fixtures, fixtures);
+	const first = sm.appendMessage({ role: "user", content: text("original request"), timestamp: 1 });
+	const old = sm.appendMessage(assistant("unused", null, "original answer").message);
+	const details = { nativeCodex: { output: [{ type: "compaction", encrypted_content: "fixture" }] } };
+	const checkpoint = sm.appendCompaction("first checkpoint", first, 100, details, true);
+	const kept = sm.appendMessage({ role: "user", content: text("new request"), timestamp: 2 });
+	sm.appendMessage(assistant("unused", null, "new answer").message);
+	sm.appendCompaction("second checkpoint", kept, 100);
+	const archive = readFileSync(sm.getSessionFile());
+	const oldContext = sm.getBranch(old).map(entry => structuredClone(entry));
+	const hooks = {};
+	extension({ on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
+	const ctx = { sessionManager: sm, ui: { notify() {} } };
+	hooks.session_start({}, ctx);
+	assert.deepEqual(sm.getEntry(first).message.content, []);
+	assert.equal(sm.getEntry(checkpoint).details, undefined);
+	// Native tree preparation holds references to these same entry objects.
+	const preparedEntry = sm.getEntry(checkpoint);
+	assert.equal(hooks.session_before_tree({}, ctx), undefined);
+	assert.deepEqual(preparedEntry.details, details);
+	assert.deepEqual(sm.getBranch(old), oldContext);
+	sm.branch(checkpoint);
+	hooks.session_tree({}, ctx);
+	assert.deepEqual(sm.getEntry(checkpoint).details, details);
+	assert.deepEqual(sm.buildSessionContext().messages[1].content, text("original request"));
+	assert.deepEqual(readFileSync(sm.getSessionFile()), archive);
+});
+
+test("does not prune sessions without a persisted archive", () => {
+	const sm = SessionManager.inMemory();
+	sm.appendMessage({ role: "user", content: text("original"), timestamp: 1 });
+	sm.appendMessage(assistant("unused", null, "answer").message);
+	const kept = sm.appendMessage({ role: "user", content: text("keep"), timestamp: 2 });
+	sm.appendCompaction("summary", kept, 100);
+	const original = structuredClone(sm.getEntries());
+	assert.equal(pruneCompactedSession(sm).prunedEntries, 0);
+	assert.deepEqual(sm.getEntries(), original);
+});
+
+test("archive failure cancels navigation and restoration is atomic", () => {
+	const entries = [
+		user("old", null, "saved"),
+		user("kept", "old", "keep"),
+		{ type: "compaction", id: "compact", parentId: "kept",
+			timestamp: "2026-01-01T00:00:00.000Z", summary: "summary", firstKeptEntryId: "kept", tokensBefore: 100 },
+	];
+	const sm = manager(entries, "compact");
+	const hooks = {};
+	extension({ on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
+	const notifications = [];
+	const ctx = { sessionManager: sm, ui: { notify: text => notifications.push(text) } };
+	hooks.session_start({}, ctx);
+	const pruned = structuredClone(entries);
+	writeFileSync(sm.getSessionFile(), '{"type":"session","version":3,"id":"other"}\n');
+	assert.throws(() => restorePrunedSession(sm), /does not match/);
+	assert.deepEqual(entries, pruned);
+	assert.deepEqual(hooks.session_before_tree({}, ctx), { cancel: true });
+	assert.deepEqual(hooks.session_before_fork({}, ctx), { cancel: true });
+	assert.match(notifications.at(-1), /cancelled/);
+	assert.deepEqual(entries, pruned);
 });

@@ -50,7 +50,7 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   };
   const ctx = {
     ui: { notify() {}, setStatus() {} },
-    sessionManager: { getSessionId: () => "wire-root", getBranch: () => entries },
+    sessionManager: { getSessionId: () => "wire-root", getBranch: () => entries, buildContextEntries: () => [] },
     modelRegistry: {
       find: () => model, getProvider: () => provider,
       async getApiKeyAndHeaders() { return { ok: true, apiKey: jwt }; },
@@ -59,7 +59,14 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   };
   wire({
     registerFlag() {}, getFlag: name => flags.get(name), registerCommand() {},
-    events: { emit() {} }, on: (name, handler) => events.set(name, handler),
+    events: { emit() {} }, on: (name, handler) => {
+      const previous = events.get(name);
+      events.set(name, (...args) => {
+        const result = previous?.(...args);
+        const next = value => value?.cancel ? value : handler(...args) ?? value;
+        return result?.then ? result.then(next) : next(result);
+      });
+    },
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
     registerProvider: value => { provider = value; },
   });

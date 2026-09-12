@@ -1,4 +1,60 @@
-# Verification — 7 September 2026
+# Verification
+
+## Native compaction — 13 September 2026
+
+The actual Codex CLI 0.153.4 default capture uses `compaction_trigger` on
+Responses, then replays an opaque compaction item on the next turn. The
+extension now uses that path. Its earlier dedicated `/responses/compact`
+implementation was replaced after the authorized live request received HTTP 404.
+That response did not establish why the service rejected the dedicated route.
+
+The authorized replacement check used a separate synthetic Pi session and the
+configured `gpt-6-astra` model at `xhigh`, with the saved Desktop client choice.
+One compaction request and one SSE continuation completed successfully, without
+retries. Compaction took 5,321 ms and returned a 1,636-character encrypted item;
+continuation took 3,653 ms and recovered the exact eight-digit fixture value.
+That value appeared only in the compacted assistant history, not in the final
+question or retained recent tail. The encrypted item was replayed unchanged.
+
+Reported compaction usage: 164 input / 89 output tokens. Reported continuation
+usage: 194 input / 7 output tokens. This is a small correctness probe, not an
+allowance benchmark or a large-context reliability claim. No further live
+requests were made during verification.
+
+The probe used native read-only credential storage. Real settings, credentials,
+model configuration and model-store files retained identical before/after
+hashes. The installed provider file still matches its original SHA-256. No
+real user-session history was submitted or rewritten, and no session was
+reloaded or interrupted. Production dependency restoration is part of packaging.
+
+The implementation uses Pi's custom-compaction/context hooks, public
+serializers and provider registration. Installed-Pi AgentSession fixtures cover
+manual and repeated compaction, ordinary continuation, save/reopen, forks, SDK
+child routing, restored branch navigation, incompatible providers, existing
+prose checkpoints, caller retries, cancellation, quota errors and optional usage.
+A regression retains Pi's implicit user-message type, in addition to native
+explicit message items. The local collector rejects partial, duplicate,
+conflicting, empty and incomplete checkpoints without saving them.
+
+Real loopback WebSocket/SSE tests verify compaction metadata, skipped prewarming,
+no immediate interrupted-stream replay, next-caller SSE recovery, UTF-8/CRLF SSE
+framing, header/body timeout and cancellation. The retained user-text budget is
+64,000 approximate tokens, following the pinned native history builder; boundary
+text preserves valid Unicode and associated retained images.
+
+The original close1006/ECONNABORTED disconnection remains unexplained. This
+compaction replacement and the previously reproduced stock-Pi recovery defect
+do not identify its cause. Pi itself remains unchanged.
+
+Release checks for 0.20.0: 148 selected tests passed; the final 14 compaction
+checks also passed against the unchanged installed Pi 0.85.1 host after the
+retention and transient-error refinements. TypeScript passed. Production
+dependencies were restored, with the locked retired clipboard DLL left alone.
+The installed-host package check loaded 21 extensions with zero errors and
+zero inference requests. The package dry-run contained 232 files, including
+all four new compaction modules and no temporary probe artifacts.
+
+## Initial verification — 7 September 2026
 
 Environment: Windows 10.0.26100, Node 22.22.3, Pi 0.84.3.
 Protocol reference: Codex 0.153.4, commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
@@ -84,4 +140,4 @@ The additional regression tests cover:
 
 The Windows identity reference is `os_info 3.14.0` from Codex's lockfile, verified against crate SHA-256 `e4022a17595a00d6a369236fdae483f0de7f0a339960a53118b818238e132224`.
 
-The plugin remains opt-in. No live model comparison or subscription-accounting conclusion has been made. Use the controlled comparison in `README.md` after agreeing an allowance budget.
+Wire is now always included in the main bundle. No live model comparison or subscription-accounting conclusion has been made. Use the controlled comparison in `README.md` after agreeing an allowance budget.

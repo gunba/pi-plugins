@@ -10,7 +10,7 @@ summaries otherwise remain in the Node.js heap.
 This extension prunes obsolete payload fields:
 
 - after every successful compaction;
-- when an already-compacted session starts; and
+- when an already-compacted session starts or tree navigation finishes; and
 - on demand with `/session-memory prune`.
 
 The current model context remains byte-for-byte unchanged. Current-branch custom
@@ -24,12 +24,9 @@ or batched `details.messageIds` delivery markers, not their content.
 Reload recovery uses these markers to distinguish delivered messages from
 genuinely pending reports.
 
-After upgrading from a version that removed these markers, restart affected Pi
-processes once and resume the saved session. `/reload` alone cannot reconstruct
-fields already removed from the resident objects; the complete JSONL archive can.
-
 Pruning changes memory only. The append-only JSONL session file remains complete
-and new entries continue appending to it normally.
+and new entries continue appending to it normally. In-memory sessions without a
+persisted archive are not pruned.
 
 ## Commands
 
@@ -40,10 +37,17 @@ and new entries continue appending to it normally.
 Pruning is enabled by default. Set `PI_RESIDENT_SESSION_PRUNE=0` before starting
 Pi to disable it.
 
-## Trade-off
+## Restoring history
 
-In the running process, `/tree` and exports cannot show payloads that an earlier
-compaction made obsolete. The complete payloads remain in the JSONL archive.
+Before tree navigation or a native fork, released payloads are restored in place
+from the session archive. The session ID, entry IDs, parent links and message
+roles are checked before any payload is restored. Navigation is cancelled if
+the archive cannot supply the matching history. This restores checkpoint details
+as well as text, without rewriting JSONL or replacing the session tree.
+
+`/session-memory off` restores released payloads and disables further pruning.
+Use it before exporting complete history from a running process. Native
+compaction checkpoints in the active context are always retained.
 
 ## Delivery-recovery verification
 

@@ -16,11 +16,15 @@ import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm } from "./settings.ts";
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
+import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
+import { CHECKPOINT, checkpointBinding, replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
+import { compactBody, requestCompact } from "./compact.ts";
+import { codexRequestAuth, compactInput } from "./compact-input.ts";
 
 type Options = StreamOptions | SimpleStreamOptions;
 // Providers belong to the host runtime, which may differ from our serializer SDK.
 type Provider = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["getProvider"]>>;
-type WireSession = { protocol: Protocol; transport: WireTransport; turnKey?: string; beganTurn?: boolean };
+type WireSession = { protocol: Protocol; transport: WireTransport; turnKey?: string; beganTurn?: boolean; compactContext?: Context };
 
 function installationId(directory: string): string {
   mkdirSync(directory, { recursive: true });
@@ -154,13 +158,18 @@ export default function codexWire(pi: ExtensionAPI): void {
     }
 
     function wrapped(model: Model<Api>, context: Context, options: Options | undefined, simple: boolean) {
+      const threadId = options?.sessionId ?? primaryThreadId;
+      guardCheckpointContext(context, model.provider, threadId);
       const call = (opts: Options) => simple ? provider!.streamSimple(model, context, opts as SimpleStreamOptions)
         : provider!.stream(model, context, opts);
       // Do not attach subscription credentials or Codex metadata to custom endpoints.
       const endpoint = new URL(model.baseUrl);
-      if (endpoint.protocol !== "https:" || endpoint.hostname !== "chatgpt.com") return call(options ?? {});
-      const threadId = options?.sessionId ?? primaryThreadId;
+      if (endpoint.protocol !== "https:" || endpoint.hostname !== "chatgpt.com") {
+        if (context.messages.some(message => Object.hasOwn(message, CHECKPOINT))) throw new Error("Codex checkpoint requires the original Codex endpoint.");
+        return call(options ?? {});
+      }
       const session = sessionFor(threadId);
+      if (session) session.compactContext = undefined;
       const currentProtocol = session?.protocol;
       const currentTransport = session?.transport;
       const isPrimary = threadId === primaryThreadId;
@@ -212,7 +221,8 @@ export default function codexWire(pi: ExtensionAPI): void {
           if (!(options && "reasoningSummary" in options) && metadata.default_reasoning_summary !== undefined) {
             object(source.reasoning).summary = metadata.default_reasoning_summary;
           }
-          const shaped = shapeModelBody(source, metadata, currentProtocol.threadId);
+          const shaped = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId), context,
+            checkpointBinding(String(url), headers));
           const outgoing = currentProtocol.headers(headers);
           outgoing.delete("x-codex-routing-hint");
           const routingHint = requestRoutingHint(model.provider, String(url), headers, model.id, shaped.service_tier);
@@ -277,6 +287,47 @@ export default function codexWire(pi: ExtensionAPI): void {
       streamSimple: (model, context, options) => wrapped(model, context, options, true),
     });
     const registeredProvider = ctx.modelRegistry.getProvider("openai-codex");
+    if (registeredProvider) registerCompactor(registeredProvider, async operation => {
+      const owner = operation.ctx.sessionManager.getSessionId();
+      if ([...pending.values()].includes(owner)) throw new Error("Wait for this session's active request before compacting.");
+      const session = sessionFor(owner);
+      if (!session || currentLifetime.signal.aborted) throw new Error("Codex Wire is unavailable for compaction.");
+      const controller = new AbortController();
+      pending.set(controller, owner);
+      const signal = AbortSignal.any([operation.signal, currentLifetime.signal, controller.signal]);
+      try {
+        signal.throwIfAborted();
+        const selected = operation.ctx.model;
+        if (!selected || selected.provider !== "openai-codex") throw new Error("Select a Codex model for compaction.");
+        const auth = await operation.ctx.modelRegistry.getApiKeyAndHeaders(selected);
+        signal.throwIfAborted();
+        if (!auth.ok) throw new Error("Cannot resolve Codex compaction authentication.");
+        const model = auth.baseUrl ? { ...selected, baseUrl: auth.baseUrl } : selected;
+        const { url, headers } = codexRequestAuth(model.baseUrl, auth.apiKey, model.headers, auth.headers);
+        const metadata = await catalog!.model(model.id, url, headers, signal);
+        signal.throwIfAborted();
+        if (session.compactContext !== operation.context) {
+          session.transport.close(); session.protocol.beginTurn(operation.reason); session.compactContext = operation.context;
+        }
+        const source = compactInput(model, operation.context, operation.thinking);
+        if (metadata.default_reasoning_summary !== undefined) {
+          source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
+        }
+        const binding = checkpointBinding(url, headers);
+        const body = replayCheckpoints(shapeModelBody(session.protocol.shapeBody(compactBody(source)), metadata, owner), operation.context, binding);
+        const outgoing = session.protocol.compactHeaders(headers, operation.reason);
+        outgoing.delete("x-codex-routing-hint");
+        const routingHint = requestRoutingHint(model.provider, url, headers, model.id, body.service_tier);
+        if (routingHint) outgoing.set("x-codex-routing-hint", routingHint);
+        if (metadata.use_responses_lite === true) outgoing.set("x-openai-internal-codex-responses-lite", "true");
+        const result = await requestCompact({ url, body, headers: outgoing, signal, requestId: randomUUID(),
+          compression: requestCompression(compression === "on", model.provider, url, headers),
+          timeoutMs: operation.timeoutMs, trace: requestTrace(primaryThreadId, owner, operation.context, operation.signal) },
+          currentDiagnostics, session.transport);
+        signal.throwIfAborted();
+        return createCheckpoint(binding, result.output, result.usage);
+      } finally { pending.delete(controller); trimIdleSessions(); }
+    });
     releaseRequiredWire = registerRequiredWire(primaryThreadId, () =>
       !currentLifetime.signal.aborted && !!primaryProtocol && !!primarySession
       && ctx.modelRegistry.getProvider("openai-codex") === registeredProvider);
@@ -378,4 +429,5 @@ export default function codexWire(pi: ExtensionAPI): void {
       catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot activate Codex wire", "error"); }
     },
   });
+  nativeCompaction(pi);
 }
