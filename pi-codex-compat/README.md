@@ -96,10 +96,13 @@ exit codes.
 
 Pi cancellation during an active tool call terminates that process. Session IDs
 exist only in the owning Pi session and are released after completion, LRU
-pruning, or session shutdown. `apply_patch` heredoc interception and
-Pi/context-mode HTTP and large-output guardrails remain in front of execution.
-HTTP guard blocks, unknown sessions, launch/transport failures, and aborted
-calls are real Pi tool errors. Ordinary nonzero process exits remain successful
+pruning, or session shutdown. `apply_patch` heredoc interception remains in
+front of execution. HTTP clients use the same bounded output and retained-log
+handling as other commands; no context-mode tool dependency or HTTP-name
+blocklist is applied. Save large response bodies to files and inspect selected
+fields or ranges. Pi output artifacts provide further recovery where enabled.
+Unknown sessions, launch/transport failures, and aborted calls are real Pi
+tool errors. Ordinary nonzero process exits remain successful
 Unified Exec results, matching Codex protocol semantics.
 
 ## Images
@@ -177,5 +180,5 @@ The Unified Exec schema, result shape, buffering, environment, process-store,
 timing, and polling policy follow Apache-2.0 licensed
 [`openai/codex` Unified Exec at `d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf`](https://github.com/openai/codex/tree/d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf).
 This implementation keeps the compatibility layer integrated with the local
-`pi-plugins` package and its context-mode guardrails, atomic file publication,
+`pi-plugins` package and its bounded-output handling, atomic file publication,
 session-image repair, and regression suite.

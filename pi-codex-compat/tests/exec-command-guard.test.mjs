@@ -64,23 +64,24 @@ test("exec_command is a hard-cut strict Unified Exec schema", () => {
 	);
 });
 
-test("exec_command keeps the context-mode raw HTTP guardrail", async () => {
+test("HTTP client names use normal execution instead of a retired tool guard", async () => {
 	const execCommand = registeredTools().get("exec_command");
 	assert.ok(execCommand);
-	const result = await execCommand.execute(
-		"guard-test",
-		{ cmd: "curl https://example.com", workdir: process.cwd() },
-		undefined,
-		undefined,
-		{ cwd: process.cwd() },
-	);
-	assert.equal("isError" in result, false);
-	assert.equal(typeof result.details.error, "string");
-	assert.match(
-		result.content[0].text,
-		/exec_command blocked by pi-codex-compat/,
-	);
-	assert.match(result.content[0].text, /context-mode/);
+	// These literal echoes reproduced false positives without making HTTP requests.
+	for (const cmd of ["echo curl https://example.invalid", "echo Invoke-WebRequest", "echo urllib.request"]) {
+		const result = await execCommand.execute(
+			"client-name-test", { cmd, workdir: process.cwd(), login: false },
+			undefined, undefined, { cwd: process.cwd() },
+		);
+		assert.equal(result.details.exit_code, 0);
+		assert.equal(result.details.cmd, cmd);
+		assert.doesNotMatch(result.content[0].text, /blocked by pi-codex-compat|context-mode/);
+	}
+	for (const tool of registeredTools().values()) {
+		assert.doesNotMatch((tool.promptGuidelines ?? []).join("\n"), /context-mode|ctx_execute|ctx_fetch_and_index|fetch_content/);
+	}
+	assert.match(execCommand.promptGuidelines.join("\n"), /save the body to a file/);
+	assert.match(execCommand.promptGuidelines.join("\n"), /read_artifact/);
 });
 
 test("exec_command uses the managed runtime and returns Unified Exec metadata", async () => {

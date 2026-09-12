@@ -74,17 +74,6 @@ const MOVE_TO_MARKER = "*** Move to: ";
 const EOF_MARKER = "*** End of File";
 const CHANGE_CONTEXT_MARKER = "@@ ";
 const EMPTY_CHANGE_CONTEXT_MARKER = "@@";
-const EXTENSION_NAME = "pi-codex-compat";
-
-const BLOCKED_HTTP_PATTERNS = [
-	/\bfetch\s*\(/,
-	/\brequests\.get\s*\(/,
-	/\brequests\.post\s*\(/,
-	/\bhttp\.get\s*\(/,
-	/\bhttp\.request\s*\(/,
-	/\burllib\.request/,
-	/\bInvoke-WebRequest\b/,
-];
 
 type AddFileHunk = { type: "add"; path: string; contents: string };
 type DeleteFileHunk = { type: "delete"; path: string };
@@ -173,49 +162,6 @@ function interceptedPatchWorkdir(
 	const outer = execWorkdir ? resolveToolPath(cwd, execWorkdir) : cwd;
 	if (shellWorkdir) return resolveToolPath(outer, shellWorkdir);
 	return execWorkdir ? outer : undefined;
-}
-
-function stripQuotedContent(command: string): string {
-	return command
-		.replace(/<<-?\s*["']?(\w+)["']?[\s\S]*?\n\s*\1/g, "")
-		.replace(/'[^']*'/g, "''")
-		.replace(/"[^"]*"/g, '""');
-}
-
-function isSafeCurlWget(segment: string): boolean {
-	const s = segment.trim();
-	const isCurl = /\bcurl\b/i.test(s);
-	const isWget = /\bwget\b/i.test(s);
-	if (!isCurl && !isWget) return true;
-
-	const hasFileOutput = isCurl
-		? /\s(-o|--output)\s/.test(s) || /\s>\s*/.test(s) || /\s>>\s*/.test(s)
-		: /\s(-O|--output-document)\s/.test(s) ||
-			/\s>\s*/.test(s) ||
-			/\s>>\s*/.test(s);
-	if (!hasFileOutput) return false;
-	if (isCurl && /\s(-o|--output)\s+(-|\/dev\/stdout)(\s|$)/.test(s))
-		return false;
-	if (isWget && /\s(-O|--output-document)\s+(-|\/dev\/stdout)(\s|$)/.test(s))
-		return false;
-	if (/\s(-v|--verbose|--trace)\b/.test(s)) return false;
-	return isCurl
-		? /\s-[a-zA-Z]*s|--silent/.test(s)
-		: /\s-[a-zA-Z]*q|--quiet/.test(s);
-}
-
-function unsafeHttpReason(command: string): string | undefined {
-	const stripped = stripQuotedContent(command);
-	if (BLOCKED_HTTP_PATTERNS.some((pattern) => pattern.test(stripped))) {
-		return "Use context-mode tools such as ctx_execute, ctx_fetch_and_index, or fetch_content instead of inline HTTP clients. Raw fetch/requests/http output floods the context window.";
-	}
-	if (/(^|\s|&&|\||;)(curl|wget)\s/i.test(stripped)) {
-		const segments = stripped.split(/\s*(?:&&|\|\||;)\s*/);
-		if (segments.some((segment) => !isSafeCurlWget(segment))) {
-			return "Use context-mode tools such as ctx_execute, ctx_fetch_and_index, or fetch_content instead of raw curl/wget output. For an escape hatch, write silent output to a file, e.g. `curl -s -o /tmp/x.json URL`.";
-		}
-	}
-	return undefined;
 }
 
 function unwrapPatchInput(input: string): { input: string; workdir?: string } {
@@ -1489,7 +1435,6 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"apply_patch input must use the Codex envelope: `*** Begin Patch`, one or more Add/Delete/Update File sections, and `*** End Patch`.",
 			"apply_patch supports `*** Move to:` and heredoc bodies copied from structurally valid `apply_patch <<'PATCH'` shell snippets.",
 			"Do not use apply_patch for generated outputs or broad mechanical rewrites where a script or formatter is the clearer tool.",
-			"When context-mode tools such as ctx_execute or ctx_execute_file are active, keep using them for large-output analysis; apply_patch is only for committing file mutations.",
 		],
 		parameters: Type.Object(
 			{
@@ -1544,7 +1489,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"exec_command initially waits 10,000ms and clamps the wait to 250–30,000ms (2,000–30,000ms on Windows). A command still running after that wait returns a session ID.",
 			"exec_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
 			"Use write_stdin with the returned `session_id` to poll or to send an exact Ctrl-C character to a non-TTY session; other non-empty input is rejected.",
-			"Do not use exec_command for raw HTTP clients that would dump output into context; use context-mode tools such as ctx_execute, ctx_fetch_and_index, or fetch_content.",
+			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
 		],
 		parameters: Type.Object(
 			{
@@ -1607,19 +1552,6 @@ export default function codexCompat(pi: ExtensionAPI): void {
 					ctx,
 					signal,
 				);
-			}
-
-			const blockReason = unsafeHttpReason(params.cmd);
-			if (blockReason) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `exec_command blocked by ${EXTENSION_NAME}: ${blockReason}`,
-						},
-					],
-					details: { error: blockReason },
-				} as AgentToolResult<{ error: string }>;
 			}
 
 			const workdir = params.workdir

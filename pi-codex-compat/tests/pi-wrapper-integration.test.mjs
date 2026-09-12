@@ -429,15 +429,16 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 			},
 		);
 
-		await t.test("raw HTTP exec blocking is a true error", async () => {
+		await t.test("HTTP client names pass through the native tool wrapper", async () => {
 			const run = await harness.invoke("exec_command", {
-				cmd: "curl https://example.com",
+				cmd: "echo curl https://example.invalid",
 				workdir: harness.cwd,
+				login: false,
 			});
-			assertErrorOutcome(run, true);
-			assertMiddlewareRun(run, true);
-			assert.equal(typeof run.end.result.details.error, "string");
-			assert.match(textContent(run.end.result), /blocked by pi-codex-compat/);
+			assertErrorOutcome(run, false);
+			assertMiddlewareRun(run, false);
+			assert.equal(run.end.result.details.exit_code, 0);
+			assert.match(textContent(run.end.result), /curl https:\/\/example\.invalid/);
 		});
 
 		await t.test("an unknown write_stdin session is a true error", async () => {
