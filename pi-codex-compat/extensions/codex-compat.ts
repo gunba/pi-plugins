@@ -27,6 +27,7 @@ import {
 } from "./image-content.ts";
 import { describeImageForTextModel } from "./image-description.ts";
 import {
+	IMAGE_GENERATION_MODELS,
 	type ImageGenerationDetails,
 	type ImageGenerationParams,
 	executeImageGeneration,
@@ -1772,12 +1773,12 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		name: "image_gen",
 		label: "image_gen",
 		description:
-			"Generate images from descriptions or edit existing images from precise instructions, using up to five local or recent conversation references with OpenAI gpt-image-2.",
+			"Generate images from descriptions or edit existing images from precise instructions, using up to five local or recent conversation references with OpenAI GPT Image 2.5 Sunburst or Flare.",
 		promptSnippet:
-			"Generate or edit images with gpt-image-2, including local and recent conversation references",
+			"Generate or edit images with GPT Image 2.5 Sunburst or Flare, including local and recent conversation references",
 		promptGuidelines: [
 			"Use image_gen when the user requests a new image or asks to edit an existing image.",
-			"For a new image, call image_gen with only `prompt`.",
+			"For a new image, provide `prompt` and `model`; for edits, also provide the image references.",
 			"For edits, use image_gen `referenced_image_paths` when every target has a local path; inspect unseen local images with view_image first.",
 			"Use image_gen `num_last_images_to_include` only when a target has no local path, choosing the smallest recent-image count that includes every target, up to 5.",
 			"Never provide both image_gen `referenced_image_paths` and `num_last_images_to_include`; ask the user to attach missing images when neither mechanism can include every target.",
@@ -1790,6 +1791,16 @@ export default function codexCompat(pi: ExtensionAPI): void {
 					description:
 						"Detailed generation prompt or precise editing instructions.",
 				}),
+				model: Type.Union(
+					[
+						Type.Literal(IMAGE_GENERATION_MODELS[0]),
+						Type.Literal(IMAGE_GENERATION_MODELS[1]),
+					],
+					{
+						description:
+							"Required image model. Sunburst prioritizes editing precision; Flare prioritizes fast, high-quality everyday generation. Both support generation and editing; there is no default.",
+					},
+				),
 				referenced_image_paths: Type.Optional(
 					Type.Array(
 						Type.String({

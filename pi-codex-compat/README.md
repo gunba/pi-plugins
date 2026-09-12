@@ -107,6 +107,21 @@ Unified Exec results, matching Codex protocol semantics.
 
 ## Images
 
+`image_gen` requires a `model` on every call, for both generation and editing:
+
+- `gpt-image-2.5-sunburst` prioritizes editing precision.
+- `gpt-image-2.5-flare` prioritizes fast, high-quality everyday generation.
+
+These identifiers follow OpenAI's
+[image generation guide](https://developers.openai.com/api/docs/guides/image-generation).
+There is no default or automatic fallback. The chosen identifier is sent unchanged
+and recorded in the result details; size, quality and background remain `auto`.
+
+Model selection extends Codex's current tool contract:
+[Codex source at c4017a8](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/ext/image-generation/src/tool.rs)
+still fixes `gpt-image-2` and exposes no model argument. That source does not
+establish which image model OpenAI may route to internally.
+
 `view_image` and local `image_gen` references are limited to 20 MiB per file.
 Image-generation HTTP response bodies are read through a 32 MiB bounded stream,
 and decoded generated images are limited to 20 MiB. Live and resumed image

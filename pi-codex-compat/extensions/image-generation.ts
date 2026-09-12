@@ -1,6 +1,7 @@
-// Request shapes, edit-reference semantics, and fixed defaults are based on
+// Request shapes, edit-reference semantics, and auto settings are based on
 // OpenAI Codex's Apache-2.0 image-generation extension and Images endpoint:
 // codex-rs/ext/image-generation and codex-rs/codex-api/src/endpoint/images.rs.
+// Per-call Image 2.5 model selection extends that contract.
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -25,7 +26,11 @@ import {
 } from "./image-limits.ts";
 import { isChatGptCodexModel, isImageGenerationModel } from "./model-tools.ts";
 
-const IMAGE_MODEL = "gpt-image-2";
+export const IMAGE_GENERATION_MODELS = [
+	"gpt-image-2.5-sunburst",
+	"gpt-image-2.5-flare",
+] as const;
+type ImageGenerationModel = (typeof IMAGE_GENERATION_MODELS)[number];
 const MAX_EDIT_IMAGES = 5;
 const MAX_ERROR_TEXT_CHARS = 600;
 
@@ -37,12 +42,14 @@ type FetchLike = (
 
 export type ImageGenerationParams = {
 	prompt: string;
+	model: ImageGenerationModel;
 	referenced_image_paths?: string[];
 	num_last_images_to_include?: number;
 };
 
 export type ImageGenerationDetails = {
 	path: string;
+	model: ImageGenerationModel;
 	operation: "generations" | "edits";
 	bytes: number;
 	callId: string;
@@ -68,6 +75,14 @@ function isRecord(value: unknown): value is UnknownRecord {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function validateImageModel(
+	value: unknown,
+): asserts value is ImageGenerationModel {
+	if (!IMAGE_GENERATION_MODELS.some((model) => model === value)) {
+		throw new Error(`model must be ${IMAGE_GENERATION_MODELS.join(" or ")}`);
+	}
+}
+
 /** Reject lossy TypeBox coercion before Pi validates the public schema. */
 export function prepareImageGenerationArguments(
 	args: unknown,
@@ -76,6 +91,7 @@ export function prepareImageGenerationArguments(
 	if (args.prompt !== undefined && typeof args.prompt !== "string") {
 		throw new Error("prompt must be a string");
 	}
+	validateImageModel(args.model);
 	if (args.referenced_image_paths !== undefined) {
 		if (!Array.isArray(args.referenced_image_paths)) {
 			throw new Error("referenced_image_paths must be an array of strings");
@@ -508,6 +524,7 @@ export async function executeImageGeneration(
 	if (!model || !isImageGenerationModel(model)) {
 		throw new Error("image_gen is unavailable for the selected model");
 	}
+	validateImageModel(params.model);
 	if (!params.prompt.trim()) throw new Error("prompt cannot be empty");
 	if (signal?.aborted) throw new Error("image generation aborted");
 
@@ -526,7 +543,7 @@ export async function executeImageGeneration(
 		...(operation === "edits" ? { images } : {}),
 		prompt: params.prompt,
 		background: "auto",
-		model: IMAGE_MODEL,
+		model: params.model,
 		quality: "auto",
 		size: "auto",
 	};
@@ -574,6 +591,7 @@ export async function executeImageGeneration(
 		content,
 		details: {
 			path: saved.path,
+			model: params.model,
 			operation,
 			bytes: saved.bytes,
 			callId: toolCallId,

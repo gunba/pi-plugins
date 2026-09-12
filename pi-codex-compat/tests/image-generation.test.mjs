@@ -13,6 +13,7 @@ import test from "node:test";
 
 import {
 	executeImageGeneration,
+	prepareImageGenerationArguments,
 	recentConversationImageSources,
 } from "../extensions/image-generation.ts";
 import {
@@ -87,6 +88,152 @@ async function withTempDir(fn) {
 	}
 }
 
+for (const provider of ["openai", "openai-codex"]) {
+	for (const imageModel of ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]) {
+		for (const operation of ["generations", "edits"]) {
+			test(`${provider} ${operation} preserves explicit ${imageModel} selection`, async () => {
+				await withTempDir(async (root) => {
+					const codex = provider === "openai-codex";
+					const model = {
+						provider,
+						id: "gpt-5.6",
+						api: codex ? "openai-codex-responses" : "openai-responses",
+						baseUrl: codex
+							? "https://chatgpt.test/backend-api"
+							: "https://api.openai.test/v1",
+						input: ["text", "image"],
+					};
+					await writeFile(
+						join(root, "source.png"),
+						Buffer.from(PNG_DATA, "base64"),
+					);
+					const args = {
+						prompt: "paint",
+						model: imageModel,
+						...(operation === "edits"
+							? { referenced_image_paths: ["source.png"] }
+							: {}),
+					};
+					assert.equal(prepareImageGenerationArguments(args), args);
+					let calls = 0;
+					const result = await executeImageGeneration(
+						"choice",
+						args,
+						undefined,
+						mockContext({
+							model,
+							cwd: root,
+							auth: { ok: true, apiKey: codex ? jwt("acct-42") : "sk-test" },
+						}),
+						{
+							codexHome: join(root, "codex-home"),
+							async fetchImpl(url, init) {
+								calls += 1;
+								assert.equal(
+									url,
+									`${model.baseUrl}${codex ? "/codex" : ""}/images/${operation}`,
+								);
+								assert.deepEqual(JSON.parse(init.body), {
+									...(operation === "edits"
+										? {
+												images: [
+													{ image_url: `data:image/png;base64,${PNG_DATA}` },
+												],
+											}
+										: {}),
+									prompt: "paint",
+									model: imageModel,
+									background: "auto",
+									quality: "auto",
+									size: "auto",
+								});
+								return jsonResponse({ data: [{ b64_json: PNG_DATA }] });
+							},
+						},
+					);
+					assert.equal(calls, 1);
+					assert.equal(result.details.model, imageModel);
+					assert.equal(result.details.operation, operation);
+				});
+			});
+		}
+	}
+}
+
+test("model selection is mandatory and strict before authentication or requests", async () => {
+	const ctx = {
+		model: { provider: "openai", id: "gpt-5", api: "openai-responses" },
+		modelRegistry: {
+			getApiKeyAndHeaders() {
+				assert.fail("unexpected authentication");
+			},
+		},
+	};
+	for (const model of [
+		undefined,
+		null,
+		"",
+		"gpt-image-2",
+		"gpt-image-2.5",
+		"auto",
+		2.5,
+		["gpt-image-2.5-flare"],
+	]) {
+		const args = { prompt: "paint", ...(model === undefined ? {} : { model }) };
+		assert.throws(() => prepareImageGenerationArguments(args), /model must be/);
+		await assert.rejects(
+			executeImageGeneration("invalid-model", args, undefined, ctx, {
+				fetchImpl() {
+					assert.fail("unexpected request");
+				},
+			}),
+			/model must be/,
+		);
+	}
+});
+
+test("an unavailable image model is surfaced without falling back to another model", async () => {
+	await withTempDir(async (root) => {
+		for (const imageModel of [
+			"gpt-image-2.5-sunburst",
+			"gpt-image-2.5-flare",
+		]) {
+			let calls = 0;
+			await assert.rejects(
+				executeImageGeneration(
+					"unavailable",
+					{ prompt: "paint", model: imageModel },
+					undefined,
+					mockContext({
+						model: {
+							provider: "openai-codex",
+							id: "gpt-5.6",
+							api: "openai-codex-responses",
+							baseUrl: "https://chatgpt.test/backend-api",
+						},
+						cwd: root,
+						auth: { ok: true, apiKey: jwt("acct-42") },
+					}),
+					{
+						codexHome: root,
+						async fetchImpl(_url, init) {
+							calls += 1;
+							assert.equal(JSON.parse(init.body).model, imageModel);
+							return jsonResponse(
+								{ error: { message: "model not available" } },
+								{ status: 404 },
+							);
+						},
+					},
+				),
+				/image generation request failed \(404\): model not available/,
+			);
+			assert.equal(calls, 1);
+			assert.deepEqual(await readdir(root), []);
+		}
+	});
+});
+
 test("OpenAI API-key generation posts fixed defaults and atomically saves Pi-native output", async () => {
 	await withTempDir(async (root) => {
 		const model = {
@@ -104,7 +251,7 @@ test("OpenAI API-key generation posts fixed defaults and atomically saves Pi-nat
 		});
 		const result = await executeImageGeneration(
 			"call-1",
-			{ prompt: "paint a moonlit lake" },
+			{ prompt: "paint a moonlit lake", model: "gpt-image-2.5-flare" },
 			undefined,
 			ctx,
 			{
@@ -122,7 +269,7 @@ test("OpenAI API-key generation posts fixed defaults and atomically saves Pi-nat
 		assert.deepEqual(JSON.parse(request.init.body), {
 			prompt: "paint a moonlit lake",
 			background: "auto",
-			model: "gpt-image-2",
+			model: "gpt-image-2.5-flare",
 			quality: "auto",
 			size: "auto",
 		});
@@ -172,6 +319,7 @@ test("ChatGPT Codex OAuth edits local images through the codex endpoint", async 
 			"call-edit",
 			{
 				prompt: "add a red hat",
+				model: "gpt-image-2.5-sunburst",
 				referenced_image_paths: ["source.bmp"],
 			},
 			undefined,
@@ -203,7 +351,7 @@ test("ChatGPT Codex OAuth edits local images through the codex endpoint", async 
 			images: [{ image_url: `data:image/png;base64,${PNG_DATA}` }],
 			prompt: "add a red hat",
 			background: "auto",
-			model: "gpt-image-2",
+			model: "gpt-image-2.5-sunburst",
 			quality: "auto",
 			size: "auto",
 		});
@@ -265,7 +413,11 @@ test("recent conversation edits select the requested newest images in chronologi
 		};
 		await executeImageGeneration(
 			"call-recent",
-			{ prompt: "combine these", num_last_images_to_include: 2 },
+			{
+				prompt: "combine these",
+				model: "gpt-image-2.5-flare",
+				num_last_images_to_include: 2,
+			},
 			undefined,
 			mockContext({
 				model,
@@ -365,7 +517,11 @@ test("recent selection uses compacted context and reuses text-only generated pat
 		assert.equal(recentConversationImageSources(ctx, 3).length, 2);
 		await executeImageGeneration(
 			"call-compacted",
-			{ prompt: "combine visible images", num_last_images_to_include: 2 },
+			{
+				prompt: "combine visible images",
+				model: "gpt-image-2.5-sunburst",
+				num_last_images_to_include: 2,
+			},
 			undefined,
 			ctx,
 			{
@@ -405,7 +561,11 @@ test("orphan tool-result images are excluded from recent selection", async () =>
 		await assert.rejects(
 			executeImageGeneration(
 				"call-orphan",
-				{ prompt: "edit", num_last_images_to_include: 1 },
+				{
+					prompt: "edit",
+					model: "gpt-image-2.5-flare",
+					num_last_images_to_include: 1,
+				},
 				undefined,
 				mockContext({
 					model,
@@ -491,7 +651,7 @@ test("image API response bodies are rejected before an oversized payload is read
 		await assert.rejects(
 			executeImageGeneration(
 				"call-large-response",
-				{ prompt: "paint" },
+				{ prompt: "paint", model: "gpt-image-2.5-flare" },
 				undefined,
 				mockContext({
 					model,
@@ -540,6 +700,7 @@ test("edit reference validation runs before authentication or fetch", async () =
 				"call-invalid",
 				{
 					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
 					referenced_image_paths: ["1", "2", "3", "4", "5", "6"],
 				},
 				undefined,
@@ -553,6 +714,7 @@ test("edit reference validation runs before authentication or fetch", async () =
 				"call-invalid",
 				{
 					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
 					referenced_image_paths: ["1"],
 					num_last_images_to_include: 1,
 				},
@@ -565,7 +727,11 @@ test("edit reference validation runs before authentication or fetch", async () =
 		await assert.rejects(
 			executeImageGeneration(
 				"call-invalid",
-				{ prompt: "edit", referenced_image_paths: [] },
+				{
+					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
+					referenced_image_paths: [],
+				},
 				undefined,
 				ctx,
 				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
@@ -577,6 +743,7 @@ test("edit reference validation runs before authentication or fetch", async () =
 				"call-invalid",
 				{
 					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
 					referenced_image_paths: [],
 					num_last_images_to_include: 1,
 				},
@@ -589,7 +756,11 @@ test("edit reference validation runs before authentication or fetch", async () =
 		await assert.rejects(
 			executeImageGeneration(
 				"call-invalid",
-				{ prompt: "edit", num_last_images_to_include: 1 },
+				{
+					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
+					num_last_images_to_include: 1,
+				},
 				undefined,
 				ctx,
 				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
@@ -602,7 +773,11 @@ test("edit reference validation runs before authentication or fetch", async () =
 		await assert.rejects(
 			executeImageGeneration(
 				"call-invalid",
-				{ prompt: "edit", referenced_image_paths: ["oversized.png"] },
+				{
+					prompt: "edit",
+					model: "gpt-image-2.5-sunburst",
+					referenced_image_paths: ["oversized.png"],
+				},
 				undefined,
 				ctx,
 				{ codexHome: root, fetchImpl: async () => jsonResponse({}) },
@@ -625,7 +800,7 @@ test("API errors are concise and do not publish an image", async () => {
 		await assert.rejects(
 			executeImageGeneration(
 				"call-error",
-				{ prompt: "paint" },
+				{ prompt: "paint", model: "gpt-image-2.5-flare" },
 				undefined,
 				mockContext({
 					model,
@@ -662,7 +837,7 @@ test("mandatory atomic publication surfaces save failures", async () => {
 		await assert.rejects(
 			executeImageGeneration(
 				"call-save-failure",
-				{ prompt: "paint" },
+				{ prompt: "paint", model: "gpt-image-2.5-flare" },
 				undefined,
 				mockContext({
 					model,
@@ -695,7 +870,7 @@ test("text-only Codex models receive a saved-path result without an image block"
 		let capturedUrl;
 		const result = await executeImageGeneration(
 			"call-text",
-			{ prompt: "draw a small blue square" },
+			{ prompt: "draw a small blue square", model: "gpt-image-2.5-flare" },
 			undefined,
 			mockContext({
 				model,

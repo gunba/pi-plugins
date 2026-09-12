@@ -553,7 +553,11 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 					},
 					{
 						toolName: "image_gen",
-						args: { prompt: "must not generate", unexpected: true },
+						args: {
+							prompt: "must not generate",
+							model: "gpt-image-2.5-flare",
+							unexpected: true,
+						},
 					},
 				];
 
@@ -621,16 +625,25 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 					{ toolName: "image_gen", args: { prompt: 7 } },
 					{
 						toolName: "image_gen",
-						args: { prompt: "edit", referenced_image_paths: [1] },
-					},
-					{
-						toolName: "image_gen",
-						args: { prompt: "edit", num_last_images_to_include: 1.5 },
+						args: {
+							prompt: "edit",
+							model: "gpt-image-2.5-flare",
+							referenced_image_paths: [1],
+						},
 					},
 					{
 						toolName: "image_gen",
 						args: {
 							prompt: "edit",
+							model: "gpt-image-2.5-flare",
+							num_last_images_to_include: 1.5,
+						},
+					},
+					{
+						toolName: "image_gen",
+						args: {
+							prompt: "edit",
+							model: "gpt-image-2.5-flare",
 							referenced_image_paths: [],
 							num_last_images_to_include: 1,
 						},
@@ -640,6 +653,26 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 					assertErrorOutcome(run, true);
 					assert.deepEqual(run.middleware, []);
 					assert.notEqual(textContent(run.end.result), "");
+				}
+			},
+		);
+		await t.test(
+			"image generation rejects missing and invalid model choices before execution",
+			async () => {
+				for (const model of [
+					undefined,
+					null,
+					"gpt-image-2",
+					"auto",
+					["gpt-image-2.5-flare"],
+				]) {
+					const run = await harness.invoke("image_gen", {
+						prompt: "must not generate",
+						...(model === undefined ? {} : { model }),
+					});
+					assertErrorOutcome(run, true);
+					assert.deepEqual(run.middleware, []);
+					assert.match(textContent(run.end.result), /model must be/);
 				}
 			},
 		);

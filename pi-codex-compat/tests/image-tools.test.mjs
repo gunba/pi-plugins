@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import codexCompat from "../extensions/codex-compat.ts";
 import { MAX_LOCAL_IMAGE_BYTES } from "../extensions/image-limits.ts";
@@ -66,6 +67,34 @@ test("image tool metadata carries upstream direct-generation and editing guidanc
 	const applyPatch = tools.get("apply_patch");
 	const viewImage = tools.get("view_image");
 	const imageGen = tools.get("image_gen");
+	assert.match(imageGen.description, /GPT Image 2\.5 Sunburst or Flare/);
+	assert.match(imageGen.promptSnippet, /GPT Image 2\.5 Sunburst or Flare/);
+	assert.match(
+		imageGen.promptGuidelines.join("\n"),
+		/provide `prompt` and `model`/,
+	);
+	assert.doesNotMatch(imageGen.promptGuidelines.join("\n"), /only `prompt`/);
+	assert.deepEqual(imageGen.parameters.required, ["prompt", "model"]);
+	assert.deepEqual(
+		imageGen.parameters.properties.model.anyOf.map((schema) => schema.const),
+		["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"],
+	);
+	assert.equal(
+		Object.hasOwn(imageGen.parameters.properties.model, "default"),
+		false,
+	);
+	for (const model of ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]) {
+		const args = { prompt: "paint", model };
+		assert.deepEqual(
+			validateToolArguments(imageGen, {
+				type: "toolCall",
+				id: "image-choice",
+				name: "image_gen",
+				arguments: args,
+			}),
+			args,
+		);
+	}
 	assert.doesNotMatch(
 		[
 			applyPatch.description,
