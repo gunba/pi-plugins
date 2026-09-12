@@ -2,10 +2,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage, Context, Provider } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
 import { SettingsManager, convertToLlm, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { CHECKPOINT, CHECKPOINT_CAPTION, assertCheckpointContext, checkpointMessages, checkpointUsage, compactionPrefix, entryCheckpoint, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
-import { isRetryableAssistantError } from "./serializer.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 
 type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySettings" | "getHttpIdleTimeoutMs">;

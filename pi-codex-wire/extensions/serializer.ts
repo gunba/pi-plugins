@@ -1,11 +1,17 @@
 import { createRequire } from "node:module";
 
-// Pi exposes the pi-ai root to extensions, but not its serializer subpaths.
-// Resolve our runtime dependency through Node so both bundled Pi and SDK
-// loaders use the package exports instead of rewriting a subpath root alias.
+// Pi reloads this TypeScript module. Keep the cached native helper independent
+// of the export list so an upgrade cannot retain the old serializer surface.
 const require = createRequire(import.meta.url);
-export const { convertResponsesMessages, convertResponsesTools, createGrammarToolInputProperties, splitDeferredTools, isRetryableAssistantError } = require("./serializer.mjs") as
-  typeof import("@earendil-works/pi-ai/api/openai-responses-shared") &
-  typeof import("@earendil-works/pi-ai/api/constrained-sampling") &
-  typeof import("@earendil-works/pi-ai/utils/deferred-tools") &
-  typeof import("@earendil-works/pi-ai/utils/retry");
+const { loadNative } = require("./native-import.mjs") as {
+	loadNative(specifier: string): unknown;
+};
+export const { convertResponsesMessages, convertResponsesTools } = loadNative(
+	"@earendil-works/pi-ai/api/openai-responses-shared",
+) as typeof import("@earendil-works/pi-ai/api/openai-responses-shared");
+export const { createGrammarToolInputProperties } = loadNative(
+	"@earendil-works/pi-ai/api/constrained-sampling",
+) as typeof import("@earendil-works/pi-ai/api/constrained-sampling");
+export const { splitDeferredTools } = loadNative(
+	"@earendil-works/pi-ai/utils/deferred-tools",
+) as typeof import("@earendil-works/pi-ai/utils/deferred-tools");

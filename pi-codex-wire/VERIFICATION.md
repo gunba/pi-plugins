@@ -1,5 +1,35 @@
 # Verification
 
+## Compaction imports after reload — 13 September 2026
+
+An upgrade from the earlier two-export serializer bridge to 0.20.0 reproduced
+`isRetryableAssistantError is not a function` through Pi 0.85.1's actual path
+loader. Pi reloaded TypeScript while Node retained the old native ESM module.
+The new tool/deferred-tool serializers were also missing; retry classification
+could mask their original failure. Fresh-process checks did not cover this.
+
+The extension now uses a native resolver with a stable interface. SDK export
+selection lives in reloaded TypeScript, and retry classification comes from
+Pi's public root import. The old bridge is removed without patching Pi or
+clearing its caches.
+
+The regression loads the old bridge, replaces temporary extension files,
+and reloads twice in the same process. It verifies all serializer helpers,
+tool-call/result pairing, xhigh, a bounded 503 retry, preservation of a
+nonretryable error, and cancellation without retry. The AgentSession compaction
+tests now load extensions by path instead of direct factories and exercise a
+session reload before checkpoint continuation. All sessions and transports
+in these checks are synthetic; no live inference or user-session reload occurs.
+
+This fixes the reported missing-function failure. It does not establish the
+cause of the separate `Operation aborted` message or original WebSocket loss.
+
+Release checks for 0.20.1: 133 selected Wire and host-loading tests passed,
+and TypeScript passed. After restoring production dependencies, all seven
+compaction/reload checks passed against the unchanged installed Pi 0.85.1.
+The installed host loaded all 21 bundled extensions with zero errors and
+zero inference requests. The locked retired clipboard DLL was left alone.
+
 ## Native compaction — 13 September 2026
 
 The actual Codex CLI 0.153.4 default capture uses `compaction_trigger` on

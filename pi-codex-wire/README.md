@@ -15,8 +15,11 @@ pi install https://github.com/gunba/pi-plugins
 The parent manifest loads Wire automatically. Do not register this subdirectory separately. Remove any old standalone Wire registration, then reload Pi. Your saved model and authentication are unchanged. For a checkout whose dependencies were removed, run `npm ci --omit=dev --legacy-peer-deps` at the repository root.
 
 The package installs its Pi serializer dependency explicitly. A native ESM module
-loads its public subpaths independently of the extension loader's root-module
-aliases, supporting both the bundled CLI and SDK child runtimes.
+resolves its public subpaths independently of the extension loader's root-module
+aliases, supporting both the bundled CLI and SDK child runtimes. The resolver
+has a stable interface; the TypeScript module selects SDK exports on each Pi
+reload, so an update cannot leave newly added helpers missing from a cached
+native export list.
 
 Codex mode is mandatory on startup, resume, fork and reload. The old mode flag, mode-switch commands and saved `default-mode` setting are no longer used. If activation fails after loading, Codex requests are blocked rather than sent through the original provider.
 

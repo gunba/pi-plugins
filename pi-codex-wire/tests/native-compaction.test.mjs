@@ -2,19 +2,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Type } from "typebox";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createAgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
-import wire from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
 import { CHECKPOINT, CHECKPOINT_CAPTION, checkpointBinding, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
 import { compactInput } from "../extensions/compact-input.ts";
 import nativeCompaction, { retryCompaction } from "../extensions/native-compaction.ts";
 import { copyCompletedParentTurns } from "../../pi-subagents/extensions/subagent-runtime.ts";
 import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
-import sessionMemory from "../../pi-session-memory/extensions/session-memory.ts";
 
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url")}.x`;
 const usage = { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -35,8 +34,9 @@ function compactStream(items = [output[1]], usage) {
 
 async function harness(t) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-native-compact-"));
-	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE };
+	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE };
 	process.env.PI_CODING_AGENT_DIR = directory; process.env.PI_OFFLINE = "1";
+	process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = identity.originator;
 	const priorFetch = globalThis.fetch;
 	const calls = [];
 	let compactResponse = () => compactStream();
@@ -71,7 +71,8 @@ async function harness(t) {
 	const flags = new Map([["codex-wire-client", "cli"], ["codex-wire-originator", identity.originator], ["codex-wire-user-agent", identity.userAgent], ["codex-wire-transport", "sse"], ["codex-wire-compression", "off"]]);
 	const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings, noExtensions: true,
 		noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-		extensionFactories: [(pi) => wire(new Proxy(pi, { get(target, key) { return key === "getFlag" ? name => flags.get(name) : Reflect.get(target, key); } })), sessionMemory],
+		additionalExtensionPaths: ["../extensions/index.ts", "../../pi-session-memory/extensions/session-memory.ts"]
+			.map(path => fileURLToPath(new URL(path, import.meta.url))),
 		systemPrompt: "Fixture standing instructions." });
 	let session;
 	t.after(async () => {
@@ -80,10 +81,13 @@ async function harness(t) {
 			globalThis.fetch = priorFetch;
 			if (priorEnv.agent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = priorEnv.agent;
 			if (priorEnv.offline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = priorEnv.offline;
+			if (priorEnv.originator === undefined) delete process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = priorEnv.originator;
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 	await loader.reload();
+	assert.deepEqual(loader.getExtensions().errors, []);
+	for (const [name, value] of flags) loader.getExtensions().runtime.flagValues.set(name, value);
 	({ session } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime, model,
 		thinkingLevel: "xhigh", resourceLoader: loader, sessionManager: manager, settingsManager: settings, tools: ["fixture_lookup"],
 		customTools: [{ name: "fixture_lookup", label: "Fixture lookup", description: "Look up the fixture value.",
@@ -123,6 +127,8 @@ test("real AgentSession compacts through native Responses, persists, resumes and
 	const catalog = call.body.input.find(item => item.type === "additional_tools");
 	assert.equal(catalog.tools[0].tools[0].name, "fixture_lookup");
 	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, oldBytes.length).equals(oldBytes));
+	await h.session.reload();
+	assert.equal(h.session.thinkingLevel, "xhigh");
 	await h.session.prompt("Continue the fixture.", { expandPromptTemplates: false });
 	const ordinary = h.calls.at(-1);
 	assert.ok(ordinary.url.endsWith("/responses"));
