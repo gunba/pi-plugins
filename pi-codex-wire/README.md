@@ -32,6 +32,19 @@ Desktop identity applies to both catalog and inference requests. Switching clien
 
 `--codex-wire-transport auto` uses WebSockets with HTTP/SSE fallback. `--codex-wire-transport sse` fixes the transport to HTTP/SSE.
 
+If an established WebSocket closes, errors, fails to send or times out before
+completion, Wire surfaces the failure and selects HTTPS/SSE for subsequent calls
+on that routing session. Pi's existing retry policy decides whether to try again;
+Wire neither replays the interrupted stream nor adds or resets retries. This
+applies to ordinary responses and summaries, including failures after partial
+output. Model, effort, prompt and tool content stay unchanged.
+
+Fallback is reported in the UI and remains local to the affected routing session
+until transport state is recreated. Cancellation, deliberate shutdown, completed
+responses, model error responses and invalid payloads do not activate stream fallback.
+`websocket-failure` diagnostics record the close code, elapsed/idle milliseconds,
+event count and whether output began—not close-reason text, error text or content.
+
 Full-prompt WebSocket prewarming is **off by default**. `/codex-wire prewarm on|off`
 saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. This
 controls only the extra `generate:false` request, not Wire, Codex identity,
@@ -102,6 +115,9 @@ New records also include root/child session IDs, lifecycle-derived request
 purpose/origin, per-attempt IDs, prewarm-to-inference links and full-input
 fallback reasons. `node ledger.mjs <run.jsonl> [...]` aggregates terminal
 provider usage once per attempt. It does not add the overlapping decoder usage.
+Summary requests with fresh routing IDs are linked to compaction or branch-summary
+lifecycle events by their abort signal, without reading prompt text or
+misclassifying unrelated requests made while a summary is active.
 Legacy records without attempt IDs are identified and excluded from these
 attempt totals. Missing coverage and conflicting response usage are reported.
 Allowance reset counters are retained for comparison, not assigned causally to

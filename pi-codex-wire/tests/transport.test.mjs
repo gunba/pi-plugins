@@ -14,6 +14,8 @@ import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { shapeModelBody, normalizeLiteEvent } from "../extensions/model-shape.ts";
 import { identity } from "./fixtures.mjs";
 import { zstdDecompressSync } from "node:zlib";
+import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
+import requestTracing, { requestTrace } from "../extensions/request-trace.ts";
 
 async function fixture(t, mode = "auto", handler, prewarm = true) {
   const directory = mkdtempSync(join(tmpdir(), "pi-wire-test-"));
@@ -36,6 +38,174 @@ function exchange(f, overrides = {}) { return { url: f.url, body: f.protocol.sha
 const expired = { type: "error", status: 400, error: { code: "websocket_connection_limit_reached" } };
 const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
+
+for (const partial of [false, true]) for (const failure of ["close", "terminate", "idle"]) {
+  test(`broken WebSocket selects SSE only for the caller's next request (${failure}, partial=${partial})`, async t => {
+    const posts = [];
+    const f = await fixture(t, "auto", (req, res) => {
+      const chunks = [];
+      req.on("data", chunk => chunks.push(chunk));
+      req.on("end", () => {
+        posts.push(JSON.parse(Buffer.concat(chunks).toString()));
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(`data: ${JSON.stringify(completed("retry"))}\n\n`);
+      });
+    }, false);
+    const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+    let frames = 0;
+    wss.on("connection", socket => socket.on("message", () => {
+      frames++;
+      if (partial) socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "PRIVATE PARTIAL OUTPUT" }));
+      if (failure === "close") socket.close(1011, "PRIVATE CLOSE REASON");
+      if (failure === "terminate") socket.terminate();
+    }));
+    const notifications = [];
+    await assert.rejects(async () => (await f.transport.request(exchange(f, {
+      timeoutMs: failure === "idle" ? 100 : 3000,
+      onFallback: phase => notifications.push(phase),
+    }))).text(), /closed before completion|timed out/);
+    assert.equal(frames, 1);
+    assert.equal(posts.length, 0); // The transport must not replay even a no-output failure.
+    assert.deepEqual(notifications, ["stream"]);
+    const retryBody = f.protocol.shapeBody({ ...body, reasoning: { effort: "xhigh" } });
+    await (await f.transport.request(exchange(f, { body: retryBody, requestId: "caller-retry" }))).text();
+    assert.equal(frames, 1);
+    assert.deepEqual(posts, [retryBody]);
+    const log = readFileSync(f.log, "utf8");
+    const diagnostic = log.trim().split("\n").map(JSON.parse).find(row => row.kind === "websocket-failure");
+    assert.equal(diagnostic.sawOutput, partial);
+    assert.equal(diagnostic.events, partial ? 1 : 0);
+    assert.equal(diagnostic.reason, failure === "idle" ? "idle-timeout" : "closed");
+    assert.equal(diagnostic.closeCode, failure === "close" ? 1011 : failure === "terminate" ? 1006 : undefined);
+    assert.ok(diagnostic.elapsedMs >= diagnostic.idleMs);
+    for (const secret of ["PRIVATE", "SECRET"]) assert.equal(log.includes(secret), false);
+  });
+}
+
+for (const ending of ["abort", "cancel", "local-close", "completed-close", "model-error"]) {
+  test(`intentional or terminal WebSocket endings do not select fallback (${ending})`, async t => {
+    let posts = 0;
+    const f = await fixture(t, "auto", (req, res) => { posts++; req.resume(); res.end(); }, false);
+    const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+    let frames = 0;
+    let received;
+    const firstFrame = new Promise(resolve => { received = resolve; });
+    wss.on("connection", socket => socket.on("message", () => {
+      frames++;
+      if (frames > 1) socket.send(JSON.stringify(completed("next")));
+      else {
+        received(socket);
+        if (ending === "completed-close") socket.send(JSON.stringify(completed("done")), () => socket.close());
+        if (ending === "model-error") socket.send(JSON.stringify({ type: "error", error: { code: "invalid_request", message: "PRIVATE ERROR" } }));
+      }
+    }));
+    const controller = new AbortController();
+    const response = await f.transport.request(exchange(f, { signal: controller.signal }));
+    const socket = await firstFrame;
+    if (ending === "cancel") await response.body.cancel();
+    else if (ending === "completed-close" || ending === "model-error") {
+      await response.text();
+      if (ending === "completed-close" && socket.readyState !== socket.CLOSED) await once(socket, "close");
+    } else {
+      const consumed = response.text();
+      if (ending === "abort") controller.abort(); else f.transport.close();
+      await assert.rejects(consumed, { name: "AbortError" });
+    }
+    await (await f.transport.request(exchange(f, { requestId: "next" }))).text();
+    assert.equal(frames, 2);
+    assert.equal(posts, 0);
+    assert.doesNotMatch(readFileSync(f.log, "utf8"), /"kind":"fallback"|PRIVATE ERROR/);
+  });
+}
+
+function summaryEvents() {
+  const item = { type: "message", id: "msg_summary", role: "assistant", status: "completed",
+    content: [{ type: "output_text", text: "Checkpoint.", annotations: [] }] };
+  return [
+    { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
+    { type: "response.content_part.added", output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Checkpoint." },
+    { type: "response.output_item.done", output_index: 0, item },
+    { ...completed("summary"), response: { ...completed("summary").response, output: [item] } },
+  ];
+}
+
+for (const outcome of ["success", "failure", "abort"]) {
+  test(`native Pi compaction retains its retry budget across WS-to-SSE recovery (${outcome})`, async t => {
+    let posts = 0;
+    const f = await fixture(t, "auto", (req, res) => {
+      posts++; req.resume();
+      if (outcome === "failure") {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "temporarily unavailable" } }));
+      } else {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(summaryEvents().map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
+      }
+    }, false);
+    const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+    let frames = 0;
+    wss.on("connection", socket => socket.on("message", () => { frames++; socket.close(1011); }));
+    const handlers = new Map();
+    requestTracing({ on: (name, handler) => handlers.set(name, handler) });
+    const root = `summary-${outcome}`;
+    const ctx = { sessionManager: { getSessionId: () => root } };
+    const controller = new AbortController();
+    handlers.get("session_start")({}, ctx);
+    handlers.get("session_before_compact")({ signal: controller.signal }, ctx);
+    t.after(() => handlers.get("session_shutdown")({}, ctx));
+    const invocations = [];
+    const traces = [];
+    const stream = (selected, context, options) => {
+      invocations.push(options.sessionId);
+      assert.notEqual(options.sessionId, root);
+      assert.equal(options.signal, controller.signal);
+      assert.equal(options.reasoning, "xhigh");
+      assert.equal(options.cacheRetention, "none");
+      const trace = requestTrace(root, options.sessionId, context, options.signal);
+      traces.push(trace);
+      let outgoing;
+      return streamSimple(selected, context, {
+        ...options, transport: "sse", maxRetries: 0,
+        onPayload: value => {
+          outgoing = shapeModelBody(f.protocol.shapeBody(value), {
+            slug: model.id, use_responses_lite: true, support_verbosity: false,
+          }, f.protocol.threadId);
+          assert.equal(outgoing.model, model.id);
+          assert.equal(outgoing.reasoning.effort, "xhigh");
+          return value;
+        },
+        fetch: () => {
+          const request = exchange(f, {
+            body: outgoing, signal: options.signal, trace, requestId: `attempt-${invocations.length}`,
+            normalizeEvent: normalizeLiteEvent,
+          });
+          request.headers.set("x-openai-internal-codex-responses-lite", "true");
+          return f.transport.request(request);
+        },
+      });
+    };
+    const result = generateSummaryWithUsage(
+      [{ role: "user", content: "A local fixture.", timestamp: 0 }],
+      { ...model, thinkingLevelMap: { xhigh: "xhigh" } }, 1000, jwt,
+      undefined, controller.signal, undefined, undefined, "xhigh", stream, undefined,
+      { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+      { onRetryScheduled: () => { if (outcome === "abort") controller.abort(); } },
+    );
+    if (outcome === "success") assert.equal((await result).text, "Checkpoint.");
+    else if (outcome === "abort") {
+      // AgentSession checks this signal before saving; the summary helper itself
+      // may return an empty result after its retry loop is cancelled.
+      await result;
+      assert.equal(controller.signal.aborted, true);
+    } else await assert.rejects(result, /failed/i);
+    assert.equal(frames, 1);
+    assert.equal(posts, outcome === "abort" ? 0 : 1);
+    assert.equal(invocations.length, outcome === "abort" ? 1 : 2);
+    assert.equal(new Set(invocations).size, 1);
+    assert.ok(traces.every(trace => trace.callKind === "compaction" && trace.rootSessionId === root));
+  });
+}
 
 test("default transport sends no prewarm and retains WebSocket continuation", async t => {
   const f = await fixture(t, "auto", undefined, false);

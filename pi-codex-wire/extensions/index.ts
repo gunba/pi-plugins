@@ -170,7 +170,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       trimIdleSessions();
       const requestSignal = AbortSignal.any([currentLifetime.signal, controller.signal, ...(options?.signal ? [options.signal] : [])]);
       const requestId = randomUUID();
-      const trace = requestTrace(primaryThreadId, threadId, context);
+      const trace = requestTrace(primaryThreadId, threadId, context, options?.signal);
       currentDiagnostics.write({ kind: "invocation", requestId, ...trace });
       let body: JsonObject;
       let metadataForRequest: JsonObject | undefined;
@@ -227,6 +227,8 @@ export default function codexWire(pi: ExtensionAPI): void {
             normalizeEvent: metadata.use_responses_lite === true ? normalizeLiteEvent : undefined,
             requestId, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
             trace,
+            onFallback: () => ctx.ui.notify(
+              "Codex Wire is falling back to HTTPS. Use /codex-wire reconnect when idle to try WebSocket again.", "warning"),
           });
         };
       } else {

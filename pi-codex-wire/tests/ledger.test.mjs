@@ -29,14 +29,48 @@ test("lifecycle trace distinguishes tool loops, custom wake-ups and compaction w
   const context = { messages: [{ role: "toolResult" }] };
   assert.equal(requestTrace("root", "trace-child", context).origin, "tool-continuation");
   handlers.get("message_start")({ message: { role: "custom", customType: "pi-subagents/notice" } }, ctx);
-  handlers.get("session_before_compact")({}, ctx);
-  assert.deepEqual(requestTrace("root", "trace-child", context), {
+  const signal = new AbortController().signal;
+  handlers.get("session_before_compact")({ signal }, ctx);
+  assert.deepEqual(requestTrace("root", "trace-child", context, signal), {
     rootSessionId: "root", sessionId: "trace-child", callKind: "compaction", origin: "child-notice", triggerOrigin: "child-notice",
   });
   handlers.get("session_compact")({}, ctx);
   assert.equal(requestTrace("root", "trace-child", context).callKind, "assistant");
   handlers.get("session_shutdown")({}, ctx);
   assert.equal(requestTrace("root", "trace-child", { messages: [] }).origin, "unknown");
+});
+
+test("fresh summary routing IDs are matched by lifecycle signal, not the parent's active phase", () => {
+  const handlers = new Map();
+  requestTracing({ on: (name, fn) => handlers.set(name, fn) });
+  const root = "trace-summary-root";
+  const ctx = { sessionManager: { getSessionId: () => root } };
+  const context = { messages: [{ role: "user", content: "Not inspected for classification." }] };
+  const summary = new AbortController();
+  const unrelated = new AbortController();
+  handlers.get("session_start")({}, ctx);
+  handlers.get("input")({ source: "interactive" }, ctx);
+  handlers.get("session_before_compact")({ signal: summary.signal }, ctx);
+  handlers.get("input")({ source: "extension" }, ctx);
+  assert.deepEqual(requestTrace(root, "fresh-summary-id", context, summary.signal), {
+    rootSessionId: root, sessionId: "fresh-summary-id", callKind: "compaction",
+    origin: "interactive-input", triggerOrigin: "interactive-input",
+  });
+  assert.equal(requestTrace(root, root, context, unrelated.signal).callKind, "assistant");
+  assert.equal(requestTrace(root, "child", context, unrelated.signal).callKind, "assistant");
+  assert.equal(requestTrace("other-root", "child", context, summary.signal).callKind, "assistant");
+  handlers.get("session_compact_failed")({}, ctx);
+  assert.equal(requestTrace(root, "fresh-summary-id", context, summary.signal).callKind, "assistant");
+  handlers.get("session_before_tree")({ signal: summary.signal, preparation: { userWantsSummary: true } }, ctx);
+  assert.equal(requestTrace(root, "fresh-tree-id", context, summary.signal).callKind, "branch-summary");
+  handlers.get("session_tree")({}, ctx);
+  assert.equal(requestTrace(root, "fresh-tree-id", context, summary.signal).callKind, "assistant");
+  handlers.get("session_before_tree")({ signal: summary.signal, preparation: { userWantsSummary: false } }, ctx);
+  assert.equal(requestTrace(root, "fresh-tree-id", context, summary.signal).callKind, "assistant");
+  handlers.get("session_before_compact")({ signal: summary.signal }, ctx);
+  summary.abort();
+  assert.equal(requestTrace(root, "fresh-summary-id", context, summary.signal).callKind, "assistant");
+  handlers.get("session_shutdown")({}, ctx);
 });
 
 test("continuation diagnostics identify shape and history changes without logging payloads", () => {

@@ -35,6 +35,7 @@ export interface Exchange {
   compression?: Compression;
   trace?: RequestTrace;
   inferenceRequestId?: string;
+  onFallback?: (phase: "connect" | "prewarm" | "stream") => void;
 }
 
 export interface WireHooks {
@@ -188,6 +189,14 @@ export class WireTransport {
       turnStatePresent: headers.has("x-codex-turn-state") });
   }
 
+  private useSse(exchange: Exchange, phase: "connect" | "prewarm" | "stream"): void {
+    if (this.fallback) return;
+    this.fallback = true;
+    this.diagnostics.write({ kind: "fallback", ...exchange.trace, requestId: exchange.requestId, phase, to: "sse" });
+    // UI observers must not replace the transport failure or prevent cleanup.
+    try { exchange.onFallback?.(phase); } catch { /* The diagnostic remains available. */ }
+  }
+
   private async connect(exchange: Exchange): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) return this.socket;
     this.close();
@@ -242,6 +251,9 @@ export class WireTransport {
     let finished = false;
     let retriedMissingResponse = false;
     let sawOutput = false;
+    const startedAt = Date.now();
+    let lastEventAt = startedAt;
+    let events = 0;
     const completedOutput = new CompletedResponseOutput();
     let cancel = () => {};
     const stream = new ReadableStream<Uint8Array>({
@@ -254,17 +266,28 @@ export class WireTransport {
           this.activeCancel = undefined;
           this.busy = false;
         };
-        const fail = (reason: Error) => {
+        const fail = (error: Error, reason = "protocol", closeCode?: number) => {
           if (finished) return;
           finished = true; cleanup(); this.continuation = undefined;
-          socket.terminate(); controller.error(reason);
+          const failedAt = Date.now();
+          this.diagnostics.write({ kind: "websocket-failure", ...exchange.trace,
+            requestId: exchange.requestId, attemptId, prewarm, reason, closeCode,
+            elapsedMs: failedAt - startedAt, idleMs: failedAt - lastEventAt, events, sawOutput });
+          // Do not replay this failed stream. The caller owns retries and any
+          // partial output; its next request can use HTTPS within that budget.
+          if (!prewarm && !exchange.signal?.aborted &&
+            ["closed", "socket-error", "send-error", "idle-timeout"].includes(reason)) {
+            this.useSse(exchange, "stream");
+          }
+          socket.terminate(); controller.error(error);
         };
         const resetTimer = () => {
           clearTimeout(timer);
-          timer = setTimeout(() => fail(new Error("Codex WebSocket stream timed out")), exchange.timeoutMs);
+          timer = setTimeout(() => fail(new Error("Codex WebSocket stream timed out"), "idle-timeout"), exchange.timeoutMs);
         };
         const message = (data: WebSocket.RawData) => {
           if (finished) return;
+          lastEventAt = Date.now(); events++;
           resetTimer();
           let event: JsonObject;
           try { event = object(JSON.parse(data.toString())); }
@@ -308,7 +331,7 @@ export class WireTransport {
               inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
               transport: "websocket", retry: "missing-continuation", continuationReason: "missing-continuation" });
             socket.send(JSON.stringify({ type: "response.create", ...retryBody }), sendError => {
-              if (sendError) fail(new Error("Codex WebSocket retry failed"));
+              if (sendError) fail(new Error("Codex WebSocket retry failed"), "send-error");
             });
             return;
           }
@@ -335,17 +358,17 @@ export class WireTransport {
             finished = true; cleanup(); controller.close();
           }
         };
-        const error = () => fail(new Error("Codex WebSocket stream failed"));
-        const closed = () => fail(new Error("Codex WebSocket closed before completion"));
-        const aborted = () => fail(new DOMException("Request aborted", "AbortError"));
-        cancel = () => fail(new DOMException("Request cancelled", "AbortError"));
+        const error = () => fail(new Error("Codex WebSocket stream failed"), "socket-error");
+        const closed = (code: number) => fail(new Error("Codex WebSocket closed before completion"), "closed", code);
+        const aborted = () => fail(new DOMException("Request aborted", "AbortError"), "aborted");
+        cancel = () => fail(new DOMException("Request cancelled", "AbortError"), "cancelled");
         this.activeCancel = cancel;
         socket.on("message", message); socket.once("error", error); socket.once("close", closed);
         exchange.signal?.addEventListener("abort", aborted, { once: true });
         resetTimer();
         if (exchange.signal?.aborted) { aborted(); return; }
         socket.send(JSON.stringify({ type: "response.create", ...body }), sendError => {
-          if (sendError) fail(new Error("Codex WebSocket send failed"));
+          if (sendError) fail(new Error("Codex WebSocket send failed"), "send-error");
         });
       },
       cancel: () => cancel(),
@@ -391,8 +414,7 @@ export class WireTransport {
       } catch (error) {
         this.busy = false;
         if (exchange.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
-        this.fallback = true;
-        this.diagnostics.write({ kind: "fallback", requestId: exchange.requestId, phase: "connect", to: "sse" });
+        this.useSse(exchange, "connect");
         return this.sse(exchange);
       }
       if (this.prewarmEnabled && !this.prewarmed) {
@@ -410,8 +432,7 @@ export class WireTransport {
             if (!error.replaySafe || reconnects >= 1) throw error;
             return this.reconnectExpired(exchange, reconnects, "prewarm");
           }
-          this.close(); this.fallback = true;
-          this.diagnostics.write({ kind: "fallback", requestId: exchange.requestId, phase: "prewarm", to: "sse" });
+          this.close(); this.useSse(exchange, "prewarm");
           return this.sse(exchange);
         }
         this.busy = true;
