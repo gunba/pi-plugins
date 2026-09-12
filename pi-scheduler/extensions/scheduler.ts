@@ -116,16 +116,19 @@ export default function (pi: ExtensionAPI): void {
     return "Invalid delay. Use minutes, hours, or days like 15m, 5h, 5.5h, or 30d.";
   }
 
-  function cancelMessages(ctx: ExtensionContext, selector: string): { cancelled: ScheduledMessage[]; ambiguous: boolean } {
+  function cancelMessages(ctx: ExtensionContext, selector: string): { cancelled: ScheduledMessage[]; ambiguous: boolean; alreadyDelivered: boolean } {
     const normalized = selector.trim().replace(/^#/, "");
     if (!normalized) throw new Error("Schedule id cannot be empty.");
     const store = storeFor(ctx);
-    store.claimDue(-Infinity, admittedMessages(ctx));
+    const admitted = admittedMessages(ctx);
+    store.claimDue(-Infinity, admitted);
+    for (const id of admitted) attempted.delete(id);
     const result = store.cancel(normalized);
     for (const entry of result.cancelled)
       completeWorkResource(sessionId(ctx), { kind: "timer", id: entry.id }, `Scheduled timer #${entry.id} was cancelled.`);
     armTimer(ctx);
-    return result;
+    refreshWidget(ctx);
+    return { ...result, alreadyDelivered: admitted.has(normalized) };
   }
 
   function admittedMessages(ctx: ExtensionContext): Set<string> {
@@ -163,6 +166,17 @@ export default function (pi: ExtensionAPI): void {
       message: entry.message,
       delivery: entry.delivery,
     };
+  }
+
+  function reconcileAdmissions(ctx: ExtensionContext): void {
+    if (!attempted.size || !activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
+    const admitted = admittedMessages(ctx);
+    const confirmed = new Set(sessionMessages(ctx).filter(entry => admitted.has(entry.id)).map(entry => entry.id));
+    if (!confirmed.size) return;
+    storeFor(ctx).claimDue(-Infinity, confirmed);
+    for (const id of confirmed) attempted.delete(id);
+    refreshWidget(ctx);
+    armTimer(ctx);
   }
 
   function scheduledDeliveryContent(entry: ScheduledMessage): string {
@@ -281,7 +295,7 @@ export default function (pi: ExtensionAPI): void {
   }
 
   function scheduledExpandedHeader(theme: Theme, width: number, message: ScheduledMessage): string {
-    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", formatRemaining(message.dueAt))}`;
+    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", deliveryStatus(message))}`;
     const at = theme.fg("dim", formatDueAt(message.dueAt));
     return truncateToWidth(`${left} ${at}`, width);
   }
@@ -326,7 +340,7 @@ export default function (pi: ExtensionAPI): void {
   }
 
   function scheduledRow(theme: Theme, width: number, message: ScheduledMessage): string {
-    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", formatRemaining(message.dueAt))}`;
+    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", deliveryStatus(message))}`;
     const at = theme.fg("dim", formatDueAt(message.dueAt));
     const previewWidth = Math.max(12, width - visibleWidth(left) - visibleWidth(at) - 6);
     const preview = truncateToWidth(displayText(message.message).replace(/\s+/g, " ").trim(), Math.min(MAX_MESSAGE_PREVIEW, previewWidth));
@@ -363,6 +377,10 @@ export default function (pi: ExtensionAPI): void {
     return `in ${seconds}s`;
   }
 
+  function deliveryStatus(message: ScheduledMessage): string {
+    return attempted.has(message.id) ? "delivery pending" : formatRemaining(message.dueAt);
+  }
+
   function formatDueAt(dueAt: number): string {
     return new Date(dueAt).toLocaleString(undefined, {
       month: "short",
@@ -373,12 +391,13 @@ export default function (pi: ExtensionAPI): void {
   }
 
   function notifyScheduleList(ctx: ExtensionContext): void {
+    reconcileAdmissions(ctx);
     const messages = sessionMessages(ctx);
     if (!messages.length) {
       ctx.ui.notify("No scheduled messages for this session.", "info");
       return;
     }
-    const lines = messages.map((message) => `#${message.id} ${formatRemaining(message.dueAt)} (${formatDueAt(message.dueAt)}): ${displayText(message.message)}`);
+    const lines = messages.map((message) => `#${message.id} ${deliveryStatus(message)} (${formatDueAt(message.dueAt)}): ${displayText(message.message)}`);
     ctx.ui.notify(lines.join("\n"), "info");
   }
 
@@ -450,10 +469,10 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "schedule",
     label: "Schedule message",
-    description: "Schedule a labelled future message back to this same Pi session. When it becomes due during an active run, it is delivered as steering so it updates the current work instead of starting a delayed follow-up.",
+    description: "Schedule a message after a genuine time-based delay. Use work-completion notifications or wait_for_work for tracked processes and agents, not a short reminder to check whether they finished. Due messages steer an active run.",
     promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
     promptGuidelines: [
-      "Use schedule when you need to be reminded or re-contacted after a real-world delay instead of polling manually.",
+      "Use schedule for a real-world time-based follow-up. For tracked processes or agents, use completion notifications or wait_for_work rather than scheduling a completion check.",
       "Write the scheduled message with enough context that you can resume the task when it is delivered.",
       "Messages created with schedule always steer an active run rather than queueing a follow-up.",
       "Delays use minutes, hours, or days, for example `15m`, `5h`, `5.5h`, or `30d`.",
@@ -503,8 +522,14 @@ export default function (pi: ExtensionAPI): void {
       const selector = params.id.trim();
       if (!selector) throw new Error("Schedule id cannot be empty.");
 
-      const { cancelled, ambiguous } = cancelMessages(ctx, selector);
+      const { cancelled, ambiguous, alreadyDelivered } = cancelMessages(ctx, selector);
       if (ambiguous) throw new Error(`Schedule id ${displayText(selector)} is ambiguous; use more characters.`);
+      if (!cancelled.length && alreadyDelivered) {
+        return {
+          content: [{ type: "text", text: `Scheduled message #${displayText(selector)} was already delivered.` }],
+          details: { selector, count: 0, alreadyDelivered: true, cancelled: [] },
+        };
+      }
       if (!cancelled.length) throw new Error(`No cancellable scheduled message matched ${displayText(selector)}; it may already be delivering.`);
 
       const confirmation = cancellationConfirmation(cancelled);
@@ -559,9 +584,10 @@ export default function (pi: ExtensionAPI): void {
       }
       const cancelMatch = trimmed.match(/^cancel\s+(\S+)$/i);
       if (cancelMatch) {
-        const { cancelled, ambiguous } = cancelMessages(ctx, cancelMatch[1]!);
+        const { cancelled, ambiguous, alreadyDelivered } = cancelMessages(ctx, cancelMatch[1]!);
         if (ambiguous) ctx.ui.notify(`Schedule id ${displayText(cancelMatch[1]!)} is ambiguous; use more characters.`, "error");
         else if (cancelled.length) ctx.ui.notify(cancellationConfirmation(cancelled), "info");
+        else if (alreadyDelivered) ctx.ui.notify(`Scheduled message #${displayText(cancelMatch[1]!)} was already delivered.`, "info");
         else ctx.ui.notify(`No cancellable scheduled message matched ${displayText(cancelMatch[1]!)}; it may already be delivering.`, "error");
         refreshWidget(ctx);
         return;
@@ -596,6 +622,12 @@ export default function (pi: ExtensionAPI): void {
   pi.on("agent_settled", (_event, ctx) => {
     if (!activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
     try { storeFor(ctx).claimDue(-Infinity, admittedMessages(ctx)); refreshWidget(ctx); armTimer(ctx); }
+    catch (error) { reportError(ctx, error); }
+  });
+  pi.on("context", (_event, ctx) => {
+    // A steering message can be persisted while the agent remains active for
+    // many turns. Check its durable receipt without waiting for idle settlement.
+    try { reconcileAdmissions(ctx); }
     catch (error) { reportError(ctx, error); }
   });
 }

@@ -31,7 +31,8 @@ for (const width of [0, 1, 2, 8, 16, 24, 40, 80, 132, 240]) {
 
 test("collapsed summaries retain priority state and current task, without a global expansion control", () => {
 	const lines = workPanelLines(snapshot(), plain, 120);
-	assert.match(lines[1], /Goal active · armed · 3\/50 · Verify/);
+	assert.match(lines[1], /Goal active · armed · Verify/);
+	assert.doesNotMatch(lines[1], /3\/50/);
 	assert.match(lines[2], /Todos 1\/3 done · 1 active · 1 pending · current/);
 	assert.match(lines[3], /Subagents ! 1 attention · 1 running/);
 	assert.match(workPanelLines(snapshot(), plain, 24)[3], /! 1 attention/);
@@ -103,6 +104,8 @@ test("goal projections preserve pause, completion, blocker and corruption state"
 		const section = goalWorkSection({ ...goal, phase, activation: "disarmed", blockedReason: phase === "blocked" ? { code: "round-limit", message: "Too many rounds\nMore detail" } : undefined });
 		assert.match(section.status, new RegExp(phase));
 		assert.match(section.detail, /disarmed/);
+		assert.doesNotMatch(section.status, /\d+\/\d+/);
+		assert.match(section.detail, /Automatic continuations: 3 \(limit 50\)/);
 		if (phase === "blocked") assert.match(section.detail, /round-limit: Too many rounds\nMore detail/);
 	}
 	assert.equal(goalWorkSection(undefined, "bad history").tone, "error");

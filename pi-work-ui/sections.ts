@@ -20,14 +20,15 @@ export function goalWorkSection(goal: GoalState | undefined, corruption?: string
 	const activation = goal.phase === "active" ? ` · ${goal.activation}` : "";
 	return {
 		label: "Goal",
-		status: `${goal.phase === "blocked" ? "! " : ""}${goal.phase}${activation} · ${goal.roundsStarted}/${goal.maxGoalRounds}`,
+		status: `${goal.phase === "blocked" ? "! " : ""}${goal.phase}${activation}`,
 		summary: goal.objective,
 		tone: goal.phase === "blocked" ? "warning" : goal.phase === "complete" ? "success" : goal.phase === "paused" ? "muted" : "accent",
 		detail: [
 			goal.objective,
 			"",
 			`State: ${goal.phase} · ${goal.activation}`,
-			`Rounds: ${goal.roundsStarted}/${goal.maxGoalRounds} · Revision: ${goal.revision} · ID: ${goal.id}`,
+			`Automatic continuations: ${goal.roundsStarted} (limit ${goal.maxGoalRounds})`,
+			`Revision: ${goal.revision} · ID: ${goal.id}`,
 			...(goal.blockedReason ? ["", `Blocked: ${goal.blockedReason.code}: ${goal.blockedReason.message}`] : []),
 			"", "Manage with /goal; viewing this panel does not change or resume the goal.",
 		].join("\n"),

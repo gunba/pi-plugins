@@ -27,11 +27,12 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   in assistant Markdown against the session working directory, using absolute
   file URLs for terminal Ctrl+click. Applies during streaming and history
   restoration without changing saved messages or model context.
-- `pi-web-search` — adds one `web_search` tool, labelled `web.run`, based on
+- [`pi-web-search`](pi-web-search/README.md) — adds one `web_search` tool, labelled `web.run`, based on
   Codex's standalone search client. It sends Codex-compatible commands directly
   to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no
   provider router, fallback provider, summary workflow, or separately selected
-  model.
+  model. Native citation references render as readable terminal text without
+  altering the model's source evidence.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that
   provides the interactive `ask_user` tool without loading the upstream
   mandatory decision-gate skill by default.

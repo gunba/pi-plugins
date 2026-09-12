@@ -103,6 +103,78 @@ for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, 
 });
 
 const storeUrl = new URL("../extensions/store.ts", import.meta.url).href;
+
+test("active steering receipts clear the widget without idle settlement or early acknowledgement", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const dir = mkdtempSync(join(tmpdir(), "scheduler-active-receipt-"));
+  const old = process.env.PI_SCHEDULER_DIR;
+  process.env.PI_SCHEDULER_DIR = dir;
+  const { default: extension } = await import("../extensions/scheduler.ts?active-receipt");
+  const h = harness(dir);
+  extension(h.pi);
+  try {
+    await h.events.get("session_start")({}, h.ctx);
+    const first = await h.tools.get("schedule").execute("first", { delay: "1m", message: "first" });
+    const later = await h.tools.get("schedule").execute("later", { delay: "5m", message: "later" });
+    const store = new ScheduleStore(dir, "session");
+    t.mock.timers.tick(60_000);
+    assert.equal(h.sent.length, 1);
+    h.ctx.ui.getToolsExpanded = () => true;
+    assert.match(h.widget().render(140).join("\n"), /delivery pending/);
+    const message = h.sent[0].message;
+    const event = { messages: [{ role: "custom", ...message }] };
+    await h.events.get("context")(event, h.ctx);
+    assert.equal(store.list().length, 2, "context visibility alone is not a saved receipt");
+    appendFileSync(h.file, JSON.stringify({ type: "custom_message", customType: message.customType, details: message.details }));
+    await h.events.get("context")(event, h.ctx);
+    assert.equal(store.list().length, 2, "unfinished append cannot acknowledge delivery");
+    appendFileSync(h.file, "\n");
+    const original = readFileSync(h.file);
+    await h.events.get("context")(event, h.ctx);
+    assert.deepEqual(store.list().map(entry => entry.id), [later.details.id]);
+    assert.ok(!h.widget().render(140).join("\n").includes(first.details.id));
+    assert.ok(h.widget().render(140).join("\n").includes(later.details.id));
+    await h.events.get("context")(event, h.ctx);
+    assert.equal(h.sent.length, 1, "reconciliation does not send another reminder");
+    assert.deepEqual(readFileSync(h.file), original);
+  } finally {
+    await h.events.get("session_shutdown")({}, h.ctx);
+    if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cancel reports an admitted delivery and clears stale UI even on a no-match error", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const dir = mkdtempSync(join(tmpdir(), "scheduler-cancel-receipt-"));
+  const old = process.env.PI_SCHEDULER_DIR;
+  process.env.PI_SCHEDULER_DIR = dir;
+  const { default: extension } = await import("../extensions/scheduler.ts?cancel-receipt");
+  const h = harness(dir);
+  extension(h.pi);
+  try {
+    await h.events.get("session_start")({}, h.ctx);
+    const scheduled = await h.tools.get("schedule").execute("first", { delay: "1m", message: "first" });
+    t.mock.timers.tick(60_000);
+    const cancel = h.tools.get("cancel_scheduled_message");
+    await assert.rejects(cancel.execute("claimed", { id: scheduled.details.id }), /may already be delivering/);
+    assert.ok(h.widget(), "unacknowledged delivery remains visible and recoverable");
+    const { message } = h.sent[0];
+    appendFileSync(h.file, JSON.stringify({ type: "custom_message", customType: message.customType, details: message.details }) + "\n");
+    await assert.rejects(cancel.execute("unknown", { id: "unknown" }), /No cancellable/);
+    assert.equal(h.widget(), undefined, "the no-match branch must refresh the old snapshot");
+    const result = await cancel.execute("admitted", { id: scheduled.details.id });
+    assert.equal(result.details.alreadyDelivered, true);
+    assert.match(result.content[0].text, /already delivered/);
+    assert.deepEqual(new ScheduleStore(dir, "session").list(), []);
+    assert.equal(h.sent.length, 1);
+  } finally {
+    await h.events.get("session_shutdown")({}, h.ctx);
+    if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function worker(dir, code) {
   return spawn(process.execPath, ["--input-type=module", "-e", `import { ScheduleStore } from ${JSON.stringify(storeUrl)};
     const store = new ScheduleStore(${JSON.stringify(dir)}, 'shared'); ${code}`], { stdio: ["ignore", "pipe", "pipe"] });

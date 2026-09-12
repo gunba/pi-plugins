@@ -10,6 +10,7 @@ import {
 	CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
 	isChatGptCodexModel,
 } from "../../pi-codex-compat/extensions/model-tools.ts";
+import { renderSearchResult } from "./render.ts";
 
 const MAX_ERROR_CHARS = 2_000;
 
@@ -391,6 +392,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 			"When web_search returns sources, cite the supporting pages with Markdown links.",
 		],
 		parameters: WEB_SEARCH_PARAMETERS,
+		renderResult: renderSearchResult,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return executeWebSearch(params as WebSearchParams, signal, ctx);
 		},

@@ -2,6 +2,8 @@
 
 Goal, Todos, Subagents and Party share one compact panel above Pi's editor.
 Each section starts collapsed, with its state before the clipped preview.
+The Goal summary shows its phase and activation state; continuation usage,
+limit and revision remain in expanded details.
 
 In Pi's fullscreen mode, click a section header to expand or collapse just that
 section. Other sections keep their state. Tool results elsewhere in the
