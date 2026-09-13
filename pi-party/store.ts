@@ -12,6 +12,10 @@ export interface PartyMessage {
 	id: string; room: string; sender: string; sender_epoch: string; sender_label: string;
 	recipient: string; recipient_epoch: string; text: string; created: number; wake: number;
 }
+export interface HistoryCursor { created: number; id: string }
+export type HistoryQuery = { before: HistoryCursor } | { after: HistoryCursor } | { oldest: true } | undefined;
+export interface HistoryMessage extends PartyMessage { admitted: number; recipient_label: string }
+export interface HistoryPage { room: string; messages: HistoryMessage[]; hasOlder: boolean; hasNewer: boolean }
 
 /** One local-user database, independent of scheduler and session JSONL storage. */
 export class PartyStore {
@@ -38,6 +42,7 @@ export class PartyStore {
 				text TEXT NOT NULL, created INTEGER NOT NULL, wake INTEGER NOT NULL, admitted INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, recipient_epoch, admitted);
+			CREATE INDEX IF NOT EXISTS messages_history ON messages(room, created, id);
 		`);
 	}
 	close(): void { this.db.close(); }
@@ -87,6 +92,26 @@ export class PartyStore {
 	members(session: string, owner: string): Member[] {
 		const self = this.owned(session, owner);
 		return this.db.prepare("SELECT * FROM members WHERE room=? ORDER BY label,session").all(self.room) as unknown as Member[];
+	}
+	/** Read room history without admitting messages, renewing leases or reserving wakes. */
+	history(session: string, owner: string, query?: HistoryQuery): HistoryPage {
+		const self = this.owned(session, owner);
+		const cursor = query && ("before" in query ? query.before : "after" in query ? query.after : undefined);
+		const ascending = !!query && !("before" in query);
+		const comparison = query && "before" in query ? "<" : ">";
+		const rows = this.db.prepare(`SELECT m.*, COALESCE(sender.label, m.sender_label) AS sender_label,
+			COALESCE(recipient.label, 'Former member') AS recipient_label
+			FROM messages m LEFT JOIN members recipient ON recipient.session=m.recipient AND recipient.epoch=m.recipient_epoch
+			LEFT JOIN members sender ON sender.session=m.sender AND sender.epoch=m.sender_epoch
+			WHERE m.room=? ${cursor ? `AND (m.created,m.id) ${comparison} (?,?)` : ""}
+			ORDER BY m.created ${ascending ? "ASC" : "DESC"}, m.id ${ascending ? "ASC" : "DESC"} LIMIT 20`)
+			.all(self.room, ...(cursor ? [cursor.created, cursor.id] : [])) as unknown as HistoryMessage[];
+		if (!ascending) rows.reverse();
+		const first = rows[0], last = rows.at(-1);
+		const exists = (cursor: HistoryCursor, comparison: "<" | ">") => !!this.db.prepare(
+			`SELECT 1 FROM messages WHERE room=? AND (created,id) ${comparison} (?,?) LIMIT 1`,
+		).get(self.room, cursor.created, cursor.id);
+		return { room: self.room, messages: rows, hasOlder: !!first && exists(first, "<"), hasNewer: !!last && exists(last, ">") };
 	}
 	send(session: string, owner: string, target: string, text: string, wake: boolean): PartyMessage[] {
 		if (!text.trim()) throw Error("Party messages must contain non-whitespace text.");

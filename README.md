@@ -77,7 +77,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   changes the native compaction threshold and applies it through an automatic
   extension reload, without restarting Pi.
 - [`pi-party`](pi-party/README.md) — explicitly links independent main-agent
-  sessions through `/party <id>` and provides bounded peer messaging.
+  sessions through `/party <id>`, with readable message previews and a live
+  `/party chat` conversation viewer.
 - [`pi-browser-context`](pi-browser-context/README.md) — archived accessibility
   snapshot diffs and a focused browser skill for the existing Playwright backend.
 - `pi-goal` — adds one durable, branch-local completion objective with `/goal`,

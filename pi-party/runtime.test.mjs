@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateToolArguments } from "@earendil-works/pi-ai";
-import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createEventBus, initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
+import { PartyStore } from "./store.ts";
 import party, { deliveredPartyIds, PARTY_MESSAGE } from "./index.ts";
 import { pruneCompactedSession } from "../pi-session-memory/extensions/session-memory.ts";
 
@@ -86,6 +87,40 @@ test("reload reconnects membership but cannot wake inference until the human rea
 	await resumed.emit("input", { source: "terminal" });
 	await resumed.emit("before_agent_start");
 	assert.equal(resumed.sent.length, 1);
+});
+
+test("roster calls and opening live chat cannot arm, wake or acknowledge a dormant session", async t => {
+	environment(t);
+	initTheme("dark", false);
+	const a = harness(t, "first"), old = harness(t, "second");
+	await a.emit("session_start"); await old.emit("session_start");
+	await a.command("1"); await old.command("1"); await old.emit("session_shutdown");
+	await a.call("party_send", { to: "second", message: "**Waiting** for the next human turn" });
+	const b = harness(t, "second");
+	await b.emit("session_start");
+	b.ctx.mode = "tui";
+	let view;
+	b.ctx.ui.custom = (factory, options) => new Promise(resolve => {
+		assert.equal(options.overlay, true);
+		view = factory({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_color, text) => text, bold: text => text }, {}, resolve);
+	});
+	const connection = new PartyStore(join(process.env.PI_CODING_AGENT_DIR, "party"));
+	try {
+		const owner = connection.member("second").owner;
+		const before = JSON.stringify([connection.pending("second", owner), connection.member("second").wakes]);
+		const opening = b.command("chat");
+		assert.ok(view);
+		assert.match(view.render(100).join("\n"), /Waiting/);
+		await a.call("party_members"); await b.call("party_members");
+		t.mock.timers.tick(30_000);
+		view.handleInput("\x1b[H"); view.render(100); view.handleInput("\x1b[F"); view.refresh();
+		assert.equal(a.sent.length, 0);
+		assert.equal(b.sent.length, 0);
+		assert.equal(JSON.stringify([connection.pending("second", owner), connection.member("second").wakes]), before);
+		await b.emit("session_tree");
+		await opening;
+		assert.deepEqual(view.render(100), []);
+	} finally { connection.close(); }
 });
 
 test("party_send accepts and delivers large messages without a schema or runtime length cap", async t => {

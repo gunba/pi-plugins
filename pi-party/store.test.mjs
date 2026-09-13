@@ -110,6 +110,42 @@ test("large Unicode messages survive broadcast and independent database reads in
 	}
 });
 
+test("history pages are complete, ordered, room-scoped and cannot admit or wake recipients", t => {
+	const { a, b } = fixture(t);
+	a.join("first", "a", "chat", "Studio cleanup");
+	b.join("second", "b", "chat", "Copilot Skills");
+	a.join("other", "c", "elsewhere", "Other room");
+	a.join("other-peer", "d", "elsewhere", "Other peer");
+	a.send("other", "c", "other-peer", "Private to another room", true);
+	const messages = Array.from({ length: 53 }, (_, i) => a.send("first", "a", "second", i === 0 ? "Long Unicode 🧪\n".repeat(10000) : `Message ${i}`, true)[0]);
+	b.admit("second", "b", messages.slice(0, 25).map(message => message.id));
+	const state = JSON.stringify([b.member("second"), b.pending("second", "b")]);
+	const latest = b.history("second", "b");
+	assert.equal(latest.messages.length, 20);
+	assert.equal(latest.hasOlder, true);
+	assert.equal(latest.hasNewer, false);
+	const middle = b.history("second", "b", { before: latest.messages[0] });
+	const first = b.history("second", "b", { before: middle.messages[0] });
+	const all = [...first.messages, ...middle.messages, ...latest.messages];
+	assert.equal(all.length, 53);
+	assert.equal(new Set(all.map(message => message.id)).size, 53);
+	assert.deepEqual(all.map(message => message.id), messages.map(message => message.id).sort());
+	assert.equal(all.find(message => message.id === messages[0].id).text, messages[0].text);
+	assert.ok(all.every(message => message.sender_label === "Studio cleanup" && message.recipient_label === "Copilot Skills"));
+	assert.equal(all.filter(message => message.admitted).length, 25);
+	assert.equal(first.hasOlder, false);
+	assert.equal(first.hasNewer, true);
+	assert.deepEqual(b.history("second", "b", { oldest: true }).messages.map(message => message.id), all.slice(0, 20).map(message => message.id));
+	assert.deepEqual(b.history("second", "b", { after: middle.messages.at(-1) }).messages, latest.messages);
+	assert.equal(JSON.stringify([b.member("second"), b.pending("second", "b")]), state);
+	assert.throws(() => b.history("second", "wrong-owner"), /owned/);
+	b.touch("second", "b", "idle", "Renamed conversation");
+	assert.equal(a.history("first", "a").messages[0].recipient_label, "Renamed conversation");
+	b.admit("second", "b", messages.map(message => message.id));
+	b.leave("second", "b");
+	assert.equal(a.history("first", "a").messages[0].recipient_label, "Former member");
+});
+
 test("independent Node processes commit messages through the shared SQLite store", { timeout: 30000 }, async t => {
 	const { a, directory } = fixture(t);
 	a.join("recipient", "parent", "ipc", "Recipient");
