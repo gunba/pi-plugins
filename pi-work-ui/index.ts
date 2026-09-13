@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SECTION_ORDER, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
 import { InlineWorkView } from "./inline.ts";
-import { WORKSPACE_DISCOVER } from "../pi-workspace/api.ts";
 export { safeWorkText, workPanelLines } from "./view.ts";
 export type { WorkSection, WorkSectionId, WorkSnapshot } from "./view.ts";
 
@@ -21,8 +20,6 @@ export interface WorkUiSource {
 
 /** Presentation only: no persistence, inference, session writes, editor or footer overrides. */
 export class WorkUi {
-	private workspace: () => boolean;
-	constructor(workspace = () => false) { this.workspace = workspace; }
 	private ctx: ExtensionContext | undefined;
 	private generation = 0;
 	private closed = false;
@@ -133,7 +130,7 @@ export class WorkUi {
 				if (this.active(generation)) this.listeners.add(changed);
 				return {
 					render: (width) => disposed || !this.active(generation) ? [] : this.inline.render(
-						this.currentSnapshot, theme, width, this.workspace() ? Math.max(3, tui.terminal.rows - 4) : Math.max(3, Math.min(24, Math.floor(tui.terminal.rows / 2))),
+						this.currentSnapshot, theme, width, Math.max(3, Math.min(24, Math.floor(tui.terminal.rows / 2))),
 					),
 					handleMouse: (event) => disposed || !this.active(generation) ? undefined : this.inline.handleMouse(event),
 					invalidate: () => this.inline.invalidate(),
@@ -163,7 +160,7 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	const probe: { ui?: WorkUi } = {};
 	pi.events.emit(DISCOVER, probe);
 	if (probe.ui) return probe.ui;
-	const ui = new WorkUi(() => { const request: { workspace?: unknown } = {}; pi.events.emit(WORKSPACE_DISCOVER, request); return Boolean(request.workspace); });
+	const ui = new WorkUi();
 	const release = pi.events.on(DISCOVER, (value) => {
 		if (value && typeof value === "object") (value as typeof probe).ui = ui;
 	});
