@@ -143,7 +143,18 @@ export function createExtensionHarness(options = {}) {
 				content: [{ type: "text", text }],
 				timestamp: Date.now(),
 			});
+			const message = contextMessages.at(-1);
+			await emit("message_start", { message });
+			await emit("message_end", { message });
 			await emit("context", { messages: structuredClone(contextMessages) });
+		},
+		async deliver(messages) {
+			for (const message of messages) {
+				await emit("message_start", { message });
+				await emit("message_end", { message });
+			}
+			contextMessages.push(...messages);
+			return emit("context", { messages: structuredClone(contextMessages) });
 		},
 		async admitLastRound() {
 			const sentIndex = sentMessages.length - 1;

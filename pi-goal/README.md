@@ -2,7 +2,7 @@
 
 Pi Goal adds one durable, branch-local completion goal to a Pi session. It can continue substantial work through bounded, same-session model rounds while keeping human controls and terminal reporting explicit.
 
-Built for Pi **0.84.2**.
+Built for Pi **0.85.1**.
 
 The repository root package loads this extension automatically. For isolated development, run:
 
@@ -45,19 +45,21 @@ The extension also registers three sequential model tools:
 - Visible continuation messages carry the model prompt and transcript presentation. Their objective is JSON-quoted, so multiline and tag-like text remains data inside `<goal_round>`.
 - `agent_settled` drives at most one next round. An in-memory reservation prevents duplicate dispatch.
 - Autonomous completion and blocking add one no-tools closing instruction for the model’s user-facing wrap-up.
-- `/goal` output is a non-model custom entry. Commands, rounds and tool calls retain their transcript renderers. Goal state appears collapsed in the shared Work panel, alongside todos and subagents. `/work goal` shows the full objective, phase, activation, round count and blocker in a bounded, scrollable overlay without changing or re-arming the goal.
+- `/goal` output is a non-model custom entry. Commands, rounds and tool calls retain their transcript renderers. Goal state appears collapsed in the shared Work panel, alongside todos and subagents. Expand its section to see the objective, activation, round count and blocker.
 
 ## Authority
 
-Pi Goal records ordered input markers for both human and extension sources. It grants direct-human authority only when a message for that delivery class has content matching an `interactive` or `rpc` marker. One match admits the whole current agent run, including a group of human messages that Pi flushes together after compaction. The grant lasts until `agent_settled`, so tool calls, subagent notices, scheduler messages, and later context normalization cannot revoke it. Steering inputs are matched before queued follow-ups, mirroring Pi's queue order, so extension steering cannot consume an earlier human follow-up marker. Immediate skill and template expansion is rebound through `before_agent_start`. A transformed queued input fails closed because Pi exposes no equivalent boundary when it later leaves the queue.
+Pi Goal records ordered input markers for both human and extension sources. It grants direct-human authority when Pi admits a new user message through `message_start` whose text and image payload matches an `interactive` or `rpc` marker. Pi awaits this event before preparing model context. Checkpoint carriers, restored history and other context transformations cannot consume a marker or grant authority. One match authorizes the current agent run, including a group of human messages that Pi flushes together after compaction. The grant lasts until `agent_settled`, so tool calls, subagent notices and scheduler messages cannot revoke it. Steering inputs are matched before queued follow-ups, mirroring Pi's queue order. Immediate skill and template expansion is rebound through `before_agent_start`. A transformed queued input fails closed because Pi exposes no equivalent boundary when it later leaves the queue.
 
-Direct-human turns may let the model create, edit, pause, resume, complete, or block a goal. An automatic round may only complete or block the exact goal revision and admitted round that the extension reserved; that authority also lasts until the round's agent run settles. Goal tools do not grant direct-human mutation authority inside Pi Subagents child processes. Arbitrary context values are fingerprinted without JSON serialization; unsupported values clear pending input markers but cannot revoke authority that the current run has already admitted.
+Direct-human turns may let the model create, edit, pause, resume, complete, or block a goal. An automatic round may only complete or block the exact goal revision and admitted round that the extension reserved; that authority also lasts until the round's agent run settles. Goal tools do not grant direct-human mutation authority inside Pi Subagents child processes. Only input payload hashes are retained for matching; conversation history and peer message bodies are not scanned for authority.
 
-This is the strongest authority boundary exposed by Pi 0.84.2. Extensions share the Pi process and are trusted code.
+An active goal restored as **disarmed** still exists, but cannot continue automatically until resumed. Disarming does not prohibit an authorized human turn from editing or completing it. Clearing a goal removes its state; it does not authorize a subsequent peer-only turn to create a replacement.
+
+Extensions share the Pi process and are trusted code.
 
 ## Pi semantic gaps
 
-Pi 0.84.2 does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
+Pi 0.85.1 does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
 
 - Custom messages lose typed source attribution when Pi converts them to model input. Another trusted extension can imitate a goal message.
 - Registered command handlers run before Pi emits `input` and receive no source metadata. A trusted extension can therefore invoke `/goal` controls through `sendUserMessage(..., { expandPromptTemplates: true })`; source isolation for `/goal` requires a Pi host change or replacing the registered command path.

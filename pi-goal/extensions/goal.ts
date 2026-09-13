@@ -167,72 +167,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function valueFingerprint(value: unknown): string | undefined {
-	try {
-		const seen = new WeakMap<object, number>();
-		let nextReference = 0;
-		const encode = (candidate: unknown): string => {
-			if (candidate === null) return "null";
-			switch (typeof candidate) {
-				case "undefined": return "undefined";
-				case "boolean": return candidate ? "true" : "false";
-				case "string": return `string:${JSON.stringify(candidate)}`;
-				case "bigint": return `bigint:${candidate.toString(10)}`;
-				case "number": {
-					if (Number.isNaN(candidate)) return "number:NaN";
-					if (Object.is(candidate, -0)) return "number:-0";
-					return `number:${String(candidate)}`;
-				}
-				case "object": break;
-				default: throw new TypeError(`unsupported fingerprint value: ${typeof candidate}`);
-			}
-			const object = candidate as object;
-			const priorReference = seen.get(object);
-			if (priorReference !== undefined) return `reference:${priorReference}`;
-			const reference = nextReference;
-			nextReference += 1;
-			seen.set(object, reference);
-			if (Array.isArray(object)) {
-				return `array:${reference}:[${object.map((item) => encode(item)).join(",")}]`;
-			}
-			if (object instanceof Date) return `date:${reference}:${object.toISOString()}`;
-			if (object instanceof RegExp) return `regexp:${reference}:${object.source}/${object.flags}`;
-			if (object instanceof Map) {
-				return `map:${reference}:[${[...object].map(([key, item]) =>
-					`${encode(key)}=>${encode(item)}`).join(",")}]`;
-			}
-			if (object instanceof Set) {
-				return `set:${reference}:[${[...object].map((item) => encode(item)).join(",")}]`;
-			}
-			if (ArrayBuffer.isView(object)) {
-				const bytes = new Uint8Array(object.buffer, object.byteOffset, object.byteLength);
-				return `view:${reference}:${object.constructor.name}:${Buffer.from(bytes).toString("base64")}`;
-			}
-			if (object instanceof ArrayBuffer) {
-				return `buffer:${reference}:${Buffer.from(object).toString("base64")}`;
-			}
-			const keys = Reflect.ownKeys(object);
-			if (keys.some((key) => typeof key === "symbol")) {
-				throw new TypeError("symbol-keyed values cannot be fingerprinted");
-			}
-			const names = (keys as string[]).sort();
-			const fields = names.map((name) => {
-				const descriptor = Object.getOwnPropertyDescriptor(object, name);
-				if (descriptor === undefined || !("value" in descriptor)) {
-					throw new TypeError("accessor values cannot be fingerprinted");
-				}
-				return `${JSON.stringify(name)}:${encode(descriptor.value)}`;
-			});
-			return `object:${reference}:{${fields.join(",")}}`;
-		};
-		return createHash("sha256").update(encode(value)).digest("base64url");
-	} catch {
-		return undefined;
+/** Compare admitted user payloads only; model context is not an input boundary. */
+function contentFingerprint(content: unknown): string | undefined {
+	if (!Array.isArray(content)) return undefined;
+	const hash = createHash("sha256");
+	for (const block of content) {
+		if (!isRecord(block)) return undefined;
+		if (block.type === "text" && typeof block.text === "string") {
+			hash.update(JSON.stringify(["text", block.text]));
+		} else if (block.type === "image" && typeof block.mimeType === "string" && typeof block.data === "string") {
+			hash.update(JSON.stringify(["image", block.mimeType, block.data]));
+		} else return undefined;
 	}
+	return hash.digest("base64url");
 }
 
 function userContentFingerprint(text: string, images: readonly unknown[] | undefined): string | undefined {
-	return valueFingerprint([
+	return contentFingerprint([
 		{ type: "text", text },
 		...(images ?? []),
 	]);
@@ -308,8 +259,6 @@ class GoalController {
 	private readonly topLevel: boolean;
 	private authority: GoalAuthority = { kind: "none" };
 	private pendingInputs: PendingInput[] = [];
-	private readonly seenContextMessages = new Map<string, number>();
-	private latestIngress: readonly unknown[] = [];
 	private attempt: GoalAttempt | undefined;
 	private pendingWrapup: string | undefined;
 	private lastStopReason: AssistantStopReason | undefined;
@@ -342,38 +291,6 @@ class GoalController {
 		this.store.reconcile(ctx.sessionManager.getBranch());
 	}
 
-	private resetContextTracking(entries: readonly unknown[]): void {
-		this.latestIngress = [];
-		this.seenContextMessages.clear();
-		const messages: unknown[] = [];
-		for (const candidate of entries) {
-			if (!isRecord(candidate)) continue;
-			if (candidate.type === "message") messages.push(candidate.message);
-			if (candidate.type === "compaction" && Array.isArray(candidate.retainedTail)) {
-				messages.push(...candidate.retainedTail);
-			}
-		}
-		this.rememberContextMessages(messages);
-	}
-
-	private rememberContextMessages(messages: readonly unknown[]): unknown[] | undefined {
-		const occurrences = new Map<string, number>();
-		const unseen: unknown[] = [];
-		for (const message of messages) {
-			// Tool/model payloads cannot grant authority, including their images.
-			if (!isRecord(message) || (message.role !== "user" && message.role !== "custom")) continue;
-			const key = valueFingerprint(message);
-			if (key === undefined) return undefined;
-			const occurrence = (occurrences.get(key) ?? 0) + 1;
-			occurrences.set(key, occurrence);
-			if (occurrence > (this.seenContextMessages.get(key) ?? 0)) unseen.push(message);
-		}
-		for (const [key, count] of occurrences) {
-			this.seenContextMessages.set(key, Math.max(count, this.seenContextMessages.get(key) ?? 0));
-		}
-		return unseen;
-	}
-
 	private dequeuePendingInput(): PendingInput | undefined {
 		for (const streamingBehavior of [undefined, "steer", "followUp"] as const) {
 			const index = this.pendingInputs.findIndex((pending) =>
@@ -381,66 +298,6 @@ class GoalController {
 			if (index !== -1) return this.pendingInputs.splice(index, 1)[0];
 		}
 		return undefined;
-	}
-
-	private isAttemptMessage(value: unknown): boolean {
-		const attempt = this.attempt;
-		if (
-			attempt === undefined ||
-			!isRecord(value) ||
-			value.role !== "custom" ||
-			value.customType !== GOAL_ROUND_MESSAGE ||
-			value.content !== attempt.content
-		) return false;
-		try {
-			const details = decodeGoalRoundDetails(value.details);
-			return details.goalId === attempt.goalId
-				&& details.revision === attempt.revision
-				&& details.round === attempt.round;
-		} catch {
-			return false;
-		}
-	}
-
-	private admitAuthorityFromContext(messages: readonly unknown[]): void {
-		this.latestIngress = messages.filter((message) => isRecord(message) && (message.role === "user" || message.role === "custom"));
-		// Authority lasts for this run. Recheck only when new input may change it.
-		if (this.authority.kind !== "none" && this.pendingInputs.length === 0) return;
-		const unseen = this.rememberContextMessages(this.latestIngress);
-		if (unseen === undefined) {
-			this.pendingInputs = [];
-			return;
-		}
-		const ingress = unseen.filter((message) =>
-			isRecord(message) && (message.role === "user" || message.role === "custom"));
-		if (ingress.length === 0) return;
-
-		const userMessages = ingress.filter((message) => isRecord(message) && message.role === "user");
-		let directHuman = false;
-		for (const message of userMessages) {
-			const pending = this.dequeuePendingInput();
-			const content = isRecord(message) ? message.content : undefined;
-			const contentFingerprint = valueFingerprint(content);
-			directHuman ||= pending?.source === "human"
-				&& pending.contentFingerprint !== undefined
-				&& contentFingerprint === pending.contentFingerprint;
-		}
-		if (directHuman) {
-			this.authority = { kind: "direct-human" };
-			return;
-		}
-
-		const attempt = this.attempt;
-		if (attempt !== undefined && ingress.some((message) => this.isAttemptMessage(message))) {
-			this.authority = {
-				kind: "goal-round",
-				goalId: attempt.goalId,
-				revision: attempt.revision,
-				round: attempt.round,
-			};
-		}
-		// Authority belongs to the current agent run. Later custom messages and
-		// context normalization cannot revoke an already admitted human or goal round.
 	}
 
 	private currentForUi(): GoalView | undefined {
@@ -696,7 +553,6 @@ class GoalController {
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			const branch = ctx.sessionManager.getBranch();
-			this.resetContextTracking(branch);
 			this.store.restore(branch);
 			this.refreshUi(ctx);
 		});
@@ -708,7 +564,6 @@ class GoalController {
 			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			const branch = ctx.sessionManager.getBranch();
-			this.resetContextTracking(branch);
 			this.store.restore(branch);
 			this.refreshUi(ctx);
 		});
@@ -719,8 +574,6 @@ class GoalController {
 			this.attempt = undefined;
 			this.authority = { kind: "none" };
 			this.pendingInputs = [];
-			this.seenContextMessages.clear();
-			this.latestIngress = [];
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			this.store.disarm();
@@ -747,6 +600,17 @@ class GoalController {
 			const pending = this.pendingInputs[index];
 			if (pending !== undefined) {
 				pending.contentFingerprint = userContentFingerprint(event.prompt, event.images);
+			}
+		});
+
+		// Pi awaits message_start for newly admitted input before preparing context.
+		// Checkpoint carriers and rewritten history never pass through this event.
+		this.pi.on("message_start", (event) => {
+			if (event.message.role !== "user") return;
+			const pending = this.dequeuePendingInput();
+			if (pending?.source === "human" && pending.contentFingerprint !== undefined
+				&& contentFingerprint(event.message.content) === pending.contentFingerprint) {
+				this.authority = { kind: "direct-human" };
 			}
 		});
 
@@ -779,11 +643,6 @@ class GoalController {
 		});
 
 		this.pi.on("context", (event) => {
-			try {
-				this.admitAuthorityFromContext(event.messages);
-			} catch {
-				this.pendingInputs = [];
-			}
 			if (this.pendingWrapup === undefined) return;
 			return {
 				messages: [
@@ -843,8 +702,6 @@ class GoalController {
 		) {
 			this.store.disarm();
 		}
-		this.rememberContextMessages(this.latestIngress);
-		this.latestIngress = [];
 		this.attempt = undefined;
 		this.authority = { kind: "none" };
 		this.pendingInputs = [];
