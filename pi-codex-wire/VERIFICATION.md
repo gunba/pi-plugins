@@ -1,5 +1,42 @@
 # Verification
 
+## HTTPS reader progress after compaction — 13 September 2026
+
+A read-only trace confirmed a saved native checkpoint followed by 66 completed
+ordinary responses. A later WebSocket closed with code 1006; the caller retried
+over HTTPS. That request received HTTP 200 and body bytes, then recorded neither
+a terminal event nor a timeout. The existing process was left running. The
+trace does not contain payload bytes, so its exact event boundary is unknown.
+
+A local reproduction found that Lite normalization returned from a stream pull
+without emitting anything when a network chunk ended inside an event. After
+the initial prefetch, the downstream reader could remain pending indefinitely.
+Aborting only fetch did not release that waiting reader. The original fixture
+stopped after three upstream pulls; the corrected reader consumed all 78 pulls
+and completed the same synthetic response. This is consistent with the trace,
+but does not establish the sole cause of the live freeze or the WebSocket loss.
+
+Wire now reads until it emits a complete frame or reaches EOF, preserves split
+UTF-8 and multiline/CRLF events, and propagates cancellation directly to the
+output stream. Reader cleanup is idempotent. The existing timeout value now
+measures the next SSE data event, matching the pinned Codex client's
+`process_sse_with_treatment`; comments and partial bytes cannot renew it.
+Completed events still renew the deadline, allowing longer overall generations.
+No inference is replayed internally and no caller retry budget is changed.
+
+Regressions cover one-byte streams through both Pi's ordinary decoder and the
+checkpoint collector, EOF termination, comment/partial-data timeouts, queued and
+partial-stream cancellation, and release for the caller's next request. The
+AgentSession fixtures also split all responses into seven-byte chunks through
+Pi's real extension loader. No live inference or user-session mutation was used.
+
+Release checks for 0.20.2: 142 selected tests passed, followed by 59 final
+transport tests after the cancellation-cleanup refinement. TypeScript passed.
+With production dependencies restored, all 17 streaming, compaction and reload
+checks passed against installed Pi 0.85.1. The installed host loaded all 21
+extensions with zero errors and zero inference. Its provider hash is unchanged;
+the locked retired clipboard DLL was left alone.
+
 ## Compaction imports after reload — 13 September 2026
 
 An upgrade from the earlier two-export serializer bridge to 0.20.0 reproduced

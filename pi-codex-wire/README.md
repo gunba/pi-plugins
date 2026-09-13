@@ -100,6 +100,10 @@ Request records include the effective timeout and whether streaming was requeste
 Pi's `httpIdleTimeoutMs` setting controls the default header/idle wait; an explicit
 provider timeout takes precedence. For streaming responses these are not limits
 on total generation time; native compaction uses the same idle deadline.
+For SSE, the body deadline renews on complete data events. Heartbeat comments
+and unfinished event fragments do not extend it. Lite event normalization reads
+across network-chunk boundaries, and cancellation terminates both the network
+reader and Pi's waiting response stream.
 
 WebSocket failures include the last allowlisted event type, event counts, byte
 counts, largest frame, longest gap, negotiated compression, and TCP end/close/error

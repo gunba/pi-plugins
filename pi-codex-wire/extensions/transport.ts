@@ -523,10 +523,13 @@ export class WireTransport {
       this.recordHeaders(response.headers, response.status, exchange.requestId);
     } catch (error) { failure("headers", error); clearTimeout(timer); this.activeCancel = undefined; this.busy = false; throw error; }
     if (!response.ok || !response.body) { clearTimeout(timer); this.activeCancel = undefined; this.busy = false; return response; }
-    // Observe only complete JSON events; forward original bytes unchanged to Pi's parser.
+    // A network chunk may contain only part of an SSE event. Keep reading until
+    // we can emit output; returning an empty pull can strand the consumer.
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
+    let released = false;
+    let output: ReadableStreamDefaultController<Uint8Array>;
     const recordEvent = (event: JsonObject) => {
       events++; lastEventType = diagnosticEventType(event);
       terminalSeen ||= terminal.has(String(event.type)) || event.type === "error";
@@ -534,51 +537,78 @@ export class WireTransport {
       const diagnostic = eventDiagnostics(event);
       if (diagnostic) this.diagnostics.write({ ...diagnostic, requestId: exchange.requestId, attemptId });
     };
-    const release = () => { clearTimeout(timer); this.busy = false; this.activeCancel = undefined; reader.releaseLock(); };
-    this.activeCancel = () => { controller.abort(); void reader.cancel().catch(() => {}); };
+    const release = () => {
+      if (released) return;
+      released = true; clearTimeout(timer); this.busy = false; this.activeCancel = undefined;
+      signal.removeEventListener("abort", abort); reader.releaseLock();
+    };
+    const fail = (error: unknown) => {
+      if (released) return;
+      failure("body", error); output.error(error);
+      void reader.cancel(error).catch(() => {});
+      release(); controller.abort(error);
+    };
+    // Cancel the output as well as fetch: a buffered/backpressured stream may
+    // have no pending upstream read through which an abort could propagate.
+    const abort = () => fail(signal.reason);
+    const block = (text: string): void => {
+      const data = text.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
+      // Match Codex's next-SSE-event idle deadline. Comments and partial bytes
+      // are not events and must not keep an otherwise stalled response alive.
+      if (data) resetTimer();
+      if (exchange.normalizeEvent) {
+        if (!data || data === "[DONE]") { output.enqueue(encoder.encode(`${text}\n\n`)); return; }
+        const event = object(JSON.parse(data));
+        recordEvent(event);
+        output.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent(event))}\n\n`));
+      } else if (data && data !== "[DONE]") {
+        try { recordEvent(object(JSON.parse(data))); }
+        catch { /* Pi's parser remains responsible for protocol errors. */ }
+      }
+    };
+    resetTimer();
     const observed = new ReadableStream<Uint8Array>({
-      pull: async controller => {
+      start: stream => {
+        output = stream;
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      },
+      pull: async stream => {
         try {
-          const next = await reader.read();
-          resetTimer();
-          if (next.done) {
-            this.diagnostics.write({ kind: "sse-end", requestId: exchange.requestId, attemptId,
-              receivedBytes, events, lastEventType, terminalSeen, pendingCharacters: pending.length });
-            release(); controller.close(); return;
-          }
-          if (receivedBytes === 0) this.diagnostics.write({ kind: "sse-progress",
-            requestId: exchange.requestId, attemptId, milestone: "first-body", elapsedMs: Date.now() - startedAt });
-          receivedBytes += next.value.byteLength;
-          pending += decoder.decode(next.value, { stream: true });
-          if (exchange.normalizeEvent) {
+          while (!released) {
+            const next = await reader.read();
+            if (released) return;
+            if (next.done) {
+              pending += decoder.decode();
+              // Pi treats EOF as terminating the residual SSE frame.
+              if (pending.trim()) block(pending);
+              this.diagnostics.write({ kind: "sse-end", requestId: exchange.requestId, attemptId,
+                receivedBytes, events, lastEventType, terminalSeen, pendingCharacters: pending.length });
+              release(); stream.close(); return;
+            }
+            if (receivedBytes === 0) this.diagnostics.write({ kind: "sse-progress",
+              requestId: exchange.requestId, attemptId, milestone: "first-body", elapsedMs: Date.now() - startedAt });
+            receivedBytes += next.value.byteLength;
+            pending += decoder.decode(next.value, { stream: true });
             let boundary: RegExpExecArray | null;
+            let emitted = false;
             while ((boundary = /\r?\n\r?\n/.exec(pending))) {
-              const block = pending.slice(0, boundary.index);
+              block(pending.slice(0, boundary.index));
               pending = pending.slice(boundary.index + boundary[0].length);
-              const data = block.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).join("\n");
-              if (!data || data === "[DONE]") { controller.enqueue(encoder.encode(`${block}\n\n`)); continue; }
-              const event = object(JSON.parse(data));
-              recordEvent(event);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent(event))}\n\n`));
+              emitted = true;
             }
             if (pending.length > 50 * 1024 * 1024) throw new Error("Codex event exceeds the transport frame limit");
-            return;
+            if (!exchange.normalizeEvent) { stream.enqueue(next.value); return; }
+            if (emitted) return;
           }
-          let newline: number;
-          while ((newline = pending.indexOf("\n")) >= 0) {
-            const line = pending.slice(0, newline).trimEnd(); pending = pending.slice(newline + 1);
-            if (!line.startsWith("data:")) continue;
-            try {
-              const event = object(JSON.parse(line.slice(5)));
-              recordEvent(event);
-            } catch { /* Pi's parser remains responsible for protocol errors. */ }
-          }
-          // This observer need not retain arbitrarily large event lines.
-          if (pending.length > 8 * 1024 * 1024) pending = "";
-          controller.enqueue(next.value);
-        } catch (error) { failure("body", error); release(); controller.error(error); }
+        } catch (error) { fail(error); }
       },
-      cancel: async reason => { try { await reader.cancel(reason); } finally { release(); } },
+      cancel: async reason => {
+        if (released) return;
+        const cancelled = reader.cancel(reason);
+        release(); controller.abort(reason);
+        await cancelled;
+      },
     });
     return new Response(observed, { status: response.status, headers: response.headers });
   }

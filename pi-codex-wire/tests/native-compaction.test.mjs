@@ -26,10 +26,18 @@ const user = content => ({ role: "user", content, timestamp: 1 });
 const assistant = content => ({ role: "assistant", content: [{ type: "text", text: content }], usage,
 	api: modelData.api, provider: "openai-codex", model: modelData.id, stopReason: "stop", timestamp: 2 });
 
+function sseResponse(text) {
+	const bytes = new TextEncoder().encode(text); let at = 0;
+	return new Response(new ReadableStream({ pull(controller) {
+		if (at === bytes.length) controller.close();
+		else { const end = Math.min(at + 7, bytes.length); controller.enqueue(bytes.subarray(at, end)); at = end; }
+	} }), { headers: { "content-type": "text/event-stream" } });
+}
+
 function compactStream(items = [output[1]], usage) {
 	const events = items.map((item, output_index) => ({ type: "response.output_item.done", output_index, item }));
 	events.push({ type: "response.completed", response: { id: "resp_compaction", status: "completed", output: [], ...(usage ? { usage } : {}) } });
-	return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+	return sseResponse(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
 async function harness(t) {
@@ -49,7 +57,7 @@ async function harness(t) {
 		if (call.body.input.at(-1)?.type === "compaction_trigger") return compactResponse(call);
 		assert.ok(call.url.endsWith("/responses"));
 		const item = { type: "message", id: "msg_fixture", role: "assistant", content: [{ type: "output_text", text: "Fixture response.", annotations: [] }] };
-		return new Response(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_fixture", status: "completed", output: [item], usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 } } })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+		return sseResponse(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_fixture", status: "completed", output: [item], usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 } } })}\n\n`);
 	};
 	writeFileSync(join(directory, "settings.json"), JSON.stringify({ compaction: { enabled: false, reserveTokens: 40000, keepRecentTokens: 300 },
 		retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 }, httpIdleTimeoutMs: 900000 }));
