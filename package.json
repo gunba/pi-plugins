@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.20.2",
+  "version": "0.21.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -8,6 +8,9 @@
     "pi-extension"
   ],
   "type": "module",
+  "bin": {
+    "pi-workspace": "pi-workspace/cli.mjs"
+  },
   "workspaces": [
     "pi-codex-wire"
   ],
@@ -65,10 +68,12 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@mariozechner/clipboard": "0.3.9",
     "diff": "8.0.2",
     "jiti": "2.7.0",
     "mdast-util-from-markdown": "^2.0.2",
-    "typebox": "^1.1.38"
+    "typebox": "^1.1.38",
+    "undici": "8.9.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.85.1",

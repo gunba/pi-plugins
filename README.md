@@ -2,6 +2,22 @@
 
 Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.85.1+.
 
+## Pi Workspace
+
+[`pi-workspace`](pi-workspace/README.md) is a fullscreen terminal frontend for Pi
+with a resizable right pane for files, Git diffs and extension work. It uses Pi's
+public SDK and the same configured extensions, tools and sessions. The default
+split is 60% conversation and 40% workspace. Launch it separately from `pi`;
+installing the package as an ordinary Pi extension does not replace Pi's screen.
+
+```sh
+node pi-workspace/cli.mjs --cwd /path/to/project
+```
+
+To add the `pi-workspace` command from this checkout, run
+`npm link --omit=dev --ignore-scripts --legacy-peer-deps --workspaces=false`.
+See the frontend README for controls, session selection and extension APIs.
+
 ## Extensions
 
 - `pi-codex-compat` — adds Codex-shaped `apply_patch`, `exec_command`,
