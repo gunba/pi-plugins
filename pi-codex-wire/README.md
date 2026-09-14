@@ -69,9 +69,13 @@ text-retention estimate; the boundary message preserves its beginning and end
 with a truncation marker. Images within retained messages remain intact. Pi's
 recent tail is kept separately. Original session records are not rewritten.
 
-Wire replays the checkpoint after reopening or forking the session. It is bound
-to the Codex account and endpoint. A different provider is blocked while that
-checkpoint is in context; navigating to a branch before it remains possible.
+Wire replays the checkpoint after reopening or forking the session, including
+after switching Codex accounts. Account changes reset authenticated connections,
+continuation and turn state; they do not discard the checkpoint. Existing saved
+entries replay without modification. OpenAI remains responsible for accepting
+the encrypted content. Replay is restricted to the ChatGPT Codex Responses
+endpoint, and a different provider is blocked while that checkpoint is in
+context; navigating to a branch before it remains possible.
 Native-checkpoint branches can also be summarized into text when navigating
 elsewhere. Forked children receive independent copies of checkpoint details.
 

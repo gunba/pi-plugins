@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,13 +10,14 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createAgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { identity } from "./fixtures.mjs";
-import { CHECKPOINT, CHECKPOINT_CAPTION, checkpointBinding, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
+import { CHECKPOINT, CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
 import { compactInput } from "../extensions/compact-input.ts";
 import nativeCompaction, { retryCompaction } from "../extensions/native-compaction.ts";
 import { copyCompletedParentTurns } from "../../pi-subagents/extensions/subagent-runtime.ts";
 import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
 
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url")}.x`;
+const responsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 const usage = { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const modelData = { id: "gpt-6-astra", name: "Fixture", api: "openai-codex-responses", reasoning: true,
 	thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
@@ -40,7 +42,7 @@ function compactStream(items = [output[1]], usage) {
 	return sseResponse(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-async function harness(t) {
+async function harness(t, checkpoint) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-native-compact-"));
 	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE };
 	process.env.PI_CODING_AGENT_DIR = directory; process.env.PI_OFFLINE = "1";
@@ -65,6 +67,13 @@ async function harness(t) {
 	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 	runtime.registerProvider("openai-codex", { name: "Fixture", apiKey: jwt, baseUrl: "https://chatgpt.com/backend-api", api: modelData.api,
 		streamSimple, models: [modelData] });
+	let token = jwt;
+	const fixtureProvider = runtime.getProvider("openai-codex");
+	runtime.registerNativeProvider({ ...fixtureProvider, auth: { apiKey: {
+		name: "Fixture",
+		login: async () => assert.fail("fixture login must not execute"),
+		resolve: async () => ({ auth: { apiKey: token }, source: "fixture" }),
+	} } });
 	const model = runtime.getModel("openai-codex", modelData.id);
 	assert.ok(model);
 	const manager = SessionManager.create(directory, directory);
@@ -75,6 +84,10 @@ async function harness(t) {
 			manager.appendMessage({ role: "toolResult", toolCallId: "call_fixture", toolName: "fixture_lookup", content: [{ type: "text", text: "paired result" }], isError: false, timestamp: 2 });
 		}
 		manager.appendMessage(assistant(`answer ${i} ` + "a".repeat(1800)));
+	}
+	if (checkpoint) {
+		const kept = manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user");
+		manager.appendCompaction(CHECKPOINT_CAPTION, kept.id, 10000, { [CHECKPOINT]: checkpoint });
 	}
 	const flags = new Map([["codex-wire-client", "cli"], ["codex-wire-originator", identity.originator], ["codex-wire-user-agent", identity.userAgent], ["codex-wire-transport", "sse"], ["codex-wire-compression", "off"]]);
 	const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings, noExtensions: true,
@@ -103,7 +116,8 @@ async function harness(t) {
 	const errors = [];
 	await session.bindExtensions({ mode: "print", onError: error => errors.push(error) });
 	assert.deepEqual(errors, []);
-	return { session, manager, model, runtime, calls, errors, directory, setResponse: fn => { compactResponse = fn; } };
+	return { session, manager, model, runtime, calls, errors, directory,
+		setToken: value => { token = value; }, setResponse: fn => { compactResponse = fn; } };
 }
 
 test("real AgentSession compacts through native Responses, persists, resumes and replays the exact checkpoint", async t => {
@@ -148,15 +162,19 @@ test("real AgentSession compacts through native Responses, persists, resumes and
 	assert.deepEqual(h.errors, []);
 	const reopened = SessionManager.open(h.manager.getSessionFile());
 	const context = { messages: convertToLlm(projectCheckpoints(reopened.buildSessionContext().messages, reopened.getBranch())) };
-	const binding = result.details[CHECKPOINT].binding;
-	assert.deepEqual(replayCheckpoints(compactInput(h.model, context, "xhigh"), context, binding).input.filter(item => item.type === "compaction"), [output[1]]);
+	assert.equal(Object.hasOwn(result.details[CHECKPOINT], "binding"), false);
+	assert.deepEqual(replayCheckpoints(compactInput(h.model, context, "xhigh"), context, responsesUrl).input.filter(item => item.type === "compaction"), [output[1]]);
 	const child = SessionManager.create(h.directory, h.directory);
 	copyCompletedParentTurns(reopened, child, "absent");
 	const forkContext = { messages: convertToLlm(checkpointMessages(child.buildContextEntries())) };
-	assert.deepEqual(replayCheckpoints(compactInput(h.model, forkContext, "xhigh"), forkContext, binding).input.filter(item => item.type === "compaction"), [output[1]]);
+	assert.deepEqual(replayCheckpoints(compactInput(h.model, forkContext, "xhigh"), forkContext, responsesUrl).input.filter(item => item.type === "compaction"), [output[1]]);
 	assert.throws(() => assertCheckpointContext(forkContext, "anthropic"), /requires Codex Wire/);
 	assert.throws(() => assertCheckpointContext({ messages: [] }, "openai-codex", reopened.buildContextEntries()), /lost during context conversion/);
-	assert.throws(() => replayCheckpoints(compactInput(h.model, context, "xhigh"), context, "0".repeat(64)), /different account or endpoint/);
+	for (const url of ["https://api.openai.com/v1/responses", "https://example.com/responses",
+		"http://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/other/responses",
+		`${responsesUrl}?route=other`, "https://chatgpt.com:444/backend-api/codex/responses"]) {
+		assert.throws(() => replayCheckpoints(compactInput(h.model, context, "xhigh"), context, url), /requires the ChatGPT Codex Responses endpoint/);
+	}
 	let otherRequests = 0;
 	h.runtime.registerProvider("fixture-other", { name: "Fixture other", apiKey: "fixture", baseUrl: "https://fixture.invalid", api: modelData.api,
 		streamSimple: () => { otherRequests++; throw new Error("Must not reach the other provider"); }, models: [modelData] });
@@ -174,6 +192,29 @@ test("real AgentSession compacts through native Responses, persists, resumes and
 	assert.equal(navigation.cancelled, false);
 	assert.equal(h.calls.at(-1).url.endsWith("/responses"), true);
 	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"), [output[1]]);
+	assert.deepEqual(h.errors, []);
+});
+
+test("saved checkpoint replays and recompacts after switching accounts without rewriting its history", async t => {
+	const h = await harness(t, { version: 1, output: structuredClone(output),
+		binding: createHash("sha256").update(JSON.stringify([
+			"https://chatgpt.com", "/backend-api/codex/responses", "", "fixture-account",
+		])).digest("hex") });
+	const before = readFileSync(h.manager.getSessionFile());
+	const otherJwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "other-account" } })).toString("base64url")}.x`;
+	h.setToken(otherJwt);
+	await h.session.reload();
+	assert.equal((await h.runtime.getAuth(h.model)).auth.apiKey, otherJwt);
+	await h.session.prompt("Continue after switching accounts.", { expandPromptTemplates: false });
+	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
+	const call = h.calls.at(-1);
+	assert.equal(call.headers.get("chatgpt-account-id"), "other-account");
+	assert.deepEqual(call.body.input.filter(item => item.type === "compaction"), [output[1]]);
+	const recompact = await h.session.compact();
+	assert.equal(h.calls.at(-1).headers.get("chatgpt-account-id"), "other-account");
+	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"), [output[1]]);
+	assert.equal(Object.hasOwn(recompact.details[CHECKPOINT], "binding"), false);
+	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, before.length).equals(before));
 	assert.deepEqual(h.errors, []);
 });
 
@@ -268,6 +309,4 @@ test("native compaction retry cancellation stops before another attempt", async 
 	await assert.rejects(retryCompaction(async () => { attempts++; throw new Error("503"); },
 		{ enabled: true, maxRetries: 3, baseDelayMs: 1 }, controller.signal, () => controller.abort()), /abort/i);
 	assert.equal(attempts, 1);
-	const headers = new Headers({ "chatgpt-account-id": "fixture-account" });
-	assert.notEqual(checkpointBinding("https://chatgpt.com/a/responses", headers), checkpointBinding("https://chatgpt.com/b/responses", headers));
 });

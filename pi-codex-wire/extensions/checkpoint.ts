@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { calculateCost, type Api, type Context, type Model, type Usage } from "@earendil-works/pi-ai";
 import { buildContextEntries, sessionEntryToContextMessages, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { object, type JsonObject } from "./diagnostics.ts";
@@ -6,21 +6,13 @@ import { object, type JsonObject } from "./diagnostics.ts";
 export const CHECKPOINT = "codexWireCheckpoint";
 type AgentMessage = AgentSession["messages"][number];
 export const CHECKPOINT_CAPTION = "Codex checkpoint. Conversation state is stored in this entry and requires Codex Wire to continue.";
-export interface Checkpoint { version: 1; binding: string; output: JsonObject[]; reportedUsage?: JsonObject; }
+export interface Checkpoint { version: 1; output: JsonObject[]; reportedUsage?: JsonObject; }
 type Carrier = { role: "user"; content: string; timestamp: number; codexWireCheckpoint: Checkpoint };
-
-export function checkpointBinding(url: string, headers: Headers): string {
-	const endpoint = new URL(url);
-	const account = headers.get("chatgpt-account-id");
-	if (!account) throw new Error("Codex checkpoint requires an authenticated account.");
-	return createHash("sha256").update(JSON.stringify([endpoint.origin, endpoint.pathname.replace(/\/$/, ""), endpoint.search, account])).digest("hex");
-}
 
 /** The endpoint returns replacement history. Keep its opaque items byte-for-byte. */
 export function validateCheckpoint(value: unknown): Checkpoint {
 	const checkpoint = object(value);
-	if (checkpoint.version !== 1 || typeof checkpoint.binding !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.binding)
-		|| !Array.isArray(checkpoint.output) || !checkpoint.output.length) throw new Error("Invalid Codex checkpoint.");
+	if (checkpoint.version !== 1 || !Array.isArray(checkpoint.output) || !checkpoint.output.length) throw new Error("Invalid Codex checkpoint.");
 	let compacted = false;
 	for (const value of checkpoint.output) {
 		const item = object(value);
@@ -39,14 +31,14 @@ export function validateCheckpoint(value: unknown): Checkpoint {
 }
 
 /** Codex 0.153.4 compact_remote::should_keep_compacted_history_item. */
-export function createCheckpoint(binding: string, output: JsonObject[], reportedUsage?: JsonObject): Checkpoint {
+export function createCheckpoint(output: JsonObject[], reportedUsage?: JsonObject): Checkpoint {
 	const transient = new Set(["additional_tools", "reasoning", "compaction_trigger", "local_shell_call", "function_call",
 		"tool_search_call", "function_call_output", "tool_search_output", "custom_tool_call", "custom_tool_call_output", "web_search_call", "image_generation_call"]);
 	const retained = output.filter(item => !transient.has(String(item.type))
 		&& !(item.type === "message" && !["user", "assistant"].includes(String(item.role))))
 		.map(item => item.type === "compaction_summary" ? { ...item, type: "compaction" } : item);
 	// Pi's user messages have no Codex session-prefix parser; preserve every user message.
-	return structuredClone(validateCheckpoint({ version: 1, binding, output: retained, ...(reportedUsage ? { reportedUsage } : {}) }));
+	return structuredClone(validateCheckpoint({ version: 1, output: retained, ...(reportedUsage ? { reportedUsage } : {}) }));
 }
 
 /** Account only for counters actually returned by the endpoint. Keep unknown usage absent. */
@@ -115,16 +107,19 @@ export function assertCheckpointContext(context: Context, provider: string, expe
 }
 
 /** Splice into the native serializer output, retaining deferred tools and call/result pairing. */
-export function replayCheckpoints(body: JsonObject, context: Context, binding: string): JsonObject {
+export function replayCheckpoints(body: JsonObject, context: Context, url: string): JsonObject {
+	const carriers = context.messages.filter(message => Object.hasOwn(message, CHECKPOINT));
+	if (!carriers.length) return body;
+	// Codex validates account portability; keep opaque state on its own endpoint.
+	if (new URL(url).href.replace(/\/$/, "") !== "https://chatgpt.com/backend-api/codex/responses") {
+		throw new Error("Codex checkpoint requires the ChatGPT Codex Responses endpoint. Request cancelled.");
+	}
 	const replacements = new Map<string, JsonObject[]>();
-	for (const message of context.messages) {
-		if (!Object.hasOwn(message, CHECKPOINT)) continue;
+	for (const message of carriers) {
 		const checkpoint = validateCheckpoint(object(message)[CHECKPOINT]);
-		if (checkpoint.binding !== binding) throw new Error("Codex checkpoint belongs to a different account or endpoint. Request cancelled.");
 		if (message.role !== "user" || typeof message.content !== "string" || replacements.has(message.content)) throw new Error("Invalid Codex checkpoint carrier.");
 		replacements.set(message.content, checkpoint.output);
 	}
-	if (!replacements.size) return body;
 	if (!Array.isArray(body.input)) throw new Error("Missing Codex request input.");
 	const input = body.input.flatMap(value => {
 		const item = object(value);

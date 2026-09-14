@@ -17,7 +17,7 @@ import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, read
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
 import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
-import { CHECKPOINT, checkpointBinding, replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT, replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
 import { compactBody, requestCompact } from "./compact.ts";
 import { codexRequestAuth, compactInput } from "./compact-input.ts";
 
@@ -222,7 +222,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             object(source.reasoning).summary = metadata.default_reasoning_summary;
           }
           const shaped = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId), context,
-            checkpointBinding(String(url), headers));
+            String(url));
           const outgoing = currentProtocol.headers(headers);
           outgoing.delete("x-codex-routing-hint");
           const routingHint = requestRoutingHint(model.provider, String(url), headers, model.id, shaped.service_tier);
@@ -313,8 +313,7 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (metadata.default_reasoning_summary !== undefined) {
           source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
         }
-        const binding = checkpointBinding(url, headers);
-        const body = replayCheckpoints(shapeModelBody(session.protocol.shapeBody(compactBody(source)), metadata, owner), operation.context, binding);
+        const body = replayCheckpoints(shapeModelBody(session.protocol.shapeBody(compactBody(source)), metadata, owner), operation.context, url);
         const outgoing = session.protocol.compactHeaders(headers, operation.reason);
         outgoing.delete("x-codex-routing-hint");
         const routingHint = requestRoutingHint(model.provider, url, headers, model.id, body.service_tier);
@@ -325,7 +324,7 @@ export default function codexWire(pi: ExtensionAPI): void {
           timeoutMs: operation.timeoutMs, trace: requestTrace(primaryThreadId, owner, operation.context, operation.signal) },
           currentDiagnostics, session.transport);
         signal.throwIfAborted();
-        return createCheckpoint(binding, result.output, result.usage);
+        return createCheckpoint(result.output, result.usage);
       } finally { pending.delete(controller); trimIdleSessions(); }
     });
     releaseRequiredWire = registerRequiredWire(primaryThreadId, () =>

@@ -1,5 +1,28 @@
 # Verification
 
+## Account-switch checkpoint replay — 14 September 2026
+
+An isolated, authorized read-only request replayed an existing encrypted
+checkpoint under a different Codex account, using GPT-6 Astra at xhigh with
+Desktop identity. The stored account hash matched the source account and
+differed from the receiving account. OpenAI completed the WebSocket response
+and returned the requested acknowledgement: 8,353 input and 7 output tokens.
+No tools were supplied and the source session remained byte-for-byte unchanged.
+This establishes acceptance for the tested accounts and model, not universal
+portability or a guarantee for other endpoints.
+
+The local account-hash rejection is removed. Checkpoints retain their opaque
+output; new entries no longer store an account binding. Existing entries need
+no migration. Replay is restricted to the official ChatGPT Codex Responses
+URL, while authenticated sockets, continuation, turn state and catalog caches
+remain credential-scoped. Backend failures still surface normally.
+
+Focused checks passed: 15 native-compaction/compact tests and 58
+transport/catalog tests. The account-switch regression reloads a saved
+account-bound checkpoint, continues and recompacts with the second account,
+and verifies the original history bytes remain unchanged. Local replay of
+two existing saved checkpoints also preserved their exact output and files.
+
 ## HTTPS reader progress after compaction — 13 September 2026
 
 A read-only trace confirmed a saved native checkpoint followed by 66 completed
