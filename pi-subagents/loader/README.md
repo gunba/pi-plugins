@@ -42,7 +42,12 @@ loadChildToolExtensions(options: {
 
 The result is empty if there are no unhandled extension tools; otherwise it contains one named wrapper, `inherited-tool-providers`. Spread that result into `DefaultResourceLoader.extensionFactories`.
 
-Each wrapper invocation creates a new graph, then imports and invokes all authorized provider factories sequentially. Every provider gets a child API proxy that permits only its parent-owned tool names. Other registrations and lifecycle/policy hooks stay attached to the child. A supplied parent `getFlag` is authoritative, including `false` and `undefined`; there is no fallback to child defaults when it is supplied.
+Each wrapper invocation creates a new graph, then imports and invokes all authorized provider factories sequentially. Every provider gets a scoped child API that permits only its parent-owned tool names. Other registrations and lifecycle/policy hooks stay attached to the child. A supplied parent `getFlag` is authoritative, including `false` and `undefined`; there is no fallback to child defaults when it is supplied.
+
+The provider's API object owns its mutable properties. Registration decorators and
+their cleanup cannot replace another provider's filtered callback or mutate the
+shared SDK API. The inherited scoped API retains the registration filter, while
+parent-authoritative `getFlag` remains read-only.
 
 The wrapper is one SDK loading transaction: failure of any provider rejects the group. Error messages identify the failing source and owned tools. The driver owns active-tool selection, post-start availability checks, revocations and disposal. Descendants must continue using original root source metadata; SDK inline source labels are synthetic and cannot reconstruct a provider.
 

@@ -64,11 +64,15 @@ Children follow the root session's current enabled tools, without a coding-tool
 whitelist. This includes tools such as `web_search`, MCP tools and custom file-based
 providers. Parent revocations are checked again at execution; source-provider
 restrictions remain effective.
+Party tools remain root-only: children do not inherit party membership or party
+messaging capabilities, and those tools do not block child initialization.
 
 Provider factories are recreated against the child's API, cwd, session and model.
 Their lifecycle and permission hooks are retained, and flag values come from the
 parent configuration. Parent execution closures are never copied. Descendants use
 the original root source catalog, not synthetic child-tool metadata.
+Each provider has its own API object. Wrapping `registerTool` affects only that
+provider; it cannot replace the registration callback used by other providers.
 
 Each activation uses a private JavaScript module graph, shared across its provider
 entrypoints but not other activations. An audited, pinned Jiti adapter also isolates

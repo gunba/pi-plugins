@@ -14,6 +14,13 @@ export interface LoadChildToolExtensionsOptions {
 	getFlag?: (name: string) => boolean | string | undefined;
 }
 
+// Party membership belongs to user-linked root sessions. Its provider deliberately
+// does not register in managed children.
+const ROOT_ONLY_TOOLS = new Set(["party_members", "party_send", "party_read"]);
+export function canInheritTool(name: string): boolean {
+	return !ROOT_ONLY_TOOLS.has(name);
+}
+
 // Resolve public framework entries from the SDK, not the provider's node_modules.
 // The SDK may have nested dependencies, so importing a same-named peer from this
 // package can create a second framework identity. Only native framework modules
@@ -77,7 +84,7 @@ export async function loadChildToolExtensions({
 	// Validate the complete metadata set before evaluating any provider code.
 	for (const tool of tools) {
 		signal.throwIfAborted();
-		if (handled.has(tool.name) || tool.sourceInfo?.source === "builtin") continue;
+		if (!canInheritTool(tool.name) || handled.has(tool.name) || tool.sourceInfo?.source === "builtin") continue;
 		const source = tool.sourceInfo;
 		if (!source) throw sourceError([tool.name], "parent tool metadata has no sourceInfo.");
 		if (source.scope === "project" && !projectTrusted) {
@@ -125,12 +132,18 @@ export async function loadChildToolExtensions({
 					signal.throwIfAborted();
 					if (names.has(tool.name)) pi.registerTool(tool);
 				};
-				const childApi = new Proxy(pi, {
+				const scopedApi = new Proxy(pi, {
 					get(target, property, receiver) {
 						if (property === "registerTool") return registerTool;
 						if (property === "getFlag" && getFlag) return getFlag;
 						return Reflect.get(target, property, receiver);
 					},
+				});
+				// A provider may decorate its API (for example registerTool). Keep
+				// those assignments local, not on the shared SDK registration target.
+				const childApi: ExtensionAPI = Object.assign(Object.create(scopedApi), scopedApi);
+				if (getFlag) Object.defineProperty(childApi, "getFlag", {
+					value: getFlag, enumerable: true, writable: false, configurable: false,
 				});
 				await (factory as ExtensionFactory)(childApi);
 				signal.throwIfAborted();

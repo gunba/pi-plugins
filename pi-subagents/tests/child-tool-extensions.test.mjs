@@ -126,6 +126,59 @@ test("source ownership filters overridden/inactive extra and late hook registrat
 	assert.equal(h.tools.get("custom_a").description, "custom_a");
 });
 
+test("API decorators stay local to their provider and retain late registration ownership", async (t) => {
+	const root = await fixture(t, {
+		"decorator.ts": `export default function(pi) {
+			const definition = (name, description) => ({ name, description, parameters: { type: "object" }, execute: async () => ({ content: [], details: {} }) });
+			pi.registerTool(definition("decorated", "initial"));
+			const original = pi.registerTool;
+			const wrapped = function(tool) { pi.events.emit("wrapped", tool.name); original.call(this, tool); };
+			pi.registerTool = wrapped;
+			pi[Symbol.for("fixture.api.interceptor")] = wrapped;
+			pi.events.emit("assigned", pi.registerTool === wrapped);
+			pi.events.emit("flag", { changed: Reflect.set(pi, "getFlag", () => true), value: pi.getFlag("allowed") });
+			pi.on("session_start", () => {
+				pi.registerTool(definition("decorated", "late"));
+				pi.registerTool(definition("plain", "unowned"));
+			});
+			pi.on("session_shutdown", () => {
+				if (pi.registerTool === wrapped) {
+					pi.registerTool = original;
+					delete pi[Symbol.for("fixture.api.interceptor")];
+					pi.events.emit("cleanup", true);
+				}
+			});
+		}`,
+		"plain.ts": `export default function(pi) {
+			pi.events.emit("foreign-interceptor", !!pi[Symbol.for("fixture.api.interceptor")]);
+			const copy = { ...pi };
+			pi.events.emit("enumerable-api", typeof copy.on === "function" && copy.events === pi.events);
+			copy.registerTool({ name: "plain", description: "plain provider", parameters: { type: "object" }, execute: async () => ({ content: [], details: {} }) });
+		}`,
+	});
+	const [{ factory }] = await load([tool("decorated", join(root, "decorator.ts")), tool("plain", join(root, "plain.ts"))],
+		{ getFlag: () => false });
+	const h = harness(); const original = h.api.registerTool; const observed = new Map();
+	for (const name of ["assigned", "flag", "foreign-interceptor", "enumerable-api", "cleanup"])
+		h.api.events.on(name, value => observed.set(name, value));
+	const wrapped = []; h.api.events.on("wrapped", name => wrapped.push(name));
+	await factory(h.api);
+	assert.deepEqual([...h.tools.keys()].sort(), ["decorated", "plain"]);
+	assert.equal(h.api.registerTool, original);
+	assert.equal(h.api[Symbol.for("fixture.api.interceptor")], undefined);
+	assert.equal(observed.get("assigned"), true);
+	assert.equal(observed.get("foreign-interceptor"), false);
+	assert.equal(observed.get("enumerable-api"), true);
+	assert.deepEqual(observed.get("flag"), { changed: false, value: false });
+	await h.emit("session_start");
+	assert.equal(h.tools.get("decorated").description, "late");
+	assert.equal(h.tools.get("plain").description, "plain provider");
+	assert.deepEqual(wrapped, ["decorated", "plain"]);
+	await h.emit("session_shutdown");
+	assert.equal(observed.get("cleanup"), true);
+	assert.equal(h.api.registerTool, original);
+});
+
 test("dependency state is shared within one graph but isolated from native root, siblings and reactivations", async (t) => {
 	const root = await fixture(t, {
 		"state.mjs": `export const state = { calls: 0, stopped: false }; export const stop = () => { state.stopped = true; };`,

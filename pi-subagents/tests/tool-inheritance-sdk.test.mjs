@@ -10,6 +10,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
 
 const SEARCH_SOURCE = fileURLToPath(new URL("../../pi-web-search/extensions/web-search.ts", import.meta.url));
+const PARTY_SOURCE = fileURLToPath(new URL("../../pi-party/index.ts", import.meta.url));
 const ZERO_USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = (id) => ({ id, name: id, api: "openai-codex-responses", provider: "openai-codex",
@@ -74,7 +75,7 @@ export default function(pi) {
 }`;
 }
 
-async function integration(t, { search = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
+async function integration(t, { search = false, party = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-tool-inheritance-sdk-"));
 	const agentDir = join(directory, "agent"); const rootCwd = join(directory, "root-work");
 	await mkdir(agentDir); await mkdir(rootCwd);
@@ -131,13 +132,14 @@ async function integration(t, { search = false, initialActive = ["custom_invento
 	runtime.registerNativeProvider(providerFixture(respond));
 	const rootManager = SessionManager.inMemory(rootCwd, { id: "root-tool-fixture" });
 	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, settingsManager: SettingsManager.inMemory(settings),
-		additionalExtensionPaths: [fixturePath, ...(search ? [SEARCH_SOURCE] : [])], noSkills: true,
+		additionalExtensionPaths: [fixturePath, ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
 		noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
-		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(search ? ["web_search"] : [])] }));
+		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(search ? ["web_search"] : []),
+			...(party ? ["party_members", "party_send", "party_read"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
 	const rootCatalogs = [];
@@ -202,6 +204,33 @@ test("actual web_search inherits child-selected Codex model and child session in
 	assert.equal(h.rootCatalogs.length, 2);
 	assert.ok(h.rootCatalogs.every((catalog) => catalog.find((tool) => tool.name === "web_search").sourceInfo.path === SEARCH_SOURCE));
 	assert.deepEqual(new Set(h.observations.map((entry) => entry.sessionId)), new Set(["search-child", "search-grandchild"]));
+});
+
+test("child initialization retains enabled tools from multiple source extensions", { timeout: 25000 }, async (t) => {
+	const h = await integration(t, { search: true, initialActive: ["custom_inventory", "web_search"] });
+	const child = await h.open("multiple-provider-child");
+	const available = JSON.parse((await child.driver.prompt("fixture-availability")).output);
+	assert.ok(available.includes("custom_inventory"));
+	assert.ok(available.includes("web_search"));
+	await call(child, "custom_inventory");
+	await call(child, "web_search", { search_query: [{ q: "offline fixture" }] });
+	assert.equal(executed(child.manager).length, 1);
+	assert.equal(h.requests.length, 1);
+});
+
+test("root party tools neither block child initialization nor become child capabilities", { timeout: 25000 }, async (t) => {
+	const names = ["party_members", "party_send", "party_read"];
+	const h = await integration(t, { party: true, initialActive: ["custom_inventory", ...names] });
+	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
+	const child = await h.open("root-party-child", { descriptorTools: ["custom_inventory", ...names] });
+	const available = JSON.parse((await child.driver.prompt("fixture-availability")).output);
+	assert.ok(available.includes("custom_inventory"));
+	assert.ok(names.every(name => !available.includes(name)));
+	await call(child, "custom_inventory");
+	await call(child, "party_members");
+	assert.equal(toolResults(child.manager).at(-1).isError, true);
+	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
+	assert.equal(h.requests.length, 0);
 });
 
 test("arbitrary tools use child cwd/model/session, retain false parent flags and hooks, and isolate shutdown state", { timeout: 25000 }, async (t) => {
