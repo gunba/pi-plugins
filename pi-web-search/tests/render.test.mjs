@@ -45,6 +45,37 @@ test("collapsed and expanded rendering preserve source evidence and clamp narrow
 	assert.equal(result.content[0].text, raw);
 });
 
+test("unchanged redraws reuse presentation; width, expansion and theme changes refresh it", () => {
+	const raw = Array.from({ length: 200 }, (_, i) => `${marker(`turn${i}view0`)} Example 漢字 ${"text ".repeat(20)}`).join("\n");
+	const result = { content: [{ type: "text", text: raw }] };
+	const options = { expanded: false, isPartial: false };
+	let color = "\x1b[31m";
+	const mutableTheme = { fg(_name, text) { return `${color}${text}\x1b[0m`; } };
+	const view = renderSearchResult(result, options, mutableTheme);
+	const collapsed = view.render(80);
+	assert.equal(collapsed.length, 11);
+	for (let i = 0; i < 20; i++) assert.strictEqual(view.render(80), collapsed);
+
+	const narrow = view.render(18);
+	assert.notStrictEqual(narrow, collapsed);
+	assert.strictEqual(view.render(18), narrow);
+	assert.ok(narrow.every(line => visibleWidth(line) <= 18));
+	options.expanded = true;
+	const expanded = view.render(18);
+	assert.ok(expanded.length > 200);
+	assert.strictEqual(view.render(18), expanded);
+	options.expanded = false;
+	assert.equal(view.render(18).length, 11);
+
+	color = "\x1b[32m";
+	view.invalidate();
+	const recolored = view.render(18);
+	assert.match(recolored[0], /\x1b\[32m/);
+	assert.doesNotMatch(recolored.join("\n"), /\x1b\[31m/);
+	assert.strictEqual(view.render(18), recolored);
+	assert.equal(result.content[0].text, raw);
+});
+
 test("registered renderer works through Pi's native tool result and independent mouse expansion", async () => {
 	const { ToolExecutionComponent } = await import(new URL(
 		"./modes/interactive/components/tool-execution.js",
