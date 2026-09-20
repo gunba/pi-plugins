@@ -27,7 +27,7 @@ Use `/codex-wire status` to see the client identity, last request outcome and di
 
 ## CLI and Desktop identities
 
-CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header.
+CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header. On Windows and Linux, neither client needs a saved User-Agent profile.
 
 The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. This models Desktop initialization of Wire's pinned **0.153.4** app-server protocol; it does not claim to reproduce the installed Desktop binary's exact core version.
 
@@ -136,15 +136,14 @@ WebSocket reuse or continuation. Reconnects follow the same setting.
 
 `--codex-wire-compression on` matches Codex 0.153.4's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
-On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. Terminal detection follows the native precedence and sanitization rules, including Windows Terminal and tmux client detection. It does not launch Codex.
+On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. On Linux, Wire reads `lsb_release` (then `/etc/os-release`) and `uname -m` for the native OS/version/architecture fields. Terminal detection follows the native precedence and sanitization rules, including Windows Terminal and tmux client detection. It does not launch Codex.
 
 For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.153.4 (...) terminal"`. It must match the selected originator and pinned version. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
 
 You can save a verified native profile for this machine with
 `/codex-wire user-agent codex_cli_rs/0.153.4 (...) terminal`. The profile is stored
 under `~/.pi/agent/codex-wire/user-agent` and is used on activation, resume, and
-reload. An explicit `--codex-wire-user-agent` overrides the saved profile. This
-lets Linux sessions activate Wire without repeating flags. CLI and Desktop User-Agent profiles are saved separately; the current client determines which profile is written.
+reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI and Desktop User-Agent profiles are saved separately; the current client determines which profile is written.
 
 ## Implemented behaviour
 
@@ -223,7 +222,7 @@ The tests use local HTTP/WebSocket servers and fake credentials, plus Pi's actua
 
 Source map:
 
-- `identity.ts`: `login/src/auth/default_client.rs`, `terminal-detection/src/lib.rs`; `native-os-info.ps1` follows the Windows APIs in the pinned `os_info 3.14.0` dependency.
+- `identity.ts`: `login/src/auth/default_client.rs`, `terminal-detection/src/lib.rs`, and the Linux parsers in pinned `os_info 3.14.0`; `native-os-info.ps1` follows that dependency's Windows APIs.
 - `protocol.ts`: `core/src/session/session.rs`, `core/src/responses_metadata.rs`, `codex-api/src/requests/headers.rs`.
 - `compression.ts`: `features/src/lib.rs`, `core/src/client.rs` (compression and routing-header gates).
 - `transport.ts`: `core/src/client.rs`, `codex-api/src/endpoint/responses_websocket.rs`, `codex-api/src/sse/responses.rs`.

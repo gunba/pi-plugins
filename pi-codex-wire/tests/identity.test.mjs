@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexIdentity, terminalToken, windowsSystem } from "../extensions/identity.ts";
+import { codexIdentity, linuxRelease, linuxSystem, terminalToken, windowsSystem } from "../extensions/identity.ts";
 import { identity } from "./fixtures.mjs";
 
 const system = { osType: "Windows", version: "10.0.26100", architecture: "x86_64" };
@@ -56,6 +56,28 @@ test("native originator precedence, suffix and exact explicit profile", () => {
   assert.deepEqual(codexIdentity({ env: {}, userAgent: identity.userAgent }), identity);
   assert.throws(() => codexIdentity({ env: {}, userAgent: "codex_cli_rs/0.148.0 anything" }), /0\.153\.4/);
   assert.throws(() => codexIdentity({ env: {}, userAgent: `${identity.userAgent}\r\nInjected: 1` }), /single-line/);
+});
+
+test("Linux release detection matches pinned native version and distro formatting", () => {
+  assert.deepEqual(linuxRelease("Distributor ID:\tFedora Linux\nRelease:\t43 Workstation\n", "ID=ubuntu\nVERSION_ID=\"24.04\"\n"),
+    { osType: "Fedora", version: "43.0.0" });
+  assert.deepEqual(linuxRelease(undefined, 'NAME="Ubuntu"\nID=ubuntu\nVERSION_ID="24.04"\n'),
+    { osType: "Ubuntu", version: "24.4.0" });
+  assert.deepEqual(linuxRelease("Distributor ID:\tunknown\n", "ID=cachyos\n"),
+    { osType: "CachyOS Linux", version: "Unknown" });
+  assert.deepEqual(linuxRelease("Distributor ID:\tArch\nRelease:\trolling\n", undefined),
+    { osType: "Arch", version: "Rolling Release" });
+  assert.deepEqual(linuxRelease(undefined, "ID=unrecognized\nVERSION_ID=42\n"),
+    { osType: "Linux", version: "Unknown" });
+});
+
+test("automatic Linux Desktop identity uses native system fields without a saved profile", { skip: process.platform !== "linux" }, () => {
+  const native = linuxSystem();
+  assert.match(native.architecture, /^[a-zA-Z0-9_]+$/);
+  assert.equal(codexIdentity({ client: "desktop", env: { TERM_PROGRAM: "ghostty", TERM_PROGRAM_VERSION: "1.2.3" } }).userAgent,
+    `Codex Desktop/0.153.4 (${native.osType} ${native.version}; ${native.architecture}) ghostty/1.2.3 (Codex Desktop; 26.903.61454)`);
+  assert.equal(codexIdentity({ env: { TERM_PROGRAM: "ghostty" } }).userAgent,
+    `codex_cli_rs/0.153.4 (${native.osType} ${native.version}; ${native.architecture}) ghostty`);
 });
 
 test("automatic Windows identity uses native API values", { skip: process.platform !== "win32" }, () => {
