@@ -46,7 +46,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   pi.registerFlag("codex-wire-transport", { type: "string", default: "auto", description: "Wire transport: auto (WebSocket with SSE fallback) or sse" });
   pi.registerFlag("codex-wire-compression", { type: "string", default: "on", description: "Native request-compression feature: on (Codex default) or off" });
   pi.registerFlag("codex-wire-prewarm", { type: "string", description: "Full-prompt WebSocket prewarming: on or off (default off; Wire remains mandatory)" });
-  pi.registerFlag("codex-wire-user-agent", { type: "string", description: "Exact native User-Agent profile; required outside Windows" });
+  pi.registerFlag("codex-wire-user-agent", { type: "string", description: "Explicit User-Agent profile (optional on Windows and Linux)" });
   pi.registerFlag("codex-wire-originator", { type: "string", description: "Native originator override (default codex_cli_rs)" });
   let mode: "off" | "codex" = "off";
   let client: Client = "cli";

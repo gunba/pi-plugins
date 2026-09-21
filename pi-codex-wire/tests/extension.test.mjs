@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
+import { codexIdentity } from "../extensions/identity.ts";
 import { saveUserAgent } from "../extensions/settings.ts";
 import { requireCodexWire } from "../extensions/required.ts";
 
@@ -107,6 +108,32 @@ test("Desktop selection changes both catalog and inference identity and persists
   await h.commands.get("codex-wire").handler("status", h.ctx);
   assert.match(h.notices.at(-1), /Client: desktop/);
   assert.equal(readFileSync(join(directory, "client"), "utf8").trim(), "cli", "startup override must not rewrite the saved client");
+});
+
+test("Desktop activates on Linux without a Desktop User-Agent profile and saves the default", { skip: process.platform !== "linux" }, async t => {
+  const h = harness(t);
+  h.flags.delete("codex-wire-user-agent");
+  const directory = join(h.directory, "codex-wire");
+  const expected = codexIdentity({ client: "desktop" }).userAgent;
+  assert.equal(existsSync(join(directory, "user-agent-desktop")), false);
+  await h.commands.get("codex-wire").handler("client desktop", h.ctx);
+  assert.equal(readFileSync(join(directory, "client"), "utf8").trim(), "desktop");
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({ reason: "reload" }, h.ctx);
+  const headers = [];
+  const fetcher = async (url, init) => {
+    headers.push(new Headers(init.headers));
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id }] });
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+  assert.equal(result.stopReason, "stop", result.errorMessage);
+  assert.equal(headers.length, 2);
+  for (const header of headers) {
+    assert.equal(header.get("originator"), "Codex Desktop");
+    assert.equal(header.get("user-agent"), expected);
+  }
 });
 
 function concurrentFetch(t, expected) {
