@@ -62,7 +62,7 @@ test("every owned tool publishes a strict top-level schema", () => {
 	}
 });
 
-test("image tool metadata carries upstream direct-generation and editing guidance", () => {
+test("image tool metadata describes its model and reference contract without choosing the workflow", () => {
 	const tools = registeredTools();
 	const applyPatch = tools.get("apply_patch");
 	const viewImage = tools.get("view_image");
@@ -107,14 +107,9 @@ test("image tool metadata carries upstream direct-generation and editing guidanc
 		viewImage.description,
 		"View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
 	);
-	assert.match(
-		imageGen.promptGuidelines.join("\n"),
-		/Directly generate the image without reconfirmation or clarification/,
-	);
-	assert.match(
-		imageGen.promptGuidelines.join("\n"),
-		/Always use image_gen for image editing.*Do not use Python/s,
-	);
+	assert.match(imageGen.promptGuidelines.join("\n"), /Choose one reference mode/);
+	assert.match(imageGen.promptGuidelines.join("\n"), /up to five references/);
+	assert.doesNotMatch(imageGen.promptGuidelines.join("\n"), /without reconfirmation|Always use|Do not use Python/);
 });
 
 test("view_image returns native image content and semantic rendering", async (t) => {

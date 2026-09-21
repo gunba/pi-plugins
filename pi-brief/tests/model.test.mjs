@@ -87,8 +87,16 @@ test("compileBriefPrompt preserves process, time horizon, audit, and no-partial 
 	assert.match(prompt, /## Verification and adversarial audit/);
 	assert.match(prompt, /Do not return partial recovery/);
 	assert.match(prompt, /manual database reset does not count/);
-	assert.match(prompt, /Do not claim completion until every success condition/);
+	assert.doesNotMatch(prompt, /Do not claim completion until every success condition/);
 	assert.doesNotMatch(prompt, /Decisions already deferred/);
+});
+
+test("compiled brief preserves its agreed partial-work policy without adding a blanket stop rule", () => {
+	const brief = completeBrief();
+	brief.completion.partialWorkPolicy = "Deliver completed components and identify the remainder.";
+	const prompt = compileBriefPrompt(brief);
+	assert.match(prompt, /Deliver completed components and identify the remainder/);
+	assert.doesNotMatch(prompt, /rather than returning a contradictory or partial substitute/);
 });
 
 test("compileBriefPrompt carries unresolved decisions into the executing conversation", () => {

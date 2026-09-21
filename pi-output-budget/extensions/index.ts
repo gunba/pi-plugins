@@ -59,7 +59,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
     name: "read", label: "read", parameters: readSchema,
     description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,
     promptSnippet: "Read file contents",
-    promptGuidelines: ["Use read to examine files instead of cat or sed. When completeness matters, follow read_artifact next_offset until it is null."],
+    promptGuidelines: ["Truncated reads are archived. read_artifact pages use next_offset; null marks the end of the captured content."],
     execute: (id, params, signal, _update, ctx) => readSnapshot(id, params, signal, ctx, outputArtifactStore()),
   });
 

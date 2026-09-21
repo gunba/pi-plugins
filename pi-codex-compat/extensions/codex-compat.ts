@@ -1430,12 +1430,9 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Apply Codex-style file patches using the apply_patch patch envelope",
 		promptGuidelines: [
-			"Use apply_patch for manual file edits when a Codex-style patch is natural; pass the whole patch body as the `input` string.",
-			"Use surrounding unchanged lines in apply_patch hunks to target repeated text precisely; do not replace manual edits with Python, PowerShell, or shell text-rewrite scripts.",
 			"Grammar-mode patches use the session cwd; use absolute paths for other directories. JSON calls may set workdir.",
 			"apply_patch input must use the Codex envelope: `*** Begin Patch`, one or more Add/Delete/Update File sections, and `*** End Patch`.",
 			"apply_patch supports `*** Move to:` and heredoc bodies copied from structurally valid `apply_patch <<'PATCH'` shell snippets.",
-			"Do not use apply_patch for generated outputs or broad mechanical rewrites where a script or formatter is the clearer tool.",
 		],
 		parameters: Type.Object(
 			{
@@ -1484,12 +1481,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Run commands in managed sessions with the Codex Unified Exec contract",
 		promptGuidelines: [
-			"Use exec_command when a Codex-style tool call would use `exec_command`; always set `workdir` when operating inside a repository.",
-			"exec_command accepts `cmd`, optional `workdir`, `tty`, `shell`, `login`, `yield_time_ms`, and `max_output_tokens`.",
-			"exec_command uses plain pipes. `tty:false` is the default; `tty:true` is rejected rather than pretending a pipe is a PTY.",
-			"exec_command initially waits 10,000ms and clamps the wait to 250–30,000ms (2,000–30,000ms on Windows). A command still running after that wait returns a session ID.",
+			"A command still running after yield_time_ms returns a session ID. Completion notifications arrive automatically; write_stdin collects the result.",
 			"exec_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
-			"Use write_stdin with the returned `session_id` to poll or to send an exact Ctrl-C character to a non-TTY session; other non-empty input is rejected.",
 			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
 		],
 		parameters: Type.Object(
@@ -1640,11 +1633,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Poll a Unified Exec session or send an exact Ctrl-C interrupt",
 		promptGuidelines: [
-			"Use write_stdin only with a `session_id` returned by exec_command.",
-			"Use write_stdin with omitted or empty `chars` to poll without writing; empty polls default to 5,000ms.",
-			"Non-TTY exec_command sessions accept only an exact U+0003 Ctrl-C input. Other non-empty `chars` values are rejected because stdin is closed.",
+			"session_id comes from exec_command. Omitted or empty chars reads output; stdin is closed except for the U+0003 interruption request.",
 			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it requests `taskkill /T` tree termination because an extension cannot emit a truthful console Ctrl-C event.",
-			"Do not rapidly poll shell sessions at one-second intervals. Prefer the empty-poll default and increase `yield_time_ms` for repeated waits.",
 		],
 		parameters: Type.Object(
 			{
@@ -1737,8 +1727,6 @@ export default function codexCompat(pi: ExtensionAPI): void {
 			"View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
 		promptSnippet: "Inspect a local PNG/JPEG/GIF/WebP/BMP image",
 		promptGuidelines: [
-			"Use view_image when visual inspection of an existing local image is needed.",
-			"view_image accepts a local filesystem `path`; do not use it for remote URLs.",
 			"On a text-only Codex model, view_image delegates visual inspection to an authenticated image-capable model and returns its concise description.",
 		],
 		parameters: Type.Object(
@@ -1777,13 +1765,8 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		promptSnippet:
 			"Generate or edit images with GPT Image 2.5 Sunburst or Flare, including local and recent conversation references",
 		promptGuidelines: [
-			"Use image_gen when the user requests a new image or asks to edit an existing image.",
 			"For a new image, provide `prompt` and `model`; for edits, also provide the image references.",
-			"For edits, use image_gen `referenced_image_paths` when every target has a local path; inspect unseen local images with view_image first.",
-			"Use image_gen `num_last_images_to_include` only when a target has no local path, choosing the smallest recent-image count that includes every target, up to 5.",
-			"Never provide both image_gen `referenced_image_paths` and `num_last_images_to_include`; ask the user to attach missing images when neither mechanism can include every target.",
-			"Directly generate the image without reconfirmation or clarification unless required images must be attached again.",
-			"Always use image_gen for image editing unless the user explicitly requests otherwise. Do not use Python for image editing unless specifically instructed.",
+			"Choose one reference mode: referenced_image_paths supplies local files in prompt order; num_last_images_to_include selects the most recent conversation images. Each supports up to five references.",
 		],
 		parameters: Type.Object(
 			{

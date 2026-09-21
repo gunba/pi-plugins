@@ -49,23 +49,21 @@ test("multiline and tag-like objectives remain one JSON-quoted value", () => {
 	assert.equal(prompt.match(/\n<\/goal_round>/g)?.length, 1);
 });
 
-test("completion wrap-up requests grounded user-facing closure without tools", () => {
+test("completion wrap-up describes the outcome without prohibiting follow-through", () => {
 	const prompt = renderGoalWrapup(goal);
 	assert.match(prompt, /^<goal_complete>/);
-	assert.match(prompt, /state the outcome/);
-	assert.match(prompt, /how it was verified/);
-	assert.match(prompt, /files, commits, or other artifacts/);
-	assert.match(prompt, /Do not call any more tools/);
+	assert.match(prompt, /outcome, verification, relevant artifacts/);
+	assert.match(prompt, /Automatic continuation has stopped/);
+	assert.doesNotMatch(prompt, /Do not call|next instruction/);
 	assert.match(prompt, /<\/goal_complete>$/);
 });
 
-test("blocked wrap-up asks for completed work, attempts, blocker, and exact user input", () => {
+test("blocked wrap-up asks for progress, attempts, and a route to resume", () => {
 	const prompt = renderGoalWrapup(goal, "A credential is unavailable.");
 	assert.match(prompt, /^<goal_blocked>/);
 	assert.match(prompt, /Blocked: "A credential is unavailable\."/);
-	assert.match(prompt, /what has been completed/);
-	assert.match(prompt, /what you tried/);
-	assert.match(prompt, /exactly what you need from the user/);
+	assert.match(prompt, /progress, the blocking condition, attempts/);
+	assert.match(prompt, /what would allow work to resume/);
 	assert.match(prompt, /<\/goal_blocked>$/);
 });
 

@@ -139,14 +139,13 @@ function delegationTool(
 		label: context === "fresh" ? "Subagent" : "Subagent Fork",
 		description:
 			`Delegate work to a Pi SDK child session. ${contextWording} ` +
-			"The child runs in the background by default and remains available by durable id. Set run_in_background false only when the next action depends on its result.",
+			"The child runs in the background by default and remains available by durable id; run_in_background false waits for its result.",
 		promptSnippet:
 			context === "fresh"
 				? "Delegate a self-contained task to a fresh child session"
 				: "Delegate a task to a child seeded with completed parent turns",
 		promptGuidelines: [
-			`Use ${name} in the background by default; set run_in_background to false only when your next action depends on the result.`,
-			`Start independent ${name} delegations together and continue useful work while they run.`,
+			"Background children send settlement notices automatically, so the parent can continue useful work without polling.",
 			"Model and thinking overrides require the user's conversation-level approval. The first override opens an approval dialog; after approval you may choose without asking again. If approval is denied, inherit the parent settings.",
 		],
 		parameters: delegationParameters(context),
@@ -299,7 +298,7 @@ export function createSubagentToolDefinitions(
 				promptSnippet:
 					"Report a self-contained result to the direct parent without ending the turn",
 				promptGuidelines: [
-					"Use report when a finding changes what your direct parent should do next. Your final answer is delivered automatically; do not send it again through report.",
+					"report sends an interim finding. The final answer is delivered automatically.",
 				],
 				parameters: reportParameters,
 				execute: async (_toolCallId, params) => {

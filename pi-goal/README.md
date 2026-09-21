@@ -44,7 +44,7 @@ The extension also registers three sequential model tools:
 - Each validated continuation writes a non-context custom admission entry containing its exact identity and rendered prompt. Replay counts that entry, so the visible custom round message can be pruned from context without changing goal state.
 - Visible continuation messages carry the model prompt and transcript presentation. Their objective is JSON-quoted, so multiline and tag-like text remains data inside `<goal_round>`.
 - `agent_settled` drives at most one next round. An in-memory reservation prevents duplicate dispatch.
-- Autonomous completion and blocking add one no-tools closing instruction for the model’s user-facing wrap-up.
+- Autonomous completion and blocking add a closing instruction for the model’s user-facing wrap-up.
 - `/goal` output is a non-model custom entry. Commands, rounds and tool calls retain their transcript renderers. Goal state appears collapsed in the shared Work panel, alongside todos and subagents. Expand its section to see the objective, activation, round count and blocker.
 
 ## Authority

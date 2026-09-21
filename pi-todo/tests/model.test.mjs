@@ -82,14 +82,16 @@ test("parallel policy accepts several active items and single policy rejects the
 test("description changes only its active-task policy clause", () => {
 	const parallel = describeTodoTool(true);
 	const single = describeTodoTool(false);
-	assert.match(parallel, /several at once when work genuinely runs in parallel/);
-	assert.doesNotMatch(parallel, /AT MOST ONE/);
-	assert.match(single, /Keep AT MOST ONE todo `in_progress`/);
-	assert.doesNotMatch(single, /several at once/);
+	assert.match(parallel, /Parallel tasks may share/);
+	assert.doesNotMatch(parallel, /at most one/);
+	assert.match(single, /permits at most one `in_progress`/);
+	assert.doesNotMatch(single, /Parallel tasks/);
 	assert.equal(
-		parallel.replace(/Mark every todo[\s\S]*?`in_progress`\. /, "POLICY "),
-		single.replace(/Keep AT MOST ONE[\s\S]*?`in_progress`\. /, "POLICY "),
+		parallel.replace(/Parallel tasks.*?\. /, "POLICY "),
+		single.replace(/This configuration.*?\. /, "POLICY "),
 	);
+	assert.match(parallel, /replaces the entire list/);
+	assert.doesNotMatch(parallel, /before you start|the moment|do not batch|at least one/);
 });
 
 test("counts and model-visible result text use the exact contract", () => {

@@ -472,10 +472,7 @@ export default function (pi: ExtensionAPI): void {
     description: "Schedule a message after a genuine time-based delay. Use work-completion notifications or wait_for_work for tracked processes and agents, not a short reminder to check whether they finished. Due messages steer an active run.",
     promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
     promptGuidelines: [
-      "Use schedule for a real-world time-based follow-up. For tracked processes or agents, use completion notifications or wait_for_work rather than scheduling a completion check.",
-      "Write the scheduled message with enough context that you can resume the task when it is delivered.",
-      "Messages created with schedule always steer an active run rather than queueing a follow-up.",
-      "Delays use minutes, hours, or days, for example `15m`, `5h`, `5.5h`, or `30d`.",
+      "Tracked processes and agents already emit completion notifications; wait_for_work can yield until they finish. Scheduled messages are for time-based follow-ups.",
     ],
     parameters: Type.Object({
       delay: Type.String({ description: "Delay before delivery, using m/h/d units, e.g. 15m, 5h, 5.5h, or 30d." }),
@@ -511,9 +508,6 @@ export default function (pi: ExtensionAPI): void {
     label: "Cancel scheduled message",
     description: "Cancel a pending message in this Pi session using the id returned by schedule. Use the id 'all' to cancel every pending scheduled message in the session.",
     promptSnippet: "Cancel a pending message created by schedule using its returned id",
-    promptGuidelines: [
-      "Use cancel_scheduled_message when a pending message created by schedule is no longer needed.",
-    ],
     parameters: Type.Object({
       id: Type.String({ description: "Schedule id returned by schedule, or 'all' to cancel every pending scheduled message in this session." }),
     }),
