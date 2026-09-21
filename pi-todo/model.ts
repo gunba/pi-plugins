@@ -46,13 +46,13 @@ export interface PlanSummary {
 }
 
 const DESCRIPTION_START =
-	"Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits). Use it to plan multi-step work and show progress: add one todo per concrete step before you start. ";
+	"Record a task list for planning and progress. Each call replaces the entire list. ";
 const PARALLEL_GUIDANCE =
-	"Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. ";
+	"Parallel tasks may share the `in_progress` status. ";
 const SINGLE_GUIDANCE =
-	"Keep AT MOST ONE todo `in_progress` at a time; while work remains, exactly one active task should be `in_progress`. ";
+	"This configuration permits at most one `in_progress` item. ";
 const DESCRIPTION_END =
-	"Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished).";
+	"Statuses are `pending`, `in_progress`, and `completed`.";
 
 export function describeTodoTool(allowParallelInProgress: boolean): string {
 	return DESCRIPTION_START

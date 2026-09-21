@@ -204,10 +204,6 @@ export function compileBriefPrompt(brief: BriefDocument): string {
 		);
 	}
 
-	sections.push(
-		"Do not claim completion until every success condition and acceptance criterion has been satisfied and the specified verification has passed. If an unforeseen conflict makes the brief impossible to satisfy, stop and ask the user to resolve that conflict rather than returning a contradictory or partial substitute.",
-	);
-
 	return `${sections.join("\n\n")}\n`;
 }
 

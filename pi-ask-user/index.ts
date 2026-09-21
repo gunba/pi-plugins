@@ -1489,14 +1489,11 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user for input or approval when progress is blocked. Prefer resolving routine uncertainty with available tools before asking.",
+         "Ask the user for a decision, missing information, or approval.",
       promptSnippet:
-         "Ask the user for input or approval when progress is blocked",
+         "Collect a user decision or approval",
       promptGuidelines: [
-         "Use ask_user sparingly when progress is blocked by a user-owned decision, missing permission, or information that cannot be resolved from project context.",
-         "Before calling ask_user, gather relevant context with available tools and pass a concise summary via the context field.",
-         "Do not use ask_user for routine implementation details, preferences that can be inferred, or questions answerable by reading files, running checks, or consulting available documentation.",
-         "For low-risk reversible ambiguity, make a reasonable assumption, state it briefly, and continue instead of asking.",
+         "The dialog pauses tool execution until the user responds. Its context field can summarize findings relevant to the decision.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run

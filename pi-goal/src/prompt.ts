@@ -13,18 +13,13 @@ export function renderGoalRoundPrompt(goal: GoalPromptState, round: number): str
 	].join("\n");
 }
 
-const GROUNDING =
-	"Report only what earlier rounds and tool results in this session actually establish; when a detail is not in the session, say so instead of inventing it. ";
-
 export function renderGoalWrapup(goal: Pick<GoalView, "objective">, blockedReason?: string): string {
 	const objective = `Objective: ${JSON.stringify(goal.objective)}\n`;
 	if (blockedReason === undefined) {
 		return [
 			"<goal_complete>",
 			objective.trimEnd(),
-			"The goal is marked complete and this autonomous run is ending. Write the closing message to the user now: state the outcome, summarize what was done and how it was verified, and point to the concrete results (files, commits, or other artifacts). "
-				+ GROUNDING
-				+ "Note anything the user should review or do next. Address the user directly. Do not call any more tools in this run; further work waits for the user's next instruction.",
+			"Automatic continuation has stopped. Summarize the outcome, verification, relevant artifacts and any next steps for the user.",
 			"</goal_complete>",
 		].join("\n");
 	}
@@ -32,9 +27,7 @@ export function renderGoalWrapup(goal: Pick<GoalView, "objective">, blockedReaso
 		"<goal_blocked>",
 		objective.trimEnd(),
 		`Blocked: ${JSON.stringify(blockedReason)}`,
-		"The goal is marked blocked and this autonomous run is ending. Write the closing message to the user now: state what has been completed so far, describe the concrete blocking condition and what you tried, and say exactly what you need from the user to continue. "
-			+ GROUNDING
-			+ "Address the user directly. Do not call any more tools in this run; further work waits for the user's next instruction.",
+		"Automatic continuation has stopped. Summarize progress, the blocking condition, attempts to resolve it and what would allow work to resume.",
 		"</goal_blocked>",
 	].join("\n");
 }

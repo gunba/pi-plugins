@@ -452,7 +452,7 @@ test("an exact admitted goal round may complete and receives one wrap-up model s
 	assert.equal(results.length, 1);
 	assert.equal(results[0].messages.length, 1);
 	assert.match(results[0].messages[0].content[0].text, /<goal_complete>/);
-	assert.match(results[0].messages[0].content[0].text, /Do not call any more tools/);
+	assert.match(results[0].messages[0].content[0].text, /Automatic continuation has stopped/);
 });
 
 test("goal-round authority survives unrelated custom messages in the same agent run", async () => {

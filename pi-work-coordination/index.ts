@@ -72,7 +72,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   });
   pi.registerTool({
     name: "wait_for_work", label: "Wait for work",
-    description: "Yield only when no independent useful work remains. Wait for existing session-owned child settlements, managed processes, or scheduled timers without polling. Call alone: Pi terminates a tool batch only if every result terminates. A resource finishing before this call returns immediately. User input and reload cancel the wait.",
+    description: "Wait for existing session-owned child settlements, managed processes, or scheduled timers. Call alone: Pi terminates a tool batch only if every result terminates. A resource finishing before this call returns immediately. User input and reload cancel the wait.",
     parameters: Type.Object({ targets: Type.Array(Type.Object({ kind: StringEnum(["child", "process", "timer"] as const), id: Type.String({ minLength: 1 }) }), { minItems: 1, maxItems: 64 }), mode: Type.Optional(StringEnum(["any", "all"] as const)) }),
     executionMode: "sequential",
     async execute(_id, params, signal, _update, ctx) {

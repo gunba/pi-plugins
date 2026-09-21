@@ -5,12 +5,12 @@ description: Inspect and control websites through the configured Playwright brow
 
 # Browse
 
-Use the existing Playwright MCP connection. Discover only the needed tools with
+Use the existing Playwright MCP connection. Discover tools with
 `mcp({search:"browser_run_code"})` or a specific tool name. Call discovered
 non-direct MCP tools through the gateway; call direct tools normally.
 
-Prefer `browser_run_code_unsafe` for a batch of related Playwright actions and
-return only the observations needed for the next decision. The function receives
+`browser_run_code_unsafe` can batch related Playwright actions and return a focused
+observation. The function receives
 the current `page`; the browser persists across calls, but local JavaScript
 bindings do not.
 
@@ -31,5 +31,5 @@ Snapshot responses may contain changes against the previous observation.
 are retained under the supplied `read_artifact` IDs. Those artifacts are
 historical evidence, not a live view. `/browser-context full` disables diffs.
 
-For editing workflows, separate inspection from the action batch at any
-decision or approval boundary, and return saved-state evidence after the edit.
+After editing, inspect the saved state. Pause a batch where a user decision or
+approval is needed.
