@@ -17,8 +17,8 @@ const modelData = { id: "offline", name: "Offline fixture", api: "openai-complet
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
-test("native Pi admits human goal edits and queued creation after checkpoint projection, but rejects peer-only work", { timeout: 30000 }, async t => {
-	const directory = mkdtempSync(join(tmpdir(), "pi-goal-authority-"));
+test("native Pi permits goal controls after checkpoint projection, steering, and peer-only input", { timeout: 30000 }, async t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-goal-controls-"));
 	const priorFetch = globalThis.fetch;
 	globalThis.fetch = async () => assert.fail("this fixture must never make a network request");
 	let session;
@@ -44,7 +44,8 @@ test("native Pi admits human goal edits and queued creation after checkpoint pro
 	const script = [];
 	const contexts = [];
 	let calls = 0;
-	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null,
+		modelsStorePath: join(directory, "models-store.json"), allowModelNetwork: false, refreshOnCreate: false });
 	runtime.registerProvider("openai-codex", { name: "Offline fixture", apiKey: "fixture-only", api: modelData.api,
 		baseUrl: "http://127.0.0.1:1", models: [modelData], streamSimple(model, context) {
 			contexts.push(context.messages);
@@ -118,16 +119,12 @@ test("native Pi admits human goal edits and queued creation after checkpoint pro
 	assert.equal(script.length, 0);
 	assert.ok(session.messages.some(message => message.role === "user" && message.content[0]?.text === "I removed it. Set it now."));
 
-	// Clearing state does not give the next peer-triggered run human authority.
+	// Peer-triggered work can create and complete a goal without fresh human input.
 	await session.prompt("/goal clear");
-	script.push(() => tool("create_goal", { objective: "Unauthorized peer objective" }), context => {
-		assert.equal(result(context).isError, true);
-		assert.match(result(context).content[0].text, /GOAL_TOOL_AUTHORITY_REQUIRED/);
-		return finish();
-	});
+	script.push(() => tool("create_goal", { objective: "Peer continuation objective" }), terminal, expectComplete);
 	await session.sendCustomMessage({ customType: "pi-party/message", content: "Peer-only follow-up", display: true }, { triggerTurn: true });
 	assert.equal(script.length, 0);
 	assert.deepEqual(errors, []);
 	assert.ok(readFileSync(manager.getSessionFile(), "utf8").includes("Replacement objective"));
-	assert.ok(!manager.getBranch().some(entry => entry.customType === GOAL_CHANGE_ENTRY && entry.data.goal?.objective === "Unauthorized peer objective"));
+	assert.ok(manager.getBranch().some(entry => entry.customType === GOAL_CHANGE_ENTRY && entry.data.goal?.objective === "Peer continuation objective"));
 });

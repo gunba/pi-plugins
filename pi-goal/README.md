@@ -40,29 +40,30 @@ The extension also registers three sequential model tools:
 - Durable phases are `active`, `paused`, `blocked`, and `complete`.
 - Activation is process-local. Session start, reload, resume, fork, and tree navigation restore active goals as disarmed.
 - The default continuation cap is 256 rounds. A per-goal cap can override it.
-- Autonomous `blocked` reports require at least three admitted rounds. A direct human turn can block earlier.
+- `blocked` reports during an automatic goal round require at least three admitted rounds. Outside an automatic goal round, a blocker can be recorded immediately.
 - Each validated continuation writes a non-context custom admission entry containing its exact identity and rendered prompt. Replay counts that entry, so the visible custom round message can be pruned from context without changing goal state.
 - Visible continuation messages carry the model prompt and transcript presentation. Their objective is JSON-quoted, so multiline and tag-like text remains data inside `<goal_round>`.
 - `agent_settled` drives at most one next round. An in-memory reservation prevents duplicate dispatch.
 - Autonomous completion and blocking add one no-tools closing instruction for the model’s user-facing wrap-up.
 - `/goal` output is a non-model custom entry. Commands, rounds and tool calls retain their transcript renderers. Goal state appears collapsed in the shared Work panel, alongside todos and subagents. Expand its section to see the objective, activation, round count and blocker.
 
-## Authority
+## Agent controls
 
-Pi Goal records ordered input markers for both human and extension sources. It grants direct-human authority when Pi admits a new user message through `message_start` whose text and image payload matches an `interactive` or `rpc` marker. Pi awaits this event before preparing model context. Checkpoint carriers, restored history and other context transformations cannot consume a marker or grant authority. One match authorizes the current agent run, including a group of human messages that Pi flushes together after compaction. The grant lasts until `agent_settled`, so tool calls, subagent notices and scheduler messages cannot revoke it. Steering inputs are matched before queued follow-ups, mirroring Pi's queue order. Immediate skill and template expansion is rebound through `before_agent_start`. A transformed queued input fails closed because Pi exposes no equivalent boundary when it later leaves the queue.
+Goal tools operate on the current session branch regardless of input source or
+agent role. They are available during autonomous rounds, after compaction or
+resume, and in managed children. Updates still require the exact goal ID and
+revision, and the store validates state transitions.
 
-Direct-human turns may let the model create, edit, pause, resume, complete, or block a goal. An automatic round may only complete or block the exact goal revision and admitted round that the extension reserved; that authority also lasts until the round's agent run settles. Goal tools do not grant direct-human mutation authority inside Pi Subagents child processes. Only input payload hashes are retained for matching; conversation history and peer message bodies are not scanned for authority.
-
-An active goal restored as **disarmed** still exists, but cannot continue automatically until resumed. Disarming does not prohibit an authorized human turn from editing or completing it. Clearing a goal removes its state; it does not authorize a subsequent peer-only turn to create a replacement.
-
-Extensions share the Pi process and are trusted code.
+A restored active goal is **disarmed** until resumed through the tool or command.
+Managed children can maintain their own branch-local goals; their enclosing
+runtime, rather than this plugin, controls continuation. Child tools do not
+address a parent's goal.
 
 ## Pi semantic gaps
 
 Pi 0.85.1 does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
 
 - Custom messages lose typed source attribution when Pi converts them to model input. Another trusted extension can imitate a goal message.
-- Registered command handlers run before Pi emits `input` and receive no source metadata. A trusted extension can therefore invoke `/goal` controls through `sendUserMessage(..., { expandPromptTemplates: true })`; source isolation for `/goal` requires a Pi host change or replacing the registered command path.
 - Human queue priority and `hasPendingMessages()` are not atomic with continuation dispatch.
 - Extensions cannot reserve or reject a message at a cancellable pre-model-step fence.
 - `appendEntry()` has no explicit flush, and a brand-new session may not reach disk before its first assistant message.

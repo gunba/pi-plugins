@@ -152,179 +152,70 @@ test("direct top-level human turns may create, edit, pause, and resume through t
 	assert.equal(harness.sentMessages.length, 0, "active human run must settle before continuation");
 });
 
-test("model mutations without direct-human or exact-round authority fail closed", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await assert.rejects(
-		executeTool(harness, "create_goal", { objective: "unauthorized" }),
-		/GOAL_TOOL_AUTHORITY_REQUIRED/,
-	);
-});
-
-const userMessage = (text, timestamp = 1, images = []) => ({
-	role: "user", content: [{ type: "text", text }, ...images], timestamp,
-});
-const peerMessage = {
-	role: "custom", customType: "pi-party/message", content: "Peer findings",
-	display: true, timestamp: 1,
-};
-const deniedCreate = harness => assert.rejects(
-	executeTool(harness, "create_goal", { objective: "not authorized" }),
-	/GOAL_TOOL_AUTHORITY_REQUIRED/,
-);
-
-test("input and prepared user context cannot authorize tools before message admission", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "direct request", source: "interactive" });
-	await harness.emit("before_agent_start", { prompt: "direct request" });
-	await harness.emit("context", { messages: [userMessage("direct request")] });
-	await deniedCreate(harness);
-	await harness.deliver([userMessage("direct request")]);
-	assert.equal((await executeTool(harness, "create_goal", { objective: "admitted request" })).details.goal.objective, "admitted request");
-});
-
-test("immediate expanded skills and image attachments retain human authority", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	const images = [{ type: "image", mimeType: "image/png", data: "fixture-only" }];
-	await harness.emit("input", { text: "/skill:long-task", images, source: "interactive" });
-	await harness.emit("before_agent_start", { prompt: "Expanded instructions", images });
-	await harness.deliver([userMessage("Expanded instructions", 1, images)]);
-	assert.equal((await executeTool(harness, "create_goal", { objective: "expanded request" })).details.goal.objective, "expanded request");
-});
-
-test("a delivered compaction batch with one human marker authorizes the run", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "first human message", source: "interactive" });
-	await harness.deliver([userMessage("first human message"), userMessage("second human message", 2)]);
-	assert.equal((await executeTool(harness, "create_goal", { objective: "batched request" })).details.goal.objective, "batched request");
-});
-
-test("queued human input authorizes only its later delivery, not the current party run", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "human follow-up", source: "interactive", streamingBehavior: "followUp" });
-	await harness.deliver([peerMessage]);
-	await deniedCreate(harness);
-	await harness.deliver([userMessage("human follow-up", 2)]);
-	assert.equal((await executeTool(harness, "create_goal", { objective: "authorized later" })).details.goal.objective, "authorized later");
-});
-
-test("extension steering cannot consume earlier human follow-ups, including identical text", async () => {
-	for (const extensionText of ["extension steer", "human follow-up"]) {
-		const harness = createExtensionHarness({ idle: false });
+for (const context of ["no input", "extension input", "peer notice", "expanded input", "settled run", "managed child", "child process"]) {
+	test(`goal mutations are available with ${context}`, async () => {
+		const harness = createExtensionHarness({
+			idle: false, managedChild: context === "managed child", topLevel: context !== "child process",
+		});
 		await harness.start();
-		await harness.emit("input", { text: "human follow-up", source: "interactive", streamingBehavior: "followUp" });
-		await harness.emit("input", { text: extensionText, source: "extension", streamingBehavior: "steer" });
-		await harness.deliver([userMessage(extensionText)]);
-		await deniedCreate(harness);
-		await harness.deliver([userMessage("human follow-up", 2)]);
-		assert.equal((await executeTool(harness, "create_goal", { objective: "human authority" })).details.goal.objective, "human authority");
-	}
-});
-
-test("transformed queued input fails closed without a matching expansion boundary", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "/skill:long-task", source: "interactive", streamingBehavior: "followUp" });
-	await harness.deliver([userMessage("Expanded instructions")]);
-	await deniedCreate(harness);
-});
-
-test("handled input cannot authorize a peer turn or same-text extension input", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "same text", source: "interactive" });
-	await harness.deliver([peerMessage]);
-	await deniedCreate(harness);
-	await harness.emit("input", { text: "same text", source: "extension" });
-	await harness.emit("before_agent_start", { prompt: "same text" });
-	await harness.deliver([userMessage("same text", 2)]);
-	await deniedCreate(harness);
-});
-
-test("restored human history and unmatched extension messages grant no authority", async () => {
-	const message = userMessage("past human request");
-	const harness = createExtensionHarness({ idle: false, branch: [{ type: "message", message }] });
-	await harness.start();
-	await harness.emit("context", { messages: [message] });
-	await harness.deliver([peerMessage, userMessage("extension without an input marker", 3)]);
-	await deniedCreate(harness);
-});
-
-test("direct-human authority survives the user's tool-call turns", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.directInput("use tools to finish this");
-	await harness.emit("context", {
-		messages: [
-			{ role: "assistant", content: [], stopReason: "toolUse", timestamp: 2 },
-			{ role: "toolResult", toolCallId: "call-1", toolName: "read", content: [], isError: false, timestamp: 3 },
-		],
+		if (context === "extension input") await harness.emit("input", { text: "continue", source: "extension" });
+		if (context === "peer notice") await harness.deliver([{
+			role: "custom", customType: "pi-party/message", content: "Findings", display: true, timestamp: 1,
+		}]);
+		if (context === "expanded input") {
+			await harness.emit("input", { text: "/skill:task", source: "interactive", streamingBehavior: "followUp" });
+			await harness.deliver([{ role: "user", content: [{ type: "text", text: "Expanded task" }], timestamp: 1 }]);
+		}
+		if (context === "settled run") await harness.emit("agent_settled");
+		let result = await executeTool(harness, "create_goal", { objective: "finish the task" });
+		for (const action of ["edit", "pause", "resume", "blocked", "resume", "complete"]) {
+			const current = (await executeTool(harness, "get_goal")).details.goal;
+			result = await executeTool(harness, "update_goal", {
+				goal_id: current.id, revision: current.revision, action,
+				...(action === "edit" ? { objective: "finish the revised task" } : {}),
+				...(action === "blocked" ? { blocked_reason: "Waiting for an unavailable dependency." } : {}),
+			});
+		}
+		assert.equal(result.details.goal.phase, "complete");
+		assert.equal(result.details.goal.objective, "finish the revised task");
+		assert.equal(harness.sentMessages.length, 0);
+		await harness.emit("session_shutdown");
 	});
-	const created = await executeTool(harness, "create_goal", { objective: "tool-backed work" });
-	assert.equal(created.details.goal.objective, "tool-backed work");
-});
+}
 
-test("direct-human authority survives unrelated custom messages in the same agent run", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.directInput("establish authority");
-	await harness.emit("context", {
-		messages: [{
-			role: "custom",
-			customType: "other-extension",
-			content: "subagent settlement notice",
-			display: true,
-			timestamp: 2,
-		}],
+test("a restored goal can resume without a new human-input event", async () => {
+	const initial = createExtensionHarness({ idle: false });
+	await initial.start();
+	await executeTool(initial, "create_goal", { objective: "continue after reload" });
+	const restored = createExtensionHarness({ branch: initial.branch });
+	await restored.start("resume");
+	const current = await executeTool(restored, "get_goal");
+	assert.equal(current.details.activation, "disarmed");
+	await executeTool(restored, "update_goal", {
+		goal_id: current.details.goal.id, revision: current.details.goal.revision, action: "resume",
 	});
-	const created = await executeTool(harness, "create_goal", { objective: "notice-safe authority" });
-	assert.equal(created.details.goal.objective, "notice-safe authority");
+	assert.equal(restored.sentMessages.length, 1);
 });
 
-test("admitted authority expires when the agent run settles", async () => {
-	const harness = createExtensionHarness({ idle: false });
+test("an automatic round can edit, pause, and resume without duplicating continuation", async () => {
+	const harness = createExtensionHarness();
 	await harness.start();
-	await harness.directInput("establish authority");
-	await harness.emit("agent_settled");
-	await assert.rejects(
-		executeTool(harness, "create_goal", { objective: "expired authority" }),
-		/GOAL_TOOL_AUTHORITY_REQUIRED/,
-	);
-});
-
-test("context normalization is never inspected for input authority", async () => {
-	const harness = createExtensionHarness({ idle: false });
-	await harness.start();
-	await harness.emit("input", { text: "pending human", source: "rpc" });
-	const details = new Proxy({}, { ownKeys() { assert.fail("context must not be fingerprinted"); } });
-	for (let i = 0; i < 3; i++) await harness.emit("context", { messages: [
-		{ role: "user", content: `changing checkpoint ${i}`, timestamp: 0, details },
-		{ ...peerMessage, details },
-	] });
-	await deniedCreate(harness);
-	await harness.deliver([userMessage("pending human", 2)]);
-	await executeTool(harness, "create_goal", { objective: "context-independent authority" });
-	await harness.emit("agent_settled");
-	await deniedCreate(harness);
-});
-
-test("a mismatched image or malformed user payload consumes its marker without granting authority", async () => {
-	for (const content of [
-		[{ type: "text", text: "request" }, { type: "image", mimeType: "image/png", data: "different" }],
-		[{ type: "unknown" }],
-	]) {
-		const harness = createExtensionHarness({ idle: false });
-		await harness.start();
-		await harness.emit("input", { text: "request", source: "interactive", images: [{ type: "image", mimeType: "image/png", data: "original" }] });
-		await harness.deliver([{ role: "user", content, timestamp: 1 }]);
-		await deniedCreate(harness);
-		await harness.deliver([userMessage("request", 2, [{ type: "image", mimeType: "image/png", data: "original" }])]);
-		await deniedCreate(harness);
+	await harness.commands.get("goal").handler("original task", harness.ctx);
+	await harness.admitLastRound();
+	harness.setIdle(false);
+	for (const action of ["edit", "pause", "resume"]) {
+		const current = (await executeTool(harness, "get_goal")).details.goal;
+		await executeTool(harness, "update_goal", {
+			goal_id: current.id, revision: current.revision, action,
+			...(action === "edit" ? { objective: "revised task" } : {}),
+		});
 	}
+	assert.equal(harness.sentMessages.length, 1);
+	harness.setIdle(true);
+	await harness.emit("agent_end", { messages: successfulAgentMessages() });
+	await harness.emit("agent_settled");
+	assert.equal(harness.sentMessages.length, 2);
+	assert.match(harness.sentMessages[1].message.content, /revised task/);
 });
 
 test("arbitrary cyclic context cannot suppress an already pending goal wrap-up", async () => {
@@ -354,26 +245,20 @@ test("arbitrary cyclic context cannot suppress an already pending goal wrap-up",
 	assert.match(outcome.results[0].messages.at(-1).content[0].text, /<goal_complete>/);
 });
 
-test("managed SDK children cannot acquire human goal authority from an apparent interactive input", async () => {
-	const harness = createExtensionHarness({ idle: false, managedChild: true });
-	await harness.start();
-	await harness.directInput();
-	await assert.rejects(
-		executeTool(harness, "create_goal", { objective: "child goal" }),
-		/GOAL_TOOL_AUTHORITY_REQUIRED/,
-	);
-	assert.equal((await executeTool(harness, "get_goal")).details.goal, null);
-	await harness.emit("session_shutdown");
-});
-
-test("Pi Subagents child processes do not receive direct-human goal authority", async () => {
-	const harness = createExtensionHarness({ idle: false, topLevel: false });
-	await harness.start();
-	await harness.directInput();
-	await assert.rejects(
-		executeTool(harness, "create_goal", { objective: "child goal" }),
-		/GOAL_TOOL_AUTHORITY_REQUIRED/,
-	);
+test("managed child goals remain session-local and do not dispatch automatic rounds", async () => {
+	const parent = createExtensionHarness({ idle: false });
+	const child = createExtensionHarness({ managedChild: true });
+	await parent.start(); await child.start();
+	const parentGoal = await executeTool(parent, "create_goal", { objective: "parent task" });
+	const childGoal = await executeTool(child, "create_goal", { objective: "child task" });
+	assert.notEqual(parentGoal.details.goal.id, childGoal.details.goal.id);
+	await assert.rejects(executeTool(child, "update_goal", {
+		goal_id: parentGoal.details.goal.id, revision: parentGoal.details.goal.revision, action: "pause",
+	}), /stale goal ref/);
+	await child.emit("agent_settled");
+	assert.equal(child.sentMessages.length, 0);
+	assert.equal((await executeTool(parent, "get_goal")).details.goal.phase, "active");
+	await child.emit("session_shutdown");
 });
 
 test("goal tools return compact values and enforce read-before-update CAS", async () => {
@@ -455,7 +340,7 @@ test("an exact admitted goal round may complete and receives one wrap-up model s
 	assert.match(results[0].messages[0].content[0].text, /Do not call any more tools/);
 });
 
-test("goal-round authority survives unrelated custom messages in the same agent run", async () => {
+test("unrelated custom messages do not prevent completion during a goal round", async () => {
 	const harness = createExtensionHarness();
 	await harness.start();
 	await harness.commands.get("goal").handler("finish despite notices", harness.ctx);
