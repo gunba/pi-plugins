@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -45,18 +44,18 @@ import {
 } from "../src/ui.ts";
 
 const CREATE_DESCRIPTION =
-	"Create one persisted same-session completion goal when the current direct human request is a long-running objective that should continue across autonomous goal rounds. You may infer that intent without requiring the user to say create a goal. Do not use this for trivial single-turn work. Execution rejects non-human and subagent authority.";
+	"Create one persisted same-session completion goal for a long-running task that should continue across autonomous goal rounds.";
 
 const GET_DESCRIPTION =
 	"Read the current same-session goal, including its exact id/revision, objective, phase, completed continuation rounds, round limit, blocker reason when present, and whether another continuation is armed. Call this before updating a goal.";
 
 const UPDATE_DESCRIPTION =
-	"Update the exact current goal revision. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.";
+	"Edit, pause, resume, complete, or block the exact current goal revision. During an automatic goal round, blocked requires the configured minimum round count and a concrete blocked_reason.";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 
 const createSchema = Type.Object({
-	objective: Type.String({ description: "The concrete completion objective inferred from the direct human request." }),
+	objective: Type.String({ description: "The concrete completion objective for the current task." }),
 	max_goal_rounds: Type.Optional(Type.Integer({
 		minimum: 1,
 		maximum: MAX_SAFE_INTEGER,
@@ -107,17 +106,6 @@ interface GoalAttempt extends GoalRoundIdentity {
 	admitted: boolean;
 }
 
-interface PendingInput {
-	source: "human" | "extension";
-	contentFingerprint?: string;
-	streamingBehavior?: "steer" | "followUp";
-}
-
-type GoalAuthority =
-	| { kind: "none" }
-	| { kind: "direct-human" }
-	| ({ kind: "goal-round" } & GoalRoundIdentity);
-
 type AssistantStopReason = "stop" | "length" | "toolUse" | "error" | "aborted" | "pending";
 
 class GoalToolPolicyError extends Error {
@@ -161,32 +149,6 @@ function toolResult(value: GoalToolValue): AgentToolResult<GoalToolValue> {
 
 function hasText(value: string | undefined): value is string {
 	return value !== undefined && value !== "";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Compare admitted user payloads only; model context is not an input boundary. */
-function contentFingerprint(content: unknown): string | undefined {
-	if (!Array.isArray(content)) return undefined;
-	const hash = createHash("sha256");
-	for (const block of content) {
-		if (!isRecord(block)) return undefined;
-		if (block.type === "text" && typeof block.text === "string") {
-			hash.update(JSON.stringify(["text", block.text]));
-		} else if (block.type === "image" && typeof block.mimeType === "string" && typeof block.data === "string") {
-			hash.update(JSON.stringify(["image", block.mimeType, block.data]));
-		} else return undefined;
-	}
-	return hash.digest("base64url");
-}
-
-function userContentFingerprint(text: string, images: readonly unknown[] | undefined): string | undefined {
-	return contentFingerprint([
-		{ type: "text", text },
-		...(images ?? []),
-	]);
 }
 
 function hasRoundCap(value: number | undefined): value is number {
@@ -257,8 +219,6 @@ class GoalController {
 	private goalUi: WorkUiSource | undefined;
 	private readonly store: GoalStore;
 	private readonly topLevel: boolean;
-	private authority: GoalAuthority = { kind: "none" };
-	private pendingInputs: PendingInput[] = [];
 	private attempt: GoalAttempt | undefined;
 	private pendingWrapup: string | undefined;
 	private lastStopReason: AssistantStopReason | undefined;
@@ -291,15 +251,6 @@ class GoalController {
 		this.store.reconcile(ctx.sessionManager.getBranch());
 	}
 
-	private dequeuePendingInput(): PendingInput | undefined {
-		for (const streamingBehavior of [undefined, "steer", "followUp"] as const) {
-			const index = this.pendingInputs.findIndex((pending) =>
-				pending.streamingBehavior === streamingBehavior);
-			if (index !== -1) return this.pendingInputs.splice(index, 1)[0];
-		}
-		return undefined;
-	}
-
 	private currentForUi(): GoalView | undefined {
 		try {
 			return this.store.get();
@@ -314,32 +265,14 @@ class GoalController {
 		updateGoalUi(this.goalUi, this.currentForUi(), this.store.corruptionReason);
 	}
 
-	private requireDirectHuman(): void {
-		if (this.topLevel && this.authority.kind === "direct-human") return;
-		throw new GoalToolPolicyError(
-			"this goal operation requires a direct human turn on a top-level agent",
-			"GOAL_TOOL_AUTHORITY_REQUIRED",
-		);
-	}
-
-	private terminalAuthority(goal: GoalView): "direct-human" | "goal-round" {
-		if (this.topLevel && this.authority.kind === "direct-human") return "direct-human";
+	private isCurrentRound(goal: GoalView): boolean {
 		const attempt = this.attempt;
-		if (
-			this.topLevel &&
-			this.authority.kind === "goal-round" &&
+		// Editing a goal changes its revision, not the admitted run that owns it.
+		return (
 			attempt !== undefined &&
 			attempt.admitted &&
-			this.authority.goalId === goal.id &&
-			this.authority.revision === goal.revision &&
-			this.authority.round === goal.roundsStarted &&
 			attempt.goalId === goal.id &&
-			attempt.revision === goal.revision &&
 			attempt.round === goal.roundsStarted
-		) return "goal-round";
-		throw new GoalToolPolicyError(
-			"complete and blocked require a direct human turn or the current goal round",
-			"GOAL_TOOL_AUTHORITY_REQUIRED",
 		);
 	}
 
@@ -436,7 +369,6 @@ class GoalController {
 			executionMode: "sequential",
 			execute: async (_id, params: CreateParams, _signal, _onUpdate, ctx) => this.serialized(() => {
 				this.refresh(ctx);
-				this.requireDirectHuman();
 				const goal = this.store.create({
 					objective: params.objective,
 					...(params.max_goal_rounds === undefined ? {} : { maxGoalRounds: params.max_goal_rounds }),
@@ -467,7 +399,6 @@ class GoalController {
 				};
 				let goal: GoalView;
 				if (params.action === "edit") {
-					this.requireDirectHuman();
 					if (hasText(params.blocked_reason)) {
 						throw new GoalToolPolicyError(
 							"blocked_reason is valid only with action blocked",
@@ -476,7 +407,6 @@ class GoalController {
 					}
 					goal = this.store.edit(goalRef, replacements);
 				} else if (params.action === "pause" || params.action === "resume") {
-					this.requireDirectHuman();
 					if (hasText(params.objective) || hasRoundCap(params.max_goal_rounds) || hasText(params.blocked_reason)) {
 						throw new GoalToolPolicyError(
 							"objective and max_goal_rounds are valid only with action edit; blocked_reason is valid only with action blocked",
@@ -491,7 +421,7 @@ class GoalController {
 					if (current === undefined) {
 						throw new GoalToolPolicyError("no current goal", "GOAL_NOT_FOUND");
 					}
-					const authority = this.terminalAuthority(current);
+					const inGoalRound = this.isCurrentRound(current);
 					if (hasText(params.objective) || hasRoundCap(params.max_goal_rounds)) {
 						throw new GoalToolPolicyError(
 							"objective and max_goal_rounds are valid only with action edit",
@@ -512,7 +442,7 @@ class GoalController {
 					}
 					if (
 						params.action === "blocked" &&
-						authority === "goal-round" &&
+						inGoalRound &&
 						current.roundsStarted < DEFAULT_BLOCKED_AFTER_ROUNDS
 					) {
 						throw new GoalToolPolicyError(
@@ -526,7 +456,7 @@ class GoalController {
 							code: "model-reported",
 							message: params.blocked_reason as string,
 						});
-					if (authority === "goal-round") {
+					if (inGoalRound) {
 						this.pendingWrapup = renderGoalWrapup(
 							goal,
 							params.action === "blocked" ? params.blocked_reason as string : undefined,
@@ -548,8 +478,6 @@ class GoalController {
 			this.stopping = false;
 			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
-			this.authority = { kind: "none" };
-			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			const branch = ctx.sessionManager.getBranch();
@@ -560,8 +488,6 @@ class GoalController {
 		this.pi.on("session_tree", (_event, ctx) => {
 			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
-			this.authority = { kind: "none" };
-			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			const branch = ctx.sessionManager.getBranch();
 			this.store.restore(branch);
@@ -572,46 +498,11 @@ class GoalController {
 			this.stopping = true;
 			this.driveRequested = false;
 			this.attempt = undefined;
-			this.authority = { kind: "none" };
-			this.pendingInputs = [];
 			this.pendingWrapup = undefined;
 			this.lastStopReason = undefined;
 			this.store.disarm();
 			clearGoalUi(this.goalUi);
 			this.goalUi = undefined;
-		});
-
-		this.pi.on("input", (event) => {
-			this.pendingInputs = this.pendingInputs.filter((pending) =>
-				pending.streamingBehavior !== undefined);
-			this.pendingInputs.push({
-				source: event.source === "extension" ? "extension" : "human",
-				contentFingerprint: userContentFingerprint(event.text, event.images),
-				...(event.streamingBehavior === undefined
-					? {}
-					: { streamingBehavior: event.streamingBehavior }),
-			});
-		});
-
-		this.pi.on("before_agent_start", (event) => {
-			let index = this.pendingInputs.length - 1;
-			while (index >= 0 && this.pendingInputs[index]?.streamingBehavior !== undefined) index -= 1;
-			if (index === -1) return;
-			const pending = this.pendingInputs[index];
-			if (pending !== undefined) {
-				pending.contentFingerprint = userContentFingerprint(event.prompt, event.images);
-			}
-		});
-
-		// Pi awaits message_start for newly admitted input before preparing context.
-		// Checkpoint carriers and rewritten history never pass through this event.
-		this.pi.on("message_start", (event) => {
-			if (event.message.role !== "user") return;
-			const pending = this.dequeuePendingInput();
-			if (pending?.source === "human" && pending.contentFingerprint !== undefined
-				&& contentFingerprint(event.message.content) === pending.contentFingerprint) {
-				this.authority = { kind: "direct-human" };
-			}
 		});
 
 		this.pi.on("message_end", async (event, ctx) => {
@@ -681,7 +572,6 @@ class GoalController {
 			} else if (
 				goal !== undefined &&
 				goal.id === attempt.goalId &&
-				goal.revision === attempt.revision &&
 				goal.phase === "active" &&
 				goal.activation === "armed"
 			) {
@@ -703,8 +593,6 @@ class GoalController {
 			this.store.disarm();
 		}
 		this.attempt = undefined;
-		this.authority = { kind: "none" };
-		this.pendingInputs = [];
 		this.pendingWrapup = undefined;
 		this.lastStopReason = undefined;
 		this.refreshUi(ctx);
@@ -754,7 +642,6 @@ class GoalController {
 			admitted: false,
 		};
 		this.attempt = attempt;
-		this.authority = { kind: "goal-round", goalId: goal.id, revision: goal.revision, round };
 		try {
 			this.pi.sendMessage({
 				customType: GOAL_ROUND_MESSAGE,
@@ -769,7 +656,6 @@ class GoalController {
 			}, { deliverAs: "followUp", triggerTurn: true });
 		} catch (error) {
 			this.attempt = undefined;
-			this.authority = { kind: "none" };
 			const latest = this.store.get();
 			if (
 				latest !== undefined &&

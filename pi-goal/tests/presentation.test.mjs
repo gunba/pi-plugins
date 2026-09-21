@@ -67,9 +67,10 @@ test("blocked wrap-up asks for progress, attempts, and a route to resume", () =>
 	assert.match(prompt, /<\/goal_blocked>$/);
 });
 
-test("guidance includes intent inference, read-before-update, restore rearming, completion, and threshold", () => {
+test("guidance describes agent controls, revision checks, restore rearming, and threshold", () => {
 	const guidance = renderGoalGuidance(3);
-	assert.match(guidance, /infer goal intent/);
+	assert.match(guidance, /Create, edit, pause, resume, complete, or block it as the task requires/);
+	assert.doesNotMatch(guidance, /direct human|when a human asks/);
 	assert.match(guidance, /Call get_goal before update_goal/);
 	assert.match(guidance, /resume or fork/);
 	assert.match(guidance, /at least 3 consecutive goal rounds/);
