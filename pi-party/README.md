@@ -60,6 +60,9 @@ automatic delivery until explicitly resumed.
 Startup, reload and branch navigation pause automatic delivery. Starting work
 rearms delivery unless it was explicitly paused; reconnecting alone never
 starts inference. Membership, profiles and unread messages survive restart.
+Messages delivered while a prompt is being prepared become context for that
+prompt, rather than starting a competing run. Peer-triggered work remains
+steerable and cancellable through Pi's normal controls.
 
 Managed children have independent profiles and membership, not their parent's.
 They can discover, join, invite and send messages using their inherited active

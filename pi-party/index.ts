@@ -43,6 +43,7 @@ export default function party(pi: ExtensionAPI): void {
 	let stopped = false;
 	let armed = false;
 	let paused = false;
+	let preparingPrompt = false;
 	let chat: PartyChat | undefined;
 	let chatRoom: string | undefined;
 	let peerLabels = new Map<string, string>();
@@ -94,7 +95,7 @@ export default function party(pi: ExtensionAPI): void {
 		source?.set({ label: "Party", status, summary: rows.filter((_row, index) => peers[index].session !== session).join("; "),
 			detail, tone: pending ? "warning" : "accent" });
 	};
-	const pump = (starting = false) => {
+	const pump = (starting = preparingPrompt) => {
 		if (stopped || !armed || pumping || !ctx || !store || member()?.owner !== owner) return;
 		// A managed child's driver owns its turns and usage accounting.
 		if (child && ctx.isIdle() && !starting) return;
@@ -112,7 +113,12 @@ export default function party(pi: ExtensionAPI): void {
 						customType: PARTY_MESSAGE, display: true,
 						content: `${message.kind === "invite" ? `Invitation to party ${message.invite_room}` : message.room ? `Party ${message.room}` : "Direct message"} · ${safeWorkText(message.sender_label)} (${message.sender})\n\n${message.text}${message.kind === "invite" ? `\n\nJoin with party_join({party:"${message.invite_room}"}) if useful; this invitation has not changed your membership.` : ""}`,
 						details: { messageId: message.id, party: message.room, sender: message.sender, kind: message.kind, invitedParty: message.invite_room },
-					}, { deliverAs: "steer", triggerTurn: !child && wantsWake && index === pending.length - 1 });
+					}, {
+						// Pi has not claimed the low-level run in before_agent_start.
+						// Attach to that prompt instead of starting a competing run.
+						deliverAs: "steer",
+						triggerTurn: !starting && !child && wantsWake && index === pending.length - 1,
+					});
 				} catch (error) { inFlight.delete(message.id); throw error; }
 			}
 			publish();
@@ -146,7 +152,7 @@ export default function party(pi: ExtensionAPI): void {
 	};
 	pi.on("session_start", (_event, context) => {
 		chat?.close(); peerLabels.clear();
-		ctx = context; session = ctx.sessionManager.getSessionId(); stopped = false; armed = false; paused = false; signature = "";
+		ctx = context; session = ctx.sessionManager.getSessionId(); stopped = false; armed = false; paused = false; preparingPrompt = false; signature = "";
 		source = ui.source("party");
 		safely(() => {
 			const self = database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session");
@@ -159,13 +165,13 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, context) => {
 		chat?.close();
 		for (const id of inFlight) revoked.add(id);
-		inFlight.clear(); armed = false;
+		inFlight.clear(); armed = false; preparingPrompt = false;
 		if (store && member()?.owner === owner) store.setDelivery(session, owner, false);
 		ctx = context; source = ui.source("party"); signature = ""; publish();
 	});
 	pi.on("session_shutdown", () => {
 		chat?.close();
-		stopped = true; armed = false; stopTransport();
+		stopped = true; armed = false; preparingPrompt = false; stopTransport();
 		try { store?.release(session, owner); }
 		finally { store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
 	});
@@ -178,6 +184,7 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", () => {
 		const self = member();
 		if (self?.owner !== owner) return;
+		preparingPrompt = true;
 		armed = !paused; store!.setDelivery(session, owner, armed);
 		pump(true);
 	});
@@ -203,8 +210,8 @@ export default function party(pi: ExtensionAPI): void {
 			store.touch(session, owner, ctx.isIdle() ? "idle" : "working", label());
 			publish();
 	});
-	pi.on("agent_start", refresh);
-	pi.on("agent_settled", refresh);
+	pi.on("agent_start", () => { preparingPrompt = false; refresh(); });
+	pi.on("agent_settled", () => { preparingPrompt = false; refresh(); });
 	pi.on("session_info_changed", refresh);
 	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} });
 	const joinParty = (room: string) => {
