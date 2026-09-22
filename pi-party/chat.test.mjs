@@ -20,7 +20,7 @@ function fixture(t) {
 	db.join(sender, "a", "cleanup", "Copilot Skills");
 	db.join(recipient, "b", "cleanup", "Studio Bridge");
 	t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
-	return { db, send: text => db.send(sender, "a", recipient, text, true), height: value => { height = value; },
+	return { db, send: text => db.send(sender, "a", "all", text, true), height: value => { height = value; },
 		view: () => new PartyChat({ room: "cleanup", session: sender, theme, height: () => height, requestRender() {}, done() { closed++; }, load: query => db.history(sender, "a", query) }), closed: () => closed };
 }
 const plain = (view, width = 100) => stripVTControlCharacters(view.render(width).join("\n"));
@@ -94,7 +94,7 @@ test("party tool and incoming previews retain useful text and names without expo
 	const ctx = { args, expanded: false, isError: false };
 	const call = renderPartyCall("send", args, theme, ctx, label);
 	const status = renderPartyResult("send", result, { expanded: false, isPartial: false }, theme, ctx, label);
-	assert.match(plain(call), /Party → Studio Bridge/);
+	assert.match(plain(call), /Direct → Studio Bridge/);
 	assert.match(plain(call), /Cleanup ready/);
 	assert.match(plain(status), /FYI · no wake/);
 	assert.doesNotMatch(plain(status), /receipt-private|22222222/);
@@ -152,7 +152,7 @@ test("native tool expansion reveals the complete sent message and keeps receipts
 	component.setExpanded(true);
 	assert.match(plain(component), /Final detail/);
 	component.setExpanded(false);
-	const lines = component.render(100), y = lines.findIndex(line => line.includes("Party →"));
+	const lines = component.render(100), y = lines.findIndex(line => line.includes("Direct →"));
 	assert.equal(component.handleMouse({ type: "click", button: "left", x: 3, y, screenX: 3, screenY: y, width: 100, height: lines.length, shift: false, alt: false, ctrl: false }).handled, true);
 	assert.match(plain(component), /Final detail/);
 	assert.equal(JSON.stringify(result), before);

@@ -64,8 +64,10 @@ Children follow the root session's current enabled tools, without a coding-tool
 whitelist. This includes tools such as `web_search`, MCP tools and custom file-based
 providers. Parent revocations are checked again at execution; source-provider
 restrictions remain effective.
-Party tools remain root-only: children do not inherit party membership or party
-messaging capabilities, and those tools do not block child initialization.
+Party tools are inherited with child-local registration and membership.
+Children can discover and contact peers without inheriting the parent's party.
+Idle children are not awakened outside their driver; incoming peer messages
+wait for managed work.
 
 Provider factories are recreated against the child's API, cwd, session and model.
 Their lifecycle and permission hooks are retained, and flag values come from the

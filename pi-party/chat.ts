@@ -56,7 +56,7 @@ export class PartyChat implements Component {
 			const time = new Date(message.created).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 			const route = `${participant(message.sender, message.sender_label)} → ${participant(message.recipient, message.recipient_label)}`;
 			const delivery = message.admitted ? "Delivered" : "Queued";
-			const wake = message.wake ? "reply requested" : "FYI";
+			const wake = `${message.wake ? "reply requested" : "FYI"}${message.kind === "invite" ? ` · invitation to ${safeWorkText(message.invite_room)}` : ""}`;
 			return [new Text(theme.fg("accent", theme.bold(route)) + "\n" + theme.fg("muted", `${time} · ${delivery} · ${wake}`), 0, 0),
 				new Markdown(safeWorkText(message.text, true), 0, 0, getMarkdownTheme()), new Spacer(1)];
 		});
@@ -136,7 +136,7 @@ export class PartyChat implements Component {
 			const body = truncateToWidth(line, inner, "…");
 			return fit(theme.fg("border", "│ ") + body + " ".repeat(Math.max(0, inner - visibleWidth(body))) + theme.fg("border", " │"));
 		};
-		const title = truncateToWidth(` Party ${safeWorkText(this.options.room)} · Chat `, Math.max(1, this.width - 7), "…");
+		const title = truncateToWidth(` ${this.options.room ? `Party ${safeWorkText(this.options.room)}` : "Direct messages"} · Chat `, Math.max(1, this.width - 7), "…");
 		const top = theme.fg("border", `╭${title}${"─".repeat(Math.max(0, this.width - visibleWidth(title) - 5))} × ╮`);
 		const count = this.page.messages.length;
 		const status = this.error || `${this.live ? "Live · " : ""}${count} ${count === 1 ? "message" : "messages"} · ${this.top + 1}–${Math.min(this.total, this.top + this.viewport)} of ${this.total} lines${this.newer || this.page.hasNewer ? " · newer messages — End to view" : ""}`;

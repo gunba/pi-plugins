@@ -16,7 +16,7 @@ import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import outputBudget from "../../pi-output-budget/extensions/index.ts";
 import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
 import nativeCompaction, { inheritCompactor, guardCheckpointContext } from "../../pi-codex-wire/extensions/native-compaction.ts";
-import { canInheritTool, loadChildToolExtensions } from "./child-tool-extensions.ts";
+import { loadChildToolExtensions } from "./child-tool-extensions.ts";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	ChildDriver,
@@ -316,7 +316,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		const enabledTools = () => [...new Set([
 			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
 			...childOnlyTools, ...fallbackHelpers,
-		])].filter(canInheritTool);
+		])];
 		const inheritedExtensions = toolInfo ? await loadChildToolExtensions({
 			tools: toolInfo,
 			handledToolNames: [...customToolNames, "wait_for_work", "cancel_work_wait"],

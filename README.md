@@ -76,8 +76,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - [`pi-context-limit`](pi-context-limit/README.md) — `/context-limit 200k`
   changes the native compaction threshold and applies it through an automatic
   extension reload, without restarting Pi.
-- [`pi-party`](pi-party/README.md) — explicitly links independent main-agent
-  sessions through `/party <id>`, with readable message previews and a live
+- [`pi-party`](pi-party/README.md) — local agent discovery, self-managed parties,
+  invitations and direct or group messaging, with message previews and a live
   `/party chat` conversation viewer.
 - [`pi-browser-context`](pi-browser-context/README.md) — archived accessibility
   snapshot diffs and a focused browser skill for the existing Playwright backend.

@@ -118,9 +118,11 @@ async function integration(t, { search = false, party = false, initialActive = [
 		assert.ok(++serial < 80, "fixture cannot enter an unbounded model/tool loop");
 		const latest = context.messages.at(-1);
 		const available = (context.tools ?? []).map((tool) => tool.name);
-		observations.push({ model: selected.id, sessionId: options?.sessionId, available, role: latest?.role });
+		observations.push({ model: selected.id, sessionId: options?.sessionId, available, role: latest?.role,
+			peerMessageSeen: context.messages.some(message => text(message.content).includes("NATIVE DIRECT FINDING")) });
 		if (latest?.role === "toolResult") return { stopReason: "stop", content: [{ type: "text", text: text(latest.content) }] };
-		const prompt = text(latest?.content);
+		const prompt = [...context.messages].reverse().map(message => text(message.content))
+			.find(value => value.startsWith("fixture-tool:") || value === "fixture-availability") ?? text(latest?.content);
 		if (prompt === "fixture-availability") return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(available) }] };
 		assert.ok(prompt.startsWith("fixture-tool:"), "only explicit offline fixture prompts are accepted");
 		const command = JSON.parse(prompt.slice("fixture-tool:".length));
@@ -139,7 +141,7 @@ async function integration(t, { search = false, party = false, initialActive = [
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
 		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(search ? ["web_search"] : []),
-			...(party ? ["party_members", "party_send", "party_read"] : [])] }));
+			...(party ? ["party_members", "party_send", "party_read", "party_discover", "party_join", "party_profile", "party_leave"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
 	const rootCatalogs = [];
@@ -218,17 +220,32 @@ test("child initialization retains enabled tools from multiple source extensions
 	assert.equal(h.requests.length, 1);
 });
 
-test("root party tools neither block child initialization nor become child capabilities", { timeout: 25000 }, async (t) => {
-	const names = ["party_members", "party_send", "party_read"];
+test("party tools inherit with child-local discovery and membership", { timeout: 25000 }, async (t) => {
+	const names = ["party_members", "party_send", "party_read", "party_discover", "party_join", "party_profile", "party_leave"];
 	const h = await integration(t, { party: true, initialActive: ["custom_inventory", ...names] });
 	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
 	const child = await h.open("root-party-child", { descriptorTools: ["custom_inventory", ...names] });
 	const available = JSON.parse((await child.driver.prompt("fixture-availability")).output);
 	assert.ok(available.includes("custom_inventory"));
-	assert.ok(names.every(name => !available.includes(name)));
+	assert.ok(names.every(name => available.includes(name)));
 	await call(child, "custom_inventory");
 	await call(child, "party_members");
-	assert.equal(toolResults(child.manager).at(-1).isError, true);
+	assert.equal(toolResults(child.manager).at(-1).isError, false);
+	await call(child, "party_join", { party: "child-team" });
+	await call(child, "party_profile", { description: "Reviewing inheritance" });
+	const found = JSON.parse((await call(child, "party_discover")).output).agents;
+	assert.equal(found.find(agent => agent.id === "root-party-child").party, "child-team");
+	assert.equal(found.find(agent => agent.id === "root-party-child").kind, "child");
+	assert.equal(found.find(agent => agent.id === "root-party-child").wakeable, false);
+	assert.equal(found.find(agent => agent.id === "root-tool-fixture").party, null);
+	const before = h.observations.length;
+	const sender = h.rootSession.agent.state.tools.find(tool => tool.name === "party_send");
+	await sender.execute("peer-direct", { to: "root-party-child", message: "NATIVE DIRECT FINDING", wake: true });
+	await new Promise(resolve => setTimeout(resolve, 50));
+	assert.equal(h.observations.length, before, "party cannot start an untracked idle-child turn");
+	assert.equal(child.driver.isRunning, false);
+	await call(child, "party_members");
+	assert.ok(h.observations.slice(before).some(item => item.peerMessageSeen), "queued direct message reaches the next native SDK child turn");
 	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
 	assert.equal(h.requests.length, 0);
 });

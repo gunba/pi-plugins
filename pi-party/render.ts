@@ -15,7 +15,7 @@ function messageBody(text: string, expanded: boolean): Component {
 
 export function renderPartyCall(kind: PartyTool, args: { to?: string; message?: string }, theme: Theme, context: RenderContext, label: Label): Component {
 	const to = typeof args.to === "string" ? args.to : "";
-	const title = kind === "send" ? `Party → ${to === "all" ? "everyone" : to ? label(to) : "…"}` : kind === "members" ? "Party members" : "Party inbox";
+	const title = kind === "send" ? `${to === "all" ? "Party" : "Direct"} → ${to === "all" ? "everyone" : to ? label(to) : "…"}` : kind === "members" ? "Party members" : "Peer inbox";
 	const heading = theme.fg("toolTitle", theme.bold(safeWorkText(title)));
 	if (kind !== "send" || typeof args.message !== "string") return rows([heading]);
 	const container = new Container();
@@ -40,7 +40,7 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 		lines = value.map(peer => `${peer.label}${peer.self ? " (you)" : ""} · ${peer.state}`);
 		if (!lines.length) lines.push("No party members.");
 	} else if (kind === "read" && Array.isArray(value)) {
-		lines = value.map(message => `${message.label || label(String(message.sender))}: ${options.expanded ? message.message : preview(String(message.message))}`);
+		lines = value.map(message => `${message.label || label(String(message.sender))}${message.kind === "invite" ? ` · invitation to ${message.invitedParty}` : ""}: ${options.expanded ? message.message : preview(String(message.message))}`);
 		if (!lines.length) lines.push("No unread party messages.");
 	} else lines = [raw];
 	const display = lines.map(line => theme.fg("toolOutput", safeWorkText(line, true)));
