@@ -27,6 +27,7 @@
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",
+      "./pi-mobile-bridge/extensions/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
       "./pi-brief/extensions/brief.ts",
       "./pi-extension-freshness/extensions/extension-freshness.ts",
