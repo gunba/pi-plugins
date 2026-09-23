@@ -14,7 +14,7 @@ function phoneUrl(): string {
 			encoding: "utf8", timeout: 2000, maxBuffer: 512_000, stdio: ["ignore", "pipe", "ignore"],
 		})) as { Self?: { DNSName?: string } };
 		const hostname = status.Self?.DNSName?.replace(/\.$/, "");
-		if (hostname && /^[a-z0-9.-]+$/i.test(hostname)) return `https://${hostname}/pi/`;
+		if (hostname && /^[a-z0-9.-]+$/i.test(hostname)) return `https://${hostname}/`;
 	} catch { /* Use the local address if Tailscale is not available. */ }
 	return "http://127.0.0.1:8911/";
 }

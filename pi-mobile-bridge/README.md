@@ -16,25 +16,21 @@ question needs to return to the desktop, run `/phone-desktop` in that terminal.
 ## Phone access
 
 Tailscale Serve can expose the loopback page on a private tailnet without
-opening a public port. Mount it at `/pi` on an existing HTTPS route without
-changing that route's root service:
+opening a public port. When the device's HTTPS root is reserved for Pi:
 
 ```sh
-tailscale serve --bg --https=443 --set-path=/pi http://127.0.0.1:8911
+tailscale serve --bg --https=443 http://127.0.0.1:8911
 ```
 
-Open `https://<machine>.<tailnet>.ts.net/pi/` on a phone signed into the same
+Open `https://<machine>.<tailnet>.ts.net/` on a phone signed into the same
 tailnet. Run `/phone-token` in any Pi terminal to see the URL and pairing token.
 The token is shared among this machine's Pi terminals, stored in an owner-only
 file under `~/.pi/agent/mobile-bridge/`, and sent in an authorization header,
 not a URL. The browser keeps it in tab session storage. `/phone-reset` rotates
 it. Do not use Tailscale Funnel or expose port 8911 to the public internet.
 
-To remove only the Pi route while preserving the existing root service:
-
-```sh
-tailscale serve --https=443 --set-path=/pi off
-```
+Do not use this root mapping if another service already owns `/`; move that
+service first or mount Pi under a separate path and open that path directly.
 
 The PC must stay awake and at least one foreground Pi terminal must remain
 open to host the page. Each terminal stops appearing when its Pi process exits.
