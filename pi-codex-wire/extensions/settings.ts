@@ -36,6 +36,24 @@ export function savePrewarm(directory: string, enabled: boolean): void {
   saveSetting(directory, "prewarm", enabled ? "on" : "off");
 }
 
+export function readFast(value: unknown): boolean {
+  if (value === "on") return true;
+  if (value === "off") return false;
+  throw new Error("Use /fast on, /fast off, or /fast status");
+}
+
+export function savedFast(directory: string): boolean {
+  try { return readFast(readFileSync(join(directory, "fast-mode"), "utf8").trim()); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof Error && error.message.startsWith("Use /fast")) return false;
+    throw error;
+  }
+}
+
+export function saveFast(directory: string, enabled: boolean): void {
+  saveSetting(directory, "fast-mode", enabled ? "on" : "off");
+}
+
 export function readUserAgent(directory: string, client: Client = "cli"): string | undefined {
   try { return readFileSync(join(directory, client === "desktop" ? "user-agent-desktop" : "user-agent"), "utf8").trim(); }
   catch (error) {

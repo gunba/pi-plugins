@@ -41,7 +41,7 @@ export function eventDiagnostics(value: unknown): JsonObject | undefined {
   if (!["response.completed", "response.done", "response.incomplete", "response.failed"].includes(String(event.type))) return;
   const response = object(event.response);
   const usage = object(response.usage);
-  const tier = ["auto", "default", "flex", "priority", "scale"].includes(String(response.service_tier))
+  const tier = ["auto", "default", "flex", "priority", "fast", "scale"].includes(String(response.service_tier))
     ? response.service_tier : undefined;
   return {
     kind: "response",
@@ -82,7 +82,7 @@ export class Diagnostics {
       kind: "request", ...details,
       model: typeof body.model === "string" && /^[a-zA-Z0-9._-]+$/.test(body.model) ? body.model : undefined,
       effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "disabled"].includes(String(reasoning.effort)) ? reasoning.effort : undefined,
-      serviceTier: ["auto", "default", "flex", "priority", "scale"].includes(String(body.service_tier)) ? body.service_tier : "omitted",
+      serviceTier: ["auto", "default", "flex", "priority", "fast", "scale"].includes(String(body.service_tier)) ? body.service_tier : "omitted",
       inputItems: Array.isArray(body.input) ? body.input.length : 0,
       tools: Array.isArray(body.tools) ? body.tools.length : 0,
       streamRequested: body.stream === true,

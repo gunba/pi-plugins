@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { crc32 } from "node:zlib";
 import {
 	MAX_LOCAL_IMAGE_BYTES,
 	decodedBase64ByteLength,
@@ -77,6 +78,29 @@ const PNG_END = [
 	0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
+function validPng(bytes: Uint8Array): boolean {
+	if (bytes.length < 8 + 25 + PNG_END.length ||
+		!bytesMatch(bytes, 0, PNG_SIGNATURE)) return false;
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	let offset = PNG_SIGNATURE.length;
+	let sawImageData = false;
+	let first = true;
+	while (offset + 12 <= bytes.length) {
+		const length = view.getUint32(offset);
+		const end = offset + 12 + length;
+		if (end > bytes.length) return false;
+		const type = ascii(bytes, offset + 4, offset + 8);
+		if (first && (type !== "IHDR" || length !== 13)) return false;
+		if (type === "IDAT") sawImageData = true;
+		if (view.getUint32(end - 4) !== crc32(bytes.subarray(offset + 4, end - 4)))
+			return false;
+		if (type === "IEND") return sawImageData && length === 0 && end === bytes.length;
+		offset = end;
+		first = false;
+	}
+	return false;
+}
+
 function bytesMatch(
 	bytes: Uint8Array,
 	offset: number,
@@ -105,10 +129,7 @@ const IMAGE_SIGNATURES: Array<{
 }> = [
 	{
 		mimeType: "image/png",
-		matches: (bytes) =>
-			bytes.length >= 24 &&
-			bytesMatch(bytes, 0, PNG_SIGNATURE) &&
-			bytesMatch(bytes, bytes.length - PNG_END.length, PNG_END),
+		matches: validPng,
 	},
 	{
 		mimeType: "image/jpeg",

@@ -13,7 +13,8 @@ import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
-import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm } from "./settings.ts";
+import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
+  readFast, savedFast, saveFast } from "./settings.ts";
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
 import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
@@ -63,6 +64,8 @@ export default function codexWire(pi: ExtensionAPI): void {
   let lifetime: AbortController | undefined;
   let releaseRequiredWire: (() => void) | undefined;
   let prewarm = false;
+  let fastEnabled = false;
+  let lastFastCheck = "not checked";
 
   function abortPending(threadId?: string): void {
     for (const [controller, owner] of pending) {
@@ -87,6 +90,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   function activateUnchecked(ctx: ExtensionContext, selectedClient = readClient(pi.getFlag("codex-wire-client") ?? savedClient(directory)),
     selectedPrewarm = readPrewarm(pi.getFlag("codex-wire-prewarm") ?? savedPrewarm(directory))): void {
     const next = "codex";
+    const selectedFast = savedFast(directory);
     const selectedTransport = pi.getFlag("codex-wire-transport") ?? "auto";
     if (selectedTransport !== "auto" && selectedTransport !== "sse") throw new Error("codex-wire-transport must be auto or sse");
     const compression = pi.getFlag("codex-wire-compression") ?? "on";
@@ -97,7 +101,8 @@ export default function codexWire(pi: ExtensionAPI): void {
       userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory, selectedClient),
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
-    stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; lastRequest = "not tested";
+    stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; fastEnabled = selectedFast;
+    lastFastCheck = "not checked"; lastRequest = "not tested";
     const currentLifetime = lifetime = new AbortController();
     const currentSessions = sessions = new Map<string, WireSession>();
     const provider = ctx.modelRegistry.getProvider("openai-codex");
@@ -122,7 +127,18 @@ export default function codexWire(pi: ExtensionAPI): void {
     const primaryProtocol = protocol;
     const primarySession = protocol ? currentSessions.get(protocol.threadId) : undefined;
     const fallbackWarnings = new Set<string>();
+    const fastWarnings = new Set<string>();
     const primaryThreadId = ctx.sessionManager.getSessionId();
+
+    function fastAvailable(metadata: JsonObject, modelId: string): boolean {
+      const available = Array.isArray(metadata.service_tiers)
+        && metadata.service_tiers.some(tier => object(tier).id === "priority");
+      if (fastEnabled && !available && !fastWarnings.has(modelId)) {
+        fastWarnings.add(modelId);
+        ctx.ui.notify(`Fast mode is not offered for ${modelId} in this Codex catalog; sending Standard instead.`, "warning");
+      }
+      return available;
+    }
 
     function sessionFor(threadId: string): WireSession | undefined {
       if (!identity || !primaryProtocol) return;
@@ -168,6 +184,9 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (context.messages.some(message => Object.hasOwn(message, CHECKPOINT))) throw new Error("Codex checkpoint requires the original Codex endpoint.");
         return call(options ?? {});
       }
+      const requestFast = fastEnabled && model.api === "openai-codex-responses"
+        && ctx.modelRegistry.isUsingOAuth(model)
+        && !(options && "serviceTier" in options && options.serviceTier !== undefined);
       const session = sessionFor(threadId);
       if (session) session.compactContext = undefined;
       const currentProtocol = session?.protocol;
@@ -221,8 +240,17 @@ export default function codexWire(pi: ExtensionAPI): void {
           if (!(options && "reasoningSummary" in options) && metadata.default_reasoning_summary !== undefined) {
             object(source.reasoning).summary = metadata.default_reasoning_summary;
           }
+          // Pi's Codex streamSimple rebuilds its options and drops serviceTier.
+          // Apply the opt-in to the serialized request, before catalog validation.
+          if (requestFast && source.service_tier === undefined) source.service_tier = "priority";
           const shaped = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId), context,
             String(url));
+          if (requestFast) {
+            const available = fastAvailable(metadata, model.id);
+            lastFastCheck = shaped.service_tier === "priority" && available
+              ? `${model.id}: priority requested`
+              : `${model.id}: Standard sent`;
+          }
           const outgoing = currentProtocol.headers(headers);
           outgoing.delete("x-codex-routing-hint");
           const routingHint = requestRoutingHint(model.provider, String(url), headers, model.id, shaped.service_tier);
@@ -310,6 +338,9 @@ export default function codexWire(pi: ExtensionAPI): void {
           session.transport.close(); session.protocol.beginTurn(operation.reason); session.compactContext = operation.context;
         }
         const source = compactInput(model, operation.context, operation.thinking);
+        if (fastEnabled && operation.ctx.modelRegistry.isUsingOAuth(selected) && fastAvailable(metadata, model.id)) {
+          source.service_tier = "priority";
+        }
         if (metadata.default_reasoning_summary !== undefined) {
           source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
         }
@@ -330,7 +361,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     releaseRequiredWire = registerRequiredWire(primaryThreadId, () =>
       !currentLifetime.signal.aborted && !!primaryProtocol && !!primarySession
       && ctx.modelRegistry.getProvider("openai-codex") === registeredProvider);
-    ctx.ui.setStatus("codex-wire", `wire:${client}`);
+    ctx.ui.setStatus("codex-wire", `wire:${client}${fastEnabled ? " · fast:on" : ""}`);
     ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
   }
 
@@ -374,6 +405,34 @@ export default function codexWire(pi: ExtensionAPI): void {
   pi.on("session_compact", newWindow);
   pi.on("session_tree", newWindow);
   pi.on("session_shutdown", () => { stop(); });
+  pi.registerCommand("fast", {
+    description: "ChatGPT Codex Fast mode (higher credit use): on, off, or status",
+    handler: async (args, ctx) => {
+      const action = args.trim();
+      if (!action || action === "status") {
+        ctx.ui.notify(`Codex Fast mode: ${fastEnabled ? "on" : "off"} (saved)\nLast check: ${lastFastCheck}\nOnly supported ChatGPT Codex models use it; the backend can downgrade a request.`, "info");
+        return;
+      }
+      if (!ctx.isIdle() || pending.size > 0) {
+        ctx.ui.notify("Wait for all Codex requests to finish before changing Fast mode.", "warning");
+        return;
+      }
+      try {
+        const enabled = readFast(action);
+        saveFast(directory, enabled);
+        fastEnabled = enabled;
+        lastFastCheck = "not checked";
+        for (const session of sessions.values()) session.transport.close();
+        transport?.close();
+        ctx.ui.setStatus("codex-wire", `wire:${client}${enabled ? " · fast:on" : ""}`);
+        ctx.ui.notify(enabled
+          ? "Codex Fast mode on and saved. Eligible ChatGPT requests ask for priority processing, which uses more credits."
+          : "Codex Fast mode off and saved. New requests use the normal tier.", "info");
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : "Cannot change Fast mode", "error");
+      }
+    },
+  });
   pi.registerCommand("codex-wire", {
     description: "Always-on Codex wire: status, reconnect, prewarm <on|off>, client <cli|desktop>, user-agent <profile>, or mark <used-percent> <reset-id>",
     handler: async (args, ctx) => {

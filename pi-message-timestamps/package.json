@@ -1,0 +1,19 @@
+{
+  "name": "pi-message-timestamps",
+  "version": "0.1.0",
+  "description": "Show tool-call timing and live activity in Pi's interactive view.",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/message-timestamps.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true }
+  },
+  "license": "MIT"
+}

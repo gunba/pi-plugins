@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { savedClient, saveClient, readClient, readUserAgent, saveUserAgent } from "../extensions/settings.ts";
+import { savedClient, saveClient, readClient, readUserAgent, saveUserAgent, savedFast, saveFast, readFast } from "../extensions/settings.ts";
 
 test("client selection persists and saved User-Agents are isolated by client", t => {
   const directory = mkdtempSync(join(tmpdir(), "wire-client-"));
@@ -29,4 +29,15 @@ test('saved native user-agent survives reload and rejects multiline values', asy
   assert.equal(readUserAgent(directory), profile);
   assert.throws(() => saveUserAgent(directory, profile + '\nheader: value'));
   assert.equal(readUserAgent(directory), profile);
+});
+
+test("Fast mode defaults off and only a saved opt-in enables it", t => {
+  const directory = mkdtempSync(join(tmpdir(), "wire-fast-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  assert.equal(savedFast(directory), false);
+  saveFast(directory, true);
+  assert.equal(savedFast(directory), true);
+  saveFast(directory, false);
+  assert.equal(savedFast(directory), false);
+  assert.throws(() => readFast("priority"), /fast on/);
 });

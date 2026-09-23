@@ -22,6 +22,7 @@
   "pi": {
     "extensions": [
       "./pi-codex-wire/extensions/index.ts",
+      "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
@@ -33,6 +34,7 @@
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
       "./pi-session-memory/extensions/session-memory.ts",
+      "./pi-fast-footer/extensions/fast-footer.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-context-limit/index.ts",
       "./pi-party/index.ts",

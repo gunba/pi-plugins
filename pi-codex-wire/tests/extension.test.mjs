@@ -38,7 +38,7 @@ function harness(t, mode = "codex", savedDefault) {
   };
   const api = { events: { emit: (name, data) => published.push({ name, data }) }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
-  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildContextEntries: () => [] }, isIdle: () => true };
+  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildContextEntries: () => [] }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));
@@ -73,6 +73,63 @@ test("prewarm is off by default and command changes persist independently of man
   await h.commands.get("codex-wire").handler("prewarm off", h.ctx);
   requireCodexWire("pi-thread");
   assert.equal(readFileSync(join(h.directory, "codex-wire", "prewarm"), "utf8").trim(), "off");
+});
+
+test("Fast opt-in selects the advertised priority tier and can be turned off after reload", async t => {
+  const h = harness(t);
+  const bodies = [], hints = [];
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({
+      models: [{ slug: model.id, service_tiers: [{ id: "priority", name: "Fast" }] }],
+    });
+    bodies.push(decode(init));
+    hints.push(new Headers(init.headers).get("x-codex-routing-hint"));
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[],"service_tier":"priority"}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  const request = async () => {
+    const response = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+    assert.equal(response.stopReason, "stop", response.errorMessage);
+  };
+  await request();
+  assert.equal(bodies.at(-1).service_tier, undefined);
+  await h.commands.get("fast").handler("on", h.ctx);
+  assert.equal(readFileSync(join(h.directory, "codex-wire", "fast-mode"), "utf8").trim(), "on");
+  await request();
+  assert.equal(bodies.at(-1).service_tier, "priority", h.notices.slice(-4).join(" | "));
+  assert.match(hints.at(-1), /;tier=priority$/);
+  await h.commands.get("fast").handler("status", h.ctx);
+  assert.match(h.notices.at(-1), /priority requested/);
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({ reason: "reload" }, h.ctx);
+  await request();
+  assert.equal(bodies.at(-1).service_tier, "priority");
+  await h.commands.get("fast").handler("off", h.ctx);
+  await request();
+  assert.equal(bodies.at(-1).service_tier, undefined);
+  assert.ok(hints.at(-1) && !hints.at(-1).includes(";tier="));
+});
+
+test("Fast does not alter unsupported catalog models or API-key Codex requests", async t => {
+  const h = harness(t);
+  const bodies = [];
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id, service_tiers: [] }] });
+    bodies.push(decode(init));
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[],"service_tier":"default"}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  await h.commands.get("fast").handler("on", h.ctx);
+  await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+  assert.equal(bodies.at(-1).service_tier, undefined);
+  assert.equal(h.notices.filter(text => text.includes("not offered")).length, 1);
+  h.ctx.modelRegistry.isUsingOAuth = () => false;
+  await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+  assert.equal(bodies.at(-1).service_tier, undefined);
+  assert.equal(h.notices.filter(text => text.includes("not offered")).length, 1);
+  h.ctx.isIdle = () => false;
+  await h.commands.get("fast").handler("off", h.ctx);
+  assert.equal(readFileSync(join(h.directory, "codex-wire", "fast-mode"), "utf8").trim(), "on");
 });
 
 test("Desktop selection changes both catalog and inference identity and persists across reload", async t => {

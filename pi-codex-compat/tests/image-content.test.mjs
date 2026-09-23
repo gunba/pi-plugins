@@ -16,6 +16,26 @@ const PNG_DATA =
 const BMP_DATA =
 	"Qk1GAAAAAAAAADYAAAAoAAAAAgAAAAIAAAABABgAAAAAABAAAADEDgAAxA4AAAAAAAAAAAAAAP8AAP8AAAAA/wAA/wAAAA==";
 
+test("a PNG with intact signature and IEND but damaged image data is never replayed", async () => {
+	const damaged = Buffer.from(PNG_DATA, "base64");
+	damaged[50] ^= 1;
+	const data = damaged.toString("base64");
+	const block = { type: "image", data, mimeType: "image/png" };
+	await assert.rejects(
+		prepareNativeImageContent(block, async () => { throw new Error("must not convert"); }),
+		/invalid image data/,
+	);
+	assert.deepEqual(normalizeLegacyImageBlock(block), {
+		type: "text",
+		text: "[Invalid image content omitted: unsupported or invalid image data]",
+	});
+	const [message] = await normalizeProviderImageMessages(
+		[{ role: "toolResult", content: [block] }],
+		async () => { throw new Error("must not convert"); },
+	);
+	assert.equal(message.content[0].type, "text");
+});
+
 test("createImageContent returns Pi's native image block", () => {
 	assert.deepEqual(createImageContent(PNG_DATA, "image/png"), {
 		type: "image",

@@ -27,6 +27,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   in assistant Markdown against the session working directory, using absolute
   file URLs for terminal Ctrl+click. Applies during streaming and history
   restoration without changing saved messages or model context.
+- [`pi-message-timestamps`](pi-message-timestamps/README.md) — shows compact
+  time and duration inside tool blocks, plus a live elapsed/quiet clock while
+  tools run. No new session entries or model context.
 - [`pi-web-search`](pi-web-search/README.md) — adds one `web_search` tool, labelled `web.run`, based on
   Codex's standalone search client. It sends Codex-compatible commands directly
   to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no
@@ -70,6 +73,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   message, tool-result, image, and old-summary payloads from memory after
   compaction. The active context and current-branch extension state remain
   available, while the append-only JSONL session archive stays complete.
+- `pi-fast-footer` — keeps interactive session usage and context statistics
+  cached between session changes instead of scanning the full transcript on
+  each terminal redraw. Git branch and extension status updates stay live.
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
@@ -109,6 +115,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 [`pi-codex-wire`](pi-codex-wire/README.md) is included in the automatic extension
 manifest and always activates in Codex mode. It keeps Pi's agent loop and offers
 CLI or Desktop request identity through `/codex-wire client cli|desktop`.
+`/fast on|off|status` controls an off-by-default, paid ChatGPT Codex speed tier.
 No separate package registration or saved activation setting is needed. Remove
 any old standalone Wire registration to avoid loading it twice. The linked guide
 covers identity limits, privacy-safe diagnostics and testing.
@@ -151,8 +158,8 @@ the installed Pi application.
 
 The detailed Codex usage report includes native assistant, tool, and summary
 usage, plus durable background-child charges deduplicated by invocation ID.
-Successful foreground children return native tool usage. The native Pi footer
-remains intact and does not include custom background billing; the extension also
+Successful foreground children return native tool usage. The cached Pi footer
+does not include custom background billing; the extension also
 contributes the passive Codex 5h/7d rate-limit status.
 
 Codex plan-window tracking is passive: `x-codex-*` response headers and

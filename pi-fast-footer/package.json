@@ -1,0 +1,19 @@
+{
+  "name": "pi-fast-footer",
+  "version": "0.1.0",
+  "description": "Cache Pi's session footer statistics between transcript changes.",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/fast-footer.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true }
+  },
+  "license": "MIT"
+}

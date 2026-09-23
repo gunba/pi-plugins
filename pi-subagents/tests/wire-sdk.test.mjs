@@ -41,7 +41,7 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   const entries = [];
   const flags = new Map([
     ["codex-wire-transport", "sse"],
-    ["codex-wire-user-agent", "codex_cli_rs/0.153.4 (Windows NT 10.0.26100; x86_64)"],
+    ["codex-wire-user-agent", "codex_cli_rs/0.155.0 (Windows NT 10.0.26100; x86_64)"],
   ]);
   let provider = {
     id: model.provider, name: "Offline Codex",

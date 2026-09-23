@@ -25,6 +25,23 @@ Codex mode is mandatory on startup, resume, fork and reload. The old mode flag, 
 
 Use `/codex-wire status` to see the client identity, last request outcome and diagnostic file. `/codex-wire reconnect` creates fresh transport state without disabling Wire. Activation is not itself a successful request. Changes require an idle session. The plugin reuses Pi's existing `openai-codex` authentication.
 
+## Fast mode
+
+Use `/fast on`, `/fast off`, or `/fast status`. The preference starts **off** and
+is saved in `~/.pi/agent/codex-wire/fast-mode`; other running Pi processes pick
+up changes after `/reload`. Enabling it does not change the current model or
+reasoning level. It asks for `service_tier: "priority"` on ChatGPT-authenticated
+Codex responses and native compaction only when the live model catalog offers
+that tier. API-key and custom-endpoint requests are not switched. If the catalog
+does not offer Fast for a model, the request stays Standard and a warning appears.
+The backend can still downgrade an eligible request; the diagnostic log records
+the requested and reported service tiers separately.
+
+[Codex Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
+uses more ChatGPT credits where available. Pi's local cost estimates are not
+the final subscription-credit charge. No request is sent just by toggling the
+preference.
+
 ## CLI and Desktop identities
 
 CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header. On Windows and Linux, neither client needs a saved User-Agent profile.
