@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createReadToolDefinition, detectSupportedImageMimeTypeFromFile, getAgentDir, SettingsManager,
@@ -14,6 +14,71 @@ const readSchema = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1 })),
   full: Type.Optional(Type.Boolean({ description: `Request a larger preview, up to ${MAX_CHARS} characters; excess remains retrievable.` })),
 }, { additionalProperties: false });
+
+const ARTIFACT_ID = /^sha256-[a-f0-9]{64}$/;
+const FULL_REPLAYS = 2;
+type MessageEntry = Extract<ReturnType<ExtensionContext["sessionManager"]["getEntries"]>[number], { type: "message" }>;
+type AgentMessage = MessageEntry["message"];
+
+function archivedResultId(message: AgentMessage): string | undefined {
+  if (message.role !== "toolResult" || message.isError ||
+    message.content.length === 0 || message.content.some(block => block.type !== "text")) return;
+  const details = message.details;
+  if (!details || typeof details !== "object" || Array.isArray(details) ||
+    details.outputBudgeted !== true) return;
+  const id = details.outputArtifact;
+  return typeof id === "string" && ARTIFACT_ID.test(id) ? id : undefined;
+}
+
+function replayKey(toolCallId: string, id: string): string {
+  return `${toolCallId}\0${id}`;
+}
+
+export function archivedReplayCandidates(messages: AgentMessage[]): Set<string> {
+  const eligible = new Set<string>();
+  let assistantsAfter = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === "assistant") { assistantsAfter++; continue; }
+    if (assistantsAfter < FULL_REPLAYS || message.role !== "toolResult") continue;
+    const id = archivedResultId(message);
+    if (id) eligible.add(replayKey(message.toolCallId, id));
+  }
+  return eligible;
+}
+
+export async function slimArchivedResults(
+  messages: AgentMessage[],
+  store: ArtifactStore,
+  checked: Set<string>,
+  eligible: Set<string>,
+  signal?: AbortSignal,
+): Promise<AgentMessage[]> {
+  let projected: AgentMessage[] | undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "toolResult") continue;
+    const id = archivedResultId(message);
+    if (!id || !eligible.has(replayKey(message.toolCallId, id))) continue;
+    if (!checked.has(id)) {
+      signal?.throwIfAborted();
+      try {
+        const entry = await lstat(store.path(id));
+        if (!entry.isFile() || entry.isSymbolicLink()) continue;
+      } catch { continue; }
+      checked.add(id);
+    }
+    projected ??= [...messages];
+    projected[index] = {
+      ...message,
+      content: [{
+        type: "text",
+        text: `[Earlier tool result archived as ${id}. Use read_artifact({artifact:"${id}",offset:0}) to retrieve the captured text; follow next_offset for the rest.]`,
+      }],
+    };
+  }
+  return projected ?? messages;
+}
 
 export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
@@ -55,6 +120,8 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
 
 /** Safe to install explicitly in SDK children; does not discover unrelated extensions. */
 export default function outputBudget(pi: ExtensionAPI): void {
+  const checkedReplayArtifacts = new Set<string>();
+  const replayCandidates = new Map<string, Set<string>>();
   pi.registerTool({
     name: "read", label: "read", parameters: readSchema,
     description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,
@@ -160,5 +227,24 @@ export default function outputBudget(pi: ExtensionAPI): void {
     return plainDetails
       ? { content: result.content, details: { ...details as object, ...result.details } }
       : { content: result.content };
+  });
+
+  // Freeze the selection at the start of a turn. Changing old tool results
+  // during a tool-call chain would invalidate Codex Wire's incremental prefix.
+  pi.on("before_agent_start", (_event, ctx) => {
+    const branch = ctx.sessionManager.getBranch();
+    const messages = branch.flatMap(entry => entry.type === "message" ? [entry.message] : []);
+    replayCandidates.set(ctx.sessionManager.getSessionId(), archivedReplayCandidates(messages));
+  });
+  pi.on("session_shutdown", (_event, ctx) => {
+    replayCandidates.delete(ctx.sessionManager.getSessionId());
+  });
+  pi.on("context", async (event, ctx) => {
+    const eligible = replayCandidates.get(ctx.sessionManager.getSessionId());
+    if (!eligible?.size) return;
+    const messages = await slimArchivedResults(
+      event.messages, outputArtifactStore(), checkedReplayArtifacts, eligible, ctx.signal,
+    );
+    if (messages !== event.messages) return { messages };
   });
 }

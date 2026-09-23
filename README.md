@@ -64,8 +64,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
 - [`pi-output-budget`](pi-output-budget/README.md) — bounded text previews,
-  immutable complete-output artifacts, character paging and batched read-only
-  file inspection. The same explicit policy is installed in SDK children;
+  immutable complete-output artifacts, character paging, batched read-only
+  file inspection, and compact replay links for older archived results.
+  The same explicit policy is installed in SDK children;
   unrelated extension discovery remains disabled.
 - `pi-session-memory` — bounds long-running Pi processes by releasing obsolete
   message, tool-result, image, and old-summary payloads from memory after

@@ -31,6 +31,19 @@ Other tools may already have truncated their data upstream: their artifacts
 contain all returned text, including the original truncation/retrieval notice,
 not data the underlying tool never returned.
 
+## Older observations
+
+At the start of a later turn, a successful text-only tool result followed by at
+least two assistant responses and backed by an existing output artifact becomes
+a short `read_artifact` link in provider context. The selection stays fixed
+through that turn so tool-call continuations retain a stable history. The
+session history and original artifact are unchanged.
+Recent results, errors, images, and results without an available artifact retain
+their original content. This avoids replaying the same large preview throughout
+a long session without creating another archive or recall tool. The idea is
+adapted from [SoL-Pi's ObservationPack](https://github.com/NVlabs/SoL-Pi)
+(MIT), using this bundle's existing artifact store.
+
 ## Storage and privacy
 
 Artifacts live under `~/.pi/agent/tool-output` (or the configured agent directory).
