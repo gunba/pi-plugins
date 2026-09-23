@@ -90,7 +90,9 @@ async function refresh(){
    }
    const tabs=$('sessions');tabs.replaceChildren();
    for(const item of sessions){
-     const button=document.createElement('button');button.textContent=item.name+' · '+item.state+(item.summary?' · '+item.summary:'');
+     const button=document.createElement('button');button.textContent=item.name+' · '+item.cwd.split(/[\\\\/]/).filter(Boolean).pop()+
+       ' #'+item.id.slice(0,5)+' · '+item.state+(item.summary?' · '+item.summary:'');
+     button.title=item.cwd;
      button.className=(item.id===currentInstance?'selected ':'')+(item.state==='needs-answer'?'attention':'');
      button.onclick=()=>{currentInstance=item.id;currentAsk='';sessionStorage.setItem('pi-mobile-instance',item.id);
        $('prompt').value='';renderAsk(null);refresh()};tabs.append(button);
