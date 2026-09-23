@@ -18,6 +18,7 @@ export type ToolActivationState = {
 
 export const CODEX_COMPAT_TOOL_NAMES = [
 	"apply_patch",
+	"patch_and_run",
 	"exec_command",
 	"write_stdin",
 	"view_image",
@@ -107,7 +108,7 @@ export function toolsForModel(
 	capabilities: ToolActivationCapabilities = {},
 ): string[] {
 	if (!isCodexLikeModel(model)) return [];
-	const tools = ["apply_patch", "exec_command", "write_stdin"];
+	const tools = ["apply_patch", "patch_and_run", "exec_command", "write_stdin"];
 	const canGenerateImages =
 		capabilities.imageGenerationAuthenticated === true &&
 		isImageGenerationModel(model);
@@ -144,7 +145,8 @@ export function syncCodexCompatTools(
 	eligibleToolNames = mergeToolNames(eligibleToolNames, activeOwnedTools);
 
 	const adapterTools = toolsForModel(model, capabilities).filter((name) =>
-		eligibleToolNames.includes(name),
+		eligibleToolNames.includes(name) &&
+		(name !== "patch_and_run" || eligibleToolNames.includes("apply_patch")),
 	);
 	let base = withoutCodexCompatTools(activeTools);
 	let suppressedEditWasActive = state.suppressedEditWasActive === true;

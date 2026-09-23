@@ -62,11 +62,13 @@ test("image activation requires configured auth while retaining the text-only Pi
 	const textOnly = { provider: "openai", id: "gpt-5", input: ["text"] };
 	assert.deepEqual(toolsForModel(textOnly), [
 		"apply_patch",
+		"patch_and_run",
 		"exec_command",
 		"write_stdin",
 	]);
 	assert.deepEqual(toolsForModel(textOnly, AUTHENTICATED), [
 		"apply_patch",
+		"patch_and_run",
 		"exec_command",
 		"write_stdin",
 		"view_image",
@@ -77,7 +79,7 @@ test("image activation requires configured auth while retaining the text-only Pi
 			{ provider: "openai", id: "gpt-5", input: ["text", "image"] },
 			{ imageGenerationAuthenticated: false },
 		),
-		["apply_patch", "exec_command", "write_stdin", "view_image"],
+		["apply_patch", "patch_and_run", "exec_command", "write_stdin", "view_image"],
 	);
 	assert.deepEqual(
 		toolsForModel(
@@ -88,7 +90,7 @@ test("image activation requires configured auth while retaining the text-only Pi
 			},
 			AUTHENTICATED,
 		),
-		["apply_patch", "exec_command", "write_stdin", "view_image"],
+		["apply_patch", "patch_and_run", "exec_command", "write_stdin", "view_image"],
 	);
 	assert.equal(
 		isImageGenerationModel({
@@ -111,6 +113,7 @@ test("activation preserves unrelated tools, keeps bash, and prefers apply_patch 
 			"edit",
 			"custom_search",
 			"apply_patch",
+			"patch_and_run",
 			"exec_command",
 			"write_stdin",
 			"view_image",
@@ -125,6 +128,7 @@ test("activation preserves unrelated tools, keeps bash, and prefers apply_patch 
 		"bash",
 		"custom_search",
 		"apply_patch",
+		"patch_and_run",
 		"exec_command",
 		"write_stdin",
 		"view_image",
@@ -153,6 +157,7 @@ test("resynchronization never resurrects manually disabled base or compatibility
 			"edit",
 			"custom_search",
 			"apply_patch",
+			"patch_and_run",
 			"exec_command",
 			"write_stdin",
 			"view_image",
@@ -175,6 +180,7 @@ test("resynchronization never resurrects manually disabled base or compatibility
 		"read",
 		"bash",
 		"apply_patch",
+		"patch_and_run",
 		"exec_command",
 		"write_stdin",
 		"image_gen",
@@ -226,7 +232,7 @@ test("activation never widens an explicit active-tool allowlist", () => {
 
 test("disabling apply_patch restores edit and re-enabling it suppresses edit again", () => {
 	const enabled = syncCodexCompatTools(
-		["read", "edit", "apply_patch", "exec_command", "write_stdin"],
+		["read", "edit", "apply_patch", "patch_and_run", "exec_command", "write_stdin"],
 		{ provider: "openai-codex", id: "gpt-5.6" },
 		EMPTY_STATE,
 	);
@@ -238,6 +244,7 @@ test("disabling apply_patch restores edit and re-enabling it suppresses edit aga
 		enabled.state,
 	);
 	assert.equal(applyPatchDisabled.activeTools.includes("apply_patch"), false);
+	assert.equal(applyPatchDisabled.activeTools.includes("patch_and_run"), false);
 	assert.equal(applyPatchDisabled.activeTools.includes("edit"), true);
 
 	const applyPatchRestored = syncCodexCompatTools(
@@ -246,5 +253,6 @@ test("disabling apply_patch restores edit and re-enabling it suppresses edit aga
 		applyPatchDisabled.state,
 	);
 	assert.equal(applyPatchRestored.activeTools.includes("apply_patch"), true);
+	assert.equal(applyPatchRestored.activeTools.includes("patch_and_run"), true);
 	assert.equal(applyPatchRestored.activeTools.includes("edit"), false);
 });

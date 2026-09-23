@@ -1,7 +1,7 @@
 # pi-codex-compat
 
-Codex-shaped `apply_patch`, `exec_command`, `write_stdin`, `view_image`, and
-`image_gen` tools for Pi. The overlay activates for compatible Codex/OpenAI
+Codex-shaped `apply_patch`, `patch_and_run`, `exec_command`, `write_stdin`,
+`view_image`, and `image_gen` tools for Pi. The overlay activates for compatible Codex/OpenAI
 models with exact provider/API checks and preserves the rest of the active tool
 set without resurrecting tools removed while the overlay is active. When
 `apply_patch` is active, the overlay suppresses built-in `edit` so Codex models
@@ -38,6 +38,15 @@ safety improvements over partial mutation.
 Successful and failed model output uses Codex's exit-code, wall-time, and
 `Output:` framing. Pi's `tool_result` lifecycle marks verification/application
 failures as real tool errors while retaining structured change/error details.
+
+`patch_and_run` combines a patch and a follow-up command in one tool call.
+It uses the same patch parser and rollback behavior as `apply_patch`; the command
+runs only after the patch succeeds and the changed files still match the
+post-patch snapshot. A command failure does not roll back the successful patch.
+The command uses the managed `exec_command` runtime; a long command can return
+a session ID for `write_stdin`. This is an adaptation of the [Action Fusion
+idea from NVIDIA's SoL-Pi](https://github.com/NVlabs/SoL-Pi) (MIT), tailored to
+our primary patch tool rather than Pi's built-in `edit` and `write` tools.
 
 ## Unified Exec sessions
 

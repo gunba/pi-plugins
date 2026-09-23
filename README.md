@@ -4,7 +4,7 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 
 ## Extensions
 
-- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `exec_command`,
+- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `patch_and_run`, `exec_command`,
   `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
   The tool overlay activates only for Codex-like models and preserves unrelated
   tools, except that active `apply_patch` replaces built-in `edit` so repeated
@@ -13,7 +13,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   inspection to an authenticated image-capable model for concise descriptions.
   `apply_patch` accepts Codex envelopes, moves, and structurally recognized
   heredoc bodies, with native grammar input on supported models and cancellable,
-  alias-safe file mutation. Managed shell sessions launch independently, stream partial output, terminate
+  alias-safe file mutation. `patch_and_run` applies the same patch then starts a
+  follow-up command only on success. Managed shell sessions launch independently, stream partial output, terminate
   process trees, retain complete logs when display output is truncated, and use
   compact tool rendering while preserving context-mode HTTP-output guardrails.
   `view_image` emits Pi-native image blocks and normalises older session images

@@ -105,6 +105,10 @@ type ApplyPatchDetails = {
 	wallTimeSeconds: number;
 	error?: string;
 };
+type PatchAndRunDetails = Partial<ExecCommandDetails> & {
+	patch: ApplyPatchDetails;
+	skipped?: boolean;
+};
 
 type FileState = { exists: boolean; content?: string };
 type ChangeRecord = {
@@ -1024,6 +1028,72 @@ async function executeApplyPatch(
 	}
 }
 
+async function executePatchAndRun(
+	input: string,
+	workdir: string | undefined,
+	thenRun: { cmd: string; yield_time_ms?: number; max_output_tokens?: number },
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+	owner: ReturnType<typeof createExecRuntimeOwner>,
+): Promise<AgentToolResult<PatchAndRunDetails>> {
+	const patch = await executeApplyPatch(input, workdir, ctx, signal);
+	const skipped = (reason: string): AgentToolResult<PatchAndRunDetails> => ({
+		content: [...patch.content, { type: "text", text: `[then_run:skipped] ${reason}` }],
+		details: { patch: patch.details, skipped: true, error: reason },
+	});
+	if (patch.details.exitCode !== 0) return skipped("Patch did not apply; command was not run.");
+
+	// Another process may edit a target between patch completion and command launch.
+	// This check does not lock external writers, but avoids knowingly validating
+	// a different set of files from the ones this call just changed.
+	try {
+		const paths = [...new Set(patch.details.changes.flatMap(change =>
+			change.movePath ? [change.path, change.movePath] : [change.path]))];
+		const states = await Promise.all(paths.map(path => readOptionalFile(path)));
+		await new Promise<void>(resolve => setImmediate(resolve));
+		signal?.throwIfAborted();
+		for (const [index, path] of paths.entries()) {
+			if (!stateEquals(states[index]!, await readOptionalFile(path))) {
+				return skipped(`Changed file before command launch: ${path}`);
+			}
+		}
+	} catch (error) {
+		return skipped(`Could not verify patched files: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	try {
+		const outerWorkdir = workdir ? resolveToolPath(ctx.cwd, workdir) : ctx.cwd;
+		const patchWorkdir = parsePatch(input).workdir;
+		const command = await executeManagedExecCommand({
+			cmd: thenRun.cmd,
+			workdir: patchWorkdir ? resolveToolPath(outerWorkdir, patchWorkdir) : outerWorkdir,
+			yield_time_ms: thenRun.yield_time_ms ?? 30_000,
+			max_output_tokens: thenRun.max_output_tokens,
+		}, signal, ctx, undefined, owner);
+		const exit = command.details.exit_code;
+		const marker = command.details.running ? "running" : exit === 0 ? "succeeded" : "failed";
+		return {
+			content: [...patch.content, { type: "text", text: `[then_run:${marker}]\n${resultText(command)}` }],
+			details: {
+				...command.details,
+				patch: patch.details,
+				...(exit !== undefined && exit !== 0 ? { error: `Follow-up command exited ${exit}` } : {}),
+			},
+		};
+	} catch (error) {
+		return {
+			content: [...patch.content, {
+				type: "text",
+				text: `[then_run:failed] ${error instanceof Error ? error.message : String(error)}. Patch remains applied.`,
+			}],
+			details: {
+				patch: patch.details,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		};
+	}
+}
+
 function mediaTypeForPath(path: string): string | undefined {
 	switch (extname(path).toLowerCase()) {
 		case ".png":
@@ -1470,6 +1540,51 @@ export default function codexCompat(pi: ExtensionAPI): void {
 				theme,
 				context,
 			);
+		},
+	});
+
+	pi.registerTool({
+		name: "patch_and_run",
+		label: "patch_and_run",
+		description:
+			"Apply a Codex patch, then run one command only after the patch succeeds. A failed command does not roll back the patch.",
+		promptSnippet: "Apply a patch and run its follow-up command in one call",
+		promptGuidelines: [
+			"Use patch_and_run when a specific command should immediately follow a patch; use apply_patch when no command is needed.",
+			"If the command outlives the initial wait, use write_stdin with its session_id to collect the result.",
+		],
+		parameters: Type.Object({
+			input: Type.String({ description: "Complete *** Begin Patch / *** End Patch envelope." }),
+			workdir: Type.Optional(Type.String({ description: "Base directory for relative patch paths and the command." })),
+			then_run: Type.Object({
+				cmd: Type.String({ minLength: 1, description: "Command to run after the patch succeeds." }),
+				yield_time_ms: Type.Optional(Type.Integer({ minimum: 0, description: "Initial output wait in milliseconds (default 30000)." })),
+				max_output_tokens: Type.Optional(Type.Integer({ minimum: 0, description: "Model-facing command output budget." })),
+			}, { additionalProperties: false }),
+		}, { additionalProperties: false }),
+		executionMode: "sequential",
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			return executePatchAndRun(params.input, params.workdir, params.then_run, ctx, signal,
+				execRuntimeOwnerFor(ctx));
+		},
+		renderCall(args, theme, context) {
+			const label = `${formatApplyPatchCall(args)} → ${formatExecCommandCall({ cmd: args.then_run?.cmd })}`;
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(theme.fg("toolTitle", theme.bold(label)));
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			const details = result.details as PatchAndRunDetails;
+			const raw = resultText(result);
+			const failed = context.isError || Boolean(details.error || details.skipped ||
+				(details.exit_code !== undefined && details.exit_code !== 0) || details.signal);
+			const summary = `${summarizeApplyPatchResult(details.patch)} · ${
+				details.skipped ? "command skipped" : summarizeExecResult(details)}`;
+			const display = failed || options.expanded ? raw : `${details.running ? "↳" : "✓"} ${summary}`;
+			const color = failed ? "error" : details.running ? "accent" : options.expanded ? "toolOutput" : "success";
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(display.split("\n").map(line => theme.fg(color, line)).join("\n"));
+			return text;
 		},
 	});
 
