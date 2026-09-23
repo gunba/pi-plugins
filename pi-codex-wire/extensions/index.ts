@@ -58,6 +58,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   let beganTurn = false;
   let catalog: Catalog | undefined;
   let lastRequest = "not tested";
+  let lastTurnStateLength: number | undefined;
   const directory = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "codex-wire");
   const pending = new Map<AbortController, string>();
   let sessions = new Map<string, WireSession>();
@@ -66,6 +67,15 @@ export default function codexWire(pi: ExtensionAPI): void {
   let prewarm = false;
   let fastEnabled = false;
   let lastFastCheck = "not checked";
+
+  function turnStateText(): string {
+    const length = lastTurnStateLength;
+    return length === undefined ? "?" : `${length}${length === 312 || length === 356 ? " (risk?)" : ""}`;
+  }
+
+  function showWireStatus(ctx: ExtensionContext): void {
+    ctx.ui.setStatus("codex-wire", `wire:${client}${fastEnabled ? " · fast:on" : ""} · state:${turnStateText()}`);
+  }
 
   function abortPending(threadId?: string): void {
     for (const [controller, owner] of pending) {
@@ -102,7 +112,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
     stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; fastEnabled = selectedFast;
-    lastFastCheck = "not checked"; lastRequest = "not tested";
+    lastFastCheck = "not checked"; lastRequest = "not tested"; lastTurnStateLength = undefined;
     const currentLifetime = lifetime = new AbortController();
     const currentSessions = sessions = new Map<string, WireSession>();
     const provider = ctx.modelRegistry.getProvider("openai-codex");
@@ -117,7 +127,12 @@ export default function codexWire(pi: ExtensionAPI): void {
       const windows = ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "codex-wire-window");
       const lastWindow = windows.at(-1);
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
-      protocol = new Protocol(mode as Profile, ctx.sessionManager.getSessionId(), installationId(directory), identity, typeof window === "string" ? window : undefined);
+      protocol = new Protocol(mode as Profile, ctx.sessionManager.getSessionId(), installationId(directory), identity,
+        typeof window === "string" ? window : undefined, length => {
+          if (currentLifetime.signal.aborted) return;
+          lastTurnStateLength = length;
+          showWireStatus(ctx);
+        });
       if (!window) pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });
       transport = new WireTransport(diagnostics, protocol, selectedTransport, globalThis.fetch, process.env,
         headers => pi.events.emit(ALLOWANCE_EVENT, headers), selectedPrewarm);
@@ -361,7 +376,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     releaseRequiredWire = registerRequiredWire(primaryThreadId, () =>
       !currentLifetime.signal.aborted && !!primaryProtocol && !!primarySession
       && ctx.modelRegistry.getProvider("openai-codex") === registeredProvider);
-    ctx.ui.setStatus("codex-wire", `wire:${client}${fastEnabled ? " · fast:on" : ""}`);
+    showWireStatus(ctx);
     ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
   }
 
@@ -422,9 +437,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         saveFast(directory, enabled);
         fastEnabled = enabled;
         lastFastCheck = "not checked";
+        lastTurnStateLength = undefined;
         for (const session of sessions.values()) session.transport.close();
         transport?.close();
-        ctx.ui.setStatus("codex-wire", `wire:${client}${enabled ? " · fast:on" : ""}`);
+        showWireStatus(ctx);
         ctx.ui.notify(enabled
           ? "Codex Fast mode on and saved. Eligible ChatGPT requests ask for priority processing, which uses more credits."
           : "Codex Fast mode off and saved. New requests use the normal tier.", "info");
@@ -438,7 +454,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (!args.trim() || parts[0] === "status") {
-        ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nPrewarm: ${prewarm ? "on" : "off"}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
+        ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nPrewarm: ${prewarm ? "on" : "off"}\nTurn state length: ${turnStateText()}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
       }
       if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing or marking a comparison run.", "warning"); return; }
       if (parts[0] === "prewarm") {

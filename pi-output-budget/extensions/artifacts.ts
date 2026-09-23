@@ -19,8 +19,7 @@ export class ArtifactStore {
 
   private async prepareDirectory(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    // Keep private output out of configuration sync even before managed
-    // pi-sync ignore rules have been refreshed.
+    // Keep private output out of Git repositories with a local ignore rule.
     try { await writeFile(join(this.directory, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   }

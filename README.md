@@ -57,9 +57,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, and MCP configuration.
-- `pi-sync` — adds `/pi-sync` for synchronising `~/.pi` through a private
-  git repository, with generated package installs, sessions, caches, tmp files,
-  and local auth state kept machine-local.
 - `pi-system-context` — adds compact local environment context to the system
   prompt.
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`

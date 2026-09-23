@@ -25,6 +25,20 @@ Codex mode is mandatory on startup, resume, fork and reload. The old mode flag, 
 
 Use `/codex-wire status` to see the client identity, last request outcome and diagnostic file. `/codex-wire reconnect` creates fresh transport state without disabling Wire. Activation is not itself a successful request. Changes require an idle session. The plugin reuses Pi's existing `openai-codex` authentication.
 
+The footer's `state:<length>` is the character count of the latest
+`x-codex-turn-state` value observed during the current turn. `state:?` means no
+value has been observed yet; it does not mean the account is restricted.
+`state:312 (risk?)` and `state:356 (risk?)` flag community-reported shapes for
+personal and team accounts. These lengths are not an OpenAI-published account
+trust or model-quality measure. A 292 or 332 value does not establish normal
+treatment either. The status is observational: Wire never changes routing or
+reuses a token across turns to influence it. Only the length reaches the footer;
+the opaque value is not added to status or diagnostic logs.
+[Codex's client source](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs)
+describes the token as sticky-routing state; the length interpretation is
+[community reporting](https://github.com/gylive/ccodex-sleep-state), not its
+documented contract.
+
 ## Fast mode
 
 Use `/fast on`, `/fast off`, or `/fast status`. The preference starts **off** and

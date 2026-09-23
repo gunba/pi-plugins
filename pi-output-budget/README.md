@@ -37,8 +37,8 @@ Artifacts live under `~/.pi/agent/tool-output` (or the configured agent director
 They contain actual file or command output and may contain confidential data.
 They are local files, not Wire diagnostic records, and are not uploaded by the
 artifact store.
-The directory has its own ignore rule, and managed `pi-sync` rules exclude it
-from configuration sync. Do not force-add these private artifacts to Git.
+The directory has its own ignore rule. Do not force-add these private artifacts
+to Git.
 
 SHA-256 IDs deduplicate identical content and verify integrity before retrieval.
 Publication is atomic and does not overwrite an existing artifact. Complete

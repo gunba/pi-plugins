@@ -42,8 +42,7 @@
       "./pi-subagents/extensions/subagents.ts",
       "./pi-todo/extensions/todo.ts",
       "./pi-browser-context/index.ts",
-      "./pi-output-budget/extensions/index.ts",
-      "./pi-sync/extensions/pi-sync.ts"
+      "./pi-output-budget/extensions/index.ts"
     ],
     "skills": [
       "./pi-browser-context/skills/browse"

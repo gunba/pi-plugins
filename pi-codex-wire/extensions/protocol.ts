@@ -15,17 +15,22 @@ export class Protocol {
   readonly threadId: string;
   readonly installationId: string;
   readonly identity: Identity;
+  private readonly onTurnStateLength?: (length: number | undefined) => void;
   constructor(
     profile: Profile, threadId: string, installationId: string, identity: Identity, windowId = uuidv7(),
-  ) { this.profile = profile; this.threadId = threadId; this.sessionId = threadId; this.installationId = installationId; this.identity = identity; this.windowId = windowId; }
+    onTurnStateLength?: (length: number | undefined) => void,
+  ) { this.profile = profile; this.threadId = threadId; this.sessionId = threadId; this.installationId = installationId; this.identity = identity; this.windowId = windowId; this.onTurnStateLength = onTurnStateLength; }
 
   getWindowId(): string { return this.windowId; }
   rotateWindow(): void { this.windowId = uuidv7(); this.beginTurn(); }
 
-  beginTurn(reason?: "manual" | "threshold" | "overflow"): void { this.turnState = undefined; this.turnId = randomUUID(); this.turnStarted = Date.now(); this.compactionReason = reason; }
+  beginTurn(reason?: "manual" | "threshold" | "overflow"): void { this.turnState = undefined; this.onTurnStateLength?.(undefined); this.turnId = randomUUID(); this.turnStarted = Date.now(); this.compactionReason = reason; }
 
   observeHeaders(headers: Headers): void {
-    this.turnState ??= headers.get("x-codex-turn-state") ?? undefined;
+    const state = headers.get("x-codex-turn-state");
+    if (state === null) return;
+    this.turnState ??= state;
+    this.onTurnStateLength?.(state.length);
   }
 
   private metadata(kind: "turn" | "prewarm" | "compaction"): JsonObject {
@@ -93,7 +98,10 @@ export class Protocol {
   observeEvent(event: JsonObject): void {
     if (event.type !== "response.metadata") return;
     for (const [key, value] of Object.entries(object(event.headers))) {
-      if (key.toLowerCase() === "x-codex-turn-state" && typeof value === "string") this.turnState ??= value;
+      if (key.toLowerCase() === "x-codex-turn-state" && typeof value === "string") {
+        this.turnState ??= value;
+        this.onTurnStateLength?.(value.length);
+      }
     }
   }
 }
