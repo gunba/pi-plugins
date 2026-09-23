@@ -6,7 +6,7 @@ const fields = ["slug", "use_responses_lite", "supports_reasoning_summaries", "s
   "default_reasoning_summary", "default_reasoning_level", "supported_reasoning_levels", "support_verbosity", "default_verbosity",
   "multi_agent_reasoning_effort", "supports_image_detail_original", "service_tiers", "default_service_tier"];
 
-/** Codex 0.153.4 models-manager/src/{manager,model_info}.rs.
+/** Codex 0.155.0 models-manager/src/{manager,model_info}.rs.
  * Metadata lookup is not an entitlement check and never changes the model ID.
  */
 export function resolveModelMetadata(id: string, entries: JsonObject[]): JsonObject {

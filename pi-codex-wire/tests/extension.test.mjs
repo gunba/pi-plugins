@@ -98,7 +98,7 @@ test("Desktop selection changes both catalog and inference identity and persists
     assert.equal(requests.at(-2).catalog, true);
     for (const request of requests.slice(-2)) {
       assert.equal(request.headers.get("originator"), originator);
-      assert.ok(request.headers.get("user-agent").startsWith(`${originator}/0.153.4 `));
+      assert.ok(request.headers.get("user-agent").startsWith(`${originator}/0.155.0 `));
     }
   }
   assert.equal(requests.length, 4, "each client must refresh its own catalog identity");
@@ -108,6 +108,34 @@ test("Desktop selection changes both catalog and inference identity and persists
   await h.commands.get("codex-wire").handler("status", h.ctx);
   assert.match(h.notices.at(-1), /Client: desktop/);
   assert.equal(readFileSync(join(directory, "client"), "utf8").trim(), "cli", "startup override must not rewrite the saved client");
+});
+
+test("GPT-6 Sol uses the current catalog and inference version with native Lite capabilities", async t => {
+  const h = harness(t);
+  const sol = { ...model, id: "gpt-6-sol", name: "GPT-6 Sol" };
+  let sent = 0;
+  const fetcher = async (url, init) => {
+    const headers = new Headers(init.headers);
+    assert.equal(headers.get("version"), "0.155.0");
+    assert.match(headers.get("user-agent"), /^codex_cli_rs\/0\.155\.0 /);
+    if (String(url).includes("/models?")) {
+      assert.equal(new URL(url).searchParams.get("client_version"), "0.155.0");
+      return Response.json({ models: [{ slug: sol.id, use_responses_lite: true }] });
+    }
+    const body = decode(init);
+    sent++;
+    assert.equal(body.model, sol.id);
+    assert.equal(body.reasoning.effort, "high");
+    assert.equal(body.reasoning.context, "all_turns");
+    assert.equal(headers.get("x-openai-internal-codex-responses-lite"), "true");
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  const result = await h.provider().streamSimple(sol, { messages: [] },
+    { apiKey: jwt, reasoning: "high", fetch: fetcher }).result();
+  assert.equal(result.stopReason, "stop", result.errorMessage);
+  assert.equal(sent, 1);
+  assert.equal(h.notices.some(text => text.includes("unlisted")), false);
 });
 
 test("Desktop activates on Linux without a Desktop User-Agent profile and saves the default", { skip: process.platform !== "linux" }, async t => {

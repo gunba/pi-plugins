@@ -1,5 +1,5 @@
-/** Native model shaping, pinned to openai/codex rust-v0.153.4.
- * https://github.com/openai/codex/tree/3d2ee51ca2d5db578f328aa75e20aa22c0197c9a/codex-rs
+/** Native model shaping, pinned to openai/codex rust-v0.155.0.
+ * https://github.com/openai/codex/tree/f0a1b8f0849d90960bc406b848f32e5a129b0457/codex-rs
  * Sources: core/src/client.rs; core/src/client_common.rs;
  * codex-api/src/common.rs (serde omission matters);
  * tools/src/tool_spec.rs; protocol/src/openai_models.rs.
@@ -100,20 +100,18 @@ function toolCatalog(values: unknown[], lite: boolean): ObjectValue[] {
   return output;
 }
 
-function stripImages(content: unknown): void {
+function normalizeImages(content: unknown, lite: boolean, originalSupported: boolean): void {
   if (!Array.isArray(content)) return;
   for (const value of content) {
     const item = object(value, "content item");
-    if (item.type === "input_image") delete item.detail;
+    if (item.type !== "input_image") continue;
+    if (lite) delete item.detail;
+    else if (item.detail === "original" && !originalSupported) item.detail = "high";
   }
 }
 function liteInput(value: unknown): ObjectValue {
   const item = object(value, "input item");
-  if (item.type === "message" || (item.type === undefined && typeof item.role === "string")) {
-    stripImages(item.content);
-  } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
-    stripImages(item.output);
-  } else if (item.type === "function_call" || item.type === "custom_tool_call") {
+  if (item.type === "function_call" || item.type === "custom_tool_call") {
     if (item.namespace != null && item.namespace !== "functions") {
       throw new TypeError("Cannot map a non-functions call namespace to Pi");
     }
@@ -135,15 +133,21 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadI
     throw new TypeError("Native model metadata.slug must exactly match body.model");
   }
   const result = structuredClone(body);
+  const lite = booleanField(metadata.use_responses_lite, false, "use_responses_lite");
+  const originalSupported = booleanField(metadata.supports_image_detail_original, false, "supports_image_detail_original");
   for (const value of array(result.input ?? [], "input")) {
     const item = object(value, "input item");
+    if (item.type === "message" || (item.type === undefined && typeof item.role === "string")) {
+      normalizeImages(item.content, lite, originalSupported);
+    } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
+      normalizeImages(item.output, lite, originalSupported);
+    }
     const prefix = item.type === "custom_tool_call" ? "ctc_" : item.type === "function_call" ? "fc_" : undefined;
     // Pi can replay a stored function call as a grammar/custom call. Item IDs
     // belong to their original wire type; never invent a replacement server ID.
     // The optional item ID can be omitted without changing call_id/result pairing.
     if (prefix && (typeof item.id !== "string" || !item.id.startsWith(prefix))) delete item.id;
   }
-  const lite = booleanField(metadata.use_responses_lite, false, "use_responses_lite");
   const sourceReasoning = result.reasoning == null ? {} : object(result.reasoning, "reasoning");
   const effort = requestEffort(sourceReasoning.effort ?? metadata.default_reasoning_level, metadata);
   const summary = choice(sourceReasoning.summary ?? "auto", ["none", "auto", "concise", "detailed"], "reasoning summary");

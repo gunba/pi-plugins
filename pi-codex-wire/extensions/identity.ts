@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const CODEX_VERSION = "0.153.4";
+export const CODEX_VERSION = "0.155.0";
 // Electron package.json version, not the Windows Store package version.
 export const DESKTOP_APP_VERSION = "26.903.61454";
 export type Client = "cli" | "desktop";
@@ -18,31 +18,18 @@ export interface IdentityOptions {
   suffix?: string;
 }
 
-type TmuxQuery = (format: string) => string | undefined;
 const nonblank = (value: string | undefined) => value?.trim() ? value : undefined;
 const terminalSafe = (value: string) => value.replace(/[^a-zA-Z0-9._/-]/gu, "_");
 
-function queryTmux(format: string): string | undefined {
-  try {
-    return nonblank(execFileSync("tmux", ["display-message", "-p", format],
-      { encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"] }).trim());
-  } catch { return; }
-}
-
-/** Port of terminal-detection/src/lib.rs:178-215, 302-402, 422-450, 503-512. */
-export function terminalToken(env: NodeJS.ProcessEnv, tmux: TmuxQuery = queryTmux): string {
+/** Codex 0.155.0 terminal-detection: environment-only terminal detection. */
+export function terminalToken(env: NodeJS.ProcessEnv): string {
   const versioned = (name: string, version?: string) => `${name}${nonblank(version) ? `/${version}` : ""}`;
   const program = nonblank(env.TERM_PROGRAM);
   let raw: string;
-  if (program) {
-    if (program.toLowerCase() === "tmux" && (nonblank(env.TMUX) || nonblank(env.TMUX_PANE))) {
-      const type = nonblank(tmux("#{client_termtype}"));
-      const name = nonblank(tmux("#{client_termname}"));
-      if (type) { const [name, version] = type.trim().split(/\s+/); return terminalSafe(versioned(name, version)); }
-      if (name) return terminalSafe(name);
-    }
+  if (program && program.toLowerCase() !== "tmux") {
     raw = versioned(program, env.TERM_PROGRAM_VERSION);
-  } else if (env.WEZTERM_VERSION !== undefined) raw = versioned("WezTerm", env.WEZTERM_VERSION);
+  } else if (nonblank(env.GHOSTTY_RESOURCES_DIR)) raw = "ghostty";
+  else if (env.WEZTERM_VERSION !== undefined) raw = versioned("WezTerm", env.WEZTERM_VERSION);
   else if (env.ITERM_SESSION_ID !== undefined || env.ITERM_PROFILE !== undefined || env.ITERM_PROFILE_NAME !== undefined) raw = "iTerm.app";
   else if (env.TERM_SESSION_ID !== undefined) raw = "Apple_Terminal";
   else if (env.KITTY_WINDOW_ID !== undefined || env.TERM?.includes("kitty")) raw = "kitty";

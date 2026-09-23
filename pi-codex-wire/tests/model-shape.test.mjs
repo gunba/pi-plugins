@@ -91,7 +91,7 @@ test('tier uses only explicit supported id, never catalog default', () => {
   assert.equal('service_tier' in shapeModelBody(body(), metadata({ service_tiers: [{ id: 'priority', is_default: true }] })), false);
 });
 
-test('0.153.4 effort mappings follow native Ultra selection and persistent wire naming', () => {
+test('native effort mappings follow Ultra selection and persistent wire naming', () => {
   const shape = (effort, extra = {}) => shapeModelBody(body({ reasoning: { effort } }), metadata(extra)).reasoning.effort;
   const supported_reasoning_levels = [{ effort: 'medium' }, { effort: 'high' }, { effort: 'ultra' }];
   assert.equal(shape('ultra', { supported_reasoning_levels }), 'high');
@@ -103,13 +103,13 @@ test('0.153.4 effort mappings follow native Ultra selection and persistent wire 
   assert.equal(shape('future-model-effort'), 'future-model-effort');
 });
 
-test('0.153.4 parallel calls follow the prompt and Lite mode rather than removed catalog field', () => {
+test('native parallel calls follow the prompt and Lite mode rather than removed catalog field', () => {
   assert.equal(shapeModelBody(body(), metadata({ supports_parallel_tool_calls: false })).parallel_tool_calls, true);
   assert.equal(shapeModelBody(body({ parallel_tool_calls: false }), metadata()).parallel_tool_calls, false);
   assert.equal(shapeModelBody(body(), metadata({ use_responses_lite: true })).parallel_tool_calls, false);
 });
 
-test('0.153.4 Lite prefix IDs hash visible payloads within the thread and survive resume', () => {
+test('native Lite prefix IDs hash visible payloads within the thread and survive resume', () => {
   const m = metadata({ use_responses_lite: true });
   const result = shapeModelBody(body(), m);
   // Independently calculated with Python uuid.uuid5 and insertion-ordered compact JSON.
@@ -122,6 +122,26 @@ test('0.153.4 Lite prefix IDs hash visible payloads within the thread and surviv
   assert.notEqual(shapeModelBody(body(), m, 'other-thread').input[0].id, result.input[0].id);
   assert.notEqual(shapeModelBody(body({ instructions: 'changed' }), m).input[1].id, result.input[1].id);
   assert.notEqual(shapeModelBody(body({ tools: [tool('read')] }), m).input[0].id, result.input[0].id);
+});
+
+test('native image detail normalizes messages and tool results without changing stored history', () => {
+  const image = { type: 'input_image', image_url: 'data:image/png;base64,eA==', detail: 'original' };
+  const input = freeze(body({ input: [
+    { role: 'user', content: [image] },
+    { type: 'function_call_output', call_id: 'f', output: [image] },
+    { type: 'custom_tool_call_output', call_id: 'c', output: [image] },
+  ] }));
+  for (const lite of [false, true]) {
+    for (const supported of [false, true]) {
+      const result = shapeModelBody(input, metadata({
+        use_responses_lite: lite, supports_image_detail_original: supported,
+      }));
+      const items = result.input.filter(item => item.role === 'user' || item.call_id);
+      const expected = lite ? undefined : supported ? 'original' : 'high';
+      assert.deepEqual(items.map(item => (item.content ?? item.output)[0].detail), [expected, expected, expected]);
+      assert.equal(input.input[0].content[0].detail, 'original');
+    }
+  }
 });
 
 test('lite moves tools and instructions to input and retains native reasoning/include', () => {

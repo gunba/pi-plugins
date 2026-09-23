@@ -60,7 +60,7 @@ test("aborted or failed lookups cannot publish a snapshot or poison another call
 
 test("catalog uses the explicit native identity and pinned version in every scope", async () => {
   await new Catalog(identity).model(id, url, headers("A"), undefined, async (target, options) => {
-    assert.equal(String(target), "https://chatgpt.com/backend-api/codex/models?client_version=0.153.4");
+    assert.equal(String(target), "https://chatgpt.com/backend-api/codex/models?client_version=0.155.0");
     assert.equal(options.headers.get("originator"), identity.originator);
     assert.equal(options.headers.get("user-agent"), identity.userAgent);
     assert.equal(options.headers.get("version"), identity.version);
