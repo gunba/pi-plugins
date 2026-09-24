@@ -55,6 +55,7 @@ export class SessionEndpoint {
 	private pendingAsk?: MobileAskRequest;
 	private live = "";
 	private tools = new Map<string, string>();
+	private publicationErrorShown = false;
 
 	constructor(pi: ExtensionAPI, workUi: WorkUi) {
 		this.pi = pi;
@@ -68,13 +69,22 @@ export class SessionEndpoint {
 		const ctx = this.ctx;
 		if (!ctx || !this.server) return;
 		const subagents = this.workUi.snapshot().find(([id]) => id === "subagents")?.[1];
-		saveSession({
-			id: this.id, sessionId: ctx.sessionManager.getSessionId(),
-			name: this.pi.getSessionName() || "Untitled conversation", cwd: ctx.cwd,
-			state: this.pendingAsk ? "needs-answer" : ctx.isIdle() ? "idle" : "working",
-			...(subagents ? { summary: subagents.status } : {}),
-			updatedAt: Date.now(),
-		});
+		try {
+			saveSession({
+				id: this.id, sessionId: ctx.sessionManager.getSessionId(),
+				name: this.pi.getSessionName() || "Untitled conversation", cwd: ctx.cwd,
+				state: this.pendingAsk ? "needs-answer" : ctx.isIdle() ? "idle" : "working",
+				...(subagents ? { summary: subagents.status } : {}),
+				updatedAt: Date.now(),
+			});
+			this.publicationErrorShown = false;
+		} catch (error) {
+			// Discovery is optional; it must never turn a tool event into a failure.
+			if (this.publicationErrorShown) return;
+			this.publicationErrorShown = true;
+			try { ctx.ui.notify(`Phone session status unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+			catch { /* A notification is optional too. */ }
+		}
 	}
 
 	private unpair(fallback = true): void {
@@ -93,7 +103,7 @@ export class SessionEndpoint {
 		ask.accepted = true;
 		this.pendingAsk = ask;
 		this.publish();
-		try { this.ctx.ui.notify("Question waiting on the phone. /phone-unpair returns it to this terminal.", "info"); }
+		try { this.ctx.ui.notify("Question waiting on the phone. /phone-desktop returns it to this terminal.", "info"); }
 		catch { /* A stale notification must not fail the pending question. */ }
 	}
 

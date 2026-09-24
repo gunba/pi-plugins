@@ -29,7 +29,6 @@
       "./pi-ask-user/index.ts",
       "./pi-mobile-bridge/extensions/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
-      "./pi-brief/extensions/brief.ts",
       "./pi-extension-freshness/extensions/extension-freshness.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",

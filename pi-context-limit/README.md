@@ -18,5 +18,8 @@ limit. The reserve is global; another model window produces a different
 threshold. Other running processes read the change when they reload.
 A trusted workspace reserve override must be resolved before changing the
 global value. The command does not enable compaction if it was disabled.
+The `m` suffix means one million tokens, so `1m` is accepted only when the
+selected model reports a context window above one million tokens. The command
+cannot enlarge that window and has no effect when native compaction is disabled.
 
 No model metadata, Pi runtime files or saved session entries are altered.
