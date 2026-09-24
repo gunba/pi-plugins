@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.85.1+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.87.1+.
 
 ## Extensions
 
@@ -76,9 +76,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-context-ledger` — prints a one-time, TUI-only breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
   after the first user message; never sent to the model.
-- [`pi-context-limit`](pi-context-limit/README.md) — `/context-limit 200k`
-  changes the native compaction threshold and applies it through an automatic
-  extension reload, without restarting Pi.
+- [`pi-context-window`](pi-context-window/README.md) — `/context-window`
+  opens a modal for the active model's window and checkpoint setting, including
+  an opt-in 1M/900K preset for supported OpenAI models.
 - [`pi-party`](pi-party/README.md) — local agent discovery, self-managed parties,
   invitations and direct or group messaging, with message previews and a live
   `/party chat` conversation viewer.
@@ -168,25 +168,11 @@ Pi installs this git package; Pi provides those packages at runtime.
 
 ## Context and request controls
 
-Use one global native compaction setting, not a maintained model table:
-
-```json
-{
-  "compaction": {
-    "enabled": true,
-    "reserveTokens": 72000,
-    "keepRecentTokens": 20000
-  }
-}
-```
-
-With the current 272,000-token model windows, this starts compaction at about
-200,000 tokens. Pi 0.85.1 checks between tool rounds as well as around prompts.
-The setting also applies to SDK children through their normal settings loader.
-It is a reserve, so a model with a different context window has a different
-threshold. `/context-limit 200k` calculates and saves the reserve for the current
-model, then reloads extensions automatically. Other processes apply the setting
-when they reload.
+`/context-window` opens a modal for the selected model. Pi's Codex catalog may
+report 272,000 tokens even when an OpenAI model supports a larger window. The
+opt-in 1M preset records a model-specific window and a 900K automatic
+checkpoint threshold. `pi-codex-wire` supplies the native Codex checkpoint;
+other running Pi processes pick up the selected settings after `/reload`.
 
 Wire remains mandatory. Full-prompt prewarming is **off by default** and can be
 changed independently with `/codex-wire prewarm on|off`. Provider replacement or

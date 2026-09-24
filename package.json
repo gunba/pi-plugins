@@ -36,7 +36,7 @@
       "./pi-session-memory/extensions/session-memory.ts",
       "./pi-fast-footer/extensions/fast-footer.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
-      "./pi-context-limit/index.ts",
+      "./pi-context-window/index.ts",
       "./pi-party/index.ts",
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
@@ -50,7 +50,7 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.85.1",
-    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-coding-agent": ">=0.87.1",
     "@earendil-works/pi-tui": ">=0.85.1"
   },
   "peerDependenciesMeta": {
