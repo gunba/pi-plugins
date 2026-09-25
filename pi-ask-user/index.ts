@@ -31,9 +31,7 @@ import {
 import { renderSingleSelectRows } from "./single-select-layout.ts";
 
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
-import { MOBILE_ASK_CLOSE, MOBILE_ASK_REQUEST, type MobileAskRequest } from "../pi-mobile-bridge/bridge-events.ts";
 const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
@@ -1486,44 +1484,6 @@ async function askViaDialogs(
    return createSelectionResponse([selected], comment);
 }
 
-function askViaMobile(
-   pi: ExtensionAPI,
-   question: string,
-   context: string | undefined,
-   options: QuestionOption[],
-   allowMultiple: boolean,
-   allowFreeform: boolean,
-   allowComment: boolean,
-   signal?: AbortSignal,
-   timeout?: number,
-): { accepted: boolean; result: Promise<AskUIResult | null | undefined> } {
-   let accepted = false;
-   const result = new Promise<AskUIResult | null | undefined>(resolve => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const id = randomUUID();
-      const onAbort = () => finish(null);
-      const finish: MobileAskRequest["answer"] = response => {
-         if (settled) return;
-         settled = true;
-         if (timer) clearTimeout(timer);
-         signal?.removeEventListener("abort", onAbort);
-         pi.events.emit(MOBILE_ASK_CLOSE, id);
-         resolve(response);
-      };
-      const request: MobileAskRequest = {
-         id, question, context, options, allowMultiple, allowFreeform, allowComment, answer: finish,
-      };
-      pi.events.emit(MOBILE_ASK_REQUEST, request);
-      accepted = request.accepted === true;
-      if (!accepted) { finish(undefined); return; }
-      if (signal?.aborted) { finish(null); return; }
-      signal?.addEventListener("abort", onAbort, { once: true });
-      if (timeout && timeout > 0) timer = setTimeout(() => finish(null), timeout);
-   });
-   return { accepted, result };
-}
-
 export default function(pi: ExtensionAPI) {
    pi.registerTool({
       name: "ask_user",
@@ -1646,34 +1606,6 @@ export default function(pi: ExtensionAPI) {
                isError: true,
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
             };
-         }
-
-         if (ctx.mode === "tui") {
-            // Only an already-paired phone page accepts the request. Otherwise
-            // the existing terminal dialog is unchanged.
-            const remoteOffer = askViaMobile(pi, question, normalizedContext, options,
-               allowMultiple, allowFreeform || options.length === 0, allowComment, signal, timeout);
-            if (remoteOffer.accepted) {
-               onUpdate?.({
-                  content: [{ type: "text", text: "Waiting for an answer on the phone..." }],
-                  details: { question, context: normalizedContext, options, response: null, cancelled: false },
-               });
-               const remote = await remoteOffer.result;
-               if (remote !== undefined) {
-                  if (remote === null) {
-                     pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
-                     return {
-                        content: [{ type: "text", text: "User cancelled the question" }],
-                        details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-                     };
-                  }
-                  pi.events.emit("ask:answered", { question, context: normalizedContext, response: remote });
-                  return {
-                     content: [{ type: "text", text: `User answered: ${formatResponseSummary(remote)}` }],
-                     details: { question, context: normalizedContext, options, response: remote, cancelled: false } as AskToolDetails,
-                  };
-               }
-            }
          }
 
          if (options.length === 0) {

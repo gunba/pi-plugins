@@ -63,9 +63,6 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   file inspection, and compact replay links for older archived results.
   The same explicit policy is installed in SDK children;
   unrelated extension discovery remains disabled.
-- [`pi-mobile-bridge`](pi-mobile-bridge/README.md) — private phone page
-  for all live desktop Pi terminals, with a session selector, work status,
-  and `ask_user` responses; no parallel session writer.
 - `pi-session-memory` — bounds long-running Pi processes by releasing obsolete
   message, tool-result, image, and old-summary payloads from memory after
   compaction. The active context and current-branch extension state remain
