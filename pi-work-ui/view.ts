@@ -1,7 +1,7 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-export type WorkSectionId = "goal" | "todos" | "subagents" | "party";
+export type WorkSectionId = "goal" | "todos" | "subagents" | "party" | "scheduled";
 export type WorkTone = "accent" | "muted" | "success" | "warning" | "error";
 export interface WorkSection {
 	label: string;
@@ -10,9 +10,13 @@ export interface WorkSection {
 	summary?: string;
 	detail: string;
 	tone?: WorkTone;
+	manage?: { label: string; run(ctx: ExtensionContext): Promise<void> };
 }
 export type WorkSnapshot = ReadonlyArray<readonly [WorkSectionId, Readonly<WorkSection>]>;
-export const SECTION_ORDER: readonly WorkSectionId[] = ["goal", "todos", "subagents", "party"];
+export const SECTION_ORDER: readonly WorkSectionId[] = ["goal", "todos", "subagents", "party", "scheduled"];
+export const SECTION_LABELS: Record<WorkSectionId, string> = {
+	goal: "Goal", todos: "Todos", subagents: "Subagents", party: "Party", scheduled: "Scheduled",
+};
 
 /** Data is never interpreted as terminal control sequences. Persistence is untouched. */
 export function safeWorkText(text: string, multiline = false): string {
@@ -26,7 +30,7 @@ export function safeWorkText(text: string, multiline = false): string {
 export function workPanelLines(snapshot: WorkSnapshot, theme: Theme, width: number): string[] {
 	if (!snapshot.length || width <= 0) return [];
 	const fit = (text: string) => truncateToWidth(text, Math.floor(width), "…");
-	const heading = width < 24 ? "Work" : "Work · Alt+1–4";
+	const heading = width < 24 ? "Work" : "Work · /work";
 	return [theme.fg("dim", fit(heading)), ...snapshot.map(([id, section]) => {
 		const state = theme.fg(section.tone ?? "accent", safeWorkText(section.status));
 		const label = id === "subagents" && width < 40 ? "Agents" : safeWorkText(section.label);

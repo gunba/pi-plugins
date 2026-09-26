@@ -1,23 +1,19 @@
-import { readFileSync, statSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import { ScheduleStore, type ScheduledMessage } from "./store.ts";
+import { DeliveryReceipts, SCHEDULED_MESSAGE_TYPE } from "./receipts.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Key, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Key, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { ensureWorkCoordination, registerWorkResource, completeWorkResource, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
+import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
+import { scheduledWorkSection } from "./presentation.ts";
 
-const WIDGET_KEY = "pi-scheduler";
-const SCHEDULED_MESSAGE_TYPE = "pi-scheduler-scheduled-message";
 const BASE_DIR = process.env.PI_SCHEDULER_DIR || join(homedir(), ".pi", "agent", "scheduler");
 
-const MAX_WIDGET_ROWS = 4;
-const MAX_MESSAGE_PREVIEW = 90;
 const MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
-const SCHEDULE_CONTROLS = "Ctrl+Alt+S list · /schedule cancel <id> · /schedule clear";
-const WIDGET_PLACEMENT = process.env.PI_SCHEDULER_WIDGET_PLACEMENT === "aboveEditor" ? "aboveEditor" : "belowEditor";
 
 type DeliveryMode = "steer" | "followUp";
 
@@ -25,12 +21,14 @@ type ScheduledDeliveryDetails = Pick<ScheduledMessage, "id" | "createdAt" | "due
 
 export default function (pi: ExtensionAPI): void {
   ensureWorkCoordination(pi);
+  const workUi = ensureWorkUi(pi);
+  let source: WorkUiSource | undefined;
   let activeCtx: ExtensionContext | undefined;
   let tickTimer: ReturnType<typeof setTimeout> | undefined;
   const attempted = new Set<string>();
   let timerEpoch = 0;
   let sendingDue = false;
-  let admissionCache: { key: string; ids: Set<string> } | undefined;
+  const receipts = new DeliveryReceipts();
   let lastError: string | undefined;
   function reportError(ctx: ExtensionContext, error: unknown): void {
     const message = displayText(error instanceof Error ? error.message : String(error));
@@ -131,31 +129,14 @@ export default function (pi: ExtensionAPI): void {
     return { ...result, alreadyDelivered: admitted.has(normalized) };
   }
 
-  function admittedMessages(ctx: ExtensionContext): Set<string> {
+  function admittedMessages(ctx: ExtensionContext): ReadonlySet<string> {
     const file = ctx.sessionManager.getSessionFile();
-    if (!file) return new Set(ctx.sessionManager.getEntries().flatMap((entry) =>
-      entry.type === "custom_message" && entry.customType === SCHEDULED_MESSAGE_TYPE
-        ? [(entry.details as ScheduledDeliveryDetails).id] : []));
-    let text: string;
-    let key: string;
-    try {
-      const stat = statSync(file);
-      key = `${file}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-      if (admissionCache?.key === key) return admissionCache.ids;
-      text = readFileSync(file, "utf8");
-    }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
-      throw error;
-    }
-    // Ignore only an unfinished final append; malformed completed records fail loudly.
-    const ids = new Set(text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).flatMap((line) => {
-      const entry = JSON.parse(line);
-      return entry.type === "custom_message" && entry.customType === SCHEDULED_MESSAGE_TYPE
-        && typeof entry.details?.id === "string" ? [entry.details.id as string] : [];
+    if (!file) return new Set(ctx.sessionManager.getEntries().flatMap((entry) => {
+      if (entry.type !== "custom_message" || entry.customType !== SCHEDULED_MESSAGE_TYPE) return [];
+      const details = entry.details as Partial<ScheduledDeliveryDetails> | undefined;
+      return typeof details?.id === "string" ? [details.id] : [];
     }));
-    admissionCache = { key, ids };
-    return ids;
+    return receipts.read(file);
   }
 
   function scheduledDeliveryDetails(entry: ScheduledMessage): ScheduledDeliveryDetails {
@@ -171,7 +152,7 @@ export default function (pi: ExtensionAPI): void {
   function reconcileAdmissions(ctx: ExtensionContext): void {
     if (!attempted.size || !activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
     const admitted = admittedMessages(ctx);
-    const confirmed = new Set(sessionMessages(ctx).filter(entry => admitted.has(entry.id)).map(entry => entry.id));
+    const confirmed = new Set([...attempted].filter(id => admitted.has(id)));
     if (!confirmed.size) return;
     storeFor(ctx).claimDue(-Infinity, confirmed);
     for (const id of confirmed) attempted.delete(id);
@@ -198,9 +179,16 @@ export default function (pi: ExtensionAPI): void {
     sendingDue = true;
     try {
       const now = Date.now();
-      if (!storeFor(ctx).list().some((entry) => entry.dueAt <= now)) return;
-      for (const entry of storeFor(ctx).list()) if (entry.dueAt <= now) attempted.add(entry.id);
-      const due = storeFor(ctx).claimDue(now, admittedMessages(ctx));
+      const store = storeFor(ctx);
+      const overdue = store.list().filter(entry => entry.dueAt <= now);
+      if (!overdue.length) return;
+      // A failed receipt read must not create an immediate retry loop.
+      for (const entry of overdue) attempted.add(entry.id);
+      const admitted = admittedMessages(ctx);
+      const due = store.claimDue(now, admitted);
+      for (const entry of overdue) {
+        if (admitted.has(entry.id)) attempted.delete(entry.id);
+      }
       for (const entry of due) {
         attempted.add(entry.id);
         try {
@@ -228,139 +216,18 @@ export default function (pi: ExtensionAPI): void {
 
   function refreshWidget(ctx: ExtensionContext): void {
     if (ctx.mode !== "tui") return;
-    const messages = sessionMessages(ctx);
-    if (!messages.length) {
-      ctx.ui.setWidget(WIDGET_KEY, undefined);
-      return;
-    }
-
-    ctx.ui.setWidget(WIDGET_KEY, (_tui, theme): Component => ({
-      render: (width: number) => schedulerWidgetLines(theme, width, messages, ctx.ui.getToolsExpanded()),
-      invalidate() {},
-    }), { placement: WIDGET_PLACEMENT });
+    const section = scheduledWorkSection(sessionMessages(ctx), attempted);
+    source?.set(section ? { ...section, manage: { label: "Cancel", run: cancelDialog } } : undefined);
   }
 
-  function expandKeyHint(expanded: boolean): string {
-    const action = expanded ? "collapse" : "expand";
-    try {
-      return keyHint("app.tools.expand", action);
-    } catch {
-      return `ctrl+o ${action}`;
-    }
-  }
-
-  function scheduleHelp(expanded: boolean): string {
-    return `${expandKeyHint(expanded)} · ${SCHEDULE_CONTROLS}`;
-  }
-
-  function schedulerWidgetLines(theme: Theme, width: number, messages: ScheduledMessage[], expanded: boolean): string[] {
-    const W = Math.max(0, Math.min(Math.floor(width), 140));
-    if (W < 46) {
-      const rows = expanded ? expandedScheduledRows(theme, Math.max(1, W), messages) : collapsedScheduledRows(theme, Math.max(1, W), messages);
-      return [theme.fg("accent", "Scheduled messages"), ...rows].map((line) => truncateToWidth(line, W, ""));
-    }
-    const label = "Scheduled messages";
-    const help = scheduleHelp(expanded);
-    const innerWidth = WIDGET_PLACEMENT === "belowEditor" ? W - 2 : W - 4;
-    const rows = expanded
-      ? expandedScheduledRows(theme, innerWidth, messages)
-      : collapsedScheduledRows(theme, WIDGET_PLACEMENT === "belowEditor" ? compactFirstRowMessageWidth(W, label, help) : innerWidth, messages);
-
-    if (WIDGET_PLACEMENT === "belowEditor") {
-      return expanded ? expandedCompactLines(theme, W, label, rows, help) : compactLines(theme, W, label, rows, help);
-    }
-
-    rows.push(theme.fg("dim", help));
-    return boxLines(theme, W, label, rows);
-  }
-
-  function collapsedScheduledRows(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
-    const rows = messages.slice(0, MAX_WIDGET_ROWS).map((message) => scheduledRow(theme, width, message));
-    if (messages.length > MAX_WIDGET_ROWS) {
-      rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
-    }
-    return rows;
-  }
-
-  function expandedScheduledRows(theme: Theme, width: number, messages: ScheduledMessage[]): string[] {
-    const rows: string[] = [];
-    for (const message of messages.slice(0, MAX_WIDGET_ROWS)) {
-      rows.push(scheduledExpandedHeader(theme, width, message));
-      rows.push(...expandedMessageLines(theme, Math.max(12, width - 2), message.message).map((line) => `  ${line}`));
-    }
-    if (messages.length > MAX_WIDGET_ROWS) {
-      rows.push(theme.fg("dim", `… ${messages.length - MAX_WIDGET_ROWS} more scheduled (/schedule list)`));
-    }
-    return rows;
-  }
-
-  function scheduledExpandedHeader(theme: Theme, width: number, message: ScheduledMessage): string {
-    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", deliveryStatus(message))}`;
-    const at = theme.fg("dim", formatDueAt(message.dueAt));
-    return truncateToWidth(`${left} ${at}`, width);
-  }
-
-  function expandedMessageLines(theme: Theme, width: number, message: string): string[] {
-    const normalized = displayText(message).trim();
-    if (!normalized) return [theme.fg("dim", "(empty)")];
-
-    const lines: string[] = [];
-    for (const rawLine of normalized.split("\n")) {
-      const line = rawLine.trimEnd();
-      if (!line.trim()) {
-        lines.push("");
-        continue;
-      }
-      lines.push(...wrapTextWithAnsi(theme.fg("text", line), width));
-    }
-    return lines;
-  }
-
-  function compactFirstRowMessageWidth(width: number, label: string, help: string): number {
-    return Math.max(12, width - visibleWidth(label) - visibleWidth(help) - 6);
-  }
-
-  function compactLines(theme: Theme, width: number, label: string, rows: string[], help: string): string[] {
-    const prefix = `${theme.bold(theme.fg("accent", label))} ${theme.fg("dim", "·")}`;
-    const suffix = theme.fg("dim", ` · ${help}`);
-    const first = rows[0] ? `${prefix} ${rows[0]}${suffix}` : `${prefix} ${theme.fg("dim", help)}`;
-    return [truncateToWidth(first, width), ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width))];
-  }
-
-  function expandedCompactLines(theme: Theme, width: number, label: string, rows: string[], help: string): string[] {
-    const prefix = `${theme.bold(theme.fg("accent", label))} ${theme.fg("dim", "·")}`;
-    const firstContent = rows[0] ?? theme.fg("dim", help);
-    const firstWidth = Math.max(12, width - visibleWidth(prefix) - 1);
-    const first = truncateToWidth(`${prefix} ${truncateToWidth(firstContent, firstWidth)}`, width);
-    return [
-      first,
-      ...rows.slice(1).map((row) => truncateToWidth(`  ${row}`, width)),
-      truncateToWidth(`  ${theme.fg("dim", help)}`, width),
-    ];
-  }
-
-  function scheduledRow(theme: Theme, width: number, message: ScheduledMessage): string {
-    const left = `${theme.fg("accent", `#${message.id}`)} ${theme.fg("success", deliveryStatus(message))}`;
-    const at = theme.fg("dim", formatDueAt(message.dueAt));
-    const previewWidth = Math.max(12, width - visibleWidth(left) - visibleWidth(at) - 6);
-    const preview = truncateToWidth(displayText(message.message).replace(/\s+/g, " ").trim(), Math.min(MAX_MESSAGE_PREVIEW, previewWidth));
-    return `${left} ${theme.fg("text", preview)} ${at}`;
-  }
-
-  function boxLines(theme: Theme, width: number, label: string, rows: string[]): string[] {
-    const inner = width - 4;
-    const B = (value: string) => theme.fg("borderAccent", value);
-    const lead = "╭─ ";
-    const dashes = Math.max(0, width - 1 - visibleWidth(lead) - visibleWidth(label) - 1);
-    const top = B(lead) + theme.bold(theme.fg("accent", label)) + " " + B("─".repeat(dashes) + "╮");
-    const body = rows.map((row) => `${B("│")} ${padTo(row, inner)} ${B("│")}`);
-    return [top, ...body, B(`╰${"─".repeat(width - 2)}╯`)];
-  }
-
-  function padTo(value: string, width: number): string {
-    const truncated = truncateToWidth(value, width);
-    const pad = Math.max(0, width - visibleWidth(truncated));
-    return `${truncated}${" ".repeat(pad)}`;
+  async function cancelDialog(ctx: ExtensionContext): Promise<void> {
+    const epoch = timerEpoch;
+    const selector = await ctx.ui.input("Cancel scheduled message", "ID, prefix, or all");
+    if (epoch !== timerEpoch || !selector?.trim()) return;
+    const { cancelled, ambiguous, alreadyDelivered } = cancelMessages(ctx, selector);
+    if (ambiguous) ctx.ui.notify("Ambiguous schedule id; use more characters.", "warning");
+    else if (cancelled.length) ctx.ui.notify(cancellationConfirmation(cancelled), "info");
+    else ctx.ui.notify(alreadyDelivered ? "This message was already delivered." : "No cancellable message matched.", "info");
   }
 
   function formatRemaining(dueAt: number): string {
@@ -422,8 +289,18 @@ export default function (pi: ExtensionAPI): void {
 
   function startTicker(pi: ExtensionAPI, ctx: ExtensionContext): void {
     timerEpoch++;
+    if (tickTimer) clearTimeout(tickTimer);
+    tickTimer = undefined;
     activeCtx = ctx;
+    source?.dispose();
+    source = workUi.source("scheduled");
     attempted.clear();
+    receipts.reset();
+    for (const [id, store] of stores) {
+      if (id === sessionId(ctx)) continue;
+      try { store.close(); } catch (error) { reportError(ctx, error); }
+      stores.delete(id);
+    }
     try {
       for (const entry of sessionMessages(ctx)) registerWorkResource(sessionId(ctx), { kind: "timer", id: entry.id });
       deliverDue(pi, ctx);
@@ -438,17 +315,21 @@ export default function (pi: ExtensionAPI): void {
     tickTimer = undefined;
     const current = ctx ?? activeCtx;
     activeCtx = undefined;
-    if (current) {
+    const errors: unknown[] = [];
+    try {
       // Queued but unadmitted messages remain recoverable after reload/exit.
-      const store = stores.get(sessionId(current));
-      if (store) {
-        try {
-          store.claimDue(-Infinity, admittedMessages(current));
-          store.release();
-        } catch (error) { reportError(current, error); }
-        stores.delete(sessionId(current));
-      }
-      if (current.mode === "tui") current.ui.setWidget(WIDGET_KEY, undefined);
+      if (current && attempted.size) stores.get(sessionId(current))?.claimDue(-Infinity, admittedMessages(current));
+    } catch (error) { errors.push(error); }
+    for (const store of stores.values()) {
+      try { store.close(); } catch (error) { errors.push(error); }
+    }
+    stores.clear();
+    receipts.reset();
+    attempted.clear();
+    source?.dispose();
+    source = undefined;
+    if (current) {
+      for (const error of errors) reportError(current, error);
     }
   }
 
@@ -543,8 +424,8 @@ export default function (pi: ExtensionAPI): void {
   pi.registerShortcut(Key.ctrlAlt("s"), {
     description: "Show scheduled messages",
     handler: async (ctx) => {
-      notifyScheduleList(ctx);
-      refreshWidget(ctx);
+      if (ctx.mode === "tui") await workUi.open(ctx, "scheduled");
+      else notifyScheduleList(ctx);
     },
   });
 
@@ -562,8 +443,8 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
       if (!trimmed || /^list$/i.test(trimmed)) {
-        notifyScheduleList(ctx);
-        refreshWidget(ctx);
+        if (ctx.mode === "tui") await workUi.open(ctx, "scheduled");
+        else notifyScheduleList(ctx);
         return;
       }
       if (/^help$/i.test(trimmed)) {
@@ -614,10 +495,10 @@ export default function (pi: ExtensionAPI): void {
     if (ctx.mode === "tui" || ctx.mode === "rpc") startTicker(pi, ctx);
   });
   pi.on("agent_settled", (_event, ctx) => {
-    if (!activeCtx || sessionId(activeCtx) !== sessionId(ctx)) return;
-    try { storeFor(ctx).claimDue(-Infinity, admittedMessages(ctx)); refreshWidget(ctx); armTimer(ctx); }
+    try { reconcileAdmissions(ctx); }
     catch (error) { reportError(ctx, error); }
   });
+  pi.on("session_compact", () => receipts.reset());
   pi.on("context", (_event, ctx) => {
     // A steering message can be persisted while the agent remains active for
     // many turns. Check its durable receipt without waiting for idle settlement.

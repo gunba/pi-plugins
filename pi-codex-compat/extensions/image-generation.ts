@@ -14,7 +14,6 @@ import {
 	type ImageConverter,
 	type NativeImageContent,
 	createImageContent,
-	normalizeLegacyImageBlock,
 	prepareNativeImageContent,
 } from "./image-content.ts";
 import {
@@ -22,9 +21,9 @@ import {
 	MAX_LOCAL_IMAGE_BYTES,
 	decodedBase64ByteLength,
 	readLocalImageFile,
-	readResponseTextWithinLimit,
 } from "./image-limits.ts";
 import { isChatGptCodexModel, isImageGenerationModel } from "./model-tools.ts";
+import { requestService } from "../../pi-codex-service/index.ts";
 
 export const IMAGE_GENERATION_MODELS = [
 	"gpt-image-2.5-sunburst",
@@ -32,7 +31,6 @@ export const IMAGE_GENERATION_MODELS = [
 ] as const;
 type ImageGenerationModel = (typeof IMAGE_GENERATION_MODELS)[number];
 const MAX_EDIT_IMAGES = 5;
-const MAX_ERROR_TEXT_CHARS = 600;
 
 type UnknownRecord = Record<string, unknown>;
 type FetchLike = (
@@ -229,17 +227,16 @@ async function localImageReference(
 }
 
 function nativeImageContent(value: unknown): NativeImageContent | undefined {
-	const normalized = normalizeLegacyImageBlock(value);
 	if (
-		!isRecord(normalized) ||
-		normalized.type !== "image" ||
-		typeof normalized.data !== "string" ||
-		typeof normalized.mimeType !== "string"
+		!isRecord(value) ||
+		value.type !== "image" ||
+		typeof value.data !== "string" ||
+		typeof value.mimeType !== "string"
 	) {
 		return undefined;
 	}
 	try {
-		return createImageContent(normalized.data, normalized.mimeType);
+		return createImageContent(value.data, value.mimeType);
 	} catch {
 		return undefined;
 	}
@@ -407,88 +404,12 @@ async function requestImageReferences(
 	return recent.map((image) => ({ image_url: imageDataUrl(image) }));
 }
 
-function decodeChatGptAccountId(token: string): string {
-	try {
-		const parts = token.split(".");
-		if (parts.length !== 3) throw new Error("invalid JWT");
-		const payload = JSON.parse(
-			Buffer.from(parts[1], "base64url").toString("utf8"),
-		) as UnknownRecord;
-		const auth = payload["https://api.openai.com/auth"];
-		if (!isRecord(auth) || typeof auth.chatgpt_account_id !== "string") {
-			throw new Error("missing ChatGPT account ID");
-		}
-		const accountId = auth.chatgpt_account_id.trim();
-		if (!accountId) throw new Error("missing ChatGPT account ID");
-		return accountId;
-	} catch {
-		throw new Error(
-			"failed to extract chatgpt-account-id from Codex OAuth token",
-		);
-	}
-}
-
-function endpointForModel(
-	model: NonNullable<ExtensionContext["model"]>,
-	operation: "generations" | "edits",
-): string {
-	const baseUrl = model.baseUrl?.trim().replace(/\/+$/, "");
-	if (!baseUrl) throw new Error("the selected model has no image API base URL");
-	if (isChatGptCodexModel(model)) {
-		let codexBaseUrl = baseUrl;
-		if (codexBaseUrl.endsWith("/codex/responses")) {
-			codexBaseUrl = codexBaseUrl.slice(0, -"/responses".length);
-		} else if (!codexBaseUrl.endsWith("/codex")) {
-			codexBaseUrl = `${codexBaseUrl}/codex`;
-		}
-		return `${codexBaseUrl}/images/${operation}`;
-	}
-	const apiBaseUrl = baseUrl.endsWith("/responses")
-		? baseUrl.slice(0, -"/responses".length)
-		: baseUrl;
-	return `${apiBaseUrl}/images/${operation}`;
-}
-
-function requestHeaders(
-	model: NonNullable<ExtensionContext["model"]>,
-	apiKey: string,
-	authHeaders: Record<string, string | null> | undefined,
-): Headers {
-	const headers = new Headers();
-	for (const [key, value] of Object.entries(authHeaders ?? {})) {
-		if (value !== null) headers.set(key, value);
-	}
-	headers.set("accept", "application/json");
-	headers.set("content-type", "application/json");
-	headers.set("authorization", `Bearer ${apiKey}`);
-	if (isChatGptCodexModel(model)) {
-		headers.set("chatgpt-account-id", decodeChatGptAccountId(apiKey));
-		headers.set("originator", "pi");
-	}
-	return headers;
-}
-
 function parseJson(text: string): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
 		return undefined;
 	}
-}
-
-function responseError(response: Response, text: string): Error {
-	const payload = parseJson(text);
-	const error =
-		isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
-	const rawDetail =
-		(typeof error?.message === "string" && error.message) ||
-		text.trim() ||
-		response.statusText ||
-		"request failed";
-	const detail = rawDetail.slice(0, MAX_ERROR_TEXT_CHARS);
-	return new Error(
-		`image generation request failed (${response.status}): ${detail}`,
-	);
 }
 
 function responseImageData(payload: unknown): {
@@ -531,14 +452,6 @@ export async function executeImageGeneration(
 	const convertImage = dependencies.convertImage ?? (async () => null);
 	const images = await requestImageReferences(params, ctx, convertImage);
 	const operation = images.length > 0 ? "edits" : "generations";
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) throw new Error(auth.error);
-	if (!auth.apiKey) {
-		throw new Error(
-			`no API key or OAuth token is available for ${model.provider}`,
-		);
-	}
-
 	const body = {
 		...(operation === "edits" ? { images } : {}),
 		prompt: params.prompt,
@@ -547,18 +460,10 @@ export async function executeImageGeneration(
 		quality: "auto",
 		size: "auto",
 	};
-	const fetchImpl = dependencies.fetchImpl ?? globalThis.fetch;
-	const response = await fetchImpl(endpointForModel(model, operation), {
-		method: "POST",
-		headers: requestHeaders(model, auth.apiKey, auth.headers),
-		body: JSON.stringify(body),
-		signal,
-	});
-	const responseText = await readResponseTextWithinLimit(
-		response,
-		MAX_IMAGE_API_RESPONSE_BYTES,
-	);
-	if (!response.ok) throw responseError(response, responseText);
+	const responseText = await requestService(ctx, model, {
+		path: `images/${operation}`, codex: isChatGptCodexModel(model), label: "image generation",
+		body, maxResponseBytes: MAX_IMAGE_API_RESPONSE_BYTES, maxErrorChars: 600,
+	}, signal, dependencies.fetchImpl);
 	const imageResponse = responseImageData(parseJson(responseText));
 	if (decodedBase64ByteLength(imageResponse.data) > MAX_LOCAL_IMAGE_BYTES) {
 		throw new Error(

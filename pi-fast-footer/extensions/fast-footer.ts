@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep } from "node:path";
-import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { reduceSessionUsage } from "../../pi-session-usage/index.ts";
 
 interface Totals {
 	input: number;
@@ -34,33 +34,18 @@ function formatCwd(cwd: string): string {
 	return `~${sep}${path}`;
 }
 
-function addUsage(totals: Totals, usage: Usage): void {
-	totals.input += usage.input;
-	totals.output += usage.output;
-	totals.cacheRead += usage.cacheRead;
-	totals.cacheWrite += usage.cacheWrite;
-	totals.cost += usage.cost.total;
-}
-
 function snapshot(ctx: ExtensionContext): Snapshot {
-	const totals: Totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	const entries = ctx.sessionManager.getEntries();
+	const { usage, cacheHitRate } = reduceSessionUsage(entries);
+	const totals: Totals = {
+		input: usage?.input ?? 0, output: usage?.output ?? 0,
+		cacheRead: usage?.cacheRead ?? 0, cacheWrite: usage?.cacheWrite ?? 0,
+		cost: usage?.cost.total ?? 0, cacheHitRate,
+	};
 	let sessionName: string | undefined;
-	for (const entry of ctx.sessionManager.getEntries()) {
+	for (const entry of entries) {
 		if (entry.type === "session_info") {
 			sessionName = entry.name?.trim() || undefined;
-		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			const usage = entry.message.usage;
-			addUsage(totals, usage);
-			const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-			totals.cacheHitRate = promptTokens ? (usage.cacheRead / promptTokens) * 100 : undefined;
-		} else if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
-			addUsage(totals, entry.message.usage);
-		} else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-			addUsage(totals, entry.usage);
-		} else if ((entry as { type: string }).type === "usage") {
-			// Usage entries were added after the minimum supported Pi version.
-			const usage = (entry as unknown as { usage?: Usage }).usage;
-			if (usage) addUsage(totals, usage);
 		}
 	}
 	return { totals, sessionName, context: ctx.getContextUsage() };

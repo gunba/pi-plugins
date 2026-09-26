@@ -3,10 +3,10 @@ import test from "node:test";
 
 import webSearchExtension, {
 	WEB_SEARCH_PARAMETERS,
-	codexSearchEndpoint,
 	executeWebSearch,
 	syncWebSearchTool,
 } from "../extensions/web-search.ts";
+import { serviceEndpoint } from "../../pi-codex-service/index.ts";
 
 function jwt(accountId) {
 	const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -201,14 +201,11 @@ test("accepts Codex search responses larger than 64 KiB", async () => {
 
 test("normalizes Codex response base URLs", () => {
 	assert.equal(
-		codexSearchEndpoint({ ...CODEX_MODEL, baseUrl: "https://example.test/backend-api" }),
+		serviceEndpoint("https://example.test/backend-api", "alpha/search", true),
 		"https://example.test/backend-api/codex/alpha/search",
 	);
 	assert.equal(
-		codexSearchEndpoint({
-			...CODEX_MODEL,
-			baseUrl: "https://example.test/backend-api/codex/responses/",
-		}),
+		serviceEndpoint("https://example.test/backend-api/codex/responses/", "alpha/search", true),
 		"https://example.test/backend-api/codex/alpha/search",
 	);
 });

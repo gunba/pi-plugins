@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import wire from "../../pi-codex-wire/extensions/index.ts";
 import { requireCodexWire } from "../../pi-codex-wire/extensions/required.ts";
@@ -59,7 +59,7 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   };
   wire({
     registerFlag() {}, getFlag: name => flags.get(name), registerCommand() {},
-    events: { emit() {} }, on: (name, handler) => {
+    events: createEventBus(), on: (name, handler) => {
       const previous = events.get(name);
       events.set(name, (...args) => {
         const result = previous?.(...args);

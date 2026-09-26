@@ -86,14 +86,15 @@ export default function party(pi: ExtensionAPI): void {
 		});
 		if (!self.room && !pending) { source?.set(undefined); signature = ""; return; }
 		const status = `${self.room ? `${self.room} · ${peers.length} members` : "Direct inbox"}${pending ? ` · ${pending} unread` : ""}`;
-		const detail = [...rows, "", ...(self.wakes >= 8 ? ["Automatic delivery paused. party_delivery or /party resume resets the budget.", ""] : []),
+		const members = peers.map((peer, index) => `${rows[index]}\nID: ${peer.session}\nDirectory: ${peer.cwd}${peer.description ? `\n${peer.description}` : ""}`);
+		const detail = [members.join("\n\n"), "", ...(self.wakes >= 8 ? ["Automatic delivery paused. party_delivery or /party resume resets the budget.", ""] : []),
 			...(!armed ? [paused ? "Delivery paused. party_delivery or /party resume can resume it." : "Delivery paused until work resumes, or use party_delivery.", ""] : []),
 			"/party chat opens party history; /party chat direct opens direct messages."].join("\n");
 		const next = JSON.stringify([status, detail]);
 		if (next === signature) return;
 		signature = next;
 		source?.set({ label: "Party", status, summary: rows.filter((_row, index) => peers[index].session !== session).join("; "),
-			detail, tone: pending ? "warning" : "accent" });
+			detail, tone: pending ? "warning" : "accent", manage: { label: "Chat", run: context => handleParty("chat", context) } });
 	};
 	const pump = (starting = preparingPrompt) => {
 		if (stopped || !armed || pumping || !ctx || !store || member()?.owner !== owner) return;
@@ -235,9 +236,7 @@ export default function party(pi: ExtensionAPI): void {
 		pump(); publish(); signal();
 		return publicAgent(member()!);
 	};
-	pi.registerCommand("party", {
-		description: "Join /party <id>; /party chat [direct]; /party leave; /party pause; /party resume",
-		handler: async (args, context) => {
+	const handleParty = async (args: string, context: ExtensionContext) => {
 			ctx = context;
 			const value = args.trim();
 			if (!value) {
@@ -276,7 +275,10 @@ export default function party(pi: ExtensionAPI): void {
 					context.ui.notify(`Joined party ${value.toLowerCase()}.`, "info");
 				}
 			} catch (error) { context.ui.notify(String(error), "error"); }
-		},
+	};
+	pi.registerCommand("party", {
+		description: "Join /party <id>; /party chat [direct]; /party leave; /party pause; /party resume",
+		handler: handleParty,
 	});
 	pi.registerTool({
 		name: "party_discover", label: "Discover agents",

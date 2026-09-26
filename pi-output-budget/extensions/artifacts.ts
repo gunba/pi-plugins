@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { artifactPage, artifactText, artifactVersion } from "./artifact-reader.ts";
+import { literalMatches, OUTPUT_CHARS, page } from "./text.ts";
+import { acquireArtifactAccess } from "./ownership.ts";
 
-export const OUTPUT_CHARS = 16_000;
-export const READ_CHARS = 32_000;
-export const MAX_CHARS = 128_000;
 const ID = /^sha256-[a-f0-9]{64}$/;
+const searches = new Map<string, string>();
 
 export class ArtifactStore {
   readonly directory: string;
@@ -18,10 +19,7 @@ export class ArtifactStore {
   }
 
   private async prepareDirectory(): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    // Keep private output out of Git repositories with a local ignore rule.
-    try { await writeFile(join(this.directory, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    await acquireArtifactAccess(this.directory);
   }
 
   async put(text: string): Promise<string> {
@@ -56,35 +54,39 @@ export class ArtifactStore {
     try { await link(temporary, this.path(id)); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await this.get(id);
+      await artifactVersion(this.path(id), id);
     }
   }
 
   async get(id: string): Promise<string> {
-    const bytes = await readFile(this.path(id));
-    if (`sha256-${createHash("sha256").update(bytes).digest("hex")}` !== id) {
-      throw new Error("Output artifact integrity check failed");
+    const path = this.path(id);
+    await this.prepareDirectory();
+    return artifactText(path, id);
+  }
+
+  async readPage(id: string, offset = 0, length = OUTPUT_CHARS) {
+    const path = this.path(id);
+    await this.prepareDirectory();
+    return artifactPage(path, id, offset, length);
+  }
+
+  async searchPage(id: string, query: string, offset = 0, length = OUTPUT_CHARS) {
+    if (!query) throw new Error("Search query must not be empty");
+    const path = this.path(id);
+    await this.prepareDirectory();
+    const version = await artifactVersion(path, id);
+    const key = `${path}\0${version}\0${createHash("sha256").update(query).digest("hex")}`;
+    let found = searches.get(key);
+    if (found) {
+      try { return { ...await this.readPage(found, offset, length), search_artifact: found }; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
-    return bytes.toString("utf8");
+    found = await this.put(literalMatches(await this.get(id), query));
+    searches.delete(key);
+    searches.set(key, found);
+    while (searches.size > 64) searches.delete(searches.keys().next().value!);
+    return { ...await this.readPage(found, offset, length), search_artifact: found };
   }
-}
-
-/** Offsets count UTF-16 code units, as in JS strings. Never split a surrogate pair. */
-export function page(text: string, offset = 0, length = OUTPUT_CHARS) {
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length) throw new Error("Invalid character offset");
-  if (!Number.isSafeInteger(length) || length < 1 || length > MAX_CHARS) throw new Error(`length must be 1..${MAX_CHARS}`);
-  if (offset > 0 && /[\uDC00-\uDFFF]/.test(text[offset] ?? "") && /[\uD800-\uDBFF]/.test(text[offset - 1] ?? "")) {
-    throw new Error("Offset splits a Unicode character; use the returned next_offset");
-  }
-  let end = Math.min(text.length, offset + length);
-  if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1] ?? "") && /[\uDC00-\uDFFF]/.test(text[end] ?? "")) end--;
-  if (end === offset && end < text.length) end += 2;
-  return { text: text.slice(offset, end), next_offset: end < text.length ? end : null, total_chars: text.length };
-}
-
-export function literalMatches(text: string, query: string): string {
-  if (!query) throw new Error("Search query must not be empty");
-  return text.split("\n").flatMap((line, index) => line.includes(query) ? [`${index + 1}: ${line}`] : []).join("\n");
 }
 
 export async function boundedText(store: ArtifactStore, text: string, length = OUTPUT_CHARS) {

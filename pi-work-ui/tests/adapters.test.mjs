@@ -44,7 +44,7 @@ function harness() {
 test("actual goal and todo adapters share one compact panel without changing stored text or goal authority", async () => {
 	const h = harness();
 	await h.emit("session_start");
-	assert.deepEqual([...h.commands.keys()], ["goal"]);
+	assert.deepEqual([...h.commands.keys()], ["work", "goal"]);
 	const objective = Array.from({ length: 80 }, (_, i) => `Complete stage ${i}`).join("\n\n");
 	await h.goal(objective);
 	await h.todos([{ content: "Current verification", status: "in_progress" }]);

@@ -75,33 +75,37 @@ test("source snapshots are detached from the producer and superseded leases cann
 	assert.doesNotMatch(h.lines().join("\n"), /stale/);
 });
 
-test("branch replacement retires old publishers and mouse handlers before accepting restored state", () => {
+test("branch replacement closes details and retires old publishers and mouse handlers", async () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const old = ui.source("goal"); old.set(section("Abandoned branch"));
 	const widget = h.widgets.at(-1).component;
-	ui.toggle("goal");
+	const opened = ui.open(h.ctx, "goal");
+	const modal = h.overlays.at(-1).component;
 	ui.start(h.ctx);
+	await opened;
 	const current = ui.source("goal"); current.set(section("Selected branch"));
 	old.set(section("Abandoned late update"));
 	old.dispose();
 	assert.match(h.lines().join("\n"), /Selected branch/);
 	assert.deepEqual(widget.render(100), []);
 	assert.equal(widget.handleMouse({ type: "click", button: "left", y: 1 }), undefined);
-	assert.equal(h.overlays.length, 0);
+	assert.deepEqual(modal.render(100), []);
+	assert.equal(h.overlays.length, 1);
 });
 
-test("shutdown gates callbacks before old context reads and is idempotent", () => {
+test("shutdown gates callbacks before old context reads and is idempotent", async () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const source = ui.source("goal"); source.set(section());
 	const widget = h.widgets.at(-1).component;
-	ui.toggle("goal");
+	const opened = ui.open(h.ctx, "goal");
 	ui.close();
 	Object.defineProperty(h.ctx, "ui", { get() { throw Error("retired UI read"); } });
 	Object.defineProperty(h.ctx, "mode", { get() { throw Error("retired mode read"); } });
 	ui.close(); ui.start(h.ctx); source.set(section("stale")); source.dispose();
-	ui.toggle("goal"); ui.page(1);
+	await opened;
+	await ui.open(h.ctx, "goal");
 	assert.deepEqual(widget.render(80), []);
 	assert.equal(widget.handleMouse({ type: "click", button: "left", y: 1 }), undefined);
 	assert.deepEqual(ui.snapshot(), []);
@@ -167,25 +171,37 @@ test("unexpected passive rendering failures remain visible but cannot fail a tas
 	assert.deepEqual(ui.snapshot(), []);
 });
 
-test("expanded sections update inline without overlays or editor focus", () => {
+test("open details update without enlarging the summary or starting a domain action", async () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
 	const source = ui.source("subagents");
 	source.set({ ...section("First"), summary: "State", label: "Subagents" });
-	ui.toggle("subagents");
-	assert.match(h.lines().join("\n"), /First/);
+	let managed = 0;
+	const opened = ui.open(h.ctx, "subagents");
+	const modal = h.overlays.at(-1).component;
+	assert.equal(h.overlays.at(-1).options.overlay, true);
+	assert.match(modal.render(100).join("\n"), /First/);
+	assert.doesNotMatch(h.lines().join("\n"), /First/);
 	source.set({ ...section("Second"), summary: "State", label: "Subagents" });
-	assert.match(h.lines().join("\n"), /Second/);
-	ui.toggle("subagents");
 	assert.doesNotMatch(h.lines().join("\n"), /Second/);
-	assert.equal(h.overlays.length, 0);
+	assert.match(modal.render(100).join("\n"), /Second/);
+	source.set({ ...section("Second"), manage: { label: "Manage", async run() { managed++; } } });
+	assert.equal(managed, 0);
+	modal.handleInput("\r");
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(managed, 1);
+	assert.equal(h.overlays.length, 2);
+	source.dispose();
+	assert.match(h.overlays.at(-1).component.render(100).join("\n"), /No details available/);
+	h.overlays.at(-1).component.handleInput("\x1b");
+	await opened;
 });
 
 test("RPC/print modes never instantiate terminal widgets or overlays", async () => {
 	for (const mode of ["rpc", "print", "json"]) {
 		const h = harness(mode); const ui = new WorkUi(); ui.start(h.ctx);
 		ui.source("goal").set(section());
-		ui.toggle("goal"); ui.page(1);
+		await ui.open(h.ctx, "goal");
 		assert.equal(h.widgets.length, 0); assert.equal(h.overlays.length, 0);
 		ui.close();
 	}
@@ -205,10 +221,10 @@ async function load(t, factories, bus = createEventBus()) {
 }
 function assertOneRegistration(result) {
 	const commands = result.extensions.flatMap((extension) => [...extension.commands.keys()]);
-	assert.deepEqual(commands, []);
+	assert.deepEqual(commands, ["work"]);
 	assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_start")).length, 1);
 	assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_tree")).length, 1);
-	assert.equal(result.extensions.flatMap((extension) => [...extension.shortcuts.keys()]).length, 6);
+	assert.equal(result.extensions.flatMap((extension) => [...extension.shortcuts.keys()]).length, 0);
 }
 
 test("real loader registers once for distinct API facades on the same underlying event bus", async (t) => {
@@ -254,7 +270,7 @@ test("shutdown releases registration on a shared bus and old publishers cannot a
 	current.source("goal").set(section("new"));
 	publisher.set(section("stale"));
 	assert.notEqual(old, current);
-	assert.deepEqual(commands, []);
+	assert.deepEqual(commands, ["work", "work"]);
 	assert.match(newCtx.lines().join("\n"), /new/);
 	assert.doesNotMatch(newCtx.lines().join("\n"), /stale/);
 	current.close();

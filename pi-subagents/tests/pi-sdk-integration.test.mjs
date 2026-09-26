@@ -145,7 +145,7 @@ test("Pi SDK driver runs a real isolated AgentSession with inherited provider co
 		assert.equal(outcome.output, "SDK child received: hello from the parent");
 		assert.deepEqual(
 			manager.getBranch().filter((entry) => entry.type === "message").map((entry) => entry.message.role),
-			["user", "assistant"],
+			["system", "user", "assistant"],
 		);
 	} finally {
 		await driver?.dispose();

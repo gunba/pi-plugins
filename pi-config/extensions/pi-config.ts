@@ -1,13 +1,14 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
+import { readOptional, writeCheckedFile } from "../files.ts";
 
 type SurfaceTool = "pi" | "mcp";
-type FileFormat = "json" | "toml" | "markdown" | "text";
+type FileFormat = "json" | "markdown" | "text";
 type EntryKind = "settings" | "context" | "skill" | "prompt" | "extension" | "mcp" | "model";
-type FieldType = "boolean" | "string" | "number" | "enum" | "stringArray" | "object";
+type FieldType = "boolean" | "string" | "number" | "enum" | "stringArray" | "array" | "object" | "json";
 
 type ConfigEntry = {
   id: string;
@@ -43,38 +44,57 @@ const MAX_WALK_FILES = 400;
 const PI_SETTINGS: SettingField[] = [
   field("defaultProvider", "Default provider", "string", "Default model provider, e.g. anthropic, openai, google, github-copilot.", ""),
   field("defaultModel", "Default model", "string", "Default model id for new sessions.", ""),
-  field("defaultThinkingLevel", "Default thinking level", "enum", "Default reasoning level.", "medium", ["off", "minimal", "low", "medium", "high", "xhigh"]),
+  field("defaultThinkingLevel", "Default thinking level", "enum", "Default reasoning level.", "medium", ["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+  field("modelThinkingLevels", "Model thinking levels", "object", "Startup thinking levels keyed by provider/modelId.", {}),
+  field("showCacheMissNotices", "Cache notices", "boolean", "Show significant cache misses, cache warming, compaction usage and recovery.", false),
+  field("cacheWarming", "Cache warming", "enum", "Keep eligible prompt caches warm. Agent-directory setting only.", "streaming", ["off", "streaming", "idle"]),
   field("hideThinkingBlock", "Hide thinking block", "boolean", "Hide thinking blocks in output.", false),
   field("thinkingBudgets", "Thinking budgets", "object", "Custom token budgets per thinking level.", { minimal: 1024, low: 4096, medium: 10240, high: 32768 }),
   field("theme", "Theme", "string", "Theme name, e.g. dark, light, or a custom theme.", "dark"),
   field("quietStartup", "Quiet startup", "boolean", "Hide startup header.", false),
+  field("tuiMode", "Terminal mode", "enum", "Interactive terminal UI mode.", "regular", ["regular", "fullscreen"]),
+  field("fullscreenExitOutput", "Fullscreen exit output", "enum", "Output printed on leaving fullscreen mode.", "transcript", ["transcript", "resume-hint"]),
+  field("fullscreenScrollbar", "Fullscreen scrollbar", "enum", "Transcript scrollbar visibility.", "auto", ["auto", "always", "hidden"]),
+  field("fullscreenCopyOnSelect", "Copy on selection", "boolean", "Automatically copy selected text in fullscreen mode.", true),
   field("collapseChangelog", "Collapse changelog", "boolean", "Show condensed changelog after updates.", false),
   field("enableInstallTelemetry", "Install telemetry", "boolean", "Send anonymous install/update version ping.", true),
+  field("enableAnalytics", "Analytics", "boolean", "Opt in to analytics data sharing.", false),
+  field("externalEditor", "External editor", "string", "Editor command; when unset Pi uses VISUAL, EDITOR, then the platform default.", ""),
+  field("defaultProjectTrust", "Project trust", "enum", "Fallback trust policy. Agent-directory setting only.", "ask", ["ask", "always", "never"]),
+  field("defaultTools", "Default tools", "stringArray", "Built-in tools enabled at startup; does not disable extension tools.", ["read", "bash", "edit", "write"]),
   field("doubleEscapeAction", "Double escape action", "enum", "Action for double escape.", "tree", ["tree", "fork", "none"]),
   field("treeFilterMode", "Tree filter mode", "enum", "Default filter for /tree.", "default", ["default", "no-tools", "user-only", "labeled-only", "all"]),
   field("editorPaddingX", "Editor padding X", "number", "Horizontal padding for input editor, 0-3.", 0),
+  field("outputPad", "Transcript padding", "number", "Horizontal transcript padding, 0 or 1.", 1),
   field("autocompleteMaxVisible", "Autocomplete max visible", "number", "Max visible autocomplete rows, 3-20.", 5),
   field("showHardwareCursor", "Show hardware cursor", "boolean", "Show terminal cursor while TUI positions it for IME support.", false),
   field("warnings.anthropicExtraUsage", "Anthropic extra usage warning", "boolean", "Show Anthropic subscription paid-extra-usage warning.", true),
   field("compaction.enabled", "Compaction enabled", "boolean", "Enable automatic compaction.", true),
   field("compaction.reserveTokens", "Compaction reserve tokens", "number", "Tokens reserved for LLM response during compaction.", 16384),
   field("compaction.keepRecentTokens", "Compaction keep recent tokens", "number", "Recent tokens to keep unsummarized.", 20000),
+  field("compaction.modelOverrides", "Model compaction settings", "object", "Token settings keyed by provider/modelId.", {}),
   field("branchSummary.reserveTokens", "Branch summary reserve tokens", "number", "Tokens reserved for branch summarization.", 16384),
   field("branchSummary.skipPrompt", "Branch summary skip prompt", "boolean", "Skip branch summary prompt on tree navigation.", false),
   field("retry.enabled", "Retry enabled", "boolean", "Enable automatic agent-level retry on transient errors.", true),
   field("retry.maxRetries", "Retry max retries", "number", "Maximum agent-level retry attempts.", 3),
   field("retry.baseDelayMs", "Retry base delay", "number", "Base delay for exponential retry backoff.", 2000),
-  field("retry.provider.timeoutMs", "Provider timeout", "number", "Provider/SDK request timeout in milliseconds.", 3600000),
+  field("retry.maxAgentDelayMs", "Maximum agent retry delay", "number", "Cap agent retry backoff in milliseconds.", 60000),
+  field("retry.provider.timeoutMs", "Provider timeout", "number", "Provider timeout in milliseconds; inherits httpIdleTimeoutMs when unset.", 300000),
   field("retry.provider.maxRetries", "Provider max retries", "number", "Provider-level retry attempts.", 0),
   field("retry.provider.maxRetryDelayMs", "Provider max retry delay", "number", "Cap server-requested retry delay before failing.", 60000),
   field("steeringMode", "Steering mode", "enum", "How steering messages are delivered.", "one-at-a-time", ["all", "one-at-a-time"]),
   field("followUpMode", "Follow-up mode", "enum", "How follow-up messages are delivered.", "one-at-a-time", ["all", "one-at-a-time"]),
   field("transport", "Provider transport", "enum", "Preferred transport for providers that support multiple transports.", "auto", ["auto", "sse", "websocket", "websocket-cached"]),
   field("httpIdleTimeoutMs", "HTTP idle timeout", "number", "HTTP header/body idle timeout in milliseconds; 0 disables.", 300000),
+  field("httpProxy", "HTTP proxy", "string", "Proxy URL for Pi-managed HTTP clients. Agent-directory setting only.", ""),
   field("websocketConnectTimeoutMs", "WebSocket connect timeout", "number", "WebSocket open handshake timeout in milliseconds; 0 disables.", 15000),
   field("terminal.showImages", "Show terminal images", "boolean", "Show images inline when the terminal supports it.", true),
   field("terminal.imageWidthCells", "Terminal image width", "number", "Preferred inline image width in terminal cells.", 60),
   field("terminal.clearOnShrink", "Terminal clear on shrink", "boolean", "Clear empty rows when rendered content shrinks.", false),
+  field("terminal.showTerminalProgress", "Terminal progress", "boolean", "Show OSC 9;4 progress in the terminal tab.", false),
+  field("terminal.hyperlinks", "Terminal hyperlinks", "json", "OSC 8 detection override: true, false, or \"auto\".", "auto"),
+  field("terminal.images", "Terminal image protocol", "json", "Image protocol: \"kitty\", \"iterm2\", \"auto\", or false.", "auto"),
+  field("terminal.trueColor", "Terminal true color", "json", "True-color detection override: true, false, or \"auto\".", "auto"),
   field("images.autoResize", "Auto-resize images", "boolean", "Resize images to model-friendly dimensions.", true),
   field("images.blockImages", "Block images", "boolean", "Block all images from being sent to the LLM.", false),
   field("shellPath", "Shell path", "string", "Custom shell path.", ""),
@@ -83,7 +103,8 @@ const PI_SETTINGS: SettingField[] = [
   field("sessionDir", "Session directory", "string", "Directory where session files are stored.", ""),
   field("enabledModels", "Enabled models", "stringArray", "Model patterns for Ctrl+P model cycling.", []),
   field("markdown.codeBlockIndent", "Markdown code block indent", "string", "Indentation for rendered code blocks.", "  "),
-  field("packages", "Packages", "stringArray", "NPM/git packages to load Pi resources from.", []),
+  field("markdown.mermaid", "Mermaid rendering", "enum", "Render Mermaid diagrams during streaming or after completion.", "streaming", ["off", "final", "streaming"]),
+  field("packages", "Packages", "array", "NPM/git/local sources, or objects with source and resource filters.", []),
   field("extensions", "Extension paths", "stringArray", "Local extension file paths or directories.", []),
   field("skills", "Skill paths", "stringArray", "Local skill file paths or directories.", []),
   field("prompts", "Prompt paths", "stringArray", "Local prompt template paths or directories.", []),
@@ -158,16 +179,6 @@ function readText(path: string, fallback = ""): string {
   }
 }
 
-function writeTextAtomic(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const existingMode = fileExists(path) ? statSync(path).mode & 0o777 : undefined;
-  const defaultMode = path.endsWith(".json") || path.endsWith(".toml") ? 0o600 : 0o644;
-  const mode = existingMode ?? defaultMode;
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  writeFileSync(tmp, text, { encoding: "utf8", mode });
-  renameSync(tmp, path);
-}
-
 function ensureTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text : `${text}\n`;
 }
@@ -190,7 +201,6 @@ function skillTemplate(name: string): string {
 
 function inferFormat(path: string): FileFormat {
   if (path.endsWith(".json")) return "json";
-  if (path.endsWith(".toml")) return "toml";
   if (path.endsWith(".md")) return "markdown";
   return "text";
 }
@@ -538,7 +548,6 @@ function initialTabAndFilter(initialFilter: string): { tab: TabId; filter: strin
     setting: "settings",
     settings: "settings",
     json: "settings",
-    toml: "settings",
     md: "context",
     markdown: "context",
     context: "context",
@@ -633,7 +642,7 @@ function previewLines(row: PickerRow, cwd: string): string[] {
   }
 
   const entry = row.entry;
-  const supportsSettings = settingCatalogForEntry(entry).length > 0 && (entry.format === "json" || entry.format === "toml");
+  const supportsSettings = settingCatalogForEntry(entry).length > 0 && entry.format === "json";
   const header = [
     entry.title,
     "",
@@ -1121,31 +1130,8 @@ function currentKeysForJson(text: string): Set<string> {
   }
 }
 
-function currentKeysForToml(text: string): Set<string> {
-  const keys = new Set<string>();
-  let section = "";
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.replace(/#.*/, "").trim();
-    if (!line) continue;
-    const sectionMatch = line.match(/^\[([^\]]+)]$/);
-    if (sectionMatch) {
-      section = sectionMatch[1].trim();
-      keys.add(section);
-      continue;
-    }
-    const keyMatch = line.match(/^([A-Za-z0-9_.-]+)\s*=/);
-    if (keyMatch) {
-      const key = keyMatch[1];
-      keys.add(key);
-      if (section) keys.add(`${section}.${key}`);
-    }
-  }
-  return keys;
-}
-
 function currentKeys(entry: ConfigEntry, text: string): Set<string> {
   if (entry.format === "json") return currentKeysForJson(text);
-  if (entry.format === "toml") return currentKeysForToml(text);
   return new Set();
 }
 
@@ -1163,20 +1149,8 @@ function validateJsonConfig(text: string): string | undefined {
   }
 }
 
-function validateTomlConfig(text: string): string | undefined {
-  for (const [index, rawLine] of text.split("\n").entries()) {
-    const line = rawLine.replace(/#.*/, "").trim();
-    if (!line) continue;
-    if (/^(?:\[[^\[\]]+\]|\[\[[^\[\]]+\]\])$/.test(line)) continue;
-    if (/^(?:[A-Za-z0-9_.-]+|"[^"]+")\s*=/.test(line)) continue;
-    return `Invalid TOML near line ${index + 1}: expected a section header or key = value.`;
-  }
-  return undefined;
-}
-
 function validateConfigText(entry: ConfigEntry, text: string): string | undefined {
   if (entry.format === "json") return validateJsonConfig(text);
-  if (entry.format === "toml") return validateTomlConfig(text);
   return undefined;
 }
 
@@ -1215,41 +1189,6 @@ function insertJsonSetting(text: string, key: string, value: unknown): string | 
   } catch {
     return null;
   }
-}
-
-function tomlValue(value: unknown): string {
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
-  if (value && typeof value === "object") return "{}";
-  return JSON.stringify(String(value ?? ""));
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function replaceTomlAssignment(text: string, key: string, value: unknown): string | null {
-  const pattern = new RegExp(`^(\\s*)${escapeRegex(key)}(\\s*=).*$`);
-  const lines = text.split("\n");
-  const replacement = `${key} = ${tomlValue(value)}`;
-  for (let i = 0; i < lines.length; i++) {
-    if (!pattern.test(lines[i])) continue;
-    lines[i] = lines[i].replace(pattern, `$1${replacement}`);
-    return ensureTrailingNewline(lines.join("\n"));
-  }
-  return null;
-}
-
-function insertTomlSetting(text: string, field: SettingField, overwrite = false): string | null {
-  const key = field.key;
-  const exists = currentKeysForToml(text).has(key);
-  if (exists) {
-    return overwrite ? replaceTomlAssignment(text, key, field.defaultValue) : null;
-  }
-  const prefix = text.trimEnd();
-  const description = field.description ? `# ${field.description}\n` : "";
-  return `${prefix}${prefix ? "\n\n" : ""}${description}${key} = ${tomlValue(field.defaultValue)}\n`;
 }
 
 type SettingsEditorResult = { action: "save"; text: string } | { action: "cancel" };
@@ -1423,9 +1362,7 @@ class SettingsEditorModal implements Component, Focusable {
       this.requestRender();
       return;
     }
-    const next = this.entry.format === "json"
-      ? insertJsonSetting(current, field.key, field.defaultValue)
-      : insertTomlSetting(current, field, false);
+    const next = insertJsonSetting(current, field.key, field.defaultValue);
     if (next) {
       this.validationError = undefined;
       this.referenceNotice = undefined;
@@ -1486,13 +1423,14 @@ async function editSettingsEntry(ctx: ExtensionCommandContext, entry: ConfigEntr
 }
 
 async function editEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
-  const exists = fileExists(entry.path);
+  const original = readOptional(entry.path);
+  const exists = original !== undefined;
   if (!exists) {
     const create = await ctx.ui.confirm("Create file?", `${entry.title}\n\n${entry.path}\n\nThis file does not exist. Create it now?`);
     if (!create) return false;
   }
-  const before = exists ? readText(entry.path) : (entry.createTemplate?.() ?? "");
-  const edited = entry.tool === "pi" && entry.kind === "settings" && (entry.format === "json" || entry.format === "toml")
+  const before = original ?? (entry.createTemplate?.() ?? "");
+  const edited = entry.tool === "pi" && entry.kind === "settings" && entry.format === "json"
     ? await editSettingsEntry(ctx, entry, before)
     : await reviewValidatedText(ctx, entry, entry.title, before);
   if (edited === undefined) return false;
@@ -1505,40 +1443,38 @@ async function editEntry(ctx: ExtensionCommandContext, entry: ConfigEntry): Prom
     ctx.ui.notify(validationError, "error");
     return false;
   }
-  writeTextAtomic(entry.path, ensureTrailingNewline(edited));
+  await writeCheckedFile(entry.path, original, ensureTrailingNewline(edited));
   ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
   return true;
 }
 
 async function insertSettingIntoEntry(ctx: ExtensionCommandContext, entry: ConfigEntry, selected: SettingField): Promise<boolean> {
-  if (entry.format !== "json" && entry.format !== "toml") {
-    ctx.ui.notify("Settings can only be inserted into JSON/TOML settings files", "warning");
+  if (entry.format !== "json") {
+    ctx.ui.notify("Settings can only be inserted into JSON settings files", "warning");
     return false;
   }
-  const before = fileExists(entry.path) ? readText(entry.path) : (entry.createTemplate?.() ?? "");
+  const original = readOptional(entry.path);
+  const before = original ?? (entry.createTemplate?.() ?? "");
   const keys = currentKeys(entry, before);
-  let overwrite = false;
   if (keys.has(selected.key)) {
-    overwrite = await ctx.ui.confirm("Setting already exists", `${selected.key} is already present in ${displayPath(entry.path, ctx.cwd)}. Replace it with the reference default?`);
+    const overwrite = await ctx.ui.confirm("Setting already exists", `${selected.key} is already present in ${displayPath(entry.path, ctx.cwd)}. Replace it with the reference default?`);
     if (!overwrite) return false;
   }
-  const after = entry.format === "json"
-    ? insertJsonSetting(before, selected.key, selected.defaultValue)
-    : insertTomlSetting(before, selected, overwrite);
+  const after = insertJsonSetting(before, selected.key, selected.defaultValue);
   if (after === null) {
     ctx.ui.notify("Could not insert automatically. Open the file and edit manually.", "error");
     return false;
   }
   const reviewed = await reviewValidatedText(ctx, entry, `Review ${selected.key} in ${displayPath(entry.path, ctx.cwd)}`, after);
   if (reviewed === undefined) return false;
-  writeTextAtomic(entry.path, ensureTrailingNewline(reviewed));
+  await writeCheckedFile(entry.path, original, ensureTrailingNewline(reviewed));
   ctx.ui.notify(`Saved ${displayPath(entry.path, ctx.cwd)}`, "info");
   return true;
 }
 
 async function addSettingFromReference(ctx: ExtensionCommandContext, entry: ConfigEntry): Promise<boolean> {
   const catalog = settingCatalogForEntry(entry);
-  if (catalog.length === 0 || (entry.format !== "json" && entry.format !== "toml")) {
+  if (catalog.length === 0 || entry.format !== "json") {
     ctx.ui.notify("No setting reference is available for this file type", "warning");
     return false;
   }
@@ -1547,22 +1483,15 @@ async function addSettingFromReference(ctx: ExtensionCommandContext, entry: Conf
   return selected ? insertSettingIntoEntry(ctx, entry, selected) : false;
 }
 
-async function maybeReload(ctx: ExtensionCommandContext): Promise<void> {
-  const reload = await ctx.ui.confirm("Reload Pi resources?", "Saved. Run Pi's resource reload now? This reloads extensions, skills, prompts, themes, and context files. Some settings still require a new session or restart.");
-  if (!reload) return;
-  await ctx.reload();
-  ctx.ui.notify("Pi resources reloaded", "info");
-}
-
-async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
+async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<boolean> {
   if (ctx.mode !== "tui") {
     if (ctx.hasUI) ctx.ui.notify("pi-config requires the interactive TUI", "warning");
-    return;
+    return false;
   }
   const initialFilter = args.trim();
   while (true) {
     const result = await chooseEntryOverlay(ctx, discoverEntries(pi, ctx), initialFilter);
-    if (!result) return;
+    if (!result) return false;
     const changed = result.action === "open" || result.action === "edit"
       ? await editEntry(ctx, result.entry)
       : result.action === "insertSetting" && result.field
@@ -1570,18 +1499,22 @@ async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
         : result.action === "addSetting"
           ? await addSettingFromReference(ctx, result.entry)
           : false;
-    if (changed) await maybeReload(ctx);
+    if (changed && await ctx.ui.confirm("Reload Pi resources?", "Saved. Run Pi's resource reload now? This reloads extensions, skills, prompts, themes, and context files. Some settings still require a new session or restart.")) return true;
   }
 }
 
 export default function piConfig(pi: ExtensionAPI) {
   const handler = async (args: string, ctx: ExtensionCommandContext) => {
+    let reload: boolean;
     try {
-      await runNavigator(pi, ctx, args);
+      reload = await runNavigator(pi, ctx, args);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`${EXTENSION_NAME}: ${message}`, "error");
+      return;
     }
+    // Reload retires ctx. Even reload failures belong to the host command handler.
+    if (reload) await ctx.reload();
   };
 
   pi.registerCommand("pi-config", {

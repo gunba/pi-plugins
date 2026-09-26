@@ -26,3 +26,8 @@ The extension stays inside the Pi terminal. The main navigator is a centered `ct
 Use `Tab`/arrow keys to switch tabs, type to filter within the active tab, and `Enter`/`Ctrl+E` to edit the selected file. The modal now uses nearly the full terminal (`96%` wide, `94%` high) with many more visible rows, a split-pane preview on wide terminals, and a stacked layout on narrow terminals.
 
 In the Settings tab, setting-key rows are first-class items: `Enter` inserts the setting into project `.pi/settings.json`, while `Ctrl+G` inserts into user `~/.pi/agent/settings.json`. Editing a Pi settings file opens an in-modal JSON editor with the complete Pi settings reference visible beside it; `Tab`/`Ctrl+R` focuses the reference, `Enter` inserts the highlighted setting into the JSON, and `Ctrl+S` saves. On a settings file row, `Ctrl+A` also opens the standalone in-modal reference catalog with setting keys, value type, enum choices, defaults, descriptions, and whether the key already exists. Saves are atomic and followed by an optional Pi resource reload prompt; some settings still require a new session or restart to take effect.
+
+Saving checks the original file under Pi-compatible locks. A concurrent edit is
+reported instead of overwritten. Reload closes the navigator; reopen `/pi-config`
+afterward to continue editing. Context-window uses the same file-lock and atomic
+replacement helpers for its paired model/settings updates.

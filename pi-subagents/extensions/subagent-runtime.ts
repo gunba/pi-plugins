@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { NoticeBatcher } from "./notice-batcher.ts";
+import type { ChildPolicySource } from "./child-policies.ts";
 import { completeWorkResource, getWorkCoordinator, registerWorkResource } from "../../pi-work-coordination/core.ts";
 import {
 	mkdirSync,
@@ -197,6 +198,7 @@ export interface RuntimeHost {
 	getActiveToolNames?(): string[];
 	/** Metadata identifies factories to recreate against the child, not parent execution closures. */
 	getToolInfo?(): ToolInfo[];
+	getChildPolicySources?(): ChildPolicySource[];
 	getFlag?(name: string): boolean | string | undefined;
 }
 

@@ -131,3 +131,12 @@ test("does not replace a footer outside interactive mode", () => {
 	assert.equal(h.footer, undefined);
 	assert.equal(h.counts().entryReads, 0);
 });
+
+test("replayed background child receipts are charged exactly once", () => {
+	const h = harness();
+	const entry = { type: "custom", customType: "pi-subagents/usage-v1",
+		data: { childId: "child", messageId: "settlement", usage: usage(20, 5, 0, 2) } };
+	h.entries.push(entry, structuredClone(entry));
+	h.start();
+	assert.match(h.render(), /↑137 ↓25 R50 CH33\.3% \$3\.600/);
+});

@@ -1,6 +1,6 @@
 # pi-subagents
 
-DSH-style delegated agents for Pi 0.85.1+. Children use in-process Pi SDK
+DSH-style delegated agents for Pi 0.87.1+. Children use in-process Pi SDK
 `AgentSession` instances with isolated context, durable Pi sessions, direct-parent
 control, bounded delegation depth, and root-wide admission limits.
 
@@ -76,6 +76,20 @@ the original root source catalog, not synthetic child-tool metadata.
 Each provider has its own API object. Wrapping `registerTool` affects only that
 provider; it cannot replace the registration callback used by other providers.
 
+Hook-only policies opt into child loading through the synchronous session bus:
+
+```typescript
+const unsubscribe = pi.events.on("pi-subagents:child-policies:v1", (request) => {
+  request.policies.push({ path: fileURLToPath(import.meta.url), scope: "user" });
+});
+pi.on("session_shutdown", unsubscribe);
+```
+
+Use the source's actual `user`, `project`, or `temporary` scope. Project policies
+require project trust. These factories run even without tool registrations and
+are deduplicated with tool providers by canonical path. SDK hosts can supply the
+same metadata through `RuntimeHost.getChildPolicySources()`.
+
 Each activation uses a private JavaScript module graph, shared across its provider
 entrypoints but not other activations. An audited, pinned Jiti adapter also isolates
 CommonJS, ESM and JSON dependencies; see [loader details](loader/README.md).
@@ -149,8 +163,9 @@ does not confer human approval or permission to create a root goal.
 ## Dashboard
 
 Subagent counts, activity and attention states appear in the shared Work panel
-above the editor while children exist. `/work subagents` opens a compact detail
-overlay; `d` opens the dashboard. `/subagents` still opens the full-terminal dashboard with:
+above the editor while children exist. `/work subagents` opens the detail
+modal; Enter opens the management dashboard. `/subagents` opens that same
+dashboard directly, in an overlay, with:
 
 - a stable nested child tree;
 - running, waiting, settled, aborted, and error states;

@@ -5,9 +5,10 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Type } from "typebox";
-import { AssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageEventStream, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
+import { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
+import { childPolicySources } from "../extensions/child-policies.ts";
 
 const SEARCH_SOURCE = fileURLToPath(new URL("../../pi-web-search/extensions/web-search.ts", import.meta.url));
 const PARTY_SOURCE = fileURLToPath(new URL("../../pi-party/index.ts", import.meta.url));
@@ -75,7 +76,7 @@ export default function(pi) {
 }`;
 }
 
-async function integration(t, { search = false, party = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
+async function integration(t, { search = false, party = false, policy = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-tool-inheritance-sdk-"));
 	const agentDir = join(directory, "agent"); const rootCwd = join(directory, "root-work");
 	await mkdir(agentDir); await mkdir(rootCwd);
@@ -113,11 +114,19 @@ async function integration(t, { search = false, party = false, initialActive = [
 	const fixturePath = join(directory, "provider.ts");
 	await writeFile(join(directory, "provider-state.mjs"), "export const state = { calls: 0, stopped: false };\n");
 	await writeFile(fixturePath, providerSource(auditPath));
+	const policyPath = join(directory, "policy.ts");
+	if (policy) await writeFile(policyPath, `export default pi => {
+		pi.events.on("pi-subagents:child-policies:v1", request => request.policies.push({
+			path: ${JSON.stringify(policyPath)}, scope: "user"
+		}));
+		pi.on("tool_call", event => event.toolName === "custom_inventory"
+			? { block: true, reason: "hook-only policy retained" } : undefined);
+	};`);
 	const observations = []; let serial = 0; let beforeToolResponse;
 	const respond = (selected, context, options) => {
 		assert.ok(++serial < 80, "fixture cannot enter an unbounded model/tool loop");
 		const latest = context.messages.at(-1);
-		const available = (context.tools ?? []).map((tool) => tool.name);
+		const available = getCurrentTools(context.messages).map((tool) => tool.name);
 		observations.push({ model: selected.id, sessionId: options?.sessionId, available, role: latest?.role,
 			peerMessageSeen: context.messages.some(message => text(message.content).includes("NATIVE DIRECT FINDING")) });
 		if (latest?.role === "toolResult") return { stopReason: "stop", content: [{ type: "text", text: text(latest.content) }] };
@@ -133,8 +142,9 @@ async function integration(t, { search = false, party = false, initialActive = [
 		modelsStorePath: join(directory, "root-model-store.json"), allowModelNetwork: false });
 	runtime.registerNativeProvider(providerFixture(respond));
 	const rootManager = SessionManager.inMemory(rootCwd, { id: "root-tool-fixture" });
-	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, settingsManager: SettingsManager.inMemory(settings),
-		additionalExtensionPaths: [fixturePath, ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
+	const events = createEventBus();
+	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, eventBus: events, settingsManager: SettingsManager.inMemory(settings),
+		additionalExtensionPaths: [fixturePath, ...(policy ? [policyPath] : []), ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
 		noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
@@ -155,6 +165,7 @@ async function integration(t, { search = false, party = false, initialActive = [
 			rootCatalogs.push(catalog); return catalog;
 		},
 		getFlag: (name) => name === "allow-restricted" ? false : undefined,
+		getChildPolicySources: () => childPolicySources({ events }),
 		async prepareModelRuntime(_ref, childRuntime) { childRuntime.registerNativeProvider(providerFixture(respond)); },
 	};
 	return { directory, agentDir, rootCwd, rootSession, rootManager, fixturePath, auditPath, observations, requests, rootCatalogs,
@@ -189,6 +200,16 @@ async function call(child, name, args) {
 	assert.equal(result.stopReason, "completed", result.errorMessage);
 	return result;
 }
+
+test("hook-only root policy blocks a real SDK child's tool execution", { timeout: 25000 }, async (t) => {
+	const h = await integration(t, { policy: true });
+	const child = await h.open("hook-policy-child");
+	assert.match((await call(child, "custom_inventory")).output, /hook-only policy retained/);
+	assert.equal(toolResults(child.manager).at(-1).isError, true);
+	assert.equal(executed(child.manager).length, 0);
+	assert.ok(h.rootCatalogs.every(catalog => catalog.every(tool => !tool.sourceInfo.path.endsWith("policy.ts"))),
+		"the guard has no tool metadata to inherit");
+});
 
 test("actual web_search inherits child-selected Codex model and child session in its fake POST", { timeout: 25000 }, async (t) => {
 	const h = await integration(t, { search: true, initialActive: ["web_search"] });

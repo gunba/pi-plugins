@@ -21,6 +21,36 @@ type ExecResultDetails = {
 	error?: string;
 };
 
+export function renderExecResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: { isError: boolean; lastComponent: unknown },
+): Text {
+	const raw = resultText(result);
+	const details = result.details as ExecResultDetails | undefined;
+	const failed = context.isError || Boolean(details?.error || details?.aborted || details?.signal ||
+		(details?.exit_code !== undefined && details.exit_code !== 0));
+	let display: string;
+	let color: "accent" | "error" | "success" | "toolOutput";
+	if (options.isPartial) {
+		display = liveOutputPreview(raw);
+		color = "toolOutput";
+	} else if (failed) {
+		display = raw || summarizeExecResult(details);
+		color = "error";
+	} else if (options.expanded) {
+		display = raw;
+		color = "toolOutput";
+	} else {
+		display = `${details?.running ? "↳" : "✓"} ${summarizeExecResult(details)}`;
+		color = details?.running ? "accent" : "success";
+	}
+	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	text.setText(display.split("\n").map(line => theme.fg(color, line)).join("\n"));
+	return text;
+}
+
 type ApplyPatchResultDetails = {
 	changes?: Array<{ action?: string; path?: string; movePath?: string }>;
 	error?: string;
@@ -142,3 +172,5 @@ export function summarizeApplyPatchResult(details: unknown): string {
 	if (count === 0) return "Patch applied";
 	return `Patched ${count} ${count === 1 ? "file" : "files"}`;
 }
+import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";

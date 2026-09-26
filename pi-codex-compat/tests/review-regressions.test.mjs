@@ -8,7 +8,7 @@ import test from 'node:test';
 import { withFileMutationQueue, AgentSession } from '@earendil-works/pi-coding-agent';
 import { convertResponsesTools, convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 import compat from '../extensions/codex-compat.ts';
-import { computeSessionStats } from '../extensions/usage.ts';
+import { computeSessionStats } from '../../pi-session-usage/index.ts';
 import { createExecRuntimeOwner, executeManagedExecCommand, executeWriteStdin, shutdownExecSessions } from '../extensions/shell-runtime.ts';
 
 function tools() {

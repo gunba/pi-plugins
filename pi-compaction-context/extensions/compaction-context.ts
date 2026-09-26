@@ -15,7 +15,7 @@ function fallbackSnapshot(ctx: ExtensionContext): Snapshot {
   for (const match of ctx.getSystemPrompt().matchAll(/<project_instructions\s+path="([^"]*)">\n?([\s\S]*?)\n?<\/project_instructions>/g)) {
     contextFiles.push({ path: match[1].replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&"), content: match[2] });
   }
-  return { contextFiles };
+  return { contextFiles, appendSystemPrompt: "" };
 }
 
 export function buildInjection(snapshot: Snapshot): string | undefined {

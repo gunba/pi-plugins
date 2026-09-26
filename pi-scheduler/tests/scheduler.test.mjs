@@ -9,8 +9,18 @@ import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { wrapRegisteredTool } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/wrapper.js";
-import { ScheduleStore } from "../extensions/store.ts";
+import { ScheduleStore as BaseScheduleStore } from "../extensions/store.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { ensureWorkUi } from "../../pi-work-ui/index.ts";
+
+const openStores = new Set();
+class ScheduleStore extends BaseScheduleStore {
+  constructor(...args) { super(...args); openStores.add(this); }
+  close() { try { super.close(); } finally { openStores.delete(this); } }
+}
+function closeStores(directory) {
+  for (const store of openStores) if (store.directory === directory) store.close();
+}
 
 const theme = { bg: (_, s) => s, bold: (s) => s, fg: (_, s) => s };
 function harness(directory, mode = "tui") {
@@ -22,7 +32,7 @@ function harness(directory, mode = "tui") {
     mode, cwd: directory, isIdle: () => false,
     sessionManager: { getSessionId: () => "session", getSessionFile: () => file, getEntries: () => [], getBranch: () => [] },
     ui: { notify: (...args) => notifications.push(args), getToolsExpanded: () => false,
-      setWidget: (_, factory) => { widget = factory?.({}, theme); } },
+      setWidget: (_, factory) => { widget?.dispose(); widget = factory?.({ terminal: { rows: 40 }, requestRender() {} }, theme); } },
   };
   const pi = {
     events: createEventBus(),
@@ -33,19 +43,20 @@ function harness(directory, mode = "tui") {
     appendEntry() {},
     sendMessage: (message, options) => sent.push({ message, options }),
   };
-  return { ctx, pi, tools, events, renderers, commands, sent, notifications, file, widget: () => widget };
+  return { ctx, pi, tools, events, renderers, commands, sent, notifications, file, widget: () => widget,
+    details: () => ensureWorkUi(pi).snapshot().find(([id]) => id === "scheduled")?.[1].detail ?? "" };
 }
 
-for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, durable acknowledgement, and widths 1–45 (${placement})`, async (t) => {
+test("registered tools, durable acknowledgement, and shared summary widths 1–45", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const dir = mkdtempSync(join(tmpdir(), "scheduler-"));
-  const old = process.env.PI_SCHEDULER_DIR, oldPlacement = process.env.PI_SCHEDULER_WIDGET_PLACEMENT;
+  const old = process.env.PI_SCHEDULER_DIR;
   process.env.PI_SCHEDULER_DIR = dir;
-  process.env.PI_SCHEDULER_WIDGET_PLACEMENT = placement;
-  const { default: extension } = await import(`../extensions/scheduler.ts?placement=${placement}`);
+  const { default: extension } = await import("../extensions/scheduler.ts?work-summary");
   const h = harness(dir);
   extension(h.pi);
   try {
+    await h.events.get("session_start")({}, h.ctx);
     const tool = h.tools.get("schedule");
     await assert.rejects(tool.execute("bad", { delay: "x", message: "test" }), /Invalid delay/);
     for (const mode of ["print", "json"]) {
@@ -59,14 +70,12 @@ for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, 
     await h.tools.get("cancel_scheduled_message").execute("cancel", { id: disposable.details.id });
     const store = new ScheduleStore(dir, "session");
     assert.equal(store.list().length, 2);
-    for (const expanded of [false, true]) {
-      h.ctx.ui.getToolsExpanded = () => expanded;
+    h.ctx.ui.getToolsExpanded = () => { throw Error("Global tool expansion does not control work"); };
       for (let width = 1; width <= 45; width++) {
         const lines = h.widget().render(width);
         assert.ok(lines.every((line) => visibleWidth(line) <= width), `width ${width}`);
         assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(stripVTControlCharacters(line)) && !line.includes("\x1b[2J")));
       }
-    }
     h.ctx.mode = "rpc";
     await h.events.get("session_start")({}, h.ctx);
     assert.equal(h.sent.length, 0);
@@ -97,12 +106,39 @@ for (const placement of ["aboveEditor", "belowEditor"]) test(`registered tools, 
   } finally {
     await h.events.get("session_shutdown")({}, h.ctx);
     if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
-    if (oldPlacement === undefined) delete process.env.PI_SCHEDULER_WIDGET_PLACEMENT; else process.env.PI_SCHEDULER_WIDGET_PLACEMENT = oldPlacement;
-    rmSync(dir, { recursive: true, force: true });
+    closeStores(dir); rmSync(dir, { recursive: true, force: true });
   }
 });
 
 const storeUrl = new URL("../extensions/store.ts", import.meta.url).href;
+
+test("idle settlements skip transcript reads and failed receipts cannot spin a due timer", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const dir = mkdtempSync(join(tmpdir(), "scheduler-idle-"));
+  const old = process.env.PI_SCHEDULER_DIR;
+  process.env.PI_SCHEDULER_DIR = dir;
+  const { default: extension } = await import("../extensions/scheduler.ts?idle-receipts");
+  const h = harness(dir, "rpc");
+  extension(h.pi);
+  writeFileSync(h.file, "{malformed completed record\n");
+  try {
+    await h.events.get("session_start")({}, h.ctx);
+    for (let i = 0; i < 3; i++) await h.events.get("agent_settled")({}, h.ctx);
+    assert.equal(h.notifications.length, 0);
+    assert.equal(readdirSync(dir).some(name => name.endsWith(".sqlite")), false);
+    await h.tools.get("schedule").execute("timer", { delay: "1m", message: "keep pending" });
+    t.mock.timers.tick(60_000);
+    t.mock.timers.tick(60_000);
+    assert.equal(h.sent.length, 0);
+    assert.equal(h.notifications.filter(([, level]) => level === "error").length, 1);
+    await h.events.get("session_shutdown")({}, h.ctx);
+    assert.equal(new ScheduleStore(dir, "session").list().length, 1);
+  } finally {
+    await h.events.get("session_shutdown")({}, h.ctx);
+    if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
+    closeStores(dir); rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("active steering receipts clear the widget without idle settlement or early acknowledgement", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
@@ -119,8 +155,8 @@ test("active steering receipts clear the widget without idle settlement or early
     const store = new ScheduleStore(dir, "session");
     t.mock.timers.tick(60_000);
     assert.equal(h.sent.length, 1);
-    h.ctx.ui.getToolsExpanded = () => true;
-    assert.match(h.widget().render(140).join("\n"), /delivery pending/);
+    assert.match(h.widget().render(140).join("\n"), /1 delivering/);
+    assert.match(h.details(), /delivery pending/);
     const message = h.sent[0].message;
     const event = { messages: [{ role: "custom", ...message }] };
     await h.events.get("context")(event, h.ctx);
@@ -132,15 +168,15 @@ test("active steering receipts clear the widget without idle settlement or early
     const original = readFileSync(h.file);
     await h.events.get("context")(event, h.ctx);
     assert.deepEqual(store.list().map(entry => entry.id), [later.details.id]);
-    assert.ok(!h.widget().render(140).join("\n").includes(first.details.id));
-    assert.ok(h.widget().render(140).join("\n").includes(later.details.id));
+    assert.ok(!h.details().includes(first.details.id));
+    assert.ok(h.details().includes(later.details.id));
     await h.events.get("context")(event, h.ctx);
     assert.equal(h.sent.length, 1, "reconciliation does not send another reminder");
     assert.deepEqual(readFileSync(h.file), original);
   } finally {
     await h.events.get("session_shutdown")({}, h.ctx);
     if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
-    rmSync(dir, { recursive: true, force: true });
+    closeStores(dir); rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -171,7 +207,7 @@ test("cancel reports an admitted delivery and clears stale UI even on a no-match
   } finally {
     await h.events.get("session_shutdown")({}, h.ctx);
     if (old === undefined) delete process.env.PI_SCHEDULER_DIR; else process.env.PI_SCHEDULER_DIR = old;
-    rmSync(dir, { recursive: true, force: true });
+    closeStores(dir); rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -210,7 +246,7 @@ test("multi-process schedule/cancel/delivery transactions retain every accepted 
     assert.equal(results.length, 400);
     assert.equal(new Set(results.map((r) => r.id)).size, 400);
     assert.deepEqual(store.list(), []);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("killed claimant recovers; corrupt and retired stores never look empty", async () => {
@@ -237,11 +273,13 @@ test("killed claimant recovers; corrupt and retired stores never look empty", as
     const rolledBack = once(transaction, "exit"); transaction.kill("SIGKILL"); await rolledBack;
     assert.equal(store.list().length, 1, "an interrupted transaction cannot lose a reminder");
     assert.equal(store.cancel("recover").cancelled.length, 1);
+    store.close();
     writeFileSync(dbPath, "corrupt");
-    assert.throws(() => store.list(), /database/);
+    const reopened = new ScheduleStore(dir, "shared");
+    assert.throws(() => reopened.list(), /database/);
     writeFileSync(join(dir, "scheduled-messages.json"), "{");
-    assert.throws(() => store.list(), /migration required/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    assert.throws(() => reopened.list(), /migration required/);
+  } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("one-time migration preserves every session and resumes partially imported data", () => {
@@ -260,5 +298,5 @@ test("one-time migration preserves every session and resumes partially imported 
     assert.equal(existsSync(legacy), false);
     assert.equal(readFileSync(result.backup, "utf8"), original);
     for (const message of messages) assert.deepEqual(new ScheduleStore(dir, message.sessionId).list(), [message]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true }); }
 });

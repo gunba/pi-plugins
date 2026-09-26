@@ -1,45 +1,48 @@
-# Work panel
+# Work view
 
-Goal, Todos, Subagents and Party share one compact panel above Pi's editor.
-Each section starts collapsed, with its state before the clipped preview.
+Goal, Todos, Subagents, Party and Scheduled share one compact panel above Pi's editor.
+Each section shows its state before the clipped preview.
 The Goal summary shows its phase and activation state; continuation usage,
-limit and revision remain in expanded details.
+limit and revision are in the detail view.
 
-In Pi's fullscreen mode, click a section header to expand or collapse just that
-section. Other sections keep their state. Tool results elsewhere in the
-transcript use Pi's native per-result mouse expansion.
+Use `/work` or `/work goal|todos|subagents|party|scheduled` to open the modal.
+In fullscreen mode, clicking a summary row opens that section.
 
-Keyboard controls work in either terminal mode:
+The modal works in regular and fullscreen terminal modes:
 
-- **Alt+1**: Goal
-- **Alt+2**: Todos
-- **Alt+3**: Subagents
-- **Alt+4**: Party
-- **Alt+Page Up/Down**: page the last selected section
+- **Left/Right, Tab/Shift+Tab**: change section
+- **Up/Down, Page Up/Down, Home/End**: scroll details
+- **Enter**: open the section's management screen when offered
+- **Esc or Ctrl+C**: close
 
-Use the mouse wheel over expanded details, or click the left/right halves of
-the page indicator. Section headers remain visible while details are paged.
-Text selection and editor focus remain with Pi. Ctrl+O controls native tool
-output, not this panel. `/subagents` still opens its full management dashboard.
+Fullscreen also supports clicking tabs and using the mouse wheel. Narrow views
+show the selected section and its position. Details update while open; closing
+restores editor focus and the existing draft.
 
-Pi 0.85.1 supports experimental fullscreen mode. Select it through `/settings`
-for an immediate change, or start with `pi --tui-mode fullscreen`.
+Subagents reuses `/subagents` for transcripts, follow-ups and interruption. Party
+opens the existing chat view. Scheduled offers cancellation by ID, prefix or
+`all`; `/schedule list` and Ctrl+Alt+S open its section directly. Other domain
+commands and tools remain available. Ctrl+O controls native tool output.
 
 ## Integration
 
 This shared module is not a separate auto-loaded extension. Consumers call
 `ensureWorkUi(pi)` during factory registration. Event-bus discovery installs
-one set of lifecycle hooks and shortcuts per underlying bus.
+one set of lifecycle hooks and one `/work` command per underlying bus.
 
 After `session_start` or `session_tree`, obtain a generation-bound source with
-`ui.source("goal" | "todos" | "subagents" | "party")`. Replacing a source,
+`ui.source("goal" | "todos" | "subagents" | "party" | "scheduled")`. Replacing a source,
 changing branches, or shutting down invalidates old publishers and pointer
-callbacks. Expansion is display state only: viewing does not resume goals,
+callbacks. Navigation is display state only: viewing does not resume goals,
 write session history or start inference.
 
-Expanded details occupy at most 24 rows and half the terminal height, shared
-between open sections. Full text remains reachable through paging. Only TUI
-mode mounts the component; RPC and non-interactive tools behave unchanged.
+Sections publish complete plain-text details and can provide a `manage` action.
+Only explicit activation invokes that action, after closing the detail modal;
+its return reopens the selected section. Actions are fenced by the publisher's
+lease. Session changes close the modal and invalidate pending returns.
+
+The modal uses up to 85% of the terminal height, with native text wrapping and
+scroll state. RPC and non-interactive tools do not mount terminal components.
 
 ## Checks
 

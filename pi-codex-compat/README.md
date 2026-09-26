@@ -133,11 +133,10 @@ establish which image model OpenAI may route to internally.
 
 `view_image` and local `image_gen` references are limited to 20 MiB per file.
 Image-generation HTTP response bodies are read through a 32 MiB bounded stream,
-and decoded generated images are limited to 20 MiB. Live and resumed image
-blocks are byte-sniffed against their declared MIME type; BMP is converted to a
-provider-supported format and invalid historical blocks are replaced with a
-textual omission marker before provider serialization. Historical conversions
-run with bounded concurrency.
+and decoded generated images are limited to 20 MiB. Images are byte-validated
+against their declared MIME type when read, generated, or selected as edit
+references. BMP is converted to a provider-supported format at that boundary.
+Provider requests do not rehash or rewrite saved image history.
 
 Recent-image editing uses Pi's compaction-aware context entries, excludes orphan
 tool outputs, retains chronological order, and falls back to the saved path in
@@ -147,22 +146,17 @@ atomic and mandatory. The image tool metadata directs immediate generation
 without redundant reconfirmation and prefers `image_gen` over Python editing
 unless the user explicitly asks otherwise.
 
+Image generation shares `pi-codex-service` with search for request-time registry
+auth, base-URL/header overrides, cancellation, a five-minute deadline, and bounded
+response reading. Image payloads and the default `originator: pi` remain specific
+to the standalone tool; Wire's Responses client identity does not replace them.
+
 Image generation is advertised only for supported OpenAI/Codex model metadata
 when Pi reports configured authentication. Text-only activation remains an
 intentional Pi adaptation so generated files and delegated visual descriptions
 remain usable.
 
 ## Host boundaries
-
-### Passive usage footer
-
-The usage footer reads allowance information from actual provider responses;
-it makes no usage-polling requests. Its 30-second timer only refreshes local
-reset countdowns. Each extension instance owns its context, timer and on/off
-preference. Shutdown cancels the timer before clearing the UI, and retired
-callbacks cannot restart it or change a replacement instance. If Pi invalidates
-the context without a shutdown event, the next refresh disposes the footer
-instead of throwing an uncaught timer exception.
 
 ### Tool integration
 
@@ -181,11 +175,11 @@ release. Locks coordinate this Pi process, not external filesystem writers or
 adversarial symlink replacement.
 
 Independent exec commands run concurrently; polls sharing a process serialize
-access to its output cursor. Historical image signature checks use native base64
-decoding and a bounded digest-key cache. Vision-description usage passes through
-tool results, and `/pi-usage` includes tool, compaction, branch-summary, and
-background-child usage. Background charges are durable custom records deduplicated
-by invocation ID; the native Pi footer does not count those custom records.
+access to its output cursor. Image validation uses native base64 decoding and
+PNG chunk CRC checks. Vision-description usage passes through tool results.
+Wire's `/pi-usage` and the fast footer share a reducer covering billed tools,
+compaction/branch summaries, native usage entries, and child charges deduplicated
+by invocation ID.
 
 Namespaced `image_gen.imagegen`, provider output schemas, per-image detail metadata,
 attached-environment routing, native PTY/ConPTY,
@@ -205,4 +199,13 @@ timing, and polling policy follow Apache-2.0 licensed
 [`openai/codex` Unified Exec at `d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf`](https://github.com/openai/codex/tree/d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf).
 This implementation keeps the compatibility layer integrated with the local
 `pi-plugins` package and its bounded-output handling, atomic file publication,
-session-image repair, and regression suite.
+image validation, and regression suite.
+
+## Internal modules
+
+- `codex-compat.ts`: model-dependent activation and tool-result error handling.
+- `patch-tools.ts`: patch parsing, staged mutations, rollback, rendering, and patch tools.
+- `process-tools.ts`: session ownership and process-tool registration, backed by `shell-runtime.ts`.
+- `image-tools.ts`: image-tool registration and local image inspection.
+- `tool-rendering.ts`: shared process-result rendering and compact summaries.
+- `paths.ts`: shared tool-path resolution and display.

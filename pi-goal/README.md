@@ -2,7 +2,7 @@
 
 Pi Goal adds one durable, branch-local completion goal to a Pi session. It can continue substantial work through bounded, same-session model rounds while keeping human controls and terminal reporting explicit.
 
-Built for Pi **0.85.1**.
+Built for Pi **0.87.1**.
 
 The repository root package loads this extension automatically. For isolated development, run:
 
@@ -61,7 +61,7 @@ address a parent's goal.
 
 ## Pi semantic gaps
 
-Pi 0.85.1 does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
+Pi does not expose several DSH host primitives. This extension therefore cannot provide security- or crash-equivalent behaviour in these areas:
 
 - Custom messages lose typed source attribution when Pi converts them to model input. Another trusted extension can imitate a goal message.
 - Human queue priority and `hasPendingMessages()` are not atomic with continuation dispatch.

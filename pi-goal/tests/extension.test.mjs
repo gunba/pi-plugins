@@ -22,9 +22,9 @@ function successfulAgentMessages() {
 	return [{ role: "assistant", content: [], stopReason: "stop" }];
 }
 
-test("extension registers the exact command, three sequential tools, and presentation renderers", () => {
+test("extension registers goal and work commands, sequential goal tools, and presentation renderers", () => {
 	const harness = createExtensionHarness();
-	assert.deepEqual([...harness.commands.keys()], ["goal"]);
+	assert.deepEqual([...harness.commands.keys()], ["work", "goal"]);
 	assert.deepEqual([...harness.tools.keys()], ["wait_for_work", "cancel_work_wait", "get_goal", "create_goal", "update_goal"]);
 	const goalTools = ["get_goal", "create_goal", "update_goal"].map((name) => harness.tools.get(name));
 	for (const tool of goalTools) assert.equal(tool.executionMode, "sequential");

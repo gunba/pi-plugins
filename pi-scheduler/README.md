@@ -23,13 +23,22 @@ Scheduled messages are persisted for the current session. A one-shot timer runs 
 
 Due messages are delivered as labelled Pi custom messages, not as newly typed user messages. All reminders steer an active run. When idle, a reminder starts a turn unless an explicit wait is awaiting other work. Use `wait_for_work` with a `timer` target and the schedule ID to yield until delivery; partial events in an `all` wait do not start extra turns. Cancelling an awaited timer releases the wait with a cancellation event.
 
-When any messages are queued, a borderless compact scheduler display appears below the editor with countdowns and command reminders. Press `ctrl+o` to expand scheduled entries and read the full messages. Set `PI_SCHEDULER_WIDGET_PLACEMENT=aboveEditor` for a bordered above-editor panel.
+Queued messages appear in the shared [Work view](../pi-work-ui/README.md) above
+the editor, with their count and the next message's due time. `/schedule list`,
+`/work scheduled`, or Ctrl+Alt+S opens the modal with every pending message.
+Enter opens cancellation by ID, prefix or `all`. In RPC mode, listing remains
+a text notification.
 
 Agents can call `schedule` with the same delay syntax to send a future steering message back to the session. They can later call `cancel_scheduled_message` with the returned id (or an unambiguous prefix), or with `all`, when the reminder is no longer needed. Cancellation succeeds only before a delivery process claims the reminder.
 
 ## Storage and recovery
 
 Requires Node.js 22.19 or newer with built-in `node:sqlite`. Each session has a SQLite database in `~/.pi/agent/scheduler` (override with `PI_SCHEDULER_DIR`). Use a local filesystem on one machine: process ownership is checked by PID, and SQLite transactions serialize scheduling, cancellation, and exclusive delivery claims. Corruption is reported rather than treated as an empty queue.
+
+An idle session does not create a database. The store opens on demand, retains
+one connection, and initializes its schema once. Listing uses a read query,
+not a write transaction. Session switches and shutdown close owned connections
+and release their claims.
 
 A reminder stays claimed until its ID appears in the saved session transcript. A crashed process's claims are recovered on startup or the next due-time delivery; graceful shutdown releases unacknowledged claims. PID reuse can conservatively delay recovery until that process exits. SQLite rolls back interrupted storage transactions. Ephemeral sessions use in-memory admission and cannot recover their transcript after exit.
 
@@ -38,6 +47,12 @@ leaves the queue and widget during active work, without waiting for the agent
 to become idle. A claimed message awaiting its receipt is shown as
 `delivery pending`, not `due now`. Cancelling an already-delivered ID refreshes
 the widget and reports that delivery has already occurred.
+
+Receipt checks parse only newly appended complete JSONL records. The index resets
+on session lifecycle rewrites, file replacement, or truncation; incomplete appends
+cannot acknowledge a delivery. Settlements with no attempted deliveries skip the
+transcript check entirely. Malformed completed records fail visibly when receipts
+are needed, without repeatedly retrying a due timer.
 
 Pi's `sendMessage` API returns before durable admission and does not expose asynchronous delivery failures to this extension. A claim with no transcript acknowledgement therefore remains pending until the owning session reloads or exits; it is not silently deleted or repeatedly sent. Recovery is at-least-once, not an exactly-once guarantee across delivery and transcript persistence. The stable schedule ID identifies a repeated delivery.
 

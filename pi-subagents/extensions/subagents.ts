@@ -1,7 +1,6 @@
 import {
 	getAgentDir,
 	type ExtensionAPI,
-	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
@@ -12,6 +11,7 @@ import type {
 	Provider,
 } from "@earendil-works/pi-ai";
 import { PiSdkDriverFactory } from "./pi-sdk-driver.ts";
+import { childPolicySources } from "./child-policies.ts";
 import {
 	SubagentDashboard,
 	type DashboardAction,
@@ -238,7 +238,7 @@ function deliveredRootNoticeIds(ctx: ExtensionContext): Set<string> {
 	return ids;
 }
 
-/** DSH-style subagents for Pi 0.85.1. */
+/** DSH-style SDK subagents. */
 export default function subagents(pi: ExtensionAPI): void {
 	ensureWorkCoordination(pi);
 	const workUi = ensureWorkUi(pi);
@@ -246,7 +246,6 @@ export default function subagents(pi: ExtensionAPI): void {
 	let closeDashboard: (() => void) | undefined;
 	let runtime: SubagentRuntime | undefined;
 	let notices: NoticeBatcher | undefined;
-	let currentContext: ExtensionContext | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
 	let modelPermissions: ConversationModelPermissions | undefined;
 	const feed: string[] = [];
@@ -259,7 +258,8 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	const updateActivity = (source: WorkUiSource, active: SubagentRuntime): void => {
 		if (runtime !== active) return;
-		source.set(subagentWorkSection(active.snapshot()));
+		const section = subagentWorkSection(active.snapshot());
+		source.set(section ? { ...section, manage: { label: "Manage", run: ctx => handleSubagents("", ctx) } } : undefined);
 	};
 
 	const dashboardSnapshot = (selectedId?: string): DashboardSnapshot => {
@@ -296,7 +296,6 @@ export default function subagents(pi: ExtensionAPI): void {
 	const startRuntime = async (ctx: ExtensionContext): Promise<void> => {
 		await stopRuntime();
 		const activity = activityUi = workUi.source("subagents");
-		currentContext = ctx;
 		const permissions = modelPermissions = new ConversationModelPermissions(getAgentDir(), ctx.sessionManager.getSessionId(), {
 			available: ctx.mode === "tui" || ctx.mode === "rpc",
 			confirm: (title, message, options) => ctx.ui.confirm(title, message, options),
@@ -330,6 +329,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			isProjectTrusted: () => ctx.isProjectTrusted(),
 			getActiveToolNames: () => pi.getActiveTools(),
 			getToolInfo: () => pi.getAllTools(),
+			getChildPolicySources: () => childPolicySources(pi),
 			getFlag: (name) => pi.getFlag(name),
 			recordRootLaunch(childId: string) {
 				launches.add(childId);
@@ -444,10 +444,9 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		await stopRuntime();
-		currentContext = undefined;
 	});
 
-	const handleSubagents = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+	const handleSubagents = async (args: string, ctx: ExtensionContext): Promise<void> => {
 			if (/^permissions(?:\s|$)/.test(args.trim())) {
 				if (!modelPermissions) throw new Error("subagent runtime is not initialized");
 				const action = args.trim().split(/\s+/).slice(1).join(" ") || "status";
@@ -468,33 +467,35 @@ export default function subagents(pi: ExtensionAPI): void {
 			while (active && runtime === active) {
 				let dashboard: SubagentDashboard | undefined;
 				let unsubscribe: (() => void) | undefined;
+				let close: (() => void) | undefined;
 				const action = await ctx.ui.custom<DashboardAction | null>((tui, theme, _keybindings, done) => {
-					closeDashboard = () => done(null);
+					closeDashboard = close = () => { unsubscribe?.(); done(null); };
 					dashboard = new SubagentDashboard(
 						dashboardSnapshot(selectedId),
 						selectedId,
 						theme,
 						() => tui.requestRender(),
 						done,
-						() => Math.max(8, tui.terminal.rows - 2),
+						() => Math.max(1, Math.floor(tui.terminal.rows * 0.85)),
 						(id) => {
-							if (!dashboard) return;
+							if (!dashboard || runtime !== active) return;
 							dashboard.update(dashboardSnapshot(id));
 							tui.requestRender();
 						},
 					);
-					unsubscribe = requireRuntime().subscribe(() => {
-						if (!dashboard) return;
+					unsubscribe = active.subscribe(() => {
+						if (!dashboard || runtime !== active) return;
 						dashboard.update(
 							dashboardSnapshot(dashboard.getSelectedId()),
 						);
 						tui.requestRender();
 					});
 					return dashboard;
+				}, { overlay: true, overlayOptions: { width: "92%", maxHeight: "85%", anchor: "center" } }).finally(() => {
+					unsubscribe?.();
+					if (closeDashboard === close) closeDashboard = undefined;
 				});
-				unsubscribe?.();
 				if (runtime !== active) return;
-				closeDashboard = undefined;
 				selectedId = dashboard?.getSelectedId();
 				if (!action) return;
 				if (action.action === "message") {

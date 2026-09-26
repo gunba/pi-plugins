@@ -37,6 +37,9 @@ export function allowanceFromEvent(event: JsonObject): JsonObject {
       if (/^x-codex-(primary|secondary)-(used-percent|window-minutes|reset-at|reset-after-seconds)$/.test(key.toLowerCase()))
         numeric(key, value);
     }
+    const observed = object(event.headers);
+    label("x-codex-plan-type", object(event.error).plan_type ?? observed["x-codex-plan-type"]);
+    label("x-codex-active-limit", observed["x-codex-active-limit"]);
   }
   return allowanceFromHeaders(headers);
 }

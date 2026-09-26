@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { computeSessionStats } from "../../pi-codex-compat/extensions/usage.ts";
+import { computeSessionStats } from "../../pi-session-usage/index.ts";
 import subagents, { inheritProviderRuntime } from "../extensions/subagents.ts";
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
 import { createSubagentToolDefinitions } from "../extensions/subagent-tools.ts";
@@ -61,6 +61,23 @@ async function sdkDriver(t, { respond, projectTrusted = false, rootTrusted = tru
 	t.after(() => { driver.dispose(); rmSync(root, { recursive: true, force: true }); });
 	return { driver, manager };
 }
+
+test("SDK native auxiliary charges are included once per invocation", async t => {
+	let manager;
+	const auxiliary = { ...usage, input: 5, totalTokens: 6 };
+	const opened = await sdkDriver(t, { respond() {
+		manager.appendUsage("cache_warm", model.provider, model.id, auxiliary);
+		return assistant("done");
+	} });
+	manager = opened.manager;
+	manager.appendUsage("cache_warm", model.provider, model.id, auxiliary);
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const outcome = await opened.driver.prompt("work");
+		assert.equal(outcome.usage.totalTokens, 8);
+		assert.equal(outcome.usage.input, 6);
+		assert.equal(outcome.usage.contextTokens, 2);
+	}
+});
 
 for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false], ["all", true]]) test(`real SDK root preserves notice order with ${steeringMode} steering (same final: ${sameFinal})`, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "pi-steering-fix-"));

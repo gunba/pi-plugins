@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.155.0**, commit [`f0a1b8f0849d90960bc406b848f32e5a129b0457`](https://github.com/openai/codex/tree/f0a1b8f0849d90960bc406b848f32e5a129b0457). The bundle requires Pi **0.85.1+** and Node **22.19+**.
+Protocol reference: **Codex CLI 0.155.0**, commit [`f0a1b8f0849d90960bc406b848f32e5a129b0457`](https://github.com/openai/codex/tree/f0a1b8f0849d90960bc406b848f32e5a129b0457). The bundle requires Pi **0.87.1+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -188,7 +188,7 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - Native `x-codex-routing-hint` on HTTP requests and WebSocket handshakes, using the final model and explicitly selected service tier.
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
 - Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Effort mapping follows the 0.155.0 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
-- Allowance counters from WebSocket upgrades, stream events and SSE responses are forwarded to `pi-codex-compat` through `pi-codex-wire:allowance`. The event contains only allowlisted counters and plan labels. The footer updates passively, including when the 7-day window is reported as the primary window.
+- Wire owns the passive allowance footer and `/pi-usage`. Counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. No global WebSocket interception is installed. The footer handles a 7-day window reported as the primary window.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
 On the first model request, the plugin reads `/codex/models?client_version=0.155.0` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions. Catalogs and inference support can depend on this version: updating Pi's model list does not update Wire's pinned client identity.
@@ -219,11 +219,39 @@ Compare **CLI versus Desktop** identity with the same Wire transport. This does 
 
 The report separates uncached input, cached input, output, reasoning, wire attempts and allowance percentage points. It flags reset changes, failed requests, missing coverage and transport fallback. It does not treat API dollar estimates as subscription accounting or count response usage twice.
 
+### Passive allowance status
+
+`/pi-usage` shows cumulative recorded token/cost totals and observed subscription
+windows; `/pi-usage on|off` controls its status. `PI_CODEX_USAGE_STATUS=off` disables
+the status at startup. Observations are saved in the agent directory's
+`codex-wire/usage.json` (or `PI_CODEX_USAGE_DIR/usage.json`).
+
+There is no allowance polling. The 30-second timer only updates reset countdowns.
+Each instance owns its context, timer and preference; shutdown releases listeners
+before clearing its status. Retired callbacks cannot restart or clear a newer
+instance, and invalidated contexts stop ticking.
+
+The shared `pi-session-usage` reducer accounts for assistant messages, billed tool
+results, compaction/branch summaries, native usage entries such as cache warming,
+and deduplicated child receipts. The fast footer and SDK child outcomes use the
+same reducer. Recorded API costs are not subscription allowance measurements.
+
 A repeatable difference between the identity profiles supports **client-correlated treatment**. It does not establish deliberate discrimination: routing, account experiments, backend bugs and rounding remain alternative explanations. A null result cannot rule out treatment keyed to another client signal.
 
 ## Diagnostics and boundaries
 
-Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime. Remove the log files when no longer needed.
+Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime.
+
+Each logger retains four parts of at most 2 MiB: the current `.jsonl` file and
+suffixes `.1`–`.3`. Rotated parts retain the run header. Closing or replacing a
+logger prevents late callbacks from writing again. A small `.owner` file records
+its process and whether the run has closed.
+
+Activation runs background retention outside the request path: closed runs and
+runs whose process has exited are limited to 14 days and 64 MiB in total.
+Active writers are excluded. Older logs without ownership records are preserved,
+because their writer cannot be identified safely; remove those only after stopping
+the Pi processes that could still use them.
 
 New records also include root/child session IDs, lifecycle-derived request
 purpose/origin, per-attempt IDs, prewarm-to-inference links and full-input

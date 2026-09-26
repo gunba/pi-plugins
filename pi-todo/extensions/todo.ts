@@ -229,7 +229,7 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 			refreshWidget(ctx);
 		});
 
-		pi.on("session_shutdown", (_event, ctx) => {
+		pi.on("session_shutdown", () => {
 			currentTodos = null;
 			uiSource?.dispose();
 			uiSource = undefined;

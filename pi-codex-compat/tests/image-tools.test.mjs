@@ -54,6 +54,7 @@ test("every owned tool publishes a strict top-level schema", () => {
 		"apply_patch",
 		"exec_command",
 		"image_gen",
+		"patch_and_run",
 		"view_image",
 		"write_stdin",
 	]);

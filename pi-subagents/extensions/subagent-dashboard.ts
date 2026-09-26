@@ -145,7 +145,6 @@ export class SubagentDashboard implements Component {
 	private filter = "";
 	private searching = false;
 	private transcriptOffset = 0;
-	private lastTranscriptWidth = 80;
 	private cachedWidth: number | undefined;
 	private cachedHeight: number | undefined;
 	private cachedLines: string[] | undefined;
@@ -450,7 +449,6 @@ export class SubagentDashboard implements Component {
 	}
 
 	private transcriptWindow(maxRows: number, width: number): string[] {
-		this.lastTranscriptWidth = width;
 		const lines = this.snapshot.transcript.flatMap((line) =>
 			line.length ? wrapTextWithAnsi(line, Math.max(8, width)) : [""],
 		);

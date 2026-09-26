@@ -30,7 +30,7 @@ export function goalWorkSection(goal: GoalState | undefined, corruption?: string
 			`Automatic continuations: ${goal.roundsStarted} (limit ${goal.maxGoalRounds})`,
 			`Revision: ${goal.revision} · ID: ${goal.id}`,
 			...(goal.blockedReason ? ["", `Blocked: ${goal.blockedReason.code}: ${goal.blockedReason.message}`] : []),
-			"", "Manage with /goal; viewing this panel does not change or resume the goal.",
+			"", "Manage with /goal.",
 		].join("\n"),
 	};
 }

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SECTION_ORDER, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
-import { InlineWorkView } from "./inline.ts";
+import { SECTION_ORDER, workPanelLines, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
+import { WorkModal } from "./modal.ts";
 export { safeWorkText, workPanelLines } from "./view.ts";
 export type { WorkSection, WorkSectionId, WorkSnapshot } from "./view.ts";
 
@@ -27,8 +27,10 @@ export class WorkUi {
 	private sections = new Map<WorkSectionId, Readonly<WorkSection>>();
 	private owners = new Map<WorkSectionId, symbol>();
 	private listeners = new Set<() => void>();
-	private inline = new InlineWorkView();
 	private currentSnapshot: WorkSnapshot = [];
+	private interaction: symbol | undefined;
+	private modal: WorkModal | undefined;
+	private closeModal: (() => void) | undefined;
 
 	start(ctx: ExtensionContext): void {
 		if (this.closed) return;
@@ -42,10 +44,14 @@ export class WorkUi {
 		const ctx = this.ctx;
 		this.ctx = undefined;
 		this.generation += 1;
+		this.interaction = undefined;
+		const close = this.closeModal;
+		this.closeModal = undefined;
+		this.modal = undefined;
+		try { close?.(); } catch (error) { reportUiFailure(error); }
 		this.owners.clear();
 		this.sections.clear();
 		this.currentSnapshot = [];
-		this.inline.reset();
 		this.listeners.clear();
 		const widgetInstalled = this.widgetInstalled;
 		this.widgetInstalled = false;
@@ -85,7 +91,9 @@ export class WorkUi {
 		return {
 			set: (section) => {
 				if (!current()) return;
-				if (section) this.sections.set(id, Object.freeze({ ...section }));
+				if (section) this.sections.set(id, Object.freeze({
+					...section, ...(section.manage ? { manage: Object.freeze({ ...section.manage }) } : {}),
+				}));
 				else this.sections.delete(id);
 				this.refresh();
 			},
@@ -115,25 +123,38 @@ export class WorkUi {
 		const ctx = this.ctx;
 		if (this.closed || !ctx || ctx.mode !== "tui") return;
 		this.currentSnapshot = this.snapshot();
-		this.inline.invalidate();
 		if (!this.sections.size) {
 			if (this.widgetInstalled) ctx.ui.setWidget(WORK_WIDGET_KEY, undefined);
 			this.widgetInstalled = false;
-			return;
 		}
-		if (!this.widgetInstalled) {
+		if (this.sections.size && !this.widgetInstalled) {
 			this.widgetInstalled = true;
 			const generation = this.generation;
 			ctx.ui.setWidget(WORK_WIDGET_KEY, (tui, theme) => {
 				let disposed = false;
+				let visibleRows = 0;
+				let cache: { snapshot: WorkSnapshot; width: number; height: number; lines: string[] } | undefined;
 				const changed = () => { if (!disposed && this.active(generation)) tui.requestRender(); };
 				if (this.active(generation)) this.listeners.add(changed);
 				return {
-					render: (width) => disposed || !this.active(generation) ? [] : this.inline.render(
-						this.currentSnapshot, theme, width, Math.max(3, Math.min(24, Math.floor(tui.terminal.rows / 2))),
-					),
-					handleMouse: (event) => disposed || !this.active(generation) ? undefined : this.inline.handleMouse(event),
-					invalidate: () => this.inline.invalidate(),
+					render: (width) => {
+						if (disposed || !this.active(generation)) return [];
+						const height = Math.max(3, Math.floor(tui.terminal.rows / 2));
+						if (!cache || cache.snapshot !== this.currentSnapshot || cache.width !== width || cache.height !== height) {
+							cache = { snapshot: this.currentSnapshot, width, height, lines: workPanelLines(this.currentSnapshot, theme, width).slice(0, height) };
+						}
+						visibleRows = cache.lines.length;
+						return cache.lines;
+					},
+					handleMouse: (event) => {
+						if (disposed || !this.active(generation)) return;
+						if (event.type !== "click" || event.button !== "left" || event.shift || event.ctrl || event.alt || event.y >= visibleRows) return;
+						const section = this.currentSnapshot[event.y - 1];
+						if (!section) return;
+						void this.open(ctx, section[0]).catch(reportUiFailure);
+						return { handled: true };
+					},
+					invalidate() { cache = undefined; },
 					dispose: () => { disposed = true; this.listeners.delete(changed); },
 				};
 			}, { placement: "aboveEditor" });
@@ -141,16 +162,56 @@ export class WorkUi {
 		for (const listener of this.listeners) listener();
 	}
 
-	page(direction: number): void {
-		if (!this.ctx || this.closed || this.ctx.mode !== "tui") return;
-		this.inline.page(direction);
-		for (const listener of this.listeners) listener();
-	}
-
-	toggle(id: WorkSectionId): void {
-		if (!this.ctx || this.closed || this.ctx.mode !== "tui" || !this.sections.has(id)) return;
-		this.inline.toggle(id);
-		for (const listener of this.listeners) listener();
+	async open(ctx: ExtensionContext, selected: WorkSectionId = this.currentSnapshot[0]?.[0] ?? "goal"): Promise<void> {
+		if (!this.active(this.generation) || ctx.mode !== "tui") return;
+		if (this.interaction) { this.modal?.select(selected); return; }
+		const generation = this.generation;
+		const interaction = this.interaction = Symbol("work-modal");
+		try {
+			while (this.active(generation)) {
+				let owner: symbol | undefined;
+				const action = await ctx.ui.custom<WorkSectionId | undefined>((tui, theme, keys, done) => {
+					if (!this.active(generation)) {
+						queueMicrotask(() => done(undefined));
+						return { render: () => [], invalidate() {} };
+					}
+					let finished = false;
+					const finish = (id?: WorkSectionId) => {
+						if (finished) return;
+						finished = true;
+						owner = id ? this.owners.get(id) : undefined;
+						done(id);
+					};
+					const modal = new WorkModal(this.currentSnapshot, selected, theme, keys,
+						() => Math.floor(tui.terminal.rows * 0.85),
+						() => { if (this.active(generation) && !finished) tui.requestRender(); },
+						finish);
+					this.modal = modal;
+					this.closeModal = () => finish();
+					const changed = () => modal.update(this.currentSnapshot);
+					this.listeners.add(changed);
+					return {
+						render: width => this.active(generation) ? modal.render(width) : [],
+						handleInput: data => { if (this.active(generation)) modal.handleInput(data); },
+						handleMouse: event => this.active(generation) ? modal.handleMouse(event) : undefined,
+						invalidate: () => modal.invalidate(),
+						dispose: () => { modal.dispose(); this.listeners.delete(changed); },
+					};
+				}, { overlay: true, overlayOptions: { anchor: "center", width: "92%", maxHeight: "85%" } });
+				if (!this.active(generation)) return;
+				this.modal = undefined;
+				this.closeModal = undefined;
+				if (!action) return;
+				selected = action;
+				if (owner === this.owners.get(action)) await this.sections.get(action)?.manage?.run(ctx);
+			}
+		} finally {
+			if (this.interaction === interaction) {
+				this.interaction = undefined;
+				this.modal = undefined;
+				this.closeModal = undefined;
+			}
+		}
 	}
 }
 
@@ -167,11 +228,14 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	pi.on("session_start", (_event, ctx) => ui.start(ctx));
 	pi.on("session_tree", (_event, ctx) => ui.start(ctx));
 	pi.on("session_shutdown", () => { try { ui.close(); } finally { release(); } });
-	pi.registerShortcut("alt+pageUp", { description: "Scroll expanded work panel up", handler: async () => ui.page(-1) });
-	pi.registerShortcut("alt+pageDown", { description: "Scroll expanded work panel down", handler: async () => ui.page(1) });
-	const keys = ["alt+1", "alt+2", "alt+3", "alt+4"] as const;
-	for (const [index, id] of SECTION_ORDER.entries()) {
-		pi.registerShortcut(keys[index]!, { description: `Expand or collapse ${id}`, handler: async () => ui.toggle(id) });
-	}
+	pi.registerCommand("work", {
+		description: "Open work details: goal, todos, subagents, party, scheduled",
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") { ctx.ui.notify("Work details require TUI mode.", "warning"); return; }
+			const id = args.trim() as WorkSectionId;
+			if (id && !SECTION_ORDER.includes(id)) { ctx.ui.notify(`Usage: /work [${SECTION_ORDER.join("|")}]`, "warning"); return; }
+			await ui.open(ctx, id || undefined);
+		},
+	});
 	return ui;
 }

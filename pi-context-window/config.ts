@@ -1,8 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readOptional, replaceFile, withFileLocks } from "../pi-config/files.ts";
 
 export const EXTENDED_WINDOW = 1_000_000;
 export const EXTENDED_CHECKPOINT = 900_000;
@@ -117,34 +115,6 @@ export function checkpointText(text: string | undefined, provider: string, model
 	return JSON.stringify(root, null, 2) + "\n";
 }
 
-function readOptional(path: string): string | undefined {
-	try { return readFileSync(path, "utf8"); }
-	catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
-}
-
-async function replaceFile(path: string, text: string | undefined): Promise<void> {
-	if (text === undefined) {
-		try { unlinkSync(path); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		return;
-	}
-	const temp = `${path}.${randomUUID()}.tmp`;
-	const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
-	writeFileSync(temp, text, { mode, flag: "wx" });
-	try {
-		for (let attempt = 0; ; attempt++) {
-			try { renameSync(temp, path); return; }
-			catch (error) {
-				if (!["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "") || attempt === 9) throw error;
-				await delay(50 * (attempt + 1));
-			}
-		}
-	} finally { rmSync(temp, { force: true }); }
-}
-
 export interface WindowPreset {
 	provider: string;
 	modelId: string;
@@ -155,37 +125,30 @@ export interface WindowPreset {
 /** Both files are read under their native settings lock before either is changed. */
 export async function writeWindowPreset(preset: WindowPreset): Promise<boolean> {
 	const dir = getAgentDir();
-	mkdirSync(dir, { recursive: true });
 	const modelsPath = join(dir, "models.json");
 	const settingsPath = join(dir, "settings.json");
-	const modelsLock = `${modelsPath}.lock`;
-	const settingsLock = `${settingsPath}.lock`;
-	mkdirSync(modelsLock);
-	try {
-		mkdirSync(settingsLock);
+	return withFileLocks([modelsPath, settingsPath], async () => {
+		const oldModels = readOptional(modelsPath);
+		const oldSettings = readOptional(settingsPath);
+		const newModels = modelWindowText(oldModels, preset.provider, preset.modelId, preset.window);
+		const newSettings = checkpointText(oldSettings, preset.provider, preset.modelId, preset.reserve);
+		if (newModels === oldModels && newSettings === oldSettings) return false;
+		let modelsWritten = false;
 		try {
-			const oldModels = readOptional(modelsPath);
-			const oldSettings = readOptional(settingsPath);
-			const newModels = modelWindowText(oldModels, preset.provider, preset.modelId, preset.window);
-			const newSettings = checkpointText(oldSettings, preset.provider, preset.modelId, preset.reserve);
-			if (newModels === oldModels && newSettings === oldSettings) return false;
-			let modelsWritten = false;
-			try {
-				if (newModels !== oldModels) {
-					await replaceFile(modelsPath, newModels);
-					modelsWritten = true;
-				}
-				if (newSettings !== oldSettings) await replaceFile(settingsPath, newSettings);
-			} catch (error) {
-				if (modelsWritten) {
-					try { await replaceFile(modelsPath, oldModels); }
-					catch (rollback) { throw new AggregateError([error, rollback], "Context setting failed and the model setting could not be restored"); }
-				}
-				throw error;
+			if (newModels !== oldModels) {
+				await replaceFile(modelsPath, newModels);
+				modelsWritten = true;
 			}
-			return true;
-		} finally { rmSync(settingsLock, { recursive: true, force: true }); }
-	} finally { rmSync(modelsLock, { recursive: true, force: true }); }
+			if (newSettings !== oldSettings) await replaceFile(settingsPath, newSettings);
+		} catch (error) {
+			if (modelsWritten) {
+				try { await replaceFile(modelsPath, oldModels); }
+				catch (rollback) { throw new AggregateError([error, rollback], "Context setting failed and the model setting could not be restored"); }
+			}
+			throw error;
+		}
+		return true;
+	});
 }
 
 export function readWindowFiles(): { models: string | undefined; settings: string | undefined } {

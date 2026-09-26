@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
 import { codexIdentity } from "../extensions/identity.ts";
@@ -36,7 +37,8 @@ function harness(t, mode = "codex", savedDefault) {
       return result?.then ? result.then(next) : next(result);
     });
   };
-  const api = { events: { emit: (name, data) => published.push({ name, data }) }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
+  const bus = createEventBus();
+  const api = { events: { ...bus, emit(name, data) { published.push({ name, data }); bus.emit(name, data); } }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
   const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildContextEntries: () => [] }, isIdle: () => true };
   extension(api);
@@ -318,7 +320,11 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
     return new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream", "x-codex-turn-state": "PRIVATE TOKEN" } });
   };
   h.events.get("before_agent_start")({}, h.ctx);
-  const response = h.provider().streamSimple(model, { systemPrompt: "PRIVATE INSTRUCTIONS", messages: [{ role: "user", content: "PRIVATE QUESTION", timestamp: Date.now() }], tools: [{ name: "read", description: "Read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }] }, { apiKey: jwt, reasoning: "medium", fetch: fakeFetch });
+  const response = h.provider().streamSimple(model, { messages: [
+    { role: "system", content: "PRIVATE INSTRUCTIONS", timestamp: Date.now(),
+      toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }] },
+    { role: "user", content: "PRIVATE QUESTION", timestamp: Date.now() },
+  ] }, { apiKey: jwt, reasoning: "medium", fetch: fakeFetch });
   const result = await response.result();
   assert.equal(result.stopReason, "toolUse", result.errorMessage);
   assert.equal(result.content[0].type, "toolCall");

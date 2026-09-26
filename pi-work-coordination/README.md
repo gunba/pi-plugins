@@ -1,6 +1,6 @@
 # Explicit work waits
 
-Pi 0.85.1 or newer is required. The subagent, goal and scheduler extensions install this shared policy once per session event bus. Managed SDK children install it explicitly, with discovery disabled.
+Pi 0.87.1 or newer is required. The subagent, goal and scheduler extensions install this shared policy once per session event bus. Managed SDK children install it explicitly, with discovery disabled.
 
 `wait_for_work({targets:[{kind:"child"|"process"|"timer",id}],mode:"any"|"all"})` yields only for registered, session-owned resources. Use it alone, after independent useful work is complete. Pi terminates a tool batch only when every result has `terminate:true`. Merely creating a child, process or timer does not stop work or goal rounds. A resource already complete returns immediately without another wake.
 

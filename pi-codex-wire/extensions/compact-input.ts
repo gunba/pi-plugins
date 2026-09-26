@@ -1,6 +1,7 @@
 import { clampThinkingLevel, type Api, type Context, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { convertResponsesMessages, convertResponsesTools, createGrammarToolInputProperties, splitDeferredTools } from "./serializer.ts";
+import { convertResponsesMessages, convertResponsesTools, createGrammarToolInputProperties,
+	getCurrentSystemPrompt, getDeclaredTools, normalizeContext, resolveTranscriptTools } from "./serializer.ts";
 import type { JsonObject } from "./diagnostics.ts";
 
 /** Public Pi serializers preserve native tool arguments, results, images and reasoning. */
@@ -8,19 +9,21 @@ export function compactInput(model: Model<Api>, context: Context, thinking: NonN
 	const supportsGrammar = model.compat && "supportsOpenAIGrammarTools" in model.compat
 		? model.compat.supportsOpenAIGrammarTools === true : false;
 	const compat = model.compat as { supportsAdditionalTools?: boolean; supportsToolSearch?: boolean } | undefined;
-	const deferredToolsMode = compat?.supportsAdditionalTools ? "additional-tools" : compat?.supportsToolSearch ? "tool-search" : undefined;
-	const placement = splitDeferredTools(context, deferredToolsMode !== undefined);
+	const transcript = normalizeContext(context);
+	const placement = resolveTranscriptTools(transcript.messages, !!(compat?.supportsAdditionalTools || compat?.supportsToolSearch));
 	const toolOptions = { strict: null, supportsStrictMode: false, supportsOpenAIGrammarTools: supportsGrammar };
 	const level = clampThinkingLevel(model, thinking);
 	const effort = level === "off" ? undefined : (model.thinkingLevelMap?.[level] ?? level);
 	return {
-		model: model.id, instructions: context.systemPrompt ?? "", parallel_tool_calls: true,
-		input: convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]), {
+		model: model.id, instructions: getCurrentSystemPrompt(transcript.messages), parallel_tool_calls: true,
+		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), {
 			includeSystemPrompt: false,
-			grammarToolInputProperties: createGrammarToolInputProperties(context.tools, supportsGrammar),
-			deferredTools: placement.deferred, deferredToolsMode, toolOptions,
+			grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(transcript.messages), supportsGrammar),
+			supportsAdditionalTools: compat?.supportsAdditionalTools,
+			supportsToolSearch: compat?.supportsToolSearch,
+			toolOptions,
 		}),
-		tools: convertResponsesTools(placement.immediate, toolOptions),
+		tools: convertResponsesTools(placement.requestTools, toolOptions),
 		...(effort !== undefined && effort !== null ? { reasoning: { effort } } : {}),
 	};
 }

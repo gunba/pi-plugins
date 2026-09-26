@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browse"
+  short_description: "Inspect and control Chrome through DevTools"
+  default_prompt: "Use $browse to inspect this web application."

@@ -18,7 +18,8 @@ import {
 
 import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
 import { registerWorkResource, completeWorkResource } from "../../pi-work-coordination/index.ts";
-import { ArtifactStore, OUTPUT_CHARS } from "../../pi-output-budget/extensions/artifacts.ts";
+import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
+import { OUTPUT_CHARS } from "../../pi-output-budget/extensions/text.ts";
 
 export type ExecCommandParams = {
 	cmd: string;
@@ -64,6 +65,7 @@ export type ExecUpdate = (
 ) => void;
 export type ExecExecutionContext = Pick<ExtensionContext, "cwd"> & Partial<Pick<ExtensionContext, "isProjectTrusted" | "sessionManager" | "ui">>;
 export type ExecRuntimeOwner = symbol;
+export type ExecRuntimeOwnerFor = (ctx: Pick<ExtensionContext, "sessionManager">) => ExecRuntimeOwner;
 
 type TerminationReason = "abort" | "prune" | "shutdown";
 
@@ -100,7 +102,6 @@ type ExecSession = {
 	workSessionId?: string;
 	workGeneration?: string;
 	workCompleted?: boolean;
-	workCompletionError?: string;
 	workNotifyError?: (message: string) => void;
 	outputArtifact?: string;
 	outputArtifactDirectory?: string;
@@ -884,8 +885,8 @@ function completeExecWork(session: ExecSession): void {
 			{ generation: session.workGeneration });
 		session.workCompleted = true;
 	} catch (error) {
-		session.workCompletionError = error instanceof Error ? error.message : String(error);
-		session.workNotifyError?.(`Could not persist completion of process ${session.id}: ${session.workCompletionError}`);
+		const message = error instanceof Error ? error.message : String(error);
+		session.workNotifyError?.(`Could not persist completion of process ${session.id}: ${message}`);
 	}
 }
 

@@ -11,8 +11,7 @@ import {
 	isChatGptCodexModel,
 } from "../../pi-codex-compat/extensions/model-tools.ts";
 import { renderSearchResult } from "./render.ts";
-
-const MAX_ERROR_CHARS = 2_000;
+import { requestService } from "../../pi-codex-service/index.ts";
 
 const searchQuery = Type.Object(
 	{
@@ -220,76 +219,6 @@ function isRecord(value: unknown): value is UnknownRecord {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function decodeJwtPayload(token: string): UnknownRecord {
-	const part = token.split(".")[1];
-	if (!part) throw new Error("Codex OAuth token is not a JWT");
-	try {
-		const parsed: unknown = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
-		if (!isRecord(parsed)) throw new Error("JWT payload is not an object");
-		return parsed;
-	} catch {
-		throw new Error("failed to decode Codex OAuth token");
-	}
-}
-
-function chatGptAccountId(token: string): string {
-	const payload = decodeJwtPayload(token);
-	const auth = payload["https://api.openai.com/auth"];
-	if (!isRecord(auth) || typeof auth.chatgpt_account_id !== "string") {
-		throw new Error("Codex OAuth token has no ChatGPT account ID");
-	}
-	const accountId = auth.chatgpt_account_id.trim();
-	if (!accountId) throw new Error("Codex OAuth token has no ChatGPT account ID");
-	return accountId;
-}
-
-export function codexSearchEndpoint(
-	model: NonNullable<ExtensionContext["model"]>,
-): string {
-	const configuredBase = model.baseUrl?.trim().replace(/\/+$/, "");
-	if (!configuredBase) throw new Error("the selected model has no API base URL");
-	let codexBase = configuredBase;
-	if (codexBase.endsWith("/codex/responses")) {
-		codexBase = codexBase.slice(0, -"/responses".length);
-	} else if (!codexBase.endsWith("/codex")) {
-		codexBase = `${codexBase}/codex`;
-	}
-	return `${codexBase}/alpha/search`;
-}
-
-function requestHeaders(
-	apiKey: string,
-	authHeaders?: Record<string, string | null>,
-): Headers {
-	const headers = new Headers();
-	for (const [key, value] of Object.entries(authHeaders ?? {})) {
-		if (value !== null) headers.set(key, value);
-	}
-	headers.set("accept", "application/json");
-	headers.set("authorization", `Bearer ${apiKey}`);
-	headers.set("chatgpt-account-id", chatGptAccountId(apiKey));
-	headers.set("content-type", "application/json");
-	headers.set("originator", "pi");
-	return headers;
-}
-
-function responseError(response: Response, text: string): Error {
-	let message = text.trim();
-	try {
-		const payload: unknown = JSON.parse(text);
-		if (isRecord(payload) && isRecord(payload.error) && typeof payload.error.message === "string") {
-			message = payload.error.message;
-		}
-	} catch {
-		// Plain-text error bodies are already useful.
-	}
-	return new Error(
-		`Codex search request failed (${response.status}): ${(
-			message || response.statusText || "request failed"
-		).slice(0, MAX_ERROR_CHARS)}`,
-	);
-}
-
 function parseSearchResponse(text: string): { output: string; results?: unknown[] } {
 	let payload: unknown;
 	try {
@@ -317,30 +246,20 @@ export async function executeWebSearch(
 		throw new Error("web_search requires a ChatGPT Codex model");
 	}
 	if (signal?.aborted) throw new Error("web_search aborted");
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) throw new Error(auth.error);
-	if (!auth.apiKey) throw new Error("no Codex OAuth token is available");
-
-	const response = await (dependencies.fetchImpl ?? globalThis.fetch)(
-		codexSearchEndpoint(model),
-		{
-			method: "POST",
-			headers: requestHeaders(auth.apiKey, auth.headers),
-			body: JSON.stringify({
-				id: ctx.sessionManager.getSessionId(),
-				model: model.id,
-				commands: params,
-				settings: {
-					allowed_callers: ["direct"],
-					external_web_access: true,
-				},
-				max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
-			}),
-			signal,
+	const text = await requestService(ctx, model, {
+		path: "alpha/search", codex: true, label: "Codex search",
+		maxResponseBytes: 32 * 1024 * 1024,
+		body: {
+			id: ctx.sessionManager.getSessionId(),
+			model: model.id,
+			commands: params,
+			settings: {
+				allowed_callers: ["direct"],
+				external_web_access: true,
+			},
+			max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
 		},
-	);
-	const text = await response.text();
-	if (!response.ok) throw responseError(response, text);
+	}, signal, dependencies.fetchImpl);
 	const result = parseSearchResponse(text);
 	return {
 		content: [{ type: "text", text: result.output }],

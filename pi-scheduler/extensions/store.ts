@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
+import type { DatabaseSync } from "node:sqlite";
+
+const requireSQLite = createRequire(import.meta.url);
 
 export type ScheduledMessage = {
   id: string;
@@ -31,32 +34,61 @@ export class ScheduleStore {
   readonly owner = randomUUID();
   readonly directory: string;
   readonly sessionId: string;
+  private readonly file: string;
+  private database?: DatabaseSync;
+  private closed = false;
   constructor(directory: string, sessionId: string) {
     this.directory = directory;
     this.sessionId = sessionId;
+    this.file = join(directory, `${createHash("sha256").update(sessionId).digest("hex")}.sqlite`);
   }
 
-  private transaction<T>(operation: (db: DatabaseSync) => T, importing = false): T {
+  private connection(create = false, importing = false): DatabaseSync | undefined {
+    if (this.closed) throw new Error("Schedule store is closed");
     const legacy = join(this.directory, "scheduled-messages.json");
     if (!importing && existsSync(legacy)) throw new Error(`Scheduler migration required: stop Pi processes using the JSON scheduler, then run /schedule migrate. Pending reminders remain in ${legacy}.`);
+    if (this.database) return this.database;
+    if (!create && !existsSync(this.file)) return undefined;
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const name = createHash("sha256").update(this.sessionId).digest("hex");
-    const db = new DatabaseSync(join(this.directory, `${name}.sqlite`));
+    const { DatabaseSync } = requireSQLite("node:sqlite") as typeof import("node:sqlite");
+    const db = new DatabaseSync(this.file);
     try {
-      db.exec("PRAGMA busy_timeout=10000; PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
+      db.exec("PRAGMA busy_timeout=10000; PRAGMA synchronous=FULL");
       db.exec(`CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY, payload TEXT NOT NULL,
         owner TEXT, pid INTEGER,
         CHECK ((owner IS NULL) = (pid IS NULL))
       )`);
+      this.database = db;
+      return db;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  private transaction<T>(operation: (db: DatabaseSync) => T, create = false, importing = false): T | undefined {
+    const db = this.connection(create, importing);
+    if (!db) return undefined;
+    try {
+      db.exec("BEGIN IMMEDIATE");
       const result = operation(db);
       db.exec("COMMIT");
       return result;
     } catch (error) {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    try {
+      this.database?.prepare("UPDATE messages SET owner=NULL, pid=NULL WHERE owner=?").run(this.owner);
     } finally {
-      db.close();
+      this.database?.close();
+      this.database = undefined;
+      this.closed = true;
     }
   }
 
@@ -74,14 +106,17 @@ export class ScheduleStore {
       groups.set(message.sessionId, group);
     }
     for (const [session, messages] of groups) {
-      new ScheduleStore(directory, session).transaction((db) => {
-        for (const message of messages) {
-          const payload = JSON.stringify(message);
-          const existing = db.prepare("SELECT payload FROM messages WHERE id=?").get(message.id);
-          if (existing && existing.payload !== payload) throw new Error(`Conflicting reminder ${message.id}; migration stopped without replacing it`);
-          db.prepare("INSERT OR IGNORE INTO messages(id, payload) VALUES (?, ?)").run(message.id, payload);
-        }
-      }, true);
+      const store = new ScheduleStore(directory, session);
+      try {
+        store.transaction((db) => {
+          for (const message of messages) {
+            const payload = JSON.stringify(message);
+            const existing = db.prepare("SELECT payload FROM messages WHERE id=?").get(message.id);
+            if (existing && existing.payload !== payload) throw new Error(`Conflicting reminder ${message.id}; migration stopped without replacing it`);
+            db.prepare("INSERT OR IGNORE INTO messages(id, payload) VALUES (?, ?)").run(message.id, payload);
+          }
+        }, true, true);
+      } finally { store.close(); }
     }
     if (readFileSync(legacy, "utf8") !== original) throw new Error("Legacy scheduler changed during migration; stop old Pi processes and retry");
     const backup = `${legacy}.${randomUUID()}.bak`;
@@ -100,14 +135,15 @@ export class ScheduleStore {
   }
 
   list(): ScheduledMessage[] {
-    return this.transaction((db) => this.entries(db));
+    const db = this.connection();
+    return db ? this.entries(db) : [];
   }
 
   add(message: ScheduledMessage): void {
     if (message.sessionId !== this.sessionId) throw new Error("Scheduler session mismatch");
     this.transaction((db) => {
       db.prepare("INSERT INTO messages(id, payload) VALUES (?, ?)").run(message.id, JSON.stringify(message));
-    });
+    }, true);
   }
 
   cancel(selector: string): { cancelled: ScheduledMessage[]; ambiguous: boolean } {
@@ -118,10 +154,10 @@ export class ScheduleStore {
       if (!all && matches.length > 1) return { cancelled: [], ambiguous: true };
       const cancelled = matches.filter((entry) => db.prepare("DELETE FROM messages WHERE id=? AND owner IS NULL").run(entry.id).changes > 0);
       return { cancelled, ambiguous: false };
-    });
+    }) ?? { cancelled: [], ambiguous: false };
   }
 
-  claimDue(now: number, admitted: Set<string>): ScheduledMessage[] {
+  claimDue(now: number, admitted: ReadonlySet<string>): ScheduledMessage[] {
     return this.transaction((db) => {
       // Acknowledgements come from the durable session transcript, never from
       // sendMessage's void return or message_end (which precedes persistence).
@@ -136,7 +172,7 @@ export class ScheduleStore {
       return this.entries(db).filter((entry) => entry.dueAt <= now
         && db.prepare("UPDATE messages SET owner=?, pid=? WHERE id=? AND owner IS NULL")
           .run(this.owner, process.pid, entry.id).changes > 0);
-    });
+    }) ?? [];
   }
 
   release(id?: string): void {

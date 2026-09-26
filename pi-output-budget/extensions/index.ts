@@ -6,7 +6,9 @@ import {
   type ExtensionAPI, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { ArtifactStore, boundedText, literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./artifacts.ts";
+import { ArtifactStore, boundedText } from "./artifacts.ts";
+import { literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
+import { acquireArtifactAccess } from "./ownership.ts";
 
 const readSchema = Type.Object({
   path: Type.String(),
@@ -24,8 +26,8 @@ function archivedResultId(message: AgentMessage): string | undefined {
   if (message.role !== "toolResult" || message.isError ||
     message.content.length === 0 || message.content.some(block => block.type !== "text")) return;
   const details = message.details;
-  if (!details || typeof details !== "object" || Array.isArray(details) ||
-    details.outputBudgeted !== true) return;
+  if (!details || typeof details !== "object" || !("outputBudgeted" in details) ||
+    details.outputBudgeted !== true || !("outputArtifact" in details)) return;
   const id = details.outputArtifact;
   return typeof id === "string" && ARTIFACT_ID.test(id) ? id : undefined;
 }
@@ -122,6 +124,7 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
 export default function outputBudget(pi: ExtensionAPI): void {
   const checkedReplayArtifacts = new Set<string>();
   const replayCandidates = new Map<string, Set<string>>();
+  pi.on("session_start", async () => { await acquireArtifactAccess(outputArtifactStore().directory); });
   pi.registerTool({
     name: "read", label: "read", parameters: readSchema,
     description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,
@@ -141,10 +144,11 @@ export default function outputBudget(pi: ExtensionAPI): void {
     }, { additionalProperties: false }),
     async execute(_id, params, signal) {
       const store = outputArtifactStore();
-      const original = await store.get(params.artifact);
       signal?.throwIfAborted();
-      const text = params.query === undefined ? original : literalMatches(original, params.query);
-      const result = page(text, params.offset ?? 0, params.length ?? OUTPUT_CHARS);
+      const result = params.query === undefined
+        ? await store.readPage(params.artifact, params.offset ?? 0, params.length ?? OUTPUT_CHARS)
+        : await store.searchPage(params.artifact, params.query, params.offset ?? 0, params.length ?? OUTPUT_CHARS);
+      signal?.throwIfAborted();
       return {
         content: [{ type: "text" as const, text: `${result.text}\n\n[${params.query === undefined ? "Artifact" : "Search results"}: ${result.total_chars} characters; next_offset=${result.next_offset ?? "null"}]` }],
         details: { outputBudgeted: true, artifact: params.artifact, ...result, text: undefined },
@@ -199,14 +203,41 @@ export default function outputBudget(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    if ((event.details as { outputBudgeted?: boolean } | undefined)?.outputBudgeted ||
-      event.content.some(block => block.type !== "text")) return;
+    const native = event.details as {
+      fullOutputPath?: string; full_output_artifact?: string; outputBudgeted?: boolean;
+      outputGuard?: { truncated?: boolean; fullOutputPath?: string };
+    } | undefined;
+    if (native?.outputBudgeted) return;
+    // outputGuard is local adapter metadata, not the server-controlled mcpResult.
+    const mcpSpill = native?.outputGuard?.truncated === true && typeof native.outputGuard.fullOutputPath === "string"
+      ? native.outputGuard.fullOutputPath : undefined;
+    const textOnly = event.content.every(block => block.type === "text");
+    if (!textOnly && !mcpSpill) return;
     const text = event.content.map(block => block.type === "text" ? block.text : "").join("\n");
-    const native = event.details as { fullOutputPath?: string; full_output_artifact?: string; outputBudgeted?: boolean } | undefined;
     const bashLog = (event.toolName === "bash" || event.toolName === "powershell") ? native?.fullOutputPath : undefined;
-    if (text.length <= OUTPUT_CHARS && !bashLog) return;
+    if (text.length <= OUTPUT_CHARS && !bashLog && !mcpSpill) return;
     ctx.signal?.throwIfAborted();
     const store = outputArtifactStore();
+    if (mcpSpill) {
+      let notice: string;
+      try {
+        const full = await store.putFile(mcpSpill);
+        ctx.signal?.throwIfAborted();
+        notice = `\n[Complete MCP text: ${full}; use read_artifact with offset=0.]`;
+        return {
+          content: textOnly
+            ? [{ type: "text" as const, text: page(text).text + notice }]
+            : [...event.content, { type: "text" as const, text: notice }],
+          details: { ...event.details as object, outputBudgeted: true, outputArtifact: full, full_output_artifact: full },
+        };
+      } catch {
+        ctx.signal?.throwIfAborted();
+        notice = `\n[Could not archive complete MCP text. The preview is incomplete; original spill: ${mcpSpill}]`;
+      }
+      if (!textOnly) return { content: [...event.content, { type: "text" as const, text: notice }] };
+      const fallback = await boundedText(store, notice + "\n" + text);
+      return { content: fallback.content, details: { ...event.details as object, ...fallback.details } };
+    }
     const result = await boundedText(store, text);
     if ((event.toolName === "exec_command" || event.toolName === "write_stdin") && native?.full_output_artifact) {
       result.content[0]!.text += `\n[Complete command output: ${native.full_output_artifact}; use read_artifact.]`;

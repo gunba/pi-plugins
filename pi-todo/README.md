@@ -1,6 +1,6 @@
 # pi-todo
 
-A Pi 0.85.1 extension that provides the DSH-compatible `todo_write` tool and a compact task summary in the shared Work panel above the editor.
+A Pi 0.87.1 extension that provides the DSH-compatible `todo_write` tool and a compact task summary in the shared Work panel above the editor.
 
 ## Behaviour
 

@@ -1,11 +1,8 @@
-import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
 import {
 	MAX_LOCAL_IMAGE_BYTES,
 	decodedBase64ByteLength,
 } from "./image-limits.ts";
-
-type UnknownRecord = Record<string, unknown>;
 
 export type ImageConverter = (
 	data: string,
@@ -29,44 +26,6 @@ const NATIVE_IMAGE_MIME_TYPES = new Set([
 const PROVIDER_IMAGE_MIME_TYPES = new Set(
 	[...NATIVE_IMAGE_MIME_TYPES].filter((mimeType) => mimeType !== "image/bmp"),
 );
-export const MAX_PROVIDER_IMAGE_CONVERSIONS = 4;
-
-function createAsyncLimiter(maxConcurrent: number) {
-	let active = 0;
-	const pending: Array<() => void> = [];
-	const acquire = async () => {
-		if (active < maxConcurrent) {
-			active += 1;
-			return;
-		}
-		await new Promise<void>((resolve) => pending.push(resolve));
-		active += 1;
-	};
-	const release = () => {
-		active -= 1;
-		pending.shift()?.();
-	};
-	return async <T>(operation: () => Promise<T>): Promise<T> => {
-		await acquire();
-		try {
-			return await operation();
-		} finally {
-			release();
-		}
-	};
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function firstString(...values: unknown[]): string | undefined {
-	for (const value of values) {
-		if (typeof value === "string" && value.length > 0) return value;
-	}
-	return undefined;
-}
-
 function nativeMimeType(value: unknown): string | undefined {
 	return typeof value === "string" && NATIVE_IMAGE_MIME_TYPES.has(value)
 		? value
@@ -161,41 +120,10 @@ const IMAGE_SIGNATURES: Array<{
 	},
 ];
 
-// Cache only fixed-size content digests and signature results, never image data.
-// At most 512 entries (under 128 KiB of key/value string storage).
-const signatureCache = new Map<string, string | undefined>();
 function inferMimeType(data: string): string | undefined {
 	if (decodedBase64ByteLength(data) > MAX_LOCAL_IMAGE_BYTES) return undefined;
-	const key = createHash("sha256").update(data).digest("hex");
-	if (signatureCache.has(key)) {
-		const result = signatureCache.get(key);
-		signatureCache.delete(key);
-		signatureCache.set(key, result);
-		return result;
-	}
 	const bytes = decodeBase64(data);
-	const result = IMAGE_SIGNATURES.find(({ matches }) => matches(bytes))?.mimeType;
-	if (signatureCache.size >= 512) signatureCache.delete(signatureCache.keys().next().value!);
-	signatureCache.set(key, result);
-	return result;
-}
-
-function imagePayload(block: UnknownRecord): {
-	data?: string;
-	mimeType?: string;
-} {
-	const source = isRecord(block.source) ? block.source : undefined;
-	const data = firstString(block.data, source?.data);
-	const mimeType = nativeMimeType(
-		firstString(
-			block.mimeType,
-			block.mediaType,
-			source?.mimeType,
-			source?.mediaType,
-			source?.media_type,
-		),
-	);
-	return { data, mimeType };
+	return IMAGE_SIGNATURES.find(({ matches }) => matches(bytes))?.mimeType;
 }
 
 export function createImageContent(
@@ -254,117 +182,4 @@ export async function prepareNativeImageContent(
 		);
 	}
 	return createImageContent(converted.data, convertedMimeType);
-}
-
-export function normalizeLegacyImageBlock(block: unknown): unknown {
-	if (!isRecord(block) || block.type !== "image") return block;
-
-	const { data, mimeType: declaredMimeType } = imagePayload(block);
-	if (data && declaredMimeType) {
-		const inferredMimeType = inferMimeType(data);
-		if (!inferredMimeType) {
-			return {
-				type: "text",
-				text: "[Invalid image content omitted: unsupported or invalid image data]",
-			};
-		}
-		if (declaredMimeType !== inferredMimeType) {
-			return {
-				type: "text",
-				text: `[Invalid image content omitted: image MIME type ${declaredMimeType} does not match ${inferredMimeType} data]`,
-			};
-		}
-		if (block.data === data && block.mimeType === declaredMimeType) {
-			return block;
-		}
-		return createImageContent(data, declaredMimeType);
-	}
-
-	const inferredMimeType = data ? inferMimeType(data) : undefined;
-	if (data && inferredMimeType)
-		return createImageContent(data, inferredMimeType);
-
-	return {
-		type: "text",
-		text: "[Invalid image content omitted: missing data or supported MIME type]",
-	};
-}
-
-export function normalizeLegacyImageMessages<T>(messages: T[]): T[] {
-	let messagesChanged = false;
-	const normalized = messages.map((message) => {
-		if (!isRecord(message) || !Array.isArray(message.content)) return message;
-
-		let contentChanged = false;
-		const content = message.content.map((block) => {
-			const next = normalizeLegacyImageBlock(block);
-			if (next !== block) contentChanged = true;
-			return next;
-		});
-		if (!contentChanged) return message;
-
-		messagesChanged = true;
-		return { ...message, content } as T;
-	});
-
-	return messagesChanged ? normalized : messages;
-}
-
-export async function normalizeProviderImageMessages<T>(
-	messages: T[],
-	convertImage: ImageConverter,
-): Promise<T[]> {
-	const legacyNormalized = normalizeLegacyImageMessages(messages);
-	let messagesChanged = legacyNormalized !== messages;
-	const limitConversion = createAsyncLimiter(MAX_PROVIDER_IMAGE_CONVERSIONS);
-	const normalized = await Promise.all(
-		legacyNormalized.map(async (message) => {
-			if (!isRecord(message) || !Array.isArray(message.content)) return message;
-
-			let contentChanged = false;
-			const content = await Promise.all(
-				message.content.map(async (block) => {
-					if (
-						!isRecord(block) ||
-						block.type !== "image" ||
-						typeof block.data !== "string" ||
-						typeof block.mimeType !== "string"
-					) {
-						return block;
-					}
-					if (PROVIDER_IMAGE_MIME_TYPES.has(block.mimeType)) return block;
-					const data = block.data;
-					const mimeType = block.mimeType;
-
-					try {
-						const prepared = await limitConversion(() =>
-							prepareNativeImageContent({ data, mimeType }, convertImage),
-						);
-						if (
-							prepared.data === block.data &&
-							prepared.mimeType === block.mimeType
-						) {
-							return block;
-						}
-						contentChanged = true;
-						return prepared;
-					} catch (error) {
-						contentChanged = true;
-						const message =
-							error instanceof Error ? error.message : String(error);
-						return {
-							type: "text",
-							text: `[Image content omitted: ${message}]`,
-						};
-					}
-				}),
-			);
-			if (!contentChanged) return message;
-
-			messagesChanged = true;
-			return { ...message, content } as T;
-		}),
-	);
-
-	return messagesChanged ? normalized : messages;
 }

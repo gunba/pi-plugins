@@ -28,7 +28,6 @@
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",
       "./pi-scheduler/extensions/scheduler.ts",
-      "./pi-extension-freshness/extensions/extension-freshness.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
@@ -40,17 +39,16 @@
       "./pi-goal/extensions/goal.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-todo/extensions/todo.ts",
-      "./pi-browser-context/index.ts",
       "./pi-output-budget/extensions/index.ts"
     ],
     "skills": [
-      "./pi-browser-context/skills/browse"
+      "./pi-browser/skills/browse"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.85.1",
+    "@earendil-works/pi-ai": ">=0.87.1",
     "@earendil-works/pi-coding-agent": ">=0.87.1",
-    "@earendil-works/pi-tui": ">=0.85.1"
+    "@earendil-works/pi-tui": ">=0.87.1"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
@@ -68,13 +66,15 @@
     "diff": "8.0.2",
     "jiti": "2.7.0",
     "mdast-util-from-markdown": "^2.0.2",
+    "proper-lockfile": "4.1.2",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
     "@types/node": "22.19.19",
+    "@types/proper-lockfile": "4.1.4",
     "typescript": "5.9.3"
   }
 }

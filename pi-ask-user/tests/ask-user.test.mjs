@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {getEventListeners} from 'node:events';
 import {visibleWidth, getKeybindings} from '@earendil-works/pi-tui';
 import extension from '../index.ts';
 const theme = {fg: (_color, text) => text, bg: (_color, text) => text, bold: text => text};
@@ -28,5 +29,53 @@ test('actual custom question component stays inside narrow viewports', async () 
    }
    return null;
   }}
+ });
+});
+
+test('answered custom dialogs release abort listeners and timeouts', async t => {
+ t.mock.timers.enable({apis: ['setTimeout']});
+ const controller = new AbortController();
+ let callbacks = 0;
+ await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100, displayMode: 'inline'}, controller.signal, undefined, {
+  hasUI: true, mode: 'tui', ui: {async custom(factory) {
+   factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => callbacks++);
+   assert.equal(getEventListeners(controller.signal, 'abort').length, 1);
+   return {kind: 'selection', selections: ['A']};
+  }}
+ });
+ assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+ t.mock.timers.tick(200);
+ controller.abort();
+ assert.equal(callbacks, 0, 'completed UI must not receive timeout or abort callbacks');
+});
+
+test('abort closes an active custom dialog once and releases its timer', async t => {
+ t.mock.timers.enable({apis: ['setTimeout']});
+ const controller = new AbortController();
+ let callbacks = 0;
+ const result = await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100, displayMode: 'inline'}, controller.signal, undefined, {
+  hasUI: true, mode: 'tui', ui: {custom: factory => new Promise(resolve => {
+   factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), value => { callbacks++; resolve(value); });
+   controller.abort();
+  })}
+ });
+ assert.equal(result.details.cancelled, true);
+ assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+ t.mock.timers.tick(200);
+ assert.equal(callbacks, 1);
+});
+
+test('freeform and RPC comment dialogs receive the abort signal', async () => {
+ const controller = new AbortController();
+ const signal = controller.signal;
+ const ui = {
+  async select(_question, _options, opts) {assert.equal(opts.signal, signal); return 'A';},
+  async input(_question, _placeholder, opts) {assert.equal(opts.signal, signal); controller.abort(); return undefined;},
+ };
+ const result = await tool().execute('id', {question: 'Choose', options: ['A'], allowComment: true}, signal, undefined, {hasUI: true, mode: 'rpc', ui});
+ assert.equal(result.details.cancelled, true);
+ const freeformSignal = new AbortController().signal;
+ await tool().execute('id', {question: 'Explain'}, freeformSignal, undefined, {
+  hasUI: true, mode: 'rpc', ui: {async input(_question, _placeholder, opts) {assert.equal(opts.signal, freeformSignal); return 'answer';}}
  });
 });

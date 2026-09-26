@@ -25,7 +25,8 @@ import type {
 	RuntimeHost,
 	ParentNotice,
 } from "./subagent-runtime.ts";
-import { addUsage, undispatchedNotices } from "./subagent-runtime.ts";
+import { undispatchedNotices } from "./subagent-runtime.ts";
+import { reduceSessionUsage } from "../../pi-session-usage/index.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 
@@ -77,6 +78,7 @@ function latestAssistant(messages: readonly AgentMessage[]): AgentMessage | unde
 export function outcomeFrom(
 	messages: readonly AgentMessage[],
 	streamed: string,
+	additionalEntries: readonly unknown[] = [],
 ): RunOutcome {
 	const terminal = latestAssistant(messages);
 	let outputMessage: AgentMessage | undefined;
@@ -87,10 +89,11 @@ export function outcomeFrom(
 			break;
 		}
 	}
-	const usage = messages.reduce<RunOutcome["usage"]>((total, message) => {
-		if ((message.role !== "assistant" && message.role !== "toolResult") || !message.usage) return total;
-		return addUsage(total, { ...message.usage, contextTokens: message.role === "assistant" ? message.usage.totalTokens : 0 });
-	}, undefined);
+	const measured = reduceSessionUsage([
+		...messages.map(message => ({ type: "message", message })),
+		...additionalEntries,
+	]);
+	const usage = measured.usage ? { ...measured.usage, contextTokens: measured.contextTokens } : undefined;
 	if (!terminal || terminal.role !== "assistant") {
 		return { output: streamed, stopReason: "error", errorMessage: "child produced no assistant message", ...(usage ? { usage } : {}) };
 	}
@@ -186,6 +189,8 @@ class PiSdkChildDriver implements ChildDriver {
 		const finalized: AgentMessage[] = [];
 		const priorEntries = new Set(this.session.sessionManager.getEntries().map((entry) => entry.id));
 		let streamed = "";
+		const collectOutcome = () => outcomeFrom(finalized, streamed,
+			this.session.sessionManager.getEntries().filter(entry => !priorEntries.has(entry.id) && entry.type !== "message"));
 		const unsubscribe = this.session.subscribe((event) => {
 			if (event.type === "message_end" && (event.message.role === "assistant" || event.message.role === "toolResult"))
 				finalized.push(event.message);
@@ -204,7 +209,9 @@ class PiSdkChildDriver implements ChildDriver {
 				const messages = finalized.slice(start);
 				const lastAssistant = latestAssistant(messages);
 				const waitResult = [...messages].reverse().find((item) => item.role === "toolResult" && item.toolName === "wait_for_work" && lastAssistant?.role === "assistant" && lastAssistant.content.some((block) => block.type === "toolCall" && block.id === item.toolCallId));
-				const yielded = lastAssistant?.role === "assistant" && lastAssistant.stopReason === "toolUse" && waitResult?.role === "toolResult" && waitResult.details?.waiting === true;
+				const waitDetails = waitResult?.role === "toolResult" ? waitResult.details : undefined;
+				const yielded = lastAssistant?.role === "assistant" && lastAssistant.stopReason === "toolUse"
+					&& waitDetails !== null && typeof waitDetails === "object" && "waiting" in waitDetails && waitDetails.waiting === true;
 				if (abort.signal.aborted) break;
 				if (!yielded) {
 					// triggerTurn:false notices arriving after the final provider
@@ -222,20 +229,16 @@ class PiSdkChildDriver implements ChildDriver {
 				if (abort.signal.aborted) break;
 				prompt = "The explicit wait has ended. Review the delivered event and continue the assigned task.";
 			}
-			const outcome = outcomeFrom(finalized, streamed);
+			const outcome = collectOutcome();
 			if (this.extensionErrors.length) {
 				outcome.stopReason = "error";
 				outcome.errorMessage = `Child extension lifecycle failed: ${this.extensionErrors.join("; ")}`;
 			}
 			if (abort.signal.aborted) { outcome.stopReason = "aborted"; delete outcome.errorMessage; }
-			for (const entry of this.session.sessionManager.getEntries()) {
-				if (!priorEntries.has(entry.id) && (entry.type === "compaction" || entry.type === "branch_summary") && entry.usage)
-					outcome.usage = addUsage(outcome.usage, { ...entry.usage, contextTokens: 0 });
-			}
 			return outcome;
 		} catch (error) {
 			if (!abort.signal.aborted) throw error;
-			return { ...outcomeFrom(finalized, streamed), stopReason: "aborted", errorMessage: undefined };
+			return { ...collectOutcome(), stopReason: "aborted", errorMessage: undefined };
 		} finally {
 			this.runAbort = undefined;
 			unsubscribe();
@@ -259,7 +262,7 @@ class PiSdkChildDriver implements ChildDriver {
 	}
 }
 
-/** Pi 0.85.1 in-process provider. Runtime queues own tasks; this driver owns explicit event waits. */
+/** Runtime queues own tasks; this in-process driver owns explicit event waits. */
 export class PiSdkDriverFactory implements ChildDriverFactory {
 	private readonly host: RuntimeHost;
 
@@ -317,13 +320,14 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
 			...childOnlyTools, ...fallbackHelpers,
 		])];
-		const inheritedExtensions = toolInfo ? await loadChildToolExtensions({
-			tools: toolInfo,
+		const inheritedExtensions = await loadChildToolExtensions({
+			tools: toolInfo ?? [],
+			policies: this.host.getChildPolicySources?.(),
 			handledToolNames: [...customToolNames, "wait_for_work", "cancel_work_wait"],
 			signal: input.signal,
 			projectTrusted,
 			getFlag: this.host.getFlag ? (name) => this.host.getFlag!(name) : undefined,
-		}) : [];
+		});
 		const localDenied = new Set<string>();
 		const extensionErrors: string[] = [];
 		let factoryFailure: unknown;

@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Container, Spacer, TuiAltScreen, Text } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, Spacer, TuiAltScreen, TuiMainScreen, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { WorkUi } from "../index.ts";
 
-test("native fullscreen mouse routing expands one work section and preserves editor input", async t => {
+function overlayUi(tui, theme) {
+	let current;
+	let lines = [];
+	return {
+		lines: () => lines,
+		current: () => current,
+		custom(factory, options) {
+			return new Promise(resolve => {
+				let handle;
+				const component = factory(tui, theme, getKeybindings(), result => {
+					handle.hide();
+					component.dispose?.();
+					current = undefined;
+					resolve(result);
+				});
+				const render = component.render.bind(component);
+				component.render = width => lines = render(width);
+				current = component;
+				handle = tui.showOverlay(component, options.overlayOptions);
+			});
+		},
+	};
+}
+
+for (const Renderer of [TuiAltScreen, TuiMainScreen]) test(`native ${Renderer.name} modal preserves the editor across updates and resize`, async t => {
 	let input;
 	const output = [];
 	const terminal = {
@@ -12,11 +36,13 @@ test("native fullscreen mouse routing expands one work section and preserves edi
 		write(data) { output.push(data); }, moveBy() {}, hideCursor() {}, showCursor() {},
 		clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
 	};
-	const tui = new TuiAltScreen(terminal);
+	const tui = new Renderer(terminal);
 	const theme = { fg(_color, text) { return text; }, bold(text) { return text; } };
+	const overlay = overlayUi(tui, theme);
 	let widget;
 	const ui = new WorkUi();
 	const ctx = { mode: "tui", hasUI: true, ui: {
+		custom: overlay.custom,
 		setWidget(_key, factory) {
 			if (widget) { tui.removeChild(widget); widget.dispose?.(); }
 			widget = factory?.(tui, theme);
@@ -25,8 +51,9 @@ test("native fullscreen mouse routing expands one work section and preserves edi
 		getToolsExpanded() { throw Error("Global expansion must not control individual work sections"); },
 	} };
 	ui.start(ctx);
-	ui.source("goal").set({ label: "Goal", status: "active", summary: "Summary", detail: "Goal details" });
-	ui.source("todos").set({ label: "Todos", status: "1 active", summary: "Summary", detail: "Task details" });
+	ui.source("goal").set({ label: "Goal", status: "active", summary: "Summary", detail: `Goal details\n${Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n")}` });
+	const todos = ui.source("todos");
+	todos.set({ label: "Todos", status: "1 active", summary: "Summary", detail: "Task details" });
 	let editorText = "draft";
 	const editor = new Text("draft", 0, 0);
 	editor.handleInput = data => { editorText += data; };
@@ -37,11 +64,31 @@ test("native fullscreen mouse routing expands one work section and preserves edi
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.doesNotMatch(widget.render(100).join("\n"), /Goal details|Task details/);
 	// SGR press/release on the Goal header, through Pi's actual fullscreen input path.
-	input("\x1b[<0;2;2M");
-	input("\x1b[<0;2;2m");
+	if (Renderer === TuiAltScreen) {
+		input("\x1b[<0;2;2M");
+		input("\x1b[<0;2;2m");
+	} else {
+		void ui.open(ctx, "goal");
+	}
 	await new Promise(resolve => setTimeout(resolve, 40));
-	assert.match(widget.render(100).join("\n"), /Goal details/);
-	assert.doesNotMatch(widget.render(100).join("\n"), /Task details/);
+	assert.match(overlay.lines().join("\n"), /Goal details/);
+	assert.doesNotMatch(widget.render(100).join("\n"), /Goal details|Task details/);
+	input("\x1b[F");
+	await new Promise(resolve => setTimeout(resolve, 40));
+	assert.match(overlay.lines().join("\n"), /Line 79/);
+	input("\t");
+	await new Promise(resolve => setTimeout(resolve, 40));
+	assert.match(overlay.lines().join("\n"), /Task details/);
+	todos.set({ label: "Todos", status: "done", summary: "Summary", detail: "Task details updated" });
+	terminal.columns = 44; terminal.rows = 20; tui.requestRender(true);
+	await new Promise(resolve => setTimeout(resolve, 40));
+	assert.match(overlay.lines().join("\n"), /Task details updated/);
+	assert.ok(overlay.lines().length <= 17);
+	assert.ok(overlay.lines().every(line => visibleWidth(line) <= 44));
+	assert.equal(editorText, "draft");
+	input("\x1b");
+	await new Promise(resolve => setTimeout(resolve, 40));
+	assert.equal(overlay.current(), undefined);
 	input("!");
 	assert.equal(editorText, "draft!");
 	assert.ok(output.length > 0);
@@ -61,6 +108,7 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 	};
 	const tui = new TuiAltScreen(terminal);
 	const theme = { fg(_color, text) { return text; }, bold(text) { return text; } };
+	const overlay = overlayUi(tui, theme);
 	const document = new Container(), widgetsAbove = new Container(), editor = new Text("draft\n\n", 0, 0);
 	document.addChild(new Text(Array.from({ length: 100 }, (_, i) => `Transcript ${i}`).join("\n"), 0, 0));
 	let editorText = "draft";
@@ -74,6 +122,7 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 	const ui = new WorkUi();
 	let widget;
 	ui.start({ mode: "tui", hasUI: true, ui: {
+		custom: overlay.custom,
 		setWidget(_key, factory) {
 			widget?.dispose?.();
 			widgetsAbove.clear();
@@ -102,16 +151,19 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 	assert.doesNotMatch(frame().join("\n"), /Goal details|Task details/);
 	await gesture("Goal summary");
 	// Inspect the actual rendered frame, not a fresh manual widget render.
-	assert.match(frame().join("\n"), /Goal details/);
-	assert.doesNotMatch(frame().join("\n"), /Task details/);
+	assert.match(overlay.lines().join("\n"), /Goal details/);
+	assert.doesNotMatch(overlay.lines().join("\n"), /Task details/);
+	input("\x1b"); await settle();
 	await gesture("Todo summary");
-	assert.match(frame().join("\n"), /Goal details/);
-	assert.match(frame().join("\n"), /Task details/);
+	assert.doesNotMatch(overlay.lines().join("\n"), /Goal details/);
+	assert.match(overlay.lines().join("\n"), /Task details/);
+	input("\x1b"); await settle();
 	await gesture("Goal summary", true);
-	assert.match(frame().join("\n"), /Goal details/);
+	assert.equal(overlay.current(), undefined);
 	await gesture("Goal summary");
-	assert.doesNotMatch(frame().join("\n"), /Goal details/);
-	assert.match(frame().join("\n"), /Task details/);
+	assert.match(overlay.lines().join("\n"), /Goal details/);
+	assert.doesNotMatch(overlay.lines().join("\n"), /Task details/);
+	input("\x1b"); await settle();
 	input("!");
 	assert.equal(editorText, "draft!");
 });

@@ -6,7 +6,7 @@ import { describeImageForTextModel } from "../extensions/image-description.ts";
 const PNG_DATA =
 	"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==";
 
-test("text-only visual inspection chooses an image-capable model and returns text", async () => {
+test("image inspection uses the session provider with cancellation and independent routing", async () => {
 	const current = {
 		provider: "openai-codex",
 		id: "gpt-5.3-codex-spark",
@@ -21,6 +21,7 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 	};
 	const usage = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, cost: { input: 0.1, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.2 } };
 	let request;
+	const signal = new AbortController().signal;
 	const ctx = {
 		model: current,
 		modelRegistry: {
@@ -31,15 +32,8 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 				assert.equal(model, vision);
 				return { ok: true, apiKey: "oauth-token", headers: { "x-test": "yes" } };
 			},
-		},
-	};
-	const result = await describeImageForTextModel(
-		{ type: "image", data: PNG_DATA, mimeType: "image/png" },
-		"screen.png",
-		undefined,
-		ctx,
-		{
-			async completeImageDescription(model, context, options) {
+			async complete(model, context, options) {
+				assert.equal(this, ctx.modelRegistry);
 				request = { model, context, options };
 				return {
 					role: "assistant",
@@ -49,16 +43,27 @@ test("text-only visual inspection chooses an image-capable model and returns tex
 				};
 			},
 		},
+	};
+	const result = await describeImageForTextModel(
+		{ type: "image", data: PNG_DATA, mimeType: "image/png" },
+		"screen.png",
+		signal,
+		ctx,
 	);
 
 	assert.equal(request.model, vision);
 	assert.equal(request.context.messages[0].content[1].type, "image");
-	assert.equal(request.options.apiKey, "oauth-token");
+	assert.equal(request.options.signal, signal);
+	assert.match(request.options.sessionId, /^[0-9a-f-]{36}$/);
+	assert.equal(request.options.apiKey, undefined, "the registry resolves current auth, including endpoint overrides");
 	assert.deepEqual(result, {
 		description: "A blue dialog with an OK button.",
 		usage,
 		model: "openai-codex/gpt-5.4-mini",
 	});
+	const previousId = request.options.sessionId;
+	await describeImageForTextModel({ type: "image", data: PNG_DATA, mimeType: "image/png" }, "screen.png", signal, ctx);
+	assert.notEqual(request.options.sessionId, previousId);
 });
 
 test("text-only visual inspection fails clearly when no vision model is configured", async () => {

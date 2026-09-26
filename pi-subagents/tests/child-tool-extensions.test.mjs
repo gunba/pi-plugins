@@ -9,6 +9,7 @@ import * as ai from "@earendil-works/pi-ai/compat";
 import * as typebox from "typebox";
 import { createJiti } from "jiti";
 import { loadChildToolExtensions } from "../extensions/child-tool-extensions.ts";
+import { childPolicySources, CHILD_POLICIES_EVENT } from "../extensions/child-policies.ts";
 
 async function fixture(t, files = {}) {
 	const root = await mkdtemp(join(tmpdir(), "pi-child-tool-extensions-"));
@@ -41,6 +42,40 @@ function harness() {
 	return { api, tools, hooks,
 		async emit(name, event = {}, ctx = {}) { for (const callback of hooks.get(name) ?? []) await callback(event, ctx); } };
 }
+
+test("hook-only policies are discovered and enforced in an isolated child", async (t) => {
+	const root = await fixture(t, { "guard.ts": `export default pi => {
+		pi.on("tool_call", event => event.toolName === "exec_command" ? { block: true, reason: "fixture policy" } : undefined);
+	};` });
+	const parent = harness();
+	parent.api.events.on(CHILD_POLICIES_EVENT, request => {
+		request.policies.push({ path: join(root, "guard.ts"), scope: "user" });
+	});
+	const policies = childPolicySources(parent.api);
+	const [{ factory }] = await load([], { policies });
+	const child = harness();
+	await factory(child.api);
+	assert.equal(child.tools.size, 0);
+	assert.equal(parent.hooks.size, 0);
+	assert.deepEqual(await child.hooks.get("tool_call")[0]({ toolName: "exec_command" }),
+		{ block: true, reason: "fixture policy" });
+	await assert.rejects(load([], { policies: [{ ...policies[0], scope: "project" }] }), /project trust/);
+});
+
+test("a policy that also owns tools runs once per child activation", async (t) => {
+	const root = await fixture(t, { "guard.ts": `export default pi => {
+		pi.on("tool_call", () => ({ block: true }));
+		pi.registerTool({ name: "guarded", parameters: { type: "object" }, execute: async () => ({ content: [], details: {} }) });
+	};` });
+	const path = join(root, "guard.ts");
+	const [{ factory }] = await load([tool("guarded", path)], {
+		policies: [{ path, scope: "user" }, { path, scope: "user" }],
+	});
+	const child = harness();
+	await factory(child.api);
+	assert.equal(child.hooks.get("tool_call").length, 1);
+	assert.equal(child.tools.size, 1);
+});
 
 async function loaderFor(root, extensionFactories, eventBus = sdk.createEventBus()) {
 	const settingsManager = sdk.SettingsManager.inMemory({ packages: [], extensions: [] });

@@ -1,25 +1,15 @@
-import {
-	complete,
-	type Message,
-	type Usage,
-	type Model,
-} from "@earendil-works/pi-ai/compat";
+import { randomUUID } from "node:crypto";
+import type { Api, Message, Usage, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { NativeImageContent } from "./image-content.ts";
 
-type CompleteImageDescription = typeof complete;
-
-type DescriptionDependencies = {
-	completeImageDescription?: CompleteImageDescription;
-};
-
 const DESCRIPTION_SYSTEM_PROMPT = `You are a visual inspection assistant for a coding agent whose active model cannot process images. Describe only visible facts that may matter to the task. Include visible text verbatim, layout, controls, errors, dimensions, colors, and notable visual state. Be concise, structured, and explicit about anything unreadable. Do not speculate.`;
 
-function imageCapable(model: Model<string>): boolean {
+function imageCapable(model: Model<Api>): boolean {
 	return model.input?.includes("image") === true;
 }
 
-function descriptionCandidates(ctx: ExtensionContext): Model<string>[] {
+function descriptionCandidates(ctx: ExtensionContext): Model<Api>[] {
 	const current = ctx.model;
 	if (!current) return [];
 	return ctx.modelRegistry
@@ -44,22 +34,17 @@ export async function describeImageForTextModel(
 	path: string,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
-	dependencies: DescriptionDependencies = {},
 ): Promise<{ description: string; model: string; usage: Usage }> {
-	let selectedModel: Model<string> | undefined;
-	let selectedAuth: {
-		apiKey: string;
-		headers?: Record<string, string | null>;
-		env?: Record<string, string>;
-	} | undefined;
+	signal?.throwIfAborted();
+	let selectedModel: Model<Api> | undefined;
 	for (const candidate of descriptionCandidates(ctx)) {
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(candidate);
+		signal?.throwIfAborted();
 		if (!auth.ok || !auth.apiKey) continue;
 		selectedModel = candidate;
-		selectedAuth = { apiKey: auth.apiKey, headers: auth.headers, env: auth.env };
 		break;
 	}
-	if (!selectedModel || !selectedAuth) {
+	if (!selectedModel) {
 		throw new Error("no authenticated image-capable model is configured");
 	}
 
@@ -74,14 +59,13 @@ export async function describeImageForTextModel(
 		],
 		timestamp: Date.now(),
 	};
-	const run = dependencies.completeImageDescription ?? complete;
-	const response = await run(
+	// The session runtime owns current authentication, endpoint overrides and Wire.
+	// A nested image request must not reuse the parent's in-flight routing session.
+	const response = await ctx.modelRegistry.complete(
 		selectedModel,
 		{ systemPrompt: DESCRIPTION_SYSTEM_PROMPT, messages: [message] },
 		{
-			apiKey: selectedAuth.apiKey,
-			headers: selectedAuth.headers,
-			env: selectedAuth.env,
+			sessionId: randomUUID(),
 			signal,
 		},
 	);

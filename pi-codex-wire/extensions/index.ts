@@ -2,15 +2,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { StreamOptions, SimpleStreamOptions, Model, Api, Context } from "@earendil-works/pi-ai";
+import type { StreamOptions, SimpleStreamOptions, Model, Api, Context, TranscriptContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { convertResponsesMessages, createGrammarToolInputProperties } from "./serializer.ts";
+import { responseReplay } from "./serializer.ts";
 import { Diagnostics, object, type JsonObject, type Profile } from "./diagnostics.ts";
+import { retainDiagnostics } from "./diagnostic-retention.ts";
 import { Protocol } from "./protocol.ts";
 import { CODEX_VERSION, codexIdentity, type Client } from "./identity.ts";
 import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
+import codexUsage from "./usage.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
@@ -41,6 +43,7 @@ function installationId(directory: string): string {
 }
 
 export default function codexWire(pi: ExtensionAPI): void {
+  codexUsage(pi);
   requestTracing(pi);
   pi.registerFlag("codex-wire-client", { type: "string", description: "Codex client identity: cli or desktop (overrides saved client)" });
   pi.registerFlag("codex-wire-desktop-version", { type: "string", description: "Desktop application version for the app-server User-Agent suffix" });
@@ -86,6 +89,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   }
 
   function stop(): void {
+    diagnostics?.close(); diagnostics = undefined;
     releaseRequiredWire?.(); releaseRequiredWire = undefined;
     lifetime?.abort(); lifetime = undefined;
     abortPending();
@@ -122,6 +126,10 @@ export default function codexWire(pi: ExtensionAPI): void {
       () => ctx.ui.notify("Codex wire diagnostics could not be written; this run cannot support an allowance comparison.", "warning"));
     diagnostics.write({ kind: "run", profile: mode, referenceVersion: CODEX_VERSION, transport: selectedTransport,
       compression, client, prewarm, rootSessionId: ctx.sessionManager.getSessionId() });
+    // Housekeeping runs at activation, never inside a model request.
+    void retainDiagnostics(join(directory, "logs")).catch(() => {
+      if (!currentLifetime.signal.aborted) ctx.ui.notify("Codex Wire could not retire old diagnostics.", "warning");
+    });
     if (identity) {
       catalog = new Catalog(identity);
       const windows = ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "codex-wire-window");
@@ -188,7 +196,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       }
     }
 
-    function wrapped(model: Model<Api>, context: Context, options: Options | undefined, simple: boolean) {
+    function wrapped(model: Model<Api>, context: TranscriptContext, options: Options | undefined, simple: boolean) {
       const threadId = options?.sessionId ?? primaryThreadId;
       guardCheckpointContext(context, model.provider, threadId);
       const call = (opts: Options) => simple ? provider!.streamSimple(model, context, opts as SimpleStreamOptions)
@@ -298,11 +306,7 @@ export default function codexWire(pi: ExtensionAPI): void {
         }
         if (currentTransport && metadataForRequest && !["error", "aborted"].includes(message.stopReason)) {
           try {
-            const replay = convertResponsesMessages(model, { messages: [message] }, new Set(["openai", "openai-codex", "opencode"]), {
-              includeSystemPrompt: false,
-              grammarToolInputProperties: createGrammarToolInputProperties(context.tools,
-                model.compat && "supportsOpenAIGrammarTools" in model.compat ? model.compat.supportsOpenAIGrammarTools ?? false : false),
-            }).filter(item => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");
+            const replay = responseReplay(model, context, message);
             if (metadataForRequest.use_responses_lite === true) {
               const shaped = shapeModelBody({ model: model.id, input: replay, tools: [] }, metadataForRequest, currentProtocol!.threadId);
               currentTransport.setReplayOutput(requestId, (shaped.input as unknown[]).slice(1));
@@ -411,7 +415,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   });
   pi.on("agent_settled", () => { beganTurn = false; });
   pi.on("model_select", (_event, ctx) => { abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; });
-  const newWindow = (_event: unknown, ctx: ExtensionContext) => {
+  const newWindow = () => {
     if (!protocol) return;
     abortPending(protocol.threadId); transport?.close(); protocol.rotateWindow(); beganTurn = false;
     pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });

@@ -1432,8 +1432,9 @@ async function askViaDialogs(
    allowFreeform: boolean,
    allowComment: boolean,
    timeout?: number,
+   signal?: AbortSignal,
 ): Promise<AskUIResult | null> {
-   const dialogOpts = timeout ? { timeout } : undefined;
+   const dialogOpts = { signal, ...(timeout ? { timeout } : {}) };
    const prompt = context ? `${question}\n\nContext:\n${context}` : question;
 
    if (allowMultiple) {
@@ -1443,7 +1444,7 @@ async function askViaDialogs(
          "Type your selection(s)...",
          dialogOpts,
       ) as string | undefined;
-      if (isCancelledInput(rawSelections)) return null;
+      if (signal?.aborted || isCancelledInput(rawSelections)) return null;
 
       const selections = parseDialogSelections(rawSelections);
       if (selections.length === 0) return null;
@@ -1457,18 +1458,18 @@ async function askViaDialogs(
          "Optional comment (press Enter to skip)...",
          dialogOpts,
       ) as string | undefined;
-      return createSelectionResponse(selections, comment);
+      return signal?.aborted ? null : createSelectionResponse(selections, comment);
    }
 
    const selectOptions = options.map((o) => o.title);
    if (allowFreeform) selectOptions.push(FREEFORM_SENTINEL);
 
    const selected = await ui.select(prompt, selectOptions, dialogOpts) as string | undefined;
-   if (isCancelledInput(selected)) return null;
+   if (signal?.aborted || isCancelledInput(selected)) return null;
 
    if (selected === FREEFORM_SENTINEL) {
       const answer = await ui.input(prompt, "Type your answer...", dialogOpts) as string | undefined;
-      if (isCancelledInput(answer)) return null;
+      if (signal?.aborted || isCancelledInput(answer)) return null;
       return createFreeformResponse(answer);
    }
 
@@ -1481,7 +1482,7 @@ async function askViaDialogs(
       "Optional comment (press Enter to skip)...",
       dialogOpts,
    ) as string | undefined;
-   return createSelectionResponse([selected], comment);
+   return signal?.aborted ? null : createSelectionResponse([selected], comment);
 }
 
 export default function(pi: ExtensionAPI) {
@@ -1610,8 +1611,8 @@ export default function(pi: ExtensionAPI) {
 
          if (options.length === 0) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
-            const answer = await ctx.ui.input(prompt, "Type your answer...", timeout ? { timeout } : undefined);
-            const response = createFreeformResponse(answer);
+            const answer = await ctx.ui.input(prompt, "Type your answer...", { signal, ...(timeout ? { timeout } : {}) });
+            const response = signal?.aborted ? null : createFreeformResponse(answer);
 
             if (!response) {
                return {
@@ -1635,25 +1636,30 @@ export default function(pi: ExtensionAPI) {
          let result: AskUIResult | null;
          let overlayHandle: OverlayHandle | undefined;
          let removeOverlayInputListener: (() => void) | undefined;
+         let cleanupDialog: (() => void) | undefined;
          let hasAnnouncedHide = false;
          try {
             if (ctx.mode !== "tui") {
                // RPC clients surface select()/input() through their native modal protocol.
                // ctx.ui.custom() is TUI-only (RPC returns undefined), so skip it here to
                // avoid a no-op custom UI before the real user-choice request is emitted.
-               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout);
+               result = await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout, signal);
             } else {
                const customFactory = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: AskUIResult | null) => void) => {
-                  if (signal) {
-                     const onAbort = () => done(null);
-                     signal.addEventListener("abort", onAbort, { once: true });
-                  }
-
-                  if (timeout && timeout > 0) {
-                     setTimeout(() => done(null), timeout);
-                  }
-
-                  return new AskComponent(
+                  let completed = false;
+                  let timer: ReturnType<typeof setTimeout> | undefined;
+                  const onAbort = () => finish(null);
+                  cleanupDialog = () => {
+                     completed = true;
+                     signal?.removeEventListener("abort", onAbort);
+                     clearTimeout(timer);
+                  };
+                  const finish = (value: AskUIResult | null) => {
+                     if (completed) return;
+                     cleanupDialog?.();
+                     done(value);
+                  };
+                  const component = new AskComponent(
                      question,
                      normalizedContext,
                      options,
@@ -1665,8 +1671,12 @@ export default function(pi: ExtensionAPI) {
                      theme,
                      keybindings,
                      shortcuts,
-                     done,
+                     finish,
                   );
+                  signal?.addEventListener("abort", onAbort, { once: true });
+                  if (timeout && timeout > 0) timer = setTimeout(onAbort, timeout);
+                  if (signal?.aborted) finish(null);
+                  return component;
                };
 
                // Register a raw terminal input listener for the overlay-toggle key so the
@@ -1697,8 +1707,9 @@ export default function(pi: ExtensionAPI) {
                      overlayHandle = handle;
                   }),
                );
+               cleanupDialog?.();
                result = customResult === undefined
-                  ? await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout)
+                  ? await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout, signal)
                   : customResult;
             }
          } catch (error) {
@@ -1710,9 +1721,11 @@ export default function(pi: ExtensionAPI) {
                details: { error: message },
             };
          } finally {
+            cleanupDialog?.();
             removeOverlayInputListener?.();
          }
 
+         if (signal?.aborted) result = null;
          if (result === null) {
             pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
             return {

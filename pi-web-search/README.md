@@ -47,6 +47,11 @@ Reference IDs are not rewritten before subsequent `open`, `click` or `find`
 requests. Reference lifetime and cross-session availability remain service
 behavior, not a local cache guarantee.
 
+Search and image generation share `pi-codex-service` for registry authentication,
+base-URL/header overrides, cancellation, and bounded response reading. Requests
+have a five-minute deadline and a 32 MiB response limit. A cancelled auth lookup
+cannot start a late request, and response overflow cancels the body reader.
+
 ## Differences from native Codex
 
 | Area | Pi adapter | Inspected native standalone tool |
@@ -58,14 +63,13 @@ behavior, not a local cache guarantee.
 | Reasoning | Omitted | Explicitly `None`, omitted during serialization |
 | Settings | Direct caller, live external access | Configured cached/indexed/live mode, location, context size and domain filters |
 | Output budget | 10,000 tokens requested; Pi's output-budget layer may archive and shorten the returned text | Current call's truncation-policy token budget |
-| Identity | Model-registry auth headers, then `originator: pi` and required OAuth/account headers | Native provider/auth client, optional thread originator and turn metadata |
-| Transport | One `fetch` POST with the caller's abort signal; no adapter retry or fallback | Native HTTP endpoint session using the provider retry policy |
+| Identity | Defaults to `originator: pi` and OAuth/account headers; resolved registry headers can override or remove defaults | Native provider/auth client, optional thread originator and turn metadata |
+| Transport | One bounded `fetch` POST with cancellation and a deadline; no adapter retry or fallback | Native HTTP endpoint session using the provider retry policy |
 | UI | Tool text preview and metadata retained in details | Search begin/end events with action and structured results; plaintext output supplied to the model |
 
 Codex Wire owns the Responses transport; it does not install a global fetch
 interceptor for search. Selecting Wire's Desktop identity therefore does not
-replace this tool's `originator: pi` with a Desktop originator. No search
-identity or request-policy changes accompany the rendering fix.
+replace this tool's default `originator: pi` with a Desktop originator.
 
 Native Codex also has **hosted web search**, which is not this adapter.
 Its tool planner prefers standalone search when namespace tools and provider

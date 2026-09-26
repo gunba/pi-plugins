@@ -1,9 +1,11 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type Profile = "pi" | "codex";
 export type JsonObject = Record<string, unknown>;
+export const DIAGNOSTIC_PART_BYTES = 2 * 1024 * 1024;
+export const DIAGNOSTIC_PARTS = 4;
 
 export function object(value: unknown): JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -59,18 +61,52 @@ export function eventDiagnostics(value: unknown): JsonObject | undefined {
 export class Diagnostics {
   private readonly key = randomBytes(32);
   private failed = false;
+  private closed = false;
+  private initialized = false;
+  private bytes = 0;
+  private header = "";
   readonly path: string;
   private readonly warn: () => void;
   constructor(path: string, warn: () => void = () => {}) { this.path = path; this.warn = warn; }
 
   write(record: JsonObject): void {
-    if (this.failed) return;
+    if (this.failed || this.closed) return;
     try {
-      mkdirSync(dirname(this.path), { recursive: true });
-      appendFileSync(this.path, `${JSON.stringify({ time: new Date().toISOString(), ...record })}\n`, { mode: 0o600 });
+      if (!this.initialized) {
+        mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+        writeFileSync(`${this.path}.owner`, JSON.stringify({ pid: process.pid, closed: false }), { flag: "wx", mode: 0o600 });
+        try { writeFileSync(this.path, "", { flag: "wx", mode: 0o600 }); }
+        catch (error) { rmSync(`${this.path}.owner`, { force: true }); throw error; }
+        this.initialized = true;
+      }
+      let line = `${JSON.stringify({ time: new Date().toISOString(), ...record })}\n`;
+      if (Buffer.byteLength(line) > DIAGNOSTIC_PART_BYTES / 2)
+        line = `${JSON.stringify({ time: new Date().toISOString(), kind: "record-omitted", bytes: Buffer.byteLength(line) })}\n`;
+      if (record.kind === "run" && !this.header) this.header = line;
+      const length = Buffer.byteLength(line);
+      if (this.bytes + length > DIAGNOSTIC_PART_BYTES) {
+        rmSync(`${this.path}.${DIAGNOSTIC_PARTS - 1}`, { force: true });
+        for (let part = DIAGNOSTIC_PARTS - 2; part >= 1; part--) {
+          if (existsSync(`${this.path}.${part}`)) renameSync(`${this.path}.${part}`, `${this.path}.${part + 1}`);
+        }
+        renameSync(this.path, `${this.path}.1`);
+        writeFileSync(this.path, this.header, { flag: "wx", mode: 0o600 });
+        this.bytes = Buffer.byteLength(this.header);
+      }
+      appendFileSync(this.path, line);
+      this.bytes += length;
     } catch {
       this.failed = true;
       this.warn();
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.initialized) {
+      try { writeFileSync(`${this.path}.owner`, JSON.stringify({ pid: process.pid, closed: true }), { mode: 0o600 }); }
+      catch { /* An unsealed live owner is retained conservatively. */ }
     }
   }
 

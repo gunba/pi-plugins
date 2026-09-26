@@ -17,13 +17,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   follow-up command only on success. Managed shell sessions launch independently, stream partial output, terminate
   process trees, retain complete logs when display output is truncated, and use
   compact tool rendering while preserving context-mode HTTP-output guardrails.
-  `view_image` emits Pi-native image blocks and normalises older session images
-  before provider requests; `/repair-session-images` performs a backed-up
-  permanent repair. `image_gen` follows OpenAI Codex's standalone image tool,
-  generates or edits with `gpt-image-2`, and saves outputs under
-  `$CODEX_HOME/generated_images`. A native footer status passively shows Codex
-  5h/7d usage; `/pi-usage` shows the detailed token, cost, and rate-limit
-  breakdown and controls that status.
+  `view_image` validates image data and emits Pi-native image blocks.
+  `image_gen` follows OpenAI Codex's standalone image tool, generates or edits
+  with GPT Image 2.5 Sunburst or Flare, and saves outputs under
+  `$CODEX_HOME/generated_images`.
 - [`pi-local-links`](pi-local-links/README.md) — resolves relative file hyperlinks
   in assistant Markdown against the session working directory, using absolute
   file URLs for terminal Ctrl+click. Applies during streaming and history
@@ -42,15 +39,12 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   mandatory decision-gate skill by default.
 - `pi-scheduler` — adds `/schedule <delay> <message>` and an agent-facing
   `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
-  compact queued-message panel, countdowns, `ctrl+o` expansion, and
-  cancel/list command reminders. Agents can cancel pending messages with
+  compact shared summary and full details in `/work scheduled`.
+  `/schedule list` also opens this view. Agents can cancel pending messages with
   `cancel_scheduled_message`. Due reminders appear as labelled scheduler
   messages instead of newly typed user messages. Agent-created messages steer
   an active run, as do user-created reminders. Session-scoped SQLite transactions
   protect concurrent scheduling and delivery in live TUI and RPC sessions.
-- `pi-extension-freshness` — prints a startup extension freshness panel with
-  last-updated dates, age-based color coding, and `/extension-freshness` for
-  on-demand review of stale extension paths.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, and MCP configuration.
 - `pi-system-context` — adds compact local environment context to the system
@@ -79,8 +73,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - [`pi-party`](pi-party/README.md) — local agent discovery, self-managed parties,
   invitations and direct or group messaging, with message previews and a live
   `/party chat` conversation viewer.
-- [`pi-browser-context`](pi-browser-context/README.md) — archived accessibility
-  snapshot diffs and a focused browser skill for the existing Playwright backend.
+- [`pi-browser`](pi-browser/README.md) — a focused browser skill for
+  `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
+  observations limit context, and full text uses the output archive.
 - `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
   `get_goal`, `create_goal`, and `update_goal`. Input-bound direct-human
   authority protects mutations; bounded same-session rounds use revision-fenced
@@ -97,9 +92,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
   panel. Ordered immutable three-state snapshots are branch-aware, remain visible
   through settlement, and render model-supplied text without terminal controls.
-- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo, subagent and party
-  state above the editor. Fullscreen mouse clicks expand sections independently;
-  Alt+1–4 provides keyboard access. Native tool expansion remains separate.
+- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo, subagent, party and
+  scheduled state above the editor. `/work` opens complete details in a modal;
+  fullscreen summary clicks open the corresponding section. Management reuses
+  the existing subagent and party screens. Native tool expansion remains separate.
   The shared UI loads with any consumer, not a separate manifest entry.
 
 ## Install
@@ -109,6 +105,11 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 [`pi-codex-wire`](pi-codex-wire/README.md) is included in the automatic extension
 manifest and always activates in Codex mode. It keeps Pi's agent loop and offers
 CLI or Desktop request identity through `/codex-wire client cli|desktop`.
+
+Wire also owns the passive 5h/7d allowance status and `/pi-usage`. Recorded
+token/API costs are separate from subscription allowance. Its shared usage
+reducer includes native usage entries, billed tools, summaries, and
+deduplicated child charges in both `/pi-usage` and the fast footer.
 `/fast on|off|status` controls an off-by-default, paid ChatGPT Codex speed tier.
 No separate package registration or saved activation setting is needed. Remove
 any old standalone Wire registration to avoid loading it twice. The linked guide
@@ -146,7 +147,7 @@ npm run check
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. CI covers Linux
-and Windows using Pi 0.85.1 on Node 22 and Node 24.
+and Windows using the pinned Pi 0.87.1 dependencies on Node 22 and Node 24.
 Codex Wire carries its own serializer dependency; this does not upgrade
 the installed Pi application.
 

@@ -260,7 +260,7 @@ class GoalController {
 		}
 	}
 
-	private refreshUi(ctx: ExtensionContext): void {
+	private refreshUi(): void {
 		if (this.stopping) return;
 		updateGoalUi(this.goalUi, this.currentForUi(), this.store.corruptionReason);
 	}
@@ -333,7 +333,7 @@ class GoalController {
 						input,
 						result,
 					} satisfies GoalCommandEntryData);
-					this.refreshUi(ctx);
+					this.refreshUi();
 					this.requestDrive(ctx);
 				});
 			},
@@ -373,7 +373,7 @@ class GoalController {
 					objective: params.objective,
 					...(params.max_goal_rounds === undefined ? {} : { maxGoalRounds: params.max_goal_rounds }),
 				});
-				this.refreshUi(ctx);
+				this.refreshUi();
 				this.requestDrive(ctx);
 				return toolResult(goalValue(goal));
 			}),
@@ -463,7 +463,7 @@ class GoalController {
 						);
 					}
 				}
-				this.refreshUi(ctx);
+				this.refreshUi();
 				this.requestDrive(ctx);
 				return toolResult(goalValue(goal));
 			}),
@@ -482,7 +482,7 @@ class GoalController {
 			this.lastStopReason = undefined;
 			const branch = ctx.sessionManager.getBranch();
 			this.store.restore(branch);
-			this.refreshUi(ctx);
+			this.refreshUi();
 		});
 
 		this.pi.on("session_tree", (_event, ctx) => {
@@ -491,10 +491,10 @@ class GoalController {
 			this.pendingWrapup = undefined;
 			const branch = ctx.sessionManager.getBranch();
 			this.store.restore(branch);
-			this.refreshUi(ctx);
+			this.refreshUi();
 		});
 
-		this.pi.on("session_shutdown", (_event, ctx) => {
+		this.pi.on("session_shutdown", () => {
 			this.stopping = true;
 			this.driveRequested = false;
 			this.attempt = undefined;
@@ -525,10 +525,10 @@ class GoalController {
 						this.store.admitRound(attempt, attempt.content);
 					}
 					attempt.admitted = true;
-					this.refreshUi(ctx);
+					this.refreshUi();
 				} catch {
 					this.store.disarm();
-					this.refreshUi(ctx);
+					this.refreshUi();
 				}
 			});
 		});
@@ -595,7 +595,7 @@ class GoalController {
 		this.attempt = undefined;
 		this.pendingWrapup = undefined;
 		this.lastStopReason = undefined;
-		this.refreshUi(ctx);
+		this.refreshUi();
 		this.requestDrive(ctx);
 	}
 
@@ -619,7 +619,7 @@ class GoalController {
 		if (!ctx.isIdle() || ctx.hasPendingMessages() || this.attempt !== undefined) return;
 		this.refresh(ctx);
 		if (this.store.corruptionReason !== undefined) {
-			this.refreshUi(ctx);
+			this.refreshUi();
 			return;
 		}
 		const goal = this.store.get();
@@ -629,7 +629,7 @@ class GoalController {
 				code: "round-limit",
 				message: `Goal reached its configured limit of ${goal.maxGoalRounds} rounds.`,
 			});
-			this.refreshUi(ctx);
+			this.refreshUi();
 			return;
 		}
 		const round = goal.roundsStarted + 1;
@@ -669,7 +669,7 @@ class GoalController {
 					message: `Could not queue goal round ${round}: ${error instanceof Error ? error.message : String(error)}`,
 				});
 			}
-			this.refreshUi(ctx);
+			this.refreshUi();
 		}
 	}
 }

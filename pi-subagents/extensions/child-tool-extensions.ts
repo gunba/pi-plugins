@@ -4,12 +4,14 @@ import type { ExtensionAPI, ExtensionFactory, InlineExtension, ToolInfo } from "
 import { createJiti } from "jiti";
 
 import { createIsolatedJiti } from "../loader/isolated-jiti.ts";
+import type { ChildPolicySource } from "./child-policies.ts";
 
 export interface LoadChildToolExtensionsOptions {
 	tools: ToolInfo[];
 	handledToolNames: Iterable<string>;
 	signal: AbortSignal;
 	projectTrusted: boolean;
+	policies?: readonly ChildPolicySource[];
 	/** Parent-authoritative configuration, not parent tool execution. */
 	getFlag?: (name: string) => boolean | string | undefined;
 }
@@ -67,12 +69,42 @@ function sourceError(names: Iterable<string>, reason: string, cause?: unknown): 
  * module evaluation/factory code cannot be forcibly interrupted in-process.
  */
 export async function loadChildToolExtensions({
-	tools, handledToolNames, signal, projectTrusted, getFlag,
+	tools, handledToolNames, signal, projectTrusted, getFlag, policies = [],
 }: LoadChildToolExtensionsOptions): Promise<InlineExtension[]> {
 	signal.throwIfAborted();
 	const handled = new Set(handledToolNames);
 	const providers = new Map<string, ProviderSource>();
 	const owners = new Map<string, string>();
+
+	async function resolveSource(source: { path: string; scope: string }, names: string[]): Promise<string> {
+		if (!["user", "project", "temporary"].includes(source.scope)) {
+			throw sourceError(names, `unsupported source scope ${JSON.stringify(source.scope)}.`);
+		}
+		if (source.scope === "project" && !projectTrusted) {
+			throw sourceError(names, `project trust is required for ${JSON.stringify(source.path)}.`);
+		}
+		if (!source.path || !isAbsolute(source.path)) {
+			throw sourceError(names, `source ${JSON.stringify(source.path)} is synthetic, inline or not an absolute file path; provide a real extension source file or a child-scoped handled tool.`);
+		}
+		try {
+			const path = await realpath(source.path);
+			if (!(await stat(path)).isFile()) throw new Error("source is not a file");
+			signal.throwIfAborted();
+			return path;
+		} catch (error) {
+			signal.throwIfAborted();
+			throw sourceError(names, `cannot read extension source ${JSON.stringify(source.path)} (${error instanceof Error ? error.message : String(error)}).`, error);
+		}
+	}
+	const sourceKey = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
+
+	// Policies run even when they own no tool or all their tools were overridden.
+	// Canonical identity also prevents evaluating a policy/tool factory twice.
+	for (const policy of policies) {
+		signal.throwIfAborted();
+		const path = await resolveSource(policy, ["policy"]);
+		providers.set(sourceKey(path), { path, names: new Set() });
+	}
 
 	// Validate the complete metadata set before evaluating any provider code.
 	for (const tool of tools) {
@@ -80,22 +112,8 @@ export async function loadChildToolExtensions({
 		if (handled.has(tool.name) || tool.sourceInfo?.source === "builtin") continue;
 		const source = tool.sourceInfo;
 		if (!source) throw sourceError([tool.name], "parent tool metadata has no sourceInfo.");
-		if (source.scope === "project" && !projectTrusted) {
-			throw sourceError([tool.name], `project trust is required for ${JSON.stringify(source.path)}.`);
-		}
-		if (!source.path || !isAbsolute(source.path)) {
-			throw sourceError([tool.name], `source ${JSON.stringify(source.path ?? source.source)} is synthetic, inline or not an absolute file path; provide a real extension source file or a child-scoped handled tool.`);
-		}
-		let path: string;
-		try {
-			path = await realpath(source.path);
-			if (!(await stat(path)).isFile()) throw new Error("source is not a file");
-		} catch (error) {
-			signal.throwIfAborted();
-			throw sourceError([tool.name], `cannot read extension source ${JSON.stringify(source.path)} (${error instanceof Error ? error.message : String(error)}).`, error);
-		}
-		signal.throwIfAborted();
-		const key = process.platform === "win32" ? path.toLowerCase() : path;
+		const path = await resolveSource(source, [tool.name]);
+		const key = sourceKey(path);
 		const prior = owners.get(tool.name);
 		if (prior && prior !== key) throw sourceError([tool.name], "parent metadata assigns this tool to multiple source files.");
 		owners.set(tool.name, key);
@@ -142,7 +160,7 @@ export async function loadChildToolExtensions({
 				signal.throwIfAborted();
 			} catch (error) {
 				signal.throwIfAborted();
-				throw sourceError(names, `loading ${JSON.stringify(path)} failed (${error instanceof Error ? error.message : String(error)}).`, error);
+				throw sourceError(names.size ? names : ["policy"], `loading ${JSON.stringify(path)} failed (${error instanceof Error ? error.message : String(error)}).`, error);
 			}
 		}
 	} }];
