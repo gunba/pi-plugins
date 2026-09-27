@@ -21,6 +21,7 @@ export interface Operation {
 export interface OperationOptions {
 	home: string; source: string; agentDir: string; cwd: string; directory: string;
 	action: DeskOperation; signal?: AbortSignal; progress?: (value: Operation) => void;
+	startup?: Pick<RuntimeInstallation, "cwd" | "port" | "sessionDir" | "proxy">;
 }
 const operationFile = (home: string) => join(home, "operation.json");
 export function operationStatus(home: string): Operation | undefined {
@@ -91,7 +92,7 @@ async function installationOptions(options: OperationOptions): Promise<Omit<Runt
 	const current = await probeHost(options.directory);
 	if (current.host) throw new Error("Stop the unmanaged host and retain its startup options before setup. No process was stopped.");
 	if (current.state !== "stopped") throw new Error("The existing host cannot be identified. Resolve its status before setup.");
-	return { directory: options.directory, agentDir: options.agentDir, cwd: options.cwd, port: 8910 };
+	return { directory: options.directory, agentDir: options.agentDir, cwd: options.cwd, port: 8910, ...options.startup };
 }
 export async function runOperation(options: OperationOptions): Promise<Operation> {
 	const { home } = options;

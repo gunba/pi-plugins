@@ -7,8 +7,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 [`pi-desk`](pi-desk/README.md) is the optional desktop and phone app. It runs Pi
 sessions on their owning computers and presents them through one shared web
 interface. An HTTPS relay provides remote access without inbound PC ports.
-Desk installs separately and includes a pinned Pi SDK; it is not another
-extension entry. See its [capability map](pi-desk/CAPABILITIES.md) and
+The included `/desk` extension prepares isolated runtimes with a pinned Pi SDK,
+and manages updates, restart and login-start through native Pi dialogs.
+The host build is optional; ordinary extension loading does not install its
+frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) and
 [installation guide](pi-desk/UPDATING.md) for coverage and release boundaries.
 
 ## Extensions

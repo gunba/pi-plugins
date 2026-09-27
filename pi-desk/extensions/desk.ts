@@ -6,6 +6,8 @@ import { isManagedChild } from "../../pi-work-coordination/index.ts";
 import { readInstallation, installationFile } from "../manage/installation.ts";
 import { deskStatus, extensionLocation, launchOperation, operationStatus, runLauncher, runOperation, statusText, type DeskOperation } from "../manage/operations.ts";
 import { openBrowser } from "../src/host/lifecycle.ts";
+import { readLoginConfig } from "../src/host/login-config.ts";
+import { chooseStartup } from "../manage/setup.ts";
 
 const commands = ["status", "setup", "open", "stage", "update", "restart", "rollback", "stop", "signin", "login"] as const;
 export default function desk(pi: ExtensionAPI) {
@@ -44,14 +46,17 @@ export default function desk(pi: ExtensionAPI) {
 				if (command === "status") { notify(statusText(await status())); return; }
 				if (command === "setup") {
 					if ((await status()).state?.active) { notify("Desk is already configured. Use /desk to manage it."); return; }
-					if (!await ctx.ui.confirm("Set up Desk?", "Prepare an isolated runtime and retain existing account, startup options and native sessions. An existing host must be stopped first.")) return;
+					if (!await ctx.ui.confirm("Set up Desk?", "Prepare an isolated runtime and retain the account and native sessions. Saved login-start options are kept. An existing host must be stopped first.")) return;
 					let data = directory();
 					if (!existsSync(join(data, "account.json")) && !existsSync(join(data, "login.json"))) {
 						const chosen = await ctx.ui.input("Desk data directory (Enter keeps the default)", data);
 						if (chosen === undefined) return;
 						data = chosen.trim() ? resolve(chosen.trim()) : data;
 					}
-					await runOperation({ ...options(ctx, "setup"), directory: data }); notify("Desk is ready. Use /desk open, or /desk signin for a new workspace."); return;
+					const needsDefaults = !readLoginConfig(data) && !existsSync(installationFile(location.home));
+					const startup = needsDefaults ? await chooseStartup(ctx) : undefined;
+					if (needsDefaults && !startup) return;
+					await runOperation({ ...options(ctx, "setup"), directory: data, startup }); notify("Desk is ready. Use /desk open, or /desk signin for a new workspace."); return;
 				}
 				if (!(await status()).state?.active) throw new Error("Run /desk setup first.");
 				if (command === "open") {

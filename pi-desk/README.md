@@ -13,7 +13,7 @@ controls, questions and Work summaries. Sign into the same Microsoft-owned
 workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
-forks, compaction, configuration, Party, goal/task/scheduler and child-agent
+forks, compaction, configuration, Party, plan/scheduler and child-agent
 controls are connected. The conversation footer shows model/thinking, context,
 recorded usage and first-party Fast/allowance badges, with expanded settings
 panels. Initial-context breakdowns, model accounts, MCP
@@ -23,9 +23,19 @@ The shared app combines sessions from several computers, with independent
 connection states and account-wide access controls. Unsent drafts stay in their
 browser. An unavailable computer does not
 block the others.
-Foreground, detached and optional login-start entry points and upgrade
-diagnostics are available. This is not an independently audited remote-access
+The included `/desk` command handles setup, staged updates, restart and optional
+login-start using native Pi dialogs. Prepared runtimes pin the first-party
+resources; updating the installed source does not replace live worker code.
+Foreground/detached entry points remain available for development and recovery.
+This is not an independently audited remote-access
 product. See [installation and updates](UPDATING.md) for setup and platform checks.
+
+## Getting started
+
+Install this repository as a personal Pi package, restart Pi, and run
+`/desk setup`. Then `/desk signin` connects this computer to the shared workspace
+and `/desk open` opens it. Use `/desk` for management; see
+[installation and updates](UPDATING.md) for migration and platform prerequisites.
 
 ## Development
 
@@ -129,8 +139,10 @@ a rebuild; it does not delete native sessions.
 
 ### Starting and stopping
 
-From a built checkout, use `node dist/host/cli.js` in place of `pi-desk` below.
-The package's executable runs the same commands:
+For a managed installation, use `/desk` or its stable launcher from
+[installation and updates](UPDATING.md). The commands below describe the direct
+development/standalone CLI. From a built checkout, use `node dist/host/cli.js`
+in place of `pi-desk`:
 
 ```sh
 pi-desk signin --workspace https://desk.example.com --name "My computer"
@@ -275,6 +287,10 @@ Startup failures appear in `doctor`, service/task status, `host.log` and, when
 available, `login-error.txt`. There is no automatic crash-restart loop and no
 forced process-tree termination. A subsequent start restores references, not
 active workers or tool requests.
+
+Managed users can instead use `/desk login`; its detached controller performs
+the stop/change/start sequence after confirmation. It does not apply an unrelated
+staged update or resume conversations.
 
 The user-service flow is exercised on Linux. Native Windows registration,
 window behavior and shutdown still require the platform check. The Windows
@@ -565,6 +581,8 @@ Remote access setup is in [RELAY.md](RELAY.md).
 - `src/shared/protocol.ts`: serializable app messages.
 - `src/shared/account-channel.ts`: credential-bound ephemeral handshakes.
 - `../pi-ui/`: lightweight presentation discovery for extensions.
+- `extensions/desk.ts`: native setup and management command.
+- `manage/`: immutable source preparation and stable-launcher selection.
 
 The app is an optional package. Its frontend and server dependencies are not
 part of ordinary pi-plugins extension loading.

@@ -123,6 +123,18 @@ access; keep it private.
 
 ## Deployment and incidents
 
+Managed runtimes are built from the configured personal Pi package with its
+locked dependencies. `/desk update` uses Pi's own package manager; it does not
+accept a source URL from the relay. Source/dependency publishers remain trusted
+to execute code as the host user. Runtime content hashes identify snapshots;
+they are not publisher signatures or an independent security check.
+
+Authorized users can invoke `/desk` through a normal Pi conversation. Its
+restart/stop/login controls require native confirmation, but this does not add
+a second security boundary: the same account already has access to process
+tools. Native commands call local lifecycle controls; those management HTTP
+routes are not exposed by the relay.
+
 - Protect Microsoft, hosting, source and deployment accounts with MFA and
   limited privileges. Disable unused publishing passwords, FTP and debugging.
 - Keep deployment metadata and secrets outside the source repository. Public
