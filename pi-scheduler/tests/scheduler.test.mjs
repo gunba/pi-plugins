@@ -221,30 +221,38 @@ async function finished(child) {
   const [code] = await once(child, "close");
   assert.equal(code, 0, error);
 }
+async function finishAll(children) {
+  const results = await Promise.allSettled(children.map(finished));
+  // A rejected worker must not let teardown race siblings still using SQLite.
+  for (const result of results) if (result.status === "rejected") throw result.reason;
+}
 
 test("multi-process schedule/cancel/delivery transactions retain every accepted message", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scheduler-stress-"));
+  const perWorker = 25; // Exercise competing transactions, not filesystem throughput.
   try {
-    await Promise.all(Array.from({ length: 4 }, (_, n) => finished(worker(dir, `
-      for (let i=0;i<100;i++) store.add({ id: '${n}-'+i, sessionId:'shared', cwd:'/', createdAt:i, dueAt:0, message:'test', delivery:'steer' });
-    `))));
+    await finishAll(Array.from({ length: 4 }, (_, n) => worker(dir, `
+      for (let i=0;i<${perWorker};i++) store.add({ id: '${n}-'+i, sessionId:'shared', cwd:'/', createdAt:i, dueAt:0, message:'test', delivery:'steer' });
+      store.close();
+    `)));
     const store = new ScheduleStore(dir, "shared");
-    assert.equal(store.list().length, 400);
+    assert.equal(store.list().length, 4 * perWorker);
     const log = join(dir, "results.jsonl");
-    await Promise.all(Array.from({ length: 4 }, (_, n) => finished(worker(dir, `
+    await finishAll(Array.from({ length: 4 }, (_, n) => worker(dir, `
       import { appendFileSync } from 'node:fs';
-      for(let i=0;i<100;i++) {
+      for(let i=0;i<${perWorker};i++) {
         const result = store.cancel('${n}-'+i);
         for (const entry of result.cancelled) appendFileSync(${JSON.stringify(log)}, JSON.stringify({id:entry.id,kind:'cancel'})+'\\n');
         const claimed = store.claimDue(0, new Set());
         for (const entry of claimed) appendFileSync(${JSON.stringify(log)}, JSON.stringify({id:entry.id,kind:'deliver'})+'\\n');
         store.claimDue(-Infinity, new Set(claimed.map(entry=>entry.id)));
       }
-    `))));
+      store.close();
+    `)));
     const { readFileSync } = await import("node:fs");
     const results = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
-    assert.equal(results.length, 400);
-    assert.equal(new Set(results.map((r) => r.id)).size, 400);
+    assert.equal(results.length, 4 * perWorker);
+    assert.equal(new Set(results.map((r) => r.id)).size, 4 * perWorker);
     assert.deepEqual(store.list(), []);
   } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
