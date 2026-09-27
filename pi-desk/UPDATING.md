@@ -75,12 +75,13 @@ disconnects browsers but does not stop PC workers.
 Version 0.2 uses API 2 and requires separate app/relay origins. Prepare the new
 static deployment first. Save unsent browser and attachment drafts before
 changing app origins; browser storage does not move with native conversations.
-Stop and update the connectors when work is idle. Reinstall login-start with
-both `--relay` and `--app-origin`. Deploy the message-only relay with that same
-app origin, then create fresh browser invitations.
+Revoke the previous remote device grants using the trusted local app before
+stopping and updating the idle connectors. Reinstall login-start with both
+`--relay` and `--app-origin`. Stop the old relay before changing its startup
+command and deploying the message-only release, then start it with the new app
+origin. Create fresh browser invitations after both services are ready.
 
-Revoke the previous remote device grants using the trusted local app. Update
-desktop shortcuts and phone bookmarks/installations to the new app address.
+Update desktop shortcuts and phone bookmarks/installations to the new app address.
 The old relay URL intentionally stops serving an app or redirecting invitations.
 Do not copy browser keys from its storage to the new origin. Keep native
 sessions and Desk host data in place.
