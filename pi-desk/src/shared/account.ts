@@ -38,7 +38,8 @@ export function accountConfiguration(value: unknown): AccountConfiguration {
 }
 export const workspaceIdentity = (config: AccountConfiguration) => `${config.tenantId}:${config.ownerObjectId}`;
 export const microsoftIssuer = (config: AccountConfiguration) => `https://login.microsoftonline.com/${config.tenantId}/v2.0`;
-export const workspaceScope = (config: AccountConfiguration) => `api://${config.clientId}/Workspace.Access`;
+// Entra requires the GUID resource identifier when a public client calls its own API.
+export const workspaceScope = (config: AccountConfiguration) => `${config.clientId}/Workspace.Access`;
 
 export function identifier(value: unknown): string {
 	if (typeof value !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) {

@@ -7,6 +7,10 @@ import { inspectAppAssets } from "./app-assets.ts";
 import { remoteOrigins } from "../shared/relay-protocol.ts";
 
 const help = `Pi Desk
+  signin [--workspace URL | --account URL] [--name label] [host directory options]
+                            Sign in to a shared account workspace
+  signout [--data-dir path] [--agent-dir path]
+                            Revoke this computer's account enrolment
   start [host options]       Start a detached user process
   open [--pair] [--local] [--print] [host options]
                             Start if needed and open the app
@@ -32,6 +36,9 @@ async function main(): Promise<void> {
 	const [command = "open", ...args] = process.argv.slice(2);
 	if (command === "--help" || command === "help" || command === "-h") { console.log(help); return; }
 	if (!supportsNode(process.versions.node)) throw new Error(`Pi Desk requires Node ${MINIMUM_NODE} or later; this process uses ${process.version}.`);
+	if (command === "signin" || command === "signout") {
+		await (await import("./account-cli.ts")).runAccountCommand(command, args); return;
+	}
 	if (command === "relay") { await runRelay(args); return; }
 	if (command === "publish-app") { await (await import("./publish-app.ts")).runPublishApp(args); return; }
 	if (command === "inspect") {

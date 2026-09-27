@@ -9,7 +9,8 @@ self.addEventListener("activate", event => {
 });
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
-  if (url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname === "/desk-transport.json" || event.request.method !== "GET") return;
+  if (url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/") ||
+      url.pathname === "/desk-transport.json" || url.pathname === "/desk-account.json" || event.request.method !== "GET") return;
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok && (url.pathname === "/" || url.pathname.startsWith("/assets/"))) {
       const copy = response.clone();

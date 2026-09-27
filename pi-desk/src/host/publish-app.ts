@@ -20,13 +20,15 @@ export async function publishApp(options: { relay: string; appOrigin: string; ou
 	await writeFile(join(output, "staticwebapp.config.json"), JSON.stringify({
 		mimeTypes: { ".webmanifest": "application/manifest+json" },
 		globalHeaders: {
-			"Content-Security-Policy": contentSecurityPolicy(socket.origin),
+			"Content-Security-Policy": contentSecurityPolicy({ socketOrigin: socket.origin }),
 			"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
 			"Cross-Origin-Resource-Policy": "same-origin",
 			"Strict-Transport-Security": "max-age=31536000",
 			"Cache-Control": "no-cache",
 		},
 		routes: [
+			{ route: "/auth/redirect.html", headers: { "Cache-Control": "no-store",
+				"Content-Security-Policy": contentSecurityPolicy({ authCallback: true }) } },
 			{ route: "/desk-transport.json", headers: { "Cache-Control": "no-store" } },
 			{ route: "/assets/*", headers: { "Cache-Control": "public, max-age=31536000, immutable" } },
 		],
