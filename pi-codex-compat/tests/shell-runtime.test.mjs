@@ -791,7 +791,8 @@ test("retained complete-output logs are bounded by an in-session LRU", async () 
 	await startExecSessionRuntime();
 });
 
-test("abort signals terminate managed process trees without a provider timeout field", async () => {
+for (const delay of [25, 75, 150, 300]) {
+test(`abort after ${delay}ms terminates managed process trees without a provider timeout field`, async () => {
 	const controller = new AbortController();
 	const execution = executeManagedExecCommand(
 		{
@@ -802,11 +803,22 @@ test("abort signals terminate managed process trees without a provider timeout f
 		controller.signal,
 		{ cwd: process.cwd() },
 	);
-	setTimeout(() => controller.abort(), 75);
-	const result = await execution;
+	const timer = setTimeout(() => controller.abort(), delay);
+	let result;
+	try {
+		result = await execution;
+	} catch (error) {
+		// Early cancellation can reject before launch or after verified cleanup.
+		if (error.name === "AbortError"
+			|| error.message === "exec_command aborted before the process was launched") return;
+		throw error;
+	} finally {
+		clearTimeout(timer);
+	}
 	assert.equal(result.details.aborted, true);
 	assert.equal(result.details.running, false, JSON.stringify(result.details));
 });
+}
 
 test(
 	"Unix signal exits stay distinct from numeric exit codes",
