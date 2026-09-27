@@ -60,8 +60,11 @@ export class AccountStore {
 		}
 		this.state = state;
 	}
-	snapshot(): AccountState {
+	assertAvailable(): void {
 		if (this.unavailable) throw new AccountError(503, "account_directory_unavailable");
+	}
+	snapshot(): AccountState {
+		this.assertAvailable();
 		return structuredClone(this.state);
 	}
 	device(id: string): WorkspaceDevice {
@@ -105,6 +108,16 @@ export class AccountStore {
 			const device = state.devices.find(device => device.id === id);
 			if (!device) throw new AccountError(404, "device_not_found");
 			device.revoked ??= Date.now(); device.connected = false;
+		});
+	}
+	async rename(id: string, name: unknown): Promise<void> {
+		if (typeof name !== "string" || !name.trim() || name.length > 100 || /[\u0000-\u001f\u007f]/.test(name)) {
+			throw new AccountError(400, "invalid_device_name");
+		}
+		await this.change(state => {
+			const device = state.devices.find(device => device.id === id);
+			if (!device || device.revoked !== undefined) throw new AccountError(404, "device_not_found");
+			device.name = name.trim();
 		});
 	}
 	private change<T>(operation: (state: AccountState) => T): Promise<T> {

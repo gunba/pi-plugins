@@ -19,10 +19,22 @@ export interface WorkspaceDevice {
 }
 export interface AccountConfiguration {
 	origin: string;
+	relayOrigin: string;
 	appOrigins: string[];
 	tenantId: string;
 	clientId: string;
 	ownerObjectId: string;
+}
+export function accountConfiguration(value: unknown): AccountConfiguration {
+	if (!value || typeof value !== "object") throw new Error("Invalid account configuration.");
+	const input = value as AccountConfiguration;
+	if (!Array.isArray(input.appOrigins) || !input.appOrigins.length || input.appOrigins.length > 8
+		|| !input.appOrigins.every(origin => typeof origin === "string")) throw new Error("Invalid app origins.");
+	return {
+		origin: accountOrigin(input.origin), relayOrigin: accountOrigin(input.relayOrigin),
+		appOrigins: [...new Set(input.appOrigins.map(accountOrigin))],
+		tenantId: identifier(input.tenantId), clientId: identifier(input.clientId), ownerObjectId: identifier(input.ownerObjectId),
+	};
 }
 export const workspaceIdentity = (config: AccountConfiguration) => `${config.tenantId}:${config.ownerObjectId}`;
 export const microsoftIssuer = (config: AccountConfiguration) => `https://login.microsoftonline.com/${config.tenantId}/v2.0`;

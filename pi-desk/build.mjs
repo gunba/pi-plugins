@@ -44,3 +44,14 @@ if (existsSync(resolve(root, "index.html"))) {
   const { build: buildClient } = await import("vite");
   await buildClient({ root, build: { outDir: "dist/client", emptyOutDir: true } });
 }
+// The account authority is a separate deployment from the opaque routing broker.
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/account/cli.ts"],
+  outfile: "dist/account/pi-desk-account.js",
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  bundle: true,
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+});
