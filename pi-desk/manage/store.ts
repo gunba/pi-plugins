@@ -9,7 +9,7 @@ export interface RuntimeRelease {
 	platform: string; arch: string; node: string; readyAt: string;
 }
 export interface RuntimeState {
-	format: 1; source: string; active?: string; pending?: string;
+	format: 1; source: string; active?: string; pending?: string; previous?: string;
 }
 export const validId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 export const runtimeId = (snapshot: SourceSnapshot): string => createHash("sha256")
@@ -31,7 +31,8 @@ export function readState(home: string): RuntimeState | undefined {
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
 	const state = JSON.parse(raw) as RuntimeState;
 	if (!state || state.format !== 1 || typeof state.source !== "string" || resolve(state.source) !== state.source
-		|| state.active !== undefined && !validId(state.active) || state.pending !== undefined && !validId(state.pending))
+		|| state.active !== undefined && !validId(state.active) || state.pending !== undefined && !validId(state.pending)
+		|| state.previous !== undefined && !validId(state.previous))
 		throw new Error("Invalid managed runtime state.");
 	return state;
 }
@@ -41,12 +42,14 @@ export function readRelease(home: string, id: string): RuntimeRelease {
 	const release = JSON.parse(readFileSync(join(directory, "runtime.json"), "utf8")) as RuntimeRelease;
 	if (!release || release.format !== 1 || release.id !== id || !validId(release.digest)
 		|| release.platform !== process.platform || release.arch !== process.arch
-		|| release.node !== process.versions.modules || typeof release.source !== "string"
+		|| release.node !== process.versions.modules || typeof release.source !== "string" || resolve(release.source) !== release.source
 		|| typeof release.readyAt !== "string" || !Number.isFinite(Date.parse(release.readyAt))
 		|| ![release.plugins, release.desk, release.engine].every(value => typeof value === "string" && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value))
 		|| runtimeId({ digest: release.digest } as SourceSnapshot) !== id)
 		throw new Error("Runtime is invalid or belongs to a different platform/Node version. Stage it on this computer.");
-	const entry = join(directory, "source", "pi-desk", "dist", "host", "cli.js");
-	if (!lstatSync(entry).isFile() || !within(realpathSync(directory), realpathSync(entry))) throw new Error("Runtime entry point is invalid.");
+	for (const name of ["cli.js", "managed.js"]) {
+		const entry = join(directory, "source", "pi-desk", "dist", "host", name);
+		if (!lstatSync(entry).isFile() || !within(realpathSync(directory), realpathSync(entry))) throw new Error("Runtime entry point is invalid.");
+	}
 	return release;
 }

@@ -96,7 +96,10 @@ export async function runLogin(directory: string): Promise<void> {
 	};
 	process.on("SIGTERM", stop); process.on("SIGINT", stop);
 	try {
-		const started = await startHost(directory, config.cwd, config.arguments, { managed: true, environment: loginEnvironment(config) });
+		const environment = loginEnvironment(config);
+		// The launcher supplies this non-secret code identity; never save it in login.json.
+		if (process.env.PI_DESK_RUNTIME) environment.PI_DESK_RUNTIME = process.env.PI_DESK_RUNTIME;
+		const started = await startHost(directory, config.cwd, config.arguments, { managed: true, environment });
 		rmSync(join(directory, "login-error.txt"), { force: true });
 		ready = true; if (stopping) stop();
 		const code = await started.exited;

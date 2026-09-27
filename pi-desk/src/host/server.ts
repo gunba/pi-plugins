@@ -24,6 +24,7 @@ import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/relea
 import { InputLedger } from "./inputs.ts";
 import { Attachments } from "./attachments.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
+import { assertRuntimeHost } from "../../manage/installation.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
@@ -60,6 +61,7 @@ export class DeskHost {
 	private closeJob?: Promise<void>;
 	private control?: HostControl;
 	private directory = "";
+	private runtime?: string;
 	private resolveClosed!: () => void;
 	private rejectClosed!: (error: unknown) => void;
 	readonly closed = new Promise<void>((resolve, reject) => { this.resolveClosed = resolve; this.rejectClosed = reject; });
@@ -79,6 +81,7 @@ export class DeskHost {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
+			this.runtime = assertRuntimeHost(directory);
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
@@ -129,7 +132,7 @@ export class DeskHost {
 		return {
 			release: RELEASE, instance: this.control!.record.instance, pid: process.pid, started: this.control!.record.started,
 			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir!,
-			sessionDir: this.options.sessionDir, relay: this.relayStatus,
+			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime,
 			sessions: { active: active.length,
 				working: active.filter(({ view }) => view.state === "starting" || view.snapshot?.activity !== "idle"
 					|| view.controls?.some(control => control.state === "running")).length,

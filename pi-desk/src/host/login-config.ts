@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { launcherPath, selectedRuntime } from "../../manage/installation.ts";
 
 export interface LoginConfig {
 	version: 1; owner: string; platform: "linux" | "win32"; name: string;
@@ -48,7 +49,8 @@ export function makeLoginConfig(directory: string, cwd: string, arguments_: stri
 	const canonical = realpathSync(directory), digest = createHash("sha256").update(process.platform === "win32" ? canonical.toLowerCase() : canonical).digest("hex").slice(0, 16);
 	const name = `pi-desk-${digest}`;
 	return { version: 1, owner: randomUUID(), platform: process.platform, name, node: process.execPath,
-		entry: fileURLToPath(new URL("./cli.js", import.meta.url)), directory: canonical, cwd, arguments: arguments_, environment,
+		entry: process.env.PI_DESK_RUNTIME ? launcherPath(selectedRuntime()!.home) : fileURLToPath(new URL("./cli.js", import.meta.url)),
+		directory: canonical, cwd, arguments: arguments_, environment,
 		...(process.platform === "linux" ? { unit: join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "systemd", "user", `${name}.service`) } : {}),
 	};
 }
