@@ -307,7 +307,8 @@ export class DeskHost {
 		this.emit({ type: "session", session: managed.view });
 		this.persist(true);
 		void worker.start(options).then(snapshot => {
-			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed") return;
+			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
+				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			managed.view = { ...managed.view, snapshot, ui: snapshot.ui, state: "ready",
 				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, leaf: snapshot.leaf };
 			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
@@ -316,7 +317,8 @@ export class DeskHost {
 			this.persist(true);
 			this.drainInputs(managed);
 		}).catch(error => {
-			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed") return;
+			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
+				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			this.inputs!.interrupt(key, "Session startup failed");
 			managed.view = { ...managed.view, state: "failed", error: error instanceof Error ? error.message : String(error),
 				inputs: this.inputs!.pending(key) };
@@ -519,7 +521,8 @@ export class DeskHost {
 				if (!managed) throw new Error("Unknown session.");
 				if (control[2] === "close") {
 					if (!managed.worker) return reply({ accepted: true });
-					const result = managed.worker.submitControl({ kind: "close" }, string(data.generation, 100), string(data.id, 100));
+					if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
+					const result = managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
 					if (result.control.state === "running") {
 						this.inputs!.interrupt(managed.view.key, "The conversation is closing");
 						this.inputEvent(managed);
@@ -541,7 +544,7 @@ export class DeskHost {
 				const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };
 				if (route[2] === "command" && request.method === "POST") {
 					const command = workerCommandFrom(data.command);
-					if (["asset", "artifact", "file", "history", "snapshot", "shutdown", "prompt"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
+					if (["asset", "artifact", "file", "history", "snapshot", "prompt"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
 					if (isControl(command)) {
 						if (command.kind !== "abort" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
 							throw new Error("Cancel or finish pending messages before changing this session.");

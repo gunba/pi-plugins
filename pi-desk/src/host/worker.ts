@@ -23,6 +23,7 @@ process.on("message", (request: WorkerRequest) => {
 	let operation = previous?.operation;
 	if (!operation) {
 		operation = Promise.resolve().then(async () => {
+			if (request.type === "shutdown") return engine.close();
 			if (request.type === "init") {
 				if (started) throw new Error("Worker already initialized.");
 				started = true;

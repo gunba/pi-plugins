@@ -46,7 +46,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (!Number.isSafeInteger(data.offset)) throw new Error("Invalid upload position.");
 			return { kind: data.kind, id: string(data.id, 64), offset: Number(data.offset), base64: string(data.base64, CHUNK_BYTES / 3 * 4) };
 		case "upload_finish": case "upload_discard": return { kind: data.kind, id: string(data.id, 64) };
-		case "snapshot": case "abort": case "reload": case "shutdown": return { kind: data.kind };
+		case "snapshot": case "abort": case "reload": return { kind: data.kind };
 		case "history": {
 			if (["before", "after", "from"].filter(key => data[key] !== undefined).length > 1) throw new Error("Use one history position.");
 			return { kind: data.kind, before: data.before === undefined ? undefined : string(data.before, 100),

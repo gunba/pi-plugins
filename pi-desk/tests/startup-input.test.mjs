@@ -133,3 +133,21 @@ test("stale activations, native generation changes, denied access and pending co
 	assert.equal((await f.request(`inputs/${input.id}`)).body.status.state, "failed");
 	assert.equal((await f.request("command", { id: randomUUID(), generation: f.generation, command: input.command })).status, 400, "no bypass of admission through the old command route");
 });
+
+test("close binds the worker activation before touching pending input, even before a native generation exists", async t => {
+	const f = await fixture(t);
+	await f.request("inputs", f.input("Not sent yet"));
+	let closes = 0;
+	f.worker.submitControl = (command, generation, id) => {
+		closes++;
+		return { accepted: true, control: { id, generation, kind: command.kind, state: "running", started: Date.now() } };
+	};
+	assert.equal((await f.request("close", { id: randomUUID(), activation: randomUUID() })).status, 409);
+	assert.equal((await f.request("close", { id: randomUUID() })).status, 400);
+	assert.equal(closes, 0);
+	assert.equal(f.managed.view.inputs[0].state, "queued");
+	assert.equal((await f.request("close", { id: randomUUID(), activation: f.activation })).status, 202);
+	assert.equal(closes, 1);
+	assert.equal(f.managed.view.inputs[0].state, "failed");
+	assert.match(f.managed.view.inputs[0].error, /not retried/);
+});

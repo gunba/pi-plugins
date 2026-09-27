@@ -83,3 +83,29 @@ test("worker loss before a close acknowledgement still invalidates the live sess
 	assert.ok(events.some(event => event.type === "fatal"));
 	assert.equal(events.filter(event => event.type === "control").at(-1).control.state, "interrupted");
 });
+
+test("closing before a presentation generation exists uses worker lifecycle IPC and waits for exit", async t => {
+	const child = new EventEmitter(), sent = [], events = [];
+	child.connected = true;
+	child.send = (request, done) => { sent.push(request); done(null); };
+	child.disconnect = () => { child.connected = false; };
+	t.mock.method(childProcess, "spawn", () => child);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const worker = new SessionWorker({ cwd: process.cwd() }, event => events.push(event));
+	assert.equal(worker.generation, "");
+	assert.equal(worker.submitControl({ kind: "close" }, "", "close-before-start").control.state, "running");
+	assert.equal(sent[0].type, "shutdown");
+	assert.equal(Object.hasOwn(sent[0], "generation"), false);
+	worker.generation = "a-later-presentation";
+	assert.equal(worker.submitControl({ kind: "close" }, worker.generation, "close-before-start").control.state, "running");
+	assert.equal(sent.length, 1);
+	child.emit("message", { type: "result", id: sent[0].id });
+	await new Promise(setImmediate);
+	assert.equal(child.connected, false);
+	assert.equal(events.at(-1).control.state, "running", "IPC disconnect is not process exit");
+	child.emit("exit", 0, null);
+	await new Promise(setImmediate);
+	assert.equal(events.at(-1).control.state, "completed");
+	assert.equal(events.some(event => event.type === "fatal"), false);
+});

@@ -747,15 +747,25 @@ details[open] > summary:before {
   border-radius: 10px;
   font-size: 11px;
 }
-.composer-caption {
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 10px;
-  padding: 10px 4px 0;
-  opacity: 0.8;
-  gap: 15px;
-}
+.send-button.steer-button { width: auto; padding: 0 12px; font-size: 12px; }
+.queue-button { height: 33px; padding: 0 10px; font-size: 12px; }
+.close-conversation { font-size: 12px; padding: 7px 10px; }
+.composer-help { margin: 7px 3px 0; color: var(--muted); font-size: 10px; }
+.native-queue { font-size: 12px; color: var(--muted); margin-bottom: 8px; max-height: 22vh; overflow: auto; }
+.native-queue summary { cursor: pointer; }
+.native-queue > div { margin: 8px 0; }
+.native-queue li { white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 4px; }
+.conversation-footer { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.conversation-footer summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; cursor: pointer; list-style: none; min-height: 28px; }
+.conversation-footer summary::-webkit-details-marker { display: none; }
+.footer-model { flex: 1 1 130px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.footer-badge { color: var(--text); white-space: nowrap; }
+.footer-state, .footer-usage { white-space: nowrap; }
+.footer-details { max-height: 24vh; overflow: auto; border-top: 1px solid var(--border); margin-top: 5px; padding: 4px; overflow-wrap: anywhere; }
+.footer-details p { margin-block: 7px; }
+.footer-details button { font-size: 11px; padding: 3px 6px; }
+.conversation-footer[open] .footer-expand { transform: rotate(180deg); }
+@media (pointer: coarse) { .composer-help { display: none; } }
 .question-banner {
   display: flex;
   align-items: center;
@@ -1171,14 +1181,9 @@ details[open] > summary:before {
   .model-controls select:last-child {
     max-width: 120px;
   }
-  .composer-caption {
-    font-size: 9px;
-    padding-top: 8px;
-  }
-  .composer-caption > span:last-child {
-    max-width: 52%;
-    text-align: right;
-  }
+  .conversation-footer summary { gap: 7px; font-size: 10px; }
+  .footer-usage, .footer-state, .footer-extra, .composer-help { display: none; }
+  .close-conversation { padding: 7px; font-size: 11px; }
   .message-body {
     font-size: 14px;
   }

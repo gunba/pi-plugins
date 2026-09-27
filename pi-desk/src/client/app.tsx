@@ -28,6 +28,10 @@ import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { Devices } from "./devices.tsx";
 import { DraftRecovery } from "./draft-recovery.tsx";
 import { SessionControls } from "./session-controls.tsx";
+import { ConversationFooter } from "./conversation-footer.tsx";
+import { NativeQueue } from "./native-queue.tsx";
+import { CloseSummary } from "./close-summary.tsx";
+import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
@@ -78,6 +82,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [newComputer, setNewComputer] = useState<string>();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [error, setError] = useState("");
   const attachments = useAttachments(selected, setError);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -87,7 +92,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
-  const [delivery, setDelivery] = useState<"followUp" | "steer">("followUp");
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -102,7 +106,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const ui = session?.ui;
   const controls = session?.controls ?? [];
   const controlBusy = controls.some(control => control.state === "running");
-  const confirmation = useConfirmation(`${authorized}:${selected}:${ui?.generation}:${connected}`);
+  const closing = controls.some(control => control.kind === "close" && control.state === "running");
+  const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const questions = ui?.interactions ?? [];
@@ -135,6 +140,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     controlBusy ||
     session?.snapshot?.activity === "running" ||
     session?.snapshot?.activity === "waiting" ||
+    !!session?.inputs?.some(input => input.state === "sending") ||
     !!question;
   const notice = ui?.notifications
     .filter(
@@ -232,21 +238,20 @@ export function App({ account }: { account?: BrowserAccount }) {
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
   async function closeSession() {
-    if (!session?.ui || !await confirmation.request({
-      title: "Close conversation?", context: confirmationContext, accept: "Close session",
-      body: <p>Stop this session and its active work. The saved conversation will remain available to resume.</p>,
+    if (!session?.activation || !await confirmation.request({
+      title: "Close conversation?", context: confirmationContext, accept: "Close conversation",
+      body: <CloseSummary session={session} />,
     })) return;
     setPanel(undefined);
-    try { await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), generation: session.ui?.generation }); }
+    try { await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation }); }
     catch (error) { setError(errorText(error)); }
   }
-  async function send(event: FormEvent) {
-    event.preventDefault();
-    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sending || controlBusy || !connected
+  async function send(delivery: Delivery = "steer") {
+    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
       || !session?.activation || !["starting", "ready"].includes(session.state)) return;
     const text = draft;
     const fileIds = attachments.files.map(file => file.id);
-    setSending(true);
+    sendingRef.current = true; setSending(true);
     try {
       const receiptKey = `pi-desk:submission:${selected}`;
       const previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as {
@@ -274,7 +279,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       const receipt = reusable ? previous! : {
         id: crypto.randomUUID(), activation: session.activation,
         generation: session.state === "starting" ? undefined : session.ui?.generation,
-        fingerprint, behavior: session.state === "starting" ? "followUp" as const : busy ? delivery : undefined,
+        fingerprint, behavior: session.state === "starting" ? "followUp" as const : delivery,
       };
       localStorage.setItem(receiptKey, JSON.stringify(receipt));
       try {
@@ -301,7 +306,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) {
       setError(`${errorText(error)} Your draft has been kept.`);
     } finally {
-      setSending(false);
+      sendingRef.current = false; setSending(false);
     }
   }
 
@@ -429,6 +434,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             <strong>{session ? title(session) : "Welcome"}</strong>
           </div>
           <div className="top-actions">
+            {session?.activation && ["starting", "ready"].includes(session.state) && <button
+              className="close-conversation" title="Stop this worker; keep saved history" aria-label="Close conversation"
+              disabled={!connected || closing || sending} onClick={() => void closeSession()}>{closing ? "Closing…" : "Close"}</button>}
             {session?.snapshot && (
               <button
                 className={`work-button ${question ? "attention" : ""}`}
@@ -459,8 +467,8 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
-        {session && <ControlActivity key={selected} session={selected} controls={controls} />}
-        {session && <PendingInputs key={selected} session={session} connected={connected} report={setError} />}
+        {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
+        {session && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && (session.state === "closed" || session.state === "failed") && (
           <div className="connection-banner">
             <span>{session.error || (session.interrupted ? "This session was interrupted. Desk did not resend input or retry controls." : "This session is closed.")}
@@ -552,13 +560,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot?.queue.followUp.length ? (
-              <div className="queued">
-                {session.snapshot.queue.followUp.length} follow-up
-                {session.snapshot.queue.followUp.length > 1 ? "s" : ""} queued
-              </div>
-            ) : null}
-            <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={(event) => void send(event)}
+            {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+            <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}
               onDrop={event => {
@@ -573,7 +576,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 disabled={sending}
                 placeholder={
                   busy
-                    ? "Add a follow-up…"
+                    ? "Steer Pi, or queue a follow-up…"
                     : "Ask Pi anything about your project…"
                 }
                 value={draft}
@@ -586,14 +589,18 @@ export function App({ account }: { account?: BrowserAccount }) {
                   localStorage.setItem(draftKey(selected), event.target.value);
                 }}
                 onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing &&
-                    matchMedia("(pointer:fine)").matches
-                  ) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
+                  const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
+                    matchMedia("(pointer:fine)").matches);
+                  if (!action) return;
+                  event.preventDefault();
+                  if (action === "newline") {
+                    const editor = event.currentTarget, start = editor.selectionStart;
+                    const text = `${draft.slice(0, start)}\n${draft.slice(editor.selectionEnd)}`;
+                    setDraft(text); localStorage.setItem(draftKey(selected), text);
+                    requestAnimationFrame(() => editor.setSelectionRange(start + 1, start + 1));
+                  } else {
+                    void send(action);
                   }
                 }}
               />
@@ -653,16 +660,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
                     disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>
                   {busy && !controlBusy && (
-                    <select
-                      aria-label="Message delivery"
-                      value={delivery}
-                      onChange={(event) =>
-                        setDelivery(event.target.value as "followUp" | "steer")
-                      }
-                    >
-                      <option value="followUp">Follow up</option>
-                      <option value="steer">Steer</option>
-                    </select>
+                    <button type="button" className="queue-button" aria-label="Queue follow-up"
+                      title="After current work · Alt+Enter or Ctrl+Q"
+                      disabled={sending || !connected || !attachments.ready || !session.activation || !["starting", "ready"].includes(session.state)
+                        || (!draft.trim() && !attachments.files.length)}
+                      onClick={() => void send("followUp")}>Queue</button>
                   )}
                   {busy && controls.every(control => control.state !== "running" || ["compact", "navigate"].includes(control.kind)) && (
                     <button
@@ -676,8 +678,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                     </button>
                   )}
                   <button
-                    className="send-button"
-                    aria-label={busy && !controlBusy ? "Queue follow-up" : "Send message"}
+                    type="button"
+                    className={`send-button${busy && !controlBusy ? " steer-button" : ""}`}
+                    aria-label={busy && !controlBusy ? "Steer Pi" : "Send message"}
+                    title="Enter sends or steers · Shift/Alt-click queues a follow-up"
+                    onClick={event => void send(event.altKey || event.shiftKey ? "followUp" : "steer")}
                     disabled={
                       (!draft.trim() && !attachments.files.length) ||
                       !attachments.ready ||
@@ -687,7 +692,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                        !session.activation || !["starting", "ready"].includes(session.state)
                     }
                   >
-                    ↑
+                    {busy && !controlBusy ? "Steer" : "↑"}
                   </button>
                 </div>
               </div>
@@ -696,14 +701,9 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
               )}
             </form>
-            <div className="composer-caption">
-              <span>Pi runs on {currentComputer?.name ?? state.host.name}</span>
-              <span>
-                {session.snapshot?.context?.percent == null
-                  ? "Your workspace stays on your computer"
-                  : `${session.snapshot.context.percent.toFixed(1)}% context used`}
-              </span>
-            </div>
+            <div className="composer-help">Enter to send or steer · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
+            <ConversationFooter session={session} computer={currentComputer?.name ?? state.host.name} connected={connected}
+              open={view => { setPanel("view"); setFocusedView(view.id); }} />
           </div>
         )}
       </main>
@@ -788,7 +788,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <button onClick={() => { void api(`/sessions/${session.key}/metadata`, { generation: session.ui?.generation, pinned: !session.pinned }).catch(error => setError(errorText(error))); }}>
                   {session.pinned ? "Unpin conversation" : "Pin conversation"}
                 </button>
-                {session.state === "ready" && <button disabled={!connected || controlBusy} onClick={() => void closeSession()}>Close session</button>}
               </section>}
               {session?.state === "ready" && session.ui && <SessionControls key={selected} generation={session.ui.generation}
                 busy={busy || !connected} invoke={command} />}

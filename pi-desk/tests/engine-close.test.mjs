@@ -25,6 +25,40 @@ test("overlapping shutdown callers await the same cleanup, including failure", a
 	assert.equal(await engine.presentation.request({ kind: "input", title: "Late request" }), null);
 });
 
+test("close aborts active work but retains lifecycle ownership until a transition finishes", async () => {
+	const engine = new DeskEngine(() => {});
+	let release, disposed = false, aborted = false, ended = false;
+	engine.snapshot = () => ({});
+	engine.runtime = {
+		session: { isCompacting: false, abortCompaction() {}, abortBranchSummary() {}, abort: async () => { aborted = true; } },
+		dispose: async () => { disposed = true; },
+	};
+	const transition = engine.change(() => new Promise(resolve => { release = resolve; }));
+	await Promise.resolve();
+	const closing = engine.close().then(() => { ended = true; });
+	await new Promise(setImmediate);
+	assert.equal(aborted, true);
+	assert.equal(disposed, false);
+	assert.equal(ended, false);
+	assert.equal(await engine.presentation.request({ kind: "input", title: "Late question" }), null);
+	release();
+	await transition; await closing;
+	assert.equal(disposed, true);
+	assert.equal(ended, true);
+	await assert.rejects(engine.change(async () => assert.fail("A closed runtime must not start another transition")), /closing/);
+});
+
+test("native shutdown hooks can settle a tool that is still aborting", async () => {
+	const engine = new DeskEngine(() => {});
+	let release, disposed = false;
+	engine.runtime = {
+		session: { abortCompaction() {}, abortBranchSummary() {}, abort: () => new Promise(resolve => { release = resolve; }) },
+		dispose: async () => { disposed = true; release(); },
+	};
+	await engine.close();
+	assert.equal(disposed, true);
+});
+
 test("closing during SDK discovery retains the writer until late startup cleanup", async () => {
 	const root = mkdtempSync(join(tmpdir(), "desk-start-close-")), agent = join(root, "agent"), sessions = join(root, "sessions");
 	for (const directory of [join(agent, "extensions"), sessions]) mkdirSync(directory, { recursive: true });

@@ -22,6 +22,14 @@ The controller remains the state owner. Views contain plain data; action,
 interaction and transcript callbacks stay in the host. This module has no
 browser or terminal dependency at runtime.
 
+Views may include `badges: [{ label, value, description?, compact? }]` for compact facts
+beside the conversation. The publishing controller owns their meaning and
+updates, just like the full view. Desk shows root badges in its footer and links
+back to their views; child-scope badges do not describe the parent session.
+`compact: true` keeps an important badge in the collapsed mobile summary;
+other badges remain in its expanded details.
+Badges are not a parsing contract for terminal status strings.
+
 ## Lifetime
 
 - A discovered presentation belongs to that extension runtime. Replacement or

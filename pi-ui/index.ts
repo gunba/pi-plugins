@@ -17,6 +17,8 @@ export interface UiView {
 	title: string;
 	surface?: "work" | "settings";
 	data: UiValue;
+	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
+	badges?: { label: string; value: string; description?: string; compact?: boolean }[];
 	actions?: UiAction[];
 }
 export interface UiQuestion {

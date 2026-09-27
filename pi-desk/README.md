@@ -14,8 +14,9 @@ workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
 forks, compaction, configuration, Party, goal/task/scheduler and child-agent
-controls are connected. Context capacity, initial-context breakdowns, usage,
-allowance and Fast mode have dedicated settings panels. Model accounts, MCP
+controls are connected. The conversation footer shows model/thinking, context,
+recorded usage and first-party Fast/allowance badges, with expanded settings
+panels. Initial-context breakdowns, model accounts, MCP
 connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
@@ -61,8 +62,11 @@ output directory would replace the host build as well.
 
 **Resume conversation** opens a searchable picker. Choose a computer, then its
 current project, another folder or all projects. Settings provides branch,
-fork, compaction, name, pin and explicit close controls. Closing stops that
-worker's active work, but keeps the saved conversation. A host restart restores
+fork, compaction, name and pin controls. **Close** is in the conversation header,
+including during startup. Its confirmation identifies the worker and outstanding
+work. Closing stops that worker but keeps the saved conversation. Native Pi
+messages still queued for delivery are discarded; unresolved host admissions
+remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay prompts
 or restart workers automatically.
 
@@ -88,8 +92,17 @@ Explicitly resuming a saved session also loads its native plugin state:
 Stopping does not delete pending child inbox entries or scheduled messages.
 Desk retains unresolved browser input for review, but does not replay it or
 unfinished controls after a worker or host restart.
-Shutdown joins pending startup and native cleanup before releasing the writer;
+Shutdown cancels native work and questions, then joins pending startup,
+transitions and native cleanup before releasing the writer;
 overlapping stop requests wait for the same cleanup.
+
+The footer uses native model/thinking/context state and the same recorded-usage
+reducer as the first-party terminal footer. Unreported context or usage stays
+unknown. Usage includes recorded child charges once; cost is not a subscription
+bill. Structured view badges expose the owning plugin's settings without parsing
+terminal strings: Fast is a preference, not a guarantee that the provider used
+priority processing, and allowance is passively reported rather than polled.
+The mobile footer starts collapsed; expand it for usage, status and settings.
 
 The picker searches title/opening-text previews and host paths, not complete
 conversation text. Named-only filtering and recent-first ordering follow Pi's
@@ -336,6 +349,10 @@ receipts do not start another operation in the same worker. Failed or interrupte
 operations are not retried automatically. After a lost connection, check this
 history and the native conversation before repeating a control.
 
+Close is bound to the worker activation, not a not-yet-created or changing
+presentation generation. It uses private parent/worker lifecycle IPC and waits
+for process exit, so a startup close cannot be mistaken for a stale UI command.
+
 Unfinished operations become unconfirmed after a worker or host failure. Only
 small control-operation metadata is saved. Pending message admission is separate
 and retains unresolved input for review. A failed worker cannot leave a live
@@ -451,6 +468,13 @@ to `inputs.sqlite` before acknowledging it. **Pending messages** shows Waiting
 for Pi, Confirming admission, or a failure. Cancel works before dispatch; once
 dispatch begins, check the conversation rather than treating a disconnect as
 cancellation. Up to 16 unresolved messages can be retained per conversation.
+
+On a keyboard, Enter sends or steers current work. Alt+Enter or Ctrl+Q queues a
+follow-up; Shift+Enter or Ctrl+J inserts a new line. Shift/Alt-clicking Send also
+queues a follow-up. While busy, separate **Steer** and **Queue** buttons work on
+touchscreens; the phone keyboard keeps ordinary Enter for new lines. IME
+composition does not submit. **In Pi** shows native steering/follow-up counts
+and up to twelve bounded previews per queue, distinct from host admissions.
 
 Input is bound to that worker activation and native generation. It cannot drift
 into another branch or a restarted worker. Startup messages use native follow-up

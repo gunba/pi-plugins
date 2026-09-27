@@ -41,8 +41,9 @@ export interface SessionSnapshot {
 	extensions: { path: string; error?: string }[];
 	commands: { name: string; description: string }[];
 	models: { id: string; provider: string; name: string }[];
-	queue: { steering: readonly string[]; followUp: readonly string[] };
+	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	context?: { tokens: number | null; contextWindow: number; percent: number | null };
+	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 	ui: PresentationSnapshot;
 }
 export type ChatBlock =
@@ -120,10 +121,10 @@ export type WorkerCommand =
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
-	| { kind: "reload" }
-	| { kind: "shutdown" };
+	| { kind: "reload" };
 export type WorkerRequest =
 	| { type: "init"; id: string; options: WorkerInit }
+	| { type: "shutdown"; id: string }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
 	| { type: "chat"; generation: string; message: ChatMessage; replaces?: string }

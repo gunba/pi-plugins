@@ -55,7 +55,7 @@ export class SessionWorker {
 	}
 
 	private request(request: WorkerRequest): Promise<unknown> {
-		if (this.stopped || this.stopping && !(request.type === "command" && request.command.kind === "shutdown")) {
+		if (this.stopped || this.stopping && request.type !== "shutdown") {
 			return Promise.reject(new WorkerConnectionError("Session worker is stopped or closing. Check its state before trying again."));
 		}
 		const fingerprint = createHash("sha256").update(JSON.stringify(request)).digest("hex");
@@ -77,16 +77,16 @@ export class SessionWorker {
 	}
 
 	submitControl(command: ControlCommand | { kind: "close" }, generation: string, id: string): { accepted: true; control: ControlStatus } {
-		const fingerprint = createHash("sha256").update(JSON.stringify({ command, generation })).digest("hex");
+		const fingerprint = createHash("sha256").update(JSON.stringify({ command, ...(command.kind === "close" ? {} : { generation }) })).digest("hex");
 		const previous = this.controls.get(id);
 		if (previous) {
 			if (previous.fingerprint !== fingerprint) throw new ReceiptConflict("This control receipt has different contents.");
 			return { accepted: true, control: previous.status };
 		}
 		if (this.stopped || this.stopping) throw new WorkerConnectionError("Session worker is stopped or closing.");
-		if (generation !== this.generation) throw new StaleGeneration();
+		if (command.kind !== "close" && generation !== this.generation) throw new StaleGeneration();
 		const pending = [...this.controls.values()].filter(item => item.status.state === "running");
-		if (pending.some(item => command.kind !== "abort" || item.status.kind === "abort" || item.status.kind === "close")) {
+		if (command.kind !== "close" && pending.some(item => command.kind !== "abort" || item.status.kind === "abort" || item.status.kind === "close")) {
 			throw new Error("A control is already running. Stop it or wait for its outcome before starting another.");
 		}
 		const receipt = { fingerprint, status: {
@@ -94,7 +94,7 @@ export class SessionWorker {
 		} as ControlStatus };
 		this.controls.set(id, receipt);
 		this.event({ type: "control", control: { ...receipt.status } });
-		const operation = command.kind === "close" ? this.close(false, generation) : this.command(command, generation, id);
+		const operation = command.kind === "close" ? this.close(false) : this.command(command, generation, id);
 		void operation.then(() => {
 			receipt.status = { ...receipt.status, state: "completed", ended: Date.now() };
 		}, error => {
@@ -121,19 +121,19 @@ export class SessionWorker {
 		return this.request({ type: "command", id, generation, command });
 	}
 
-	close(force = true, generation = this.generation): Promise<void> {
-		if (this.closeJob) return force ? this.closeJob.catch(() => this.close(true, generation)) : this.closeJob;
-		const job = this.finishClose(force, generation);
+	close(force = true): Promise<void> {
+		if (this.closeJob) return force ? this.closeJob.catch(() => this.close(true)) : this.closeJob;
+		const job = this.finishClose(force);
 		this.closeJob = job;
 		void job.catch(() => { if (this.closeJob === job) this.closeJob = undefined; });
 		return job;
 	}
 
-	private async finishClose(force: boolean, generation: string): Promise<void> {
+	private async finishClose(force: boolean): Promise<void> {
 		this.stopping = true;
 		this.shutdownConfirmed = false;
 		try {
-			if (!this.stopped) { await this.command({ kind: "shutdown" }, generation); this.shutdownConfirmed = true; }
+			if (!this.stopped) { await this.request({ type: "shutdown", id: randomUUID() }); this.shutdownConfirmed = true; }
 		}
 		catch (error) {
 			if (!force) { this.stopping = false; throw error; }
