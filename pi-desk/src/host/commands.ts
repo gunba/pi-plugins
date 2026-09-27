@@ -1,6 +1,6 @@
 import type { WorkerCommand } from "../shared/protocol.ts";
 import type { UiValue } from "../../../pi-ui/index.ts";
-import { CHUNK_BYTES, FILE_COUNT } from "../shared/attachments.ts";
+import { CHUNK_BYTES, FILE_COUNT, type UploadCommand } from "../shared/attachments.ts";
 
 export function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
@@ -10,7 +10,15 @@ export function string(value: unknown, max = 1_000_000): string {
 	if (typeof value !== "string" || value.length > max) throw new Error("Invalid text field.");
 	return value;
 }
-export function commandFrom(value: unknown): WorkerCommand {
+export function workerCommandFrom(value: unknown): WorkerCommand {
+	const command = commandFrom(value);
+	switch (command.kind) {
+		case "upload_begin": case "upload_chunk": case "upload_finish": case "upload_discard":
+			throw new Error("Use the upload endpoint.");
+		default: return command;
+	}
+}
+export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 	const data = object(value);
 	const origin = () => {
 		const value = object(data.origin);

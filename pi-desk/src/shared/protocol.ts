@@ -1,11 +1,11 @@
 import type { UiInteraction, UiValue, UiView } from "../../../pi-ui/index.ts";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
-import type { UploadCommand } from "./attachments.ts";
 import type { FileCommand, FileReference } from "./files.ts";
 import type { HistoryPosition } from "./history.ts";
 import type { ReferenceOrigin } from "./references.ts";
 import type { ControlStatus } from "./controls.ts";
 import type { ReleaseInfo } from "./release.ts";
+import type { InputStatus } from "./inputs.ts";
 
 export interface ViewSnapshot extends UiView {
 	id: string; revision: number; scope?: { id: string; label: string };
@@ -93,6 +93,8 @@ export interface SessionView {
 	interrupted?: boolean;
 	leaf?: string | null;
 	controls?: ControlStatus[];
+	activation?: string;
+	inputs?: InputStatus[];
 }
 export interface HostState { release: ReleaseInfo; name: string; cwd: string; sessions: SessionView[];
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
@@ -100,10 +102,9 @@ export type HostEvent =
 	| { type: "state"; state: HostState }
 	| { type: "session"; session: SessionView }
 	| { type: "worker"; key: string; message: WorkerMessage };
-export interface WorkerInit { cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean; leaf?: string | null }
+export interface WorkerInit { cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean; leaf?: string | null; attachmentScope?: string }
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
-	| UploadCommand
 	| { kind: "snapshot" }
 	| ({ kind: "history"; source?: string } & HistoryPosition)
 	| { kind: "tree"; after?: string }

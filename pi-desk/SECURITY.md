@@ -103,6 +103,14 @@ and MSAL cache. It is not a global Microsoft logout. Unsent text and attachments
 remain on that browser until removed or site data is cleared; they are not
 synced through the directory.
 
+Messages explicitly sent to a starting worker are saved on that computer in
+`inputs.sqlite`, not on the authority or broker. Unresolved text and attachment
+references remain available to authorized browsers until resolved or discarded.
+This store, uploaded files and native Pi history rely on the user's private
+profile and filesystem protection; they are not encrypted credential stores.
+Host admission can outlive a browser disconnect or revocation. A host restart
+retains unresolved input for review but never automatically resends it.
+
 The loopback endpoint remains for local process management and trusted
 recovery. `pi-desk open --local` creates a short-lived recovery link; normal
 access uses the shared website. Local recovery and process-management

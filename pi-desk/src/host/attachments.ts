@@ -21,8 +21,10 @@ const imageType = (head: Buffer): string => {
 /** Files, not a second message store. Accepted paths remain usable from native Pi history. */
 export class Attachments {
 	private readonly directory: string;
-	constructor(agentDir: string, sessionId: string) {
+	private readonly referenced: (id: string) => boolean;
+	constructor(agentDir: string, sessionId: string, referenced: (id: string) => boolean = () => false) {
 		this.directory = join(agentDir, "desk", "attachments", createHash("sha256").update(sessionId).digest("hex"));
+		this.referenced = referenced;
 	}
 	private folder(id: string): string {
 		if (!ID.test(id)) throw new Error("Invalid attachment.");
@@ -63,7 +65,7 @@ export class Attachments {
 				if (!ID.test(id)) continue;
 				const item = this.metadata(id);
 				const updated = Math.max(lstatSync(this.path(item)).mtimeMs, lstatSync(join(this.folder(id), "metadata.json")).mtimeMs);
-				if (!item.used && updated < Date.now() - 24 * 60 * 60 * 1000) {
+				if (!item.used && !this.referenced(id) && updated < Date.now() - 24 * 60 * 60 * 1000) {
 					rmSync(this.folder(id), { recursive: true }); continue;
 				}
 				reserved += item.size; count++;
@@ -82,7 +84,7 @@ export class Attachments {
 		}
 		const data = this.metadata(command.id);
 		if (command.kind === "upload_discard") {
-			if (data.used) throw new Error("A submitted prompt references this file.");
+			if (data.used || this.referenced(data.id)) throw new Error("A submitted prompt references this file.");
 			rmSync(this.folder(data.id), { recursive: true });
 			return;
 		}
@@ -114,24 +116,33 @@ export class Attachments {
 			return { id: data.id, name: data.name, size: data.size, mimeType: data.mimeType } satisfies Attachment;
 		} finally { closeSync(descriptor); }
 	}
-	prepare(ids: string[], imagesSupported: boolean) {
+	private files(ids: string[]): Stored[] {
 		if (ids.length > FILE_COUNT || new Set(ids).size !== ids.length) throw new Error("Attach up to eight different files.");
 		const files = ids.map(id => this.metadata(id));
 		if (files.reduce((sum, file) => sum + file.size, 0) > MESSAGE_FILE_LIMIT) throw new Error("Attachments must total at most 32 MiB.");
-		const images: { type: "image"; data: string; mimeType: string }[] = [];
 		for (const file of files) {
 			if (!file.ready) throw new Error("Finish uploading attachments before sending.");
 			const descriptor = this.open(file);
 			try {
 				if (fstatSync(descriptor).size !== file.size) throw new Error("Attachment size changed.");
-				if (imagesSupported && file.mimeType.startsWith("image/")) images.push({
-					type: "image", data: readFileSync(descriptor).toString("base64"), mimeType: file.mimeType,
-				});
 			} finally { closeSync(descriptor); }
 		}
-		// Retain before native admission: a disconnect or extension error must not delete a file
-		// that an input handler or queued prompt has already observed.
+		return files;
+	}
+	check(ids: string[]): void { this.files(ids); }
+	/** Only the host writes metadata; the worker's image preparation is read-only. */
+	retain(ids: string[]): void {
+		const files = this.files(ids);
 		for (const file of files) { file.used = true; this.save(file); }
+	}
+	prepare(ids: string[], imagesSupported: boolean) {
+		const files = this.files(ids);
+		const images: { type: "image"; data: string; mimeType: string }[] = [];
+		for (const file of files) if (imagesSupported && file.mimeType.startsWith("image/")) {
+			const descriptor = this.open(file);
+			try { images.push({ type: "image", data: readFileSync(descriptor).toString("base64"), mimeType: file.mimeType }); }
+			finally { closeSync(descriptor); }
+		}
 		return { images, text: files.length ? `\n\nAttached files on the host:\n${files.map(file =>
 			`- ${JSON.stringify(file.name)} (${file.size} bytes): ${JSON.stringify(this.path(file))}`).join("\n")}` : "" };
 	}

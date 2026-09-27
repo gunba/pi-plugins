@@ -1296,5 +1296,11 @@ details[open] > summary:before {
 .computer-heading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .computer-heading small, .computer-card summary small { margin-left: auto; white-space: nowrap; }
 .computer-card { margin-block: 1rem; }
+.pending-inputs { flex-shrink: 0; max-height: 24vh; overflow: auto; padding: .5rem 1rem; border-bottom: 1px solid var(--border); }
+.pending-input { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .5rem; font-size: .85rem; }
+.pending-input > div { min-width: 0; flex: 1; }
+.pending-input p { margin: .2rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-input small { color: var(--muted); overflow-wrap: anywhere; }
+.pending-input button { flex-shrink: 0; }
 .computer-card summary { display: flex; align-items: center; gap: .5rem; }
 .computers input { min-width: 0; width: 100%; }

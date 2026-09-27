@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { WorkerCommand } from "../shared/protocol.ts";
-import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT } from "../shared/attachments.ts";
+import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT, type UploadCommand } from "../shared/attachments.ts";
 
 export interface DraftFile {
 	id: string; name: string; blob: Blob;
@@ -113,7 +112,7 @@ export function useAttachments(key: string, report: (text: string) => void) {
 		files, ready, progress, add,
 		remove: (id: string) => { void mutate(files => files.filter(file => file.id !== id)).catch(error => report(String(error))); },
 		clear: (ids: string[]) => mutate(files => files.filter(file => !ids.includes(file.id))),
-		upload: async (sessionId: string, command: (value: WorkerCommand) => Promise<unknown>) => {
+		upload: async (sessionId: string, command: (value: UploadCommand) => Promise<unknown>) => {
 			const ids: string[] = [];
 			try {
 				for (const file of files) {

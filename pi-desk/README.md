@@ -86,7 +86,8 @@ Explicitly resuming a saved session also loads its native plugin state:
 - Restored goals are disarmed and need their own **Resume** action.
 
 Stopping does not delete pending child inbox entries or scheduled messages.
-Desk does not add a separate recovery queue or replay browser input and controls.
+Desk retains unresolved browser input for review, but does not replay it or
+unfinished controls after a worker or host restart.
 Shutdown joins pending startup and native cleanup before releasing the writer;
 overlapping stop requests wait for the same cleanup.
 
@@ -320,7 +321,7 @@ input to finish. Questions and command execution remain owned by the host.
 Close-session, remove-computer and uncertain-delivery decisions use the same
 dialogs, with an explicit target and Cancel/Back behavior. A conversation change
 cancels an open decision. Dismissing an uncertain resend keeps its receipt and
-draft; resending requires an explicit choice before any new upload.
+draft; a new delivery requires an explicit choice.
 
 Plugin actions acknowledge admission without keeping a request open while you
 answer a form. Their views show pending work and disable repeated actions, even
@@ -336,8 +337,9 @@ operations are not retried automatically. After a lost connection, check this
 history and the native conversation before repeating a control.
 
 Unfinished operations become unconfirmed after a worker or host failure. Only
-small operation metadata is saved, not another command queue or conversation
-store. A failed worker cannot leave a live question in the browser.
+small control-operation metadata is saved. Pending message admission is separate
+and retains unresolved input for review. A failed worker cannot leave a live
+question in the browser.
 
 Pi editor suggestions, including **Fork & edit**, appear as an offered draft.
 **Use draft** fills this device's composer; replacing existing unsent text needs
@@ -444,12 +446,25 @@ Each conversation can store up to 128 MiB or 256 attachments. Unsubmitted
 uploads older than a day are removed when that conversation starts another
 upload. Clearing browser data deletes unsent drafts, not host files.
 
-An uncertain prompt delivery keeps its command receipt as well as the draft.
-Retrying unchanged input after a browser reload reuses that receipt rather
-than sending the prompt twice within the same worker lifetime. If the worker
-or branch changed, or a receipt has expired/conflicted, the app asks you to check
-history before sending again.
-It does not automatically replay prompts after a host restart.
+You can send text and files while Pi is still starting. The host saves admission
+to `inputs.sqlite` before acknowledging it. **Pending messages** shows Waiting
+for Pi, Confirming admission, or a failure. Cancel works before dispatch; once
+dispatch begins, check the conversation rather than treating a disconnect as
+cancellation. Up to 16 unresolved messages can be retained per conversation.
+
+Input is bound to that worker activation and native generation. It cannot drift
+into another branch or a restarted worker. Startup messages use native follow-up
+delivery in submission order. Uploaded files use a stable conversation scope;
+only the host writes their metadata, and the native worker reads them.
+
+The admission receipt survives reconnects and host restarts. Retrying unchanged
+input reuses its receipt, including when Pi finished loading while the reply was
+lost. Accepted payloads are removed from the admission store; native JSONL remains
+conversation history. Failed or unconfirmed input retains its text and files.
+**Review** lets you inspect, explicitly send again, or discard it. Startup failure
+offers **Start again**; saved conversations instead resume their native history.
+Restart never automatically sends retained input. Undispatched cancellations
+release their file references for normal unused-upload cleanup.
 
 ### Accounts and connections
 

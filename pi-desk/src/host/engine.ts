@@ -53,6 +53,7 @@ export class DeskEngine {
 	private transition = false;
 	private authentication?: AbortController;
 	private providerFilter = "";
+	private attachmentScope?: string;
 
 	constructor(send: (message: WorkerMessage) => void) {
 		this.send = send;
@@ -93,6 +94,7 @@ export class DeskEngine {
 	}
 
 	private async initialize(options: WorkerInit): Promise<SessionSnapshot> {
+		this.attachmentScope = options.attachmentScope;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
@@ -435,8 +437,6 @@ export class DeskEngine {
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
 		}
 		switch (command.kind) {
-			case "upload_begin": case "upload_chunk": case "upload_finish": case "upload_discard":
-				return new Attachments(getAgentDir(), session.sessionId).command(command);
 			case "snapshot": return this.snapshot();
 			case "history": {
 				const feed = command.source === undefined ? this.feed : this.sources.get(command.source);
@@ -496,7 +496,7 @@ export class DeskEngine {
 					&& !slash.startsWith("skill:")) {
 					throw new Error(`/${slash} is not an extension command. Use the corresponding Pi Desk control.`);
 				}
-				const attached = new Attachments(getAgentDir(), session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
+				const attached = new Attachments(getAgentDir(), this.attachmentScope ?? session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
 				// Preflight reports admission without holding an HTTP request through inference.
 				return new Promise<{ accepted: true }>((resolve, reject) => {
 					let admitted = false;

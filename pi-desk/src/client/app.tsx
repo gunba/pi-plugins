@@ -28,6 +28,8 @@ import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { Devices } from "./devices.tsx";
 import { DraftRecovery } from "./draft-recovery.tsx";
 import { SessionControls } from "./session-controls.tsx";
+import { PendingInputs } from "./pending-inputs.tsx";
+import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
@@ -240,16 +242,26 @@ export function App({ account }: { account?: BrowserAccount }) {
   }
   async function send(event: FormEvent) {
     event.preventDefault();
-    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sending || controlBusy || !connected || session?.state !== "ready") return;
+    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sending || controlBusy || !connected
+      || !session?.activation || !["starting", "ready"].includes(session.state)) return;
     const text = draft;
     const fileIds = attachments.files.map(file => file.id);
     setSending(true);
     try {
       const receiptKey = `pi-desk:submission:${selected}`;
       const previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as {
-        id: string; generation: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
+        id: string; activation: string; generation?: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
       } | null;
-      if (previous && (previous.generation !== session.ui!.generation || previous.requiresConfirmation)
+      const uploaded = await attachments.upload(session.key, value => api(`/sessions/${selected}/uploads`, {
+        activation: session.activation, command: value,
+      }));
+      const prompt: PromptCommand = {
+        kind: "prompt", text, ...(uploaded.length ? { attachments: uploaded } : {}),
+      };
+      const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(prompt)))),
+        byte => byte.toString(16).padStart(2, "0")).join("");
+      const reusable = previous?.activation === session.activation && !previous.requiresConfirmation && previous.fingerprint === fingerprint;
+      if (previous && !reusable
         && !await confirmation.request({
           title: "Send this message again?", context: confirmationContext, accept: "Send again", cancel: "Keep draft",
           body: <>
@@ -259,21 +271,24 @@ export function App({ account }: { account?: BrowserAccount }) {
             {!!fileIds.length && <p>{fileIds.length} attachment{fileIds.length === 1 ? "" : "s"}</p>}
           </>,
         })) return;
-      const uploaded = await attachments.upload(session.snapshot!.id, command);
-      const prompt: WorkerCommand = {
-        kind: "prompt",
-        text,
-        ...(uploaded.length ? { attachments: uploaded } : {}),
+      const receipt = reusable ? previous! : {
+        id: crypto.randomUUID(), activation: session.activation,
+        generation: session.state === "starting" ? undefined : session.ui?.generation,
+        fingerprint, behavior: session.state === "starting" ? "followUp" as const : busy ? delivery : undefined,
       };
-      const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(prompt)))),
-        byte => byte.toString(16).padStart(2, "0")).join("");
-      const receipt = previous?.generation === session.ui!.generation && !previous.requiresConfirmation && previous.fingerprint === fingerprint
-        ? previous : { id: crypto.randomUUID(), generation: session.ui!.generation, fingerprint, behavior: busy ? delivery : undefined };
       localStorage.setItem(receiptKey, JSON.stringify(receipt));
-      try { await command({ ...prompt, behavior: receipt.behavior }, receipt.id); }
+      try {
+        const result = await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
+          id: receipt.id, activation: receipt.activation, generation: receipt.generation,
+          command: { ...prompt, behavior: receipt.behavior },
+        });
+        if (!["queued", "sending", "accepted"].includes(result.input.state)) {
+          localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
+          throw new Error(result.input.error ?? "This message was cancelled. It was not sent again.");
+        }
+      }
       catch (error) {
         if (JSON.parse(localStorage.getItem(receiptKey) ?? "null")?.id === receipt.id) {
-          if (error instanceof ApiError && error.status === 400) localStorage.removeItem(receiptKey);
           if (error instanceof ApiError && error.status === 409) localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
         }
         throw error;
@@ -282,7 +297,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
       if (selectedRef.current === selected) { setDraft(""); setLatestRequest(value => value + 1); }
       try { await attachments.clear(fileIds); }
-      catch { setError("Message sent, but this device could not clear its attachment draft. Remove those files before sending another message."); }
+      catch { setError("Message queued on the computer, but this device could not clear its attachment draft. Remove those files before sending another message."); }
     } catch (error) {
       setError(`${errorText(error)} Your draft has been kept.`);
     } finally {
@@ -445,12 +460,15 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
         {session && <ControlActivity key={selected} session={selected} controls={controls} />}
+        {session && <PendingInputs key={selected} session={session} connected={connected} report={setError} />}
         {session && (session.state === "closed" || session.state === "failed") && (
           <div className="connection-banner">
             <span>{session.error || (session.interrupted ? "This session was interrupted. Desk did not resend input or retry controls." : "This session is closed.")}
               {session.file && <small className="resume-hint">{RESUME_NOTICE}</small>}
             </span>
-            {session.file && <button onClick={() => void resume(session.file!, session.computer)}>Resume saved history</button>}
+            <button disabled={!connected} onClick={() => {
+              void api(`/sessions/${session.key}/restart`, {}).catch(error => setError(errorText(error)));
+            }}>{session.file ? "Resume saved history" : "Start again"}</button>
           </div>
         )}
         {session?.snapshot?.extensions.some(extension => extension.error) && <div className="error-banner" role="alert">
@@ -509,7 +527,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   </button>
                 )}
                 {session?.state === "starting" && !controlBusy && (
-                  <p className="muted">Loading your Pi setup…</p>
+                  <p className="muted">Loading your Pi setup. You can send now; messages will wait on this computer.</p>
                 )}
               </div>
           }
@@ -666,7 +684,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                       sending ||
                       controlBusy ||
                       !connected ||
-                      session.state !== "ready"
+                       !session.activation || !["starting", "ready"].includes(session.state)
                     }
                   >
                     ↑
