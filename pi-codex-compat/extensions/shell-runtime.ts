@@ -123,6 +123,7 @@ export type ShellLaunch = {
 export type ProcessTreeDependencies = {
 	platform: NodeJS.Platform;
 	taskkillTimeoutMs?: number;
+	onFailure?: (message: string) => void;
 	spawnTaskkill: (
 		command: string,
 		args: string[],
@@ -448,20 +449,22 @@ export function terminateProcessTree(
 			}
 			return new Promise((resolveAttempt) => {
 				let settled = false;
-				const finish = (success: boolean) => {
+				const finish = (success: boolean, failure?: string) => {
 					if (settled) return;
 					settled = true;
 					clearTimeout(timer);
+					if (failure) dependencies.onFailure?.(failure);
 					resolveAttempt(success);
 				};
 				const timer = setTimeout(() => {
 					taskkill.kill?.();
-					finish(false);
+					finish(false, `taskkill timed out after ${dependencies.taskkillTimeoutMs ?? TASKKILL_WAIT_MS}ms`);
 				}, dependencies.taskkillTimeoutMs ?? TASKKILL_WAIT_MS);
-				taskkill.once?.("error", () => finish(false));
-				taskkill.once?.("exit", (code) => finish(code === 0));
+				taskkill.once?.("error", (error) => finish(false, `taskkill failed: ${String(error)}`));
+				taskkill.once?.("exit", (code) => finish(code === 0, code === 0 ? undefined : `taskkill exited with status ${String(code)}`));
 			});
-		} catch {
+		} catch (error) {
+			dependencies.onFailure?.(`taskkill failed: ${String(error)}`);
 			return Promise.resolve(false);
 		}
 	}
@@ -947,13 +950,22 @@ function releaseSession(session: ExecSession): Promise<void> {
 
 function recordTerminationAttempt(
 	session: ExecSession,
-	attempt: Promise<boolean>,
+	pid: number,
+	signal: NodeJS.Signals,
+	force: boolean,
 ): void {
+	let failure: string | undefined;
+	const attempt = terminateProcessTree(pid, signal, force, {
+		...defaultProcessTreeDependencies,
+		onFailure: (message) => {
+			failure = `${message} (session ${session.id})`;
+		},
+	});
 	session.terminationAttempt = attempt;
 	void attempt.then((success) => {
-		if (!success) {
-			session.terminationError = `process-tree termination failed for session ${session.id}`;
-		}
+		if (session.terminationAttempt !== attempt) return;
+		session.terminationError = success ? undefined
+			: failure ?? `process-tree termination failed for session ${session.id}`;
 	});
 }
 
@@ -972,14 +984,14 @@ function requestTermination(
 	const forceNow = force || process.platform === "win32";
 	recordTerminationAttempt(
 		session,
-		terminateProcessTree(pid, forceNow ? "SIGKILL" : signal, forceNow),
+		pid, forceNow ? "SIGKILL" : signal, forceNow,
 	);
 	if (forceNow || session.forceKillTimeout) return;
 	session.forceKillTimeout = setTimeout(() => {
 		if (!isSessionDone(session) && session.child.pid) {
 			recordTerminationAttempt(
 				session,
-				terminateProcessTree(session.child.pid, "SIGKILL", true),
+				session.child.pid, "SIGKILL", true,
 			);
 		}
 	}, FORCE_KILL_DELAY_MS);
@@ -993,7 +1005,7 @@ function requestInterrupt(session: ExecSession): void {
 		const force = process.platform === "win32";
 		recordTerminationAttempt(
 			session,
-			terminateProcessTree(pid, force ? "SIGKILL" : "SIGINT", force),
+			pid, force ? "SIGKILL" : "SIGINT", force,
 		);
 	}
 }

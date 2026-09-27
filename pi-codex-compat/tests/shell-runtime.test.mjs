@@ -265,8 +265,10 @@ test("Windows taskkill failures are reported without unsafe PID fallback", async
 	]) {
 		const listeners = new Map();
 		const killed = [];
+		const failures = [];
 		const attempt = terminateProcessTree(789, "SIGTERM", true, {
 			platform: "win32",
+			onFailure: message => failures.push(message),
 			spawnTaskkill() {
 				return {
 					once(name, listener) {
@@ -281,14 +283,18 @@ test("Windows taskkill failures are reported without unsafe PID fallback", async
 		listeners.get(event)(value);
 		assert.equal(await attempt, false);
 		assert.deepEqual(killed, []);
+		assert.deepEqual(failures, [event === "error"
+			? "taskkill failed: Error: taskkill missing" : "taskkill exited with status 1"]);
 	}
 });
 
 test("a hanging Windows taskkill attempt is bounded and reported", async () => {
 	let taskkillStopped = false;
+	const failures = [];
 	const success = await terminateProcessTree(790, "SIGTERM", true, {
 		platform: "win32",
 		taskkillTimeoutMs: 5,
+		onFailure: message => failures.push(message),
 		spawnTaskkill() {
 			return {
 				once() {},
@@ -303,6 +309,7 @@ test("a hanging Windows taskkill attempt is bounded and reported", async () => {
 	});
 	assert.equal(success, false);
 	assert.equal(taskkillStopped, true);
+	assert.deepEqual(failures, ["taskkill timed out after 5ms"]);
 });
 
 test("Unified Exec timing policy clamps initial waits, writes, and empty polls", () => {

@@ -458,7 +458,9 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 			const run = await harness.invoke(
 				"exec_command",
 				{
-					cmd: `node -e "require('node:net').createServer().listen(0)"`,
+					// A failed cancellation must fail this assertion, not leave the
+					// entire test runner waiting forever for the fixture's socket.
+					cmd: `node -e "setTimeout(()=>process.exit(99),90000);require('node:net').createServer().listen(0)"`,
 					workdir: harness.cwd,
 					yield_time_ms: 1_000,
 					login: false,
@@ -478,7 +480,8 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 				})).end.result
 				: run.end.result;
 			assert.equal(terminal.details.aborted, true);
-			assert.equal(terminal.details.session_id, undefined);
+			assert.equal(terminal.details.session_id, undefined, JSON.stringify(terminal.details));
+			assert.notEqual(terminal.details.exit_code, 99, "fixture watchdog fired instead of cancellation");
 			assert.match(
 				textContent(terminal),
 				/Process (?:aborted|exited with signal)/,
