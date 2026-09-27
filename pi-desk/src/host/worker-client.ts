@@ -18,9 +18,11 @@ export class SessionWorker {
 	generation = "";
 	snapshot?: SessionSnapshot;
 	private readonly event: (message: WorkerMessage) => void;
+	private readonly runtimeDirectory: string | undefined;
 
 	constructor(options: WorkerInit, event: (message: WorkerMessage) => void) {
 		this.event = event;
+		this.runtimeDirectory = process.env.PI_DESK_RUNTIME || undefined;
 		const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("PI_DESK_")));
 		this.child = spawn(process.execPath, [fileURLToPath(new URL("./worker.js", import.meta.url))], {
 			cwd: options.cwd, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
@@ -111,7 +113,7 @@ export class SessionWorker {
 	}
 
 	async start(options: WorkerInit): Promise<SessionSnapshot> {
-		const snapshot = await this.request({ type: "init", id: randomUUID(), options }) as SessionSnapshot;
+		const snapshot = await this.request({ type: "init", id: randomUUID(), options: { ...options, runtimeDirectory: this.runtimeDirectory } }) as SessionSnapshot;
 		this.snapshot = snapshot;
 		this.generation = snapshot.ui.generation;
 		return snapshot;

@@ -32,6 +32,7 @@ import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
+import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 
 /** The only app module that owns Pi engine/session lifecycle. */
 export class DeskEngine {
@@ -101,6 +102,7 @@ export class DeskEngine {
 		this.attachmentScope = options.attachmentScope;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
+		const pin = runtimePin(options.runtimeDirectory);
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
 		const cwd = realpathSync(options.cwd);
 		const settings = SettingsManager.create(cwd, agentDir);
@@ -121,7 +123,7 @@ export class DeskEngine {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			const services = await createAgentSessionServices({
-				cwd, agentDir, settingsManager,
+				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
 					extensionFactories: [{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi);
@@ -138,6 +140,9 @@ export class DeskEngine {
 					resolveProjectTrust: ({ extensionsResult }) => this.resolveTrust(cwd, agentDir, settingsManager, extensionsResult),
 				},
 			});
+			// Only native resource discovery keeps the read projection. Session
+			// settings and extension controls retain the original file-backed API.
+			services.settingsManager = settingsManager;
 			return {
 				...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent }),
 				services, diagnostics: services.diagnostics,

@@ -103,7 +103,12 @@ export type HostEvent =
 	| { type: "state"; state: HostState }
 	| { type: "session"; session: SessionView }
 	| { type: "worker"; key: string; message: WorkerMessage };
-export interface WorkerInit { cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean; leaf?: string | null; attachmentScope?: string }
+export interface WorkerInit {
+	cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean;
+	leaf?: string | null; attachmentScope?: string;
+	/** Host-owned code location, carried over private IPC rather than worker environment. */
+	runtimeDirectory?: string;
+}
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
 	| { kind: "snapshot" }
