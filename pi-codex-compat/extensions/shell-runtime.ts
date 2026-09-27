@@ -85,6 +85,7 @@ type ExecSession = {
 	terminationAttempt?: Promise<boolean>;
 	terminationError?: string;
 	forceKillTimeout?: ReturnType<typeof setTimeout>;
+	stdioDrainTimeout?: ReturnType<typeof setTimeout>;
 	outputListeners: Set<() => void>;
 	logDirectory: string;
 	logPath: string;
@@ -184,6 +185,7 @@ const OUTPUT_UPDATE_THROTTLE_MS = 100;
 const FORCE_KILL_DELAY_MS = 1_000;
 const SHUTDOWN_WAIT_MS = 2_000;
 const TASKKILL_WAIT_MS = 2_000;
+const EXIT_STDIO_IDLE_MS = 100;
 
 const UNIFIED_EXEC_ENV_DEFAULTS: Readonly<Record<string, string>> = {
 	NO_COLOR: "1",
@@ -783,6 +785,23 @@ function isSessionRunning(session: ExecSession): boolean {
 	return !isSessionDone(session);
 }
 
+function hasProcessExited(session: ExecSession): boolean {
+	return session.child.exitCode !== null || session.child.signalCode !== null;
+}
+
+function drainExitedProcess(session: ExecSession): void {
+	if (session.stdioDrainTimeout) clearTimeout(session.stdioDrainTimeout);
+	session.stdioDrainTimeout = undefined;
+	if (session.closed || !hasProcessExited(session) || session.logBackpressureDepth > 0) return;
+	// Descendants can inherit pipes after the tracked process exits. Keep
+	// draining active output, but do not let an idle inherited handle retain it
+	// forever. Disk backpressure is not idle time.
+	session.stdioDrainTimeout = setTimeout(() => {
+		session.child.stdout.destroy();
+		session.child.stderr.destroy();
+	}, EXIT_STDIO_IDLE_MS);
+}
+
 function touchSession(session: ExecSession): void {
 	session.lastUsed = ++lastSessionUse;
 }
@@ -856,7 +875,9 @@ function appendSessionOutput(session: ExecSession, chunk: Buffer): void {
 				session.child.stdout.resume();
 				session.child.stderr.resume();
 			}
+			drainExitedProcess(session);
 		});
+	drainExitedProcess(session);
 	session.pendingOutput.append(chunk);
 	for (const listener of session.outputListeners) listener();
 }
@@ -964,7 +985,7 @@ function recordTerminationAttempt(
 	session.terminationAttempt = attempt;
 	void attempt.then((success) => {
 		if (session.terminationAttempt !== attempt) return;
-		session.terminationError = success ? undefined
+		session.terminationError = success || hasProcessExited(session) ? undefined
 			: failure ?? `process-tree termination failed for session ${session.id}`;
 	});
 }
@@ -980,7 +1001,7 @@ function requestTermination(
 	if (reason === "abort") session.aborted = true;
 
 	const pid = session.child.pid;
-	if (!pid) return;
+	if (!pid || hasProcessExited(session)) return;
 	const forceNow = force || process.platform === "win32";
 	recordTerminationAttempt(
 		session,
@@ -988,7 +1009,7 @@ function requestTermination(
 	);
 	if (forceNow || session.forceKillTimeout) return;
 	session.forceKillTimeout = setTimeout(() => {
-		if (!isSessionDone(session) && session.child.pid) {
+		if (!isSessionDone(session) && !hasProcessExited(session) && session.child.pid) {
 			recordTerminationAttempt(
 				session,
 				session.child.pid, "SIGKILL", true,
@@ -999,7 +1020,7 @@ function requestTermination(
 }
 
 function requestInterrupt(session: ExecSession): void {
-	if (isSessionDone(session)) return;
+	if (isSessionDone(session) || hasProcessExited(session)) return;
 	const pid = session.child.pid;
 	if (pid) {
 		const force = process.platform === "win32";
@@ -1238,7 +1259,7 @@ async function pruneExecSessionsForCapacity(
 		if (!isSessionDone(session)) {
 			requestTermination(session, "prune", "SIGKILL", true);
 			await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-			if (session.terminationAttempt && !(await session.terminationAttempt)) {
+			if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
 				throw new Error(
 					session.terminationError ??
 						`exec_command process-tree termination failed for session ${session.id}`,
@@ -1340,11 +1361,16 @@ async function createExecSession(
 			completeExecWork(session);
 			void cleanupSessionLog(session);
 		});
+		child.once("exit", () => {
+			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
+			drainExitedProcess(session);
+		});
 		child.once("close", (code, exitSignal) => {
 			session.closed = true;
 			session.exitCode = code;
 			session.exitSignal = exitSignal;
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
+			if (session.stdioDrainTimeout) clearTimeout(session.stdioDrainTimeout);
 			void closeSessionLog(session).then(() => {
 				completeExecWork(session);
 				return cleanupSessionLog(session);
@@ -1456,9 +1482,8 @@ export async function executeManagedExecCommand(
 			}
 		} catch (error) {
 			requestTermination(session, "abort", "SIGTERM");
-			const terminationSucceeded = session.terminationAttempt
-				? await session.terminationAttempt
-				: true;
+			const terminationSucceeded = !session.terminationAttempt
+				|| await session.terminationAttempt || hasProcessExited(session);
 			if (terminationSucceeded) {
 				await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
 			}
@@ -1575,7 +1600,7 @@ async function performExecSessionShutdown(
 		waitForActiveOperations(owner),
 		...sessions.map(async (session) => {
 			await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-			if (session.terminationAttempt && !(await session.terminationAttempt)) {
+			if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
 				throw new Error(
 					session.terminationError ??
 						`Unified Exec process-tree termination failed for session ${session.id}`,
@@ -1584,7 +1609,7 @@ async function performExecSessionShutdown(
 			if (!isSessionDone(session)) {
 				requestTermination(session, "shutdown", "SIGKILL", true);
 				await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-				if (session.terminationAttempt && !(await session.terminationAttempt)) {
+				if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
 					throw new Error(
 						session.terminationError ??
 							`Unified Exec process-tree termination failed for session ${session.id}`,

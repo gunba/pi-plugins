@@ -81,6 +81,45 @@ test("managed process completion satisfies a registered wait without polling", a
 	assert.equal(wakeups.length, 1);
 });
 
+test("an exited process drains active output without waiting for a quiet inherited pipe", async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-inherited-pipe-"));
+	const owner = createExecRuntimeOwner();
+	t.after(async () => {
+		await shutdownExecSessions(owner);
+		await rm(directory, { recursive: true, force: true });
+	});
+	const script = join(directory, "inherited.cjs");
+	await writeFile(script, `
+		if (process.argv[2] === "child") {
+			process.stdout.write("start\\n");
+			process.send("ready");
+			let count = 0;
+			const output = setInterval(() => {
+				process.stdout.write("tail-" + (++count) + "\\n");
+				if (count === 8) clearInterval(output);
+			}, 40);
+			setTimeout(() => process.exit(0), 8000);
+		} else {
+			const child = require("node:child_process").fork(__filename, ["child"], {
+				detached: true, cwd: require("node:os").tmpdir(),
+				stdio: ["ignore", "inherit", "inherit", "ipc"]
+			});
+			child.once("message", () => {
+				child.disconnect();
+				child.unref();
+				process.exit(0);
+			});
+		}
+	`);
+	const result = await executeManagedExecCommand(
+		{ cmd: script, shell: process.execPath, yield_time_ms: 2000 },
+		undefined, { cwd: directory }, undefined, owner,
+	);
+	assert.equal(result.details.running, false, JSON.stringify(result.details));
+	assert.equal(result.details.exit_code, 0);
+	assert.equal(result.details.output, "start\n" + Array.from({ length: 8 }, (_, i) => `tail-${i + 1}\n`).join(""));
+});
+
 test("complete truncated command output survives native log cleanup as an immutable artifact", async t => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-command-artifact-"));
 	const old = process.env.PI_CODING_AGENT_DIR;
@@ -792,16 +831,26 @@ test("retained complete-output logs are bounded by an in-session LRU", async () 
 });
 
 for (const delay of [25, 75, 150, 300]) {
-test(`abort after ${delay}ms terminates managed process trees without a provider timeout field`, async () => {
+test(`abort after ${delay}ms terminates managed process trees without a provider timeout field`, async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-abort-startup-"));
+	t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 }));
+	const script = join(directory, "loop.cjs");
+	const marker = join(directory, "child.pid");
+	await writeFile(script, `
+		process.chdir(require("node:os").tmpdir());
+		require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid));
+		setInterval(() => {}, 1000);
+		setTimeout(() => process.exit(0), 8000);
+	`);
 	const controller = new AbortController();
 	const execution = executeManagedExecCommand(
 		{
-			cmd: `node -e "setInterval(() => {}, 1000)"`,
-			workdir: process.cwd(),
+			cmd: `node "${script}"`,
+			workdir: directory,
 			login: false,
 		},
 		controller.signal,
-		{ cwd: process.cwd() },
+		{ cwd: directory },
 	);
 	const timer = setTimeout(() => controller.abort(), delay);
 	let result;
@@ -809,14 +858,21 @@ test(`abort after ${delay}ms terminates managed process trees without a provider
 		result = await execution;
 	} catch (error) {
 		// Early cancellation can reject before launch or after verified cleanup.
-		if (error.name === "AbortError"
-			|| error.message === "exec_command aborted before the process was launched") return;
-		throw error;
+		if (error.name !== "AbortError"
+			&& error.message !== "exec_command aborted before the process was launched") throw error;
 	} finally {
 		clearTimeout(timer);
 	}
-	assert.equal(result.details.aborted, true);
-	assert.equal(result.details.running, false, JSON.stringify(result.details));
+	if (result) {
+		assert.equal(result.details.aborted, true);
+		assert.equal(result.details.running, false, JSON.stringify(result.details));
+	}
+	await new Promise(resolve => setTimeout(resolve, 250));
+	const pid = await readFile(marker, "utf8").then(Number).catch(error => {
+		if (error.code !== "ENOENT") throw error;
+	});
+	if (pid) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" },
+		`Managed command ${pid} survived cancellation`);
 });
 }
 
