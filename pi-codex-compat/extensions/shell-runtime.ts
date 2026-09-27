@@ -1204,7 +1204,6 @@ function createOutputUpdater(
 	};
 
 	if (onUpdate) {
-		onUpdate({ content: [], details: undefined });
 		session.outputListeners.add(schedule);
 	}
 	return { flush: emit, dispose };
@@ -1409,6 +1408,10 @@ export async function executeManagedExecCommand(
 	throwIfLaunchAborted(signal);
 	const leaveOperation = await enterExecOperation(signal, owner);
 	try {
+		// A progress callback may synchronously cancel the tool. Notify before
+		// spawning, rather than racing Windows taskkill against a launching shell.
+		onUpdate?.({ content: [], details: undefined });
+		throwIfLaunchAborted(signal);
 		const call = createExecCall(params.max_output_tokens);
 		const workdir = params.workdir ?? ctx.cwd;
 		const configuredShell = params.shell?.trim() ? undefined : SettingsManager.create(

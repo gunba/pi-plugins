@@ -515,12 +515,13 @@ test("runtime owners isolate sessions and shutdown", async (t) => {
 	await shutdownExecSessions(ownerB);
 });
 
-test("pre-aborted calls cannot launch shell side effects", async (t) => {
+for (const abortAt of ["before the call", "during the initial progress update"]) {
+test(`cancellation ${abortAt} cannot launch shell side effects`, async (t) => {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-codex-pre-abort-"));
 	t.after(() => rm(cwd, { recursive: true, force: true }));
 	const marker = join(cwd, "launched.txt");
 	const controller = new AbortController();
-	controller.abort();
+	if (abortAt === "before the call") controller.abort();
 	await assert.rejects(
 		executeManagedExecCommand(
 			{
@@ -530,11 +531,13 @@ test("pre-aborted calls cannot launch shell side effects", async (t) => {
 			},
 			controller.signal,
 			{ cwd },
+			() => controller.abort(),
 		),
 		/aborted before the process was launched/,
 	);
 	await assert.rejects(access(marker), /ENOENT/);
 });
+}
 
 test("provider integer fields reject fractional and negative values", async () => {
 	await assert.rejects(

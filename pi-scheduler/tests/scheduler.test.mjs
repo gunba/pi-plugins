@@ -218,7 +218,7 @@ function worker(dir, code) {
 async function finished(child) {
   let error = "";
   child.stderr.on("data", (data) => { error += data; });
-  const [code] = await once(child, "exit");
+  const [code] = await once(child, "close");
   assert.equal(code, 0, error);
 }
 
@@ -246,7 +246,7 @@ test("multi-process schedule/cancel/delivery transactions retain every accepted 
     assert.equal(results.length, 400);
     assert.equal(new Set(results.map((r) => r.id)).size, 400);
     assert.deepEqual(store.list(), []);
-  } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true }); }
+  } finally { closeStores(dir); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
 test("killed claimant recovers; corrupt and retired stores never look empty", async () => {

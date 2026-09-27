@@ -299,11 +299,12 @@ async function createHarness() {
 		const middlewareOffset = middlewareEvents.length;
 		const messageOffset = session.messages.length;
 		let abortPromise;
-		const unsubscribeAbort = options.abortOnUpdate
+		const unsubscribeAbort = options.abortOnOutput
 			? session.subscribe((event) => {
 					if (
 						event.type === "tool_execution_update" &&
-						event.toolCallId === toolCallId
+						event.toolCallId === toolCallId &&
+						textContent(event.partialResult).includes(options.abortOnOutput)
 					) {
 						abortPromise ??= session.abort();
 					}
@@ -460,12 +461,12 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 				{
 					// A failed cancellation must fail this assertion, not leave the
 					// entire test runner waiting forever for the fixture's socket.
-					cmd: `node -e "setTimeout(()=>process.exit(99),90000);require('node:net').createServer().listen(0)"`,
+					cmd: `node -e "setTimeout(()=>process.exit(99),90000);require('node:net').createServer().listen(0,()=>console.log('READY'))"`,
 					workdir: harness.cwd,
 					yield_time_ms: 1_000,
 					login: false,
 				},
-				{ abortOnUpdate: true },
+				{ abortOnOutput: "READY" },
 			);
 			assertErrorOutcome(run, true);
 			assertMiddlewareRun(run, true);
