@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Context } from "@earendil-works/pi-ai";
 
-export type RequestOrigin = "interactive-input" | "rpc-input" | "extension-input" | "child-notice" | "timer" | "goal" | "work-completion" | "tool-continuation" | "unknown";
+export type RequestOrigin = "interactive-input" | "rpc-input" | "extension-input" | "child-notice" | "timer" | "plan" | "work-completion" | "tool-continuation" | "unknown";
 export type RequestKind = "assistant" | "compaction" | "branch-summary";
 export type RequestTrace = {
   rootSessionId: string;
@@ -50,7 +50,7 @@ export default function requestTracing(pi: ExtensionAPI): void {
     const type = message.customType;
     const origin: RequestOrigin = type.startsWith("pi-subagents/") ? "child-notice"
       : type === "pi-scheduler-scheduled-message" ? "timer"
-      : type.startsWith("pi-goal") ? "goal"
+      : type.startsWith("pi-plan") ? "plan"
       : type.startsWith("pi-work") ? "work-completion" : "extension-input";
     const id = ctx.sessionManager.getSessionId();
     states.set(id, { ...states.get(id), origin });

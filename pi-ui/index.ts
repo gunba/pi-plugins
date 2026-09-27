@@ -28,6 +28,8 @@ export type UiDetails = {
 		actions?: UiAction[] }[];
 };
 export interface UiView {
+	/** Compact always-visible summary; opening it shows this view's normal details. */
+	preview?: { label: string; primary: string; secondary?: string };
 	kind: string;
 	title: string;
 	surface?: "work" | "settings";

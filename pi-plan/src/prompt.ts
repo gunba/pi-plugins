@@ -1,5 +1,6 @@
 import type { PlanSnapshot, PlanView } from "./domain.ts";
 
+/** Part of the v1 round ledger; format changes require a replay-version migration. */
 export function renderPlanRoundPrompt(plan: PlanSnapshot, round: number): string {
 	const active = plan.steps.filter(step => step.status === "in_progress");
 	const current = active.length ? active : plan.steps.filter(step => step.status === "pending").slice(0, 1);
@@ -27,7 +28,7 @@ export function renderPlanWrapup(plan: Pick<PlanView, "objective">, blockedReaso
 
 export function renderPlanGuidance(blockedAfter: number): string {
 	return "Use one branch-local plan with a concise objective and actionable steps. Ordinary checklists have automatic continuation off. "
-		+ "Enable auto_continue for sustained work across automatic rounds. Read get_plan before update_plan and use its exact plan_id and revision. "
+		+ "Enable auto_continue for sustained work across automatic rounds. Read get_plan before update_plan; copy its id and revision into plan_id and revision. "
 		+ "After resume, reload, or fork, automatic plans are disarmed; action resume rearms them. "
 		+ "Completing every step does not itself complete the objective. "
 		+ `During automatic work, report blocked only after the same concrete condition persists for at least ${blockedAfter} consecutive rounds.`;

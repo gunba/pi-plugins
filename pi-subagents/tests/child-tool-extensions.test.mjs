@@ -143,7 +143,7 @@ export default function(pi) {
 
 test("source ownership filters overridden/inactive extra and late hook registrations", async (t) => {
 	const root = await fixture(t, {
-		"a.ts": `${simpleProvider(["custom_a", "web_search", "unowned_extra", "todo_write"])}\n`,
+		"a.ts": `${simpleProvider(["custom_a", "web_search", "unowned_extra", "custom_plan"])}\n`,
 		"b.ts": `export default function(pi) {
 			const register = name => pi.registerTool({ name, label: name, description: "winner-b", parameters: { type: "object" }, execute: async () => ({content: [], details: {}}) });
 			register("web_search");
@@ -151,7 +151,7 @@ test("source ownership filters overridden/inactive extra and late hook registrat
 		}`,
 	});
 	const factories = await load([tool("custom_a", join(root, "a.ts")), tool("web_search", join(root, "b.ts")),
-		tool("todo_write", join(root, "a.ts"))], { handledToolNames: new Set(["todo_write"]) });
+		tool("custom_plan", join(root, "a.ts"))], { handledToolNames: new Set(["custom_plan"]) });
 	assert.equal(factories.length, 1);
 	const h = harness();
 	for (const { factory } of factories) await factory(h.api);
@@ -286,8 +286,8 @@ test("native framework identities, legacy aliases, and pi-ai compat routes remai
 test("builtin ownership and handled names skip loading, not a maintained name whitelist", async (t) => {
 	assert.deepEqual(await load([
 		tool("novel_builtin", "<builtin>", { source: "builtin" }),
-		{ name: "subagent" }, { name: "todo_write", sourceInfo: { path: "<inline:todo>" } },
-	], { handledToolNames: (function* () { yield "subagent"; yield "todo_write"; })() }), []);
+		{ name: "subagent" }, { name: "custom_plan", sourceInfo: { path: "<inline:plan>" } },
+	], { handledToolNames: (function* () { yield "subagent"; yield "custom_plan"; })() }), []);
 	const root = await fixture(t, { "override.ts": simpleProvider(["bash"]) });
 	const [{ factory }] = await load([tool("bash", join(root, "override.ts"))]);
 	const h = harness(); await factory(h.api);

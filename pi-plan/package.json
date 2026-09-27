@@ -1,0 +1,15 @@
+{
+  "name": "pi-plan",
+  "version": "0.1.0",
+  "description": "Branch-local plans with optional automatic continuation for Pi.",
+  "private": true,
+  "type": "module",
+  "pi": { "extensions": ["./extensions/plan.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.87.1",
+    "@earendil-works/pi-coding-agent": ">=0.87.1",
+    "@earendil-works/pi-tui": ">=0.87.1",
+    "typebox": "*"
+  },
+  "license": "MIT"
+}

@@ -23,7 +23,8 @@ export function decodePlanRoundAdmission(value: unknown): PlanRoundAdmission {
 	return { kind: "plan/round-admission", ...decodePlanRoundDetails(details), content };
 }
 export function createPlanRoundAdmission(identity: PlanRoundIdentity, content: string): PlanRoundAdmission {
-	return decodePlanRoundAdmission({ kind: "plan/round-admission", version: 1, ...identity, content });
+	return decodePlanRoundAdmission({ kind: "plan/round-admission", version: 1,
+		planId: identity.planId, revision: identity.revision, round: identity.round, content });
 }
 export function applyPlanRoundAdmission(state: PlanFoldState, admission: PlanRoundAdmission): void {
 	if (!state.plan || admission.content !== renderPlanRoundPrompt(state.plan, admission.round))

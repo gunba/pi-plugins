@@ -51,9 +51,9 @@ for (const Renderer of [TuiAltScreen, TuiMainScreen]) test(`native ${Renderer.na
 		getToolsExpanded() { throw Error("Global expansion must not control individual work sections"); },
 	} };
 	ui.start(ctx);
-	ui.source("goal").set({ label: "Goal", status: "active", summary: "Summary", detail: `Goal details\n${Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n")}` });
-	const todos = ui.source("todos");
-	todos.set({ label: "Todos", status: "1 active", summary: "Summary", detail: "Task details" });
+	ui.source("plan").set({ label: "Plan", status: "active", summary: "Summary", detail: `Plan details\n${Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n")}` });
+	const todos = ui.source("party");
+	todos.set({ label: "Party", status: "1 active", summary: "Summary", detail: "Task details" });
 	let editorText = "draft";
 	const editor = new Text("draft", 0, 0);
 	editor.handleInput = data => { editorText += data; };
@@ -62,24 +62,24 @@ for (const Renderer of [TuiAltScreen, TuiMainScreen]) test(`native ${Renderer.na
 	tui.start();
 	t.after(() => { ui.close(); tui.stop(); });
 	await new Promise(resolve => setTimeout(resolve, 40));
-	assert.doesNotMatch(widget.render(100).join("\n"), /Goal details|Task details/);
-	// SGR press/release on the Goal header, through Pi's actual fullscreen input path.
+	assert.doesNotMatch(widget.render(100).join("\n"), /Plan details|Task details/);
+	// SGR press/release on the Plan header, through Pi's actual fullscreen input path.
 	if (Renderer === TuiAltScreen) {
 		input("\x1b[<0;2;2M");
 		input("\x1b[<0;2;2m");
 	} else {
-		void ui.open(ctx, "goal");
+		void ui.open(ctx, "plan");
 	}
 	await new Promise(resolve => setTimeout(resolve, 40));
-	assert.match(overlay.lines().join("\n"), /Goal details/);
-	assert.doesNotMatch(widget.render(100).join("\n"), /Goal details|Task details/);
+	assert.match(overlay.lines().join("\n"), /Plan details/);
+	assert.doesNotMatch(widget.render(100).join("\n"), /Plan details|Task details/);
 	input("\x1b[F");
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.match(overlay.lines().join("\n"), /Line 79/);
-	input("\t");
+	input("\t"); input("\t"); // Plan → Subagents → Party.
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.match(overlay.lines().join("\n"), /Task details/);
-	todos.set({ label: "Todos", status: "done", summary: "Summary", detail: "Task details updated" });
+	todos.set({ label: "Party", status: "done", summary: "Summary", detail: "Task details updated" });
 	terminal.columns = 44; terminal.rows = 20; tui.requestRender(true);
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.match(overlay.lines().join("\n"), /Task details updated/);
@@ -132,8 +132,8 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 			tui.requestRender();
 		},
 	} });
-	ui.source("goal").set({ label: "Goal", status: "active", summary: "Goal summary", detail: "Goal details" });
-	ui.source("todos").set({ label: "Todos", status: "active", summary: "Todo summary", detail: "Task details" });
+	ui.source("plan").set({ label: "Plan", status: "active", summary: "Plan summary", detail: "Plan details" });
+	ui.source("party").set({ label: "Party", status: "active", summary: "Peer summary", detail: "Task details" });
 	tui.setFocus(editor);
 	tui.start();
 	t.after(() => { ui.close(); tui.stop(); });
@@ -148,20 +148,20 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 		await settle();
 	};
 	await settle();
-	assert.doesNotMatch(frame().join("\n"), /Goal details|Task details/);
-	await gesture("Goal summary");
+	assert.doesNotMatch(frame().join("\n"), /Plan details|Task details/);
+	await gesture("Plan summary");
 	// Inspect the actual rendered frame, not a fresh manual widget render.
-	assert.match(overlay.lines().join("\n"), /Goal details/);
+	assert.match(overlay.lines().join("\n"), /Plan details/);
 	assert.doesNotMatch(overlay.lines().join("\n"), /Task details/);
 	input("\x1b"); await settle();
-	await gesture("Todo summary");
-	assert.doesNotMatch(overlay.lines().join("\n"), /Goal details/);
+	await gesture("Peer summary");
+	assert.doesNotMatch(overlay.lines().join("\n"), /Plan details/);
 	assert.match(overlay.lines().join("\n"), /Task details/);
 	input("\x1b"); await settle();
-	await gesture("Goal summary", true);
+	await gesture("Plan summary", true);
 	assert.equal(overlay.current(), undefined);
-	await gesture("Goal summary");
-	assert.match(overlay.lines().join("\n"), /Goal details/);
+	await gesture("Plan summary");
+	assert.match(overlay.lines().join("\n"), /Plan details/);
 	assert.doesNotMatch(overlay.lines().join("\n"), /Task details/);
 	input("\x1b"); await settle();
 	input("!");

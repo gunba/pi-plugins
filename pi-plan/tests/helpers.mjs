@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 
-import goalExtension from "../extensions/goal.ts";
+import planExtension from "../extensions/plan.ts";
 import { ensureWorkCoordination } from "../../pi-work-coordination/index.ts";
 
 export function makeTheme() {
@@ -91,7 +91,7 @@ export function createExtensionHarness(options = {}) {
 	else delete process.env.PI_SUBAGENT_TASK_PATH;
 	try {
 		if (options.managedChild) ensureWorkCoordination(pi, { child: true });
-		goalExtension(pi);
+		planExtension(pi);
 	} finally {
 		if (savedTaskPath === undefined) delete process.env.PI_SUBAGENT_TASK_PATH;
 		else process.env.PI_SUBAGENT_TASK_PATH = savedTaskPath;
@@ -120,6 +120,7 @@ export function createExtensionHarness(options = {}) {
 
 	return {
 		branch,
+		events: pi.events,
 		commands,
 		tools,
 		entryRenderers,

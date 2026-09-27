@@ -8,7 +8,7 @@ export function CloseSummary({ session }: { session: SessionView }) {
 			return typeof summary === "string" && summary ? [{ id: view.id, title: view.title, summary }] : [];
 		});
 	return <>
-		<p>Stop this Pi worker and all work it owns, including children, goal continuation and timers. Saved history is kept.</p>
+		<p>Stop this Pi worker and all work it owns, including children, plan continuation and timers. Saved history is kept.</p>
 		<ul>
 			{session.state === "starting" && <li>Pi is still loading; close waits for startup and cleanup to finish.</li>}
 			{session.snapshot?.activity === "running" && <li>The current run will be stopped.</li>}

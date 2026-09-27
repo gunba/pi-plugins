@@ -193,7 +193,7 @@ export class WorkUi {
 		for (const listener of this.listeners) listener();
 	}
 
-	async open(ctx: ExtensionContext, selected: WorkSectionId = this.currentSnapshot[0]?.[0] ?? "goal"): Promise<void> {
+	async open(ctx: ExtensionContext, selected: WorkSectionId = this.currentSnapshot[0]?.[0] ?? "plan"): Promise<void> {
 		const presentation = this.remote;
 		if (presentation && this.active(this.generation)) { presentation.open("work", selected); return; }
 		if (!this.active(this.generation) || ctx.mode !== "tui") return;
@@ -262,7 +262,7 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	pi.on("session_tree", (_event, ctx) => ui.start(ctx));
 	pi.on("session_shutdown", () => { try { ui.close(); } finally { release(); } });
 	pi.registerCommand("work", {
-		description: "Open work details: goal, todos, subagents, party, scheduled",
+		description: "Open work details: plan, subagents, party, scheduled",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui" && !getPresentation(pi)) { ctx.ui.notify("Work details require an interactive client.", "warning"); return; }
 			const id = args.trim() as WorkSectionId;

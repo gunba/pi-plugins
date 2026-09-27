@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -37,9 +37,8 @@
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-context-window/index.ts",
       "./pi-party/index.ts",
-      "./pi-goal/extensions/goal.ts",
+      "./pi-plan/extensions/plan.ts",
       "./pi-subagents/extensions/subagents.ts",
-      "./pi-todo/extensions/todo.ts",
       "./pi-output-budget/extensions/index.ts"
     ],
     "skills": [

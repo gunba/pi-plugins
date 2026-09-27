@@ -6,17 +6,19 @@ import { api } from "./connection.ts";
 import { useConfirmation } from "./confirmation.tsx";
 import { composerKey } from "./composer-keys.ts";
 import { TranscriptView } from "./transcript-view.tsx";
+import { ViewPreviews } from "./view-previews.tsx";
 import { transcriptKey, type CachedMessage } from "./state.ts";
 
 const data = (view: ViewSnapshot) => view.data as UiConversation;
 const empty: CachedMessage[] = [];
 type Receipt = { id: string; activation: string; generation: string; command: WorkerCommand };
 
-export function AgentPane({ session, context, views, focused, choose, connected, epoch, messages, onLatest, renderMessage, answer }: {
+export function AgentPane({ session, context, views, focused, choose, connected, epoch, messages, onLatest, renderMessage, answer, openView }: {
 	context: string;
 	session: SessionView; views: ViewSnapshot[]; focused: string; choose: (id: string) => void; connected: boolean; epoch: number;
 	messages: Record<string, CachedMessage[]>; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage, source: string) => ReactNode; answer: (id: string) => void;
+	openView: (id: string) => void;
 }) {
 	const [all, setAll] = useState(() => !views.some(view => data(view).active)), [search, setSearch] = useState("");
 	const [listing, setListing] = useState(true);
@@ -56,17 +58,18 @@ export function AgentPane({ session, context, views, focused, choose, connected,
 			</div>
 		</div>}
 		{selected && session.ui ? <AgentConversation key={`${selected.id}:${session.ui.generation}`} session={session} context={context} view={selected}
-			connected={connected} epoch={epoch} messages={messages} onLatest={onLatest} renderMessage={renderMessage} answer={answer} onEditing={() => setListing(false)} />
+			connected={connected} epoch={epoch} messages={messages} onLatest={onLatest} renderMessage={renderMessage} answer={answer} onEditing={() => setListing(false)} openView={openView} />
 			: <p className="muted">{focused ? "This agent view is no longer available. Choose another agent." : "Active agents appear here."}</p>}
 	</div>;
 }
 
-function AgentConversation({ session, context, view, connected, epoch, messages, onLatest, renderMessage, answer, onEditing }: {
+function AgentConversation({ session, context, view, connected, epoch, messages, onLatest, renderMessage, answer, onEditing, openView }: {
 	context: string;
 	session: SessionView; view: ViewSnapshot; connected: boolean; epoch: number; messages: Record<string, CachedMessage[]>;
 	onLatest: (source: string | undefined, page: HistoryPage) => void; renderMessage: (message: ChatMessage, source: string) => ReactNode;
 	answer: (id: string) => void;
 	onEditing: () => void;
+	openView: (id: string) => void;
 }) {
 	const item = data(view), source = item.transcript;
 	const key = `pi-desk:agent-draft:${session.key}:${view.id}`, receiptKey = `${key}:receipt`;
@@ -136,6 +139,7 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 		{questions.map(question => <button type="button" className="question-banner" key={question.id} onClick={() => answer(question.id)}>
 			{question.form.title}<span>Answer →</span>
 		</button>)}
+		{item.scope && <ViewPreviews views={session.ui!.views.filter(view => view.scope?.id === item.scope)} open={openView} />}
 		{source ? <TranscriptView key={source} session={session.key} source={source} generation={session.ui!.generation}
 			connected={connected && session.state === "ready"} epoch={epoch} messages={messages[transcriptKey(session.key, source)] ?? empty}
 			onLatest={onLatest} renderMessage={message => renderMessage(message, source)} latestRequest={latest} />

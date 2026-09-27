@@ -1,7 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-export type WorkSectionId = "goal" | "todos" | "subagents" | "party" | "scheduled";
+export type WorkSectionId = "plan" | "subagents" | "party" | "scheduled";
 export type WorkTone = "accent" | "muted" | "success" | "warning" | "error";
 export interface WorkSection {
 	label: string;
@@ -13,9 +13,10 @@ export interface WorkSection {
 	manage?: { label: string; run(ctx: ExtensionContext): Promise<void> };
 }
 export type WorkSnapshot = ReadonlyArray<readonly [WorkSectionId, Readonly<WorkSection>]>;
-export const SECTION_ORDER: readonly WorkSectionId[] = ["goal", "todos", "subagents", "party", "scheduled"];
+export const SECTION_ORDER: readonly WorkSectionId[] = ["plan", "subagents", "party", "scheduled"];
 export const SECTION_LABELS: Record<WorkSectionId, string> = {
-	goal: "Goal", todos: "Todos", subagents: "Subagents", party: "Party", scheduled: "Scheduled",
+	plan: "Plan",
+	subagents: "Subagents", party: "Party", scheduled: "Scheduled",
 };
 
 /** Data is never interpreted as terminal control sequences. Persistence is untouched. */

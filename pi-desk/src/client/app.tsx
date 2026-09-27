@@ -31,6 +31,7 @@ import { SessionControls } from "./session-controls.tsx";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { AgentPane } from "./agent-pane.tsx";
+import { ViewPreviews } from "./view-previews.tsx";
 import { CloseSummary } from "./close-summary.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
@@ -483,6 +484,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
+        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope)} open={id => { setFocusedView(id); setPanel("view"); }} />
         {!!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {agentViews.length} total</span><span>View →</span>
@@ -754,7 +756,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
             onLatest={storeHistory} renderMessage={(message, source) => <Message message={message} sessionKey={selected} source={source} />}
-            answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }} />}
+            answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
+            openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {(panel === "work" || panel === "view") &&
             (visibleViews.length ? (
               visibleViews.map((view) => (
