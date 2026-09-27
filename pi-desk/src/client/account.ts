@@ -50,12 +50,13 @@ async function storedDevice(namespace: string): Promise<BrowserDevice> {
 		return device;
 	} finally { db.close(); }
 }
-async function forgetDevice(namespace: string): Promise<void> {
+async function forgetDevice(namespace: string, expected: string): Promise<void> {
 	const db = await keyDatabase();
 	try {
 		await new Promise<void>((resolve, reject) => {
 			const transaction = db.transaction("identities", "readwrite");
-			transaction.objectStore("identities").delete(namespace);
+			const store = transaction.objectStore("identities"), request = store.get(namespace);
+			request.onsuccess = () => { if (request.result?.id === expected) store.delete(namespace); };
 			transaction.oncomplete = () => resolve();
 			transaction.onerror = transaction.onabort = () => reject(new Error("Cannot remove the browser identity."));
 		});
@@ -79,7 +80,7 @@ export class BrowserAccount {
 	private credentials: CredentialVerifier;
 	private storageChanged = (event: StorageEvent) => {
 		if ((!event.key || event.key === this.logoutKey) && this.markedOut()) {
-			this.needsSignIn = true; this.epoch++; this.credential = undefined; this.changed();
+			this.needsSignIn = true; this.epoch++; this.credential = undefined; this.device = undefined; this.pending = undefined; this.changed();
 		}
 	};
 	private constructor(config: AccountConfiguration, application: PublicClientApplication) {
@@ -94,7 +95,7 @@ export class BrowserAccount {
 				|| event.eventType === EventType.ACTIVE_ACCOUNT_CHANGED) {
 				if (event.eventType === EventType.LOGOUT_SUCCESS
 					|| event.eventType === EventType.ACTIVE_ACCOUNT_CHANGED && !application.getActiveAccount()) {
-					this.needsSignIn = true; this.epoch++; this.credential = undefined; this.device = undefined;
+					this.needsSignIn = true; this.epoch++; this.credential = undefined; this.device = undefined; this.pending = undefined;
 				} else this.needsSignIn = this.markedOut() || !this.account();
 				this.changed();
 			}
@@ -142,7 +143,7 @@ export class BrowserAccount {
 	private changed(): void { for (const listener of this.listeners) listener(); }
 	async signIn(): Promise<void> {
 		if (this.revoked) {
-			await forgetDevice(this.namespace);
+			if (this.device) await forgetDevice(this.namespace, this.device.id);
 			this.device = undefined; this.credential = undefined; this.revoked = false;
 		}
 		this.needsSignIn = false;
@@ -201,7 +202,7 @@ export class BrowserAccount {
 		if (this.credential && this.credential.expires > Date.now() / 1000 + 90) return this.credential;
 		if (this.pending) return this.pending;
 		const epoch = this.epoch;
-		this.pending = (async () => {
+		const job = (async () => {
 			const device = await this.identity();
 			const value = await this.request<{ token: string; expires: number }>("/devices/enrol", {
 				id: device.id, kind: "browser", key: device.publicKey, name: navigator.platform || "Browser",
@@ -209,8 +210,8 @@ export class BrowserAccount {
 			if (typeof value.token !== "string" || !Number.isSafeInteger(value.expires)) throw new Error("Invalid account credential.");
 			if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
 			this.credential = value; return value;
-		})().finally(() => { this.pending = undefined; });
-		return this.pending;
+		})().finally(() => { if (this.pending === job) this.pending = undefined; });
+		this.pending = job; return job;
 	}
 	async directory(): Promise<AccountDirectory> {
 		const value = await this.request<AccountDirectory>("/workspace");
@@ -237,7 +238,7 @@ export class BrowserAccount {
 		// An in-flight MSAL refresh must not silently sign this browser back in.
 		localStorage.setItem(this.logoutKey, "1");
 		this.epoch++; this.needsSignIn = true; this.credential = undefined; this.changed();
-		await forgetDevice(this.namespace);
+		await forgetDevice(this.namespace, device.id);
 		await this.application.clearCache({ account: this.account() });
 		this.device = undefined; this.credential = undefined; this.changed();
 	}

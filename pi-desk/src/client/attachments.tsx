@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkerCommand } from "../shared/protocol.ts";
 import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT } from "../shared/attachments.ts";
 
-interface DraftFile {
+export interface DraftFile {
 	id: string; name: string; blob: Blob;
 	uploaded?: { session: string; id: string };
 }
@@ -31,6 +31,47 @@ async function change(key: string, update?: (files: DraftFile[]) => DraftFile[])
 		transaction.onabort = transaction.onerror = () => reject(failure ?? transaction.error ?? new Error("Could not save attachments on this device."));
 	});
 }
+export async function draftAttachments(): Promise<Map<string, DraftFile[]>> {
+	const database = await db();
+	return new Promise((resolve, reject) => {
+		const transaction = database.transaction("attachments", "readonly"), store = transaction.objectStore("attachments");
+		const result = new Map<string, DraftFile[]>(), cursor = store.openCursor();
+		cursor.onsuccess = () => {
+			const value = cursor.result;
+			if (!value) return;
+			if (typeof value.key === "string" && Array.isArray(value.value) && value.value.length) result.set(value.key, value.value);
+			value.continue();
+		};
+		transaction.oncomplete = () => resolve(result);
+		transaction.onabort = transaction.onerror = () => reject(new Error("Cannot read saved attachments."));
+	});
+}
+export async function copyDraftAttachments(source: string, target: string, commit: () => () => void): Promise<void> {
+	if (source === target) throw new Error("Choose another conversation.");
+	const database = await db();
+	await new Promise<void>((resolve, reject) => {
+		const transaction = database.transaction("attachments", "readwrite"), store = transaction.objectStore("attachments");
+		const read = store.get(source), destination = store.get(target);
+		let completed = 0, failure: unknown, rollback: (() => void) | undefined;
+		const ready = () => {
+			if (++completed !== 2) return;
+			try {
+				if (destination.result?.length) throw new Error("The current conversation already has attachments.");
+				const files = (read.result ?? []) as DraftFile[];
+				if (files.length > FILE_COUNT || files.some(file => !(file.blob instanceof Blob) || file.blob.size > FILE_LIMIT)
+					|| files.reduce((sum, file) => sum + file.blob.size, 0) > MESSAGE_FILE_LIMIT) throw new Error("Saved attachments exceed the message limits.");
+				rollback = commit();
+				if (files.length) store.put(files.map(file => ({ id: crypto.randomUUID(), name: file.name, blob: file.blob })), target);
+			} catch (error) { failure = error; transaction.abort(); }
+		};
+		read.onsuccess = destination.onsuccess = ready;
+		transaction.oncomplete = () => resolve();
+		transaction.onabort = transaction.onerror = () => {
+			try { rollback?.(); } finally { reject(failure ?? new Error("Cannot copy saved attachments.")); }
+		};
+	});
+	dispatchEvent(new CustomEvent("pi-desk:draft-changed", { detail: target }));
+}
 const encoded = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
 	const reader = new FileReader();
 	reader.onload = () => resolve(String(reader.result).split(",")[1]!);
@@ -46,9 +87,13 @@ export function useAttachments(key: string, report: (text: string) => void) {
 	const ready = stored?.key === key;
 	useEffect(() => {
 		let cancelled = false;
-		void change(key).then(files => { if (!cancelled) setStored({ key, files }); })
-			.catch(error => { if (!cancelled) report(String(error)); });
-		return () => { cancelled = true; };
+		const refresh = () => {
+			void change(key).then(files => { if (!cancelled) setStored({ key, files }); })
+				.catch(error => { if (!cancelled) report(String(error)); });
+		};
+		const changed = (event: Event) => { if ((event as CustomEvent).detail === key) refresh(); };
+		refresh(); addEventListener("pi-desk:draft-changed", changed);
+		return () => { cancelled = true; removeEventListener("pi-desk:draft-changed", changed); };
 	}, [key]);
 	const mutate = async (update: (files: DraftFile[]) => DraftFile[]) => {
 		const files = await change(key, update);

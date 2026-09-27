@@ -25,6 +25,7 @@ import { AttachmentList, useAttachments } from "./attachments.tsx";
 import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { Devices } from "./devices.tsx";
+import { DraftRecovery } from "./draft-recovery.tsx";
 import { SessionControls } from "./session-controls.tsx";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
@@ -761,6 +762,10 @@ export function App({ account }: { account?: BrowserAccount }) {
           {panel === "settings" && (
             <>
               {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <Devices />}
+              <DraftRecovery available={host.sessions.map(item => item.key)} target={session?.key}
+                busy={sending || controlBusy} restored={(target, text) => {
+                  if (selectedRef.current === target) setDraft(text);
+                }} />
               {!!ui?.views.some(view => view.surface === "settings") && <section className="panel-card"><h3>Pi settings</h3><div className="panel-actions">
               {ui.views.filter(view => view.surface === "settings").map(view => <button key={view.id} onClick={() => {
                 setPanel("view"); setFocusedView(view.id);
