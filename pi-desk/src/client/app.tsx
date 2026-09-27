@@ -12,7 +12,7 @@ import { ReferenceContext } from "./reference-origin.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
-import { SavedSessions, RESUME_NOTICE } from "./saved-sessions.tsx";
+import { ResumeConversation, RESUME_NOTICE } from "./resume.tsx";
 import { Computers } from "./computers.tsx";
 import { Inspector, Modal, Navigation } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
@@ -63,9 +63,10 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
   const [panel, setPanel] = useState<
-    "work" | "settings" | "history" | "view" | undefined
+    "work" | "settings" | "view" | undefined
   >();
   const [create, setCreate] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const createRequest = useRef(0);
@@ -324,6 +325,9 @@ export function App({ account }: { account?: BrowserAccount }) {
         <button className="new-chat" onClick={openNewConversation}>
           <span>＋</span> New conversation
         </button>
+        <button className="resume-chat" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
+          <span>◷</span> Resume conversation
+        </button>
         <input
           className="search"
           aria-label="Search conversations"
@@ -377,14 +381,6 @@ export function App({ account }: { account?: BrowserAccount }) {
           )}
         </nav>
         <div className="sidebar-bottom">
-          <button
-            onClick={() => {
-              setPanel("history");
-              setSidebar(false);
-            }}
-          >
-            ◷ <span>Saved sessions</span>
-          </button>
           <button
             onClick={() => {
               setPanel("settings");
@@ -689,7 +685,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       </main>
       {panel && (
         <Inspector title={panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
-          : panel === "history" ? "Saved sessions" : "Settings & tools"} close={() => setPanel(undefined)}
+          : "Settings & tools"} close={() => setPanel(undefined)}
           back={panel === "view" ? () => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work") : undefined}>
           <div className="panel-title">
             {panel === "view" && <button className="icon-button"
@@ -700,9 +696,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 ? "Work"
                 : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
-                : panel === "history"
-                  ? "Saved sessions"
-                  : "Settings & tools"}
+                : "Settings & tools"}
             </h2>
             <button
               className="icon-button"
@@ -754,11 +748,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                   : "Goals, tasks, agents and scheduled work will appear here."}
               </p>
             ))}
-          {panel === "history" && (
-            <SavedSessions computers={host.computers} connected={connected} selected={key => {
-              setSelected(key); setPanel(undefined); setSidebar(false);
-            }} />
-          )}
           {panel === "settings" && (
             <>
               {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <Devices />}
@@ -904,6 +893,10 @@ export function App({ account }: { account?: BrowserAccount }) {
           )}
         </Inspector>
       )}
+      {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
+        current={session} folders={host.sessions} close={() => setResumeOpen(false)} selected={key => {
+          setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
+        }} />}
       {create && (
         <Modal title="New conversation" close={closeNewConversation}>
           <form onSubmit={(event) => void newSession(event)}>

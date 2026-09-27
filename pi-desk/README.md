@@ -59,7 +59,8 @@ Stop development hosts before rebuilding their executable output. For a
 client-only build, use `npx vite build --outDir dist/client`; Vite's default
 output directory would replace the host build as well.
 
-Saved sessions can be resumed from the history panel. Settings provides branch,
+**Resume conversation** opens a searchable picker. Choose a computer, then its
+current project, another folder or all projects. Settings provides branch,
 fork, compaction, name, pin and explicit close controls. Closing stops that
 worker's active work, but keeps the saved conversation. A host restart restores
 session references and marks interrupted sessions; it does not replay prompts
@@ -82,18 +83,26 @@ Desk does not add a separate recovery queue or replay browser input and controls
 Shutdown joins pending startup and native cleanup before releasing the writer;
 overlapping stop requests wait for the same cleanup.
 
-The saved-session catalog searches title/opening-text previews and host paths,
-not complete conversation text. Results are grouped by computer and project,
-with up to 50 entries per page and a serialized-size limit. Each computer loads
-independently. Refresh rechecks its files; changing results invalidate older page
-positions rather than mixing catalog versions.
+The picker searches title/opening-text previews and host paths, not complete
+conversation text. Named-only filtering and recent-first ordering follow Pi's
+session metadata. Rows are virtualized; bounded pages load as you scroll. Only
+the selected computer and scope are queried. Refresh rechecks files; changed
+results invalidate older page positions rather than mixing catalogue versions.
 
-The host streams the documented native JSONL format into a private, rebuildable
-metadata index (`history.sqlite` in its data directory). It stores bounded
-previews, not complete messages or another authoritative conversation record.
-Unchanged files reuse their indexed metadata. Discovery includes the configured
-session store and directories used by Desk's saved session references. Browsing
-does not start session workers. Indexing/read failures are shown in the catalog.
+The host uses Pi's public `SessionManager.list`/`listAll` APIs in an isolated
+listing thread, with progress and cancellation. The first response returns
+cached results immediately, including while a cold scan is still running.
+Recent completed scans are reused. At most two listing threads run per host,
+each with a 512 MiB JavaScript heap budget; failures leave cached previews
+available and ask you to narrow the project selection.
+
+A private, rebuildable metadata index (`history.sqlite` in the data directory)
+stores bounded previews, not complete messages or another authoritative
+conversation record. Discovery includes the configured session store and
+directories used by Desk's saved session references. Browsing does not start
+agent sessions or load extensions. Indexing failures are shown in the picker.
+Pi skips unreadable records and files. A completed listing replaces that scope's
+cached membership; an interrupted or failed listing retains its cached previews.
 With the host stopped, deleting this index and its SQLite sidecars only forces
 a rebuild; it does not delete native sessions.
 

@@ -8,7 +8,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 rmSync(resolve(root, "dist/host"), { recursive: true, force: true });
 const host = await build({
   absWorkingDir: root,
-  entryPoints: ["src/host/cli.ts", "src/host/worker.ts"],
+  entryPoints: ["src/host/cli.ts", "src/host/worker.ts", "src/host/catalog-worker.ts"],
   outdir: "dist/host",
   platform: "node",
   target: "node22",

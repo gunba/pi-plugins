@@ -451,7 +451,15 @@ export class DeskHost {
 					offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
 					revision: url.searchParams.get("revision") ?? undefined,
 					refresh: url.searchParams.get("refresh") === "1",
+					cwd: url.searchParams.get("cwd") ?? undefined,
+					scan: url.searchParams.get("scan") ?? undefined,
+					named: url.searchParams.get("named") === "1",
+					reader: url.searchParams.get("reader") ?? undefined,
 				}));
+			}
+			if (url.pathname === "/api/history/cancel" && request.method === "POST") {
+				this.saved!.cancel(string(request.body?.scan, 100), string(request.body?.reader, 100));
+				return reply({});
 			}
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
 			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.access.devices());

@@ -78,7 +78,6 @@ export interface TreePage {
 }
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
-	warning?: string;
 }
 export interface SessionView {
 	key: string;

@@ -87,8 +87,8 @@ export function SurfaceFrame({ label, className, close, back, modal = true, port
 	</dialog>;
 	return portal ? createPortal(dialog, document.body) : dialog;
 }
-export function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
-	return <SurfaceFrame label={title} className="modal" close={close} portal>
+export function Modal({ title, close, children, className = "" }: { title: string; close: () => void; children: ReactNode; className?: string }) {
+	return <SurfaceFrame label={title} className={`modal ${className}`} close={close} portal>
 		<div className="panel-title">
 			<h2 data-surface-heading tabIndex={-1}>{title}</h2>
 			<button type="button" className="icon-button" aria-label="Close dialog" onClick={close}>×</button>
