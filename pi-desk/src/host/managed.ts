@@ -30,6 +30,7 @@ if (!["inspect", "--help", "-h", "help"].includes(command)) {
 		if (installation.sessionDir) set("--session-dir", installation.sessionDir);
 		if (installation.proxy) set("--proxy", installation.proxy);
 	}
+	if (installation.proxy && ["signin", "signout"].includes(command)) set("--proxy", installation.proxy);
 }
 process.argv.splice(2, process.argv.length - 2, command, ...args);
 await import("./cli.ts");
