@@ -86,6 +86,14 @@ keep their configured revision, and local development paths are not fetched.
 `stage` and `update` can therefore report the same version. Versions are not
 automatically removed.
 
+After changing Node, restart terminal Pi with the new executable and run
+`/desk stage`, then `/desk restart`. Preparation can use the existing JavaScript
+controller without loading its old native bindings. The running host keeps its
+old runtime until the explicit restart. Login-start then records the new Node
+path while retaining its other settings. A restart or rollback to an incompatible
+runtime is refused **before** stopping the current host; stopping alone remains
+available from either Node version.
+
 ## Moving from an unmanaged installation
 
 1. Record the old executable, Node path and startup options. Preserve the Pi

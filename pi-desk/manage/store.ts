@@ -12,8 +12,10 @@ export interface RuntimeState {
 	format: 1; source: string; active?: string; pending?: string; previous?: string;
 }
 export const validId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-export const runtimeId = (snapshot: SourceSnapshot): string => createHash("sha256")
-	.update(JSON.stringify([1, snapshot.digest, process.platform, process.arch, process.versions.modules])).digest("hex");
+const identity = (digest: string, platform: string, arch: string, node: string): string => createHash("sha256")
+	.update(JSON.stringify([1, digest, platform, arch, node])).digest("hex");
+export const runtimeId = (snapshot: SourceSnapshot): string =>
+	identity(snapshot.digest, process.platform, process.arch, process.versions.modules);
 export const versionDirectory = (home: string, id: string): string => {
 	if (!validId(id)) throw new Error("Invalid runtime identity.");
 	return join(home, "versions", id);
@@ -36,20 +38,29 @@ export function readState(home: string): RuntimeState | undefined {
 		throw new Error("Invalid managed runtime state.");
 	return state;
 }
-export function readRelease(home: string, id: string): RuntimeRelease {
+/** The JS-only controller can prepare/stop runtimes after Node replacement. */
+export function readControllerRelease(home: string, id: string): RuntimeRelease {
 	const directory = versionDirectory(home, id);
 	if (lstatSync(directory).isSymbolicLink() || !within(realpathSync(home), realpathSync(directory))) throw new Error("Runtime directory escaped its installation.");
 	const release = JSON.parse(readFileSync(join(directory, "runtime.json"), "utf8")) as RuntimeRelease;
 	if (!release || release.format !== 1 || release.id !== id || !validId(release.digest)
 		|| release.platform !== process.platform || release.arch !== process.arch
-		|| release.node !== process.versions.modules || typeof release.source !== "string" || resolve(release.source) !== release.source
+		|| typeof release.node !== "string" || !/^\d+$/.test(release.node)
+		|| typeof release.source !== "string" || resolve(release.source) !== release.source
 		|| typeof release.readyAt !== "string" || !Number.isFinite(Date.parse(release.readyAt))
 		|| ![release.plugins, release.desk, release.engine].every(value => typeof value === "string" && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value))
-		|| runtimeId({ digest: release.digest } as SourceSnapshot) !== id)
-		throw new Error("Runtime is invalid or belongs to a different platform/Node version. Stage it on this computer.");
+		|| identity(release.digest, release.platform, release.arch, release.node) !== id)
+		throw new Error("Runtime is invalid or belongs to a different platform. Stage it on this computer.");
 	for (const name of ["cli.js", "managed.js", "manage-cli.js"]) {
 		const entry = join(directory, "source", "pi-desk", "dist", "host", name);
 		if (!lstatSync(entry).isFile() || !within(realpathSync(directory), realpathSync(entry))) throw new Error("Runtime entry point is invalid.");
 	}
+	return release;
+}
+/** Host/worker activation still requires dependencies prepared for this Node. */
+export function readRelease(home: string, id: string): RuntimeRelease {
+	const release = readControllerRelease(home, id);
+	if (release.node !== process.versions.modules)
+		throw new Error("This runtime was prepared with a different Node version. Run /desk stage using the current Node, then /desk restart.");
 	return release;
 }

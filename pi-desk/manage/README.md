@@ -48,3 +48,10 @@ Versions are not overwritten or automatically removed. A rollback selects
 compatible code; it does not downgrade native histories, credentials or account
 state. The initial migration from an unmanaged host must stop that host and
 move its login-start entry before activating the managed installation.
+
+The JavaScript-only management controller validates the ready release identity
+and platform, but does not require its recorded Node ABI. This lets a new Node
+prepare a replacement or stop the old host. Host/worker selection still requires
+matching native dependencies. Restart/rollback validate their target before
+closing a running host, then retarget stopped login-start to the current Node
+and select the prepared version.

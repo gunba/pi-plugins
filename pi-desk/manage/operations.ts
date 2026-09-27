@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { activateRuntime, configureRuntime } from "./activate.ts";
 import { canonicalPath, launcherPath, readInstallation, type RuntimeInstallation } from "./installation.ts";
-import { atomicJson, readRelease, readState, versionDirectory } from "./store.ts";
+import { atomicJson, readControllerRelease, readRelease, readState, versionDirectory } from "./store.ts";
 import { stageRuntime } from "./stage.ts";
 import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { migrateLogin, removeLogin, stopLogin } from "../src/host/login.ts";
@@ -146,6 +146,8 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 		const state = readState(home)!;
 		const selected = options.action === "rollback" ? state.previous : options.action === "restart" ? state.pending : undefined;
 		if (options.action === "rollback" && !selected) throw new Error("No previous runtime is available.");
+		// Refuse an incompatible target before closing a healthy host or changing login-start.
+		if (options.action !== "stop") readRelease(home, selected ?? state.active!);
 		const login = readLoginConfig(installation.directory);
 		if (options.action === "login-install" && login) throw new Error("Login-start is already configured.");
 		publish("Stopping the host; saved sessions will remain closed");
@@ -153,6 +155,7 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 		if (options.action === "login-remove") await removeLogin(installation.directory);
 		if (options.action === "login-install") await runLauncher(home, ["login", "install"]);
 		if (options.action !== "stop") {
+			await migrateLogin(installation.directory, launcherPath(home));
 			if (selected) await activateRuntime(home, selected);
 			publish("Starting the selected runtime");
 			await runLauncher(home, ["start"]);
@@ -168,7 +171,7 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 export async function launchOperation(home: string, action: Exclude<DeskOperation, "setup">): Promise<void> {
 	const state = readState(home);
 	if (!state?.active) throw new Error("Run /desk setup first.");
-	readRelease(home, state.active);
+	readControllerRelease(home, state.active);
 	const file = join(versionDirectory(home, state.active), "source", "pi-desk", "dist", "host", "manage-cli.js");
 	const fd = openSync(join(home, "operation.log"), "a", 0o600);
 	try {
