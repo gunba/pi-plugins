@@ -99,7 +99,7 @@ addons remain shared.
 Missing or synthetic provider sources fail explicitly rather than silently hiding
 tools. SDK hosts can supply child-bound definitions for tools without source files.
 Pi Desk gives each active child its own structured human-interaction scope.
-Questions identify the child and can be answered from a paired browser; native
+Questions identify the child and can be answered from an authorized browser; native
 select/confirm/input dialogs use the same scope. Interruption cancels that child's
 pending questions, not a sibling's. Without that presentation, human questions
 must be escalated to the parent. Tool availability does not confer human approval

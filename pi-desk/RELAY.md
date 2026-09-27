@@ -1,184 +1,194 @@
 # Remote access
 
-Each computer opens an outbound connection to one relay. Browsers on Linux,
-Windows and phones use the same HTTPS app, which combines sessions from paired
-computers in one sidebar. Pi and its tools keep running on their owning computer;
-the relay does not run an agent or store conversations.
+Linux and Windows computers sign into one Microsoft-account-owned workspace.
+Every signed-in browser uses the same website and discovers its computers,
+including offline ones. Sessions and tools stay on their owning computers.
+See [Security](SECURITY.md) for the authority and publisher trust boundaries.
 
-## Browser app
+## Services
 
-Host the browser app separately from the relay, with a separate origin and
-deployment surface. The relay process must not be able to modify the app files
-or read their publishing credentials.
+Deploy three distinct origins:
 
-After building Pi Desk, prepare the public files:
+| Service | Contents | Private material |
+| --- | --- | --- |
+| Static website | Published browser assets and public bootstrap | Publishing credentials, outside the served files |
+| Account authority | Standalone Node service and durable device directory | Authority signing key and directory |
+| Routing broker | Standalone Node WebSocket service | No owner tokens, authority key or website publishing access |
 
-```sh
-pi-desk publish-app --relay https://relay.example.com --app-origin https://desk.example.com --output /path/to/new-app-release
+The Node services require Node 22.19 or later. Copy their bundled executable
+and a `package.json` containing `{"type":"module"}` into each deployment.
+Neither service needs Pi, a package install or a provider account. Use HTTPS
+reverse proxies and one instance of each Node service. The authority's data
+directory must survive redeployment. Keep releases and configuration outside
+the source checkout.
+
+## Microsoft registration
+
+Create a single-tenant Microsoft Entra application and service principal:
+
+- Configure v2 access tokens and expose the delegated `Workspace.Access` scope.
+  Permit the chosen owner's account to consent, or grant consent through the
+  organization's administrator.
+- Register the website's exact `/auth/redirect.html` URL as a **SPA** redirect.
+  Register `http://localhost` for the **mobile/desktop public client** flow.
+  Enable public-client flows; do not create a client secret or enable implicit
+  token flows.
+- The same application is the public client and API resource. Clients request
+  `<client-id>/Workspace.Access`, using the GUID resource form, not a Graph
+  scope. Keep the tenant, application ID and immutable owner object ID.
+
+Use the tenant-specific authority, not `common`. The service checks the owner
+object ID, not a display name or email. Add temporary localhost SPA redirects
+only for development and remove them afterward. A Static Web Apps login gate
+alone does not authorize independent PC connectors.
+
+References: [redirect URI rules](https://learn.microsoft.com/entra/identity-platform/reply-url),
+[delegated scope validation](https://learn.microsoft.com/entra/identity-platform/scenario-protected-web-api-verification-scope-app-roles),
+[MSAL redirect bridge](https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/redirect-bridge.md).
+
+## Account authority
+
+Prepare a private configuration file:
+
+```json
+{
+  "origin": "https://account.example.com",
+  "relayOrigin": "https://relay.example.com",
+  "appOrigins": ["https://desk.example.com"],
+  "tenantId": "<tenant-guid>",
+  "clientId": "<application-guid>",
+  "ownerObjectId": "<owner-object-guid>"
+}
 ```
 
-Publish that directory to a static host. It contains no Pi credentials. Its
-`desk-transport.json` names the broker; invitations never select a different
-broker. The generated `staticwebapp.config.json` configures Azure Static Web Apps:
-scripts come only from the app origin, and cross-origin connections are limited
-to the broker's WebSocket endpoint. Other static hosts must apply those same
-headers and cache rules. Do not rewrite missing files to `index.html`.
-
-The publisher requires a new output directory. Keep previous releases outside
-the published root. Do not run an API, agent, or connector on the static host.
-
-## Relay server
-
-Copy only `dist/relay/` to a server with Node 22.19 or later. The standalone relay bundles its
-dependencies. It does not require Pi, provider credentials, or `npm install`.
-It serves health information and WebSocket routing, not HTML, JavaScript, a
-service worker, redirects, or browser configuration.
-
-Generate a registration secret:
+Generate a private P-256 JWK with `kty`, `crv`, `x`, `y` and `d` fields using
+Web Crypto or a JWK-capable key tool. Store it separately from the public app
+and broker. Retain it across ordinary redeployments.
 
 ```sh
-node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+node dist/account/pi-desk-account.js --config /private/account.json --key-file /private/signing-key.json --data-dir /private/account-state
 ```
 
-Set it as `PI_DESK_RELAY_TOKEN` in the relay process's private environment.
-Keep it for the computer's connector too. Start the server:
+Alternatively supply `PI_DESK_ACCOUNT_CONFIG` and `PI_DESK_ACCOUNT_KEY` as JSON
+in that service's private environment, and `PI_DESK_ACCOUNT_DATA` as its
+persistent directory. Do not copy these variables into a PC's Pi environment.
+The service binds to `127.0.0.1:8930`; `--listen`, `--port` or the deployment's
+`PORT` select another binding. Expose only the HTTPS proxy.
+
+`/health`, `/config` and `/.well-known/jwks.json` are public. `/workspace`
+requires the owner's delegated access token; device mutations also require
+proof of the enrolled key. Back up the private directory and key together.
+Do not restore revoked enrolments from an old backup.
+
+## Routing broker
 
 ```sh
-node dist/relay/pi-desk-relay.js --origin https://relay.example.com --app-origin https://desk.example.com
+node dist/relay/pi-desk-relay.js --account https://account.example.com --origin https://relay.example.com --app-origin https://desk.example.com
 ```
 
-The relay binds to `127.0.0.1:8920`. Put it behind an HTTPS reverse proxy.
-For example, a Caddy site with DNS pointing to this server:
+The broker discovers the authority's public configuration. It binds to
+`127.0.0.1:8920`; `--listen` and `--port` can change this. There is no
+registration token. PC admission requires a current authority credential and
+proof of the enrolled signing key.
+
+For example, a reverse proxy can forward the public origin to the private port:
 
 ```caddyfile
 relay.example.com {
-    encode zstd gzip
     reverse_proxy 127.0.0.1:8920
 }
 ```
 
-The proxy must preserve Host, Origin and the connector's `X-Pi-Desk-App-Origin`
-header, and support WebSocket upgrades. Browser sockets must come from the
-configured app origin; connectors must declare that same app origin.
-`GET /health` returns `status: "ok"`, the app origin and release/API metadata. Use `--port` or `--listen` when the
-server's existing deployment requires another address. Only expose the HTTPS
-proxy to the internet.
+Preserve Host, Origin and `X-Pi-Desk-App-Origin`, and support WebSocket upgrades.
+The broker serves `/health` and routing, not application files or redirects.
+Its health response includes release/API information. An outage disconnects
+browsers without stopping PC workers.
 
-The separate service delivering the app is trusted: malicious client JavaScript could
-misuse a paired device's credentials. Encryption protects session traffic
-from the routing service; it does not make an untrusted app distributor safe.
+## Static app
 
-## Computer
-
-Set the same `PI_DESK_RELAY_TOKEN` in the connector's environment, then run:
+After building Pi Desk and starting the authority:
 
 ```sh
-pi-desk serve --cwd /path/to/project --relay https://relay.example.com --app-origin https://desk.example.com
+pi-desk publish-app --account https://account.example.com --app-origin https://desk.example.com --output /path/to/new-app-release
 ```
 
-Run `pi-desk doctor` with the same `--data-dir` after starting the connector.
-Its relay check fails until the outbound connection is online; local access
-remains independent. Doctor does not open sessions or test provider accounts.
+Publish the new directory to the separate static host. It includes
+`desk-account.json`, which selects the authority, and generated
+`staticwebapp.config.json` headers for Azure Static Web Apps. Other static hosts
+must apply the equivalent CSP and cache rules. Connections are limited to the
+configured authority, broker and Microsoft sign-in endpoints. The redirect
+bridge must remain a separate document; do not rewrite missing assets to the
+application shell. Bootstrap and auth callbacks must not be cached.
 
-From a source build, replace `pi-desk` with `node dist/host/cli.js`.
-The command works as an ordinary user process on Windows and Linux. It does
-not install a service, change firewall rules, or require administrator access.
-Keep the computer awake and logged in. Optional [login-start](README.md#start-at-login)
-saves the connector's startup options and selected environment privately; it is
-not a prerequisite for this connector.
+The output contains no private signing key or Pi credentials. Its deployment
+origins are public runtime configuration, not source defaults. Keep previous
+releases outside the published root. Never put the app or its publishing
+credentials on the broker.
 
-For an explicit proxy:
+## Computers and browsers
+
+Install the [native package and protected-store dependency](UPDATING.md), then
+on each computer:
 
 ```sh
-pi-desk serve --relay https://relay.example.com --app-origin https://desk.example.com --proxy http://proxy.example.com:8080
+pi-desk signin --workspace https://desk.example.com --name "My computer"
+pi-desk start --cwd /path/to/project
+pi-desk open
+pi-desk doctor
 ```
 
-Standard proxy environment variables and `NO_PROXY` are also supported when
-`--proxy` is omitted. TLS verification remains enabled. Use your organization's
-approved certificate and proxy configuration; the connector does not override
-workplace policies. Local access remains available if the relay is unreachable.
-If Node lacks an approved certificate authority, `NODE_EXTRA_CA_CERTS` can
-point to its PEM file. Restart the connector after changing it. This adds
-trusted authorities without turning certificate or hostname checks off.
+Use `node dist/host/cli.js` instead of `pi-desk` from a built checkout.
+`signin` opens Microsoft in that computer's browser. It saves the public
+workspace configuration and enrols the computer; future starts reconnect to
+that workspace. `--account` can select the authority directly during initial
+deployment. A repeated explicit sign-in can replace a revoked enrolment.
+It does not create a second native conversation store.
 
-## Pair a device
+Open the shared website on desktop or phone and choose **Continue with
+Microsoft**. Every browser gets the same directory after signing in. No
+invitations or per-computer pairing steps are needed. Private profiles or
+installed web apps with separate storage sign in separately.
 
-Open the local pairing link printed by the host. In **Settings & tools → Device
-access**, choose **Pair a phone or another device**, then open that invitation
-on the other device within ten minutes. Invitations grant access to Pi and its
-tools under the computer's OS account.
+Computers are ordinary user processes: no service elevation, inbound firewall
+rule or router configuration is needed. The PC must be awake and the user
+logged in. Linux needs an unlocked Secret Service; Windows uses current-user
+DPAPI. [Login-start](README.md#start-at-login) is optional.
 
-The secret is in the URL fragment, not a request URL or relay log. On first
-connection, the invitation is exchanged for a fresh, persistent device key.
-The browser saves that key before claiming the invitation, so losing an
-acknowledgement does not lose the pairing. Reloading or reconnecting does not
-require another invitation. Private browsing does not retain keys after its
-browser context closes.
+For an approved explicit proxy, pass `--proxy http://proxy.example.com:8080`
+to `signin`/`signout` and to the host's `start`/`serve` or login-start installation.
+Otherwise the native clients use standard proxy environment variables and
+`NO_PROXY`. `NODE_EXTRA_CA_CERTS` can add an approved PEM CA without disabling
+TLS verification. Browser sign-in uses the browser's network configuration.
+Hosting under a large provider's domain does not guarantee enterprise access:
+Microsoft endpoints, the authority, website and WebSockets all need approval.
 
-Revoke a device from **Device access**. Revocation closes its current connection
-and rejects later requests. Do not copy the computer's Desk access file to
-another machine: each computer owns its identity, sessions and device records.
+## Daily use
 
-### Several computers
+- Computer names and removals are account-wide. Removing one computer does
+  not stop its sessions or affect access to other computers.
+- **Browser access** removes a browser enrolment. **Sign out of this browser**
+  also clears its local identity and MSAL cache, not all Microsoft sessions.
+- `pi-desk signout` revokes this PC's enrolment and refreshes its connector
+  without stopping native sessions. It needs the authority to confirm
+  revocation; an offline failure is not reported as successful sign-out.
+- `pi-desk open --local` provides trusted loopback recovery. Local access
+  records are separate from account-wide remote access.
+- Install the website with **Install app** or **Add to Home Screen**. Closing
+  it does not stop Pi. Clearing its data loses local drafts and the browser's
+  identity, not the PCs' saved conversations; revoke unwanted enrolments too.
 
-Configure the same relay and app origin on each computer. In the shared app, open **Settings &
-tools → Computers → Connect another computer**, or open that computer's
-invitation. Adding it keeps existing pairings. Pairing is per browser and
-computer; it is not a server account shared between devices.
+New conversations, saved history, controls, uploads and file links route to
+their owner. An offline computer does not block the others. Unsent drafts stay
+on the browser; **Saved drafts** in settings can recover those whose
+conversation is no longer listed.
 
-Sessions appear together, grouped by computer. New conversations let you choose
-a connected computer and a folder on that computer. Saved sessions, controls,
-uploads and file links are routed to their owner. Drafts and reading positions
-are separate even when two computers have identically named sessions.
+Hidden pages close live connections and reconnect when visible. Reconnect reads
+current state but never automatically replays uncertain input. Check history
+and Recent operations before repeating it. Compatible release requirements
+apply per computer; see [updates](UPDATING.md).
 
-Computer names can be changed for the current browser. Expand a computer in
-settings to manage its device access. **Forget computer** removes that browser's
-stored pairing and disconnects it; it does not stop work or revoke other devices.
-An offline or revoked computer does not block access to the others.
-
-## Install the app
-
-Open the shared HTTPS address in a normal browser profile, pair the computers,
-then use the browser's **Install app** or **Add to Home Screen** action. On a
-computer, choose to open it in its own window. A phone needs only the browser
-or installed web app; Pi stays on the paired computers.
-
-Mobile browsers may give an installed app separate storage. If it opens
-unpaired, create fresh invitations and pair from that app window. Keep using
-the same app address: a different hostname or port is a different browser
-storage location.
-
-Closing an app window does not stop Pi. Reopen it to reconnect to available
-computers. Removing the app is also separate from stopping the hosts; the
-browser may offer to delete website data during removal. Deleting that data
-loses local pairings and unsent drafts, not the computers' saved conversations.
-
-For a deployment check, open the separately hosted HTTPS app, connect
-both computers and reopen an installed app window. Check `doctor` on each
-computer. A successful `/health` response alone does not verify WebSocket
-routing, static app configuration or browser pairing.
-
-## Connection behavior
-
-Each connection uses fresh nonces from both endpoints, HKDF-separated direction keys,
-and AES-GCM with strictly increasing counters. Tampered, reordered and replayed
-frames are rejected. Large messages are chunked and bounded. The relay sees
-connection metadata and encrypted frames, but not Pi requests or results.
-
-Disconnecting a browser or restarting the relay does not stop the worker.
-The app reconnects and reads current state. It does not automatically replay
-unacknowledged prompts or actions: check the conversation when delivery is
-uncertain. A host crash is different from a relay outage; arbitrary tools
-cannot safely be replayed after a host restart.
-
-Hidden browser pages close their live connections and reconnect when visible.
-Event delivery acknowledgements also bound a frozen browser's outstanding
-backlog. Overload disconnects are retryable and do not revoke device keys.
-Update the app server and connectors to compatible releases; API/protocol
-mismatches are reported for the affected computer rather than requesting another
-pairing. The same applies to a tab still running an older app. Reload that tab
-after the update. A healthy computer remains usable while another needs an update.
-See [updates and removal](UPDATING.md) for the rollout sequence.
-
-For local development only, loopback HTTP origins are accepted. The app and
-relay must still use different ports/origins. All other origins must use HTTPS.
+For an acceptance check, sign in on both computers and a fresh browser, verify
+both appear without invitations, exercise a conversation on each, then check
+revocation and installed-app reopening. A public health response alone does not
+verify authentication, proxy support or WebSocket routing. Real workplace and
+mobile acceptance cannot be replaced by fixture tests.

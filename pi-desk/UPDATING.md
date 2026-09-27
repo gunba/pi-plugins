@@ -1,151 +1,168 @@
 # Installation and updates
 
-Pi Desk requires Node 22.19 or later. Its package includes a pinned Pi SDK;
-updating the global Pi CLI does not replace Desk's engine. The host still loads
-the account's normal Pi configuration and extensions.
+Pi Desk requires Node 22.19 or later on Windows or Linux. Its package pins the
+Pi SDK; updating the global Pi CLI does not replace Desk's engine. The host
+loads the account's normal Pi configuration and extensions.
 
-## Install a built package
+## Build and install
 
-While Desk is in development, build an archive from `pi-desk/`:
+From `pi-desk/`:
 
 ```sh
 npm ci --ignore-scripts
+npm rebuild keytar
+npm run typecheck
 npm run build
 npm pack --pack-destination /path/to/packages
 ```
 
-Create the destination first, outside the checkout. Install the resulting
-archive into a user-owned application directory:
+Create the package destination outside the checkout first. Install the archive
+into a user-owned application directory:
 
 ```sh
-npm install --prefix /path/to/desk-app --omit=dev --ignore-scripts /path/to/packages/gunba-pi-desk-0.2.0.tgz
+npm install --prefix /path/to/desk-app --omit=dev --ignore-scripts /path/to/packages/gunba-pi-desk-0.3.0.tgz
+npm --prefix /path/to/desk-app rebuild keytar
 node /path/to/desk-app/node_modules/@gunba/pi-desk/dist/host/cli.js doctor
 ```
 
-On Windows, use the same commands with quoted Windows paths. For example:
+`keytar` is a native dependency of Microsoft's protected-cache library.
+`--ignore-scripts` alone leaves its binary unavailable; the targeted rebuild is
+required on both platforms. An approved prebuilt binary normally avoids
+compilation. If it cannot be downloaded, a supported native build toolchain is
+needed. Linux also requires libsecret and an available, unlocked desktop Secret
+Service. There is no fallback to plaintext token/key storage.
+
+On Windows, no global package installation or PowerShell shim is required:
 
 ```powershell
 $app = "$HOME\apps\desk-app"
-npm install --prefix $app --omit=dev --ignore-scripts "$HOME\Downloads\gunba-pi-desk-0.2.0.tgz"
+npm install --prefix $app --omit=dev --ignore-scripts "$HOME\Downloads\gunba-pi-desk-0.3.0.tgz"
+npm --prefix $app rebuild keytar
 $desk = "$app\node_modules\@gunba\pi-desk\dist\host\cli.js"
-node $desk doctor
+node $desk signin --workspace https://desk.example.com --name "My computer"
 node $desk start --cwd "C:\Projects"
-node $desk open --pair
+node $desk open
+node $desk doctor
 ```
 
-The direct Node entry point avoids relying on a global installation or a shell
-shim. See [starting and stopping](README.md#starting-and-stopping) and
-[remote access](RELAY.md) for options. A built source checkout is also usable;
-stop its hosts before rebuilding `dist/`.
+Use a private user directory, not a shared/public folder. Sign-in uses the
+current user's protected store. Organizational execution and network policy
+still applies. Native binary or Secret Service installation may need IT help;
+do not work around that by disabling protection.
 
-## Update
+A built checkout also works. Stop its hosts before rebuilding `dist/`.
+See [remote deployment](RELAY.md) and [lifecycle commands](README.md#starting-and-stopping).
 
-1. Keep the previous archive and record each host's startup options. `status`
-   reports its directories, origin and relay. Preserve the private environment
-   used to launch it, including its relay token and command paths.
-2. Let work finish, or deliberately stop it. Run `stop` using the existing
-   executable and the same `--data-dir` for each affected host. Confirm `status`
-   reports stopped. With login-start configured, `stop` also waits for its launcher.
-   Do not replace files while an old worker can still load them.
-3. Install the new archive into the same application directory. Keep the Pi
-   agent directory, native session directories and Desk data directory unchanged.
-   Run `doctor` from the new executable.
-4. Start with the same directories, relay and environment. Check `doctor` and
-   the app's resource diagnostics before resuming saved sessions.
-5. Reload browser tabs or installed app windows. Resume conversations explicitly.
-   No worker, interrupted prompt or arbitrary tool is automatically replayed by
-   a host restart. Check native history and Recent operations before repeating
-   uncertain work.
+## Update an account-workspace release
 
-Login-start records absolute Node/app paths. An in-place app update keeps the
-same integration and private environment. If either executable path changes,
-run `login remove` with the old installation, then `login install` from the new
-one with the required startup options and environment. Inspect `login status`
-and `doctor`; do not copy `login.json` to another computer.
+1. Keep the previous package and record each host's directories/startup options.
+   Preserve native sessions, the Pi agent directory, Desk data and the OS
+   protected store. Neither credentials nor `login.json` are portable setup
+   files for another computer.
+2. Let work finish, or deliberately stop it. Use the existing executable's
+   `stop` with the same `--data-dir`, then confirm `status` reports stopped.
+   Login-start shutdown also waits for its launcher. Do not replace executable
+   files while a worker can still load them.
+3. Install the new archive, rebuild `keytar`, and run the new `doctor`.
+   Keep the data/session directories in place.
+4. Start with the same host options and approved environment. Check `doctor`
+   and resource diagnostics before explicitly resuming saved sessions.
+5. Reload browser tabs/app windows. Check native history and Recent operations
+   before repeating uncertain work. No host restart automatically replays
+   prompts, arbitrary tools or unfinished controls.
 
-For remote access, publish the static app and standalone relay from the same
-build to their separate services. Use `publish-app` to generate app configuration
-and headers, as described in [remote access](RELAY.md). Restart the relay at the
-same relay origin with the registration secret and `--app-origin`. Its `/health`
-response includes version and app-origin information. A relay restart
-disconnects browsers but does not stop PC workers.
+Login-start records absolute Node/app paths and selected environment values.
+If these change, use the old executable's `login remove`, then reinstall with
+the new executable and current host options. Do not copy another computer's
+login configuration or protected cache.
 
-### Moving from a combined server
+Deploy matching account, broker and static builds to their separate services.
+Preserve the authority directory and signing key. Generate the website with
+`publish-app --account …`; runtime configuration is not an editable source
+default. A broker restart disconnects clients but does not stop native workers.
 
-Version 0.2 uses API 2 and requires separate app/relay origins. Prepare the new
-static deployment first. Save unsent browser and attachment drafts before
-changing app origins; browser storage does not move with native conversations.
-Revoke the previous remote device grants using the trusted local app before
-stopping and updating the idle connectors. Reinstall login-start with both
-`--relay` and `--app-origin`. Stop the old relay before changing its startup
-command and deploying the message-only release, then start it with the new app
-origin. Create fresh browser invitations after both services are ready.
+## Moving to version 0.3
 
-Update desktop shortcuts and phone bookmarks/installations to the new app address.
-The old relay URL intentionally stops serving an app or redirecting invitations.
-Do not copy browser keys from its storage to the new origin. Keep native
-sessions and Desk host data in place.
+Version 0.3 uses API 3 and account credentials instead of remote invitations.
+There is no translation layer or old remote-authentication mode.
 
-### Compatible releases and rollback
+1. Prepare the Microsoft registration, separate authority and private persistent
+   storage using [Remote access](RELAY.md). Build and verify all release
+   artifacts before replacing any live service.
+2. Keep the website origin if possible so browser drafts remain available.
+   If changing it, save drafts/files first; browser storage does not move with
+   native conversations. Retain previous deployment/package artifacts.
+3. When each PC is idle, remove its old login-start entry using its old
+   executable, then stop it. Install 0.3 and rebuild `keytar`. Preserve native
+   sessions and Desk data.
+4. Enrol each PC with `signin --account https://account.example.com`. This
+   works before the new website is published. Reinstall login-start using
+   current host options, without old relay/app-origin arguments.
+5. Replace the broker and website with the matching release. Configure the
+   broker with `--account`, `--origin` and `--app-origin`. Remove the retired
+   registration token from broker/PC environment and startup records.
+6. Start PCs and sign into the website. Verify automatic directory discovery,
+   real authentication and revocation from a fresh browser and the installed
+   mobile app. Check both computers and the actual work-network connection.
 
-The app/server and PCs can be updated one at a time. An incompatible computer is
-unavailable until its API matches; other compatible computers remain usable.
-There is no translation layer for old application APIs. An update error does
-not revoke device keys or clear drafts. Do not forget/re-pair a computer to fix
-a version error.
+The old remote grants are not imported: host access storage drops their secret
+records, and the browser removes its old grant cache. Native conversations,
+local recovery records and unsent drafts remain. A PC's new account ID can
+change its browser draft key; **Settings → Saved drafts** provides explicit
+text/file recovery without sending or overwriting another draft. Uncertain
+deliveries still need confirmation before resend.
 
-To roll back, stop first, reinstall the retained archive, and use its matching
-relay/client files on their separate services. Releases before 0.2 do not support
-this hosting boundary. Keep the same data directories. Check that the older SDK
-can read the native session format and load the installed extensions; a package
-rollback is not a session-file downgrade. Restore a pre-update backup if a
-future release requires a data migration.
-Remove login-start before rolling back to a release that does not provide its
-entry point or understand its startup configuration.
+A rollout can temporarily leave an older computer unavailable. Keep each
+computer's native sessions intact; neither a version mismatch nor re-enrolment
+requires deleting them. Do not restore revoked remote grants to regain access.
+
+## Rollback
+
+For a compatible account-workspace release, stop hosts first and reinstall
+the retained package with its matching service/browser artifacts. Preserve
+account state and the signing key rather than restoring revoked enrolments.
+Check that the older SDK can read native session files and installed extensions;
+a package rollback is not a session-file downgrade.
+
+Pre-0.3 packages cannot use account credentials. Do not roll the account
+workspace back into obsolete remote pairing records. If a cutover fails, stop
+the affected remote services and use trusted local recovery while fixing the
+release. Remove login-start before installing an executable that cannot read
+its configuration.
 
 ## Remove
 
-Stop each host and the relay you intend to remove. Run `pi-desk login remove`
-for each configured instance before removing its executable. That command stops
-the host and removes its owned startup entry without deleting other host data.
-Confirm the host has stopped, then uninstall
-only the app package:
+Use `signout` while the authority is available, or remove the computer from a
+trusted browser. Then `login remove` (if configured), `stop`, and confirm the
+host is stopped before uninstalling only its application package:
 
 ```sh
 npm uninstall --prefix /path/to/desk-app @gunba/pi-desk
 ```
 
-For a source checkout, remove its optional app installation only after stopping
-its hosts. Removing Desk does not require removing Pi or its plugins.
+Removing Desk does not require removing Pi or its plugins. Keep native sessions
+and the agent directory. Submitted files under `desk/attachments/` can still be
+referenced by saved conversations. Deleting them breaks those references.
 
-Keep native sessions and the Pi agent directory. Keep Desk's data directory if
-you want its device grants, names, pins and operation outcomes on reinstall.
-Files under the agent directory's `desk/attachments/` can be referenced by saved
-native conversations; deleting those files breaks those references.
-
-Removing an installed browser app is separate from removing the host. Clearing
-that site's browser data loses its pairings, unsent drafts and attachment drafts.
-It does not delete host conversations or revoke another device. Use Device
-access on the host to revoke a device that should no longer have access.
+Browser-app removal is separate. Sign out or revoke the browser first; clearing
+site data alone is not account-wide revocation. It deletes local drafts, not
+host conversations. Microsoft sign-in sessions are managed separately.
 
 ## Release checks
 
-`doctor` distinguishes the installed package from a running host. It reports
-the app/API versions, actual SDK and expected SDK, runtime paths and startup
-status without printing management or provider secrets. A wrong SDK requires
-reinstalling that Desk release, not changing the global CLI.
-The JSON `checks` list reports built app files, accessible directories,
-login-start, host API and remote connectivity. Errors return exit status 1.
-Warnings, such as a deliberately stopped host, do not fail the command. Doctor
-does not activate a session or validate model-service credentials.
+`doctor` reports installed/running app and SDK versions, built assets,
+directories, login-start, host API and remote connectivity without printing
+secrets. Errors return status 1; a deliberately stopped host is a warning.
+It does not activate sessions, verify a Microsoft login or test model accounts.
 
-Startup rejects missing client files or entry scripts/styles rather than
-advertising a healthy server that only returns a blank page. Keep the complete
-distribution together; deleting an asset from a running server still requires
-restoring it and restarting the server.
+Verify protected-store load/persistence on the target platform, not just
+TypeScript compilation. CI's Windows DPAPI check does not establish workplace
+approval, browser OAuth or proxy acceptance. Linux headless CI can check the
+native binding without claiming it has an unlocked desktop keyring.
 
-Application DTO/command changes that break compatibility must increment
-`API_VERSION` in `src/shared/release.ts`. JSON requests declare it through
-`X-Pi-Desk-API`; local event streams use `?api=`. Remote peers check it before
-pairing and in authenticated messages. Process management has its own runtime
-record contract, so `stop` does not depend on browser API compatibility.
+Application DTO changes that break compatibility increment `API_VERSION` in
+`src/shared/release.ts`. Local JSON requests declare `X-Pi-Desk-API`, and local
+event streams use `?api=`. Remote handshakes and authenticated messages bind the
+API revision. Process management has its own record contract, so `stop` does
+not depend on browser API compatibility. Never fix an update error by deleting
+native sessions, credentials or drafts.

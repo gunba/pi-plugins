@@ -17,12 +17,12 @@ jobs:
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
-      # v4.3.1
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           cache: npm
           cache-dependency-path: |
@@ -31,6 +31,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm ci
       - run: npm --prefix pi-desk ci --ignore-scripts
+      - run: npm --prefix pi-desk rebuild keytar
       - run: npm run typecheck
       # Stream failure details even if a process fixture leaves a worker alive.
       - run: npm test -- --test-reporter=tap --test-timeout=120000

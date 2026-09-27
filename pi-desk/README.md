@@ -1,35 +1,39 @@
 # Pi Desk
 
 See [Pi capabilities](CAPABILITIES.md) for plugin controls and integration limits.
-Read [Security](SECURITY.md) before enabling remote access. A paired browser can
+Read [Security](SECURITY.md) before enabling remote access. An authorized browser can
 run Pi tools with the host account's permissions; this is not a read-only viewer
 or a sandbox.
 
 A desktop and mobile client for Pi. The local host runs Pi's normal SDK and
 extensions in session workers; browser connections do not own agent lifetimes.
 
-Development is in progress. The local browser app supports conversations,
-streaming, tool output, model controls, questions and Work summaries. The host
-uses one-time invitations and persistent browser pairing. An encrypted outbound
-relay connection provides remote access. Saved-session resume, branch navigation,
+The shared website supports conversations, streaming, tool output, model
+controls, questions and Work summaries. Sign into the same Microsoft-owned
+workspace on each computer and browser; enrolled computers appear automatically.
+An encrypted outbound connection provides remote access without inbound PC
+ports or a VPN. Saved-session resume, branch navigation,
 forks, compaction, configuration, Party, goal/task/scheduler and child-agent
 controls are connected. Context capacity, initial-context breakdowns, usage,
 allowance and Fast mode have dedicated settings panels. Model accounts, MCP
 connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
-connection states, device access and drafts. An unavailable computer does not
+connection states and account-wide access controls. Unsent drafts stay in their
+browser. An unavailable computer does not
 block the others.
 Foreground, detached and optional login-start entry points and upgrade
-diagnostics are available. Remaining recovery and platform verification are
-still in progress. See [installation and updates](UPDATING.md).
+diagnostics are available. This is not an independently audited remote-access
+product. See [installation and updates](UPDATING.md) for setup and platform checks.
 
 ## Development
 
-Requires Node 22.19 or later.
+Requires Node 22.19 or later. Native account storage also needs the protected-cache
+dependency and the platform facilities described in [installation](UPDATING.md).
 
 ```sh
 npm install --ignore-scripts
+npm rebuild keytar
 npm run typecheck
 npm run build
 node dist/host/cli.js doctor
@@ -41,12 +45,12 @@ node dist/host/cli.js serve --cwd /path/to/project
 reports extensions, tools and commands, then shuts down. It does not request
 model inference. Run it against a trusted project to include project resources.
 
-`serve` listens on `127.0.0.1:8910` and prints a one-time local pairing link.
+`serve` listens on `127.0.0.1:8910`. Use `open --local` for a local recovery link.
 Use `--port` to select another port and `--data-dir` for isolated development
 state. This command runs in the foreground; `start` detaches instead.
 
-For one shared entry point on desktop and phone, configure the same relay and
-separate app origin on each host. See [remote access](RELAY.md). The app groups sessions
+For shared desktop/phone access, sign in with `signin --workspace URL` on each
+host. See [remote access](RELAY.md). The app groups sessions
 by computer and routes controls to their owner; no per-computer app switch is
 required. Desk owns SDK sessions, not live terminal displays. An existing terminal
 session must release its writer before Desk can resume it.
@@ -99,17 +103,18 @@ From a built checkout, use `node dist/host/cli.js` in place of `pi-desk` below.
 The package's executable runs the same commands:
 
 ```sh
+pi-desk signin --workspace https://desk.example.com --name "My computer"
 pi-desk start --cwd /path/to/project
-pi-desk open --pair
+pi-desk open
 pi-desk status
 pi-desk stop
 ```
 
-`open` also starts the host if needed. Use `--pair` once for a new browser.
-Subsequent `open` calls open the app without replacing its existing pairing.
-With a configured relay, the shared server's app opens by default; `--local`
-opens this computer's loopback app instead. `--print` displays the link rather
-than launching a browser. Pairing links expire and should be kept private.
+`signin` opens Microsoft sign-in and saves this computer's workspace. `open`
+starts the host if needed and opens the shared website, where each browser signs
+in independently. `--local` instead creates a short-lived loopback recovery
+link; it is not part of routine onboarding. `--print` displays the URL rather
+than launching a browser. Keep local recovery links private.
 
 `start` creates a detached Node process with redirected input/output, not a
 terminal session or system service. It uses the same Node executable and
@@ -125,7 +130,7 @@ command shim:
 ```powershell
 $desk = "$HOME\apps\pi-desk\dist\host\cli.js"
 node $desk start --cwd "C:\Projects"
-node $desk open --pair
+node $desk open
 node $desk status
 node $desk stop
 ```
@@ -162,8 +167,9 @@ starting a session. It does not print runtime secrets or saved environment
 values. A malformed runtime record produces a generic recovery message, not a
 JSON excerpt.
 
-Both host and relay startup reject an incomplete app distribution. Copy the
-client, host and relay files from the same build. An occupied lock with no responding management
+Native host startup rejects an incomplete app distribution. Build the app,
+native host, account service and broker together, then deploy their separate
+artifacts. An occupied lock with no responding management
 endpoint is reported as unavailable rather than treated as permission to kill
 a process. An older foreground host must be stopped before upgrading.
 
@@ -173,9 +179,9 @@ or removing the app package. See the [update and removal guide](UPDATING.md).
 
 The app and each computer negotiate one application API revision, independently
 of encrypted transport framing. Incompatible clients cannot admit session
-commands or consume a pairing invitation. That computer shows **Update required**;
+commands or consume a local recovery invitation. That computer shows **Update required**;
 the other computers remain usable. A server mismatch opens an update screen,
-not another pairing request. Reload after updating; pairings, drafts and uncertain
+not another sign-in requirement. Reload after updating; enrolments, drafts and uncertain
 delivery receipts remain on the device. Settings shows app/host versions.
 
 ### Start at login
@@ -185,13 +191,13 @@ options:
 
 ```sh
 pi-desk stop
-pi-desk login install --cwd /path/to/project --relay https://desk.example.com
+pi-desk login install --cwd /path/to/project
 pi-desk login status
 pi-desk start
 ```
 
-Set `PI_DESK_RELAY_TOKEN` in the shell before installing a relay-enabled host.
-Omit `--relay` for a local-only host. Use the same `--data-dir` on every command
+The host reads its saved account configuration; no registration secret or
+relay argument is needed. Use the same `--data-dir` on every command
 when selecting a non-default instance. Installing enables future login-start
 without starting the host immediately. `start` and `open` then use that service
 or task; `stop` waits for its host and launcher to finish.
@@ -205,9 +211,9 @@ available after a failed installation has been cleaned up.
 
 The private `login.json` records the Node/app paths, host options and selected
 environment values. Defaults include PATH, locale, proxy/certificate variables,
-the relay token, the session-directory override and a small set of Pi process
+the session-directory override and a small set of Pi process
 settings. It does not copy the entire shell environment or current Pi session
-markers. Ordinary provider authentication still comes from the Pi agent
+markers or account-service configuration/signing secrets. Ordinary provider authentication still comes from the Pi agent
 directory and inherited OS environment.
 
 For another required variable, name it explicitly:
@@ -230,7 +236,7 @@ pi-desk login remove
 
 Removal stops that host, disables/unregisters its owned service/task, and removes
 only the private startup configuration. Native sessions, provider credentials,
-Desk pairing records and referenced attachments remain. The installer refuses
+Desk account/local recovery records and referenced attachments remain. The installer refuses
 to overwrite or delete a foreign service/task with the same name.
 
 Startup failures appear in `doctor`, service/task status, `host.log` and, when
@@ -293,7 +299,7 @@ their conversation and question.
 Registered slash commands acknowledge dispatch without waiting for interactive
 input to finish. Questions and command execution remain owned by the host.
 
-Close-session, forget-computer and uncertain-delivery decisions use the same
+Close-session, remove-computer and uncertain-delivery decisions use the same
 dialogs, with an explicit target and Cancel/Back behavior. A conversation change
 cancels an open decision. Dismissing an uncertain resend keeps its receipt and
 draft; resending requires an explicit choice before any new upload.
@@ -400,6 +406,12 @@ combined. Draft files stay in this browser's IndexedDB until sent or removed;
 message text stays in local storage. They survive a page reload, but unsent
 drafts are not shared between devices.
 
+**Settings → Saved drafts** lists drafts whose conversation is no longer
+available in the current workspace. Copy text and attachments to an empty
+selected conversation, or download files directly. Originals remain, upload
+handles are reset and uncertain delivery still requires confirmation. Copying
+a draft sends nothing.
+
 Sending uploads the files in bounded, retryable chunks. Remote uploads use
 the encrypted relay channel. Files receive private, generated host paths under
 the Pi agent directory's `desk/attachments/`; original names cannot select a
@@ -469,10 +481,14 @@ Remote access setup is in [RELAY.md](RELAY.md).
 - `src/host/transcript-feed.ts`: shared native message projection for roots and children.
 - `src/host/worker.ts`: private process protocol and command receipts.
 - `src/host/server.ts`: authenticated HTTP API and reconnectable event stream.
-- `src/host/relay-server.ts`: opaque routing and static app delivery.
+- `src/account/`: delegated-token validation, device directory and credentials.
+- `src/host/account-identity.ts`: native sign-in and protected persistence.
+- `src/host/publish-app.ts`: separate website configuration and headers.
+- `src/host/relay-server.ts`: opaque routing and proof-of-key admission.
 - `src/host/relay-connector.ts`: outbound connection and device authorization.
 - `src/client/`: responsive conversation interface.
 - `src/shared/protocol.ts`: serializable app messages.
+- `src/shared/account-channel.ts`: credential-bound ephemeral handshakes.
 - `../pi-ui/`: lightweight presentation discovery for extensions.
 
 The app is an optional package. Its frontend and server dependencies are not
