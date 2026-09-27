@@ -2,6 +2,9 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { ProxyAgent } from "proxy-agent";
 import type { INetworkModule, NetworkRequestOptions, NetworkResponse } from "@azure/msal-node";
+import { createRemoteJWKSet, customFetch } from "jose";
+import type { AccountConfiguration } from "../shared/account.ts";
+import { CredentialVerifier } from "../shared/device-credential.ts";
 
 /** Uses normal Node TLS trust and the same proxy policy as the outbound relay. */
 export class AccountNetwork implements INetworkModule {
@@ -9,7 +12,7 @@ export class AccountNetwork implements INetworkModule {
 	constructor(proxy?: string) {
 		this.agent = proxy ? new ProxyAgent({ getProxyForUrl: () => proxy }) : new ProxyAgent();
 	}
-	async request<T>(method: "GET" | "POST", address: string, options?: NetworkRequestOptions, timeout = 20_000): Promise<NetworkResponse<T>> {
+	async request<T>(method: "GET" | "POST", address: string, options?: NetworkRequestOptions & { signal?: AbortSignal }, timeout = 20_000): Promise<NetworkResponse<T>> {
 		const url = new URL(address);
 		if (url.username || url.password || url.hash || !(url.protocol === "https:"
 			|| url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))) {
@@ -19,7 +22,7 @@ export class AccountNetwork implements INetworkModule {
 		if (Buffer.byteLength(contents) > 1024 * 1024) throw new Error("Account request is too large.");
 		return new Promise((resolve, reject) => {
 			const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
-				method, agent: this.agent, headers: { ...options?.headers,
+				method, agent: this.agent, signal: options?.signal, headers: { ...options?.headers,
 					...(method === "POST" ? { "Content-Length": String(Buffer.byteLength(contents)) } : {}) },
 			}, response => {
 				const parts: Buffer[] = [];
@@ -56,6 +59,17 @@ export class AccountNetwork implements INetworkModule {
 	}
 	sendPostRequestAsync<T>(url: string, options?: NetworkRequestOptions): Promise<NetworkResponse<T>> {
 		return this.request<T>("POST", url, options);
+	}
+	verifier(config: AccountConfiguration): CredentialVerifier {
+		return new CredentialVerifier(config, createRemoteJWKSet(new URL("/.well-known/jwks.json", config.origin), {
+			timeoutDuration: 10_000, cooldownDuration: 30_000, cacheMaxAge: 10 * 60_000,
+			[customFetch]: async (url, options) => {
+				const result = await this.request("GET", String(url), {
+					headers: Object.fromEntries(new Headers(options.headers)), signal: options.signal ?? undefined,
+				});
+				return new Response(JSON.stringify(result.body), { status: result.status, headers: result.headers });
+			},
+		}));
 	}
 	close(): void { this.agent.destroy(); }
 }

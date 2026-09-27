@@ -4,9 +4,10 @@ import {
 } from "@azure/msal-browser";
 import {
 	accountConfiguration, accountOrigin, deviceKey, identifier, workspaceIdentity, workspaceScope,
-	type AccountConfiguration, type DeviceKey, type WorkspaceDevice,
+	type AccountConfiguration, type DeviceKey, type WorkspaceDevice, type MembershipPeer, type MembershipLease,
 } from "../shared/account.ts";
 import { accountProof } from "../shared/account-proof.ts";
+import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
 
 interface BrowserDevice { id: string; key: CryptoKey; publicKey: DeviceKey }
 export interface AccountDirectory { account: string; revision: number; devices: Array<WorkspaceDevice & { online: boolean }> }
@@ -197,6 +198,13 @@ export class BrowserAccount {
 		return this.pending;
 	}
 	directory(): Promise<AccountDirectory> { return this.request("/workspace"); }
+	async certificate(): Promise<string> { return (await this.enrol()).token; }
+	async signProof(payload: Uint8Array<ArrayBuffer>, purpose: ProofPurpose): Promise<string> {
+		return signChannelProof(payload, purpose, (await this.identity()).key);
+	}
+	async lease(peers: MembershipPeer[]): Promise<MembershipLease> {
+		return this.request(`/devices/${(await this.identity()).id}/lease`, { peers });
+	}
 	async signOut(): Promise<void> {
 		const device = await this.identity();
 		if (!this.revoked) await this.request(`/devices/${device.id}/revoke`, {});

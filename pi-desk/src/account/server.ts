@@ -167,8 +167,8 @@ export class AccountServer {
 			if (route[2] === "credential") {
 				this.reply(response, 200, await this.authority.credential(this.store.device(deviceId), identity)); return;
 			}
-			if (device.kind !== "host") throw new AccountError(403, "host_required");
 			if (route[2] === "heartbeat") {
+				if (device.kind !== "host") throw new AccountError(403, "host_required");
 				if (typeof input.value.connected !== "boolean") throw new AccountError(400, "invalid_heartbeat");
 				await this.store.touch(deviceId, input.value.connected);
 				this.reply(response, 200, { accepted: true }); return;
@@ -181,7 +181,7 @@ export class AccountServer {
 			}
 			const allowed = input.value.peers.map(value => {
 				const peer = object(value), peerId = id(peer.id);
-				const record = snapshot.devices.find(item => item.id === peerId && item.kind === "browser"
+				const record = snapshot.devices.find(item => item.id === peerId && item.kind === (device.kind === "host" ? "browser" : "host")
 					&& item.revoked === undefined && item.thumbprint === peer.thumbprint);
 				return record?.id;
 			}).filter((value): value is string => !!value);

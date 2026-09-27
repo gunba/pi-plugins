@@ -1,7 +1,7 @@
 import manifest from "../../package.json" with { type: "json" };
 
 // Increment when the app/host DTO or command contract changes incompatibly.
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 export const API_HEADER = "X-Pi-Desk-API";
 export const MINIMUM_NODE = manifest.engines.node.slice(2);
 export function supportsNode(version: string): boolean {
@@ -22,5 +22,5 @@ export type ReleaseInfo = typeof RELEASE;
 export const apiMatches = (value: unknown): boolean => value === API_VERSION || value === String(API_VERSION);
 export function upgradeMessage(component: string, version?: unknown): string {
 	const received = typeof version === "number" || typeof version === "string" ? String(version).slice(0, 24) : "unversioned";
-	return `${component} uses API ${received}; this release uses API ${API_VERSION}. Update the app/server and affected computer to compatible Pi Desk releases, then reload the app. Pairings and drafts are kept.`;
+	return `${component} uses API ${received}; this release uses API ${API_VERSION}. Update the app/server and affected computer to compatible Pi Desk releases, then reload the app. Native conversations are retained.`;
 }

@@ -3,7 +3,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const MAX_MESSAGE = 32 * 1024 * 1024;
 const CHUNK = 48 * 1024;
 export const MAX_WIRE = 128 * 1024;
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export interface Handshake {
 	secret: string; challenge: string; clientNonce: string; host: string; device: string; role: "host" | "client";
 }

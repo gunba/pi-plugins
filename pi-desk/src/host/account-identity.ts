@@ -9,10 +9,11 @@ import {
 import { generateKeyPair, exportJWK, importJWK } from "jose";
 import {
 	accountConfiguration, deviceKey, identifier, workspaceIdentity, workspaceScope,
-	type AccountConfiguration, type DeviceKey,
+	type AccountConfiguration, type DeviceKey, type MembershipPeer, type MembershipLease,
 } from "../shared/account.ts";
 import { accountProof } from "../shared/account-proof.ts";
 import { AccountNetwork } from "./account-network.ts";
+import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
 
 export class AccountSignInRequired extends Error {
 	constructor() { super("Sign in to your Pi Desk account on this computer."); }
@@ -27,6 +28,8 @@ export class NativeAccountIdentity {
 	private application: PublicClientApplication;
 	private network: AccountNetwork;
 	private secret: IPersistence;
+	private certificateValue?: { token: string; expires: number };
+	private renewing?: Promise<string>;
 
 	private constructor(config: AccountConfiguration, device: NativeDeviceIdentity, key: CryptoKey,
 		application: PublicClientApplication, network: AccountNetwork, secret: IPersistence) {
@@ -127,7 +130,25 @@ export class NativeAccountIdentity {
 		return response.body;
 	}
 	async enrol(name: string): Promise<{ token: string; expires: number }> {
-		return this.request("/devices/enrol", { id: this.device.id, kind: "host", name, key: this.device.key });
+		const result = await this.request<{ token: string; expires: number }>("/devices/enrol", {
+			id: this.device.id, kind: "host", name, key: this.device.key,
+		});
+		this.certificateValue = result;
+		return result;
+	}
+	async certificate(): Promise<string> {
+		if (this.certificateValue && this.certificateValue.expires > Date.now() / 1000 + 90) return this.certificateValue.token;
+		if (this.renewing) return this.renewing;
+		this.renewing = this.request<{ token: string; expires: number }>(`/devices/${this.device.id}/credential`, {})
+			.then(value => { this.certificateValue = value; return value.token; }).finally(() => { this.renewing = undefined; });
+		return this.renewing;
+	}
+	signProof(payload: Uint8Array<ArrayBuffer>, purpose: ProofPurpose): Promise<string> {
+		return signChannelProof(payload, purpose, this.key);
+	}
+	verifier() { return this.network.verifier(this.config); }
+	lease(peers: MembershipPeer[]): Promise<MembershipLease> {
+		return this.request(`/devices/${this.device.id}/lease`, { peers });
 	}
 	async signOut(): Promise<void> {
 		// Revoke before removing the key; offline failure must not pretend remote access was revoked.
@@ -136,6 +157,7 @@ export class NativeAccountIdentity {
 			await this.application.getTokenCache().removeAccount(account);
 		}
 		await this.secret.delete();
+		this.certificateValue = undefined;
 	}
 	close(): void { this.network.close(); }
 }

@@ -5,9 +5,13 @@ import { once } from "node:events";
 import { WebSocket } from "ws";
 import { RelayServer } from "../src/host/relay-server.ts";
 import { newSecret } from "../src/shared/secure-channel.ts";
+import { hostAdmission } from "../src/shared/account-channel.ts";
+import { accountFixture } from "./account-fixture.mjs";
 
 test("malformed HTTP and upgrade targets cannot crash the relay", { timeout: 5000 }, async t => {
-	const relay = new RelayServer({ origin: "http://127.0.0.1:1", appOrigin: "https://app.example", token: newSecret() });
+	const fixture = await accountFixture();
+	const relay = new RelayServer({ origin: fixture.config.relayOrigin, appOrigin: "https://app.example",
+		account: fixture.config, verifier: fixture.verifier });
 	await relay.start(0);
 	t.after(() => relay.close());
 	const port = relay.server.address().port;
@@ -33,8 +37,9 @@ test("malformed HTTP and upgrade targets cannot crash the relay", { timeout: 500
 });
 
 test("the broker cannot supply the app and accepts only its separately configured app origin", { timeout: 5000 }, async t => {
-	const appOrigin = "https://app.example", token = newSecret();
-	const relay = new RelayServer({ origin: "http://127.0.0.1:1", appOrigin, token });
+	const appOrigin = "https://app.example", fixture = await accountFixture();
+	const relay = new RelayServer({ origin: fixture.config.relayOrigin, appOrigin,
+		account: fixture.config, verifier: fixture.verifier });
 	await relay.start(0);
 	t.after(() => relay.close());
 	relay.origin = `http://127.0.0.1:${relay.server.address().port}`;
@@ -43,19 +48,26 @@ test("the broker cannot supply the app and accepts only its separately configure
 		assert.equal(response.status, 404);
 		await response.arrayBuffer();
 	}
-	const host = crypto.randomUUID();
-	const connect = (path, headers) => new Promise((resolve, reject) => {
-		const socket = new WebSocket(`${relay.origin.replace("http:", "ws:")}${path}?host=${host}`, { headers, handshakeTimeout: 2000 });
+	const host = await fixture.device("host");
+	const connect = (path, headers, message) => new Promise((resolve, reject) => {
+		const socket = new WebSocket(`${relay.origin.replace("http:", "ws:")}${path}?host=${host.device.id}`, { headers, handshakeTimeout: 2000 });
+		if (message) socket.on("message", raw => { void message(socket, JSON.parse(raw.toString())).catch(reject); });
 		socket.on("error", reject);
 		socket.once("open", () => resolve({ status: 101, socket }));
 		socket.once("unexpected-response", (_, response) => {
 			response.resume(); socket.terminate(); resolve({ status: response.statusCode });
 		});
 	});
-	const credentials = { Authorization: `Bearer ${token}`, "X-Pi-Desk-App-Origin": appOrigin };
-	assert.equal((await connect("/host", { ...credentials, "X-Pi-Desk-App-Origin": relay.origin })).status, 403);
-	const registered = await connect("/host", credentials);
+	assert.equal((await connect("/host", { Authorization: `Bearer ${newSecret()}` })).status, 403);
+	assert.equal((await connect("/host", { Origin: appOrigin })).status, 403);
+	let admitted;
+	const admission = new Promise(resolve => { admitted = resolve; });
+	const registered = await connect("/host", {}, async (socket, message) => {
+		if (message.type === "admission") socket.send(JSON.stringify(await hostAdmission(host, relay.origin, message.nonce)));
+		else if (message.type === "admitted") admitted();
+	});
 	assert.equal(registered.status, 101);
+	await admission;
 	for (const Origin of [relay.origin, "https://elsewhere.example", "null"]) {
 		assert.equal((await connect("/connect", { Origin })).status, 403);
 	}

@@ -25,6 +25,8 @@ export interface AccountConfiguration {
 	clientId: string;
 	ownerObjectId: string;
 }
+export interface MembershipPeer { id: string; thumbprint: string }
+export interface MembershipLease { allowed: string[]; expires: number }
 export function accountConfiguration(value: unknown): AccountConfiguration {
 	if (!value || typeof value !== "object") throw new Error("Invalid account configuration.");
 	const input = value as AccountConfiguration;

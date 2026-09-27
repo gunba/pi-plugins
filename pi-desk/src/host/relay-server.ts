@@ -1,34 +1,48 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { MAX_WIRE, validId } from "../shared/secure-channel.ts";
+import { MAX_WIRE, validId, newSecret, PROTOCOL_VERSION } from "../shared/secure-channel.ts";
 import { remoteOrigins } from "../shared/relay-protocol.ts";
 import { securityHeaders } from "./static.ts";
 import { parseArgs } from "node:util";
 import { MINIMUM_NODE, RELEASE, supportsNode } from "../shared/release.ts";
+import { accountConfiguration, accountOrigin, type AccountConfiguration } from "../shared/account.ts";
+import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
+import { verifyHostAdmission } from "../shared/account-channel.ts";
+import { AccountNetwork } from "./account-network.ts";
 
 export async function runRelay(args: string[]): Promise<void> {
 	if (!supportsNode(process.versions.node)) throw new Error(`Pi Desk requires Node ${MINIMUM_NODE} or later; this process uses ${process.version}.`);
 	const { values } = parseArgs({ args, options: {
 		port: { type: "string", default: "8920" }, listen: { type: "string", default: "127.0.0.1" }, origin: { type: "string" },
 		"app-origin": { type: "string" },
+		account: { type: "string" },
 	} });
 	const port = Number(values.port);
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port.");
-	if (!values["app-origin"]) throw new Error("Set --app-origin to the separately hosted browser app.");
-	const relay = new RelayServer({ origin: values.origin ?? `http://127.0.0.1:${port}`, appOrigin: values["app-origin"], token: process.env.PI_DESK_RELAY_TOKEN ?? "" });
-	await relay.start(port, values.listen);
+	if (!values.account) throw new Error("Set --account to the account authority.");
+	const network = new AccountNetwork(), origin = accountOrigin(values.account);
+	let relay: RelayServer;
+	try {
+		const response = await network.request<AccountConfiguration>("GET", `${origin}/config`);
+		if (response.status !== 200) throw new Error("Account configuration unavailable.");
+		const account = accountConfiguration(response.body);
+		if (account.origin !== origin) throw new Error("Account authority mismatch.");
+		relay = new RelayServer({ origin: values.origin ?? `http://127.0.0.1:${port}`,
+			appOrigin: values["app-origin"] ?? account.appOrigins[0], account, verifier: network.verifier(account) });
+		await relay.start(port, values.listen);
+	} catch (error) { network.close(); throw error; }
 	console.log(`Pi Desk relay: ${relay.origin}`);
 	let closing = false;
 	const close = () => {
 		if (closing) return;
 		closing = true;
-		void relay.close().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+		void relay.close().then(() => { network.close(); process.exit(0); }, () => { network.close(); process.exit(1); });
 	};
 	process.once("SIGINT", close); process.once("SIGTERM", close);
 }
 
-interface Room { socket: WebSocket; peers: Map<string, WebSocket> }
+interface Room { socket: WebSocket; peers: Map<string, WebSocket>; credential: DeviceCredential }
 function requestUrl(target: string | undefined, origin: string): URL | undefined {
 	try {
 		const url = new URL(target ?? "/", origin);
@@ -52,15 +66,17 @@ export class RelayServer {
 	private timer?: ReturnType<typeof setInterval>;
 	private alive = new WeakSet<WebSocket>();
 	private count = 0;
-	private tokenHash: Buffer;
+	private verifier: CredentialVerifier;
 	origin: string;
 	appOrigin: string;
 
-	constructor(options: { origin: string; appOrigin: string; token: string }) {
+	constructor(options: { origin: string; appOrigin: string; account: AccountConfiguration; verifier?: CredentialVerifier }) {
 		const origins = remoteOrigins(options.origin, options.appOrigin);
 		this.origin = origins.origin; this.appOrigin = origins.appOrigin;
-		if (options.token.length < 32) throw new Error("Set PI_DESK_RELAY_TOKEN to a random secret of at least 32 characters.");
-		this.tokenHash = createHash("sha256").update(options.token).digest();
+		const account = accountConfiguration(options.account);
+		if (account.relayOrigin !== this.origin || !account.appOrigins.includes(this.appOrigin)
+			|| account.origin === this.origin || account.origin === this.appOrigin) throw new Error("Invalid account service separation.");
+		this.verifier = options.verifier ?? new CredentialVerifier(account);
 		this.server.on("upgrade", (request, socket, head) => {
 			const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
 			const url = requestUrl(request.url, this.origin);
@@ -68,11 +84,9 @@ export class RelayServer {
 			const host = url.searchParams.get("host");
 			if (request.headers.host !== new URL(this.origin).host || !validId(host) || this.count >= 256) { reject(403); return; }
 			if (url.pathname === "/host") {
-				const provided = createHash("sha256").update((request.headers.authorization ?? "").replace(/^Bearer /, "")).digest();
-				if (!timingSafeEqual(provided, this.tokenHash) || request.headers.origin
-					|| request.headers["x-pi-desk-app-origin"] !== this.appOrigin) { reject(403); return; }
+				if (request.headers.origin || request.headers.authorization) { reject(403); return; }
 				if (this.rooms.has(host)) { reject(409); return; }
-				this.sockets.handleUpgrade(request, socket, head, ws => this.host(host, ws));
+				this.sockets.handleUpgrade(request, socket, head, ws => this.admit(host, ws));
 			} else if (url.pathname === "/connect") {
 				const room = this.rooms.get(host);
 				if (request.headers.origin !== this.appOrigin || !room || room.peers.size >= 32) { reject(403); return; }
@@ -84,6 +98,9 @@ export class RelayServer {
 	async start(port = 8920, address = "127.0.0.1"): Promise<void> {
 		await new Promise<void>((yes, no) => { this.server.once("error", no); this.server.listen(port, address, () => { this.server.off("error", no); yes(); }); });
 		this.timer = setInterval(() => {
+			for (const room of this.rooms.values()) if (room.credential.expires <= Date.now() / 1000) {
+				room.socket.close(4001, "Host authorization expired");
+			}
 			for (const socket of this.sockets.clients) {
 				if (!this.alive.has(socket)) { socket.terminate(); continue; }
 				this.alive.delete(socket); socket.ping();
@@ -102,13 +119,47 @@ export class RelayServer {
 		if (socket.bufferedAmount > 2 * 1024 * 1024) { socket.terminate(); return; }
 		socket.send(typeof value === "string" ? value : JSON.stringify(value));
 	}
-	private host(id: string, socket: WebSocket): void {
+	private admit(id: string, socket: WebSocket): void {
 		this.track(socket);
-		const room: Room = { socket, peers: new Map() }; this.rooms.set(id, room);
+		const nonce = newSecret();
+		const deadline = setTimeout(() => socket.close(4001, "Host authorization required"), 15_000);
+		deadline.unref();
+		socket.once("close", () => clearTimeout(deadline));
+		let pending = false;
+		const identify = (raw: import("ws").RawData, binary: boolean) => {
+			const text = raw.toString();
+			if (pending || binary || text.length > 12_000) { socket.close(1008, "Invalid admission"); return; }
+			pending = true;
+			void (async () => {
+				const credential = await verifyHostAdmission(JSON.parse(text), this.origin, nonce, id, this.verifier);
+				if (socket.readyState !== WebSocket.OPEN) return;
+				if (this.rooms.has(id)) throw new Error("Host already connected.");
+				clearTimeout(deadline); socket.off("message", identify);
+				this.host(id, socket, credential);
+				this.send(socket, { type: "admitted", protocol: PROTOCOL_VERSION });
+			})().catch(() => socket.close(4001, "Host authorization failed"));
+		};
+		socket.on("message", identify);
+		this.send(socket, { type: "admission", protocol: PROTOCOL_VERSION, nonce });
+	}
+	private host(id: string, socket: WebSocket, credential: DeviceCredential): void {
+		const room: Room = { socket, peers: new Map(), credential }; this.rooms.set(id, room);
+		let renewing = false;
 		socket.on("message", (raw, binary) => {
 			try {
 				if (binary) throw new Error("Expected a routed frame.");
+				if (room.credential.expires <= Date.now() / 1000) throw new Error("Host authorization expired.");
 				const message = JSON.parse(raw.toString());
+				if (message.type === "renew") {
+					if (renewing || typeof message.credential !== "string") throw new Error("Invalid credential renewal.");
+					renewing = true;
+					void this.verifier.verify(message.credential, "host", id).then(current => {
+						if (current.thumbprint !== room.credential.thumbprint) throw new Error("Host key changed.");
+						room.credential = current;
+						this.send(socket, { type: "renewed", expires: current.expires });
+					}).catch(() => socket.close(4001, "Host authorization failed")).finally(() => { renewing = false; });
+					return;
+				}
 				if (!validId(message.peer)) throw new Error("Invalid peer.");
 				const peer = room.peers.get(message.peer);
 				if (!peer) return;
@@ -124,10 +175,12 @@ export class RelayServer {
 		});
 	}
 	private client(room: Room, socket: WebSocket): void {
+		if (room.credential.expires <= Date.now() / 1000) { socket.close(1012, "Host authorization expired"); return; }
 		this.track(socket);
 		const id = randomUUID(); room.peers.set(id, socket);
 		this.send(room.socket, { type: "opened", peer: id });
 		socket.on("message", (raw, binary) => {
+			if (room.credential.expires <= Date.now() / 1000) { socket.close(1012, "Host authorization expired"); return; }
 			const frame = raw.toString();
 			if (binary || Buffer.byteLength(frame) > MAX_WIRE) { socket.close(1009, "Frame too large"); return; }
 			this.send(room.socket, { type: "frame", peer: id, frame });
