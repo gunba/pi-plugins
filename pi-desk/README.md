@@ -284,8 +284,26 @@ APIs. Linux shutdown uses [systemd's process and signal controls](https://man7.o
 
 ### Session content
 
-Child agents have their own paged transcripts in Work and `/subagents`, including
-live assistant text/thinking, tool cards, images and complete-output links.
+The conversation's **Agents** bar opens a dedicated pane beside the chat on a
+wide screen, or a full-height sheet on a phone. It offers live state/activity,
+a searchable virtualized agent list, and the selected agent's paged transcript:
+assistant text/thinking, tool cards, images and complete-output links. Finished
+agents remain available through **Include finished**. A new active collection
+can open the desktop pane when no other panel or text editor is in use.
+
+**Steer** updates a running direct child; **Queue** accepts a native follow-up.
+An idle continuable child offers **Send** to wake it. The owning subagent runtime
+enforces direct-parent messaging and ancestor interruption, just as the terminal
+tools do. Stop targets that agent's current work, not every descendant; queued
+tasks remain saved. `/subagents` manages launches and model permissions, and
+`/subagents <id>` opens that agent's pane. The terminal dashboard is unchanged.
+
+Drafts are separate for each agent on this browser. Inline sends wait for native
+controller admission. Uncertain replies retain the draft and exact request ID:
+**Check delivery** asks for that same result, not another message. A new send
+requires confirmation; reconnect never sends automatically. Each view has its
+own action lock, so a launch dialog does not block another agent's controls.
+
 History uses the already-owned Pi managers, not filesystem paths supplied by
 the browser or another conversation store. Earlier pages stay bounded; Latest returns
 to live output. Parent and child streams use separate channels.

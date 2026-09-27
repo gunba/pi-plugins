@@ -1,14 +1,11 @@
-import type { Presentation, UiAction, UiDetails, UiValue, UiTranscriptHandle } from "../../pi-ui/index.ts";
+import type { Presentation, UiAction, UiConversation, UiDetails, UiValue, UiView, UiTranscriptHandle } from "../../pi-ui/index.ts";
 import type { ConversationModelPermissions } from "./model-permissions.ts";
-import { readSessionTranscript } from "./session-transcript.ts";
 import type { ParentInvocation, RuntimeChildSnapshot, SubagentRuntime, ThinkingLevel } from "./subagent-runtime.ts";
 
 /** Human controls use the runtime's existing authority and admission paths. */
 export class SubagentPresentation {
 	private active = true;
-	private selected?: string;
-	private offset = 0;
-	private signature = "";
+	private readonly signatures = new Map<string, string>();
 	private model?: string;
 	private thinking?: ThinkingLevel;
 	private readonly transcripts = new Map<string, UiTranscriptHandle>();
@@ -40,7 +37,7 @@ export class SubagentPresentation {
 			signal: this.lifetime.signal,
 		});
 		this.check();
-		if (result.kind === "continuable") this.selected = result.subagentId;
+		if (result.kind === "continuable") this.open(result.subagentId);
 	}
 	private async settings(): Promise<void> {
 		const model = await this.text("Launch model · provider/id, or empty to inherit", this.model);
@@ -55,45 +52,78 @@ export class SubagentPresentation {
 		this.model = model.trim() || undefined;
 		this.thinking = answer.selections[0] === levels[0] ? undefined : answer.selections[0] as ThinkingLevel;
 	}
-	private async message(child: RuntimeChildSnapshot, followup: boolean): Promise<void> {
-		const text = await this.text(followup ? `Follow-up · ${child.label}` : `Steer · ${child.label}`, "", true);
-		if (!text?.trim()) return;
-		if (followup) this.runtime.followupTask(this.runtime.rootAuthority, child.id, text);
-		else this.runtime.sendMessage(this.runtime.rootAuthority, child.id, text);
-	}
 	open(id?: string): void {
-		this.check(); this.selected = id; this.signature = ""; this.refresh();
-		this.remote.open("subagents");
+		this.check();
+		if (id && !this.runtime.snapshot().some(child => child.id === id)) throw new Error("Unknown subagent.");
+		this.refresh();
+		this.remote.open(id ? `agent:${id}` : "subagents");
+	}
+	private publish(id: string, view: UiView, callbacks: Record<string, (value: UiValue) => unknown>): void {
+		const signature = JSON.stringify(view);
+		if (signature === this.signatures.get(id)) return;
+		this.signatures.set(id, signature);
+		this.remote.publish(id, view, callbacks);
+	}
+	private child(child: RuntimeChildSnapshot): void {
+		const active = ["running", "waiting"].includes(child.state), direct = child.parentId === this.runtime.host.rootSessionId;
+		const callbacks: Record<string, (value: UiValue) => unknown> = {};
+		const actions: UiAction[] = [];
+		const add = (descriptor: UiAction, run: (value: UiValue) => unknown) => {
+			actions.push(descriptor);
+			callbacks[descriptor.id] = value => { this.check(); try { return run(value); } finally { this.refresh(); } };
+		};
+		const message = (value: UiValue, followup: boolean) => {
+			if (typeof value !== "string" || !value.trim() || value.length > 1_000_000) throw new Error("Enter a message.");
+			return followup ? this.runtime.followupTask(this.runtime.rootAuthority, child.id, value)
+				: this.runtime.sendMessage(this.runtime.rootAuthority, child.id, value);
+		};
+		if (direct && !child.diagnosticReason) {
+			if (child.canSteer) add({ id: "steer", label: "Steer", input: "message", delivery: "steer" }, value => message(value, false));
+			if (child.mode === "continuable") add({ id: "followup", label: active ? "Queue" : "Send", input: "message", delivery: "followUp" }, value => message(value, true));
+		}
+		if (child.canStop) add({ id: "stop", label: "Stop agent", destructive: true }, () => this.runtime.interrupt(this.runtime.rootAuthority, child.id));
+		const data: UiConversation = {
+			transcript: this.transcripts.get(child.id)?.id, scope: child.id,
+			active, status: child.state, activity: active ? child.activity?.slice(0, 300) : undefined,
+			subtitle: `${child.model} · ${child.thinkingLevel} · depth ${child.depth}`,
+			error: (child.errorMessage ?? child.diagnosticReason)?.slice(0, 2000),
+			fields: [
+				{ label: "Agent", value: child.id },
+				{ label: "Model", value: child.model },
+				{ label: "Thinking", value: child.thinkingLevel },
+				{ label: "Queued tasks", value: String(child.queued ?? 0) },
+				...(!active ? [{ label: "Active time", value: `${Math.floor((child.activeDurationMs ?? 0) / 1000)}s` }] : []),
+				...(!direct ? [{ label: "Messaging", value: "Only the direct parent can send messages to this agent." }] : []),
+			],
+		};
+		this.publish(`agent:${child.id}`, { kind: "conversation", title: child.label, data, actions }, callbacks);
 	}
 	refresh(): void {
 		if (!this.active) return;
+		this.remote.batch(() => this.refreshViews());
+	}
+	private refreshViews(): void {
 		const children = this.runtime.snapshot();
 		for (const child of children) if (!child.diagnosticReason && !this.transcripts.has(child.id) && this.remote.registerTranscript) {
 			this.transcripts.set(child.id, this.remote.registerTranscript(this.runtime.transcript(child.id)));
 		}
+		const present = new Set(children.map(child => `agent:${child.id}`));
+		for (const id of this.signatures.keys()) if (id !== "subagents" && !present.has(id)) {
+			this.remote.publish(id, undefined); this.signatures.delete(id);
+			const child = id.slice("agent:".length);
+			this.transcripts.get(child)?.close(); this.transcripts.delete(child);
+		}
+		for (const child of children) this.child(child);
 		const callbacks: Record<string, (value: UiValue) => Promise<void>> = {};
 		const action = (id: string, label: string, run: () => unknown | Promise<unknown>, destructive = false): UiAction => {
 			callbacks[id] = async () => {
 				this.check();
 				try { await run(); }
-				finally { if (this.active) { this.signature = ""; this.refresh(); } }
+				finally { if (this.active) this.refresh(); }
 			};
 			return { id, label, destructive };
 		};
-		const childActions = (child: RuntimeChildSnapshot): UiAction[] => [
-			action(`inspect:${child.id}`, "Transcript", () => { this.selected = child.id; }),
-			...(child.parentId === this.runtime.host.rootSessionId && !child.diagnosticReason ? [
-				...(child.mode === "continuable" ? [action(`followup:${child.id}`, "Follow-up", () => this.message(child, true))] : []),
-				...(["running", "waiting"].includes(child.state) ? [
-					action(`steer:${child.id}`, "Steer", () => this.message(child, false)),
-				] : []),
-			] : []),
-			...(["running", "waiting"].includes(child.state) ? [
-				action(`interrupt:${child.id}`, "Interrupt", () => this.runtime.interrupt(this.runtime.rootAuthority, child.id), true),
-			] : []),
-		];
 		const controls = [
-			action("list", "All agents", () => { this.selected = undefined; }),
 			action("launch", "New agent", () => this.launch("fresh")),
 			action("fork", "Fork conversation", () => this.launch("fork")),
 			action("launch-settings", "Launch settings", () => this.settings()),
@@ -111,38 +141,14 @@ export class SubagentPresentation {
 				{ label: "Model override permission", value: permission },
 			], items: [],
 		};
-		const selected = children.find(child => child.id === this.selected);
-		const source = selected && this.transcripts.get(selected.id);
-		if (source) details.transcript = source.id;
-		if (selected) {
-			const transcript = !source ? readSessionTranscript(selected.sessionFile) : undefined;
-			details.items = [
-				{ id: selected.id, title: selected.label, subtitle: `${selected.model} · ${selected.thinkingLevel} · depth ${selected.depth}`,
-					status: selected.state, body: [selected.id, selected.activity, selected.errorMessage, selected.diagnosticReason].filter(Boolean).join("\n"),
-					actions: childActions(selected).filter(action => !action.id.startsWith("inspect:")) },
-				...(!source ? [{ id: "transcript", title: "Recent transcript", subtitle: "Latest saved entries. Refresh to include completed messages.",
-					body: transcript?.error ?? (transcript?.lines.join("\n") || "No messages yet.") }] : []),
-			];
-		} else {
-			this.offset = Math.min(this.offset, Math.max(0, Math.floor((children.length - 1) / 20) * 20));
-			details.items = children.slice(this.offset, this.offset + 20).map(child => ({
-				id: child.id, title: child.label, subtitle: `${child.model} · ${child.thinkingLevel} · depth ${child.depth}`,
-				status: child.state, body: (child.errorMessage ?? child.diagnosticReason ?? child.activity ?? child.lastOutput ?? "").slice(0, 4_000),
-				actions: childActions(child),
-			}));
-			if (this.offset) controls.push(action("previous", "Previous", () => { this.offset -= 20; }));
-			if (this.offset + 20 < children.length) controls.push(action("next", "Next", () => { this.offset += 20; }));
-		}
 		const view = { kind: "details", title: "Subagents", data: details as UiValue, actions: controls };
-		const signature = JSON.stringify(view);
-		if (signature === this.signature) return;
-		this.signature = signature;
-		this.remote.publish("subagents", view, callbacks);
+		this.publish("subagents", view, callbacks);
 	}
 	close(): void {
 		this.active = false; this.lifetime.abort();
 		for (const source of this.transcripts.values()) source.close();
 		this.transcripts.clear();
-		this.remote.publish("subagents", undefined);
+		this.remote.batch(() => { for (const id of this.signatures.keys()) this.remote.publish(id, undefined); });
+		this.signatures.clear();
 	}
 }

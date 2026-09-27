@@ -103,9 +103,9 @@ export function Navigation({ open, close, children }: { open: boolean; close: ()
 		{children}
 	</SurfaceFrame> : <aside className="sidebar">{children}</aside>;
 }
-export function Inspector({ title, close, back, children }: {
-	title: string; close: () => void; back?: () => void; children: ReactNode;
+export function Inspector({ title, close, back, children, className = "" }: {
+	title: string; close: () => void; back?: () => void; children: ReactNode; className?: string;
 }) {
 	const modal = useMedia("(max-width: 1180px)");
-	return <SurfaceFrame label={title} className="detail-panel" modal={modal} close={close} back={back}>{children}</SurfaceFrame>;
+	return <SurfaceFrame label={title} className={`detail-panel ${className}`} modal={modal} close={close} back={back}>{children}</SurfaceFrame>;
 }

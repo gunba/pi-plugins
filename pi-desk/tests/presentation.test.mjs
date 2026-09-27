@@ -104,3 +104,23 @@ test("interactive actions acknowledge admission and remain single-flight through
 	assert.equal(presentation.snapshot().views[0].actionError, undefined);
 	assert.equal(presentation.snapshot().notifications.length, 0);
 });
+
+test("inline messages wait for controller admission and cannot report a rejected message as accepted", async () => {
+	const presentation = new DeskPresentation(() => {}, () => {});
+	const view = { kind: "conversation", title: "Child", data: { active: true, status: "running" },
+		actions: [{ id: "send", label: "Send", input: "message" }] };
+	let reject, admitted = false;
+	presentation.publish("child", view, { send: () => new Promise((_, fail) => { reject = fail; }) });
+	const current = () => presentation.snapshot().views[0].revision;
+	await assert.rejects(presentation.act("child", current(), "send", null), /Enter a message/);
+	const result = presentation.act("child", current(), "send", "hello").then(() => { admitted = true; });
+	void result.catch(() => {});
+	await new Promise(setImmediate);
+	assert.equal(admitted, false);
+	assert.equal(presentation.snapshot().views[0].working, "Send");
+	reject(Error("Not a running direct child"));
+	await assert.rejects(result, /Not a running direct child/);
+	assert.match(presentation.snapshot().views[0].actionError, /Not a running direct child/);
+	presentation.publish("child", view, { send: () => {} });
+	assert.equal((await presentation.act("child", current(), "send", "next")).accepted, true);
+});

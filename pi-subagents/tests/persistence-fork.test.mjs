@@ -490,6 +490,9 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 				usage: usageFor(2, 3, 5, 0.25),
 				activeDurationMs: 0,
 				errorMessage: "recovered failure",
+				canSteer: false,
+				canStop: false,
+				queued: 0,
 			});
 			assert.deepEqual(second.notices, [notice]);
 			const delivered = SessionManager.open(manager.getSessionFile(), first.childSessions)

@@ -30,6 +30,7 @@ import { DraftRecovery } from "./draft-recovery.tsx";
 import { SessionControls } from "./session-controls.tsx";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
+import { AgentPane } from "./agent-pane.tsx";
 import { CloseSummary } from "./close-summary.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
@@ -39,7 +40,7 @@ import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
-import type { UiDetails } from "../../../pi-ui/index.ts";
+import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
 import type {
   ChatMessage,
@@ -70,7 +71,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
   const [panel, setPanel] = useState<
-    "work" | "settings" | "view" | undefined
+    "work" | "settings" | "view" | "agents" | undefined
   >();
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -78,6 +79,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [createError, setCreateError] = useState("");
   const createRequest = useRef(0);
   const [focusedView, setFocusedView] = useState("");
+  const [focusedAgent, setFocusedAgent] = useState("");
+  const autoAgents = useRef("");
   const [cwd, setCwd] = useState("");
   const [newComputer, setNewComputer] = useState<string>();
   const [draft, setDraft] = useState("");
@@ -110,6 +113,19 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
+  const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
+  const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
+  const chooseAgent = (id: string) => { setFocusedAgent(id); localStorage.setItem(`pi-desk:agent-selection:${selected}`, id); };
+  useEffect(() => { setFocusedAgent(localStorage.getItem(`pi-desk:agent-selection:${selected}`) ?? ""); }, [selected]);
+  useEffect(() => {
+    if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
+    const activation = `${selected}:${session?.activation}`;
+    if (activeAgents && autoAgents.current !== activation) {
+      autoAgents.current = activation;
+      if (!panel && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
+        && matchMedia("(min-width:1181px)").matches) setPanel("agents");
+    }
+  }, [panel, focusedView, activeAgents, selected, session?.activation, ui]);
   const questions = ui?.interactions ?? [];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
   useEffect(() => {
@@ -467,6 +483,10 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
+        {!!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+          aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
+          <strong>Agents</strong><span>{activeAgents} active · {agentViews.length} total</span><span>View →</span>
+        </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
         {session && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && (session.state === "closed" || session.state === "failed") && (
@@ -708,7 +728,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
       </main>
       {panel && (
-        <Inspector title={panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
+        <Inspector className={panel === "agents" ? "agents-panel" : ""} title={panel === "agents" ? "Agents" : panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
           : "Settings & tools"} close={() => setPanel(undefined)}
           back={panel === "view" ? () => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work") : undefined}>
           <div className="panel-title">
@@ -716,7 +736,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               aria-label={visibleViews[0]?.surface === "settings" ? "Back to settings" : "Back to Work"}
               onClick={() => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {panel === "work"
+              {panel === "agents" ? "Agents" : panel === "work"
                 ? "Work"
                 : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
@@ -730,6 +750,11 @@ export function App({ account }: { account?: BrowserAccount }) {
               ×
             </button>
           </div>
+          {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
+            context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
+            focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
+            onLatest={storeHistory} renderMessage={(message, source) => <Message message={message} sessionKey={selected} source={source} />}
+            answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }} />}
           {(panel === "work" || panel === "view") &&
             (visibleViews.length ? (
               visibleViews.map((view) => (
@@ -1174,7 +1199,7 @@ const Message = memo(function Message({
           {message.role === "assistant"
             ? "π"
             : message.role === "user"
-              ? "You"
+              ? source ? "Input" : "You"
               : (message.toolName ?? "Note")}
         </span>
         {message.role === "assistant" && <strong>Pi</strong>}

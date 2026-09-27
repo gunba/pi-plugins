@@ -120,6 +120,9 @@ export type RuntimeChildSnapshot = {
 	context: ChildContextMode;
 	state: "running" | "waiting" | "settled" | "error" | "aborted";
 	activity?: string;
+	canSteer?: boolean;
+	canStop?: boolean;
+	queued?: number;
 	createdAt: number;
 	updatedAt: number;
 	finishedAt?: number;
@@ -1966,6 +1969,9 @@ export class SubagentRuntime {
 					mode: record.descriptor.mode,
 					context: record.descriptor.context,
 					state,
+					canSteer: !!record.activation?.driver.isRunning,
+					canStop: !!(record.opening || record.activation?.current),
+					queued: record.queue.filter(item => !item.started && !item.cancelled).length,
 					...(activity ? { activity } : {}),
 					createdAt: record.descriptor.createdAt,
 					updatedAt: record.updatedAt,
