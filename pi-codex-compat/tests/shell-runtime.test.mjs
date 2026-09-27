@@ -805,7 +805,7 @@ test("abort signals terminate managed process trees without a provider timeout f
 	setTimeout(() => controller.abort(), 75);
 	const result = await execution;
 	assert.equal(result.details.aborted, true);
-	assert.equal(result.details.running, false);
+	assert.equal(result.details.running, false, JSON.stringify(result.details));
 });
 
 test(
