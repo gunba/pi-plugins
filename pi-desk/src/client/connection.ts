@@ -1,9 +1,8 @@
 import type { HostEvent, HostState } from "../shared/protocol.ts";
-import type { RemoteInvitation, ApiResponse } from "../shared/relay-protocol.ts";
-import { remoteOrigins } from "../shared/relay-protocol.ts";
-import { newSecret, unbase64, validId, validSecret } from "../shared/secure-channel.ts";
+import type { ApiResponse } from "../shared/relay-protocol.ts";
+import { deviceKey, identifier, workspaceIdentity, type WorkspaceDevice } from "../shared/account.ts";
+import type { BrowserAccount } from "./account.ts";
 import { RemoteClient, RemoteError } from "./remote.ts";
-import { COMPUTER_PREFIX, readComputers, saveComputer, forgetComputer, type SavedComputer } from "./computer-store.ts";
 import { sessionKey, type WorkspaceEvent, type WorkspaceState } from "./workspace.ts";
 import { surfaces } from "./surfaces.tsx";
 import { BlobPool, decodeBase64, type BlobLease } from "./blob-pool.ts";
@@ -13,10 +12,13 @@ export class ApiError extends Error {
 	status: number;
 	constructor(status: number, message: string) { super(message); this.status = status; }
 }
-interface ComputerConnection { saved: SavedComputer; client: RemoteClient; state?: HostState; epoch: number; unlisten: () => void }
+interface ComputerConnection { device: WorkspaceDevice; client: RemoteClient; state?: HostState; epoch: number; unlisten: () => void }
 const remotes = new Map<string, ComputerConnection>();
-let mode: "local" | "relay" | undefined;
-let relay: string;
+let mode: "local" | "account" | undefined;
+let account: BrowserAccount | undefined;
+let directoryError: string | undefined;
+let generation = 0, directoryTimer: ReturnType<typeof setInterval> | undefined;
+let syncing: Promise<void> | undefined, unwatchAccount: (() => void) | undefined;
 const consumers = new Set<(event: WorkspaceEvent, accepted?: () => void) => void>();
 const upgrades = new Set<(message: string) => void>();
 let upgrade: string | undefined;
@@ -31,10 +33,10 @@ export function onUpgrade(handler: (message: string) => void): () => void {
 }
 function workspace(): WorkspaceState {
 	return {
-		release: RELEASE, name: "Workspace", cwd: "", sessions: [...remotes.entries()].flatMap(([id, remote]) =>
+		release: RELEASE, name: "Workspace", cwd: "", directoryError, sessions: [...remotes.entries()].flatMap(([id, remote]) =>
 			(remote.state?.sessions ?? []).map(session => ({ ...session, computer: id, key: sessionKey(id, session.key) }))),
 		computers: [...remotes.entries()].map(([id, remote]) => ({
-			id, name: remote.saved.alias || remote.saved.name, cwd: remote.state?.cwd ?? "", online: remote.client.connected,
+			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", online: remote.client.connected,
 			epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
 			release: remote.state?.release, upgrade: remote.client.errorStatus === 426,
 		})).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
@@ -45,34 +47,24 @@ function emit(event: WorkspaceEvent, accepted?: () => void): void {
 	for (const consume of consumers) consume(event, accepted);
 }
 function emitWorkspace(): void { emit({ type: "state", state: workspace() }); }
-function restoreComputers(): void {
-	const saved = readComputers();
+function reconcile(devices: WorkspaceDevice[]): void {
 	for (const [id, remote] of remotes) {
-		const value = saved.find(item => item.credential.host === id);
-		if (!value || value.credential.device !== remote.saved.credential.device || value.credential.key !== remote.saved.credential.key) {
+		const value = devices.find(item => item.id === id);
+		if (!value || value.thumbprint !== remote.device.thumbprint) {
 			remote.unlisten(); remote.client.close(); remotes.delete(id);
-		} else remote.saved = value;
+		} else remote.device = value;
 	}
-	for (const computer of saved) {
-		const id = computer.credential.host;
+	for (const computer of devices) {
+		const id = computer.id;
 		if (remotes.has(id)) continue;
-		const client = new RemoteClient(relay, { ...computer.credential }, credential => {
-			const current = readComputers().find(item => item.credential.host === id);
-			if (current?.credential.device === credential.device && current.credential.key === credential.key) {
-				saveComputer({ ...current, credential });
-			}
-		});
-		const remote: ComputerConnection = { saved: computer, client, epoch: 0, unlisten: () => {} };
+		const client = new RemoteClient(account!, { id, thumbprint: computer.thumbprint });
+		const remote: ComputerConnection = { device: computer, client, epoch: 0, unlisten: () => {} };
 		remotes.set(id, remote);
 		remote.unlisten = client.subscribe((event, sequence) => {
 			const epoch = remote.epoch;
 			const accepted = () => { if (remote.epoch === epoch) client.acknowledge(sequence); };
 			if (event.type === "state") {
 				remote.state = event.state;
-				const current = readComputers().find(item => item.credential.host === id);
-				if (current && current.name !== event.state.name) {
-					remote.saved = { ...current, name: event.state.name }; saveComputer(remote.saved);
-				}
 				emit({ type: "state", state: workspace() }, accepted);
 			} else if (event.type === "session") {
 				if (remote.state) remote.state = { ...remote.state, sessions: [
@@ -87,71 +79,74 @@ function restoreComputers(): void {
 	}
 	emitWorkspace();
 }
-addEventListener("storage", event => { if (mode === "relay" && (!event.key || event.key.startsWith(COMPUTER_PREFIX))) restoreComputers(); });
-addEventListener("hashchange", () => { if (/^#(?:remote|pair)=/.test(location.hash)) location.reload(); });
-export function renameComputer(id: string, name: string): void {
-	const value = readComputers().find(item => item.credential.host === id);
-	if (value) { saveComputer({ ...value, alias: name.trim().slice(0, 100) || undefined }); restoreComputers(); }
+export async function refreshDirectory(force = false): Promise<void> {
+	if (!account) return;
+	if (syncing) { if (!force) return syncing; await syncing.catch(() => {}); }
+	if (!account) return;
+	const current = account, epoch = generation;
+	const job = (async () => {
+		const result = await current.directory();
+		if (current !== account || epoch !== generation) return;
+		if (result.account !== workspaceIdentity(current.config) || !Array.isArray(result.devices) || result.devices.length > 1000) {
+			throw new Error("Invalid account directory.");
+		}
+		const devices = await Promise.all(result.devices.filter(device => device.kind === "host" && device.revoked === undefined).map(async device => {
+			identifier(device.id);
+			if (typeof device.name !== "string" || device.name.length > 100 || (await deviceKey(device.key)).thumbprint !== device.thumbprint) {
+				throw new Error("Invalid computer identity.");
+			}
+			return device;
+		}));
+		if (current !== account || epoch !== generation) return;
+		directoryError = undefined; reconcile(devices);
+	})().catch(error => {
+		if (current === account && epoch === generation) { directoryError = "Account directory unavailable. Retrying."; emitWorkspace(); }
+		throw error;
+	}).finally(() => { if (syncing === job) syncing = undefined; });
+	syncing = job; return job;
 }
-export function removeComputer(id: string): void { forgetComputer(id); restoreComputers(); }
-async function discover(): Promise<void> {
-	let transport;
-	try {
-		const response = await fetch("/desk-transport.json", { cache: "no-store", signal: AbortSignal.timeout(5000) });
-		if (!response.ok) throw new Error(`Pi Desk server is unavailable (HTTP ${response.status}).`);
-		transport = await response.json();
-	} catch (error) {
-		const saved = localStorage.getItem("pi-desk:transport");
-		try { if (saved) transport = JSON.parse(saved); } catch { /* No usable offline configuration. */ }
-		if (!transport) throw error;
-	}
-	if (!transport || (transport.kind !== "relay" && transport.kind !== "local")) throw incompatible("This server is not running a matching Pi Desk API.");
-	if (!apiMatches(transport.api)) throw incompatible(upgradeMessage("This server", transport.api));
-	if (transport.kind === "relay") {
-		try {
-			const origins = remoteOrigins(transport.relay, transport.appOrigin);
-			if (origins.appOrigin !== location.origin) throw new Error();
-			relay = origins.origin;
-		} catch { throw incompatible("The app's deployment configuration must name this app origin and its separate relay."); }
-	}
-	mode = transport.kind;
-	localStorage.setItem("pi-desk:transport", JSON.stringify(transport));
+const syncDirectory = () => { if (mode === "account" && !document.hidden) void refreshDirectory().catch(() => {}); };
+export async function renameComputer(id: string, name: string): Promise<void> {
+	if (!account || !remotes.has(id)) throw new Error("Unknown computer.");
+	await account.request(`/devices/${identifier(id)}/rename`, { name: name.trim() }); await refreshDirectory(true);
 }
-export async function initialize(): Promise<void> {
-	const hash = location.hash;
-	if (hash) history.replaceState(null, "");
+export async function removeComputer(id: string): Promise<void> {
+	if (!account || !remotes.has(id)) throw new Error("Unknown computer.");
+	await account.request(`/devices/${identifier(id)}/revoke`, {});
+	const remote = remotes.get(id);
+	remote?.unlisten(); remote?.client.close(); remotes.delete(id); emitWorkspace();
+	await refreshDirectory(true);
+}
+export async function initialize(identity?: BrowserAccount): Promise<void> {
+	dispose();
+	const epoch = generation;
+	account = identity; mode = identity ? "account" : "local";
 	await surfaces.prepare();
-	await discover();
-	if (hash) {
-		await pair(`${location.origin}/${hash}`);
-		history.replaceState(null, "", location.pathname + location.search);
-	}
-	if (mode === "relay") {
-		restoreComputers();
-		if (!remotes.size) throw new ApiError(401, "Open an invitation from a computer to pair this browser.");
+	if (epoch !== generation) return;
+	// Remove obsolete authorization data, not drafts, attachments or native conversations.
+	for (const key of Object.keys(localStorage)) if (key.startsWith("pi-desk:computer:")) localStorage.removeItem(key);
+	localStorage.removeItem("pi-desk:transport");
+	if (mode === "account") {
+		if (/^#(?:remote|pair)=/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search);
+		unwatchAccount = account!.watch(() => { if (!account?.signedIn()) dispose(); });
+		await refreshDirectory();
+		if (epoch !== generation) return;
+		directoryTimer = setInterval(syncDirectory, 20_000);
+		addEventListener("online", syncDirectory); document.addEventListener("visibilitychange", syncDirectory);
+	} else {
+		const token = new URLSearchParams(location.hash.slice(1)).get("pair");
+		if (token) {
+			history.replaceState(null, "", location.pathname + location.search);
+			await api("/pair", { token, label: navigator.platform || "Browser" });
+		}
+		await api("/state");
 	}
 }
-export async function pair(invitation: string): Promise<void> {
-	if (!mode) await discover();
-	let params: URLSearchParams;
-	if (invitation.trim().startsWith("http")) {
-		const url = new URL(invitation.trim());
-		if (url.origin !== location.origin) throw new ApiError(400, "Open this invitation at its original address.");
-		params = new URLSearchParams(url.hash.slice(1));
-	} else params = new URLSearchParams({ pair: invitation.trim() });
-	if (mode === "relay") {
-		const value = params.get("remote");
-		if (!value || value.length > 2000) throw new ApiError(400, "Use a remote pairing invitation from your computer.");
-		const data = JSON.parse(new TextDecoder().decode(unbase64(value))) as RemoteInvitation;
-		if (!validId(data.host) || !validId(data.device) || !validSecret(data.key)) throw new ApiError(400, "Invalid invitation.");
-		const saved = readComputers(), existing = saved.find(item => item.credential.host === data.host);
-		if (!existing && saved.length >= 16) throw new ApiError(400, "This browser has 16 computers. Forget one before adding another.");
-		const credential = existing?.credential.device === data.device ? existing.credential :
-			{ host: data.host, device: data.device, key: newSecret(), invitation: data.key, label: navigator.platform || "Browser" };
-		// The claim may reach the host without its acknowledgement reaching this browser.
-		saveComputer({ ...existing, name: existing?.name ?? `Computer ${data.host.slice(0, 8)}`, credential });
-		restoreComputers();
-	} else await api("/pair", { token: params.get("pair") ?? "", label: navigator.platform || "Browser" });
+export function dispose(): void {
+	generation++; clearInterval(directoryTimer); unwatchAccount?.(); unwatchAccount = undefined;
+	removeEventListener("online", syncDirectory); document.removeEventListener("visibilitychange", syncDirectory);
+	for (const remote of remotes.values()) { remote.unlisten(); remote.client.close(); }
+	remotes.clear(); syncing = undefined; directoryError = undefined; upgrade = undefined; account = undefined; mode = undefined;
 }
 function convert(error: unknown): Error {
 	return error instanceof RemoteError ? new ApiError(error.status, error.message) : error instanceof Error ? error : new Error(String(error));
@@ -161,7 +156,7 @@ function route(path: string, computer?: string): { remote: ComputerConnection; p
 	if (match) { computer = match[1]; path = `/sessions/${match[2]}${match[3] ?? ""}`; }
 	if (!computer) throw new ApiError(400, "Choose a computer.");
 	const remote = remotes.get(computer);
-	if (!remote) throw new ApiError(401, "This computer is not paired in this browser.");
+	if (!remote) throw new ApiError(403, "This computer is not in your account workspace.");
 	return { remote, path, computer };
 }
 function body<T>(result: ApiResponse): T {
@@ -170,7 +165,8 @@ function body<T>(result: ApiResponse): T {
 }
 export async function api<T>(path: string, data?: unknown, computer?: string): Promise<T> {
 	try {
-		if (mode === "relay") {
+		if (!mode) throw new ApiError(401, "Workspace access is not active.");
+		if (mode === "account") {
 			if (path === "/state" && data === undefined) return workspace() as T;
 			const target = route(path, computer);
 			const result = body<Record<string, unknown>>(await target.remote.client.request({
@@ -210,6 +206,7 @@ export function acquireAsset(session: string, asset: string, origin: string): Bl
 	return assetBlobs.acquire(`${session}/${asset}?${origin}`, () => assetBlob(session, asset, origin));
 }
 export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection: (connected: boolean) => void): () => void {
+	if (!mode) { connection(false); return () => {}; }
 	let timer: ReturnType<typeof setTimeout> | undefined, source: EventSource | undefined;
 	let pending: WorkspaceEvent[] = [], weights: number[] = [], acknowledgements: (() => void)[] = [], size = 0;
 	const clear = () => { clearTimeout(timer); timer = undefined; pending = []; weights = []; acknowledgements = []; size = 0; };
@@ -218,7 +215,7 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 		if (event.type === "state" && pending.at(-1)?.type === "state") { size -= weights.pop()!; pending.pop(); }
 		if (pending.length >= 128 || pending.length > 0 && size + bytes > 8 * 1024 * 1024) {
 			clear();
-			if (mode === "relay") { for (const remote of remotes.values()) remote.client.reconnect(); }
+			if (mode === "account") { for (const remote of remotes.values()) remote.client.reconnect(); }
 			else { source?.close(); source = undefined; openLocal(); }
 			return;
 		}
@@ -250,12 +247,12 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 	const visibility = () => {
 		if (document.hidden) {
 			clear(); source?.close(); source = undefined; connection(false);
-			if (mode === "relay") events([{ type: "state", state: workspace() }]);
+			if (mode === "account") events([{ type: "state", state: workspace() }]);
 		}
 		else if (mode === "local") openLocal();
 	};
 	const hide = () => { clear(); source?.close(); source = undefined; connection(false); };
-	if (mode === "relay") { consumers.add(relayReceive); relayReceive({ type: "state", state: workspace() }); }
+	if (mode === "account") { consumers.add(relayReceive); relayReceive({ type: "state", state: workspace() }); }
 	else openLocal();
 	document.addEventListener("visibilitychange", visibility);
 	addEventListener("pagehide", hide); addEventListener("pageshow", visibility);

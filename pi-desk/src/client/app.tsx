@@ -9,7 +9,8 @@ import {
 import Markdown from "react-markdown";
 import { FileLink } from "./file-view.tsx";
 import { ReferenceContext } from "./reference-origin.tsx";
-import { api, ApiError, initialize, pair, subscribe, onUpgrade } from "./connection.ts";
+import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
+import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
 import { SavedSessions, RESUME_NOTICE } from "./saved-sessions.tsx";
 import { Computers } from "./computers.tsx";
@@ -49,9 +50,9 @@ const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const draftKey = (key: string) => `pi-desk:draft:${key}`;
 const emptyMessages: NonNullable<ClientState["messages"][string]> = [];
-export function App() {
+export function App({ account }: { account?: BrowserAccount }) {
   const [state, setState] = useState<ClientState>({ messages: {} });
-  const [paired, setPaired] = useState<boolean | undefined>();
+  const [authorized, setAuthorized] = useState<boolean | undefined>();
   const [upgrade, setUpgrade] = useState<string>();
   useEffect(() => onUpgrade(setUpgrade), []);
   const [selected, setSelected] = useState(
@@ -81,7 +82,6 @@ export function App() {
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
-  const [invitation, setInvitation] = useState("");
   const [delivery, setDelivery] = useState<"followUp" | "steer">("followUp");
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
   const selectedRef = useRef(selected);
@@ -97,7 +97,7 @@ export function App() {
   const ui = session?.ui;
   const controls = session?.controls ?? [];
   const controlBusy = controls.some(control => control.state === "running");
-  const confirmation = useConfirmation(`${paired}:${selected}:${ui?.generation}:${connected}`);
+  const confirmation = useConfirmation(`${authorized}:${selected}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const questions = ui?.interactions ?? [];
@@ -141,21 +141,18 @@ export function App() {
     try {
       const host = await api<HostState>("/state");
       setState((previous) => reduceEvents(previous, [{ type: "state", state: host }]));
-      setPaired(true);
+      setAuthorized(true);
       setError("");
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) setPaired(false);
+      if (error instanceof ApiError && error.status === 401) setAuthorized(false);
       else setError(errorText(error));
     }
   };
   useEffect(() => {
-    void initialize().then(() => { setPaired(true); return refresh(); }).catch(error => {
-      if (error instanceof ApiError && error.status === 401) setPaired(false);
-      setError(errorText(error));
-    });
+    void refresh();
   }, []);
   useEffect(() => {
-    if (!paired || upgrade) return;
+    if (!authorized || upgrade) return;
     return subscribe(
       (batch) => {
         setState((previous) => reduceEvents(previous, batch));
@@ -172,11 +169,11 @@ export function App() {
         else
           void api("/state").catch((error) => {
             if (error instanceof ApiError && error.status === 401)
-              setPaired(false);
+              setAuthorized(false);
           });
       },
     );
-  }, [paired, upgrade]);
+  }, [authorized, upgrade]);
   useEffect(() => {
     setDraft(localStorage.getItem(draftKey(selected)) ?? "");
     setState(previous => ({ ...previous, focused: [selected] }));
@@ -294,33 +291,13 @@ export function App() {
     <div className="brand-mark">π</div><h1>Update Pi Desk</h1><p role="alert">{upgrade}</p>
     <button onClick={() => location.reload()}>Reload app</button>
   </main>;
-  if (paired === false)
+  if (authorized === false)
     return (
       <main className="pair-page">
         <div className="brand-mark">π</div>
-        <h1>Your Pi, anywhere.</h1>
-        <p>
-          Open a pairing link from Pi Desk on your computer,
-          <br />
-          or paste an invitation below.
-        </p>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void pair(invitation)
-              .then(refresh)
-              .catch((error) => setError(errorText(error)));
-          }}
-        >
-          <input
-            aria-label="Pairing invitation"
-            value={invitation}
-            onChange={(event) => setInvitation(event.target.value)}
-            placeholder="Pairing invitation"
-            autoComplete="off"
-          />
-          <button className="primary">Connect</button>
-        </form>
+        <h1>Access unavailable</h1>
+        <p>{account ? "Sign in again to open your account workspace." : "Run pi-desk open --local on this computer to authorize local recovery."}</p>
+        <button onClick={() => location.reload()}>Reload app</button>
         <p className="error-text" role="alert">
           {error}
         </p>
@@ -361,7 +338,7 @@ export function App() {
           {host.computers && <div className="nav-label computer-heading">
             <span>{computer.name}</span><small>{computer.upgrade ? "Update required" : computer.online ? "Connected" : "Offline"}</small>
           </div>}
-          {computer.upgrade && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Its pairing is kept.</p>
+          {computer.upgrade && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
             .filter((item) =>
@@ -460,7 +437,8 @@ export function App() {
         </header>
         {!connected && (
           <div className="connection-banner">
-            {currentComputer?.error ?? (currentComputer ? `${currentComputer.name} is offline. Reconnecting…` : "Disconnected. Reconnecting…")}
+            {host.computers?.length === 0 ? "No computers yet. Add one in Settings."
+              : currentComputer?.error ?? (currentComputer ? `${currentComputer.name} is offline. Reconnecting…` : "Disconnected. Reconnecting…")}
           </div>
         )}
         {session && <ControlActivity key={selected} session={selected} controls={controls} />}
@@ -476,6 +454,7 @@ export function App() {
           Some Pi extensions failed to load. Prompts are paused until they are fixed.
           <button onClick={() => setPanel("settings")}>View errors</button>
         </div>}
+        {host.directoryError && <div className="connection-banner" role="status">{host.directoryError}</div>}
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
@@ -781,7 +760,7 @@ export function App() {
           )}
           {panel === "settings" && (
             <>
-              {state.host.computers ? <Computers computers={state.host.computers} /> : <Devices relay={state.host.relay} />}
+              {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <Devices />}
               {!!ui?.views.some(view => view.surface === "settings") && <section className="panel-card"><h3>Pi settings</h3><div className="panel-actions">
               {ui.views.filter(view => view.surface === "settings").map(view => <button key={view.id} onClick={() => {
                 setPanel("view"); setFocusedView(view.id);

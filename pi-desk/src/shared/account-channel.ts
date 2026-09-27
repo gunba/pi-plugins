@@ -15,7 +15,7 @@ export interface ChannelHandlers {
 	input: (message: unknown) => void;
 	failed: (error: Error) => void;
 }
-export interface ChannelSession { channel: SecureChannel; peer: DeviceCredential; ownExpires: number }
+export interface ChannelSession { channel: SecureChannel; peer: DeviceCredential; own: DeviceCredential }
 interface Hello {
 	protocol: number; api: number; host: string; nonce: string; key: DeviceKey; credential: string;
 	offer?: string;
@@ -105,7 +105,7 @@ export class ClientHandshake {
 			throw new Error("Host response does not authorize this handshake.");
 		}
 		return { channel: await channel(key, data.key, this.offer, accept, this.data, data, this.own.id, "client", handlers),
-			peer, ownExpires: this.own.expires };
+			peer, own: this.own };
 	}
 	close(): void { this.privateKey = undefined; }
 }
@@ -123,7 +123,7 @@ export async function acceptChannelOffer(value: unknown, host: string, identity:
 		proof: await identity.signProof(bytes(data), "pi-desk-host-hello+jws") };
 	if (Math.min(own.expires, peer.expires) <= Date.now() / 1000) throw new Error("Channel authorization expired.");
 	return { channel: await channel(key.privateKey, client.key, offer, accept, client, data, peer.id, "host", handlers),
-		peer, ownExpires: own.expires, accept };
+		peer, own, accept };
 }
 
 export async function hostAdmission(identity: ChannelIdentity, origin: string, nonce: string): Promise<{ credential: string; proof: string }> {

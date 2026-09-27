@@ -1,4 +1,4 @@
-const CACHE = "pi-desk-shell-v1";
+const CACHE = "pi-desk-shell-v3";
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(["/", "/icon.svg", "/manifest.webmanifest"])));
   self.skipWaiting();
@@ -10,7 +10,7 @@ self.addEventListener("activate", event => {
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   if (url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/") ||
-      url.pathname === "/desk-transport.json" || url.pathname === "/desk-account.json" || event.request.method !== "GET") return;
+      url.pathname === "/desk-account.json" || event.request.method !== "GET") return;
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok && (url.pathname === "/" || url.pathname.startsWith("/assets/"))) {
       const copy = response.clone();

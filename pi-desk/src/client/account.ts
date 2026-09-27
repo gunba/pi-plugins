@@ -8,6 +8,7 @@ import {
 } from "../shared/account.ts";
 import { accountProof } from "../shared/account-proof.ts";
 import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
+import { CredentialVerifier } from "../shared/device-credential.ts";
 
 interface BrowserDevice { id: string; key: CryptoKey; publicKey: DeviceKey }
 export interface AccountDirectory { account: string; revision: number; devices: Array<WorkspaceDevice & { online: boolean }> }
@@ -66,6 +67,7 @@ export class BrowserAccount {
 	private application: PublicClientApplication;
 	private device?: BrowserDevice;
 	private namespace: string;
+	private logoutKey: string;
 	private credential?: { token: string; expires: number };
 	private pending?: Promise<{ token: string; expires: number }>;
 	private listeners = new Set<() => void>();
@@ -74,16 +76,26 @@ export class BrowserAccount {
 	private needsSignIn = false;
 	private closed = false;
 	private epoch = 0;
+	private credentials: CredentialVerifier;
+	private storageChanged = (event: StorageEvent) => {
+		if ((!event.key || event.key === this.logoutKey) && this.markedOut()) {
+			this.needsSignIn = true; this.epoch++; this.credential = undefined; this.changed();
+		}
+	};
 	private constructor(config: AccountConfiguration, application: PublicClientApplication) {
 		this.config = config; this.application = application;
+		this.credentials = new CredentialVerifier(config);
 		this.namespace = `${config.origin}|${workspaceIdentity(config)}`;
+		this.logoutKey = `pi-desk:signed-out:${this.namespace}`;
+		this.needsSignIn = this.markedOut();
+		addEventListener("storage", this.storageChanged);
 		this.eventId = application.addEventCallback(event => {
 			if (event.eventType === EventType.LOGIN_SUCCESS || event.eventType === EventType.LOGOUT_SUCCESS
 				|| event.eventType === EventType.ACTIVE_ACCOUNT_CHANGED) {
 				if (event.eventType === EventType.LOGOUT_SUCCESS
 					|| event.eventType === EventType.ACTIVE_ACCOUNT_CHANGED && !application.getActiveAccount()) {
 					this.needsSignIn = true; this.epoch++; this.credential = undefined; this.device = undefined;
-				} else this.needsSignIn = !this.account();
+				} else this.needsSignIn = this.markedOut() || !this.account();
 				this.changed();
 			}
 		});
@@ -108,7 +120,7 @@ export class BrowserAccount {
 		const client = new BrowserAccount(config, application);
 		if (result) {
 			application.setActiveAccount(result.account);
-			client.needsSignIn = !result.account || !client.matches(result.account);
+			client.needsSignIn = client.markedOut() || !result.account || !client.matches(result.account);
 		}
 		return client;
 	}
@@ -120,7 +132,8 @@ export class BrowserAccount {
 		if (active) return this.matches(active) ? active : undefined;
 		return this.application.getAllAccounts().find(account => this.matches(account));
 	}
-	signedIn(): boolean { return !this.closed && !this.needsSignIn && !this.revoked && !!this.account(); }
+	private markedOut(): boolean { return localStorage.getItem(this.logoutKey) === "1"; }
+	signedIn(): boolean { return !this.closed && !this.markedOut() && !this.needsSignIn && !this.revoked && !!this.account(); }
 	private checked(result: AuthenticationResult): AuthenticationResult {
 		if (!result.account || !this.matches(result.account) || !result.accessToken) throw new BrowserSignInRequired();
 		return result;
@@ -133,6 +146,7 @@ export class BrowserAccount {
 			this.device = undefined; this.credential = undefined; this.revoked = false;
 		}
 		this.needsSignIn = false;
+		localStorage.removeItem(this.logoutKey);
 		await this.application.loginRedirect({ scopes: [workspaceScope(this.config)], prompt: "select_account" });
 	}
 	private async token(forceRefresh: boolean): Promise<string> {
@@ -150,13 +164,14 @@ export class BrowserAccount {
 		}
 	}
 	private async identity(): Promise<BrowserDevice> {
+		if (this.closed || this.markedOut()) throw new BrowserSignInRequired();
 		if (this.device) return this.device;
 		const epoch = this.epoch, device = await storedDevice(this.namespace);
 		if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
 		return this.device = device;
 	}
 	async request<T>(path: string, input?: Record<string, unknown>, forceRefresh = false): Promise<T> {
-		if (this.closed) throw new BrowserSignInRequired();
+		if (this.closed || this.markedOut()) throw new BrowserSignInRequired();
 		const epoch = this.epoch;
 		const url = new URL(path, this.config.origin);
 		if (!path.startsWith("/") || url.origin !== this.config.origin || url.search || url.hash) throw new Error("Invalid account request.");
@@ -164,7 +179,7 @@ export class BrowserAccount {
 		const accessToken = await this.token(forceRefresh);
 		const device = method === "POST" ? await this.identity() : undefined;
 		const proof = device ? await accountProof({ id: device.id, method, url: url.href, body, accessToken }, device.key) : undefined;
-		if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
+		if (this.closed || this.markedOut() || epoch !== this.epoch) throw new BrowserSignInRequired();
 		const response = await fetch(url, {
 			method, credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20_000),
 			headers: { Authorization: `Bearer ${accessToken}`, ...(device ? {
@@ -197,7 +212,18 @@ export class BrowserAccount {
 		})().finally(() => { this.pending = undefined; });
 		return this.pending;
 	}
-	directory(): Promise<AccountDirectory> { return this.request("/workspace"); }
+	async directory(): Promise<AccountDirectory> {
+		const value = await this.request<AccountDirectory>("/workspace");
+		if (value.account !== workspaceIdentity(this.config) || !Array.isArray(value.devices)) throw new Error("Invalid account directory.");
+		const device = await this.identity();
+		if (!value.devices.some(item => item.id === device.id && item.kind === "browser" && item.revoked === undefined)) {
+			this.revoked = true; this.credential = undefined; this.changed();
+			throw new BrowserSignInRequired();
+		}
+		return value;
+	}
+	async deviceId(): Promise<string> { return (await this.identity()).id; }
+	verifier(): CredentialVerifier { return this.credentials; }
 	async certificate(): Promise<string> { return (await this.enrol()).token; }
 	async signProof(payload: Uint8Array<ArrayBuffer>, purpose: ProofPurpose): Promise<string> {
 		return signChannelProof(payload, purpose, (await this.identity()).key);
@@ -208,6 +234,8 @@ export class BrowserAccount {
 	async signOut(): Promise<void> {
 		const device = await this.identity();
 		if (!this.revoked) await this.request(`/devices/${device.id}/revoke`, {});
+		// An in-flight MSAL refresh must not silently sign this browser back in.
+		localStorage.setItem(this.logoutKey, "1");
 		this.epoch++; this.needsSignIn = true; this.credential = undefined; this.changed();
 		await forgetDevice(this.namespace);
 		await this.application.clearCache({ account: this.account() });
@@ -216,6 +244,7 @@ export class BrowserAccount {
 	close(): void {
 		this.closed = true; this.epoch++;
 		if (this.eventId) this.application.removeEventCallback(this.eventId);
+		removeEventListener("storage", this.storageChanged);
 		this.listeners.clear(); this.credential = undefined;
 	}
 }

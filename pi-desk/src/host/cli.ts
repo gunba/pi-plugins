@@ -23,7 +23,7 @@ const help = `Pi Desk
   login status|remove [--data-dir path] [--agent-dir path]
   inspect [directory]       Inspect normal Pi resources
   relay [relay options]     Run the shared relay
-  publish-app --relay URL --app-origin URL --output path
+  publish-app --account URL --app-origin URL --output path
                             Prepare the separate static app deployment
 
 Host options: --cwd path --port number --data-dir path --agent-dir path

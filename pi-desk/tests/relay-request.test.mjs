@@ -43,7 +43,7 @@ test("the broker cannot supply the app and accepts only its separately configure
 	await relay.start(0);
 	t.after(() => relay.close());
 	relay.origin = `http://127.0.0.1:${relay.server.address().port}`;
-	for (const path of ["/", "/index.html", "/sw.js", "/assets/app.js", "/api/transport", "/desk-transport.json"]) {
+	for (const path of ["/", "/index.html", "/sw.js", "/assets/app.js", "/api/transport", "/desk-account.json"]) {
 		const response = await fetch(relay.origin + path, { signal: t.signal });
 		assert.equal(response.status, 404);
 		await response.arrayBuffer();

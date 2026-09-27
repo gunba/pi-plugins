@@ -217,7 +217,7 @@ export class RelayConnector {
 			failed: () => this.drop(peer.id, true, 1013),
 		});
 		if (this.peers.get(peer.id) !== peer) { session.channel.close(); return; }
-		peer.device = session.peer; peer.ownExpires = session.ownExpires; peer.sentCredential = session.accept.credential;
+		peer.device = session.peer; peer.ownExpires = session.own.expires; peer.sentCredential = session.accept.credential;
 		peer.channel = session.channel;
 		await this.output(peer, JSON.stringify(session.accept));
 	}

@@ -11,7 +11,6 @@ export type RemotePayload =
 	| { type: "response"; id: string; response: ApiResponse }
 	| { type: "event"; sequence: number; event: HostEvent }
 	| { type: "events_ack"; sequence: number };
-export interface RemoteInvitation { host: string; device: string; key: string }
 
 export function relayOrigin(value: string): string {
 	const url = new URL(value);

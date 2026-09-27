@@ -324,7 +324,7 @@ export class DeskHost {
 			if (request.method !== "GET" && !operator && !this.allowedOrigin(request.headers.origin)) {
 				json(response, 403, { error: "Unrecognized request origin." }); return;
 			}
-			if (url.pathname === "/desk-transport.json" && request.method === "GET") { json(response, 200, { kind: "local", ...RELEASE }); return; }
+			if (url.pathname === "/desk-account.json" && request.method === "GET") { json(response, 200, { kind: "local", ...RELEASE }); return; }
 			const clientApi = request.headers[API_HEADER.toLowerCase()] ?? (url.pathname === "/api/events" ? url.searchParams.get("api") : undefined);
 			if (url.pathname.startsWith("/api/") && !apiMatches(clientApi)) {
 				json(response, 426, { error: upgradeMessage("This browser/client", clientApi), release: RELEASE });
