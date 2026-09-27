@@ -49,7 +49,7 @@ export function windowsSystem(): NativeSystem {
   // GetNativeSystemInfo, rather than process architecture, also handles WOW64/emulation.
   const script = fileURLToPath(new URL("./native-os-info.ps1", import.meta.url));
   const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script],
-    { encoding: "utf8", timeout: 10_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    { encoding: "utf8", timeout: 30_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
   const result = JSON.parse(output.replace(/^\uFEFF/, "")) as NativeSystem;
   if (result.osType !== "Windows" || !/^(unknown|\d+\.\d+\.\d+)$/.test(result.version) ||
     !["x86_64", "ia64", "arm", "aarch64", "i386", "unknown"].includes(result.architecture)) {

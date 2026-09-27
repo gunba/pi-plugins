@@ -105,7 +105,7 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		promptSnippet: "Poll a Unified Exec session or send an exact Ctrl-C interrupt",
 		promptGuidelines: [
 			"session_id comes from exec_command. Omitted or empty chars reads output; stdin is closed except for the U+0003 interruption request.",
-			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it requests `taskkill /T` tree termination because an extension cannot emit a truthful console Ctrl-C event.",
+			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it terminates the owned command job; it does not emit a console Ctrl-C event.",
 		],
 		parameters: Type.Object({
 			session_id: Type.Integer({ description: "Identifier of the running unified exec session.", minimum: 1 }),

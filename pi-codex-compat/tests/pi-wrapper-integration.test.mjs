@@ -471,7 +471,7 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 			assertErrorOutcome(run, true);
 			assertMiddlewareRun(run, true);
 			assert.equal(run.end.result.details.aborted, true);
-			// Windows taskkill can outlast the initial cancellation response.
+			// Windows job termination can outlast the initial cancellation response.
 			// A still-running result must retain a handle and reach a terminal
 			// aborted result within one bounded collection, not leak a server.
 			const terminal = run.end.result.details.session_id

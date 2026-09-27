@@ -102,10 +102,11 @@ default `tty:false`, child stdin is closed: `write_stdin` accepts polling and an
 exact U+0003 Ctrl-C interrupt only, rejecting all other non-empty input. Unix
 interrupts target the process group; Windows uses an owned
 [Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
-and `taskkill /T /F`, whose signal semantics necessarily differ. The job is armed
+whose owner is terminated through its held process handle, not a PID lookup.
+Its signal semantics necessarily differ. The job is armed
 before launching the shell, so cancellation cannot miss a child created during
 shell startup. Normal command exit preserves deliberately backgrounded children.
-The `taskkill` result is observed and bounded;
+Termination is observed and bounded;
 failure is surfaced instead of falling back to a potentially reused PID or
 claiming successful tree shutdown. Signal exits remain distinct from numeric
 exit codes.

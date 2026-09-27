@@ -263,31 +263,23 @@ test("model output defaults to 10k tokens and preserves a UTF-8-safe head and ta
 	assert.match(formatted.output, /…2500 tokens truncated…/);
 });
 
-test("process tree termination uses taskkill /T on Windows and Unix process groups", async () => {
-	const taskkillCalls = [];
+test("process termination uses the owned Windows job handle and Unix process groups", async () => {
+	const ownerSignals = [];
 	assert.equal(
-		await terminateProcessTree(123, "SIGTERM", true, {
+		await terminateProcessTree({ pid: 123, kill(signal) { ownerSignals.push(signal); return true; } }, "SIGTERM", {
 			platform: "win32",
-			spawnTaskkill(command, args, options) {
-				taskkillCalls.push({ command, args, options });
-				return { unref() {} };
-			},
 			kill() {
-				assert.fail("Windows should not call process.kill");
+				assert.fail("Windows must not signal a PID lookup");
 			},
 		}),
 		true,
 	);
-	assert.match(taskkillCalls[0].command, /\\System32\\taskkill\.exe$/);
-	assert.deepEqual(taskkillCalls[0].args, ["/PID", "123", "/T", "/F"]);
+	assert.deepEqual(ownerSignals, ["SIGKILL"]);
 
 	const killed = [];
 	assert.equal(
-		await terminateProcessTree(456, "SIGINT", false, {
+		await terminateProcessTree({ pid: 456, kill() { assert.fail("Unix must target the group"); } }, "SIGINT", {
 			platform: "linux",
-			spawnTaskkill() {
-				assert.fail("Unix should not call taskkill");
-			},
 			kill(pid, signal) {
 				killed.push([pid, signal]);
 			},
@@ -297,58 +289,25 @@ test("process tree termination uses taskkill /T on Windows and Unix process grou
 	assert.deepEqual(killed, [[-456, "SIGINT"]]);
 });
 
-test("Windows taskkill failures are reported without unsafe PID fallback", async () => {
-	for (const [event, value] of [
-		["error", new Error("taskkill missing")],
-		["exit", 1],
-	]) {
-		const listeners = new Map();
-		const killed = [];
+test("Windows job termination failures never fall back to a PID lookup", async () => {
+	for (const throws of [false, true]) {
 		const failures = [];
-		const attempt = terminateProcessTree(789, "SIGTERM", true, {
+		const success = await terminateProcessTree({
+			pid: 789,
+			kill() {
+				if (throws) throw new Error("owner termination denied");
+				return false;
+			},
+		}, "SIGTERM", {
 			platform: "win32",
 			onFailure: message => failures.push(message),
-			spawnTaskkill() {
-				return {
-					once(name, listener) {
-						listeners.set(name, listener);
-					},
-				};
-			},
-			kill(pid, signal) {
-				killed.push([pid, signal]);
+			kill() {
+				assert.fail("must not fall back to a potentially reused PID");
 			},
 		});
-		listeners.get(event)(value);
-		assert.equal(await attempt, false);
-		assert.deepEqual(killed, []);
-		assert.deepEqual(failures, [event === "error"
-			? "taskkill failed: Error: taskkill missing" : "taskkill exited with status 1"]);
+		assert.equal(success, false);
+		assert.deepEqual(failures, throws ? ["Windows job termination failed: Error: owner termination denied"] : []);
 	}
-});
-
-test("a hanging Windows taskkill attempt is bounded and reported", async () => {
-	let taskkillStopped = false;
-	const failures = [];
-	const success = await terminateProcessTree(790, "SIGTERM", true, {
-		platform: "win32",
-		taskkillTimeoutMs: 5,
-		onFailure: message => failures.push(message),
-		spawnTaskkill() {
-			return {
-				once() {},
-				kill() {
-					taskkillStopped = true;
-				},
-			};
-		},
-		kill() {
-			assert.fail("must not fall back to a potentially reused PID");
-		},
-	});
-	assert.equal(success, false);
-	assert.equal(taskkillStopped, true);
-	assert.deepEqual(failures, ["taskkill timed out after 5ms"]);
 });
 
 test("Unified Exec timing policy clamps initial waits, writes, and empty polls", () => {

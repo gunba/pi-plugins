@@ -1,13 +1,12 @@
 import {
 	type ChildProcessWithoutNullStreams,
-	type SpawnOptions,
 	spawn,
 } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, win32 } from "node:path";
+import { basename, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
 	type AgentToolResult,
@@ -125,20 +124,7 @@ export type ShellLaunch = {
 
 export type ProcessTreeDependencies = {
 	platform: NodeJS.Platform;
-	taskkillTimeoutMs?: number;
 	onFailure?: (message: string) => void;
-	spawnTaskkill: (
-		command: string,
-		args: string[],
-		options: SpawnOptions,
-	) => {
-		unref?: () => void;
-		kill?: () => void;
-		once?: (
-			event: "error" | "exit",
-			listener: (value?: unknown) => void,
-		) => unknown;
-	};
 	kill: (pid: number, signal: NodeJS.Signals) => void;
 };
 
@@ -186,7 +172,6 @@ const MAX_OUTPUT_TOKENS_POLICY = Math.floor(
 const OUTPUT_UPDATE_THROTTLE_MS = 100;
 const FORCE_KILL_DELAY_MS = 1_000;
 const SHUTDOWN_WAIT_MS = 2_000;
-const TASKKILL_WAIT_MS = 2_000;
 const EXIT_STDIO_IDLE_MS = 100;
 
 const UNIFIED_EXEC_ENV_DEFAULTS: Readonly<Record<string, string>> = {
@@ -219,7 +204,6 @@ const shutdownInProgress = new Map<ExecRuntimeOwner, Promise<void>>();
 
 const defaultProcessTreeDependencies: ProcessTreeDependencies = {
 	platform: process.platform,
-	spawnTaskkill: (command, args, options) => spawn(command, args, options),
 	kill: (pid, signal) => process.kill(pid, signal),
 };
 
@@ -431,48 +415,23 @@ export function resolveShellLaunch(
 }
 
 export function terminateProcessTree(
-	pid: number,
+	child: Pick<ChildProcessWithoutNullStreams, "pid" | "kill">,
 	signal: NodeJS.Signals,
-	force: boolean,
 	dependencies: ProcessTreeDependencies = defaultProcessTreeDependencies,
 ): Promise<boolean> {
 	if (dependencies.platform === "win32") {
 		try {
-			const taskkill = dependencies.spawnTaskkill(
-				win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
-				["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
-				{
-					stdio: "ignore",
-					detached: true,
-					windowsHide: true,
-				},
-			);
-			if (!taskkill.once) {
-				taskkill.unref?.();
-				return Promise.resolve(true);
-			}
-			return new Promise((resolveAttempt) => {
-				let settled = false;
-				const finish = (success: boolean, failure?: string) => {
-					if (settled) return;
-					settled = true;
-					clearTimeout(timer);
-					if (failure) dependencies.onFailure?.(failure);
-					resolveAttempt(success);
-				};
-				const timer = setTimeout(() => {
-					taskkill.kill?.();
-					finish(false, `taskkill timed out after ${dependencies.taskkillTimeoutMs ?? TASKKILL_WAIT_MS}ms`);
-				}, dependencies.taskkillTimeoutMs ?? TASKKILL_WAIT_MS);
-				taskkill.once?.("error", (error) => finish(false, `taskkill failed: ${String(error)}`));
-				taskkill.once?.("exit", (code) => finish(code === 0, code === 0 ? undefined : `taskkill exited with status ${String(code)}`));
-			});
+			// Kill the owned handle, not a PID lookup. Closing this owner's
+			// non-inheritable job handle terminates the kernel-owned command tree.
+			return Promise.resolve(child.kill("SIGKILL"));
 		} catch (error) {
-			dependencies.onFailure?.(`taskkill failed: ${String(error)}`);
+			dependencies.onFailure?.(`Windows job termination failed: ${String(error)}`);
 			return Promise.resolve(false);
 		}
 	}
 
+	const pid = child.pid;
+	if (!pid) return Promise.resolve(false);
 	try {
 		dependencies.kill(-pid, signal);
 		return Promise.resolve(true);
@@ -973,12 +932,10 @@ function releaseSession(session: ExecSession): Promise<void> {
 
 function recordTerminationAttempt(
 	session: ExecSession,
-	pid: number,
 	signal: NodeJS.Signals,
-	force: boolean,
 ): void {
 	let failure: string | undefined;
-	const attempt = terminateProcessTree(pid, signal, force, {
+	const attempt = terminateProcessTree(session.child, signal, {
 		...defaultProcessTreeDependencies,
 		onFailure: (message) => {
 			failure = `${message} (session ${session.id})`;
@@ -1007,14 +964,14 @@ function requestTermination(
 	const forceNow = force || process.platform === "win32";
 	recordTerminationAttempt(
 		session,
-		pid, forceNow ? "SIGKILL" : signal, forceNow,
+		forceNow ? "SIGKILL" : signal,
 	);
 	if (forceNow || session.forceKillTimeout) return;
 	session.forceKillTimeout = setTimeout(() => {
 		if (!isSessionDone(session) && !hasProcessExited(session) && session.child.pid) {
 			recordTerminationAttempt(
 				session,
-				session.child.pid, "SIGKILL", true,
+				"SIGKILL",
 			);
 		}
 	}, FORCE_KILL_DELAY_MS);
@@ -1028,7 +985,7 @@ function requestInterrupt(session: ExecSession): void {
 		const force = process.platform === "win32";
 		recordTerminationAttempt(
 			session,
-			pid, force ? "SIGKILL" : "SIGINT", force,
+			force ? "SIGKILL" : "SIGINT",
 		);
 	}
 }
@@ -1447,7 +1404,7 @@ export async function executeManagedExecCommand(
 	const leaveOperation = await enterExecOperation(signal, owner);
 	try {
 		// A progress callback may synchronously cancel the tool. Notify before
-		// spawning, rather than racing Windows taskkill against a launching shell.
+		// spawning, rather than launching work already cancelled by that update.
 		onUpdate?.({ content: [], details: undefined });
 		throwIfLaunchAborted(signal);
 		const call = createExecCall(params.max_output_tokens);

@@ -1,6 +1,5 @@
 using System;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -38,6 +37,23 @@ internal static class WindowsExec
         public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInfo
+    {
+        public uint Size;
+        public IntPtr Reserved, Desktop, Title;
+        public uint X, Y, Width, Height, Columns, Rows, Fill, Flags;
+        public ushort ShowWindow, ReservedSize;
+        public IntPtr ReservedBytes, Input, Output, Error;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInfo
+    {
+        public IntPtr Process, Thread;
+        public uint ProcessId, ThreadId;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -48,6 +64,28 @@ internal static class WindowsExec
     private static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr source,
+        IntPtr targetProcess, out IntPtr target, uint access, bool inherit, uint options);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(string application, StringBuilder command,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags,
+        IntPtr environment, string directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+
+    private static IntPtr InheritStream(int kind)
+    {
+        IntPtr copy;
+        if (!DuplicateHandle(GetCurrentProcess(), GetStdHandle(kind),
+            GetCurrentProcess(), out copy, 0, true, 2))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return copy;
+    }
 
     private static void SetLimits(IntPtr job, uint flags)
     {
@@ -84,23 +122,44 @@ internal static class WindowsExec
             if (!AssignProcessToJobObject(job, GetCurrentProcess()))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             var arguments = args.Skip(3);
-            var start = new ProcessStartInfo(args[2],
-                String.Join(" ", args[1] == "verbatim" ? arguments : arguments.Select(Quote)))
+            var command = new StringBuilder(Quote(args[2]) + " " +
+                String.Join(" ", args[1] == "verbatim" ? arguments : arguments.Select(Quote)));
+            var startup = new StartupInfo
             {
-                UseShellExecute = false,
-                CreateNoWindow = true
+                Size = (uint)Marshal.SizeOf(typeof(StartupInfo)),
+                Flags = 0x100 // STARTF_USESTDHANDLES
             };
-            // Inherit the original handles, without .NET text decoding or
-            // redirection. This includes stdin used by legacy WSL bash.
-            using (var child = Process.Start(start))
+            ProcessInfo child;
+            // Explicit inheritable handles also work with CREATE_NO_WINDOW.
+            // ProcessStartInfo without redirection can discard those handles.
+            try
             {
-                child.WaitForExit();
-                int code = child.ExitCode;
-                // A normal exit may deliberately leave a background process.
-                // Cancellation or owner death instead closes the armed job.
-                SetLimits(job, 0);
-                return code;
+                startup.Input = InheritStream(-10);
+                startup.Output = InheritStream(-11);
+                startup.Error = InheritStream(-12);
+                if (!CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, true,
+                    0x08000000, IntPtr.Zero, null, ref startup, out child))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+            finally
+            {
+                if (startup.Input != IntPtr.Zero) CloseHandle(startup.Input);
+                if (startup.Output != IntPtr.Zero) CloseHandle(startup.Output);
+                if (startup.Error != IntPtr.Zero) CloseHandle(startup.Error);
+            }
+            CloseHandle(child.Thread);
+            uint code;
+            try
+            {
+                if (WaitForSingleObject(child.Process, UInt32.MaxValue) != 0 ||
+                    !GetExitCodeProcess(child.Process, out code))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            finally { CloseHandle(child.Process); }
+            // A normal exit may deliberately leave a background process.
+            // Cancellation or owner death instead closes the armed job.
+            SetLimits(job, 0);
+            return unchecked((int)code);
         }
         catch (Exception error)
         {
