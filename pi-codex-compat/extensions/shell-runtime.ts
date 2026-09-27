@@ -1520,6 +1520,7 @@ export async function executeWriteStdin(
 
 			const updater = createOutputUpdater(session, call, onUpdate);
 			try {
+				onUpdate?.({ content: [], details: undefined });
 				if (params.chars === "\u0003") requestInterrupt(session);
 				const waitMs = effectiveWriteStdinYieldMilliseconds(params);
 				await settleSession(session, waitMs, signal);
