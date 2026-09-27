@@ -94,11 +94,18 @@ export class NativeAccountIdentity {
 		return result;
 	}
 	async signIn(openBrowser: (url: string) => Promise<void>): Promise<void> {
-		this.checked(await this.application.acquireTokenInteractive({
-			scopes: [workspaceScope(this.config)], openBrowser, prompt: "select_account",
+		try { await this.token(); return; }
+		catch (error) { if (!(error instanceof AccountSignInRequired)) throw error; }
+		const request = {
+			scopes: [workspaceScope(this.config)], openBrowser,
 			successTemplate: "<!doctype html><title>Pi Desk</title><p>Signed in. You can close this window.</p>",
 			errorTemplate: "<!doctype html><title>Pi Desk</title><p>Sign-in did not complete. Return to Pi Desk.</p>",
-		}));
+		};
+		let result = await this.application.acquireTokenInteractive(request);
+		if (result?.account && !this.matches(result.account)) {
+			result = await this.application.acquireTokenInteractive({ ...request, prompt: "select_account" });
+		}
+		this.checked(result);
 	}
 	private async token(forceRefresh = false): Promise<string> {
 		const account = (await this.application.getTokenCache().getAllAccounts()).find(account => this.matches(account));

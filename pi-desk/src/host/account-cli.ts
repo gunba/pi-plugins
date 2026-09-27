@@ -31,7 +31,7 @@ export async function runAccountCommand(command: "signin" | "signout", args: str
 		} else {
 			// Save public configuration before opening OAuth so a cancelled attempt can be retried.
 			await saveAccount(directory, chosen);
-			console.log("Opening Microsoft sign-in. This enrols the computer for access through your Pi Desk account.");
+			console.log("Signing in to enrol this computer. Existing Microsoft authorization will be reused where possible.");
 			await identity.signIn(openBrowser);
 			try { await identity.enrol(values.name ?? hostname()); }
 			catch (error) {

@@ -138,7 +138,8 @@ pi-desk doctor
 ```
 
 Use `node dist/host/cli.js` instead of `pi-desk` from a built checkout.
-`signin` opens Microsoft in that computer's browser. It saves the public
+`signin` reuses its saved authorization, or opens Microsoft in the computer's
+browser and lets Microsoft reuse an existing session. It saves the public
 workspace configuration and enrols the computer; future starts reconnect to
 that workspace. `--account` can select the authority directly during initial
 deployment. A repeated explicit sign-in can replace a revoked enrolment.
@@ -148,6 +149,11 @@ Open the shared website on desktop or phone and choose **Continue with
 Microsoft**. Every browser gets the same directory after signing in. No
 invitations or per-computer pairing steps are needed. Private profiles or
 installed web apps with separate storage sign in separately.
+
+The browser and background connector hold separate authorizations; they do not
+copy tokens between stores. Using the same browser profile lets Microsoft SSO
+avoid another account/password prompt. MFA, expired sessions or another browser
+profile can still require interaction.
 
 Computers are ordinary user processes: no service elevation, inbound firewall
 rule or router configuration is needed. The PC must be awake and the user

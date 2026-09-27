@@ -110,7 +110,9 @@ pi-desk status
 pi-desk stop
 ```
 
-`signin` opens Microsoft sign-in and saves this computer's workspace. `open`
+`signin` reuses saved authorization or opens Microsoft sign-in, then saves this
+computer's workspace. It does not force the account picker unless a different
+account was selected. `open`
 starts the host if needed and opens the shared website, where each browser signs
 in independently. `--local` instead creates a short-lived loopback recovery
 link; it is not part of routine onboarding. `--print` displays the URL rather

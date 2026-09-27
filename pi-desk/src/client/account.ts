@@ -148,7 +148,12 @@ export class BrowserAccount {
 		}
 		this.needsSignIn = false;
 		localStorage.removeItem(this.logoutKey);
-		await this.application.loginRedirect({ scopes: [workspaceScope(this.config)], prompt: "select_account" });
+		const active = this.application.getActiveAccount();
+		const chooseAccount = active ? !this.matches(active)
+			: this.application.getAllAccounts().length > 0 && !this.account();
+		await this.application.loginRedirect({
+			scopes: [workspaceScope(this.config)], ...(chooseAccount ? { prompt: "select_account" } : {}),
+		});
 	}
 	private async token(forceRefresh: boolean): Promise<string> {
 		const account = this.account();
