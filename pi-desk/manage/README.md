@@ -4,6 +4,18 @@ The installed Pi package supplies source; each prepared runtime contains its
 own first-party resources, locked dependencies and built Desk entry points.
 Third-party packages continue to use native Pi discovery.
 
+The `/desk` extension registers a native command, not a model tool. Setup uses
+native dialogs; preparation and updates run through a detached controller once
+an installation exists. The controller uses Pi's public package manager for
+the configured personal source. Normal interactive Pi startup stages changes
+without waiting; managed workers, children and offline startup do not do this.
+
+`operation.json` records admission, progress and outcome under an OS-backed
+operation lease. It is not a retry queue. Restart/stop/login changes run outside
+the worker they close. An unfinished record without a held lease is reported
+as unconfirmed rather than replayed. `/desk status` distinguishes this operation
+state from the running host and its active/pending versions.
+
 `stageRuntime` publishes a ready version and changes only `state.json.pending`.
 `configureRuntime` binds an installation to its existing host data directory.
 `activateRuntime` selects a ready version and retains the previous identity.

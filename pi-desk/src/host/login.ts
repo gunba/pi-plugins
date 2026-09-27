@@ -5,6 +5,8 @@ import { SessionLease } from "../../../pi-session-ownership/lease.ts";
 import { loginEnvironment, loginFile, loginPathsValid, makeLoginConfig, readLoginConfig, saveLoginConfig, type LoginConfig } from "./login-config.ts";
 import { disableManager, installManager, managerStatus, removeManager, startManager, stopManager, type LoginStatus } from "./login-manager.ts";
 import { probeHost, startHost, stopHost, type StartedHost } from "./lifecycle.ts";
+import { atomicJson } from "../../manage/store.ts";
+import { canonicalPath } from "../../manage/installation.ts";
 
 export async function loginStatus(directory: string): Promise<LoginStatus> {
 	const config = readLoginConfig(directory);
@@ -17,6 +19,39 @@ export async function loginStatus(directory: string): Promise<LoginStatus> {
 		status.error = `The last login-start task returned ${status.result}. Check login-error.txt, host.log and Task Scheduler.`;
 	}
 	return status;
+}
+/** Preserve startup options and private environment while replacing the app entry. */
+export async function migrateLogin(directory: string, entry: string): Promise<void> {
+	const original = readLoginConfig(directory);
+	if (!original) return;
+	const edit = new SessionLease(join(directory, "login-edit"));
+	let launch: SessionLease | undefined;
+	try {
+		launch = new SessionLease(join(directory, "launch"));
+		if ((await probeHost(directory)).state !== "stopped") throw new Error("Stop login-start before migrating its entry.");
+		const status = await managerStatus(original);
+		if (status.error) throw new Error(status.error);
+		if (!["inactive", "failed", "missing", "not-found", "Ready", "Disabled"].includes(status.state ?? ""))
+			throw new Error("The login-start process has not stopped.");
+		const changed = canonicalPath(original.entry) !== canonicalPath(entry) || canonicalPath(original.node) !== canonicalPath(process.execPath);
+		if (!changed && !["missing", "not-found"].includes(status.state ?? "")) return;
+		atomicJson(join(directory, "login-before-managed.json"), original);
+		const config = { ...original, entry, node: process.execPath };
+		await disableManager(original); await removeManager(original);
+		try {
+			atomicJson(loginFile(directory), config);
+			await installManager(config);
+			if (!status.enabled) await disableManager(config);
+		} catch {
+			try {
+				await removeManager(config);
+				atomicJson(loginFile(directory), original);
+				await installManager(original);
+				if (!status.enabled) await disableManager(original);
+			} catch { throw new Error("Login migration and restoration are unconfirmed. Check login.json and login-before-managed.json locally. The host was not started."); }
+			throw new Error("Login migration failed; the previous entry was restored and remains stopped.");
+		}
+	} finally { launch?.close(); edit.close(); }
 }
 export async function stopLogin(config: LoginConfig): Promise<{ stopped: boolean; unclean?: boolean }> {
 	const before = await probeHost(config.directory);

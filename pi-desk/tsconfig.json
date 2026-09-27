@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "manage", "../pi-ui/index.ts"]
+  "include": ["src", "manage", "extensions", "../pi-ui/index.ts"]
 }

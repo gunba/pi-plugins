@@ -22,6 +22,7 @@
   "pi": {
     "extensions": [
       "./pi-session-ownership/index.ts",
+      "./pi-desk/extensions/desk.ts",
       "./pi-codex-wire/extensions/index.ts",
       "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",

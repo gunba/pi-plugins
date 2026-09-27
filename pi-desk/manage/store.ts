@@ -47,7 +47,7 @@ export function readRelease(home: string, id: string): RuntimeRelease {
 		|| ![release.plugins, release.desk, release.engine].every(value => typeof value === "string" && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value))
 		|| runtimeId({ digest: release.digest } as SourceSnapshot) !== id)
 		throw new Error("Runtime is invalid or belongs to a different platform/Node version. Stage it on this computer.");
-	for (const name of ["cli.js", "managed.js"]) {
+	for (const name of ["cli.js", "managed.js", "manage-cli.js"]) {
 		const entry = join(directory, "source", "pi-desk", "dist", "host", name);
 		if (!lstatSync(entry).isFile() || !within(realpathSync(directory), realpathSync(entry))) throw new Error("Runtime entry point is invalid.");
 	}
