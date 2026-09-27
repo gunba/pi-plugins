@@ -24,6 +24,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            pi-desk/package-lock.json
           node-version: ${{ matrix.node }}
       - run: npm ci
+      - run: npm --prefix pi-desk ci --ignore-scripts
       - run: npm run check
+      - run: npm --prefix pi-desk run typecheck
+      - run: npm --prefix pi-desk run build

@@ -417,7 +417,7 @@ test("shutdown cancels a stuck opening and disposes a late driver", async (t) =>
 test("root-wide admission counts opening children before allocating another session", async (t) => {
 	const opening = deferred();
 	const h = createHarness({ maxActive: 1, factory: { open: () => opening.promise } });
-	t.after(h.cleanup);
+	t.after(async () => { opening.resolve({ dispose() {} }); await h.cleanup(); });
 	const request = { description: "child", prompt: "work", context: "fresh", runInBackground: true, parent: h.parent() };
 	await h.runtime.start(request);
 	await assert.rejects(h.runtime.start(request), /root-wide subagent limit 1/);
@@ -437,6 +437,8 @@ test("interrupting initialization preserves an immediately accepted follow-up ta
 	await waitUntil(() => opening);
 	h.runtime.interrupt(h.runtime.rootAuthority, child.subagentId);
 	h.runtime.followupTask(h.runtime.rootAuthority, child.subagentId, "next");
+	assert.equal(normal.promptLog.length, 0);
+	pending.resolve({ dispose() {} });
 	await waitUntil(() => normal.promptLog.length === 1);
 	assert.equal(opening.signal.aborted, true);
 	assert.equal(normal.promptLog[0].message, "next");

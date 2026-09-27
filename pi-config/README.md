@@ -4,7 +4,7 @@ Pi-native configuration navigator for agentic CLI settings and resource files.
 
 ## Commands
 
-- `/pi-config` — open the tabbed terminal settings modal.
+- `/pi-config` — open the configuration navigator.
 - `/pcfg` — alias.
 - `/pi-config <tab-or-filter>` — open a specific tab (`settings`, `md`, `skills`, `mcp`, `prompts`, `extensions`) or start with a filter.
 
@@ -17,7 +17,7 @@ Pi-native configuration navigator for agentic CLI settings and resource files.
 
 ## Editing model
 
-The extension stays inside the Pi terminal. The main navigator is a centered `ctx.ui.custom(..., { overlay: true })` modal with first-class tabs instead of one giant mixed list:
+In the terminal, the main navigator is a centered `ctx.ui.custom(..., { overlay: true })` modal with first-class tabs instead of one giant mixed list:
 
 - **Settings** — Pi JSON settings/model files and every supported Pi setting key with type/default metadata.
 - **.MD context** — Markdown files that Pi actually loads (`AGENTS.md`/`CLAUDE.md`, active `SYSTEM.md`, active `APPEND_SYSTEM.md`).
@@ -31,3 +31,21 @@ Saving checks the original file under Pi-compatible locks. A concurrent edit is
 reported instead of overwritten. Reload closes the navigator; reopen `/pi-config`
 afterward to continue editing. Context-window uses the same file-lock and atomic
 replacement helpers for its paired model/settings updates.
+
+## Pi Desk
+
+The same discovery, setting reference, JSON validation and checked file writer
+are available through Desk's structured presentation. Open **Configuration**
+in session settings, or use `/pi-config`. Search and page
+through files, inspect a preview, insert a documented default, and edit with a
+form. Use the session's **Reload Pi resources** control after saving.
+
+Standard credential, authorization, environment, connection-command and URL
+fields in JSON stay on the computer. The remote editor receives placeholders;
+saving preserves the original values, and moving or removing a protected
+placeholder is rejected. Token-budget settings remain editable. Change
+protected connection fields on the computer. Malformed JSON and files above
+256 KiB require a local editor. Ordinary resource text is shown as file content.
+
+Changing sessions or branches retires open configuration actions. The writer
+rechecks that lifetime after acquiring the file lock and during rename retries.

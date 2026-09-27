@@ -1,5 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 
+export const SESSION_USAGE_CHANGED = "pi-session-usage/changed";
+
 type RecordedUsage = Partial<Omit<Usage, "cost">> & { cost?: Partial<Usage["cost"]> };
 type Entry = {
 	type?: string;

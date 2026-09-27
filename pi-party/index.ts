@@ -8,6 +8,8 @@ import { isManagedChild } from "../pi-work-coordination/index.ts";
 import { LEASE_MS, PartyStore, type Member } from "./store.ts";
 import { PartyChat } from "./chat.ts";
 import { renderPartyCall, renderPartyResult, renderPartyNotice } from "./render.ts";
+import { getPresentation } from "../pi-ui/index.ts";
+import { PartyPresentation } from "./presentation.ts";
 
 export const PARTY_MESSAGE = "pi-party/message";
 export function deliveredPartyIds(entries: readonly unknown[]): string[] {
@@ -46,6 +48,7 @@ export default function party(pi: ExtensionAPI): void {
 	let preparingPrompt = false;
 	let chat: PartyChat | undefined;
 	let chatRoom: string | undefined;
+	let remote: PartyPresentation | undefined;
 	let peerLabels = new Map<string, string>();
 	const peerLabel = (id: string) => {
 		const exact = peerLabels.get(id);
@@ -73,13 +76,14 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	const publish = () => {
 		const self = member();
-		if (!self || self.owner !== owner || !store) { chat?.close(); source?.set(undefined); return; }
+		if (!self || self.owner !== owner || !store) { chat?.close(); remote?.close(); remote = undefined; source?.set(undefined); return; }
 		syncFlight();
 		const peers = store.members(session, owner);
 		for (const peer of peers) peerLabels.set(peer.session, peer.label);
 		if (chatRoom !== undefined && chatRoom !== "" && chatRoom !== self.room) chat?.close();
 		chat?.refresh();
 		const pending = store.pending(session, owner).length;
+		remote?.refresh();
 		const rows = peers.map(peer => {
 			const state = peer.heartbeat <= Date.now() - LEASE_MS ? "offline" : peer.state;
 			return `${peer.label}${peer.session === session ? " (you)" : ""} · ${state}`;
@@ -159,6 +163,7 @@ export default function party(pi: ExtensionAPI): void {
 			const self = database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session");
 			paused = !!self.muted;
 			database().admit(session, owner, deliveredPartyIds(ctx!.sessionManager.getBranch()));
+			bindRemote();
 			startTransport(); publish();
 			// Reconnecting advertises presence but never starts inference.
 		});
@@ -169,9 +174,11 @@ export default function party(pi: ExtensionAPI): void {
 		inFlight.clear(); armed = false; preparingPrompt = false;
 		if (store && member()?.owner === owner) store.setDelivery(session, owner, false);
 		ctx = context; source = ui.source("party"); signature = ""; publish();
+		bindRemote(); publish();
 	});
 	pi.on("session_shutdown", () => {
 		chat?.close();
+		remote?.close(); remote = undefined;
 		stopped = true; armed = false; preparingPrompt = false; stopTransport();
 		try { store?.release(session, owner); }
 		finally { store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
@@ -236,9 +243,43 @@ export default function party(pi: ExtensionAPI): void {
 		pump(); publish(); signal();
 		return publicAgent(member()!);
 	};
+	const sendPartyMessage = (to: string, text: string, wake: boolean, invite = false) => {
+		const room = member()?.room;
+		if (invite && !room) throw Error("Join a party before inviting agents.");
+		const sent = database().send(session, owner, to, text, wake, invite ? room : undefined);
+		signal(); publish();
+		return sent;
+	};
+	const removeMember = (target: string) => {
+		const removed = database().remove(session, owner, target); signal(); publish(); return removed;
+	};
+	function bindRemote(): void {
+		remote?.close(); remote = undefined;
+		const presentation = getPresentation(pi);
+		if (!presentation?.capabilities.includes("details")) return;
+		remote = new PartyPresentation(presentation, {
+			state: () => {
+				const self = member();
+				if (!self || self.owner !== owner) throw Error("Party registration is unavailable.");
+				return { self: publicAgent(self), pending: database().pending(session, owner).length, armed };
+			},
+			members: () => database().members(session, owner).map(publicAgent),
+			discover: (query, offline, offset) => {
+				const found = database().discover(query, offline, offset);
+				return { agents: found.agents.map(publicAgent), nextOffset: found.nextOffset };
+			},
+			history: (query, direct) => database().history(session, owner, query, direct),
+			join: joinParty, leave: leaveParty, delivery,
+			profile: description => { database().profile(session, owner, description); signal(); publish(); },
+			remove: removeMember, send: sendPartyMessage,
+		});
+	}
 	const handleParty = async (args: string, context: ExtensionContext) => {
 			ctx = context;
 			const value = args.trim();
+			if (remote && (!value || value === "chat" || value === "chat direct")) {
+				remote.open(value ? value === "chat direct" : undefined); return;
+			}
 			if (!value) {
 				const self = member();
 				context.ui.notify(self?.room ? `Party ${self.room}. /party chat opens the conversation.` : "No current party. Use party_discover to find agents or /party <id> to join.", "info");
@@ -313,7 +354,7 @@ export default function party(pi: ExtensionAPI): void {
 		description: "Remove another member from this agent's current party. Every member has the same control; this does not ban rejoining or disable direct messages.",
 		parameters: Type.Object({ agent: Type.String({ minLength: 1 }) }),
 		async execute(_id, params) {
-			const removed = database().remove(session, owner, params.agent); signal(); publish();
+			const removed = removeMember(params.agent);
 			return result({ removed: removed.session, party: removed.room });
 		},
 	});
@@ -324,8 +365,8 @@ export default function party(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const self = member();
 			if (!self?.room) throw Error("Join a party before inviting agents.");
-			const sent = database().send(session, owner, params.agent, params.message?.trim() || `Invitation to party ${self.room}.`, params.wake !== false, self.room);
-			signal(); publish(); return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, recipient: publicAgent(database().member(message.recipient)!) })), party: self.room });
+			const sent = sendPartyMessage(params.agent, params.message?.trim() || `Invitation to party ${self.room}.`, params.wake !== false, true);
+			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, recipient: publicAgent(database().member(message.recipient)!) })), party: self.room });
 		},
 	});
 	pi.registerTool({
@@ -353,8 +394,7 @@ export default function party(pi: ExtensionAPI): void {
 		renderCall: (args, theme, context) => renderPartyCall("send", args, theme, context, peerLabel),
 		renderResult: (result, options, theme, context) => renderPartyResult("send", result, options, theme, context, peerLabel),
 		async execute(_id, params) {
-			const sent = database().send(session, owner, params.to, params.message, params.wake !== false);
-			signal(); publish();
+			const sent = sendPartyMessage(params.to, params.message, params.wake !== false);
 			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, recipient: publicAgent(database().member(message.recipient)!) })) });
 		},
 	});

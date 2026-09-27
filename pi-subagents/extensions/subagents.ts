@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { SESSION_USAGE_CHANGED } from "../../pi-session-usage/index.ts";
 import {
 	getAgentDir,
 	type ExtensionAPI,
@@ -25,6 +27,7 @@ import {
 	SubagentRuntime,
 	type ModelRef,
 	type ParentNotice,
+	type ParentInvocation,
 	type RuntimeHost,
 } from "./subagent-runtime.ts";
 import { createSubagentToolDefinitions } from "./subagent-tools.ts";
@@ -35,6 +38,8 @@ import { ensureWorkCoordination, getWorkCoordinator, completeWorkResource } from
 import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
+import { getPresentation } from "../../pi-ui/index.ts";
+import { SubagentPresentation } from "./presentation.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -245,6 +250,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	let activityUi: WorkUiSource | undefined;
 	let closeDashboard: (() => void) | undefined;
 	let runtime: SubagentRuntime | undefined;
+	let presentation: SubagentPresentation | undefined;
 	let notices: NoticeBatcher | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
 	let modelPermissions: ConversationModelPermissions | undefined;
@@ -258,6 +264,7 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	const updateActivity = (source: WorkUiSource, active: SubagentRuntime): void => {
 		if (runtime !== active) return;
+		presentation?.refresh();
 		const section = subagentWorkSection(active.snapshot());
 		source.set(section ? { ...section, manage: { label: "Manage", run: ctx => handleSubagents("", ctx) } } : undefined);
 	};
@@ -277,6 +284,8 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		presentation?.close();
+		presentation = undefined;
 		const active = runtime;
 		runtime = undefined;
 		const close = closeDashboard;
@@ -331,6 +340,9 @@ export default function subagents(pi: ExtensionAPI): void {
 			getToolInfo: () => pi.getAllTools(),
 			getChildPolicySources: () => childPolicySources(pi),
 			getFlag: (name) => pi.getFlag(name),
+			...(getPresentation(pi)?.createScope ? {
+				createPresentation: descriptor => getPresentation(pi)!.createScope!(descriptor.childSessionId, descriptor.label),
+			} : {}),
 			recordRootLaunch(childId: string) {
 				launches.add(childId);
 				pi.appendEntry(LAUNCH_ENTRY, {
@@ -356,6 +368,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				if (billed.has(id)) return;
 				pi.appendEntry(BACKGROUND_USAGE_ENTRY, { childId, messageId, usage });
 				billed.add(id);
+				pi.events.emit(SESSION_USAGE_CHANGED, undefined);
 			},
 			resolveModel(ref: ModelRef) {
 				return ctx.modelRegistry.find(ref.provider, ref.id);
@@ -388,6 +401,14 @@ export default function subagents(pi: ExtensionAPI): void {
 				),
 		);
 		runtime = created;
+		const remote = getPresentation(pi);
+		if (remote?.capabilities.includes("details")) {
+			presentation = new SubagentPresentation(remote, created, () => ({
+				authority: created.rootAuthority, sessionManager: ctx.sessionManager as ParentInvocation["sessionManager"],
+				model: ctx.model, thinkingLevel: ctx.thinkingLevel, toolNames: pi.getActiveTools(),
+				toolCallId: `human:${randomUUID()}`, cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(),
+			}), permissions);
+		}
 		unsubscribeRuntime = created.subscribe(() => updateActivity(activity, created));
 		created.initialize();
 		for (const notice of recoveredNotices) notices.add(notice);
@@ -458,6 +479,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
 				return;
 			}
+			if (presentation) { presentation.open(args.trim() || undefined); return; }
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("The subagent dashboard requires TUI mode.", "warning");
 				return;

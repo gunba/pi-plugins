@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 import { MAX_CHARS, page } from "./text.ts";
+import { searchToFile } from "./artifact-search.ts";
 
 const CHUNK = 64 * 1024;
 const CACHE_BYTES = 16 * 1024 * 1024;
@@ -151,3 +152,6 @@ export const artifactVersion = (path: string, id: string): Promise<string> =>
 
 export const artifactText = (path: string, id: string): Promise<string> =>
   indexed(path, id, file => file.readFile("utf8"));
+
+export const artifactSearch = (path: string, id: string, query: string, destination: FileHandle): Promise<string> =>
+  indexed(path, id, file => searchToFile(file, destination, query));

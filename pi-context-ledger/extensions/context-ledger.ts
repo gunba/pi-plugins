@@ -13,8 +13,10 @@ import type {
 // user's message contain wide (CJK/emoji) characters.
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+import { getPresentation } from "../../pi-ui/index.ts";
+import { LEDGER_ENTRY, readLedger, type Ledger, type LedgerGroup, type LedgerLeaf } from "../model.ts";
 
-const CUSTOM_TYPE = "pi-context-ledger";
+const CUSTOM_TYPE = LEDGER_ENTRY;
 const DISABLE_ENV = "PI_CONTEXT_LEDGER";
 
 // Pi estimates context with a chars/4 heuristic (see estimateTokens). We mirror
@@ -78,26 +80,6 @@ function contextFileLabel(filePath: string, cwd: string | undefined): string {
 }
 
 // --- ledger model ------------------------------------------------------------
-
-type LedgerLeaf = {
-  label: string;
-  tokens: number;
-};
-
-type LedgerGroup = {
-  label: string;
-  tokens: number;
-  note: string;
-  /** Individual contributors, sorted largest-first. Empty for atomic groups. */
-  items: LedgerLeaf[];
-};
-
-type Ledger = {
-  total: number;
-  contextWindow: number;
-  windowPercent: number | null;
-  groups: LedgerGroup[];
-};
 
 function isBuiltinTool(tool: ToolInfo): boolean {
   const source = tool.sourceInfo?.source;
@@ -426,6 +408,21 @@ export default function contextLedger(pi: ExtensionAPI): void {
   const armedSessions = new Set<string>();
   const shownSessions = new Set<string>();
   const optionsBySession = new Map<string, BuildSystemPromptOptions>();
+  function publish(ctx: ExtensionContext): void {
+    const remote = getPresentation(pi);
+    if (!remote) return;
+    const entry = ctx.sessionManager.getBranch().slice().reverse().find(entry => entry.type === "custom" && entry.customType === CUSTOM_TYPE);
+    const ledger = entry?.type === "custom" ? readLedger(entry.data) : undefined;
+    remote.publish(CUSTOM_TYPE, { kind: "ledger", surface: "settings", title: "Initial context",
+      data: { ledger: ledger ?? null, autoEnabled },
+      actions: [
+        ...(remote.runCommand ? [{ id: "refresh", label: "Recompute breakdown" }] : []),
+        { id: "automatic", label: autoEnabled ? "Disable automatic card" : "Enable automatic card" },
+      ] }, {
+      refresh: () => remote.runCommand?.("context-ledger"),
+      automatic: () => { autoEnabled = !autoEnabled; publish(ctx); },
+    });
+  }
 
   pi.registerEntryRenderer<Ledger>(CUSTOM_TYPE, (entry, options, theme) => {
     const ledger = entry.data;
@@ -438,7 +435,9 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!sessionId) return;
     // Only fresh conversations have a meaningful "first user message" to follow.
     if (event.reason === "startup" || event.reason === "new") armedSessions.add(sessionId);
+    publish(ctx);
   });
+  pi.on("session_tree", (_event, ctx) => publish(ctx));
 
   pi.on("before_agent_start", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId?.();
@@ -447,11 +446,12 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!sessionId || !armedSessions.has(sessionId) || shownSessions.has(sessionId)) return;
     armedSessions.delete(sessionId);
 
-    if (!autoEnabled || ctx.mode !== "tui") return;
+    if (!autoEnabled || ctx.mode !== "tui" && !getPresentation(pi)) return;
     shownSessions.add(sessionId);
 
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);
     pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
+    publish(ctx);
   });
 
   pi.registerCommand("context-ledger", {
@@ -460,6 +460,7 @@ export default function contextLedger(pi: ExtensionAPI): void {
       const command = args.trim().toLowerCase();
       if (command === "off" || command === "on") {
         autoEnabled = command === "on";
+        publish(ctx);
         ctx.ui.notify(`pi-context-ledger: automatic breakdown ${autoEnabled ? "enabled" : "disabled"}`, "info");
         return;
       }
@@ -469,12 +470,13 @@ export default function contextLedger(pi: ExtensionAPI): void {
       const options = hasCapturedOptions && sessionId ? optionsBySession.get(sessionId) : undefined;
       if (!hasCapturedOptions) {
         ctx.ui.notify(
-          "pi-context-ledger: skill and context-file attribution is unavailable until after the first agent turn",
+          "Skill and context-file attribution is unavailable until an agent turn runs after startup or reload.",
           "warning",
         );
       }
       const ledger = computeLedger(ctx, pi, ctx.getSystemPrompt(), options, "", 0);
       pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
+      publish(ctx);
     },
   });
 }

@@ -115,3 +115,47 @@ test("search pages reuse an immutable result and recover after unreferenced cach
   await rm(store.path(resultId));
   assert.equal((await store.searchPage(id, "needle")).text, matches);
 });
+
+test("artifact searches stream huge matching lines and coalesce simultaneous scans", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-search-stream-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new ArtifactStore(directory), source = join(directory, "source");
+  const file = await open(source, "w");
+  const chunk = Buffer.alloc(1024 * 1024, 120), size = chunk.length * 8;
+  try {
+    for (let index = 0; index < 8; index++) await file.write(chunk);
+    await file.write("needle");
+  } finally { await file.close(); }
+  const id = await store.putFile(source);
+  const handle = await open(store.path(id), "r"), prototype = Object.getPrototypeOf(handle);
+  await handle.close();
+  t.mock.method(prototype, "readFile", () => { throw new Error("Search loaded the whole artifact"); });
+  let scans = 0;
+  const truncate = prototype.truncate;
+  t.mock.method(prototype, "truncate", function (...args) { scans++; return truncate.apply(this, args); });
+  const results = await Promise.all(Array.from({ length: 4 }, () =>
+    new ArtifactStore(directory).searchPage(id, "needle", size, 32)));
+  for (const result of results) {
+    assert.equal(result.text, "xxxneedle");
+    assert.equal(result.total_chars, size + 9);
+    assert.equal(result.next_offset, null);
+    assert.equal(result.search_artifact, results[0].search_artifact);
+  }
+  assert.equal(scans, 1);
+});
+
+test("streamed searches retain literal Unicode, CRLF and malformed-byte semantics", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-search-unicode-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new ArtifactStore(directory), source = join(directory, "source");
+  const bytes = Buffer.concat([
+    Buffer.from("x".repeat(65535) + "🙂needle\r\n\n" + "界".repeat(44000) + "needle\n"),
+    Buffer.from([0xf0, 0x9f]), Buffer.from("\nend"), Buffer.from([0xff, 0xe2, 0x82]),
+  ]);
+  await writeFile(source, bytes);
+  const id = await store.putFile(source), decoded = bytes.toString("utf8");
+  for (const query of ["needle", "🙂", "\ud83d", "\ude42", "\r", "\ufffd", "end", "\n", "missing"]) {
+    const result = await store.searchPage(id, query);
+    assert.ok(await store.get(result.search_artifact) === literalMatches(decoded, query), `Different matching lines for ${JSON.stringify(query)}`);
+  }
+});

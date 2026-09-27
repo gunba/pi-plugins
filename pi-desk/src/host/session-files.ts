@@ -1,0 +1,47 @@
+import { closeSync, existsSync, openSync, readSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { SessionView } from "../shared/protocol.ts";
+
+export function readSessionHeader(file: string): { cwd: string; id: string } {
+	const fd = openSync(file, "r");
+	try {
+		const buffer = Buffer.alloc(65_536);
+		const text = buffer.subarray(0, readSync(fd, buffer)).toString("utf8");
+		const line = text.split("\n", 1)[0]!;
+		const header = JSON.parse(line);
+		if (header.type !== "session" || typeof header.cwd !== "string" || typeof header.id !== "string") throw new Error("Not a Pi session file.");
+		return { cwd: header.cwd, id: header.id };
+	} finally { closeSync(fd); }
+}
+
+/** Small references/preferences only; Pi's JSONL files remain the transcript. */
+export class SessionCatalog {
+	private file: string;
+	constructor(directory: string) { this.file = join(directory, "sessions.json"); }
+	read(): SessionView[] {
+		if (!existsSync(this.file)) return [];
+		const value = JSON.parse(readFileSync(this.file, "utf8"));
+		if (value.version !== 1 || !Array.isArray(value.sessions)) throw new Error("Invalid Desk session catalog.");
+		return value.sessions.map((item: SessionView) => {
+			if (typeof item.key !== "string" || typeof item.cwd !== "string") throw new Error("Invalid Desk session reference.");
+			return { ...item, state: "closed", interrupted: item.state !== "closed" || item.interrupted,
+				controls: item.controls?.map(control => control.state === "running"
+					? { ...control, state: "interrupted", error: "The host stopped before the outcome was recorded. Check saved history; this operation was not replayed." }
+					: control),
+				error: item.state === "closed" ? item.error : "The host stopped. Resume saved history to continue; unfinished operations were not replayed." };
+		});
+	}
+	write(sessions: SessionView[]): void {
+		const records = sessions.map(view => ({
+			key: view.key, cwd: view.snapshot?.cwd ?? view.cwd, created: view.created, state: view.state,
+			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
+			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
+			pinned: view.pinned, interrupted: view.interrupted, error: view.error,
+			controls: view.controls,
+		}));
+		const temporary = `${this.file}.${randomUUID()}.tmp`;
+		writeFileSync(temporary, JSON.stringify({ version: 1, sessions: records }), { mode: 0o600 });
+		renameSync(temporary, this.file);
+	}
+}

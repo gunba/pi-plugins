@@ -2,8 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { computeSessionStats, type SessionStats } from "../../pi-session-usage/index.ts";
+import { computeSessionStats, SESSION_USAGE_CHANGED, type SessionStats } from "../../pi-session-usage/index.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
+import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/index.ts";
 
 type HeaderMap = Record<string, unknown>;
 type JsonRecord = Record<string, unknown>;
@@ -48,6 +49,7 @@ type UsageState = {
   timer?: ReturnType<typeof setInterval>;
   statsCache?: SessionStatsCache;
   disposed: boolean;
+  presentation?: Presentation;
   dispose(): void;
 };
 const statusOwners = new WeakMap<ExtensionAPI["events"], UsageState>();
@@ -365,8 +367,47 @@ function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   // Do not retain a stale ctx if any of its guarded getters or UI calls failed.
   if (state.disposed) return;
   state.context = ctx;
-  if (status) ensureTickTimer(state);
+  publishUsage(ctx, state);
+  if (status || state.presentation && snapshotForSource(state, "codex")) ensureTickTimer(state);
   else disposeTickTimer(state);
+}
+
+function publishUsage(ctx: ExtensionContext, state: UsageState): void {
+  const remote = state.presentation;
+  if (!remote || state.disposed) return;
+  const stats = cachedSessionStats(ctx, state), allowance = snapshotForSource(state, "codex");
+  const fresh = stats.totalInput + stats.totalCacheWrite, input = fresh + stats.totalCacheRead;
+  const context = ctx.getContextUsage(), model = ctx.model;
+  const data: UiDetails = {
+    summary: "Cumulative recorded usage includes child charges once. Prices are estimates; Codex subscription costs are not a bill.",
+    fields: [
+      { label: "Model", value: model ? `${model.provider}/${model.id}` : "Not selected" },
+      { label: "Reasoning", value: ctx.thinkingLevel ?? "off" },
+      { label: "Input uncached", value: `${formatTokens(fresh)} · ${formatMoney(stats.costInput + stats.costCacheWrite)}` },
+      { label: "Input cached", value: `${formatTokens(stats.totalCacheRead)} · ${formatMoney(stats.costCacheRead)}${input ? ` · ${Math.round(stats.totalCacheRead / input * 100)}% of input` : ""}` },
+      { label: "Output", value: `${formatTokens(stats.totalOutput)} · ${formatMoney(stats.costOutput)}` },
+      { label: "Total", value: `${formatTokens(input + stats.totalOutput)} tokens · ${formatMoney(stats.totalCost)}` },
+      { label: "Current context", value: `${context?.tokens == null ? "Not measured" : formatTokens(context.tokens)} / ${formatTokens(context?.contextWindow ?? model?.contextWindow ?? 0)}` },
+      ...(allowance ? [{ label: "Allowance observed", value: new Date(allowance.updatedAtMs).toISOString() },
+        ...(allowance.planType ? [{ label: "Plan", value: allowance.planType }] : []),
+        ...(allowance.activeLimit ? [{ label: "Active limit", value: allowance.activeLimit }] : [])] : []),
+    ],
+    items: [allowance?.primary, allowance?.secondary].flatMap((window, index) => {
+      if (!window) return [];
+      const remaining = window.usedPercent === undefined ? undefined : 100 - window.usedPercent;
+      return [{ id: `window-${index}`, title: `${window.label} Codex allowance`,
+        subtitle: remaining === undefined ? "Remaining amount unknown" : `${remaining}% remaining`,
+        body: window.resetAtMs ? `Resets ${new Date(window.resetAtMs).toISOString()} (in ${formatDurationUntil(window.resetAtMs)})` : "Reset time unknown",
+        ...(remaining === undefined ? {} : { meter: { value: remaining, max: 100, label: `${window.label} allowance remaining` } }) }];
+    }),
+  };
+  if (!allowance) data.items = [{ id: "no-snapshot", title: "No current Codex allowance snapshot",
+    body: "Allowance arrives passively with Codex responses. No polling or extra provider request is made." }];
+  remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
+    actions: [{ id: "refresh", label: "Refresh view" }, { id: "status", label: state.enabled ? "Hide status" : "Show status" }] }, {
+    refresh: () => updateUsageStatus(ctx, state),
+    status: () => { state.enabled = !state.enabled; updateUsageStatus(ctx, state); },
+  });
 }
 
 function refreshUsageStatus(state: UsageState): void {
@@ -425,6 +466,7 @@ export default function codexUsage(pi: ExtensionAPI): void {
     const snapshot = parseUsageHeaders(recordValue(data));
     if (snapshot) recordSnapshot(snapshot, state);
   });
+  const unsubscribeUsage = pi.events.on(SESSION_USAGE_CHANGED, () => refreshUsageStatus(state));
 
   function dispose(): void {
     if (state.disposed) return;
@@ -432,12 +474,17 @@ export default function codexUsage(pi: ExtensionAPI): void {
     disposeTickTimer(state);
     state.context = undefined;
     state.statsCache = undefined;
+    const presentation = state.presentation;
+    state.presentation = undefined;
     if (statusOwners.get(pi.events) === state) statusOwners.delete(pi.events);
     unsubscribeWire();
+    unsubscribeUsage();
+    presentation?.publish("pi-usage", undefined);
   }
 
   pi.on("session_start", (_event, ctx) => {
     if (state.disposed) return;
+    state.presentation = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
     updateUsageStatus(ctx, state);
   });
 
@@ -449,6 +496,10 @@ export default function codexUsage(pi: ExtensionAPI): void {
   pi.on("model_select", (_event, ctx) => {
     updateUsageStatus(ctx, state);
   });
+  pi.on("agent_settled", (_event, ctx) => updateUsageStatus(ctx, state));
+  pi.on("turn_end", (_event, ctx) => updateUsageStatus(ctx, state));
+  pi.on("session_tree", (_event, ctx) => updateUsageStatus(ctx, state));
+  pi.on("session_compact", (_event, ctx) => updateUsageStatus(ctx, state));
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (state.disposed) return;
@@ -476,6 +527,11 @@ export default function codexUsage(pi: ExtensionAPI): void {
         return;
       }
 
+      if (state.presentation) {
+        updateUsageStatus(ctx, state);
+        state.presentation.open("pi-usage");
+        return;
+      }
       ctx.ui.notify(
         [
           formatSessionCostDetails(ctx, state),

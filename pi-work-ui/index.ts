@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SECTION_ORDER, workPanelLines, type WorkSection, type WorkSectionId, type WorkSnapshot } from "./view.ts";
 import { WorkModal } from "./modal.ts";
+import { getPresentation, type Presentation, type UiValue } from "../pi-ui/index.ts";
 export { safeWorkText, workPanelLines } from "./view.ts";
 export type { WorkSection, WorkSectionId, WorkSnapshot } from "./view.ts";
 
@@ -20,6 +21,9 @@ export interface WorkUiSource {
 
 /** Presentation only: no persistence, inference, session writes, editor or footer overrides. */
 export class WorkUi {
+	private readonly presentation?: () => Presentation | undefined;
+	private remote?: Presentation;
+	constructor(presentation?: () => Presentation | undefined) { this.presentation = presentation; }
 	private ctx: ExtensionContext | undefined;
 	private generation = 0;
 	private closed = false;
@@ -36,6 +40,7 @@ export class WorkUi {
 		if (this.closed) return;
 		this.reset();
 		this.ctx = ctx;
+		this.remote = this.presentation?.();
 	}
 
 	private reset(touchUi = true): void {
@@ -52,6 +57,9 @@ export class WorkUi {
 		this.owners.clear();
 		this.sections.clear();
 		this.currentSnapshot = [];
+		const remote = this.remote;
+		this.remote = undefined;
+		if (touchUi) remote?.publish("work", undefined);
 		this.listeners.clear();
 		const widgetInstalled = this.widgetInstalled;
 		this.widgetInstalled = false;
@@ -121,8 +129,31 @@ export class WorkUi {
 
 	private refreshUi(): void {
 		const ctx = this.ctx;
-		if (this.closed || !ctx || ctx.mode !== "tui") return;
+		if (this.closed || !ctx) return;
+		const mode = ctx.mode;
 		this.currentSnapshot = this.snapshot();
+		const presentation = this.remote;
+		if (presentation) {
+			const generation = this.generation;
+			const actions: Record<string, (value: UiValue) => Promise<void>> = {};
+			for (const [id, section] of this.currentSnapshot) {
+				if (!section.manage) continue;
+				const owner = this.owners.get(id);
+				actions[id] = async () => {
+					if (!this.active(generation) || this.owners.get(id) !== owner) throw new Error("This work item changed.");
+					await this.sections.get(id)?.manage?.run(ctx);
+				};
+			}
+			presentation.publish("work", {
+				kind: "work", title: "Work",
+				data: this.currentSnapshot.map(([id, section]) => ({
+					id, label: section.label, status: section.status, summary: section.summary,
+					detail: section.detail, tone: section.tone,
+				})),
+				actions: this.currentSnapshot.flatMap(([id, section]) => section.manage ? [{ id, label: section.manage.label }] : []),
+			}, actions);
+		}
+		if (mode !== "tui") return;
 		if (!this.sections.size) {
 			if (this.widgetInstalled) ctx.ui.setWidget(WORK_WIDGET_KEY, undefined);
 			this.widgetInstalled = false;
@@ -163,6 +194,8 @@ export class WorkUi {
 	}
 
 	async open(ctx: ExtensionContext, selected: WorkSectionId = this.currentSnapshot[0]?.[0] ?? "goal"): Promise<void> {
+		const presentation = this.remote;
+		if (presentation && this.active(this.generation)) { presentation.open("work", selected); return; }
 		if (!this.active(this.generation) || ctx.mode !== "tui") return;
 		if (this.interaction) { this.modal?.select(selected); return; }
 		const generation = this.generation;
@@ -221,7 +254,7 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	const probe: { ui?: WorkUi } = {};
 	pi.events.emit(DISCOVER, probe);
 	if (probe.ui) return probe.ui;
-	const ui = new WorkUi();
+	const ui = new WorkUi(() => getPresentation(pi));
 	const release = pi.events.on(DISCOVER, (value) => {
 		if (value && typeof value === "object") (value as typeof probe).ui = ui;
 	});
@@ -231,7 +264,7 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	pi.registerCommand("work", {
 		description: "Open work details: goal, todos, subagents, party, scheduled",
 		handler: async (args, ctx) => {
-			if (ctx.mode !== "tui") { ctx.ui.notify("Work details require TUI mode.", "warning"); return; }
+			if (ctx.mode !== "tui" && !getPresentation(pi)) { ctx.ui.notify("Work details require an interactive client.", "warning"); return; }
 			const id = args.trim() as WorkSectionId;
 			if (id && !SECTION_ORDER.includes(id)) { ctx.ui.notify(`Usage: /work [${SECTION_ORDER.join("|")}]`, "warning"); return; }
 			await ui.open(ctx, id || undefined);

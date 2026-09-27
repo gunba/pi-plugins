@@ -184,11 +184,14 @@ export default function outputBudget(pi: ExtensionAPI): void {
           // Keep each file's archive handle instead of expanding every large file into memory.
           let output = preview;
           if (request.query !== undefined) {
-            const text = typeof artifact === "string" ? await store.get(artifact)
-              : preview.slice(0, result.details.capturedChars);
-            const matches = literalMatches(text, request.query);
-            const bounded = await boundedText(store, matches, MAX_CHARS);
-            output = bounded.content[0]!.text;
+            if (typeof artifact === "string") {
+              const matches = await store.searchPage(artifact, request.query, 0, MAX_CHARS);
+              output = matches.text;
+              if (matches.next_offset !== null) output += `\n\n[Output truncated. Complete matching lines: ${matches.search_artifact}. Use read_artifact with offset=${matches.next_offset}. Source: ${artifact}]`;
+            } else {
+              const matches = literalMatches(preview.slice(0, result.details.capturedChars), request.query);
+              output = (await boundedText(store, matches, MAX_CHARS)).content[0]!.text;
+            }
           }
           sections.push(`--- ${index + 1}. ${request.path} ---\n${output || "[No matches]"}`);
         } catch (error) {

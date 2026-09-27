@@ -2,6 +2,15 @@
 
 Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.87.1+.
 
+## Pi Desk
+
+[`pi-desk`](pi-desk/README.md) is the optional desktop and phone app. It runs Pi
+sessions on their owning computers and presents them through one shared web
+interface. An HTTPS relay provides remote access without inbound PC ports.
+Desk installs separately and includes a pinned Pi SDK; it is not another
+extension entry. See its [capability map](pi-desk/CAPABILITIES.md) and
+[installation guide](pi-desk/UPDATING.md) for coverage and release boundaries.
+
 ## Extensions
 
 - `pi-codex-compat` — adds Codex-shaped `apply_patch`, `patch_and_run`, `exec_command`,
@@ -26,8 +35,8 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   file URLs for terminal Ctrl+click. Applies during streaming and history
   restoration without changing saved messages or model context.
 - [`pi-message-timestamps`](pi-message-timestamps/README.md) — shows compact
-  time and duration inside tool blocks, plus a live elapsed/quiet clock while
-  tools run. No new session entries or model context.
+  native timing in Desk and a live elapsed/quiet clock in the terminal.
+  Tool timing metadata survives saved history without private renderer patches.
 - [`pi-web-search`](pi-web-search/README.md) — adds one `web_search` tool, labelled `web.run`, based on
   Codex's standalone search client. It sends Codex-compatible commands directly
   to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no
@@ -64,9 +73,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 - `pi-fast-footer` — keeps interactive session usage and context statistics
   cached between session changes instead of scanning the full transcript on
   each terminal redraw. Git branch and extension status updates stay live.
-- `pi-context-ledger` — prints a one-time, TUI-only breakdown of
+- `pi-context-ledger` — shows a saved breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
-  after the first user message; never sent to the model.
+  after the first user message, in the terminal and Desk; never sent to the model.
 - [`pi-context-window`](pi-context-window/README.md) — `/context-window`
   opens a modal for the active model's window and checkpoint setting, including
   an opt-in 1M/900K preset for supported OpenAI models.
@@ -97,6 +106,9 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
   fullscreen summary clicks open the corresponding section. Management reuses
   the existing subagent and party screens. Native tool expansion remains separate.
   The shared UI loads with any consumer, not a separate manifest entry.
+- [`pi-session-ownership`](pi-session-ownership/README.md) — cooperative writer
+  leases for native sessions. Desk acquires its lease before opening a session;
+  terminal enforcement starts when its extension loads.
 
 ## Install
 
@@ -142,7 +154,10 @@ and all discovered regression tests as CI:
 
 ```bash
 npm ci
+npm --prefix pi-desk ci --ignore-scripts
 npm run check
+npm --prefix pi-desk run typecheck
+npm --prefix pi-desk run build
 ```
 
 The Pi packages remain optional runtime peers; their pinned development copies

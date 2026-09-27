@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, link, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { artifactPage, artifactText, artifactVersion } from "./artifact-reader.ts";
-import { literalMatches, OUTPUT_CHARS, page } from "./text.ts";
+import { artifactPage, artifactSearch, artifactText, artifactVersion } from "./artifact-reader.ts";
+import { OUTPUT_CHARS, page } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 
 const ID = /^sha256-[a-f0-9]{64}$/;
 const searches = new Map<string, string>();
+const pendingSearches = new Map<string, Promise<string>>();
 
 export class ArtifactStore {
   readonly directory: string;
@@ -75,17 +76,40 @@ export class ArtifactStore {
     const path = this.path(id);
     await this.prepareDirectory();
     const version = await artifactVersion(path, id);
-    const key = `${path}\0${version}\0${createHash("sha256").update(query).digest("hex")}`;
+    // String.includes uses UTF-16 units; UTF-8 would collapse lone surrogates into U+FFFD.
+    const key = `${path}\0${version}\0${createHash("sha256").update(query, "utf16le").digest("hex")}`;
     let found = searches.get(key);
     if (found) {
-      try { return { ...await this.readPage(found, offset, length), search_artifact: found }; }
+      try {
+        const result = await this.readPage(found, offset, length);
+        searches.delete(key); searches.set(key, found);
+        return { ...result, search_artifact: found };
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
-    found = await this.put(literalMatches(await this.get(id), query));
-    searches.delete(key);
-    searches.set(key, found);
-    while (searches.size > 64) searches.delete(searches.keys().next().value!);
+    let pending = pendingSearches.get(key);
+    if (!pending) {
+      pending = this.search(path, id, query).then(result => {
+        searches.delete(key); searches.set(key, result);
+        while (searches.size > 64) searches.delete(searches.keys().next().value!);
+        return result;
+      }).finally(() => pendingSearches.delete(key));
+      pendingSearches.set(key, pending);
+    }
+    found = await pending;
     return { ...await this.readPage(found, offset, length), search_artifact: found };
+  }
+
+  private async search(path: string, id: string, query: string): Promise<string> {
+    const temporary = join(this.directory, `.capture-${randomUUID()}`);
+    try {
+      const file = await open(temporary, "wx", 0o600);
+      let result: string;
+      try { result = await artifactSearch(path, id, query, file); }
+      finally { await file.close(); }
+      await this.publish(temporary, result);
+      return result;
+    } finally { await rm(temporary, { force: true }); }
   }
 }
 

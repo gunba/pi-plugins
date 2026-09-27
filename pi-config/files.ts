@@ -29,7 +29,8 @@ export async function withFileLocks<T>(paths: string[], operation: () => Promise
 }
 
 /** Caller holds the lock. Preserve file permissions and retry Windows rename contention. */
-export async function replaceFile(path: string, text: string | undefined): Promise<void> {
+export async function replaceFile(path: string, text: string | undefined, assertCurrent?: () => void): Promise<void> {
+	assertCurrent?.();
 	if (text === undefined) {
 		try { unlinkSync(path); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -40,7 +41,7 @@ export async function replaceFile(path: string, text: string | undefined): Promi
 	writeFileSync(temp, text, { mode, flag: "wx" });
 	try {
 		for (let attempt = 0; ; attempt++) {
-			try { renameSync(temp, path); return; }
+			try { assertCurrent?.(); renameSync(temp, path); return; }
 			catch (error) {
 				if (!["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "") || attempt === 9) throw error;
 				await delay(50 * (attempt + 1));
@@ -49,9 +50,10 @@ export async function replaceFile(path: string, text: string | undefined): Promi
 	} finally { rmSync(temp, { force: true }); }
 }
 
-export async function writeCheckedFile(path: string, before: string | undefined, after: string): Promise<void> {
+export async function writeCheckedFile(path: string, before: string | undefined, after: string, assertCurrent?: () => void): Promise<void> {
 	await withFileLocks([path], async () => {
+		assertCurrent?.();
 		if (readOptional(path) !== before) throw new Error(`File changed while it was being edited: ${path}. Reopen it before saving.`);
-		await replaceFile(path, after);
+		await replaceFile(path, after, assertCurrent);
 	});
 }

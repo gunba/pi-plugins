@@ -8,6 +8,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { todoWorkSection } from "../../pi-work-ui/sections.ts";
+import { getPresentation, type Presentation } from "../../pi-ui/index.ts";
 
 import {
 	TODO_CLEAR_ENTRY,
@@ -151,12 +152,21 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 		const workUi = ensureWorkUi(pi);
 		let uiSource: WorkUiSource | undefined;
 		let currentTodos: TodoSnapshot | null = null;
+		let remote: Presentation | undefined;
 
 		const refreshWidget = (_ctx: ExtensionContext): void => {
 			uiSource?.set(todoWorkSection(currentTodos));
+			remote?.publish("todos", currentTodos?.length ? {
+				kind: "details", title: "Tasks",
+				data: { items: currentTodos.map((todo, index) => ({
+					id: String(index), title: todo.content,
+					status: todo.status === "completed" ? "Completed" : todo.status === "in_progress" ? "In progress" : "Pending",
+				})) },
+			} : undefined);
 		};
 
 		const restore = (ctx: ExtensionContext): void => {
+			remote = getPresentation(pi);
 			uiSource = workUi.source("todos");
 			currentTodos = null;
 			refreshWidget(ctx);
@@ -230,6 +240,8 @@ export function createTodoExtension(options: TodoExtensionOptions) {
 		});
 
 		pi.on("session_shutdown", () => {
+			remote?.publish("todos", undefined);
+			remote = undefined;
 			currentTodos = null;
 			uiSource?.dispose();
 			uiSource = undefined;

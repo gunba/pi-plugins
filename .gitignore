@@ -5,3 +5,4 @@ node_modules/
 *.ndjson
 config.json
 npm-debug.log*
+pi-desk/dist/

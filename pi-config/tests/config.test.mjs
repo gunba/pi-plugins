@@ -15,7 +15,7 @@ test('navigator omits unused profiles and fits narrow terminals', async () => {
  try {
   mkdirSync(join(root, '.pi/agents'), {recursive: true});
   writeFileSync(join(root, '.pi/agents/stale-profile.md'), '# Stale profile');
-  extension({registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
+  extension({on() {}, registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
   let rendered = false;
   await commands['pi-config'].handler('', {cwd: root, mode: 'tui', hasUI: true, ui: {
    notify(message, level) {assert.notEqual(level, 'error', message);},
@@ -39,7 +39,7 @@ test('reload exits the navigator and never touches its retired context', async t
  const path = join(root, 'context.md');
  writeFileSync(path, 'Before\n');
  const commands = {};
- extension({registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
+ extension({on() {}, registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
  for (const failure of [undefined, new Error('reload failed after retirement')]) {
   let retired = false, opened = 0, reloaded = false;
   const live = () => assert.equal(retired, false, 'old context used after reload');
@@ -62,7 +62,7 @@ test('an edit cannot overwrite a change made while its dialog was open', async t
  const path = join(root, 'context.md');
  writeFileSync(path, 'Original\n');
  const commands = {}, errors = [];
- extension({registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
+ extension({on() {}, registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
  await commands['pi-config'].handler('', {cwd: root, mode: 'tui', hasUI: true, ui: {
   notify(message, level) {if (level === 'error') errors.push(message);},
   async custom() {return {action: 'edit', entry: {title: 'Context', path, tool: 'pi', kind: 'context', format: 'markdown'}};},

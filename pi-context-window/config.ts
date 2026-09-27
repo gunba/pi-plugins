@@ -123,23 +123,29 @@ export interface WindowPreset {
 }
 
 /** Both files are read under their native settings lock before either is changed. */
-export async function writeWindowPreset(preset: WindowPreset): Promise<boolean> {
+export async function writeWindowPreset(preset: WindowPreset, options: {
+	assertCurrent?: () => void; expected?: { window: number | undefined; reserve: number | undefined };
+} = {}): Promise<boolean> {
 	const dir = getAgentDir();
 	const modelsPath = join(dir, "models.json");
 	const settingsPath = join(dir, "settings.json");
 	return withFileLocks([modelsPath, settingsPath], async () => {
+		options.assertCurrent?.();
 		const oldModels = readOptional(modelsPath);
 		const oldSettings = readOptional(settingsPath);
+		if (options.expected && (configuredWindow(oldModels, preset.provider, preset.modelId) !== options.expected.window ||
+			configuredReserve(oldSettings, preset.provider, preset.modelId) !== options.expected.reserve))
+			throw new Error("Context settings changed while the dialog was open. Reopen it before saving.");
 		const newModels = modelWindowText(oldModels, preset.provider, preset.modelId, preset.window);
 		const newSettings = checkpointText(oldSettings, preset.provider, preset.modelId, preset.reserve);
 		if (newModels === oldModels && newSettings === oldSettings) return false;
 		let modelsWritten = false;
 		try {
 			if (newModels !== oldModels) {
-				await replaceFile(modelsPath, newModels);
+				await replaceFile(modelsPath, newModels, options.assertCurrent);
 				modelsWritten = true;
 			}
-			if (newSettings !== oldSettings) await replaceFile(settingsPath, newSettings);
+			if (newSettings !== oldSettings) await replaceFile(settingsPath, newSettings, options.assertCurrent);
 		} catch (error) {
 			if (modelsWritten) {
 				try { await replaceFile(modelsPath, oldModels); }

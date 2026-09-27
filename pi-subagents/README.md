@@ -98,8 +98,12 @@ addons remain shared.
 
 Missing or synthetic provider sources fail explicitly rather than silently hiding
 tools. SDK hosts can supply child-bound definitions for tools without source files.
-Tools requiring human interaction must be escalated to the parent; tool availability
-does not confer human approval or permission to create a root goal.
+Pi Desk gives each active child its own structured human-interaction scope.
+Questions identify the child and can be answered from a paired browser; native
+select/confirm/input dialogs use the same scope. Interruption cancels that child's
+pending questions, not a sibling's. Without that presentation, human questions
+must be escalated to the parent. Tool availability does not confer human approval
+or permission to create a root goal.
 
 ## Lifecycle and authority
 
@@ -120,6 +124,8 @@ does not confer human approval or permission to create a root goal.
 - Only the exact resident continuable child can call `report`.
 - The defaults are depth 3, eight live child activations per root, and a
   30-second activation-opening deadline. Opening children count toward the cap.
+  A cancelled opening keeps its admission slot until late cleanup finishes;
+  accepted follow-ups wait rather than opening that child's session concurrently.
 - Child model and thinking level inherit from the parent unless the user has
   approved creation-time overrides. Effective provider configuration and resolved
   authentication come from the parent's registry for the selected provider.
@@ -179,6 +185,18 @@ Pi branch navigation is blocked while the current session owns live children.
 Session replacement drains live SDK activations and reconstructs the durable
 catalog for the replacement root.
 
+### Pi Desk
+
+The Work view and `/subagents` expose new/fork, transcript preview, follow-up,
+steering, interrupt, and model-permission controls. Launch settings inherit the
+parent by default; explicit overrides still use the conversation approval flow.
+Child questions survive browser disconnects. Desk pages the native active branch
+and streams assistant text/thinking into readable message and tool cards. Images
+load when visible, and long text/arguments have complete-output links. History
+uses bounded pages with Older, Newer and Latest controls; reading it does not
+activate a cold child. Hosts without the transcript capability receive the text
+preview.
+
 ## Storage
 
 Child sessions use Pi's JSONL session format under:
@@ -186,6 +204,11 @@ Child sessions use Pi's JSONL session format under:
 ```text
 ~/.pi/agent/subagents/sessions/<root-session-id>/*.jsonl
 ```
+
+The runtime acquires the shared session-ownership lease before creating or opening
+each child file and keeps it while the root owns that durable child, including
+between activations. It releases after shutdown and any late opening cleanup.
+Another ownership-aware Pi process cannot resume the same file concurrently.
 
 The child session contains model-hidden custom entries for:
 
@@ -222,9 +245,9 @@ The implementation keeps these boundaries explicit:
    Notices carry provenance in custom-message details and durable receipt records.
 3. Pi has no public per-activation `maxTokens` override. Cold activations use the
    restored model's normal token limit.
-4. Pi extensions cannot register a browser-side child catalog or composer. The
-   complete interface is available in the TUI; RPC mode receives notices but no
-   custom dashboard.
+4. Core RPC does not transport custom dashboards. Pi Desk uses the shared
+   `pi-ui` presentation capability for its child catalog, actions and scoped forms;
+   other RPC clients still receive notices without that custom dashboard.
 5. Pi tears down the extension runtime for reload, new, resume, and fork. Active
    turns are therefore aborted cleanly and durable sessions are reconstructed
    instead of preserving in-memory activations across replacement.

@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
 import { readOptional, writeCheckedFile } from "../files.ts";
+import { getPresentation } from "../../pi-ui/index.ts";
+import { ConfigPresentation } from "../presentation.ts";
 
 type SurfaceTool = "pi" | "mcp";
 type FileFormat = "json" | "markdown" | "text";
@@ -239,7 +241,7 @@ function ancestorDirs(cwd: string): string[] {
   return dirs;
 }
 
-function discoverEntries(pi: ExtensionAPI, ctx: ExtensionCommandContext): ConfigEntry[] {
+function discoverEntries(pi: ExtensionAPI, ctx: Pick<ExtensionContext, "cwd">): ConfigEntry[] {
   const cwd = ctx.cwd;
   const agentDir = piAgentDir();
   const entries: ConfigEntry[] = [];
@@ -1504,7 +1506,24 @@ async function runNavigator(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
 }
 
 export default function piConfig(pi: ExtensionAPI) {
+  let remote: ConfigPresentation | undefined;
+  const bind = (ctx: ExtensionContext) => {
+    remote?.close(); remote = undefined;
+    const presentation = getPresentation(pi);
+    if (!presentation?.capabilities.includes("details")) return;
+    remote = new ConfigPresentation(presentation, {
+      discover: () => discoverEntries(pi, ctx),
+      matches: (entry, filter) => matchesFilter(entry as ConfigEntry, filter, ctx.cwd),
+      fields: entry => settingCatalogForEntry(entry as ConfigEntry),
+      validate: (entry, text) => validateConfigText(entry as ConfigEntry, text),
+      insert: insertJsonSetting,
+    }, (message, level = "info") => ctx.ui.notify(message, level));
+  };
+  pi.on("session_start", (_event, ctx) => bind(ctx));
+  pi.on("session_tree", (_event, ctx) => bind(ctx));
+  pi.on("session_shutdown", () => { remote?.close(); remote = undefined; });
   const handler = async (args: string, ctx: ExtensionCommandContext) => {
+    if (remote) { remote.open(args.trim()); return; }
     let reload: boolean;
     try {
       reload = await runNavigator(pi, ctx, args);

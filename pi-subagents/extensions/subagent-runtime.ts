@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { NoticeBatcher } from "./notice-batcher.ts";
+import type { PresentationScope, UiTranscriptSource } from "../../pi-ui/index.ts";
+import { SessionLease, attachOwnership, releaseOwnership } from "../../pi-session-ownership/lease.ts";
 import type { ChildPolicySource } from "./child-policies.ts";
 import { completeWorkResource, getWorkCoordinator, registerWorkResource } from "../../pi-work-coordination/core.ts";
 import {
@@ -200,9 +202,11 @@ export interface RuntimeHost {
 	getToolInfo?(): ToolInfo[];
 	getChildPolicySources?(): ChildPolicySource[];
 	getFlag?(name: string): boolean | string | undefined;
+	createPresentation?(descriptor: ChildDescriptor): PresentationScope;
 }
 
 export interface ChildDriver {
+	subscribeTranscript?(listener: Parameters<UiTranscriptSource["subscribe"]>[0]): () => void;
 	readonly sessionFile?: string;
 	readonly isRunning: boolean;
 	readonly activity?: string;
@@ -247,6 +251,7 @@ type QueueItem = {
 };
 
 type Activation = {
+	unsubscribeTranscript?: () => void;
 	authority: Authority;
 	driver: ChildDriver;
 	unsubscribeActivity?: () => void;
@@ -778,6 +783,7 @@ export function createDurableChildSession(
 	sessionDir: string,
 	id: string,
 	parentSession: string | undefined,
+	beforeCreate?: (file: string) => void,
 ): SessionManager {
 	mkdirSync(sessionDir, { recursive: true });
 	const timestamp = new Date().toISOString();
@@ -785,6 +791,7 @@ export function createDurableChildSession(
 		sessionDir,
 		`${timestamp.replace(/[:.]/g, "-")}_${id}.jsonl`,
 	);
+	beforeCreate?.(file);
 	writeFileSync(
 		file,
 		`${JSON.stringify({
@@ -795,7 +802,7 @@ export function createDurableChildSession(
 			cwd,
 			...(parentSession ? { parentSession } : {}),
 		})}\n`,
-		{ flag: "wx" },
+		{ flag: "wx", mode: 0o600 },
 	);
 	return SessionManager.open(file, sessionDir, cwd);
 }
@@ -804,11 +811,11 @@ function normalizeToolNames(names: readonly string[]): string[] {
 	return [...new Set(names.filter((name) => typeof name === "string" && name.length > 0))].sort();
 }
 
-function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSignal): Promise<ChildDriver> {
+function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSignal, settled: () => void): Promise<ChildDriver> {
 	return new Promise((resolve, reject) => {
 		let cancelled = signal.aborted;
 		const abort = () => { cancelled = true; reject(signal.reason); };
-		if (cancelled) { reject(signal.reason); return; }
+		if (cancelled) { settled(); reject(signal.reason); return; }
 		signal.addEventListener("abort", abort, { once: true });
 		void Promise.resolve().then(() => {
 			signal.throwIfAborted();
@@ -822,7 +829,7 @@ function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSig
 			reject(error);
 		}).catch(() => {
 			// A late driver failed disposal after its cancelled opening was rejected.
-		});
+		}).finally(settled);
 	});
 }
 
@@ -832,9 +839,15 @@ export class SubagentRuntime {
 	readonly maxActive: number;
 	private readonly openTimeoutMs: number;
 	private readonly records = new Map<string, ChildRecord>();
+	private readonly leases = new Map<string, SessionLease>();
+	private readonly ownedManagers = new Map<string, SessionManager>();
+	private readonly openingFiles = new Map<string, number>();
+	private shutdownFinished = false;
+	private initialized = false;
 	private readonly diagnostics = new Map<string, DiagnosticRecord>();
 	private readonly authorities = new Map<string, Authority>();
 	private readonly listeners = new Set<() => void>();
+	private readonly transcriptListeners = new Map<string, Set<Parameters<UiTranscriptSource["subscribe"]>[0]>>();
 	private readonly noticeBatchers = new Map<string, NoticeBatcher>();
 	private readonly generation = randomUUID();
 	private closing = false;
@@ -868,6 +881,8 @@ export class SubagentRuntime {
 	readonly sessionDir: string;
 
 	initialize(): void {
+		if (this.initialized || this.closing) throw new Error("Subagent runtime has already been initialized or closed.");
+		this.initialized = true;
 		mkdirSync(this.sessionDir, { recursive: true });
 		this.loadCatalog();
 		for (const record of this.records.values()) {
@@ -896,8 +911,35 @@ export class SubagentRuntime {
 		return () => this.listeners.delete(listener);
 	}
 
+	transcript(childId: string): UiTranscriptSource {
+		const record = this.records.get(childId);
+		if (!record) throw new Error("Child transcript is unavailable.");
+		return {
+			cwd: () => record.manager.getCwd(),
+			branch: () => {
+				if (this.closing) throw new Error("The child conversation has closed.");
+				return record.manager.getBranch();
+			},
+			subscribe: listener => {
+				if (this.closing) throw new Error("The child conversation has closed.");
+				let listeners = this.transcriptListeners.get(childId);
+				if (!listeners) this.transcriptListeners.set(childId, listeners = new Set());
+				listeners.add(listener);
+				return () => { listeners.delete(listener); if (!listeners.size && this.transcriptListeners.get(childId) === listeners) this.transcriptListeners.delete(childId); };
+			},
+		};
+	}
+
 	private emit(): void {
 		for (const listener of this.listeners) listener();
+	}
+
+	private releaseFile(file: string): void {
+		const manager = this.ownedManagers.get(file);
+		if (manager) releaseOwnership(manager);
+		this.ownedManagers.delete(file);
+		this.leases.get(file)?.close();
+		this.leases.delete(file);
 	}
 
 	private issueAuthority(sessionId: string, depth: number): Authority {
@@ -927,7 +969,9 @@ export class SubagentRuntime {
 		for (const name of readdirSync(this.sessionDir)) {
 			if (!name.endsWith(".jsonl")) continue;
 			const file = join(this.sessionDir, name);
+			let lease: SessionLease | undefined;
 			try {
+				lease = new SessionLease(file);
 				const manager = SessionManager.open(file, this.sessionDir);
 				const sessionId = manager.getSessionId();
 				const branch = manager.getBranch();
@@ -983,6 +1027,7 @@ export class SubagentRuntime {
 					pendingSettlement: descriptor.mode === "continuable" && recovered.needsSettlement,
 					pendingSettlementNotices: recovered.pendingSettlementNotices,
 				});
+				this.leases.set(file, lease);
 			} catch {
 				const header = readHeaderFallback(file);
 				if (header.id && header.parentSession === this.host.rootSessionFile) {
@@ -993,7 +1038,7 @@ export class SubagentRuntime {
 						reason: "unavailable",
 					});
 				}
-			}
+			} finally { if (!this.leases.has(file)) lease?.close(); }
 		}
 
 		const byId = new Map(candidates.map((record) => [record.descriptor.childSessionId, record]));
@@ -1082,6 +1127,15 @@ export class SubagentRuntime {
 				reason: "unavailable",
 			});
 		}
+		const retained = new Set([...this.records.values()].map(record => record.manager.getSessionFile()!));
+		for (const [file, lease] of this.leases) {
+			if (!retained.has(file)) { lease.close(); this.leases.delete(file); }
+		}
+		for (const record of this.records.values()) {
+			const file = record.manager.getSessionFile()!;
+			attachOwnership(record.manager, this.leases.get(file)!, true);
+			this.ownedManagers.set(file, record.manager);
+		}
 	}
 
 	private recordLaunch(parent: ParentInvocation, childId: string): void {
@@ -1139,6 +1193,7 @@ export class SubagentRuntime {
 		const childId = randomUUID();
 		const mode: ChildMode = request.runInBackground ? "continuable" : "one-shot";
 		let manager: SessionManager | undefined;
+		let claimedFile: string | undefined;
 		let record: ChildRecord | undefined;
 		let item: QueueItem | undefined;
 		try {
@@ -1147,7 +1202,14 @@ export class SubagentRuntime {
 				this.sessionDir,
 				childId,
 				request.parent.sessionManager.getSessionFile(),
+				file => {
+					const lease = new SessionLease(file);
+					claimedFile = file;
+					this.leases.set(file, lease);
+				},
 			);
+			attachOwnership(manager, this.leases.get(claimedFile!)!, true);
+			this.ownedManagers.set(claimedFile!, manager);
 			const forkBoundaryEntryId =
 				request.context === "fork"
 					? copyCompletedParentTurns(
@@ -1203,6 +1265,7 @@ export class SubagentRuntime {
 					// An unowned durable session is ignored by catalog recovery.
 				}
 			}
+			if (claimedFile) this.releaseFile(claimedFile);
 			throw error;
 		}
 		if (!record || !item) throw new Error("subagent acceptance did not produce a durable record");
@@ -1448,16 +1511,18 @@ export class SubagentRuntime {
 	}
 
 	private activeCount(): number {
-		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump || record.disposing).length;
+		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump || record.disposing
+			|| this.openingFiles.has(record.manager.getSessionFile()!)).length;
 	}
 
 	private requireCapacity(): void {
 		if (this.activeCount() >= this.maxActive)
-			throw new Error(`root-wide subagent limit ${this.maxActive} reached; wait for active children to settle`);
+			throw new Error(`root-wide subagent limit ${this.maxActive} reached; wait for active children or initialization cleanup to finish`);
 	}
 
 	private startPump(record: ChildRecord): void {
 		if (record.pump || record.parked || this.closing) return;
+		if (!record.activation && this.openingFiles.has(record.manager.getSessionFile()!)) return;
 		if (!record.activation && record.queue.length > 0 && this.activeCount() >= this.maxActive) return;
 		record.pump = this.pump(record)
 			.catch(async (error) => {
@@ -1547,6 +1612,8 @@ export class SubagentRuntime {
 				authority,
 				record.descriptor.mode,
 			);
+			const file = record.manager.getSessionFile()!;
+			this.openingFiles.set(file, (this.openingFiles.get(file) ?? 0) + 1);
 			const driver = await openWithCancellation(() => this.driverFactory.open({
 				descriptor: record.descriptor,
 				sessionManager: record.manager,
@@ -1554,13 +1621,28 @@ export class SubagentRuntime {
 				customTools,
 				intrinsicToolNames: record.descriptor.mode === "continuable" ? ["report"] : [],
 				signal,
-			}), signal);
+			}), signal, () => {
+				const pending = (this.openingFiles.get(file) ?? 1) - 1;
+				if (pending) this.openingFiles.set(file, pending);
+				else {
+					this.openingFiles.delete(file);
+					if (this.shutdownFinished) this.releaseFile(file);
+					else if (!this.closing) {
+						for (const waiting of this.records.values()) if (waiting.queue.length) this.startPump(waiting);
+						this.emit();
+					}
+				}
+			});
 			if (this.closing) {
 				await driver.dispose();
 				this.authorities.delete(authority.sessionId);
 				throw new Error("subagent runtime shut down while opening a child activation");
 			}
 			const activation: Activation = { authority, driver, interrupted: false };
+			activation.unsubscribeTranscript = driver.subscribeTranscript?.(event => {
+				const listeners = this.transcriptListeners.get(record.descriptor.childSessionId);
+				if (listeners) for (const listener of listeners) listener(event);
+			});
 			activation.unsubscribeActivity = driver.subscribeActivity?.(() => {
 				record.updatedAt = Date.now();
 				this.emit();
@@ -1733,6 +1815,7 @@ export class SubagentRuntime {
 		const disposing = (async () => {
 			let failure: unknown;
 			try { activation.unsubscribeActivity?.(); } catch (error) { failure = error; }
+			try { activation.unsubscribeTranscript?.(); } catch (error) { failure ??= error; }
 			try { await activation.driver.dispose(); } catch (error) { failure ??= error; }
 			return failure;
 		})();
@@ -1869,7 +1952,7 @@ export class SubagentRuntime {
 				))
 					state = "waiting";
 				else state = statusForOutcome(record.lastOutcome);
-				const activity = record.opening ? "starting" :
+				const activity = record.opening ? "starting" : !record.activation && this.openingFiles.has(record.manager.getSessionFile()!) ? "closing cancelled initialization" :
 					record.activation?.driver.activity ?? record.activation?.current?.source;
 				const activeDurationMs = record.activeDurationMs +
 					(record.activation?.current?.startedAt !== undefined
@@ -1956,6 +2039,9 @@ export class SubagentRuntime {
 		}
 		this.authorities.clear();
 		this.listeners.clear();
+		this.transcriptListeners.clear();
+		this.shutdownFinished = true;
+		for (const file of this.leases.keys()) if (!this.openingFiles.has(file)) this.releaseFile(file);
 	}
 }
 

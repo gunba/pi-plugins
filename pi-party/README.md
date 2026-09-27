@@ -1,5 +1,17 @@
 # Party
 
+## Pi Desk
+
+The Party card provides discovery, profiles, membership, invitations, direct
+and party messages, removal, and delivery controls. Sending offers an explicit
+choice between queueing quietly and requesting a reply. Invitations do not
+change membership.
+
+History is paged and direct messages are participant-scoped. Opening a message
+does not deliver it to Pi, consume its wake budget, or start an agent. Long
+messages have a paged full-text view. The app and terminal use the same party
+store and delivery controller; peers still belong to the same computer.
+
 Local Pi agents can discover each other, form parties and exchange messages.
 There is no party leader: every member can invite or remove another member,
 and agents can join or leave through tools.

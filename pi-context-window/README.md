@@ -1,6 +1,6 @@
 # Context window
 
-`/context-window` opens a terminal modal for the selected model. It shows Pi's
+`/context-window` opens a dialog for the selected model. It shows Pi's
 current context window, the automatic checkpoint threshold, and two choices:
 
 - **Pi catalog:** remove this model's window and checkpoint overrides.
@@ -20,5 +20,9 @@ enable Pi's prose summarizer. An API model's published 1.05M capacity and
 Pi's configured window are different numbers. A larger window can use more
 quota, and an endpoint can still enforce a lower limit.
 
-The modal runs only in the interactive terminal. It never changes unrelated
-models, credentials, workspace overrides, or saved conversation entries.
+Pi Desk exposes this dialog through Settings → Context capacity. Its native
+compaction control remains in the conversation settings. Terminal and web choices
+share the same configuration reader and writer. A changed model/session or a
+concurrent change to this model's saved preset rejects the pending save.
+The dialog never changes unrelated models, credentials, workspace overrides,
+or the automatic-compaction policy.

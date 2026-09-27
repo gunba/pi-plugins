@@ -27,6 +27,7 @@ import type {
 } from "./subagent-runtime.ts";
 import { undispatchedNotices } from "./subagent-runtime.ts";
 import { reduceSessionUsage } from "../../pi-session-usage/index.ts";
+import type { PresentationScope } from "../../pi-ui/index.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 
@@ -52,11 +53,12 @@ export function bindChildProvider(provider: Provider, sessionId: string): Provid
 	return bound;
 }
 
-const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Report questions requiring human input to your direct parent. Background children continue after you start them.`;
+const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Background children continue after you start them.`;
 const REPORT_CONTEXT = `Use report for actionable findings that change what your parent should do next. Ordinary progress belongs in the dashboard. Your final answer is delivered automatically; do not report it again.`;
 
-export function childSystemContext(mode: "continuable" | "one-shot"): string {
-	return mode === "continuable" ? `${CHILD_CONTEXT} ${REPORT_CONTEXT}` : CHILD_CONTEXT;
+export function childSystemContext(mode: "continuable" | "one-shot", humanUi = false): string {
+	const human = humanUi ? "Use ask_user for questions that need a human answer." : "Report questions requiring human input to your direct parent.";
+	return `${CHILD_CONTEXT} ${human}${mode === "continuable" ? ` ${REPORT_CONTEXT}` : ""}`;
 }
 
 function assistantText(message: AgentMessage): string {
@@ -120,6 +122,9 @@ export function outcomeFrom(
 }
 
 class PiSdkChildDriver implements ChildDriver {
+	subscribeTranscript(listener: Parameters<NonNullable<ChildDriver["subscribeTranscript"]>>[0]): () => void {
+		return this.session.subscribe(listener);
+	}
 	private readonly session: AgentSession;
 	private readonly noticeState: { received: number; consumed: number };
 	private readonly extensionErrors: string[];
@@ -127,11 +132,13 @@ class PiSdkChildDriver implements ChildDriver {
 	private runAbort?: AbortController;
 	private disposal?: Promise<void>;
 	private readonly noticeIds = new Set<string>();
+	private readonly presentation?: PresentationScope;
 
-	constructor(session: AgentSession, noticeState: { received: number; consumed: number }, extensionErrors: string[]) {
+	constructor(session: AgentSession, noticeState: { received: number; consumed: number }, extensionErrors: string[], presentation?: PresentationScope) {
 		this.session = session;
 		this.noticeState = noticeState;
 		this.extensionErrors = extensionErrors;
+		this.presentation = presentation;
 	}
 
 	get sessionFile(): string | undefined {
@@ -247,6 +254,7 @@ class PiSdkChildDriver implements ChildDriver {
 
 	interrupt(): void {
 		this.runAbort?.abort();
+		this.presentation?.cancelInteractions();
 		getWorkCoordinator(this.session.sessionId)?.cancel("child-interrupted");
 		void this.session.abort();
 	}
@@ -256,7 +264,7 @@ class PiSdkChildDriver implements ChildDriver {
 		this.runAbort?.abort();
 		this.disposal = (async () => {
 			try { await this.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); }
-			finally { releaseWorkCoordinator(this.session.sessionId); this.session.dispose(); }
+			finally { this.presentation?.close(); releaseWorkCoordinator(this.session.sessionId); this.session.dispose(); }
 		})();
 		return this.disposal;
 	}
@@ -338,12 +346,14 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			}
 		};
 		const noticeState = { received: 0, consumed: 0 };
+		const presentation = this.host.createPresentation?.(input.descriptor);
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,
 			agentDir: this.host.agentDir,
 			settingsManager,
 			noExtensions: true,
 			extensionFactories: [
+				...(presentation ? [{ name: "child-presentation", factory: (pi: ExtensionAPI) => presentation.install(pi) }] : []),
 				{ name: "work-coordination", factory: (pi) => {
 					ensureWorkCoordination(pi, { child: true });
 					pi.on("context", () => { noticeState.consumed = noticeState.received; });
@@ -394,7 +404,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			noThemes: true,
 			appendSystemPromptOverride: (base) => [
 				...base,
-				childSystemContext(input.descriptor.mode),
+				childSystemContext(input.descriptor.mode, !!presentation),
 			],
 		});
 		const cleanupUnbound = async () => {
@@ -428,13 +438,15 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			noTools: "builtin",
 			}));
 		} catch (error) {
-			await cleanupUnbound();
+			try { await cleanupUnbound(); } finally { presentation?.close(); }
 			throw error;
 		}
-		const driver = new PiSdkChildDriver(session, noticeState, extensionErrors);
+		const driver = new PiSdkChildDriver(session, noticeState, extensionErrors, presentation);
 		try {
 			session.setActiveToolsByName(enabledTools());
-			await session.bindExtensions({ mode: "json", onError: (error) => {
+			await session.bindExtensions({ mode: presentation ? "rpc" : "json",
+				...(presentation ? { uiContext: presentation.ui } : {}),
+				onError: (error) => {
 				if (extensionErrors.length < 16) extensionErrors.push(`${error.extensionPath}: ${error.error}`);
 			} });
 			checkProvider();

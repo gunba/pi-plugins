@@ -64,7 +64,10 @@ size, modification time, or change time invalidate the index and require another
 integrity check. Index storage is bounded to 64 entries and 16 MiB.
 Literal search results are captured as separate immutable artifacts so their
 later pages also avoid rescanning the original. Both references appear in the
-saved tool result.
+saved tool result. Searches stream through the source and write matching lines
+in bounded chunks, including when one line is very large. Concurrent requests
+for the same search share the scan. Line numbers, CRLF content and UTF-16 query
+semantics are preserved.
 
 Publication is atomic and does not overwrite an existing artifact. Complete
 native logs are copied and hashed as files rather than loaded into memory for

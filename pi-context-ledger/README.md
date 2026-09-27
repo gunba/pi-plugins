@@ -1,6 +1,7 @@
 # pi-context-ledger
 
-A TUI-only breakdown of everything Pi loaded *before* you started talking.
+A breakdown of everything Pi loaded *before* you started talking, in the
+terminal and Pi Desk.
 
 When you launch a Pi session you see startup rows (`[Context]`, `[Skills]`, …)
 and then type your first message. This extension inserts a compact card
@@ -70,9 +71,16 @@ their group's own largest contributor (so the per-group leader fills its bar).
 - **Collapsed by default; expandable in place.** It honours the same
   `app.tools.expand` key that expands tool output — collapsed shows categories,
   expanded shows every individual skill / tool / file.
-- The card is **never sent to the model**. It is stored as a native TUI-only
+- The card is **never sent to the model**. It is stored as a native display-only
   custom entry, so it persists in the session log at zero context cost.
-- Disabled automatically inside `pi-subagents` child processes.
+- Headless sessions do not show automatic cards. Desk children with a structured
+  presentation can retain their own breakdown in the child transcript.
+
+Pi Desk renders the same saved data as an expandable conversation card and an
+Initial context settings panel. Group details open on demand. Its recompute and
+automatic-card controls use this extension; it does not estimate the ledger again
+in the browser. The ledger explains initial contributions, not the current
+conversation's context usage or its configured capacity.
 
 ## Controls
 

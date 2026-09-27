@@ -29,6 +29,7 @@ import {
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { renderSingleSelectRows } from "./single-select-layout.ts";
+import { getPresentation } from "../pi-ui/index.ts";
 
 import { createRequire } from "node:module";
 import { stripVTControlCharacters } from "node:util";
@@ -1609,7 +1610,8 @@ export default function(pi: ExtensionAPI) {
             };
          }
 
-         if (options.length === 0) {
+         const presentation = getPresentation(pi);
+         if (options.length === 0 && !presentation) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
             const answer = await ctx.ui.input(prompt, "Type your answer...", { signal, ...(timeout ? { timeout } : {}) });
             const response = signal?.aborted ? null : createFreeformResponse(answer);
@@ -1639,7 +1641,15 @@ export default function(pi: ExtensionAPI) {
          let cleanupDialog: (() => void) | undefined;
          let hasAnnouncedHide = false;
          try {
-            if (ctx.mode !== "tui") {
+            if (presentation) {
+               const answer = await presentation.request({
+                  kind: "question", title: question, context: normalizedContext, options,
+                  allowMultiple, allowFreeform: options.length === 0 || allowFreeform, allowComment,
+               }, { signal, timeout });
+               result = answer?.kind === "selection"
+                  ? createSelectionResponse(answer.selections, answer.comment)
+                  : answer?.kind === "freeform" ? createFreeformResponse(answer.text) : null;
+            } else if (ctx.mode !== "tui") {
                // RPC clients surface select()/input() through their native modal protocol.
                // ctx.ui.custom() is TUI-only (RPC returns undefined), so skip it here to
                // avoid a no-op custom UI before the real user-choice request is emitted.

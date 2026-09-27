@@ -8,8 +8,10 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { ensureWorkCoordination, getWorkCoordinator, isManagedChild } from "../../pi-work-coordination/index.ts";
 import { ensureWorkUi, type WorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
+import { getPresentation, type Presentation, type UiValue } from "../../pi-ui/index.ts";
 import {
 	DEFAULT_BLOCKED_AFTER_ROUNDS,
+	DEFAULT_MAX_GOAL_ROUNDS,
 	GOAL_COMMAND_ENTRY,
 	GOAL_COMMAND_VERSION,
 	GOAL_ROUND_MESSAGE,
@@ -226,6 +228,9 @@ class GoalController {
 	private driveRequested = false;
 	private driving = false;
 	private mutationTail: Promise<void> = Promise.resolve();
+	private remote?: Presentation;
+	private uiContext?: ExtensionContext;
+	private uiEpoch = 0;
 
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
@@ -262,7 +267,60 @@ class GoalController {
 
 	private refreshUi(): void {
 		if (this.stopping) return;
-		updateGoalUi(this.goalUi, this.currentForUi(), this.store.corruptionReason);
+		const goal = this.currentForUi();
+		updateGoalUi(this.goalUi, goal, this.store.corruptionReason);
+		const remote = this.remote, ctx = this.uiContext, epoch = this.uiEpoch;
+		if (!remote || !ctx) return;
+		const actions: Record<string, (value: UiValue) => Promise<void>> = {};
+		const mutate = async (action: "create" | "edit" | "pause" | "resume" | "clear") => {
+			let objective: string | undefined, maxGoalRounds: number | undefined;
+			if (action === "create" || action === "edit") {
+				const answer = await remote.request({ kind: "editor", title: "Goal objective", value: action === "edit" ? goal?.objective : "" });
+				if (answer?.kind !== "freeform" || !answer.text.trim() || epoch !== this.uiEpoch) return;
+				objective = answer.text.trim();
+				const cap = await remote.request({ kind: "input", title: "Maximum continuation rounds",
+					value: String(goal?.maxGoalRounds ?? DEFAULT_MAX_GOAL_ROUNDS) });
+				if (cap?.kind !== "freeform" || epoch !== this.uiEpoch) return;
+				maxGoalRounds = Number(cap.text);
+				if (!Number.isSafeInteger(maxGoalRounds) || maxGoalRounds < 1) throw new Error("Round limit must be a positive integer.");
+			} else if (action === "clear") {
+				const answer = await remote.request({ kind: "confirm", title: "Clear goal", message: "Remove the current goal? Its history will remain in this session." });
+				if (answer?.kind !== "confirm" || !answer.confirmed) return;
+			}
+			await this.serialized(() => {
+				if (epoch !== this.uiEpoch || this.stopping) throw new Error("The session changed.");
+				this.refresh(ctx);
+				const current = this.store.get();
+				if (current?.id !== goal?.id || current?.revision !== goal?.revision) throw new Error("The goal changed. Review it before trying again.");
+				if (action === "create") this.store.create({ objective: objective!, maxGoalRounds });
+				else if (action === "edit") this.store.edit(ref(goal!), { objective, maxGoalRounds });
+				else if (action === "pause") this.store.pause(ref(goal!));
+				else if (action === "resume") this.store.resume(ref(goal!));
+				else this.store.clear(ref(goal!));
+				getWorkCoordinator(ctx.sessionManager.getSessionId())?.cancel("goal-command");
+				this.refreshUi();
+				this.requestDrive(ctx);
+			});
+		};
+		const controls = this.store.corruptionReason ? [] : !goal || goal.phase === "complete"
+			? [{ id: "create", label: "Create goal" }]
+			: [{ id: "edit", label: "Edit goal" },
+				goal.phase === "active" && goal.activation === "armed" ? { id: "pause", label: "Pause" } : { id: "resume", label: "Resume" }];
+		if (goal && !this.store.corruptionReason) controls.push({ id: "clear", label: "Clear goal" });
+		for (const control of controls) actions[control.id] = () => mutate(control.id as Parameters<typeof mutate>[0]);
+		remote.publish("goal", {
+			kind: "details", title: "Goal",
+			data: {
+				summary: this.store.corruptionReason ?? goal?.objective ?? "No current goal.",
+				fields: goal ? [
+					{ label: "State", value: `${goal.phase} · ${goal.activation}` },
+					{ label: "Rounds", value: `${goal.roundsStarted}/${goal.maxGoalRounds}` },
+					{ label: "Revision", value: String(goal.revision) },
+					...(goal.phase === "blocked" ? [{ label: "Blocker", value: goal.blockedReason.message }] : []),
+				] : [],
+			},
+			actions: controls.map(control => ({ ...control, destructive: control.id === "clear" })),
+		}, actions);
 	}
 
 	private isCurrentRound(goal: GoalView): boolean {
@@ -314,6 +372,7 @@ class GoalController {
 		this.pi.registerCommand("goal", {
 			description: "set or view the goal for a long-running task",
 			handler: async (args, ctx) => {
+				if (!args.trim() && this.remote) { this.refreshUi(); this.remote.open("goal"); return; }
 				await this.serialized(() => {
 					this.refresh(ctx);
 					let result: GoalCommandResult;
@@ -475,6 +534,9 @@ class GoalController {
 
 	private registerEvents(): void {
 		this.pi.on("session_start", (_event, ctx) => {
+			this.uiEpoch++;
+			this.remote = getPresentation(this.pi);
+			this.uiContext = ctx;
 			this.stopping = false;
 			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
@@ -486,6 +548,8 @@ class GoalController {
 		});
 
 		this.pi.on("session_tree", (_event, ctx) => {
+			this.uiEpoch++;
+			this.uiContext = ctx;
 			this.goalUi = this.workUi.source("goal");
 			this.attempt = undefined;
 			this.pendingWrapup = undefined;
@@ -495,6 +559,10 @@ class GoalController {
 		});
 
 		this.pi.on("session_shutdown", () => {
+			this.uiEpoch++;
+			this.remote?.publish("goal", undefined);
+			this.remote = undefined;
+			this.uiContext = undefined;
 			this.stopping = true;
 			this.driveRequested = false;
 			this.attempt = undefined;

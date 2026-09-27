@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { ensureWorkCoordination, registerWorkResource, completeWorkResource, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { scheduledWorkSection } from "./presentation.ts";
+import { getPresentation, type Presentation, type UiValue } from "../../pi-ui/index.ts";
 
 const BASE_DIR = process.env.PI_SCHEDULER_DIR || join(homedir(), ".pi", "agent", "scheduler");
 
@@ -30,6 +31,7 @@ export default function (pi: ExtensionAPI): void {
   let sendingDue = false;
   const receipts = new DeliveryReceipts();
   let lastError: string | undefined;
+  let remote: Presentation | undefined;
   function reportError(ctx: ExtensionContext, error: unknown): void {
     const message = displayText(error instanceof Error ? error.message : String(error));
     if (message === lastError) return;
@@ -215,9 +217,40 @@ export default function (pi: ExtensionAPI): void {
   }
 
   function refreshWidget(ctx: ExtensionContext): void {
-    if (ctx.mode !== "tui") return;
-    const section = scheduledWorkSection(sessionMessages(ctx), attempted);
+    const messages = sessionMessages(ctx);
+    const section = scheduledWorkSection(messages, attempted);
     source?.set(section ? { ...section, manage: { label: "Cancel", run: cancelDialog } } : undefined);
+    const epoch = timerEpoch;
+    const actions: Record<string, (value: UiValue) => Promise<void>> = {};
+    const current = () => { if (epoch !== timerEpoch || !activeCtx) throw new Error("The session changed."); };
+    actions.create = async () => {
+      const delay = await remote!.request({ kind: "input", title: "When should Pi receive this?", placeholder: "15m, 5h, or 2d" });
+      current();
+      if (delay?.kind !== "freeform") return;
+      const delayMs = parseDelay(delay.text);
+      if (!delayMs) throw new Error(invalidDelayMessage());
+      const message = await remote!.request({ kind: "editor", title: "Scheduled message" });
+      current();
+      if (message?.kind !== "freeform" || !message.text.trim()) return;
+      scheduleAndNotify(ctx, delayMs, message.text.trim(), "followUp");
+    };
+    for (const entry of messages) actions[`cancel:${entry.id}`] = async () => {
+      current();
+      const result = cancelMessages(ctx, entry.id);
+      ctx.ui.notify(result.cancelled.length ? cancellationConfirmation(result.cancelled) : "This message is already delivering or was cancelled.", "info");
+    };
+    remote?.publish("scheduler", {
+      kind: "details", title: "Scheduled messages",
+      data: {
+        summary: messages.length ? "Reminders belong to this Pi session and continue while the computer is awake." : "No scheduled messages.",
+        items: messages.map(entry => ({
+          id: entry.id, title: formatDueAt(entry.dueAt), subtitle: `${entry.delivery === "steer" ? "Steering" : "Follow-up"} · ${entry.id}`,
+          body: entry.message, status: attempted.has(entry.id) ? "Delivery pending" : "Scheduled",
+          actions: [{ id: `cancel:${entry.id}`, label: "Cancel", destructive: true }],
+        })),
+      },
+      actions: [{ id: "create", label: "Schedule a message" }],
+    }, actions);
   }
 
   async function cancelDialog(ctx: ExtensionContext): Promise<void> {
@@ -292,6 +325,7 @@ export default function (pi: ExtensionAPI): void {
     if (tickTimer) clearTimeout(tickTimer);
     tickTimer = undefined;
     activeCtx = ctx;
+    remote = getPresentation(pi);
     source?.dispose();
     source = workUi.source("scheduled");
     attempted.clear();
@@ -328,6 +362,8 @@ export default function (pi: ExtensionAPI): void {
     attempted.clear();
     source?.dispose();
     source = undefined;
+    remote?.publish("scheduler", undefined);
+    remote = undefined;
     if (current) {
       for (const error of errors) reportError(current, error);
     }
@@ -443,7 +479,8 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
       if (!trimmed || /^list$/i.test(trimmed)) {
-        if (ctx.mode === "tui") await workUi.open(ctx, "scheduled");
+        if (remote) { refreshWidget(ctx); remote.open("scheduler"); }
+        else if (ctx.mode === "tui") await workUi.open(ctx, "scheduled");
         else notifyScheduleList(ctx);
         return;
       }
