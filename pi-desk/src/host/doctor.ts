@@ -4,6 +4,7 @@ import { MINIMUM_NODE, RELEASE, apiMatches, supportsNode } from "../shared/relea
 import { inspectAppAssets } from "./app-assets.ts";
 import { probeHost, type HostProbe } from "./lifecycle.ts";
 import { loginStatus } from "./login.ts";
+import { remoteOrigins } from "../shared/relay-protocol.ts";
 
 export interface DoctorCheck { id: string; status: "ok" | "warning" | "error"; message: string }
 export function connectionChecks(status: HostProbe): DoctorCheck[] {
@@ -18,6 +19,12 @@ export function connectionChecks(status: HostProbe): DoctorCheck[] {
 	if (relay) checks.push({ id: "relay", status: relay.state === "online" ? "ok" : "error",
 		message: relay.state === "online" ? "The host's outbound relay connection is online."
 			: `The relay is ${relay.state}. Remote access is unavailable; local access remains usable. Check the relay address, registration token, approved proxy/certificates and network policy.` });
+	if (relay) {
+		try {
+			remoteOrigins(relay.origin, relay.appOrigin);
+			checks.push({ id: "app-origin", status: "ok", message: "The configured browser app is separate from the relay. Its deployed files and browser connection still need verification." });
+		} catch { checks.push({ id: "app-origin", status: "error", message: "Configure separate --relay and --app-origin addresses, then restart the host." }); }
+	}
 	return checks;
 }
 

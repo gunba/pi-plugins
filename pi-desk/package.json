@@ -1,6 +1,6 @@
 {
   "name": "@gunba/pi-desk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A desktop and mobile client for Pi.",
   "type": "module",
   "license": "MIT",

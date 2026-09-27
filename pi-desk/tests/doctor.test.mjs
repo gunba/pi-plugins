@@ -10,11 +10,11 @@ import { RELEASE } from "../src/shared/release.ts";
 
 test("doctor reports a responding host's unavailable remote connection as an error", () => {
 	for (const state of ["offline", "connecting"]) {
-		const checks = connectionChecks({ state: "running", host: { release: RELEASE, relay: { state, origin: "https://example.invalid" } } });
+		const checks = connectionChecks({ state: "running", host: { release: RELEASE, relay: { state, origin: "https://example.invalid", appOrigin: "https://app.example" } } });
 		assert.equal(checks.find(check => check.id === "relay").status, "error");
 		assert.match(checks.find(check => check.id === "relay").message, /local access remains/);
 	}
-	assert.equal(connectionChecks({ state: "running", host: { release: RELEASE, relay: { state: "online" } } }).some(check => check.status === "error"), false);
+	assert.equal(connectionChecks({ state: "running", host: { release: RELEASE, relay: { state: "online", origin: "https://example.invalid", appOrigin: "https://app.example" } } }).some(check => check.status === "error"), false);
 	assert.equal(connectionChecks({ state: "stopped" })[0].status, "warning");
 });
 

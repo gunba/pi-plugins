@@ -12,6 +12,7 @@ interface Pending { resolve: (value: ApiResponse) => void; reject: (error: Error
 
 export class RemoteClient {
 	private credential: RemoteCredential;
+	private origin: string;
 	private save: (credential: RemoteCredential) => void;
 	private socket?: WebSocket;
 	private channel?: SecureChannel;
@@ -34,8 +35,8 @@ export class RemoteClient {
 	private visibilityListener = () => document.hidden ? this.disconnect("App paused; delivery of pending commands is uncertain.") : this.connect();
 	private pageHideListener = () => this.disconnect("App closed; delivery of pending commands is uncertain.");
 
-	constructor(credential: RemoteCredential, save: (credential: RemoteCredential) => void) {
-		this.credential = credential; this.save = save;
+	constructor(origin: string, credential: RemoteCredential, save: (credential: RemoteCredential) => void) {
+		this.origin = origin; this.credential = credential; this.save = save;
 		this.initial = new Promise((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
 		void this.initial.catch(() => {});
 		addEventListener("online", this.onlineListener);
@@ -55,7 +56,7 @@ export class RemoteClient {
 		this.channel?.close(); this.channel = undefined;
 		this.received = 0; this.acknowledged = 0;
 		const clientNonce = newSecret();
-		const socket = new WebSocket(socketUrl(location.origin, "/connect", this.credential.host));
+		const socket = new WebSocket(socketUrl(this.origin, "/connect", this.credential.host));
 		this.socket = socket;
 		let processing = Promise.resolve();
 		let handshakes = 0;

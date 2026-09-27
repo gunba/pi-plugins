@@ -1,5 +1,6 @@
 import type { HostEvent, HostState } from "../shared/protocol.ts";
 import type { RemoteInvitation, ApiResponse } from "../shared/relay-protocol.ts";
+import { remoteOrigins } from "../shared/relay-protocol.ts";
 import { newSecret, unbase64, validId, validSecret } from "../shared/secure-channel.ts";
 import { RemoteClient, RemoteError } from "./remote.ts";
 import { COMPUTER_PREFIX, readComputers, saveComputer, forgetComputer, type SavedComputer } from "./computer-store.ts";
@@ -15,6 +16,7 @@ export class ApiError extends Error {
 interface ComputerConnection { saved: SavedComputer; client: RemoteClient; state?: HostState; epoch: number; unlisten: () => void }
 const remotes = new Map<string, ComputerConnection>();
 let mode: "local" | "relay" | undefined;
+let relay: string;
 const consumers = new Set<(event: WorkspaceEvent, accepted?: () => void) => void>();
 const upgrades = new Set<(message: string) => void>();
 let upgrade: string | undefined;
@@ -54,7 +56,7 @@ function restoreComputers(): void {
 	for (const computer of saved) {
 		const id = computer.credential.host;
 		if (remotes.has(id)) continue;
-		const client = new RemoteClient({ ...computer.credential }, credential => {
+		const client = new RemoteClient(relay, { ...computer.credential }, credential => {
 			const current = readComputers().find(item => item.credential.host === id);
 			if (current?.credential.device === credential.device && current.credential.key === credential.key) {
 				saveComputer({ ...current, credential });
@@ -93,20 +95,27 @@ export function renameComputer(id: string, name: string): void {
 }
 export function removeComputer(id: string): void { forgetComputer(id); restoreComputers(); }
 async function discover(): Promise<void> {
+	let transport;
 	try {
-		const response = await fetch("/api/transport", { cache: "no-store", signal: AbortSignal.timeout(5000) });
+		const response = await fetch("/desk-transport.json", { cache: "no-store", signal: AbortSignal.timeout(5000) });
 		if (!response.ok) throw new Error(`Pi Desk server is unavailable (HTTP ${response.status}).`);
-		const transport = await response.json();
-		if (transport.kind !== "relay" && transport.kind !== "local") throw incompatible("This server is not running a matching Pi Desk API.");
-		if (!apiMatches(transport.api)) throw incompatible(upgradeMessage("This server", transport.api));
-		mode = transport.kind;
-		localStorage.setItem("pi-desk:transport", mode!);
+		transport = await response.json();
 	} catch (error) {
-		if (error instanceof ApiError) throw error;
 		const saved = localStorage.getItem("pi-desk:transport");
-		if (saved !== "relay" && saved !== "local") throw error;
-		mode = saved;
+		try { if (saved) transport = JSON.parse(saved); } catch { /* No usable offline configuration. */ }
+		if (!transport) throw error;
 	}
+	if (!transport || (transport.kind !== "relay" && transport.kind !== "local")) throw incompatible("This server is not running a matching Pi Desk API.");
+	if (!apiMatches(transport.api)) throw incompatible(upgradeMessage("This server", transport.api));
+	if (transport.kind === "relay") {
+		try {
+			const origins = remoteOrigins(transport.relay, transport.appOrigin);
+			if (origins.appOrigin !== location.origin) throw new Error();
+			relay = origins.origin;
+		} catch { throw incompatible("The app's deployment configuration must name this app origin and its separate relay."); }
+	}
+	mode = transport.kind;
+	localStorage.setItem("pi-desk:transport", JSON.stringify(transport));
 }
 export async function initialize(): Promise<void> {
 	const hash = location.hash;

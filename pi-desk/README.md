@@ -45,8 +45,8 @@ model inference. Run it against a trusted project to include project resources.
 Use `--port` to select another port and `--data-dir` for isolated development
 state. This command runs in the foreground; `start` detaches instead.
 
-For one shared entry point on desktop and phone, connect each host to the same
-server and open its web app. See [remote access](RELAY.md). The app groups sessions
+For one shared entry point on desktop and phone, configure the same relay and
+separate app origin on each host. See [remote access](RELAY.md). The app groups sessions
 by computer and routes controls to their owner; no per-computer app switch is
 required. Desk owns SDK sessions, not live terminal displays. An existing terminal
 session must release its writer before Desk can resume it.

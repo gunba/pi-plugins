@@ -22,7 +22,7 @@ import { HostControl, removeHostRecord, type HostStatus } from "./host-control.t
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string;
-	relay?: { origin: string; token: string; proxy?: string } }
+	relay?: { origin: string; appOrigin: string; token: string; proxy?: string } }
 interface ManagedSession { view: SessionView; worker?: SessionWorker }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
@@ -141,7 +141,7 @@ export class DeskHost {
 		if (!this.relay) throw new Error("Start the host with a relay connection first.");
 		const device = this.access.inviteRemote();
 		const fragment = base64(new TextEncoder().encode(JSON.stringify({ host: this.access.hostId, device: device.id, key: device.key })));
-		return { url: `${this.relay.status.origin}/#remote=${fragment}`, expires: device.expires };
+		return { url: `${this.relay.status.appOrigin}/#remote=${fragment}`, expires: device.expires };
 	}
 
 	private write(response: ServerResponse, frame: string): void {
@@ -298,7 +298,7 @@ export class DeskHost {
 			if (request.method !== "GET" && !operator && !this.allowedOrigin(request.headers.origin)) {
 				json(response, 403, { error: "Unrecognized request origin." }); return;
 			}
-			if (url.pathname === "/api/transport" && request.method === "GET") { json(response, 200, { kind: "local", ...RELEASE }); return; }
+			if (url.pathname === "/desk-transport.json" && request.method === "GET") { json(response, 200, { kind: "local", ...RELEASE }); return; }
 			const clientApi = request.headers[API_HEADER.toLowerCase()] ?? (url.pathname === "/api/events" ? url.searchParams.get("api") : undefined);
 			if (url.pathname.startsWith("/api/") && !apiMatches(clientApi)) {
 				json(response, 426, { error: upgradeMessage("This browser/client", clientApi), release: RELEASE });

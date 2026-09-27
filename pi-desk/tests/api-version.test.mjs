@@ -71,7 +71,7 @@ for (const stage of ["identify", "hello"]) test(`incompatible remote ${stage} is
 			})().catch(reject);
 		});
 	});
-	const connector = new RelayConnector({ origin: `http://127.0.0.1:${server.address().port}`, token: newSecret(),
+	const connector = new RelayConnector({ origin: `http://127.0.0.1:${server.address().port}`, appOrigin: "https://app.example", token: newSecret(),
 		access, status: () => {}, request: async () => { throw Error("No request should be admitted"); },
 		watch: () => { watches++; return () => {}; } });
 	t.after(async () => {

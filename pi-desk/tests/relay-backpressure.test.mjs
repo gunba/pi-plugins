@@ -40,7 +40,7 @@ test("a backed-up relay peer disconnects without reporting that its valid pairin
 		});
 	});
 	const connector = new RelayConnector({
-		origin, token: newSecret(), access, status: () => {}, request: async () => ({ status: 200, body: {} }),
+		origin, appOrigin: "https://app.example", token: newSecret(), access, status: () => {}, request: async () => ({ status: 200, body: {} }),
 		watch: handler => { publish = handler; ready(); return () => {}; },
 	});
 	t.after(async () => {

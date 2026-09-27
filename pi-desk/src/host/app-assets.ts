@@ -15,7 +15,7 @@ export function inspectAppAssets(directory = clientDirectory()): { directory: st
 			const stat = statSync(file);
 			if (!stat.isFile() || stat.size === 0) throw new Error();
 			accessSync(file, constants.R_OK);
-		} catch { throw new Error(`App file missing or unreadable: ${file}. Reinstall or rebuild Pi Desk; copy dist/client together with the host or relay.`); }
+		} catch { throw new Error(`App file missing or unreadable: ${file}. Reinstall or rebuild Pi Desk; keep dist/client with the PC host.`); }
 		return file;
 	};
 	const index = inspect("/index.html");

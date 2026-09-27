@@ -18,7 +18,7 @@ Create the destination first, outside the checkout. Install the resulting
 archive into a user-owned application directory:
 
 ```sh
-npm install --prefix /path/to/desk-app --omit=dev --ignore-scripts /path/to/packages/gunba-pi-desk-0.1.0.tgz
+npm install --prefix /path/to/desk-app --omit=dev --ignore-scripts /path/to/packages/gunba-pi-desk-0.2.0.tgz
 node /path/to/desk-app/node_modules/@gunba/pi-desk/dist/host/cli.js doctor
 ```
 
@@ -26,7 +26,7 @@ On Windows, use the same commands with quoted Windows paths. For example:
 
 ```powershell
 $app = "$HOME\apps\desk-app"
-npm install --prefix $app --omit=dev --ignore-scripts "$HOME\Downloads\gunba-pi-desk-0.1.0.tgz"
+npm install --prefix $app --omit=dev --ignore-scripts "$HOME\Downloads\gunba-pi-desk-0.2.0.tgz"
 $desk = "$app\node_modules\@gunba\pi-desk\dist\host\cli.js"
 node $desk doctor
 node $desk start --cwd "C:\Projects"
@@ -63,10 +63,29 @@ run `login remove` with the old installation, then `login install` from the new
 one with the required startup options and environment. Inspect `login status`
 and `doctor`; do not copy `login.json` to another computer.
 
-For the shared server, stop the relay and replace **both** `dist/relay/` and
-`dist/client/` from the same build. Restart at the same HTTPS origin with the
-same registration secret. Its `/health` response includes version information.
-A relay restart disconnects browsers but does not stop PC workers.
+For remote access, publish the static app and standalone relay from the same
+build to their separate services. Use `publish-app` to generate app configuration
+and headers, as described in [remote access](RELAY.md). Restart the relay at the
+same relay origin with the registration secret and `--app-origin`. Its `/health`
+response includes version and app-origin information. A relay restart
+disconnects browsers but does not stop PC workers.
+
+### Moving from a combined server
+
+Version 0.2 uses API 2 and requires separate app/relay origins. Prepare the new
+static deployment first. Save unsent browser and attachment drafts before
+changing app origins; browser storage does not move with native conversations.
+Stop and update the connectors when work is idle. Reinstall login-start with
+both `--relay` and `--app-origin`. Deploy the message-only relay with that same
+app origin, then create fresh browser invitations.
+
+Revoke the previous remote device grants using the trusted local app. Update
+desktop shortcuts and phone bookmarks/installations to the new app address.
+The old relay URL intentionally stops serving an app or redirecting invitations.
+Do not copy browser keys from its storage to the new origin. Keep native
+sessions and Desk host data in place.
+
+### Compatible releases and rollback
 
 The app/server and PCs can be updated one at a time. An incompatible computer is
 unavailable until its API matches; other compatible computers remain usable.
@@ -75,7 +94,8 @@ not revoke device keys or clear drafts. Do not forget/re-pair a computer to fix
 a version error.
 
 To roll back, stop first, reinstall the retained archive, and use its matching
-relay/client files. Keep the same data directories. Check that the older SDK
+relay/client files on their separate services. Releases before 0.2 do not support
+this hosting boundary. Keep the same data directories. Check that the older SDK
 can read the native session format and load the installed extensions; a package
 rollback is not a session-file downgrade. Restore a pre-update backup if a
 future release requires a data migration.

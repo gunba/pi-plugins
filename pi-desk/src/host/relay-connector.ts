@@ -4,7 +4,7 @@ import { AccessStore, type RemoteDevice } from "./access.ts";
 import { object, string } from "./commands.ts";
 import { SecureChannel, newSecret, validId, validSecret, MAX_WIRE, PROTOCOL_VERSION } from "../shared/secure-channel.ts";
 import { EventWindow } from "./event-window.ts";
-import { relayOrigin, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload } from "../shared/relay-protocol.ts";
+import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload } from "../shared/relay-protocol.ts";
 import type { HostEvent } from "../shared/protocol.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
 
@@ -12,9 +12,9 @@ interface Peer {
 	id: string; device?: RemoteDevice; channel?: SecureChannel; ready: boolean;
 	input: Promise<void>; timer: ReturnType<typeof setTimeout>; unwatch?: () => void; pending: number; events: EventWindow;
 }
-export interface RelayStatus { origin: string; state: "connecting" | "online" | "offline"; error?: string }
+export interface RelayStatus { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string }
 interface Options {
-	origin: string; token: string; proxy?: string; access: AccessStore;
+	origin: string; appOrigin: string; token: string; proxy?: string; access: AccessStore;
 	request: (device: string, request: ApiRequest) => Promise<ApiResponse>;
 	watch: (handler: (event: HostEvent) => void) => () => void;
 	status: (status: RelayStatus) => void;
@@ -33,8 +33,8 @@ export class RelayConnector {
 	status: RelayStatus;
 
 	constructor(options: Options) {
-		this.options = { ...options, origin: relayOrigin(options.origin) };
-		this.status = { origin: this.options.origin, state: "connecting" };
+		this.options = { ...options, ...remoteOrigins(options.origin, options.appOrigin) };
+		this.status = { origin: this.options.origin, appOrigin: this.options.appOrigin, state: "connecting" };
 		this.agent = options.proxy ? new ProxyAgent({ getProxyForUrl: () => options.proxy! }) : new ProxyAgent();
 		this.unrevoke = options.access.onRevoke(id => {
 			for (const peer of this.peers.values()) if (peer.device?.id === id) this.drop(peer.id, true);
@@ -42,14 +42,14 @@ export class RelayConnector {
 	}
 	start(): void { this.connect(); }
 	private update(state: RelayStatus["state"], error?: string): void {
-		this.status = { origin: this.options.origin, state, ...(error ? { error } : {}) };
+		this.status = { origin: this.options.origin, appOrigin: this.options.appOrigin, state, ...(error ? { error } : {}) };
 		this.options.status(this.status);
 	}
 	private connect(): void {
 		if (this.stopped) return;
 		this.update("connecting");
 		const socket = new WebSocket(socketUrl(this.options.origin, "/host", this.options.access.hostId), {
-			headers: { Authorization: `Bearer ${this.options.token}` }, agent: this.agent,
+			headers: { Authorization: `Bearer ${this.options.token}`, "X-Pi-Desk-App-Origin": this.options.appOrigin }, agent: this.agent,
 			handshakeTimeout: 15_000, maxPayload: MAX_WIRE * 2, perMessageDeflate: false,
 		});
 		this.socket = socket;

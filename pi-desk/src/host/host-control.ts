@@ -11,7 +11,7 @@ export interface HostStatus {
 	instance: string; pid: number; started: number; origin: string; stopping: boolean;
 	cwd: string; agentDir: string; sessionDir?: string;
 	sessions: { active: number; working: number; questions: number };
-	relay?: { state: string; origin: string; error?: string };
+	relay?: { state: string; origin: string; appOrigin: string; error?: string };
 }
 export function readHostRecord(directory: string): HostRecord | undefined {
 	let text: string;

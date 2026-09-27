@@ -10,7 +10,10 @@ export function securityHeaders(response: ServerResponse): void {
 	response.setHeader("X-Content-Type-Options", "nosniff");
 	response.setHeader("Referrer-Policy", "no-referrer");
 	response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-	response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+	response.setHeader("Content-Security-Policy", contentSecurityPolicy());
+}
+export function contentSecurityPolicy(socketOrigin?: string): string {
+	return `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'${socketOrigin ? ` ${socketOrigin}` : ""}; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`;
 }
 export async function serveClient(directory: string, pathname: string, response: ServerResponse): Promise<void> {
 	try {

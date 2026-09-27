@@ -5,14 +5,34 @@ Windows and phones use the same HTTPS app, which combines sessions from paired
 computers in one sidebar. Pi and its tools keep running on their owning computer;
 the relay does not run an agent or store conversations.
 
-## Server
+## Browser app
 
-Build Pi Desk, then copy `dist/client/` and `dist/relay/` to a server with
-Node 22.19 or later, preserving that layout. The standalone relay bundles its
+Host the browser app separately from the relay, with a separate origin and
+deployment surface. The relay process must not be able to modify the app files
+or read their publishing credentials.
+
+After building Pi Desk, prepare the public files:
+
+```sh
+pi-desk publish-app --relay https://relay.example.com --app-origin https://desk.example.com --output /path/to/new-app-release
+```
+
+Publish that directory to a static host. It contains no Pi credentials. Its
+`desk-transport.json` names the broker; invitations never select a different
+broker. The generated `staticwebapp.config.json` configures Azure Static Web Apps:
+scripts come only from the app origin, and cross-origin connections are limited
+to the broker's WebSocket endpoint. Other static hosts must apply those same
+headers and cache rules. Do not rewrite missing files to `index.html`.
+
+The publisher requires a new output directory. Keep previous releases outside
+the published root. Do not run an API, agent, or connector on the static host.
+
+## Relay server
+
+Copy only `dist/relay/` to a server with Node 22.19 or later. The standalone relay bundles its
 dependencies. It does not require Pi, provider credentials, or `npm install`.
-Startup checks the client shell and its referenced assets before listening.
-A missing `dist/client/` or entry bundle is a deployment error, not a running
-relay with an unusable app.
+It serves health information and WebSocket routing, not HTML, JavaScript, a
+service worker, redirects, or browser configuration.
 
 Generate a registration secret:
 
@@ -24,25 +44,27 @@ Set it as `PI_DESK_RELAY_TOKEN` in the relay process's private environment.
 Keep it for the computer's connector too. Start the server:
 
 ```sh
-node dist/relay/pi-desk-relay.js --origin https://desk.example.com
+node dist/relay/pi-desk-relay.js --origin https://relay.example.com --app-origin https://desk.example.com
 ```
 
 The relay binds to `127.0.0.1:8920`. Put it behind an HTTPS reverse proxy.
 For example, a Caddy site with DNS pointing to this server:
 
 ```caddyfile
-desk.example.com {
+relay.example.com {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8920
 }
 ```
 
-The proxy must preserve the Host header and support WebSocket upgrades.
-`GET /health` returns `status: "ok"` and release/API metadata. Use `--port` or `--listen` when the
+The proxy must preserve Host, Origin and the connector's `X-Pi-Desk-App-Origin`
+header, and support WebSocket upgrades. Browser sockets must come from the
+configured app origin; connectors must declare that same app origin.
+`GET /health` returns `status: "ok"`, the app origin and release/API metadata. Use `--port` or `--listen` when the
 server's existing deployment requires another address. Only expose the HTTPS
 proxy to the internet.
 
-The server delivering the app is trusted: malicious client JavaScript could
+The separate service delivering the app is trusted: malicious client JavaScript could
 misuse a paired device's credentials. Encryption protects session traffic
 from the routing service; it does not make an untrusted app distributor safe.
 
@@ -51,7 +73,7 @@ from the routing service; it does not make an untrusted app distributor safe.
 Set the same `PI_DESK_RELAY_TOKEN` in the connector's environment, then run:
 
 ```sh
-pi-desk serve --cwd /path/to/project --relay https://desk.example.com
+pi-desk serve --cwd /path/to/project --relay https://relay.example.com --app-origin https://desk.example.com
 ```
 
 Run `pi-desk doctor` with the same `--data-dir` after starting the connector.
@@ -68,7 +90,7 @@ not a prerequisite for this connector.
 For an explicit proxy:
 
 ```sh
-pi-desk serve --relay https://desk.example.com --proxy http://proxy.example.com:8080
+pi-desk serve --relay https://relay.example.com --app-origin https://desk.example.com --proxy http://proxy.example.com:8080
 ```
 
 Standard proxy environment variables and `NO_PROXY` are also supported when
@@ -99,7 +121,7 @@ another machine: each computer owns its identity, sessions and device records.
 
 ### Several computers
 
-Connect each computer to the same relay. In the shared app, open **Settings &
+Configure the same relay and app origin on each computer. In the shared app, open **Settings &
 tools → Computers → Connect another computer**, or open that computer's
 invitation. Adding it keeps existing pairings. Pairing is per browser and
 computer; it is not a server account shared between devices.
@@ -123,7 +145,7 @@ or installed web app; Pi stays on the paired computers.
 
 Mobile browsers may give an installed app separate storage. If it opens
 unpaired, create fresh invitations and pair from that app window. Keep using
-the same server address: a different hostname or port is a different browser
+the same app address: a different hostname or port is a different browser
 storage location.
 
 Closing an app window does not stop Pi. Reopen it to reconnect to available
@@ -131,10 +153,10 @@ computers. Removing the app is also separate from stopping the hosts; the
 browser may offer to delete website data during removal. Deleting that data
 loses local pairings and unsent drafts, not the computers' saved conversations.
 
-For a deployment check, open the app through the actual HTTPS proxy, connect
+For a deployment check, open the separately hosted HTTPS app, connect
 both computers and reopen an installed app window. Check `doctor` on each
 computer. A successful `/health` response alone does not verify WebSocket
-routing or browser pairing.
+routing, static app configuration or browser pairing.
 
 ## Connection behavior
 
@@ -158,5 +180,5 @@ pairing. The same applies to a tab still running an older app. Reload that tab
 after the update. A healthy computer remains usable while another needs an update.
 See [updates and removal](UPDATING.md) for the rollout sequence.
 
-For local development only, loopback HTTP relay origins are accepted. All
-other relay origins must use HTTPS.
+For local development only, loopback HTTP origins are accepted. The app and
+relay must still use different ports/origins. All other origins must use HTTPS.
