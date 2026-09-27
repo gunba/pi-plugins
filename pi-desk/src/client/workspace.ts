@@ -1,9 +1,12 @@
 import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
+import type { ConnectionInterruption, ConnectionState, HostPresence } from "./connection-state.ts";
 
 export interface Computer {
-	id: string; name: string; cwd: string; online: boolean; epoch: number; error?: string;
+	id: string; name: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string;
+	presence?: HostPresence;
+	diagnostics?: { interruptions: number; last?: ConnectionInterruption };
 	relay?: HostState["relay"];
-	release?: HostState["release"]; upgrade?: boolean;
+	release?: HostState["release"];
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }

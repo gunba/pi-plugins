@@ -357,10 +357,12 @@ details[open] > summary:before {
   background: #77a390;
 }
 .status-dot.running,
+.status-dot.connecting,
 .status-dot.starting {
   background: var(--accent);
 }
-.status-dot.waiting {
+.status-dot.waiting,
+.status-dot.attention {
   background: #d3a253;
 }
 .status-dot.failed,

@@ -1,7 +1,7 @@
 import type { HostEvent, HostState } from "../shared/protocol.ts";
 import type { ApiResponse } from "../shared/relay-protocol.ts";
-import { deviceKey, identifier, workspaceIdentity, type WorkspaceDevice } from "../shared/account.ts";
-import type { BrowserAccount } from "./account.ts";
+import { deviceKey, identifier, workspaceIdentity } from "../shared/account.ts";
+import type { BrowserAccount, AccountDirectory } from "./account.ts";
 import { RemoteClient, RemoteError } from "./remote.ts";
 import { sessionKey, type WorkspaceEvent, type WorkspaceState } from "./workspace.ts";
 import { surfaces } from "./surfaces.tsx";
@@ -12,7 +12,7 @@ export class ApiError extends Error {
 	status: number;
 	constructor(status: number, message: string) { super(message); this.status = status; }
 }
-interface ComputerConnection { device: WorkspaceDevice; client: RemoteClient; state?: HostState; epoch: number; unlisten: () => void }
+interface ComputerConnection { device: AccountDirectory["devices"][number]; checked: number; client: RemoteClient; state?: HostState; epoch: number; unlisten: () => void }
 const remotes = new Map<string, ComputerConnection>();
 let mode: "local" | "account" | undefined;
 let account: BrowserAccount | undefined;
@@ -36,9 +36,10 @@ function workspace(): WorkspaceState {
 		release: RELEASE, name: "Workspace", cwd: "", directoryError, sessions: [...remotes.entries()].flatMap(([id, remote]) =>
 			(remote.state?.sessions ?? []).map(session => ({ ...session, computer: id, key: sessionKey(id, session.key) }))),
 		computers: [...remotes.entries()].map(([id, remote]) => ({
-			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", online: remote.client.connected,
+			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state,
 			epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
-			release: remote.state?.release, upgrade: remote.client.errorStatus === 426,
+			release: remote.state?.release, diagnostics: remote.client.diagnostics,
+			presence: { online: remote.device.online, seen: remote.device.seen, checked: remote.checked },
 		})).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 	};
 }
@@ -47,18 +48,19 @@ function emit(event: WorkspaceEvent, accepted?: () => void): void {
 	for (const consume of consumers) consume(event, accepted);
 }
 function emitWorkspace(): void { emit({ type: "state", state: workspace() }); }
-function reconcile(devices: WorkspaceDevice[]): void {
+function reconcile(devices: AccountDirectory["devices"]): void {
+	const checked = Date.now();
 	for (const [id, remote] of remotes) {
 		const value = devices.find(item => item.id === id);
 		if (!value || value.thumbprint !== remote.device.thumbprint) {
 			remote.unlisten(); remote.client.close(); remotes.delete(id);
-		} else remote.device = value;
+		} else { remote.device = value; remote.checked = checked; }
 	}
 	for (const computer of devices) {
 		const id = computer.id;
 		if (remotes.has(id)) continue;
 		const client = new RemoteClient(account!, { id, thumbprint: computer.thumbprint });
-		const remote: ComputerConnection = { device: computer, client, epoch: 0, unlisten: () => {} };
+		const remote: ComputerConnection = { device: computer, checked, client, epoch: 0, unlisten: () => {} };
 		remotes.set(id, remote);
 		remote.unlisten = client.subscribe((event, sequence) => {
 			const epoch = remote.epoch;
@@ -92,7 +94,8 @@ export async function refreshDirectory(force = false): Promise<void> {
 		}
 		const devices = await Promise.all(result.devices.filter(device => device.kind === "host" && device.revoked === undefined).map(async device => {
 			identifier(device.id);
-			if (typeof device.name !== "string" || device.name.length > 100 || (await deviceKey(device.key)).thumbprint !== device.thumbprint) {
+			if (typeof device.name !== "string" || device.name.length > 100 || typeof device.online !== "boolean"
+				|| !Number.isFinite(device.seen) || Math.abs(device.seen) > 8.64e15 || (await deviceKey(device.key)).thumbprint !== device.thumbprint) {
 				throw new Error("Invalid computer identity.");
 			}
 			return device;
@@ -215,7 +218,7 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 		if (event.type === "state" && pending.at(-1)?.type === "state") { size -= weights.pop()!; pending.pop(); }
 		if (pending.length >= 128 || pending.length > 0 && size + bytes > 8 * 1024 * 1024) {
 			clear();
-			if (mode === "account") { for (const remote of remotes.values()) remote.client.reconnect(); }
+			if (mode === "account") { for (const remote of remotes.values()) remote.client.reconnect("Display update buffer filled; refreshing the connection"); }
 			else { source?.close(); source = undefined; openLocal(); }
 			return;
 		}
@@ -228,7 +231,7 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 	};
 	const relayReceive = (event: WorkspaceEvent, accepted?: () => void) => {
 		receive(event, accepted);
-		if (event.type === "state") connection(event.state.computers?.some(computer => computer.online) ?? false);
+		if (event.type === "state") connection(event.state.computers?.some(computer => computer.connected) ?? false);
 	};
 	const openLocal = () => {
 		if (document.hidden || source || upgrade) return;

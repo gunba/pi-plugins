@@ -70,6 +70,13 @@ Closing or suspending a browser does not stop a worker: questions, children,
 timers and goal continuation remain with the owning computer. Stop the session
 or host to stop its active work.
 
+Computer labels describe this browser's link: Connecting, Connected,
+Reconnecting or App paused. A hidden tab disconnects intentionally; returning
+re-establishes the authenticated channel. This is not a report that the PC
+stopped. Settings shows the separate last host heartbeat and unexpected
+connection interruptions (time and close code, not message contents). A stale
+directory report cannot enable commands or extend an authorization lease.
+
 Explicitly resuming a saved session also loads its native plugin state:
 
 - Overdue scheduled messages can be delivered immediately.

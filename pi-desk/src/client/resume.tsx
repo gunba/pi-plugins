@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, ApiError } from "./connection.ts";
 import { Modal } from "./surfaces.tsx";
+import { connectionLabel } from "./connection-state.ts";
 import type { Computer } from "./workspace.ts";
 import type { SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
@@ -31,8 +32,8 @@ export function ResumeConversation({ computers, connected, cwd, current, folders
 					setAll(false); setEditing(false);
 				}}>
 					<option value="" disabled>Choose a computer</option>
-					{computers.map(value => <option key={value.id} value={value.id} disabled={!value.online}>
-						{value.name}{value.online ? "" : " · not connected"}
+					{computers.map(value => <option key={value.id} value={value.id} disabled={!value.connected}>
+						{value.name}{value.connected ? "" : ` · ${connectionLabel(value)}`}
 					</option>)}
 				</select>
 			</label>}
@@ -57,7 +58,7 @@ export function ResumeConversation({ computers, connected, cwd, current, folders
 				<input className="search" aria-label="Search saved conversations" placeholder="Search titles, opening text or projects"
 					value={draft} maxLength={200} onChange={event => setDraft(event.target.value)} />
 				{(all || project) && <SessionList key={`${computer ?? "local"}:${all ? "*" : project}:${target?.epoch ?? 0}`}
-					computer={computer} cwd={all ? undefined : project} online={target?.online ?? connected}
+					computer={computer} cwd={all ? undefined : project} online={target?.connected ?? connected}
 					query={query} named={named} selected={selected} />}
 			</>}
 		</div>

@@ -6,6 +6,7 @@ import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
 import { socketUrl, type ApiRequest, type ApiResponse } from "../shared/relay-protocol.ts";
 import type { HostEvent } from "../shared/protocol.ts";
 import { API_VERSION, apiMatches, upgradeMessage } from "../shared/release.ts";
+import { interruptionReason, type ConnectionInterruption, type ConnectionState } from "./connection-state.ts";
 
 export interface RemoteAccount extends ChannelIdentity {
 	config: AccountConfiguration;
@@ -41,36 +42,53 @@ export class RemoteClient {
 	private failure?: RemoteError;
 	private lastError?: string;
 	private online = false;
+	private phase: ConnectionState = "connecting";
+	private attempts = 0;
+	private interruptionCount = 0;
+	private lastInterruption?: ConnectionInterruption;
 	private backoff = 1000;
-	private initial: Promise<void>;
-	private resolve!: () => void;
-	private reject!: (error: Error) => void;
 	private received = 0;
 	private acknowledged = 0;
 	private ackScheduled = false;
 	private renewing = false;
 	private onlineListener = () => { clearTimeout(this.timer); void this.connect(); };
-	private visibilityListener = () => document.hidden ? this.disconnect("App paused; delivery of pending commands is uncertain.") : void this.connect();
-	private pageHideListener = () => this.disconnect("App closed; delivery of pending commands is uncertain.");
+	private visibilityListener = () => document.hidden ? this.disconnect("App paused; delivery of pending commands is uncertain.", "paused") : void this.connect();
+	private pageHideListener = () => this.disconnect("App closed; delivery of pending commands is uncertain.", "paused");
+	private offlineListener = () => {
+		this.interrupted("This device lost its network connection");
+		this.disconnect("This device is offline; delivery of pending commands is uncertain.", "network-offline");
+	};
 
 	constructor(account: RemoteAccount, host: MembershipPeer) {
 		this.account = account; this.host = host; this.verifier = account.verifier();
-		this.initial = new Promise((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
-		void this.initial.catch(() => {});
 		addEventListener("online", this.onlineListener);
+		addEventListener("offline", this.offlineListener);
 		document.addEventListener("visibilitychange", this.visibilityListener);
 		addEventListener("pagehide", this.pageHideListener);
 		addEventListener("pageshow", this.onlineListener);
 		void this.connect();
 	}
-	ready(): Promise<void> { return this.initial; }
-	get connected(): boolean { return this.online; }
-	get error(): string | undefined { return this.failure?.message ?? this.lastError; }
-	get errorStatus(): number | undefined { return this.failure?.status; }
-	private setOnline(value: boolean): void {
-		this.online = value;
-		if (value) this.lastError = undefined;
-		for (const handler of this.connections) handler(value);
+	get connected(): boolean { return this.online && this.valid(); }
+	get state(): ConnectionState {
+		if (this.failure) return this.failure.status === 426 ? "upgrade" : "denied";
+		return this.phase === "connected" && !this.valid() ? "reconnecting" : this.phase;
+	}
+	get error(): string | undefined {
+		if (this.failure) return this.failure.message;
+		if (this.phase === "paused") return "This app is paused. Pausing the browser does not stop Pi sessions.";
+		if (this.phase === "network-offline") return "This device has no network connection.";
+		return this.lastError;
+	}
+	get diagnostics() { return { interruptions: this.interruptionCount, last: this.lastInterruption }; }
+	private setPhase(value: ConnectionState): void {
+		this.phase = value; this.online = value === "connected";
+		if (this.online) this.lastError = undefined;
+		for (const handler of this.connections) handler(this.connected);
+	}
+	private interrupted(reason: string, code?: number): void {
+		if (!this.online) return;
+		this.interruptionCount++;
+		this.lastInterruption = { at: Date.now(), reason, ...(code === undefined ? {} : { code }) };
 	}
 	private valid(socket = this.socket): boolean {
 		return !this.closed && this.socket === socket && socket?.readyState === WebSocket.OPEN
@@ -78,16 +96,19 @@ export class RemoteClient {
 			&& this.leaseUntil > performance.now();
 	}
 	private retry(): void {
-		if (this.closed || this.failure || document.hidden) return;
+		if (this.closed || this.failure || document.hidden || navigator.onLine === false) return;
 		clearTimeout(this.timer);
 		this.timer = setTimeout(() => { void this.connect(); }, this.backoff + Math.random() * 500);
 		this.backoff = Math.min(30_000, this.backoff * 2);
 	}
 	private async connect(): Promise<void> {
-		if (this.closed || this.failure || this.starting || document.hidden) return;
+		if (this.closed || this.failure || this.starting) return;
+		if (document.hidden) { this.setPhase("paused"); return; }
+		if (navigator.onLine === false) { this.setPhase("network-offline"); return; }
 		if (this.socket && this.socket.readyState !== WebSocket.CLOSED) return;
 		const generation = ++this.generation;
 		this.starting = true;
+		this.setPhase(this.attempts++ ? "reconnecting" : "connecting");
 		let handshake: ClientHandshake | undefined;
 		try {
 			const started = performance.now(), lease = await this.account.lease([this.host]);
@@ -103,7 +124,7 @@ export class RemoteClient {
 			if (error instanceof MembershipDenied) this.deny(403, "This computer is no longer in your account workspace.");
 			else {
 				this.lastError = "Account authorization is unavailable. Reconnecting.";
-				this.reject(new RemoteError(503, this.lastError)); this.setOnline(false); this.retry();
+				this.setPhase("reconnecting"); this.retry();
 			}
 		} finally { if (generation === this.generation) this.starting = false; }
 	}
@@ -162,15 +183,16 @@ export class RemoteClient {
 		socket.onclose = event => {
 			handshake.close();
 			if (this.socket !== socket) return;
+			this.interrupted(interruptionReason(event.code), event.code);
 			clearTimeout(this.deadline); clearInterval(this.refresh); clearInterval(this.expiry);
 			this.channel?.close(); this.channel = undefined; this.peer = undefined; this.own = undefined;
 			if (event.code === 4003) this.failure ??= new RemoteError(426, "Update Pi Desk on the computer and reload this app.");
 			this.lastError = event.code === 4001 ? "Computer access could not be authorized. Rechecking the account."
-				: "Computer is offline or unreachable. Reconnecting.";
-			this.setOnline(false);
+				: this.online ? "Connection interrupted. Reconnecting." : "Could not establish a connection. Retrying.";
+			this.setPhase("reconnecting");
 			this.rejectPending("Connection lost; delivery is uncertain. Check the conversation before sending it again.");
-			if (this.closed || this.failure) { if (this.failure) this.reject(this.failure); return; }
-			this.reject(new RemoteError(503, this.lastError)); this.retry();
+			if (this.closed || this.failure) return;
+			this.retry();
 		};
 	}
 	private async maintain(socket: WebSocket): Promise<void> {
@@ -186,7 +208,8 @@ export class RemoteClient {
 		if (this.socket === socket) { this.own = own; this.sentCredential = token; }
 	}
 	private deny(status: number, message: string): void {
-		this.failure = new RemoteError(status, message); this.reject(this.failure);
+		this.interrupted(status === 426 ? "Application update required" : "Account access is unavailable");
+		this.failure = new RemoteError(status, message);
 		this.disconnect("Access unavailable; delivery of pending commands is uncertain.");
 	}
 	private async message(raw: unknown, socket: WebSocket): Promise<void> {
@@ -199,7 +222,7 @@ export class RemoteClient {
 			if (!apiMatches((message.release as { api?: unknown } | undefined)?.api)) {
 				this.deny(426, upgradeMessage("This computer", (message.release as { api?: unknown } | undefined)?.api)); return;
 			}
-			clearTimeout(this.deadline); this.backoff = 1000; this.setOnline(true); this.resolve(); return;
+			clearTimeout(this.deadline); this.backoff = 1000; this.setPhase("connected"); return;
 		}
 		if (message.type === "authorize") {
 			if (this.renewing || typeof message.credential !== "string") throw new Error("Invalid credential renewal.");
@@ -252,30 +275,32 @@ export class RemoteClient {
 		});
 	}
 	subscribe(events: (event: HostEvent, sequence: number) => void, connected: (online: boolean) => void): () => void {
-		this.handlers.add(events); this.connections.add(connected); connected(this.online);
+		this.handlers.add(events); this.connections.add(connected); connected(this.connected);
 		return () => { this.handlers.delete(events); this.connections.delete(connected); };
 	}
 	private rejectPending(message: string): void {
 		for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new RemoteError(503, message)); }
 		this.pending.clear();
 	}
-	private disconnect(message: string): void {
+	private disconnect(message: string, phase: ConnectionState = "reconnecting"): void {
 		this.generation++; this.starting = false;
 		clearTimeout(this.timer); clearTimeout(this.deadline); clearInterval(this.refresh); clearInterval(this.expiry);
 		const socket = this.socket; this.socket = undefined;
 		socket?.close(); this.channel?.close(); this.channel = undefined; this.peer = undefined; this.own = undefined;
-		this.rejectPending(message); this.setOnline(false);
+		this.rejectPending(message); this.setPhase(phase);
 	}
-	reconnect(): void {
+	reconnect(reason?: string): void {
+		if (reason) this.interrupted(reason);
 		this.disconnect("Reconnecting; delivery of pending commands is uncertain. Check the session before retrying.");
 		void this.connect();
 	}
 	close(): void {
 		this.closed = true;
 		removeEventListener("online", this.onlineListener);
+		removeEventListener("offline", this.offlineListener);
 		document.removeEventListener("visibilitychange", this.visibilityListener);
 		removeEventListener("pagehide", this.pageHideListener);
 		removeEventListener("pageshow", this.onlineListener);
-		this.disconnect("Computer disconnected; delivery of pending commands is uncertain."); this.reject(new RemoteError(503, "Computer disconnected."));
+		this.disconnect("Computer disconnected; delivery of pending commands is uncertain.", "closed");
 	}
 }

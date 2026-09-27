@@ -14,6 +14,7 @@ import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
 import { ResumeConversation, RESUME_NOTICE } from "./resume.tsx";
 import { Computers } from "./computers.tsx";
+import { connectionLabel, connectionTone } from "./connection-state.ts";
 import { Inspector, Modal, Navigation } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, ControlHistory, EditorSuggestion } from "./control-status.tsx";
@@ -93,7 +94,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   );
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
   const connected = state.host?.computers
-    ? currentComputer?.online ?? state.host.computers.some(computer => computer.online)
+    ? currentComputer?.connected ?? state.host.computers.some(computer => computer.connected)
     : transportConnected;
   const epoch = currentComputer?.epoch ?? localEpoch;
   const ui = session?.ui;
@@ -223,7 +224,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) { setError(errorText(error)); }
   }
   function openNewConversation() {
-    const computer = currentComputer?.online ? currentComputer : state.host?.computers?.find(computer => computer.online);
+    const computer = currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
     setNewComputer(computer?.id); setCwd(computer?.cwd ?? state.host?.cwd ?? ""); setCreate(true);
   }
@@ -339,11 +340,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           CONVERSATIONS <span>{state.host.sessions.length}</span>
         </div>
         <nav className="session-list">
-          {(state.host.computers ?? [{ id: undefined, name: state.host.name, online: connected, upgrade: false }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
+          {(state.host.computers ?? [{ id: undefined, name: state.host.name, connected,
+            connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           {host.computers && <div className="nav-label computer-heading">
-            <span>{computer.name}</span><small>{computer.upgrade ? "Update required" : computer.online ? "Connected" : "Offline"}</small>
+            <span>{computer.name}</span><small>{connectionLabel(computer)}</small>
           </div>}
-          {computer.upgrade && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
+          {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
             .filter((item) =>
@@ -371,8 +373,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </span>
               </button>
             ))}
-          {host.computers && !computer.upgrade && !host.sessions.some(item => item.computer === computer.id) &&
-            <p className="sidebar-hint">{computer.online ? "No conversations yet." : "Waiting for this computer."}</p>}
+          {host.computers && computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
+            <p className="sidebar-hint">{computer.connected ? "No conversations yet." : "Sessions will appear when this app connects."}</p>}
           </section>)}
           {!state.host.sessions.length && (
             <p className="sidebar-hint">
@@ -389,12 +391,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           >
             ⚙ <span>Settings & tools</span>
           </button>
-          <div className="host-label">
+          <div className="host-label" title="Connections from this browser">
             <span
-              className={`status-dot ${transportConnected ? "online" : "offline"}`}
+              className={`status-dot ${connectionTone({ connection: transportConnected ? "connected" : host.computers?.[0]?.connection ?? "connecting" })}`}
             />
             <span>{state.host.name}</span>
-            <small>{host.computers ? `${host.computers.filter(computer => computer.online).length}/${host.computers.length} connected` : connected ? "Connected" : "Reconnecting"}</small>
+            <small>{host.computers ? `${host.computers.filter(computer => computer.connected).length}/${host.computers.length} connected` : connected ? "Connected" : "Reconnecting"}</small>
           </div>
         </div>
       </Navigation>
@@ -435,7 +437,11 @@ export function App({ account }: { account?: BrowserAccount }) {
         {!connected && (
           <div className="connection-banner">
             {host.computers?.length === 0 ? "No computers yet. Add one in Settings."
-              : currentComputer?.error ?? (currentComputer ? `${currentComputer.name} is offline. Reconnecting…` : "Disconnected. Reconnecting…")}
+              : currentComputer ? `${currentComputer.name}: ${connectionLabel(currentComputer)}. ${currentComputer.error ?? ""}`
+              : !host.computers ? "Reconnecting to this computer…"
+              : host.computers.every(computer => computer.connection === "paused") ? "This app is paused. Pi sessions stay on their computers."
+              : host.computers.every(computer => computer.connection === "network-offline") ? "This device is offline."
+              : "Connecting to your computers…"}
           </div>
         )}
         {session && <ControlActivity key={selected} session={selected} controls={controls} />}
@@ -906,8 +912,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 setCwd(state.host!.computers!.find(computer => computer.id === event.target.value)?.cwd ?? "");
               }}>
                 {!newComputer && <option value="">Choose a connected computer</option>}
-                {state.host.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.online}>
-                  {computer.name}{computer.online ? "" : " · offline"}
+                {state.host.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>
+                  {computer.name}{computer.connected ? "" : ` · ${connectionLabel(computer)}`}
                 </option>)}
               </select>
             </label>}
@@ -929,7 +935,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               <button type="button" onClick={closeNewConversation}>
                 Cancel
               </button>
-              <button className="primary" disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.online)}>{creating ? "Creating…" : "Create conversation"}</button>
+              <button className="primary" disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)}>{creating ? "Creating…" : "Create conversation"}</button>
             </div>
           </form>
         </Modal>
