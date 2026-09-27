@@ -31,13 +31,21 @@ export async function runRelay(args: string[]): Promise<void> {
 }
 
 interface Room { socket: WebSocket; peers: Map<string, WebSocket> }
+function requestUrl(target: string | undefined, origin: string): URL | undefined {
+	try {
+		const url = new URL(target ?? "/", origin);
+		return url.origin === origin ? url : undefined;
+	} catch { return; }
+}
 export class RelayServer {
 	private rooms = new Map<string, Room>();
 	private sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_WIRE * 2, perMessageDeflate: false });
 	private server = createServer((request, response) => {
 		securityHeaders(response);
 		if (request.method !== "GET" || request.headers.host !== new URL(this.origin).host) { response.writeHead(403); response.end(); return; }
-		const path = new URL(request.url ?? "/", this.origin).pathname;
+		const url = requestUrl(request.url, this.origin);
+		if (!url) { response.writeHead(400); response.end(); return; }
+		const path = url.pathname;
 		if (path === "/health" || path === "/api/transport") {
 			response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			response.end(JSON.stringify(path === "/health" ? { status: "ok", ...RELEASE } : { kind: "relay", ...RELEASE }));
@@ -57,7 +65,8 @@ export class RelayServer {
 		this.tokenHash = createHash("sha256").update(options.token).digest();
 		this.server.on("upgrade", (request, socket, head) => {
 			const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
-			const url = new URL(request.url ?? "/", this.origin);
+			const url = requestUrl(request.url, this.origin);
+			if (!url) { reject(400); return; }
 			const host = url.searchParams.get("host");
 			if (request.headers.host !== new URL(this.origin).host || !validId(host) || this.count >= 256) { reject(403); return; }
 			if (url.pathname === "/host") {

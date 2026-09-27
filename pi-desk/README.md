@@ -1,6 +1,9 @@
 # Pi Desk
 
 See [Pi capabilities](CAPABILITIES.md) for plugin controls and integration limits.
+Read [Security](SECURITY.md) before enabling remote access. A paired browser can
+run Pi tools with the host account's permissions; this is not a read-only viewer
+or a sandbox.
 
 A desktop and mobile client for Pi. The local host runs Pi's normal SDK and
 extensions in session workers; browser connections do not own agent lifetimes.
