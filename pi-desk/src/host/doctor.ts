@@ -18,12 +18,12 @@ export function connectionChecks(status: HostProbe): DoctorCheck[] {
 	const relay = status.host?.relay;
 	if (relay) checks.push({ id: "relay", status: relay.state === "online" ? "ok" : "error",
 		message: relay.state === "online" ? "The host's outbound relay connection is online."
-			: `The relay is ${relay.state}. Remote access is unavailable; local access remains usable. Check the relay address, registration token, approved proxy/certificates and network policy.` });
+			: `The relay is ${relay.state}. Remote access is unavailable; local recovery remains usable. Check account sign-in, the account service, approved proxy/certificates and network policy.` });
 	if (relay) {
 		try {
 			remoteOrigins(relay.origin, relay.appOrigin);
 			checks.push({ id: "app-origin", status: "ok", message: "The configured browser app is separate from the relay. Its deployed files and browser connection still need verification." });
-		} catch { checks.push({ id: "app-origin", status: "error", message: "Configure separate --relay and --app-origin addresses, then restart the host." }); }
+		} catch { checks.push({ id: "app-origin", status: "error", message: "Sign in to a workspace with separate app and relay addresses." }); }
 	}
 	return checks;
 }

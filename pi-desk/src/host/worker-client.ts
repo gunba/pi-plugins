@@ -21,7 +21,7 @@ export class SessionWorker {
 
 	constructor(options: WorkerInit, event: (message: WorkerMessage) => void) {
 		this.event = event;
-		const { PI_DESK_RELAY_TOKEN: _relayToken, ...environment } = process.env;
+		const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("PI_DESK_")));
 		this.child = spawn(process.execPath, [fileURLToPath(new URL("./worker.js", import.meta.url))], {
 			cwd: options.cwd, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
 			env: { ...environment, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },

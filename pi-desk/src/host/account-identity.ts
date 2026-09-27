@@ -37,7 +37,8 @@ export class NativeAccountIdentity {
 		this.application = application; this.network = network; this.secret = secret;
 	}
 	static async open(directory: string, configuration: AccountConfiguration,
-		options: { create?: boolean; proxy?: string } = {}): Promise<NativeAccountIdentity> {
+		options: { create?: boolean; proxy?: string; replaceRevokedId?: string } = {}): Promise<NativeAccountIdentity> {
+		if (options.replaceRevokedId && !options.create) throw new Error("Identity replacement requires explicit enrolment.");
 		if (!["linux", "win32"].includes(process.platform)) throw new Error("Protected account persistence requires Windows or Linux.");
 		const config = accountConfiguration(configuration);
 		const privateDirectory = join(directory, "account");
@@ -59,7 +60,8 @@ export class NativeAccountIdentity {
 		try {
 			const contents = await secret.load();
 			if (contents) saved = JSON.parse(contents);
-			else {
+			if (options.replaceRevokedId && saved?.id === options.replaceRevokedId) saved = undefined;
+			if (!saved) {
 				if (!options.create) throw new AccountSignInRequired();
 				const pair = await generateKeyPair("ES256", { extractable: true });
 				saved = { version: 1, account: identity, id: crypto.randomUUID(),
@@ -149,6 +151,9 @@ export class NativeAccountIdentity {
 	verifier() { return this.network.verifier(this.config); }
 	lease(peers: MembershipPeer[]): Promise<MembershipLease> {
 		return this.request(`/devices/${this.device.id}/lease`, { peers });
+	}
+	heartbeat(connected: boolean): Promise<unknown> {
+		return this.request(`/devices/${this.device.id}/heartbeat`, { connected });
 	}
 	async signOut(): Promise<void> {
 		// Revoke before removing the key; offline failure must not pretend remote access was revoked.

@@ -4,7 +4,8 @@ import { parseArgs } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { discoverAccount, readAccount, saveAccount } from "./account-config.ts";
 import { NativeAccountIdentity } from "./account-identity.ts";
-import { openBrowser } from "./lifecycle.ts";
+import { openBrowser, controlRequest } from "./lifecycle.ts";
+import { readHostRecord } from "./host-control.ts";
 
 export async function runAccountCommand(command: "signin" | "signout", args: string[]): Promise<void> {
 	const { values } = parseArgs({ args, options: {
@@ -17,12 +18,12 @@ export async function runAccountCommand(command: "signin" | "signout", args: str
 	const saved = await readAccount(directory);
 	const chosen = command === "signin" && (values.workspace || values.account)
 		? await discoverAccount({ workspace: values.workspace, account: values.account, proxy: values.proxy }) : saved;
-	if (!chosen) throw new Error("Use pi-desk signin --workspace https://your-desk-app with this data directory.");
+	if (!chosen) throw new Error("Use pi-desk signin --workspace https://desk.example with this data directory.");
 	if (saved && (saved.config.origin !== chosen.config.origin || saved.config.tenantId !== chosen.config.tenantId
 		|| saved.config.ownerObjectId !== chosen.config.ownerObjectId || saved.config.clientId !== chosen.config.clientId)) {
 		throw new Error("This computer is configured for another workspace. Use a separate data directory.");
 	}
-	const identity = await NativeAccountIdentity.open(directory, chosen.config, { create: command === "signin", proxy: values.proxy });
+	let identity = await NativeAccountIdentity.open(directory, chosen.config, { create: command === "signin", proxy: values.proxy });
 	try {
 		if (command === "signout") {
 			await identity.signOut();
@@ -32,8 +33,22 @@ export async function runAccountCommand(command: "signin" | "signout", args: str
 			await saveAccount(directory, chosen);
 			console.log("Opening Microsoft sign-in. This enrols the computer for access through your Pi Desk account.");
 			await identity.signIn(openBrowser);
-			await identity.enrol(values.name ?? hostname());
+			try { await identity.enrol(values.name ?? hostname()); }
+			catch (error) {
+				if (!(error instanceof Error) || error.message !== "device_revoked") throw error;
+				const previous = identity.device.id;
+				identity.close();
+				identity = await NativeAccountIdentity.open(directory, chosen.config, {
+					create: true, proxy: values.proxy, replaceRevokedId: previous,
+				});
+				await identity.enrol(values.name ?? hostname());
+			}
 			console.log("Signed in. This computer is enrolled in your Pi Desk workspace.");
 		}
 	} finally { identity.close(); }
+	const host = readHostRecord(directory);
+	if (host) {
+		try { await controlRequest(host, "account", {}); }
+		catch { console.error("Host account refresh was not confirmed. Check pi-desk status; native conversations are retained."); }
+	}
 }

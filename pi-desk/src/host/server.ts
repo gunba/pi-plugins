@@ -11,8 +11,9 @@ import { commandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
 import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
-import { base64 } from "../shared/secure-channel.ts";
-import { RelayConnector, type RelayStatus } from "./relay-connector.ts";
+import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
+import { readAccount } from "./account-config.ts";
+import type { NativeAccountIdentity } from "./account-identity.ts";
 import { securityHeaders, serveClient } from "./static.ts";
 import { readSessionHeader, SessionCatalog } from "./session-files.ts";
 import { SavedSessionIndex, CatalogChanged } from "./saved-sessions.ts";
@@ -21,8 +22,7 @@ import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worke
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
 
-interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string;
-	relay?: { origin: string; appOrigin: string; token: string; proxy?: string } }
+interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
@@ -43,6 +43,9 @@ export class DeskHost {
 	private watchers = new Set<(event: HostEvent) => void>();
 	private relay?: RelayConnector;
 	private relayStatus?: RelayStatus;
+	private accountIdentity?: NativeAccountIdentity;
+	private accountRevision = 0;
+	private accountRetry?: ReturnType<typeof setTimeout>;
 	private sequence = 0;
 	private history: { id: number; frame: string }[] = [];
 	private historyBytes = 0;
@@ -95,24 +98,14 @@ export class DeskHost {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
 			}, 20_000);
 			this.heartbeat.unref();
-			if (this.options.relay) {
-				this.relay = new RelayConnector({ ...this.options.relay, access: this.access,
-					request: (device, request) => this.api(device, request),
-					watch: handler => {
-						this.watchers.add(handler);
-						handler({ type: "state", state: this.state() });
-						return () => this.watchers.delete(handler);
-					},
-					status: status => { this.relayStatus = status; this.emit({ type: "state", state: this.state() }); },
-				});
-				this.relay.start();
-			}
+			await this.connectAccount();
 			this.control.publish(directory);
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
 			clearInterval(this.heartbeat);
 			await this.saved?.close();
 			this.relay?.close();
+			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -137,11 +130,39 @@ export class DeskHost {
 		};
 	}
 
-	private remoteInvitation(): { url: string; expires?: number } {
-		if (!this.relay) throw new Error("Start the host with a relay connection first.");
-		const device = this.access.inviteRemote();
-		const fragment = base64(new TextEncoder().encode(JSON.stringify({ host: this.access.hostId, device: device.id, key: device.key })));
-		return { url: `${this.relay.status.appOrigin}/#remote=${fragment}`, expires: device.expires };
+	private async connectAccount(): Promise<void> {
+		const revision = ++this.accountRevision;
+		clearTimeout(this.accountRetry); this.relay?.close(); this.relay = undefined;
+		this.accountIdentity?.close(); this.accountIdentity = undefined; this.relayStatus = undefined;
+		const saved = await readAccount(this.directory);
+		if (this.closing || revision !== this.accountRevision) return;
+		if (!saved) { this.emit({ type: "state", state: this.state() }); return; }
+		const update = (status: RelayStatus) => {
+			if (this.closing || revision !== this.accountRevision) return;
+			this.relayStatus = status; this.emit({ type: "state", state: this.state() });
+		};
+		update({ origin: saved.config.relayOrigin, appOrigin: saved.appOrigin, state: "connecting" });
+		try {
+			const { NativeAccountIdentity } = await import("./account-identity.ts");
+			const identity = await NativeAccountIdentity.open(this.directory, saved.config, { proxy: this.options.proxy });
+			if (this.closing || revision !== this.accountRevision) { identity.close(); return; }
+			this.accountIdentity = identity;
+			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy,
+				request: (access, request) => this.api(access, request),
+				watch: handler => {
+					this.watchers.add(handler); handler({ type: "state", state: this.state() });
+					return () => this.watchers.delete(handler);
+				}, status: update,
+			});
+			this.relay.start();
+		} catch {
+			if (this.closing || revision !== this.accountRevision) return;
+			this.accountIdentity?.close(); this.accountIdentity = undefined;
+			update({ origin: saved.config.relayOrigin, appOrigin: saved.appOrigin, state: "offline",
+				error: "Account identity is unavailable. Sign in on this computer and unlock its protected credential store." });
+			this.accountRetry = setTimeout(() => { void this.connectAccount().catch(() => {}); }, 30_000);
+			this.accountRetry.unref();
+		}
 	}
 
 	private write(response: ServerResponse, frame: string): void {
@@ -284,9 +305,14 @@ export class DeskHost {
 						return;
 					}
 					if (url.pathname === "/api/host/invite" && !this.closing) {
-						const destination = !data.local && this.relay ? this.remoteInvitation().url : `${this.origin}/#pair=${this.access.invite()}`;
+						if (data.local !== true) { json(response, 400, { error: "Use account sign-in for remote access." }); return; }
+						const destination = `${this.origin}/#pair=${this.access.invite()}`;
 						json(response, 200, { instance: this.control.record.instance, url: destination });
 						return;
+					}
+					if (url.pathname === "/api/host/account" && !this.closing) {
+						void this.connectAccount().catch(() => {});
+						json(response, 202, { instance: this.control.record.instance }); return;
 					}
 				}
 				json(response, 404, { error: "Unknown host control." }); return;
@@ -352,10 +378,12 @@ export class DeskHost {
 		}
 	}
 
-	private async api(device: string, request: ApiRequest): Promise<ApiResponse> {
+	private async api(device: string | RemoteAccess, request: ApiRequest): Promise<ApiResponse> {
 		const reply = (body: unknown, status = 200): ApiResponse => ({ body, status });
 		try {
-			if (device !== "operator" && !this.access.hasDevice(device)) return reply({ error: "This device is no longer paired." }, 401);
+			if (typeof device === "string" ? device !== "operator" && !this.access.hasDevice(device) : !device.authorized()) {
+				return reply({ error: "Device access is no longer authorized." }, 401);
+			}
 			const url = new URL(request.path, this.origin);
 			const data = request.body ?? {};
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
@@ -425,11 +453,9 @@ export class DeskHost {
 					refresh: url.searchParams.get("refresh") === "1",
 				}));
 			}
+			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
 			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.access.devices());
 			if (url.pathname === "/api/invite" && request.method === "POST") return reply({ token: this.access.invite() });
-			if (url.pathname === "/api/remote/invite" && request.method === "POST") {
-				return reply(this.remoteInvitation());
-			}
 			if (url.pathname === "/api/revoke" && request.method === "POST") {
 				const id = string(data.id, 100);
 				this.access.revoke(id);
@@ -450,7 +476,9 @@ export class DeskHost {
 		const errors: unknown[] = [];
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat);
+		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close();
+		this.accountIdentity?.close();
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => item.worker?.close()));

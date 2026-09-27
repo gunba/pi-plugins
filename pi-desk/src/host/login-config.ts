@@ -12,7 +12,7 @@ export interface LoginConfig {
 const defaults = [
 	"PATH", "LANG", "LC_ALL", "LC_CTYPE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 	"http_proxy", "https_proxy", "all_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
-	"PI_DESK_RELAY_TOKEN", "PI_CODING_AGENT_SESSION_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK",
+	"PI_CODING_AGENT_SESSION_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK",
 	"PI_TELEMETRY", "PI_CACHE_RETENTION",
 ];
 const transient = new Set(["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "AI_AGENT", "PI_CODING_AGENT"]);
@@ -37,7 +37,7 @@ export function readLoginConfig(directory: string): LoginConfig | undefined {
 export function makeLoginConfig(directory: string, cwd: string, arguments_: string[], extra: string[]): LoginConfig {
 	if (process.platform !== "linux" && process.platform !== "win32") throw new Error("Login-start supports Linux user services and native Windows scheduled tasks.");
 	for (const key of extra) {
-		if (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(key) || transient.has(key.toUpperCase())) throw new Error(`Cannot save session/process marker ${key}.`);
+		if (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(key) || transient.has(key.toUpperCase()) || key.toUpperCase().startsWith("PI_DESK_")) throw new Error(`Cannot save process marker or service configuration ${key}.`);
 		if (!Object.keys(process.env).some(k => process.platform === "win32" ? k.toUpperCase() === key.toUpperCase() : k === key)) throw new Error(`Environment variable ${key} is not set.`);
 	}
 	const keys = new Set([...defaults, ...extra]);

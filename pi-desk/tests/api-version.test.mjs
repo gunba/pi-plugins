@@ -3,13 +3,14 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { once } from "node:events";
+import { WebSocket } from "ws";
 import { DeskHost } from "../src/host/server.ts";
-import { AccessStore } from "../src/host/access.ts";
 import { RelayConnector } from "../src/host/relay-connector.ts";
+import { RelayServer } from "../src/host/relay-server.ts";
 import { API_HEADER, API_VERSION, RELEASE } from "../src/shared/release.ts";
-import { SecureChannel, newSecret, PROTOCOL_VERSION } from "../src/shared/secure-channel.ts";
+import { ClientHandshake } from "../src/shared/account-channel.ts";
+import { accountFixture } from "./account-fixture.mjs";
 
 test("missing or incompatible local API versions cannot read state, mutate a session or consume an invitation", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "desk-api-"));
@@ -41,48 +42,51 @@ test("missing or incompatible local API versions cannot read state, mutate a ses
 	} finally { await host.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-for (const stage of ["identify", "hello"]) test(`incompatible remote ${stage} is an upgrade error, not a consumed pairing`, { timeout: 5000 }, async t => {
-	const directory = mkdtempSync(join(tmpdir(), "desk-remote-api-"));
-	const server = createServer(), sockets = new WebSocketServer({ server });
-	await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-	const access = new AccessStore(directory), invitation = access.inviteRemote(), peer = crypto.randomUUID(), nonce = newSecret();
-	let channel, signal, reject, announced = false, watches = 0;
-	const closed = new Promise((resolve, fail) => { signal = resolve; reject = fail; });
-	sockets.on("connection", socket => {
-		socket.send(JSON.stringify({ type: "opened", peer }));
-		socket.send(JSON.stringify({ type: "frame", peer, frame: JSON.stringify({
-			type: "identify", protocol: PROTOCOL_VERSION, api: stage === "identify" ? 999 : API_VERSION,
-			nonce, device: invitation.id,
-		}) }));
-		socket.on("message", raw => {
-			void (async () => {
-				const message = JSON.parse(raw.toString());
-				if (message.type === "close") { signal(message.code); return; }
-				if (message.type !== "frame") return;
-				const frame = JSON.parse(message.frame);
-				if (frame.type === "upgrade-required") { announced = true; return; }
-				if (frame.type === "challenge") {
-					channel = await SecureChannel.create({ secret: invitation.key, challenge: frame.nonce, clientNonce: nonce,
-						host: access.hostId, device: invitation.id, role: "client" },
-					frame => socket.send(JSON.stringify({ type: "frame", peer, frame })),
-					message => { if (message.type === "upgrade-required") announced = true; }, reject);
-					await channel.send({ type: "hello", api: 999, label: "Sample", key: newSecret() });
-				} else channel?.receive(message.frame);
-			})().catch(reject);
-		});
-	});
-	const connector = new RelayConnector({ origin: `http://127.0.0.1:${server.address().port}`, appOrigin: "https://app.example", token: newSecret(),
-		access, status: () => {}, request: async () => { throw Error("No request should be admitted"); },
-		watch: () => { watches++; return () => {}; } });
+for (const stage of ["offer", "hello"]) test(`incompatible authenticated remote ${stage} is an upgrade error`, { timeout: 5000 }, async t => {
+	const fixture = await accountFixture(), host = await fixture.device("host"), browser = await fixture.device("browser");
+	const relay = new RelayServer({ origin: fixture.config.relayOrigin, appOrigin: "https://app.example", account: fixture.config, verifier: fixture.verifier });
+	let channel, connector, socket, watches = 0;
 	t.after(async () => {
-		connector.close(); channel?.close(); for (const socket of sockets.clients) socket.terminate();
-		sockets.close(); await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true });
+		connector?.close(); channel?.close(); socket?.terminate(); await relay.close();
+	});
+	await relay.start(0);
+	fixture.config.relayOrigin = relay.origin = `http://127.0.0.1:${relay.server.address().port}`;
+	let online;
+	const available = new Promise(resolve => { online = resolve; });
+	connector = new RelayConnector({
+		appOrigin: "https://app.example", account: host,
+		status: status => { if (status.state === "online") online(); },
+		request: async () => { throw Error("No request should be admitted"); },
+		watch: () => { watches++; return () => {}; },
 	});
 	connector.start();
-	assert.equal(await closed, 4003);
+	await available;
+	const handshake = await ClientHandshake.create(host.device.id, browser, fixture.verifier);
+	if (stage === "offer") {
+		const data = JSON.parse(Buffer.from(handshake.offer.proof.split(".")[1], "base64url"));
+		data.api = 999;
+		handshake.offer.proof = await browser.signProof(new TextEncoder().encode(JSON.stringify(data)), "pi-desk-client-hello+jws");
+	}
+	socket = new WebSocket(`${relay.origin.replace("http:", "ws:")}/connect?host=${host.device.id}`, { headers: { Origin: "https://app.example" } });
+	let announced, failed;
+	const notice = new Promise((resolve, reject) => { announced = resolve; failed = reject; });
+	socket.on("message", raw => {
+		void (async () => {
+			if (channel) { channel.receive(raw.toString()); return; }
+			const message = JSON.parse(raw.toString());
+			if (message.type === "upgrade-required") { announced(); return; }
+			const session = await handshake.finish(message, {
+				output: frame => socket.send(frame),
+				input: message => { if (message.type === "upgrade-required") announced(); }, failed,
+			});
+			channel = session.channel;
+			await channel.send({ type: "hello", api: 999 });
+		})().catch(failed);
+	});
+	await once(socket, "open", { signal: t.signal });
+	const closed = once(socket, "close", { signal: t.signal });
+	socket.send(JSON.stringify(handshake.offer));
+	assert.equal((await closed)[0], 4003);
+	await notice;
 	assert.equal(watches, 0);
-	assert.ok(access.remote(invitation.id).expires);
-	assert.equal(access.remote(invitation.id).key, invitation.key);
-	// Plain upgrade notices arrive before close; encrypted decoding may finish later.
-	if (stage === "identify") assert.equal(announced, true);
 });

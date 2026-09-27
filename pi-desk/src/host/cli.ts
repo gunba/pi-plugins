@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { runRelay } from "./relay-server.ts";
 import { MINIMUM_NODE, RELEASE, supportsNode } from "../shared/release.ts";
 import { inspectAppAssets } from "./app-assets.ts";
-import { remoteOrigins } from "../shared/relay-protocol.ts";
+import { readAccount } from "./account-config.ts";
 
 const help = `Pi Desk
   signin [--workspace URL | --account URL] [--name label] [host directory options]
@@ -12,7 +12,7 @@ const help = `Pi Desk
   signout [--data-dir path] [--agent-dir path]
                             Revoke this computer's account enrolment
   start [host options]       Start a detached user process
-  open [--pair] [--local] [--print] [host options]
+  open [--local] [--print] [host options]
                             Start if needed and open the app
   status [--data-dir path] [--agent-dir path]
   stop [--data-dir path] [--agent-dir path]
@@ -27,10 +27,10 @@ const help = `Pi Desk
                             Prepare the separate static app deployment
 
 Host options: --cwd path --port number --data-dir path --agent-dir path
-              --session-dir path --relay https://server --app-origin https://app
-              --proxy URL
-Set PI_DESK_RELAY_TOKEN when connecting a host to a relay.
-Use open --pair once for a new browser; normal open preserves its pairing.`;
+              --session-dir path --proxy URL
+Sign in once on each computer; hosts reconnect to that saved workspace.
+Normal open uses the shared website. Use --local only for loopback recovery.
+Relay options: --account URL --origin URL [--app-origin URL] [--port number]`;
 
 async function main(): Promise<void> {
 	const [command = "open", ...args] = process.argv.slice(2);
@@ -66,21 +66,17 @@ async function main(): Promise<void> {
 	if (!["start", "open", "serve", "status", "stop", "doctor", "login", "login-run"].includes(command)) throw new Error(help);
 	const { values } = parseArgs({ args, options: {
 		cwd: { type: "string" }, port: { type: "string" }, "data-dir": { type: "string" },
-		"agent-dir": { type: "string" }, "session-dir": { type: "string" }, relay: { type: "string" }, proxy: { type: "string" },
-		"app-origin": { type: "string" },
-		pair: { type: "boolean" }, print: { type: "boolean" }, local: { type: "boolean" }, background: { type: "boolean" },
+		"agent-dir": { type: "string" }, "session-dir": { type: "string" }, proxy: { type: "string" },
+		print: { type: "boolean" }, local: { type: "boolean" }, background: { type: "boolean" },
 		"host-only": { type: "boolean" },
 		env: { type: "string", multiple: true },
 	} });
-	if (command !== "open" && (values.pair || values.print || values.local)) throw new Error("--pair, --print and --local belong to open.");
+	if (command !== "open" && (values.print || values.local)) throw new Error("--print and --local belong to open.");
 	if (values.background && command !== "serve") throw new Error("--background is used by the detached host.");
 	if (values["host-only"] && command !== "stop") throw new Error("--host-only belongs to the service's stop command.");
-	if (values.proxy && !values.relay) throw new Error("Use --proxy with --relay.");
-	if (!!values.relay !== !!values["app-origin"]) throw new Error("Use --relay and --app-origin together; browser app hosting must be separate.");
-	const remote = values.relay ? remoteOrigins(values.relay, values["app-origin"]!) : undefined;
 	if (values.env?.length && loginOperation !== "install") throw new Error("--env belongs to login install; it names variables to save, not their values.");
 	if ((["status", "stop", "doctor", "login-run"].includes(command) || command === "login" && loginOperation !== "install")
-		&& ["cwd", "port", "session-dir", "relay", "app-origin", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
+		&& ["cwd", "port", "session-dir", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
 		throw new Error(`${command} selects the host with --data-dir or --agent-dir; it does not change host options.`);
 	}
 	if (command === "login-run") {
@@ -100,8 +96,6 @@ async function main(): Promise<void> {
 	const { readLoginConfig } = await import("./login-config.ts");
 	const launch = ["--cwd", cwd, "--port", String(port), "--data-dir", directory, "--agent-dir", agentDir];
 	if (values["session-dir"]) launch.push("--session-dir", resolve(values["session-dir"]));
-	if (values.relay) launch.push("--relay", values.relay);
-	if (values["app-origin"]) launch.push("--app-origin", values["app-origin"]);
 	if (values.proxy) launch.push("--proxy", values.proxy);
 	if (command === "login") {
 		if (loginOperation === "status") console.log(JSON.stringify(await loginStatus(directory), null, 2));
@@ -109,7 +103,6 @@ async function main(): Promise<void> {
 			await removeLogin(directory);
 			console.log("Login-start removed. Native sessions and other host data are retained.");
 		} else {
-			if (values.relay && !process.env.PI_DESK_RELAY_TOKEN) throw new Error("Set PI_DESK_RELAY_TOKEN before saving relay startup settings.");
 			await installLogin(directory, cwd, launch, values.env ?? []);
 			console.log("Login-start enabled for this account. Use start or open to run it now. Startup environment is saved privately in the data directory.");
 		}
@@ -137,13 +130,12 @@ async function main(): Promise<void> {
 	if (command === "serve") {
 		inspectAppAssets();
 		if (VERSION !== RELEASE.engine) throw new Error(`Pi Desk ${RELEASE.version} requires SDK ${RELEASE.engine}, but found ${VERSION}. Reinstall this Desk release; the global Pi CLI is separate.`);
-		if (values.relay && !process.env.PI_DESK_RELAY_TOKEN) throw new Error("Set PI_DESK_RELAY_TOKEN for the outbound relay connection.");
 		const { DeskHost } = await import("./server.ts");
 		const host = new DeskHost({ cwd, port, dataDir: directory, agentDir, sessionDir: values["session-dir"] && resolve(values["session-dir"]),
-			...(remote ? { relay: { ...remote, token: process.env.PI_DESK_RELAY_TOKEN!, proxy: values.proxy } } : {}) });
+			proxy: values.proxy });
 		const started = await host.start();
 		console.log(`Pi Desk: ${started.origin}`);
-		if (!values.background) console.log(`Pair a local browser: ${started.pairingUrl}`);
+		if (!values.background) console.log("Use pi-desk open for the workspace, or open --local for loopback recovery.");
 		if (values.background && process.connected) process.send?.({ type: "ready" }, () => {});
 		const close = () => { void host.close().catch(() => {}); };
 		process.on("SIGINT", close); process.on("SIGTERM", close);
@@ -151,23 +143,25 @@ async function main(): Promise<void> {
 		process.exit(0);
 	}
 	const configured = readLoginConfig(directory);
-	if (configured && ["cwd", "port", "session-dir", "relay", "app-origin", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
+	if (configured && ["cwd", "port", "session-dir", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
 		throw new Error("Login-start owns these startup options. Remove/reinstall it to change them, then use start/open with the same --data-dir.");
 	}
+	const account = await readAccount(directory);
+	if (command === "open" && !values.local && !account) throw new Error("Sign in with pi-desk signin --workspace URL first, or use open --local for recovery.");
 	const result = configured ? await startLogin(configured) : await startHost(directory, cwd, launch);
 	if (command === "start") {
-		console.log(`${result.reused ? "Already running; existing startup options retained" : "Started"}: ${result.host.origin}\nData directory: ${directory}\nOpen with pi-desk open; add --pair for a new browser.${values["data-dir"] ? " Use the same --data-dir." : ""}`);
+		console.log(`${result.reused ? "Already running; existing startup options retained" : "Started"}: ${result.host.origin}\nData directory: ${directory}\nOpen with pi-desk open.${values["data-dir"] ? " Use the same --data-dir." : ""}`);
 		return;
 	}
-	if (result.reused && ["cwd", "port", "agent-dir", "session-dir", "relay", "app-origin", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
+	if (result.reused && ["cwd", "port", "agent-dir", "session-dir", "proxy"].some(key => values[key as keyof typeof values] !== undefined)) {
 		console.error("The host is already running; existing startup options were retained. Stop it before changing them.");
 	}
-	let url = !values.local && result.host.relay ? result.host.relay.appOrigin : result.host.origin;
-	if (!url) throw new Error("Update this host and configure its separate --app-origin before opening remote access.");
-	if (values.pair) {
+	let url = account?.appOrigin;
+	if (values.local) {
 		const record = readHostRecord(directory)!;
-		url = (await controlRequest<{ instance: string; url: string }>(record, "invite", { local: !!values.local })).url;
+		url = (await controlRequest<{ instance: string; url: string }>(record, "invite", { local: true })).url;
 	}
+	if (!url) throw new Error("No workspace is configured.");
 	if (values.print) console.log(url);
 	else { await openBrowser(url); console.log("Browser open requested. Use --print to display the app link."); }
 }

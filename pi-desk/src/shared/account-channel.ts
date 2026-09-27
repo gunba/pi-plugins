@@ -20,6 +20,9 @@ interface Hello {
 	protocol: number; api: number; host: string; nonce: string; key: DeviceKey; credential: string;
 	offer?: string;
 }
+export class ChannelVersionError extends Error {
+	constructor() { super("Update Pi Desk on the computer and reload the app."); }
+}
 const encoder = new TextEncoder(), decoder = new TextDecoder("utf-8", { fatal: true });
 const bytes = (value: unknown) => encoder.encode(JSON.stringify(value));
 const digest = async (value: unknown) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes(value)));
@@ -44,7 +47,8 @@ async function proof(value: string, credential: DeviceCredential, purpose: Proof
 }
 async function hello(message: ChannelWire, credential: DeviceCredential, purpose: ProofPurpose, host: string): Promise<Hello> {
 	const data = await proof(message.proof, credential, purpose);
-	if (data.protocol !== PROTOCOL_VERSION || data.api !== API_VERSION || data.host !== host || !validSecret(data.nonce)
+	if (data.protocol !== PROTOCOL_VERSION || data.api !== API_VERSION) throw new ChannelVersionError();
+	if (data.host !== host || !validSecret(data.nonce)
 		|| data.credential !== base64(await digest(message.credential))) throw new Error("Channel context does not match.");
 	const key = (await deviceKey(data.key)).key;
 	return { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: data.nonce, key, credential: data.credential as string,

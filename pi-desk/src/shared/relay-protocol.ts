@@ -3,8 +3,9 @@ import type { ReleaseInfo } from "./release.ts";
 export interface ApiRequest { method: "GET" | "POST"; path: string; body?: Record<string, unknown> }
 export interface ApiResponse { status: number; body: unknown; asset?: { mimeType: string; base64: string } }
 export type RemotePayload =
-	| { type: "hello"; api: number; key?: string; label: string }
+	| { type: "hello"; api: number }
 	| { type: "ready"; release: ReleaseInfo }
+	| { type: "authorize"; credential: string }
 	| { type: "upgrade-required"; api: number }
 	| { type: "request"; id: string; request: ApiRequest }
 	| { type: "response"; id: string; response: ApiResponse }
