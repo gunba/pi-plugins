@@ -29,6 +29,9 @@ jobs:
             package-lock.json
             pi-desk/package-lock.json
           node-version: ${{ matrix.node }}
+      - name: Install Linux keyring runtime
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-0
       - run: npm ci
       - run: npm --prefix pi-desk ci --ignore-scripts
       - run: npm --prefix pi-desk rebuild keytar
