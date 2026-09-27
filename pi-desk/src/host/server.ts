@@ -7,7 +7,7 @@ import { hostname } from "node:os";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
-import { commandFrom, object, string } from "./commands.ts";
+import { commandFrom, workerCommandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
 import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
@@ -21,9 +21,13 @@ import { isControl } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
+import { InputLedger } from "./inputs.ts";
+import { Attachments } from "./attachments.ts";
+import type { InputSubmission } from "../shared/inputs.ts";
+import { assertRuntimeHost } from "../../manage/installation.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
-interface ManagedSession { view: SessionView; worker?: SessionWorker }
+interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -36,6 +40,7 @@ export class DeskHost {
 	private access: AccessStore;
 	private catalog?: SessionCatalog;
 	private saved?: SavedSessionIndex;
+	private inputs?: InputLedger;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private server = createServer((request, response) => { void this.handle(request, response); });
 	private sessions = new Map<string, ManagedSession>();
@@ -56,6 +61,7 @@ export class DeskHost {
 	private closeJob?: Promise<void>;
 	private control?: HostControl;
 	private directory = "";
+	private runtime?: string;
 	private resolveClosed!: () => void;
 	private rejectClosed!: (error: unknown) => void;
 	readonly closed = new Promise<void>((resolve, reject) => { this.resolveClosed = resolve; this.rejectClosed = reject; });
@@ -75,14 +81,16 @@ export class DeskHost {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
+			this.runtime = assertRuntimeHost(directory);
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
+			this.inputs = new InputLedger(directory);
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
 					const file = view.snapshot?.file ?? view.file;
 					return file ? [dirname(file)] : [];
 				}));
-			for (const view of this.catalog.read()) this.sessions.set(view.key, { view });
+			for (const view of this.catalog.read()) this.sessions.set(view.key, { view: { ...view, inputs: this.inputs.pending(view.key) } });
 			await new Promise<void>((resolve, reject) => {
 				this.server.once("error", reject);
 				this.server.listen(this.options.port ?? 8910, "127.0.0.1", () => {
@@ -104,6 +112,8 @@ export class DeskHost {
 		} catch (error) {
 			clearInterval(this.heartbeat);
 			await this.saved?.close();
+			this.inputs?.close();
+			this.inputs = undefined;
 			this.relay?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
@@ -122,7 +132,7 @@ export class DeskHost {
 		return {
 			release: RELEASE, instance: this.control!.record.instance, pid: process.pid, started: this.control!.record.started,
 			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir!,
-			sessionDir: this.options.sessionDir, relay: this.relayStatus,
+			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime,
 			sessions: { active: active.length,
 				working: active.filter(({ view }) => view.state === "starting" || view.snapshot?.activity !== "idle"
 					|| view.controls?.some(control => control.state === "running")).length,
@@ -191,11 +201,14 @@ export class DeskHost {
 			controls.push(message.control);
 			managed.view = { ...managed.view, controls: controls.slice(-16) };
 			if (message.control.kind === "close" && message.control.state === "completed") {
+				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
-				managed.view = { ...managed.view, state: "closed", snapshot: undefined, ui: undefined, error: undefined };
+				managed.view = { ...managed.view, state: "closed", snapshot: undefined, ui: undefined, error: undefined,
+					inputs: this.inputs?.pending(key) };
 			}
 			this.emit({ type: "session", session: managed.view });
 			this.persist(true);
+			if (message.control.state !== "running") this.drainInputs(managed);
 			return;
 		}
 		if (message.type === "snapshot") {
@@ -207,7 +220,9 @@ export class DeskHost {
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined } : {}) };
 		else if (message.type === "fatal") {
-			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined };
+			this.inputs?.interrupt(key, "The session worker stopped");
+			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined,
+				inputs: this.inputs?.pending(key) };
 			const worker = managed.worker;
 			void worker?.close().catch(() => {}).finally(() => {
 				if (managed.worker === worker) managed.worker = undefined;
@@ -216,6 +231,55 @@ export class DeskHost {
 		else { this.emit({ type: "worker", key, message }); return; }
 		this.emit({ type: "session", session: managed.view });
 		this.persist();
+		if (message.type === "snapshot") this.drainInputs(managed);
+	}
+
+	private inputEvent(managed: ManagedSession): void {
+		managed.view = { ...managed.view, inputs: this.inputs!.pending(managed.view.key) };
+		if (!this.closing) this.emit({ type: "session", session: managed.view });
+	}
+
+	private attachments(key: string): Attachments {
+		let referenced: Set<string> | undefined;
+		return new Attachments(this.options.agentDir!, key, id => (referenced ??= this.inputs!.files(key)).has(id));
+	}
+
+	private drainInputs(managed: ManagedSession): void {
+		if (managed.draining || !managed.initialized || this.closing || managed.view.state !== "ready"
+			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
+		const worker = managed.worker, key = managed.view.key;
+		// Admission returns before IPC dispatch, leaving queued input cancellable.
+		managed.draining = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
+			while (!this.closing && managed.worker === worker && managed.view.state === "ready"
+				&& !managed.view.controls?.some(control => control.state === "running")) {
+				const next = this.inputs!.next(key);
+				if (!next) break;
+				const { input } = next;
+				const generation = input.generation ?? managed.initialGeneration;
+				if (input.activation !== managed.view.activation || generation !== worker.generation) {
+					this.inputs!.settle(key, input.id, "failed", "The session changed before dispatch. This message was not sent.");
+					this.inputEvent(managed);
+					continue;
+				}
+				try {
+					// Pin files before IPC: an input handler can observe them before native admission.
+					this.attachments(key).retain(input.command.attachments ?? []);
+					this.inputs!.settle(key, input.id, "sending");
+					this.inputEvent(managed);
+					await worker.command({ ...input.command,
+						behavior: input.command.behavior ?? (input.generation === undefined ? "followUp" : undefined) }, generation, input.id);
+					this.inputs!.settle(key, input.id, "accepted");
+				} catch (error) {
+					this.inputs!.settle(key, input.id, error instanceof WorkerConnectionError ? "interrupted" : "failed",
+						error instanceof Error ? error.message : String(error));
+					this.inputs!.interrupt(key, "An earlier message failed");
+				}
+				this.inputEvent(managed);
+			}
+		}).catch(error => {
+			// A storage failure must stop delivery, not turn into an unhandled rejection or a retry.
+			console.error("Input admission failed:", error instanceof Error ? error.message : String(error));
+		}).finally(() => { managed.draining = undefined; });
 	}
 
 	private persist(immediate = false): void {
@@ -234,29 +298,36 @@ export class DeskHost {
 			cwd = readSessionHeader(sessionFile).cwd;
 		}
 		const key = existing?.view.key ?? randomUUID();
-		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir,
+		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key,
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
 		const worker = new SessionWorker(options, message => {
 			if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
 		});
 		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
-			snapshot: undefined, ui: undefined }, worker };
+			snapshot: undefined, ui: undefined, activation: randomUUID(), inputs: this.inputs!.pending(key) }, worker };
 		this.sessions.set(key, managed);
 		this.emit({ type: "session", session: managed.view });
 		this.persist(true);
 		void worker.start(options).then(snapshot => {
-			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed") return;
-			managed.view = { ...managed.view, snapshot, ui: snapshot.ui, state: "ready" };
+			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
+				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
+			managed.view = { ...managed.view, snapshot, ui: snapshot.ui, state: "ready",
+				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, leaf: snapshot.leaf };
+			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
 			this.persist(true);
+			this.drainInputs(managed);
 		}).catch(error => {
-			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed") return;
-			managed.view = { ...managed.view, state: "failed", error: error instanceof Error ? error.message : String(error) };
+			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
+				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
+			this.inputs!.interrupt(key, "Session startup failed");
+			managed.view = { ...managed.view, state: "failed", error: error instanceof Error ? error.message : String(error),
+				inputs: this.inputs!.pending(key) };
 			this.emit({ type: "session", session: managed.view });
 			this.persist(true);
-			void worker.close().catch(() => {});
+			void worker.close().catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; });
 		});
 		return key;
 	}
@@ -395,13 +466,71 @@ export class DeskHost {
 				const old = [...this.sessions.values()].find(item => (item.view.snapshot?.file ?? item.view.file) === file);
 				return reply({ key: this.createSession(this.options.cwd, file, old) }, 202);
 			}
+			const inputRoute = /^\/api\/sessions\/([a-f0-9-]+)\/(inputs|uploads|restart)(?:\/([a-f0-9-]+)(?:\/(cancel|dismiss))?)?$/.exec(url.pathname);
+			if (inputRoute) {
+				const key = inputRoute[1]!, managed = this.sessions.get(key);
+				if (!managed) return reply({ error: "Unknown session." }, 404);
+				const id = inputRoute[3];
+				if (inputRoute[2] === "inputs" && id) {
+					if (request.method === "GET" && !inputRoute[4]) return reply(this.inputs!.read(key, id));
+					if (request.method === "POST" && inputRoute[4]) {
+						const result = inputRoute[4] === "cancel" ? this.inputs!.cancel(key, id) : this.inputs!.dismiss(key, id);
+						this.inputEvent(managed);
+						return reply({ result: result ?? null });
+					}
+				} else if (!id && request.method === "POST") {
+					if (inputRoute[2] === "restart") {
+						if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
+						if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
+						return reply({ key: this.createSession(managed.view.cwd, managed.view.file, managed) }, 202);
+					}
+					const command = commandFrom(data.command);
+					const activation = string(data.activation, 100);
+					const generation = data.generation === undefined ? undefined : string(data.generation, 100);
+					let input: InputSubmission | undefined;
+					if (inputRoute[2] === "inputs") {
+						if (command.kind !== "prompt") throw new Error("Expected a message.");
+						const id = string(data.id, 100);
+						if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid message receipt.");
+						input = { id, activation, generation, command };
+						const previous = this.inputs!.existing(key, input);
+						if (previous) return reply({ accepted: true, input: previous });
+					}
+					if (this.closing || !managed.worker || managed.view.state === "closed" || managed.view.state === "failed")
+						throw new Error("Start or resume this conversation before sending.");
+					if (activation !== managed.view.activation) throw new StaleGeneration();
+					if (inputRoute[2] === "uploads") {
+						switch (command.kind) {
+							case "upload_begin": case "upload_chunk": case "upload_finish": case "upload_discard":
+								return reply({ result: this.attachments(key).command(command) ?? null });
+							default: throw new Error("Expected an upload command.");
+						}
+					}
+					if (managed.view.controls?.some(control => control.state === "running")) throw new Error("Wait for the current operation before sending.");
+					if (generation !== undefined ? generation !== managed.view.ui?.generation
+						: managed.initialized && managed.initialGeneration !== managed.view.ui?.generation) throw new StaleGeneration();
+					if (!input!.command.text.trim() && !input!.command.attachments?.length) throw new Error("Enter a message or attach a file.");
+					this.attachments(key).check(input!.command.attachments ?? []);
+					const accepted = this.inputs!.admit(key, input!);
+					this.inputEvent(managed);
+					this.drainInputs(managed);
+					return reply({ accepted: true, input: accepted }, 202);
+				}
+				return reply({ error: "Unknown input operation." }, 404);
+			}
 			const control = /^\/api\/sessions\/([a-f0-9-]+)\/(close|metadata)$/.exec(url.pathname);
 			if (control && request.method === "POST") {
 				const managed = this.sessions.get(control[1]!);
 				if (!managed) throw new Error("Unknown session.");
 				if (control[2] === "close") {
 					if (!managed.worker) return reply({ accepted: true });
-					return reply(managed.worker.submitControl({ kind: "close" }, string(data.generation, 100), string(data.id, 100)), 202);
+					if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
+					const result = managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
+					if (result.control.state === "running") {
+						this.inputs!.interrupt(managed.view.key, "The conversation is closing");
+						this.inputEvent(managed);
+					}
+					return reply(result, 202);
 				} else {
 					if (managed.worker && data.generation !== managed.view.ui?.generation) throw new StaleGeneration();
 					managed.view = { ...managed.view, pinned: data.pinned === true };
@@ -417,29 +546,33 @@ export class DeskHost {
 				if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this saved session before using its controls.");
 				const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };
 				if (route[2] === "command" && request.method === "POST") {
-					const command = commandFrom(data.command);
-					if (["asset", "artifact", "file", "history", "snapshot", "shutdown"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
-					if (isControl(command)) return reply({ result: managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
+					const command = workerCommandFrom(data.command);
+					if (["asset", "artifact", "file", "history", "snapshot", "prompt"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
+					if (isControl(command)) {
+						if (command.kind !== "abort" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
+							throw new Error("Cancel or finish pending messages before changing this session.");
+						return reply({ result: managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
+					}
 					const result = await managed.worker.command(command, string(data.generation, 100), string(data.id, 100));
 					return reply({ result: result ?? null });
 				}
 				if (route[2] === "history" && request.method === "GET") {
-					return reply(await managed.worker.command(commandFrom({ kind: "history",
+					return reply(await managed.worker.command(workerCommandFrom({ kind: "history",
 						before: url.searchParams.has("before") ? string(url.searchParams.get("before"), 100) : undefined,
 						after: url.searchParams.get("after") ?? undefined, from: url.searchParams.get("from") ?? undefined,
 						source: url.searchParams.has("source") ? string(url.searchParams.get("source"), 100) : undefined })));
 				}
 				if (route[3] && request.method === "GET") {
-					const asset = await managed.worker.command(commandFrom({ kind: "asset", id: route[3], origin })) as { mimeType: string; base64: string };
+					const asset = await managed.worker.command(workerCommandFrom({ kind: "asset", id: route[3], origin })) as { mimeType: string; base64: string };
 					return { status: 200, body: null, asset };
 				}
 				if (route[4] && request.method === "GET") {
-					return reply(await managed.worker.command(commandFrom({ kind: "artifact", id: route[4], origin,
+					return reply(await managed.worker.command(workerCommandFrom({ kind: "artifact", id: route[4], origin,
 						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
 						query: url.searchParams.has("query") ? url.searchParams.get("query") : undefined })));
 				}
 				if (route[5] && request.method === "GET") {
-					return reply(await managed.worker.command(commandFrom({ kind: "file", id: route[5], origin, operation: route[6] ?? "info",
+					return reply(await managed.worker.command(workerCommandFrom({ kind: "file", id: route[5], origin, operation: route[6] ?? "info",
 						version: url.searchParams.get("version"),
 						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
 						line: url.searchParams.has("line") ? Number(url.searchParams.get("line")) : undefined })));
@@ -451,7 +584,15 @@ export class DeskHost {
 					offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
 					revision: url.searchParams.get("revision") ?? undefined,
 					refresh: url.searchParams.get("refresh") === "1",
+					cwd: url.searchParams.get("cwd") ?? undefined,
+					scan: url.searchParams.get("scan") ?? undefined,
+					named: url.searchParams.get("named") === "1",
+					reader: url.searchParams.get("reader") ?? undefined,
 				}));
+			}
+			if (url.pathname === "/api/history/cancel" && request.method === "POST") {
+				this.saved!.cancel(string(request.body?.scan, 100), string(request.body?.reader, 100));
+				return reply({});
 			}
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
 			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.access.devices());
@@ -483,6 +624,8 @@ export class DeskHost {
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => item.worker?.close()));
 		for (const result of workers) if (result.status === "rejected") errors.push(result.reason);
+		await Promise.all([...this.sessions.values()].map(item => item.draining));
+		try { this.inputs?.interrupt(undefined, "The host stopped"); this.inputs?.close(); } catch (error) { errors.push(error); }
 		const closed = new Promise<void>(resolve => this.server.close(() => resolve()));
 		this.server.closeAllConnections();
 		await closed;

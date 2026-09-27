@@ -12,8 +12,9 @@ import { ReferenceContext } from "./reference-origin.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
-import { SavedSessions, RESUME_NOTICE } from "./saved-sessions.tsx";
+import { ResumeConversation, RESUME_NOTICE } from "./resume.tsx";
 import { Computers } from "./computers.tsx";
+import { connectionLabel, connectionTone } from "./connection-state.ts";
 import { Inspector, Modal, Navigation } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, ControlHistory, EditorSuggestion } from "./control-status.tsx";
@@ -27,12 +28,20 @@ import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { Devices } from "./devices.tsx";
 import { DraftRecovery } from "./draft-recovery.tsx";
 import { SessionControls } from "./session-controls.tsx";
+import { ConversationFooter } from "./conversation-footer.tsx";
+import { NativeQueue } from "./native-queue.tsx";
+import { AgentPane } from "./agent-pane.tsx";
+import { ViewPreviews } from "./view-previews.tsx";
+import { CloseSummary } from "./close-summary.tsx";
+import { composerKey, type Delivery } from "./composer-keys.ts";
+import { PendingInputs } from "./pending-inputs.tsx";
+import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
-import type { UiDetails } from "../../../pi-ui/index.ts";
+import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
 import type {
   ChatMessage,
@@ -63,17 +72,21 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
   const [panel, setPanel] = useState<
-    "work" | "settings" | "history" | "view" | undefined
+    "work" | "settings" | "view" | "agents" | undefined
   >();
   const [create, setCreate] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const createRequest = useRef(0);
   const [focusedView, setFocusedView] = useState("");
+  const [focusedAgent, setFocusedAgent] = useState("");
+  const autoAgents = useRef("");
   const [cwd, setCwd] = useState("");
   const [newComputer, setNewComputer] = useState<string>();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [error, setError] = useState("");
   const attachments = useAttachments(selected, setError);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -83,7 +96,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
-  const [delivery, setDelivery] = useState<"followUp" | "steer">("followUp");
   const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -92,15 +104,29 @@ export function App({ account }: { account?: BrowserAccount }) {
   );
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
   const connected = state.host?.computers
-    ? currentComputer?.online ?? state.host.computers.some(computer => computer.online)
+    ? currentComputer?.connected ?? state.host.computers.some(computer => computer.connected)
     : transportConnected;
   const epoch = currentComputer?.epoch ?? localEpoch;
   const ui = session?.ui;
   const controls = session?.controls ?? [];
   const controlBusy = controls.some(control => control.state === "running");
-  const confirmation = useConfirmation(`${authorized}:${selected}:${ui?.generation}:${connected}`);
+  const closing = controls.some(control => control.kind === "close" && control.state === "running");
+  const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
+  const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
+  const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
+  const chooseAgent = (id: string) => { setFocusedAgent(id); localStorage.setItem(`pi-desk:agent-selection:${selected}`, id); };
+  useEffect(() => { setFocusedAgent(localStorage.getItem(`pi-desk:agent-selection:${selected}`) ?? ""); }, [selected]);
+  useEffect(() => {
+    if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
+    const activation = `${selected}:${session?.activation}`;
+    if (activeAgents && autoAgents.current !== activation) {
+      autoAgents.current = activation;
+      if (!panel && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
+        && matchMedia("(min-width:1181px)").matches) setPanel("agents");
+    }
+  }, [panel, focusedView, activeAgents, selected, session?.activation, ui]);
   const questions = ui?.interactions ?? [];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
   useEffect(() => {
@@ -131,6 +157,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     controlBusy ||
     session?.snapshot?.activity === "running" ||
     session?.snapshot?.activity === "waiting" ||
+    !!session?.inputs?.some(input => input.state === "sending") ||
     !!question;
   const notice = ui?.notifications
     .filter(
@@ -222,32 +249,41 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) { setError(errorText(error)); }
   }
   function openNewConversation() {
-    const computer = currentComputer?.online ? currentComputer : state.host?.computers?.find(computer => computer.online);
+    const computer = currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
     setNewComputer(computer?.id); setCwd(computer?.cwd ?? state.host?.cwd ?? ""); setCreate(true);
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
   async function closeSession() {
-    if (!session?.ui || !await confirmation.request({
-      title: "Close conversation?", context: confirmationContext, accept: "Close session",
-      body: <p>Stop this session and its active work. The saved conversation will remain available to resume.</p>,
+    if (!session?.activation || !await confirmation.request({
+      title: "Close conversation?", context: confirmationContext, accept: "Close conversation",
+      body: <CloseSummary session={session} />,
     })) return;
     setPanel(undefined);
-    try { await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), generation: session.ui?.generation }); }
+    try { await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation }); }
     catch (error) { setError(errorText(error)); }
   }
-  async function send(event: FormEvent) {
-    event.preventDefault();
-    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sending || controlBusy || !connected || session?.state !== "ready") return;
+  async function send(delivery: Delivery = "steer") {
+    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
+      || !session?.activation || !["starting", "ready"].includes(session.state)) return;
     const text = draft;
     const fileIds = attachments.files.map(file => file.id);
-    setSending(true);
+    sendingRef.current = true; setSending(true);
     try {
       const receiptKey = `pi-desk:submission:${selected}`;
       const previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as {
-        id: string; generation: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
+        id: string; activation: string; generation?: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
       } | null;
-      if (previous && (previous.generation !== session.ui!.generation || previous.requiresConfirmation)
+      const uploaded = await attachments.upload(session.key, value => api(`/sessions/${selected}/uploads`, {
+        activation: session.activation, command: value,
+      }));
+      const prompt: PromptCommand = {
+        kind: "prompt", text, ...(uploaded.length ? { attachments: uploaded } : {}),
+      };
+      const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(prompt)))),
+        byte => byte.toString(16).padStart(2, "0")).join("");
+      const reusable = previous?.activation === session.activation && !previous.requiresConfirmation && previous.fingerprint === fingerprint;
+      if (previous && !reusable
         && !await confirmation.request({
           title: "Send this message again?", context: confirmationContext, accept: "Send again", cancel: "Keep draft",
           body: <>
@@ -257,21 +293,24 @@ export function App({ account }: { account?: BrowserAccount }) {
             {!!fileIds.length && <p>{fileIds.length} attachment{fileIds.length === 1 ? "" : "s"}</p>}
           </>,
         })) return;
-      const uploaded = await attachments.upload(session.snapshot!.id, command);
-      const prompt: WorkerCommand = {
-        kind: "prompt",
-        text,
-        ...(uploaded.length ? { attachments: uploaded } : {}),
+      const receipt = reusable ? previous! : {
+        id: crypto.randomUUID(), activation: session.activation,
+        generation: session.state === "starting" ? undefined : session.ui?.generation,
+        fingerprint, behavior: session.state === "starting" ? "followUp" as const : delivery,
       };
-      const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(prompt)))),
-        byte => byte.toString(16).padStart(2, "0")).join("");
-      const receipt = previous?.generation === session.ui!.generation && !previous.requiresConfirmation && previous.fingerprint === fingerprint
-        ? previous : { id: crypto.randomUUID(), generation: session.ui!.generation, fingerprint, behavior: busy ? delivery : undefined };
       localStorage.setItem(receiptKey, JSON.stringify(receipt));
-      try { await command({ ...prompt, behavior: receipt.behavior }, receipt.id); }
+      try {
+        const result = await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
+          id: receipt.id, activation: receipt.activation, generation: receipt.generation,
+          command: { ...prompt, behavior: receipt.behavior },
+        });
+        if (!["queued", "sending", "accepted"].includes(result.input.state)) {
+          localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
+          throw new Error(result.input.error ?? "This message was cancelled. It was not sent again.");
+        }
+      }
       catch (error) {
         if (JSON.parse(localStorage.getItem(receiptKey) ?? "null")?.id === receipt.id) {
-          if (error instanceof ApiError && error.status === 400) localStorage.removeItem(receiptKey);
           if (error instanceof ApiError && error.status === 409) localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
         }
         throw error;
@@ -280,11 +319,11 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
       if (selectedRef.current === selected) { setDraft(""); setLatestRequest(value => value + 1); }
       try { await attachments.clear(fileIds); }
-      catch { setError("Message sent, but this device could not clear its attachment draft. Remove those files before sending another message."); }
+      catch { setError("Message queued on the computer, but this device could not clear its attachment draft. Remove those files before sending another message."); }
     } catch (error) {
       setError(`${errorText(error)} Your draft has been kept.`);
     } finally {
-      setSending(false);
+      sendingRef.current = false; setSending(false);
     }
   }
 
@@ -324,6 +363,9 @@ export function App({ account }: { account?: BrowserAccount }) {
         <button className="new-chat" onClick={openNewConversation}>
           <span>＋</span> New conversation
         </button>
+        <button className="resume-chat" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
+          <span>◷</span> Resume conversation
+        </button>
         <input
           className="search"
           aria-label="Search conversations"
@@ -335,11 +377,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           CONVERSATIONS <span>{state.host.sessions.length}</span>
         </div>
         <nav className="session-list">
-          {(state.host.computers ?? [{ id: undefined, name: state.host.name, online: connected, upgrade: false }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
+          {(state.host.computers ?? [{ id: undefined, name: state.host.name, connected,
+            connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           {host.computers && <div className="nav-label computer-heading">
-            <span>{computer.name}</span><small>{computer.upgrade ? "Update required" : computer.online ? "Connected" : "Offline"}</small>
+            <span>{computer.name}</span><small>{connectionLabel(computer)}</small>
           </div>}
-          {computer.upgrade && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
+          {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
             .filter((item) =>
@@ -367,8 +410,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </span>
               </button>
             ))}
-          {host.computers && !computer.upgrade && !host.sessions.some(item => item.computer === computer.id) &&
-            <p className="sidebar-hint">{computer.online ? "No conversations yet." : "Waiting for this computer."}</p>}
+          {host.computers && computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
+            <p className="sidebar-hint">{computer.connected ? "No conversations yet." : "Sessions will appear when this app connects."}</p>}
           </section>)}
           {!state.host.sessions.length && (
             <p className="sidebar-hint">
@@ -379,26 +422,18 @@ export function App({ account }: { account?: BrowserAccount }) {
         <div className="sidebar-bottom">
           <button
             onClick={() => {
-              setPanel("history");
-              setSidebar(false);
-            }}
-          >
-            ◷ <span>Saved sessions</span>
-          </button>
-          <button
-            onClick={() => {
               setPanel("settings");
               setSidebar(false);
             }}
           >
             ⚙ <span>Settings & tools</span>
           </button>
-          <div className="host-label">
+          <div className="host-label" title="Connections from this browser">
             <span
-              className={`status-dot ${transportConnected ? "online" : "offline"}`}
+              className={`status-dot ${connectionTone({ connection: transportConnected ? "connected" : host.computers?.[0]?.connection ?? "connecting" })}`}
             />
             <span>{state.host.name}</span>
-            <small>{host.computers ? `${host.computers.filter(computer => computer.online).length}/${host.computers.length} connected` : connected ? "Connected" : "Reconnecting"}</small>
+            <small>{host.computers ? `${host.computers.filter(computer => computer.connected).length}/${host.computers.length} connected` : connected ? "Connected" : "Reconnecting"}</small>
           </div>
         </div>
       </Navigation>
@@ -416,6 +451,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             <strong>{session ? title(session) : "Welcome"}</strong>
           </div>
           <div className="top-actions">
+            {session?.activation && ["starting", "ready"].includes(session.state) && <button
+              className="close-conversation" title="Stop this worker; keep saved history" aria-label="Close conversation"
+              disabled={!connected || closing || sending} onClick={() => void closeSession()}>{closing ? "Closing…" : "Close"}</button>}
             {session?.snapshot && (
               <button
                 className={`work-button ${question ? "attention" : ""}`}
@@ -439,16 +477,28 @@ export function App({ account }: { account?: BrowserAccount }) {
         {!connected && (
           <div className="connection-banner">
             {host.computers?.length === 0 ? "No computers yet. Add one in Settings."
-              : currentComputer?.error ?? (currentComputer ? `${currentComputer.name} is offline. Reconnecting…` : "Disconnected. Reconnecting…")}
+              : currentComputer ? `${currentComputer.name}: ${connectionLabel(currentComputer)}. ${currentComputer.error ?? ""}`
+              : !host.computers ? "Reconnecting to this computer…"
+              : host.computers.every(computer => computer.connection === "paused") ? "This app is paused. Pi sessions stay on their computers."
+              : host.computers.every(computer => computer.connection === "network-offline") ? "This device is offline."
+              : "Connecting to your computers…"}
           </div>
         )}
-        {session && <ControlActivity key={selected} session={selected} controls={controls} />}
+        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope)} open={id => { setFocusedView(id); setPanel("view"); }} />
+        {!!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+          aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
+          <strong>Agents</strong><span>{activeAgents} active · {agentViews.length} total</span><span>View →</span>
+        </button>}
+        {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
+        {session && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && (session.state === "closed" || session.state === "failed") && (
           <div className="connection-banner">
             <span>{session.error || (session.interrupted ? "This session was interrupted. Desk did not resend input or retry controls." : "This session is closed.")}
               {session.file && <small className="resume-hint">{RESUME_NOTICE}</small>}
             </span>
-            {session.file && <button onClick={() => void resume(session.file!, session.computer)}>Resume saved history</button>}
+            <button disabled={!connected} onClick={() => {
+              void api(`/sessions/${session.key}/restart`, {}).catch(error => setError(errorText(error)));
+            }}>{session.file ? "Resume saved history" : "Start again"}</button>
           </div>
         )}
         {session?.snapshot?.extensions.some(extension => extension.error) && <div className="error-banner" role="alert">
@@ -507,7 +557,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   </button>
                 )}
                 {session?.state === "starting" && !controlBusy && (
-                  <p className="muted">Loading your Pi setup…</p>
+                  <p className="muted">Loading your Pi setup. You can send now; messages will wait on this computer.</p>
                 )}
               </div>
           }
@@ -532,13 +582,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot?.queue.followUp.length ? (
-              <div className="queued">
-                {session.snapshot.queue.followUp.length} follow-up
-                {session.snapshot.queue.followUp.length > 1 ? "s" : ""} queued
-              </div>
-            ) : null}
-            <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={(event) => void send(event)}
+            {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+            <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}
               onDrop={event => {
@@ -553,7 +598,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 disabled={sending}
                 placeholder={
                   busy
-                    ? "Add a follow-up…"
+                    ? "Steer Pi, or queue a follow-up…"
                     : "Ask Pi anything about your project…"
                 }
                 value={draft}
@@ -566,14 +611,18 @@ export function App({ account }: { account?: BrowserAccount }) {
                   localStorage.setItem(draftKey(selected), event.target.value);
                 }}
                 onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing &&
-                    matchMedia("(pointer:fine)").matches
-                  ) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
+                  const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
+                    matchMedia("(pointer:fine)").matches);
+                  if (!action) return;
+                  event.preventDefault();
+                  if (action === "newline") {
+                    const editor = event.currentTarget, start = editor.selectionStart;
+                    const text = `${draft.slice(0, start)}\n${draft.slice(editor.selectionEnd)}`;
+                    setDraft(text); localStorage.setItem(draftKey(selected), text);
+                    requestAnimationFrame(() => editor.setSelectionRange(start + 1, start + 1));
+                  } else {
+                    void send(action);
                   }
                 }}
               />
@@ -633,16 +682,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
                     disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>
                   {busy && !controlBusy && (
-                    <select
-                      aria-label="Message delivery"
-                      value={delivery}
-                      onChange={(event) =>
-                        setDelivery(event.target.value as "followUp" | "steer")
-                      }
-                    >
-                      <option value="followUp">Follow up</option>
-                      <option value="steer">Steer</option>
-                    </select>
+                    <button type="button" className="queue-button" aria-label="Queue follow-up"
+                      title="After current work · Alt+Enter or Ctrl+Q"
+                      disabled={sending || !connected || !attachments.ready || !session.activation || !["starting", "ready"].includes(session.state)
+                        || (!draft.trim() && !attachments.files.length)}
+                      onClick={() => void send("followUp")}>Queue</button>
                   )}
                   {busy && controls.every(control => control.state !== "running" || ["compact", "navigate"].includes(control.kind)) && (
                     <button
@@ -656,18 +700,21 @@ export function App({ account }: { account?: BrowserAccount }) {
                     </button>
                   )}
                   <button
-                    className="send-button"
-                    aria-label={busy && !controlBusy ? "Queue follow-up" : "Send message"}
+                    type="button"
+                    className={`send-button${busy && !controlBusy ? " steer-button" : ""}`}
+                    aria-label={busy && !controlBusy ? "Steer Pi" : "Send message"}
+                    title="Enter sends or steers · Shift/Alt-click queues a follow-up"
+                    onClick={event => void send(event.altKey || event.shiftKey ? "followUp" : "steer")}
                     disabled={
                       (!draft.trim() && !attachments.files.length) ||
                       !attachments.ready ||
                       sending ||
                       controlBusy ||
                       !connected ||
-                      session.state !== "ready"
+                       !session.activation || !["starting", "ready"].includes(session.state)
                     }
                   >
-                    ↑
+                    {busy && !controlBusy ? "Steer" : "↑"}
                   </button>
                 </div>
               </div>
@@ -676,33 +723,26 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
               )}
             </form>
-            <div className="composer-caption">
-              <span>Pi runs on {currentComputer?.name ?? state.host.name}</span>
-              <span>
-                {session.snapshot?.context?.percent == null
-                  ? "Your workspace stays on your computer"
-                  : `${session.snapshot.context.percent.toFixed(1)}% context used`}
-              </span>
-            </div>
+            <div className="composer-help">Enter to send or steer · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
+            <ConversationFooter session={session} computer={currentComputer?.name ?? state.host.name} connected={connected}
+              open={view => { setPanel("view"); setFocusedView(view.id); }} />
           </div>
         )}
       </main>
       {panel && (
-        <Inspector title={panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
-          : panel === "history" ? "Saved sessions" : "Settings & tools"} close={() => setPanel(undefined)}
+        <Inspector className={panel === "agents" ? "agents-panel" : ""} title={panel === "agents" ? "Agents" : panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
+          : "Settings & tools"} close={() => setPanel(undefined)}
           back={panel === "view" ? () => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work") : undefined}>
           <div className="panel-title">
             {panel === "view" && <button className="icon-button"
               aria-label={visibleViews[0]?.surface === "settings" ? "Back to settings" : "Back to Work"}
               onClick={() => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {panel === "work"
+              {panel === "agents" ? "Agents" : panel === "work"
                 ? "Work"
                 : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
-                : panel === "history"
-                  ? "Saved sessions"
-                  : "Settings & tools"}
+                : "Settings & tools"}
             </h2>
             <button
               className="icon-button"
@@ -712,6 +752,12 @@ export function App({ account }: { account?: BrowserAccount }) {
               ×
             </button>
           </div>
+          {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
+            context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
+            focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
+            onLatest={storeHistory} renderMessage={(message, source) => <Message message={message} sessionKey={selected} source={source} />}
+            answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
+            openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {(panel === "work" || panel === "view") &&
             (visibleViews.length ? (
               visibleViews.map((view) => (
@@ -754,11 +800,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                   : "Goals, tasks, agents and scheduled work will appear here."}
               </p>
             ))}
-          {panel === "history" && (
-            <SavedSessions computers={host.computers} connected={connected} selected={key => {
-              setSelected(key); setPanel(undefined); setSidebar(false);
-            }} />
-          )}
           {panel === "settings" && (
             <>
               {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <Devices />}
@@ -775,7 +816,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <button onClick={() => { void api(`/sessions/${session.key}/metadata`, { generation: session.ui?.generation, pinned: !session.pinned }).catch(error => setError(errorText(error))); }}>
                   {session.pinned ? "Unpin conversation" : "Pin conversation"}
                 </button>
-                {session.state === "ready" && <button disabled={!connected || controlBusy} onClick={() => void closeSession()}>Close session</button>}
               </section>}
               {session?.state === "ready" && session.ui && <SessionControls key={selected} generation={session.ui.generation}
                 busy={busy || !connected} invoke={command} />}
@@ -904,6 +944,10 @@ export function App({ account }: { account?: BrowserAccount }) {
           )}
         </Inspector>
       )}
+      {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
+        current={session} folders={host.sessions} close={() => setResumeOpen(false)} selected={key => {
+          setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
+        }} />}
       {create && (
         <Modal title="New conversation" close={closeNewConversation}>
           <form onSubmit={(event) => void newSession(event)}>
@@ -913,8 +957,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 setCwd(state.host!.computers!.find(computer => computer.id === event.target.value)?.cwd ?? "");
               }}>
                 {!newComputer && <option value="">Choose a connected computer</option>}
-                {state.host.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.online}>
-                  {computer.name}{computer.online ? "" : " · offline"}
+                {state.host.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>
+                  {computer.name}{computer.connected ? "" : ` · ${connectionLabel(computer)}`}
                 </option>)}
               </select>
             </label>}
@@ -936,7 +980,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               <button type="button" onClick={closeNewConversation}>
                 Cancel
               </button>
-              <button className="primary" disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.online)}>{creating ? "Creating…" : "Create conversation"}</button>
+              <button className="primary" disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)}>{creating ? "Creating…" : "Create conversation"}</button>
             </div>
           </form>
         </Modal>
@@ -1158,7 +1202,7 @@ const Message = memo(function Message({
           {message.role === "assistant"
             ? "π"
             : message.role === "user"
-              ? "You"
+              ? source ? "Input" : "You"
               : (message.toolName ?? "Note")}
         </span>
         {message.role === "assistant" && <strong>Pi</strong>}

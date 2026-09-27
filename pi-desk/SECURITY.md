@@ -103,6 +103,14 @@ and MSAL cache. It is not a global Microsoft logout. Unsent text and attachments
 remain on that browser until removed or site data is cleared; they are not
 synced through the directory.
 
+Messages explicitly sent to a starting worker are saved on that computer in
+`inputs.sqlite`, not on the authority or broker. Unresolved text and attachment
+references remain available to authorized browsers until resolved or discarded.
+This store, uploaded files and native Pi history rely on the user's private
+profile and filesystem protection; they are not encrypted credential stores.
+Host admission can outlive a browser disconnect or revocation. A host restart
+retains unresolved input for review but never automatically resends it.
+
 The loopback endpoint remains for local process management and trusted
 recovery. `pi-desk open --local` creates a short-lived recovery link; normal
 access uses the shared website. Local recovery and process-management
@@ -114,6 +122,18 @@ not revoke the other. A copied local recovery link grants substantial local
 access; keep it private.
 
 ## Deployment and incidents
+
+Managed runtimes are built from the configured personal Pi package with its
+locked dependencies. `/desk update` uses Pi's own package manager; it does not
+accept a source URL from the relay. Source/dependency publishers remain trusted
+to execute code as the host user. Runtime content hashes identify snapshots;
+they are not publisher signatures or an independent security check.
+
+Authorized users can invoke `/desk` through a normal Pi conversation. Its
+restart/stop/login controls require native confirmation, but this does not add
+a second security boundary: the same account already has access to process
+tools. Native commands call local lifecycle controls; those management HTTP
+routes are not exposed by the relay.
 
 - Protect Microsoft, hosting, source and deployment accounts with MFA and
   limited privileges. Disable unused publishing passwords, FTP and debugging.

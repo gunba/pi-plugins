@@ -34,7 +34,7 @@ test("SDK fork and reload retain working native UI bindings", async () => {
 	mkdirSync(cwd); mkdirSync(join(agentDir, "extensions"), { recursive: true });
 	writeFileSync(join(agentDir, "extensions", "question.ts"), `export default function(pi) {
 		pi.on("session_start", (_, ctx) => {
-			const request = {}; pi.events.emit("pi-ui/discover-v1", request);
+			const request = {}; pi.events.emit("pi-ui/discover-v2", request);
 			request.presentation.publish("probe", {kind:"details",title:"Probe",data:{},actions:[{id:"confirm",label:"Confirm"}]},
 				{confirm:()=>ctx.ui.confirm("Reload check","Continue?")});
 		});

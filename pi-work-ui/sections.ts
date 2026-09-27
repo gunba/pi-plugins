@@ -1,52 +1,23 @@
 import type { WorkSection } from "./view.ts";
+import type { PlanView } from "../pi-plan/src/domain.ts";
+import { stepSummary } from "../pi-plan/src/steps.ts";
 
-interface GoalState {
-	id: string;
-	revision: number;
-	objective: string;
-	phase: "active" | "paused" | "blocked" | "complete";
-	activation: string;
-	roundsStarted: number;
-	maxGoalRounds: number;
-	blockedReason?: { code: string; message: string };
-}
-
-export function goalWorkSection(goal: GoalState | undefined, corruption?: string): WorkSection | undefined {
-	if (corruption !== undefined) return {
-		label: "Goal", status: "! corrupt", summary: "History unavailable", tone: "error",
-		detail: `Goal history is corrupt.\n\n${corruption}`,
-	};
-	if (!goal) return undefined;
-	const activation = goal.phase === "active" ? ` · ${goal.activation}` : "";
+export function planWorkSection(plan: PlanView | undefined, error?: string): WorkSection | undefined {
+	if (error !== undefined) return { label: "Plan", status: "! unavailable", summary: "History unavailable", tone: "error", detail: error };
+	if (!plan) return undefined;
+	const progress = stepSummary(plan.steps), mode = plan.autoContinue ? plan.activation : "manual";
 	return {
-		label: "Goal",
-		status: `${goal.phase === "blocked" ? "! " : ""}${goal.phase}${activation}`,
-		summary: goal.objective,
-		tone: goal.phase === "blocked" ? "warning" : goal.phase === "complete" ? "success" : goal.phase === "paused" ? "muted" : "accent",
+		label: "Plan", status: `${plan.phase} · ${progress.completed}/${progress.total} · ${mode}`,
+		summary: `${plan.objective}${progress.current ? ` → ${progress.current}` : ""}`,
+		tone: plan.phase === "blocked" ? "warning" : plan.phase === "complete" ? "success" : plan.phase === "paused" ? "muted" : "accent",
 		detail: [
-			goal.objective,
-			"",
-			`State: ${goal.phase} · ${goal.activation}`,
-			`Automatic continuations: ${goal.roundsStarted} (limit ${goal.maxGoalRounds})`,
-			`Revision: ${goal.revision} · ID: ${goal.id}`,
-			...(goal.blockedReason ? ["", `Blocked: ${goal.blockedReason.code}: ${goal.blockedReason.message}`] : []),
-			"", "Manage with /goal.",
+			plan.objective, "", `State: ${plan.phase} · ${mode}`,
+			`Automatic rounds: ${plan.roundsStarted}/${plan.maxRounds}`,
+			`Revision: ${plan.revision} · ID: ${plan.id}`,
+			...(plan.phase === "blocked" ? ["", `Blocked: ${plan.blockedReason.message}`] : []), "",
+			...plan.steps.map(step => `${step.status === "completed" ? "✓" : step.status === "in_progress" ? "◉" : "○"} [${step.status.replaceAll("_", " ")}] ${step.content}`),
+			"", "Manage with /plan.",
 		].join("\n"),
-	};
-}
-
-interface TodoState { content: string; status: "pending" | "in_progress" | "completed" }
-export function todoWorkSection(todos: readonly TodoState[] | null): WorkSection | undefined {
-	if (!todos?.length) return undefined;
-	const done = todos.filter((todo) => todo.status === "completed").length;
-	const active = todos.filter((todo) => todo.status === "in_progress");
-	const pending = todos.filter((todo) => todo.status === "pending");
-	const current = active[0] ?? pending[0] ?? todos[todos.length - 1];
-	return {
-		label: "Todos", status: `${done}/${todos.length} done · ${active.length} active · ${pending.length} pending`,
-		summary: `${current.content}${active.length > 1 ? ` (+${active.length - 1} active)` : ""}`,
-		tone: done === todos.length ? "success" : active.length ? "accent" : "muted",
-		detail: todos.map((todo) => `${todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "◉" : "○"} [${todo.status.replaceAll("_", " ")}] ${todo.content}`).join("\n\n"),
 	};
 }
 

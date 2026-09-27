@@ -9,7 +9,7 @@ import { SessionCatalog } from "../src/host/session-files.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "../src/host/worker-errors.ts";
 import { API_HEADER, API_VERSION } from "../src/shared/release.ts";
 
-test("worker loss and stale generations are not reported as definitive input rejection", async () => {
+test("worker loss and stale generations are not reported as definitive command rejection", async () => {
 	const root = mkdtempSync(join(tmpdir(), "desk-control-"));
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: root, port: 0 });
 	try {
@@ -21,7 +21,7 @@ test("worker loss and stale generations are not reported as definitive input rej
 			worker: { command: async () => { throw failure; }, close: async () => {} } });
 		const send = () => fetch(`${origin}/api/sessions/${key}/command`, {
 			method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", [API_HEADER]: String(API_VERSION) },
-			body: JSON.stringify({ id: randomUUID(), generation: "sample", command: { kind: "prompt", text: "Sample" } }),
+			body: JSON.stringify({ id: randomUUID(), generation: "sample", command: { kind: "name", name: "Sample" } }),
 		});
 		let response = await send();
 		assert.equal(response.status, 503); await response.text();

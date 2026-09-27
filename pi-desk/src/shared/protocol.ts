@@ -1,11 +1,11 @@
 import type { UiInteraction, UiValue, UiView } from "../../../pi-ui/index.ts";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
-import type { UploadCommand } from "./attachments.ts";
 import type { FileCommand, FileReference } from "./files.ts";
 import type { HistoryPosition } from "./history.ts";
 import type { ReferenceOrigin } from "./references.ts";
 import type { ControlStatus } from "./controls.ts";
 import type { ReleaseInfo } from "./release.ts";
+import type { InputStatus } from "./inputs.ts";
 
 export interface ViewSnapshot extends UiView {
 	id: string; revision: number; scope?: { id: string; label: string };
@@ -41,8 +41,9 @@ export interface SessionSnapshot {
 	extensions: { path: string; error?: string }[];
 	commands: { name: string; description: string }[];
 	models: { id: string; provider: string; name: string }[];
-	queue: { steering: readonly string[]; followUp: readonly string[] };
+	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	context?: { tokens: number | null; contextWindow: number; percent: number | null };
+	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 	ui: PresentationSnapshot;
 }
 export type ChatBlock =
@@ -78,7 +79,6 @@ export interface TreePage {
 }
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
-	warning?: string;
 }
 export interface SessionView {
 	key: string;
@@ -94,6 +94,8 @@ export interface SessionView {
 	interrupted?: boolean;
 	leaf?: string | null;
 	controls?: ControlStatus[];
+	activation?: string;
+	inputs?: InputStatus[];
 }
 export interface HostState { release: ReleaseInfo; name: string; cwd: string; sessions: SessionView[];
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
@@ -101,10 +103,14 @@ export type HostEvent =
 	| { type: "state"; state: HostState }
 	| { type: "session"; session: SessionView }
 	| { type: "worker"; key: string; message: WorkerMessage };
-export interface WorkerInit { cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean; leaf?: string | null }
+export interface WorkerInit {
+	cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean;
+	leaf?: string | null; attachmentScope?: string;
+	/** Host-owned code location, carried over private IPC rather than worker environment. */
+	runtimeDirectory?: string;
+}
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
-	| UploadCommand
 	| { kind: "snapshot" }
 	| ({ kind: "history"; source?: string } & HistoryPosition)
 	| { kind: "tree"; after?: string }
@@ -120,10 +126,10 @@ export type WorkerCommand =
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
-	| { kind: "reload" }
-	| { kind: "shutdown" };
+	| { kind: "reload" };
 export type WorkerRequest =
 	| { type: "init"; id: string; options: WorkerInit }
+	| { type: "shutdown"; id: string }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
 	| { type: "chat"; generation: string; message: ChatMessage; replaces?: string }

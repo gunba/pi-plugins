@@ -13,18 +13,29 @@ controls, questions and Work summaries. Sign into the same Microsoft-owned
 workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
-forks, compaction, configuration, Party, goal/task/scheduler and child-agent
-controls are connected. Context capacity, initial-context breakdowns, usage,
-allowance and Fast mode have dedicated settings panels. Model accounts, MCP
+forks, compaction, configuration, Party, plan/scheduler and child-agent
+controls are connected. The conversation footer shows model/thinking, context,
+recorded usage and first-party Fast/allowance badges, with expanded settings
+panels. Initial-context breakdowns, model accounts, MCP
 connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
 connection states and account-wide access controls. Unsent drafts stay in their
 browser. An unavailable computer does not
 block the others.
-Foreground, detached and optional login-start entry points and upgrade
-diagnostics are available. This is not an independently audited remote-access
+The included `/desk` command handles setup, staged updates, restart and optional
+login-start using native Pi dialogs. Prepared runtimes pin the first-party
+resources; updating the installed source does not replace live worker code.
+Foreground/detached entry points remain available for development and recovery.
+This is not an independently audited remote-access
 product. See [installation and updates](UPDATING.md) for setup and platform checks.
+
+## Getting started
+
+Install this repository as a personal Pi package, restart Pi, and run
+`/desk setup`. Then `/desk signin` connects this computer to the shared workspace
+and `/desk open` opens it. Use `/desk` for management; see
+[installation and updates](UPDATING.md) for migration and platform prerequisites.
 
 ## Development
 
@@ -59,15 +70,26 @@ Stop development hosts before rebuilding their executable output. For a
 client-only build, use `npx vite build --outDir dist/client`; Vite's default
 output directory would replace the host build as well.
 
-Saved sessions can be resumed from the history panel. Settings provides branch,
-fork, compaction, name, pin and explicit close controls. Closing stops that
-worker's active work, but keeps the saved conversation. A host restart restores
+**Resume conversation** opens a searchable picker. Choose a computer, then its
+current project, another folder or all projects. Settings provides branch,
+fork, compaction, name and pin controls. **Close** is in the conversation header,
+including during startup. Its confirmation identifies the worker and outstanding
+work. Closing stops that worker but keeps the saved conversation. Native Pi
+messages still queued for delivery are discarded; unresolved host admissions
+remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay prompts
 or restart workers automatically.
 
 Closing or suspending a browser does not stop a worker: questions, children,
 timers and goal continuation remain with the owning computer. Stop the session
 or host to stop its active work.
+
+Computer labels describe this browser's link: Connecting, Connected,
+Reconnecting or App paused. A hidden tab disconnects intentionally; returning
+re-establishes the authenticated channel. This is not a report that the PC
+stopped. Settings shows the separate last host heartbeat and unexpected
+connection interruptions (time and close code, not message contents). A stale
+directory report cannot enable commands or extend an authorization lease.
 
 Explicitly resuming a saved session also loads its native plugin state:
 
@@ -78,29 +100,49 @@ Explicitly resuming a saved session also loads its native plugin state:
 - Restored goals are disarmed and need their own **Resume** action.
 
 Stopping does not delete pending child inbox entries or scheduled messages.
-Desk does not add a separate recovery queue or replay browser input and controls.
-Shutdown joins pending startup and native cleanup before releasing the writer;
+Desk retains unresolved browser input for review, but does not replay it or
+unfinished controls after a worker or host restart.
+Shutdown cancels native work and questions, then joins pending startup,
+transitions and native cleanup before releasing the writer;
 overlapping stop requests wait for the same cleanup.
 
-The saved-session catalog searches title/opening-text previews and host paths,
-not complete conversation text. Results are grouped by computer and project,
-with up to 50 entries per page and a serialized-size limit. Each computer loads
-independently. Refresh rechecks its files; changing results invalidate older page
-positions rather than mixing catalog versions.
+The footer uses native model/thinking/context state and the same recorded-usage
+reducer as the first-party terminal footer. Unreported context or usage stays
+unknown. Usage includes recorded child charges once; cost is not a subscription
+bill. Structured view badges expose the owning plugin's settings without parsing
+terminal strings: Fast is a preference, not a guarantee that the provider used
+priority processing, and allowance is passively reported rather than polled.
+The mobile footer starts collapsed; expand it for usage, status and settings.
 
-The host streams the documented native JSONL format into a private, rebuildable
-metadata index (`history.sqlite` in its data directory). It stores bounded
-previews, not complete messages or another authoritative conversation record.
-Unchanged files reuse their indexed metadata. Discovery includes the configured
-session store and directories used by Desk's saved session references. Browsing
-does not start session workers. Indexing/read failures are shown in the catalog.
+The picker searches title/opening-text previews and host paths, not complete
+conversation text. Named-only filtering and recent-first ordering follow Pi's
+session metadata. Rows are virtualized; bounded pages load as you scroll. Only
+the selected computer and scope are queried. Refresh rechecks files; changed
+results invalidate older page positions rather than mixing catalogue versions.
+
+The host uses Pi's public `SessionManager.list`/`listAll` APIs in an isolated
+listing thread, with progress and cancellation. The first response returns
+cached results immediately, including while a cold scan is still running.
+Recent completed scans are reused. At most two listing threads run per host,
+each with a 512 MiB JavaScript heap budget; failures leave cached previews
+available and ask you to narrow the project selection.
+
+A private, rebuildable metadata index (`history.sqlite` in the data directory)
+stores bounded previews, not complete messages or another authoritative
+conversation record. Discovery includes the configured session store and
+directories used by Desk's saved session references. Browsing does not start
+agent sessions or load extensions. Indexing failures are shown in the picker.
+Pi skips unreadable records and files. A completed listing replaces that scope's
+cached membership; an interrupted or failed listing retains its cached previews.
 With the host stopped, deleting this index and its SQLite sidecars only forces
 a rebuild; it does not delete native sessions.
 
 ### Starting and stopping
 
-From a built checkout, use `node dist/host/cli.js` in place of `pi-desk` below.
-The package's executable runs the same commands:
+For a managed installation, use `/desk` or its stable launcher from
+[installation and updates](UPDATING.md). The commands below describe the direct
+development/standalone CLI. From a built checkout, use `node dist/host/cli.js`
+in place of `pi-desk`:
 
 ```sh
 pi-desk signin --workspace https://desk.example.com --name "My computer"
@@ -246,6 +288,10 @@ available, `login-error.txt`. There is no automatic crash-restart loop and no
 forced process-tree termination. A subsequent start restores references, not
 active workers or tool requests.
 
+Managed users can instead use `/desk login`; its detached controller performs
+the stop/change/start sequence after confirmation. It does not apply an unrelated
+staged update or resume conversations.
+
 The user-service flow is exercised on Linux. Native Windows registration,
 window behavior and shutdown still require the platform check. The Windows
 implementation uses the documented [task principal](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtaskprincipal)
@@ -254,8 +300,26 @@ APIs. Linux shutdown uses [systemd's process and signal controls](https://man7.o
 
 ### Session content
 
-Child agents have their own paged transcripts in Work and `/subagents`, including
-live assistant text/thinking, tool cards, images and complete-output links.
+The conversation's **Agents** bar opens a dedicated pane beside the chat on a
+wide screen, or a full-height sheet on a phone. It offers live state/activity,
+a searchable virtualized agent list, and the selected agent's paged transcript:
+assistant text/thinking, tool cards, images and complete-output links. Finished
+agents remain available through **Include finished**. A new active collection
+can open the desktop pane when no other panel or text editor is in use.
+
+**Steer** updates a running direct child; **Queue** accepts a native follow-up.
+An idle continuable child offers **Send** to wake it. The owning subagent runtime
+enforces direct-parent messaging and ancestor interruption, just as the terminal
+tools do. Stop targets that agent's current work, not every descendant; queued
+tasks remain saved. `/subagents` manages launches and model permissions, and
+`/subagents <id>` opens that agent's pane. The terminal dashboard is unchanged.
+
+Drafts are separate for each agent on this browser. Inline sends wait for native
+controller admission. Uncertain replies retain the draft and exact request ID:
+**Check delivery** asks for that same result, not another message. A new send
+requires confirmation; reconnect never sends automatically. Each view has its
+own action lock, so a launch dialog does not block another agent's controls.
+
 History uses the already-owned Pi managers, not filesystem paths supplied by
 the browser or another conversation store. Earlier pages stay bounded; Latest returns
 to live output. Parent and child streams use separate channels.
@@ -304,7 +368,7 @@ input to finish. Questions and command execution remain owned by the host.
 Close-session, remove-computer and uncertain-delivery decisions use the same
 dialogs, with an explicit target and Cancel/Back behavior. A conversation change
 cancels an open decision. Dismissing an uncertain resend keeps its receipt and
-draft; resending requires an explicit choice before any new upload.
+draft; a new delivery requires an explicit choice.
 
 Plugin actions acknowledge admission without keeping a request open while you
 answer a form. Their views show pending work and disable repeated actions, even
@@ -319,9 +383,14 @@ receipts do not start another operation in the same worker. Failed or interrupte
 operations are not retried automatically. After a lost connection, check this
 history and the native conversation before repeating a control.
 
+Close is bound to the worker activation, not a not-yet-created or changing
+presentation generation. It uses private parent/worker lifecycle IPC and waits
+for process exit, so a startup close cannot be mistaken for a stale UI command.
+
 Unfinished operations become unconfirmed after a worker or host failure. Only
-small operation metadata is saved, not another command queue or conversation
-store. A failed worker cannot leave a live question in the browser.
+small control-operation metadata is saved. Pending message admission is separate
+and retains unresolved input for review. A failed worker cannot leave a live
+question in the browser.
 
 Pi editor suggestions, including **Fork & edit**, appear as an offered draft.
 **Use draft** fills this device's composer; replacing existing unsent text needs
@@ -428,12 +497,32 @@ Each conversation can store up to 128 MiB or 256 attachments. Unsubmitted
 uploads older than a day are removed when that conversation starts another
 upload. Clearing browser data deletes unsent drafts, not host files.
 
-An uncertain prompt delivery keeps its command receipt as well as the draft.
-Retrying unchanged input after a browser reload reuses that receipt rather
-than sending the prompt twice within the same worker lifetime. If the worker
-or branch changed, or a receipt has expired/conflicted, the app asks you to check
-history before sending again.
-It does not automatically replay prompts after a host restart.
+You can send text and files while Pi is still starting. The host saves admission
+to `inputs.sqlite` before acknowledging it. **Pending messages** shows Waiting
+for Pi, Confirming admission, or a failure. Cancel works before dispatch; once
+dispatch begins, check the conversation rather than treating a disconnect as
+cancellation. Up to 16 unresolved messages can be retained per conversation.
+
+On a keyboard, Enter sends or steers current work. Alt+Enter or Ctrl+Q queues a
+follow-up; Shift+Enter or Ctrl+J inserts a new line. Shift/Alt-clicking Send also
+queues a follow-up. While busy, separate **Steer** and **Queue** buttons work on
+touchscreens; the phone keyboard keeps ordinary Enter for new lines. IME
+composition does not submit. **In Pi** shows native steering/follow-up counts
+and up to twelve bounded previews per queue, distinct from host admissions.
+
+Input is bound to that worker activation and native generation. It cannot drift
+into another branch or a restarted worker. Startup messages use native follow-up
+delivery in submission order. Uploaded files use a stable conversation scope;
+only the host writes their metadata, and the native worker reads them.
+
+The admission receipt survives reconnects and host restarts. Retrying unchanged
+input reuses its receipt, including when Pi finished loading while the reply was
+lost. Accepted payloads are removed from the admission store; native JSONL remains
+conversation history. Failed or unconfirmed input retains its text and files.
+**Review** lets you inspect, explicitly send again, or discard it. Startup failure
+offers **Start again**; saved conversations instead resume their native history.
+Restart never automatically sends retained input. Undispatched cancellations
+release their file references for normal unused-upload cleanup.
 
 ### Accounts and connections
 
@@ -492,6 +581,8 @@ Remote access setup is in [RELAY.md](RELAY.md).
 - `src/shared/protocol.ts`: serializable app messages.
 - `src/shared/account-channel.ts`: credential-bound ephemeral handshakes.
 - `../pi-ui/`: lightweight presentation discovery for extensions.
+- `extensions/desk.ts`: native setup and management command.
+- `manage/`: immutable source preparation and stable-launcher selection.
 
 The app is an optional package. Its frontend and server dependencies are not
 part of ordinary pi-plugins extension loading.

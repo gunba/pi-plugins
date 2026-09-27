@@ -32,13 +32,15 @@ const plain = (text: string) => stripVTControlCharacters(text);
 
 /** One worker's presentation state. Browser connections never own interaction lifetimes. */
 export class DeskPresentation implements Presentation {
-	readonly version = 1;
+	readonly version = 2;
 	readonly capabilities: Presentation["capabilities"];
 	generation = randomUUID();
 	private views = new Map<string, PublishedView>();
 	private actions = new Map<string, { label: string; generation: string }>();
 	private actionErrors = new Map<string, string>();
 	private viewRevision = 0;
+	private batchDepth = 0;
+	private batchChanged = false;
 	private nextRevision: () => number;
 	private scopes = new Map<string, { label: string; presentation: DeskPresentation; close: () => void }>();
 	private retired = false;
@@ -70,7 +72,7 @@ export class DeskPresentation implements Presentation {
 		this.nextRevision = nextRevision ?? (() => ++this.viewRevision);
 		this.registerSource = registerSource;
 		this.command = command;
-		this.capabilities = ["questions", "details", "work", "scopes",
+		this.capabilities = ["questions", "details", "work", "scopes", "conversations",
 			...(registerSource ? ["transcripts" as const] : []), ...(command ? ["commands" as const] : [])];
 		// Extensions may format notifications even outside TUI mode.
 		initTheme("dark", false);
@@ -81,8 +83,9 @@ export class DeskPresentation implements Presentation {
 		const revision = this.presentationRevision;
 		const current = () => active && revision === this.presentationRevision && !this.retired;
 		const lease: Presentation = {
-			version: 1,
+			version: 2,
 			capabilities: this.capabilities,
+			batch: update => { if (current()) this.batch(update); },
 			...(this.command ? { runCommand: async (name: string, args?: string) => {
 				if (!current()) throw new Error("The command belongs to a previous session.");
 				await this.command!(name, args);
@@ -129,7 +132,17 @@ export class DeskPresentation implements Presentation {
 		};
 	}
 
-	private update(): void { this.changed(this.snapshot()); }
+	batch(update: () => void): void {
+		this.batchDepth++;
+		try { update(); } finally {
+			this.batchDepth--;
+			if (!this.batchDepth && this.batchChanged) { this.batchChanged = false; this.update(); }
+		}
+	}
+	private update(): void {
+		if (this.batchDepth) { this.batchChanged = true; return; }
+		this.changed(this.snapshot());
+	}
 
 	advance(): void {
 		this.generation = randomUUID();
@@ -191,7 +204,8 @@ export class DeskPresentation implements Presentation {
 		};
 		this.scopes.set(id, { label: plain(label), presentation: child, close });
 		return {
-			version: 1, capabilities: child.capabilities, ui,
+			version: 2, capabilities: child.capabilities, ui,
+			batch: child.batch.bind(child),
 			publish: child.publish.bind(child), open: child.open.bind(child), request: child.request.bind(child),
 			createScope: child.createScope.bind(child), install: child.install.bind(child),
 			cancelInteractions: child.cancelInteractions.bind(child), close,
@@ -221,20 +235,29 @@ export class DeskPresentation implements Presentation {
 		const itemActions = view.snapshot.kind === "details" ? (view.snapshot.data as UiDetails).items?.flatMap(item => item.actions ?? []) ?? [] : [];
 		const descriptor = [...view.snapshot.actions ?? [], ...itemActions].find(item => item.id === action);
 		if (!handler || !descriptor) throw new Error("Unknown action.");
+		if (descriptor.input === "message" && (typeof value !== "string" || !value.trim() || value.length > 1_000_000))
+			throw new Error("Enter a message of at most 1,000,000 characters.");
 		const operation = { label: plain(descriptor.label), generation: this.generation };
 		this.actions.set(id, operation); this.actionErrors.delete(id);
 		view.snapshot = { ...view.snapshot, revision: this.nextRevision() };
 		this.update();
 		const current = () => !this.retired && operation.generation === this.generation && this.actions.get(id) === operation;
-		void Promise.resolve().then(() => current() ? handler(value) : undefined).catch(error => {
-			if (!current()) return;
+		const work = Promise.resolve().then(() => {
+			if (!current()) throw new Error("The action belongs to a previous session.");
+			return handler(value);
+		}).catch(error => {
+			if (!current()) throw error;
 			const message = plain(`${operation.label}: ${error instanceof Error ? error.message : String(error)}`).slice(0, 2000);
 			if (this.views.has(id)) this.actionErrors.set(id, message);
 			this.notify(message, "error");
+			throw error;
 		}).finally(() => {
 			if (this.actions.get(id) !== operation) return;
 			this.actions.delete(id); this.update();
 		});
+		// Interactive actions remain asynchronous; inline text waits for actual admission.
+		if (descriptor.input === "message") await work;
+		else void work.catch(() => {});
 		return { accepted: true };
 	}
 

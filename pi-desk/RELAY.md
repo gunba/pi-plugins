@@ -127,17 +127,18 @@ credentials on the broker.
 
 ## Computers and browsers
 
-Install the [native package and protected-store dependency](UPDATING.md), then
-on each computer:
+Install the [personal Pi package and prepare Desk](UPDATING.md), then use its
+native commands on each computer:
 
 ```sh
-pi-desk signin --workspace https://desk.example.com --name "My computer"
-pi-desk start --cwd /path/to/project
-pi-desk open
-pi-desk doctor
+/desk signin https://desk.example.com
+/desk open
+/desk status
 ```
 
-Use `node dist/host/cli.js` instead of `pi-desk` from a built checkout.
+The stable launcher also accepts the CLI commands below. Use
+`node <Pi-agent-directory>/desk/runtime/launch.mjs` in place of `pi-desk` for a
+managed installation, or `node dist/host/cli.js` from a development checkout.
 `signin` reuses its saved authorization, or opens Microsoft in the computer's
 browser and lets Microsoft reuse an existing session. It saves the public
 workspace configuration and enrols the computer; future starts reconnect to
@@ -160,7 +161,8 @@ rule or router configuration is needed. The PC must be awake and the user
 logged in. Linux needs an unlocked Secret Service; Windows uses current-user
 DPAPI. [Login-start](README.md#start-at-login) is optional.
 
-For an approved explicit proxy, pass `--proxy http://proxy.example.com:8080`
+Managed setup can save an approved explicit proxy for both host and account
+commands. With the direct CLI, pass `--proxy http://proxy.example.com:8080`
 to `signin`/`signout` and to the host's `start`/`serve` or login-start installation.
 Otherwise the native clients use standard proxy environment variables and
 `NO_PROXY`. `NODE_EXTRA_CA_CERTS` can add an approved PEM CA without disabling

@@ -3,6 +3,7 @@ import { removeComputer, renameComputer, refreshDirectory } from "./connection.t
 import type { Computer } from "./workspace.ts";
 import type { BrowserAccount, AccountDirectory } from "./account.ts";
 import { useConfirmation } from "./confirmation.tsx";
+import { connectionLabel, connectionTone } from "./connection-state.ts";
 
 export function Computers({ computers, account }: { computers: Computer[]; account: BrowserAccount }) {
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
@@ -38,11 +39,21 @@ function ComputerCard({ computer }: { computer: Computer }) {
 		void work().catch(error => setError(String(error))).finally(() => setBusy(false));
 	};
 	return <details className="computer-card">
-		<summary><span className={`status-dot ${computer.online ? "online" : "offline"}`} />{computer.name}
-			<small>{computer.upgrade ? "Update required" : computer.online ? "Connected" : "Offline"}</small></summary>
+		<summary><span className={`status-dot ${connectionTone(computer)}`} />{computer.name}
+			<small>{connectionLabel(computer)}</small></summary>
 		<p className="muted">{computer.id.slice(0, 8)}{computer.error ? ` · ${computer.error}` : ""}</p>
 		{computer.release && <p className="muted">Host {computer.release.version} · API {computer.release.api} · Pi {computer.release.engine}</p>}
-		{computer.upgrade && <button onClick={() => location.reload()}>Reload app</button>}
+		{computer.connection === "upgrade" && <button onClick={() => location.reload()}>Reload app</button>}
+		{computer.presence && <p className="muted">Last host report: {computer.presence.online ? "online" : "no recent connection"}.
+			{" "}Last contact {new Date(computer.presence.seen).toLocaleString()}.
+		</p>}
+		<details className="connection-details"><summary>Connection details</summary>
+			<p>Browser link: {connectionLabel(computer)}. Switching away pauses this app's connections, not Pi sessions.</p>
+			<p>{computer.diagnostics?.interruptions ?? 0} unexpected interruptions since opening this app.</p>
+			{computer.diagnostics?.last && <p>Last interruption: {computer.diagnostics.last.reason}
+				{computer.diagnostics.last.code === undefined ? "" : ` (code ${computer.diagnostics.last.code})`}
+				{" · "}{new Date(computer.diagnostics.last.at).toLocaleString()}</p>}
+		</details>
 		<form onSubmit={event => { event.preventDefault(); run(() => renameComputer(computer.id, name)); }}>
 			<label>Computer name<input aria-label="Computer name" maxLength={100} value={name} onChange={event => setName(event.target.value)} required /></label>
 			<button disabled={busy}>Save name</button>

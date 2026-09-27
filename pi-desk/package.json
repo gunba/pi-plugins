@@ -1,6 +1,6 @@
 {
   "name": "@gunba/pi-desk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A desktop and mobile client for Pi.",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,6 @@
     "mdast-util-from-markdown": "2.0.2",
     "proper-lockfile": "4.1.2",
     "proxy-agent": "6.5.0",
-    "stream-json": "3.7.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

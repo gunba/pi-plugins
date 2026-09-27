@@ -7,8 +7,10 @@ Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js
 [`pi-desk`](pi-desk/README.md) is the optional desktop and phone app. It runs Pi
 sessions on their owning computers and presents them through one shared web
 interface. An HTTPS relay provides remote access without inbound PC ports.
-Desk installs separately and includes a pinned Pi SDK; it is not another
-extension entry. See its [capability map](pi-desk/CAPABILITIES.md) and
+The included `/desk` extension prepares isolated runtimes with a pinned Pi SDK,
+and manages updates, restart and login-start through native Pi dialogs.
+The host build is optional; ordinary extension loading does not install its
+frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) and
 [installation guide](pi-desk/UPDATING.md) for coverage and release boundaries.
 
 ## Extensions
@@ -85,10 +87,10 @@ extension entry. See its [capability map](pi-desk/CAPABILITIES.md) and
 - [`pi-browser`](pi-browser/README.md) — a focused browser skill for
   `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
   observations limit context, and full text uses the output archive.
-- `pi-goal` — adds one durable, branch-local completion objective with `/goal`,
-  `get_goal`, `create_goal`, and `update_goal`. Input-bound direct-human
-  authority protects mutations; bounded same-session rounds use revision-fenced
-  transitions and fail closed when Pi context cannot be authenticated.
+- [`pi-plan`](pi-plan/README.md) — one branch-local objective and checklist,
+  with optional bounded automatic continuation. `/plan`, `get_plan`,
+  `create_plan` and `update_plan` share the same revision-fenced native state.
+  Manual plans never start extra model rounds.
 - `pi-subagents` — provides DSH-style fresh and forked Pi SDK children through
   `subagent` and `subagent_fork`, steering `send_message`, FIFO `followup_task`,
   current-turn interruption, durable discovery, cold resumption, and a live TUI
@@ -98,10 +100,7 @@ extension entry. See its [capability map](pi-desk/CAPABILITIES.md) and
   Optional model and thinking overrides require one user approval for the root
   conversation; descendants share that approval. `/subagents permissions`
   shows its status, and `/subagents permissions revoke` revokes future overrides.
-- `pi-todo` — adds the whole-list `todo_write` tool and a compact standing task
-  panel. Ordered immutable three-state snapshots are branch-aware, remain visible
-  through settlement, and render model-supplied text without terminal controls.
-- [`pi-work-ui`](pi-work-ui/README.md) — combines goal, todo, subagent, party and
+- [`pi-work-ui`](pi-work-ui/README.md) — combines plan, subagent, party and
   scheduled state above the editor. `/work` opens complete details in a modal;
   fullscreen summary clicks open the corresponding section. Management reuses
   the existing subagent and party screens. Native tool expansion remains separate.

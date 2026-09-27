@@ -1,7 +1,7 @@
 # Extension presentations
 
 `getPresentation(pi)` discovers a host presentation through
-`pi-ui/discover-v1`. Ordinary terminal sessions return `undefined`; their
+`pi-ui/discover-v2`. Ordinary terminal sessions return `undefined`; their
 existing UI remains in use. Desk supplies version 1 and advertises supported
 capabilities.
 
@@ -21,6 +21,34 @@ if (presentation?.capabilities.includes("details")) {
 The controller remains the state owner. Views contain plain data; action,
 interaction and transcript callbacks stay in the host. This module has no
 browser or terminal dependency at runtime.
+
+Views may include `badges: [{ label, value, description?, compact? }]` for compact facts
+beside the conversation. The publishing controller owns their meaning and
+updates, just like the full view. Desk shows root badges in its footer and links
+back to their views; child-scope badges do not describe the parent session.
+`compact: true` keeps an important badge in the collapsed mobile summary;
+other badges remain in its expanded details.
+Badges are not a parsing contract for terminal status strings.
+
+## Side conversations
+
+A host advertising `conversations` renders `kind: "conversation"` views with
+`UiConversation` data: an opaque registered
+transcript handle, status/activity, an active flag, optional details, and the
+scope whose questions it owns. Desk shows these views in its Agents pane, not
+as duplicate Work cards. Selection, drafts and reading positions belong to the
+browser; the controller still owns the conversation and permissions.
+
+Message actions advertise `input: "message"` and a `delivery` of `steer` or
+`followUp`. Their callback receives a string and resolves after accepting that
+message, not after running its task. Unlike interactive actions, the host waits
+for this admission result. A failed or uncertain reply must not clear the draft
+or cause an automatic resend. Other actions retain the interactive admission
+path and can open native questions.
+
+Use `batch(() => { ... })` for synchronous collection updates. It publishes one
+snapshot after the group instead of a growing snapshot per item. Each view keeps
+its own revision, action lock and failure state.
 
 ## Lifetime
 

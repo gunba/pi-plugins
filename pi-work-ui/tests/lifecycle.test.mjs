@@ -10,7 +10,7 @@ import { ensureWorkUi, WorkUi } from "../index.ts";
 const theme = { fg(_color, text) { return text; }, bold(text) { return text; } };
 const keys = { "tui.select.confirm": "enter", "tui.select.cancel": "escape", "tui.select.down": "down", "tui.select.up": "up", "tui.select.pageDown": "pageDown", "tui.select.pageUp": "pageUp" };
 const keybindings = { matches(data, action) { return keys[action] ? matchesKey(data, keys[action]) : false; }, getKeys(action) { return keys[action] ? [keys[action]] : []; } };
-const section = (text = "Current objective") => ({ label: "Goal", status: "active", summary: text, detail: text });
+const section = (text = "Current objective") => ({ label: "Plan", status: "active", summary: text, detail: text });
 
 function harness(mode = "tui") {
 	const widgets = [];
@@ -42,15 +42,15 @@ test("one widget integrates three sources in stable order without footer/editor 
 	const ui = new WorkUi();
 	ui.start(h.ctx);
 	const agents = ui.source("subagents");
-	const todos = ui.source("todos");
-	const goal = ui.source("goal");
+	const todos = ui.source("party");
+	const goal = ui.source("plan");
 	agents.set({ ...section("Agents"), label: "Subagents" });
-	todos.set({ ...section("Tasks"), label: "Todos" });
+	todos.set({ ...section("Tasks"), label: "Party" });
 	goal.set(section());
 	assert.equal(h.widgets.length, 1);
 	assert.equal(h.widgets[0].key, "pi-work");
 	assert.deepEqual(h.widgets[0].options, { placement: "aboveEditor" });
-	assert.deepEqual(ui.snapshot().map(([id]) => id), ["goal", "todos", "subagents"]);
+	assert.deepEqual(ui.snapshot().map(([id]) => id), ["plan", "subagents", "party"]);
 	assert.equal(h.lines().length, 4);
 	goal.set(section("Updated objective"));
 	assert.match(h.lines().join("\n"), /Updated objective/);
@@ -66,10 +66,10 @@ test("one widget integrates three sources in stable order without footer/editor 
 test("source snapshots are detached from the producer and superseded leases cannot clear the replacement", () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
-	const old = ui.source("goal");
+	const old = ui.source("plan");
 	const data = section(); old.set(data); data.summary = "mutated";
 	assert.doesNotMatch(h.lines().join("\n"), /mutated/);
-	const current = ui.source("goal"); current.set(section("Replacement"));
+	const current = ui.source("plan"); current.set(section("Replacement"));
 	old.set(section("stale")); old.dispose();
 	assert.match(h.lines().join("\n"), /Replacement/);
 	assert.doesNotMatch(h.lines().join("\n"), /stale/);
@@ -78,13 +78,13 @@ test("source snapshots are detached from the producer and superseded leases cann
 test("branch replacement closes details and retires old publishers and mouse handlers", async () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
-	const old = ui.source("goal"); old.set(section("Abandoned branch"));
+	const old = ui.source("plan"); old.set(section("Abandoned branch"));
 	const widget = h.widgets.at(-1).component;
-	const opened = ui.open(h.ctx, "goal");
+	const opened = ui.open(h.ctx, "plan");
 	const modal = h.overlays.at(-1).component;
 	ui.start(h.ctx);
 	await opened;
-	const current = ui.source("goal"); current.set(section("Selected branch"));
+	const current = ui.source("plan"); current.set(section("Selected branch"));
 	old.set(section("Abandoned late update"));
 	old.dispose();
 	assert.match(h.lines().join("\n"), /Selected branch/);
@@ -97,15 +97,15 @@ test("branch replacement closes details and retires old publishers and mouse han
 test("shutdown gates callbacks before old context reads and is idempotent", async () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
-	const source = ui.source("goal"); source.set(section());
+	const source = ui.source("plan"); source.set(section());
 	const widget = h.widgets.at(-1).component;
-	const opened = ui.open(h.ctx, "goal");
+	const opened = ui.open(h.ctx, "plan");
 	ui.close();
 	Object.defineProperty(h.ctx, "ui", { get() { throw Error("retired UI read"); } });
 	Object.defineProperty(h.ctx, "mode", { get() { throw Error("retired mode read"); } });
 	ui.close(); ui.start(h.ctx); source.set(section("stale")); source.dispose();
 	await opened;
-	await ui.open(h.ctx, "goal");
+	await ui.open(h.ctx, "plan");
 	assert.deepEqual(widget.render(80), []);
 	assert.equal(widget.handleMouse({ type: "click", button: "left", y: 1 }), undefined);
 	assert.deepEqual(ui.snapshot(), []);
@@ -116,7 +116,7 @@ test("real SDK invalidation without shutdown cannot fail a late work publication
 	let ui;
 	const result = await load(t, [(pi) => {
 		ui = ensureWorkUi(pi);
-		pi.on("session_start", () => { source = ui.source("goal"); });
+		pi.on("session_start", () => { source = ui.source("plan"); });
 	}], createEventBus());
 	const h = harness();
 	const runner = new ExtensionRunner(result.extensions, result.runtime, tmpdir(), SessionManager.inMemory(tmpdir()), {});
@@ -136,7 +136,7 @@ test("real SDK invalidation without shutdown cannot fail a late work publication
 test("invalidation without shutdown retires a publisher without failing its task", () => {
 	const h = harness();
 	const ui = new WorkUi(); ui.start(h.ctx);
-	const source = ui.source("goal"); source.set(section());
+	const source = ui.source("plan"); source.set(section());
 	const widget = h.widgets.at(-1).component;
 	Object.defineProperty(h.ctx, "mode", { get() { throw Error("This extension ctx is stale after reload."); } });
 	assert.doesNotThrow(() => source.set(section("late update")));
@@ -149,10 +149,10 @@ test("replacement accepts the new context even if the old UI was already invalid
 	const old = harness();
 	const current = harness();
 	const ui = new WorkUi(); ui.start(old.ctx);
-	const source = ui.source("goal"); source.set(section("old"));
+	const source = ui.source("plan"); source.set(section("old"));
 	Object.defineProperty(old.ctx, "ui", { get() { throw Error("This extension ctx is stale after reload."); } });
 	assert.doesNotThrow(() => ui.start(current.ctx));
-	ui.source("goal").set(section("new context"));
+	ui.source("plan").set(section("new context"));
 	source.dispose();
 	assert.match(current.lines().join("\n"), /new context/);
 });
@@ -163,7 +163,7 @@ test("unexpected passive rendering failures remain visible but cannot fail a tas
 	const h = harness();
 	h.ctx.ui.setWidget = () => { throw Error("fixture renderer failure"); };
 	const ui = new WorkUi(); ui.start(h.ctx);
-	const source = ui.source("goal");
+	const source = ui.source("plan");
 	assert.doesNotThrow(() => source.set(section()));
 	assert.doesNotThrow(() => source.set(section("ignored")));
 	assert.equal(warnings.length, 1);
@@ -200,8 +200,8 @@ test("open details update without enlarging the summary or starting a domain act
 test("RPC/print modes never instantiate terminal widgets or overlays", async () => {
 	for (const mode of ["rpc", "print", "json"]) {
 		const h = harness(mode); const ui = new WorkUi(); ui.start(h.ctx);
-		ui.source("goal").set(section());
-		await ui.open(h.ctx, "goal");
+		ui.source("plan").set(section());
+		await ui.open(h.ctx, "plan");
 		assert.equal(h.widgets.length, 0); assert.equal(h.overlays.length, 0);
 		ui.close();
 	}
@@ -229,7 +229,7 @@ function assertOneRegistration(result) {
 
 test("real loader registers once for distinct API facades on the same underlying event bus", async (t) => {
 	const facades = []; const hubs = [];
-	const result = await load(t, ["goal", "todo", "subagents"].map((name) => ({ name, factory(pi) {
+	const result = await load(t, ["plan", "peer", "subagents"].map((name) => ({ name, factory(pi) {
 		facades.push(pi.events); hubs.push(ensureWorkUi(pi)); assert.equal(ensureWorkUi(pi), hubs.at(-1));
 	} })));
 	assert.deepEqual(result.errors, []);
@@ -240,7 +240,7 @@ test("real loader registers once for distinct API facades on the same underlying
 
 test("standalone consumers each register their own panel and command", async (t) => {
 	const hubs = [];
-	for (const name of ["goal", "todos", "subagents"]) {
+	for (const name of ["plan", "subagents", "party"]) {
 		const result = await load(t, [{ name, factory(pi) { hubs.push(ensureWorkUi(pi)); } }]);
 		assert.deepEqual(result.errors, []); assertOneRegistration(result);
 	}
@@ -264,10 +264,10 @@ test("shutdown releases registration on a shared bus and old publishers cannot a
 	const handlers = new Map(); const commands = [];
 	const pi = { events: bus, on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand(name) { commands.push(name); }, registerShortcut() {} };
 	const old = ensureWorkUi(pi); const oldCtx = harness(); old.start(oldCtx.ctx);
-	const publisher = old.source("goal"); publisher.set(section("old"));
+	const publisher = old.source("plan"); publisher.set(section("old"));
 	for (const handler of handlers.get("session_shutdown")) handler({}, oldCtx.ctx);
 	const current = ensureWorkUi(pi); const newCtx = harness(); current.start(newCtx.ctx);
-	current.source("goal").set(section("new"));
+	current.source("plan").set(section("new"));
 	publisher.set(section("stale"));
 	assert.notEqual(old, current);
 	assert.deepEqual(commands, ["work", "work"]);

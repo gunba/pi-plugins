@@ -9,7 +9,6 @@ import {
 	type AgentSession,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { createChildTodoTool } from "./child-todo-tool.ts";
 import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
@@ -310,12 +309,6 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		);
 		const toolInfo = this.host.getToolInfo?.();
 		const customTools = [...input.customTools];
-		// SDK hosts without source metadata may still supply their own child-bound
-		// definitions. Normal extension sessions reconstruct the actual providers.
-		if (!toolInfo && input.descriptor.toolNames.includes("todo_write")
-			&& !customTools.some((tool) => tool.name === "todo_write")) {
-			customTools.push(createChildTodoTool(input.sessionManager));
-		}
 		const customToolNames = customTools.map((tool) => tool.name);
 		// Absence from getAllTools can mean an explicit SDK exclusion, not a
 		// child-only capability. Only the caller may declare intrinsic tools.

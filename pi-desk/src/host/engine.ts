@@ -31,6 +31,8 @@ import type { UiTranscriptSource, UiTranscriptHandle } from "../../../pi-ui/inde
 import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
+import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 
 /** The only app module that owns Pi engine/session lifecycle. */
 export class DeskEngine {
@@ -51,8 +53,12 @@ export class DeskEngine {
 	private managers = new Set<SessionManager>();
 	private reserved?: SessionLease;
 	private transition = false;
+	private transitionJob?: Promise<unknown>;
 	private authentication?: AbortController;
 	private providerFilter = "";
+	private attachmentScope?: string;
+	private usageRevision = 0;
+	private usageCache?: { manager: SessionManager; leaf: string | null; revision: number; value: SessionSnapshot["usage"] };
 
 	constructor(send: (message: WorkerMessage) => void) {
 		this.send = send;
@@ -93,8 +99,10 @@ export class DeskEngine {
 	}
 
 	private async initialize(options: WorkerInit): Promise<SessionSnapshot> {
+		this.attachmentScope = options.attachmentScope;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
+		const pin = runtimePin(options.runtimeDirectory);
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
 		const cwd = realpathSync(options.cwd);
 		const settings = SettingsManager.create(cwd, agentDir);
@@ -115,11 +123,13 @@ export class DeskEngine {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			const services = await createAgentSessionServices({
-				cwd, agentDir, settingsManager,
+				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
 					extensionFactories: [{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi);
 						installIntegrations(pi);
+						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
+						pi.on("session_shutdown", releaseUsage);
 						pi.on("session_tree", () => {
 							this.feed?.reset();
 							this.presentation.advance();
@@ -130,6 +140,9 @@ export class DeskEngine {
 					resolveProjectTrust: ({ extensionsResult }) => this.resolveTrust(cwd, agentDir, settingsManager, extensionsResult),
 				},
 			});
+			// Only native resource discovery keeps the read projection. Session
+			// settings and extension controls retain the original file-backed API.
+			services.settingsManager = settingsManager;
 			return {
 				...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent }),
 				services, diagnostics: services.diagnostics,
@@ -244,6 +257,7 @@ export class DeskEngine {
 			() => this.presentation.generation, this.send, () => session.sessionManager.getCwd());
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
+			if (event.type === "message_end" || event.type === "agent_settled") this.usageRevision++;
 			if (event.type === "agent_start") this.running = true;
 			if (event.type === "agent_settled") this.running = false;
 			if (event.type === "message_update" || event.type === "message_start" || event.type === "message_end") {
@@ -267,10 +281,10 @@ export class DeskEngine {
 			onError: error => { this.failed = true; this.presentation.notify(`${error.extensionPath}: ${error.error}`, "error"); },
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
-				newSession: options => this.runtime!.newSession(options),
-				switchSession: (path, options) => this.switchSession(path, options),
-				fork: (entryId, options) => this.runtime!.fork(entryId, options),
-				navigateTree: (targetId, options) => session.navigateTree(targetId, options),
+				newSession: options => this.change(() => this.runtime!.newSession(options)),
+				switchSession: (path, options) => this.change(() => this.switchSession(path, options)),
+				fork: (entryId, options) => this.change(() => this.runtime!.fork(entryId, options)),
+				navigateTree: (targetId, options) => this.change(() => session.navigateTree(targetId, options)),
 				reload: () => this.reload(),
 			},
 		});
@@ -397,6 +411,14 @@ export class DeskEngine {
 		const active = new Set(session.getActiveToolNames());
 		const ui = this.presentation.snapshot();
 		const context = session.getContextUsage();
+		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(text => text.length > 300 ? `${text.slice(0, 300)}…` : text) });
+		const manager = session.sessionManager, leaf = manager.getLeafId();
+		if (!this.usageCache || this.usageCache.manager !== manager || this.usageCache.leaf !== leaf || this.usageCache.revision !== this.usageRevision) {
+			const { usage } = reduceSessionUsage(manager.getEntries());
+			this.usageCache = { manager, leaf, revision: this.usageRevision, value: usage ? {
+				input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost.total,
+			} : undefined };
+		}
 		return {
 			id: session.sessionId, file: session.sessionFile, cwd: this.runtime.cwd, name: session.sessionName,
 			leaf: session.sessionManager.getLeafId(),
@@ -414,8 +436,9 @@ export class DeskEngine {
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({
 				id: model.id, provider: model.provider, name: model.name,
 			})),
-			queue: { steering: session.getSteeringMessages(), followUp: session.getFollowUpMessages() },
+			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent } : undefined,
+			usage: this.usageCache.value,
 			ui,
 		};
 	}
@@ -423,10 +446,6 @@ export class DeskEngine {
 	async command(generation: string, command: WorkerCommand): Promise<unknown> {
 		if (generation !== this.presentation.generation) throw new StaleGeneration();
 		if (command.kind === "answer") { this.presentation.answer(command.id, command.answer); return; }
-		if (command.kind === "shutdown") {
-			if (this.transition) throw new Error("A session transition is in progress.");
-			await this.close(); return;
-		}
 		if (!this.runtime || this.closed || this.replacing) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
 		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort"].includes(command.kind)) throw new Error("A session transition is in progress.");
@@ -435,8 +454,6 @@ export class DeskEngine {
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
 		}
 		switch (command.kind) {
-			case "upload_begin": case "upload_chunk": case "upload_finish": case "upload_discard":
-				return new Attachments(getAgentDir(), session.sessionId).command(command);
 			case "snapshot": return this.snapshot();
 			case "history": {
 				const feed = command.source === undefined ? this.feed : this.sources.get(command.source);
@@ -496,7 +513,7 @@ export class DeskEngine {
 					&& !slash.startsWith("skill:")) {
 					throw new Error(`/${slash} is not an extension command. Use the corresponding Pi Desk control.`);
 				}
-				const attached = new Attachments(getAgentDir(), session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
+				const attached = new Attachments(getAgentDir(), this.attachmentScope ?? session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
 				// Preflight reports admission without holding an HTTP request through inference.
 				return new Promise<{ accepted: true }>((resolve, reject) => {
 					let admitted = false;
@@ -536,15 +553,18 @@ export class DeskEngine {
 	}
 
 	private async change<T>(operation: () => Promise<T>): Promise<T> {
+		if (this.closed) throw new Error("This session is closing.");
 		if (this.transition || this.running || this.authentication || this.runtime!.session.isCompacting || this.presentation.snapshot().interactions.length) throw new Error("Finish or stop active work before changing this session.");
 		this.transition = true;
 		this.send({ type: "snapshot", snapshot: this.snapshot() });
-		try { return await operation(); }
+		const job = Promise.resolve().then(operation);
+		this.transitionJob = job;
+		try { return await job; }
 		catch (error) {
-			if (this.replacing) this.send({ type: "fatal", error: `Session replacement failed: ${String(error)}. Resume saved history to recover.` });
+			if (this.replacing && !this.closed) this.send({ type: "fatal", error: `Session replacement failed: ${String(error)}. Resume saved history to recover.` });
 			throw error;
 		}
-		finally { this.transition = false; this.scheduleSnapshot(); }
+		finally { this.transitionJob = undefined; this.transition = false; this.scheduleSnapshot(); }
 	}
 
 	private async reload(): Promise<void> {
@@ -574,7 +594,18 @@ export class DeskEngine {
 			this.presentation.close();
 			// Discovery/binding can still own a writer before the runtime is assigned.
 			await this.startJob?.catch(() => {});
-			try { await this.runtime?.dispose(); }
+			try {
+				const session = this.runtime?.session;
+				if (session) {
+					session.abortCompaction(); session.abortBranchSummary();
+				}
+				const aborting = session?.abort() ?? Promise.resolve();
+				void aborting.catch(() => {});
+				// Reload/replacement may still be creating the next runtime and owning its writer.
+				await this.transitionJob?.catch(() => {});
+				// Native shutdown hooks can release tools whose abort is still settling.
+				try { await this.runtime?.dispose(); } finally { await aborting; }
+			}
 			catch (error) {
 				this.send({ type: "fatal", error: `Session shutdown failed: ${error instanceof Error ? error.message : String(error)}. Check saved history before resuming.` });
 				throw error;

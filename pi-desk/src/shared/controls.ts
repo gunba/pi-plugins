@@ -2,7 +2,7 @@ import type { WorkerCommand } from "./protocol.ts";
 
 export const CONTROL_LABELS = {
 	compact: "Compact context", navigate: "Change branch", fork: "Fork conversation",
-	reload: "Reload resources", model: "Change model", abort: "Stop work", close: "Close session",
+	reload: "Reload resources", model: "Change model", abort: "Stop work", close: "Close conversation",
 } as const;
 export type ControlKind = keyof typeof CONTROL_LABELS;
 export type ControlCommand = Extract<WorkerCommand, { kind: Exclude<ControlKind, "close"> }>;

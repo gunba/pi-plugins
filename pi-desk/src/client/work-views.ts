@@ -2,7 +2,7 @@ import type { ViewSnapshot } from "../shared/protocol.ts";
 
 /** Work's shared terminal projection is navigation, not another browser card. */
 export function panelViews(views: readonly ViewSnapshot[], panel: string | undefined, focused?: string): ViewSnapshot[] {
-	return views.filter(view => view.kind !== "work" && (panel === "view" ? view.id === focused : view.surface !== "settings"));
+	return views.filter(view => view.kind !== "work" && view.kind !== "conversation" && (panel === "view" ? view.id === focused : view.surface !== "settings"));
 }
 
 export function openView(view: string, section?: string): { panel: "work" | "view"; focused?: string } {

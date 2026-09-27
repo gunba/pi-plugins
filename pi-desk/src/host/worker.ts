@@ -23,6 +23,7 @@ process.on("message", (request: WorkerRequest) => {
 	let operation = previous?.operation;
 	if (!operation) {
 		operation = Promise.resolve().then(async () => {
+			if (request.type === "shutdown") return engine.close();
 			if (request.type === "init") {
 				if (started) throw new Error("Worker already initialized.");
 				started = true;
@@ -32,8 +33,7 @@ process.on("message", (request: WorkerRequest) => {
 			if (isControl(request.command)) send({ type: "snapshot", snapshot: engine.snapshot() });
 			return result;
 		});
-		// Chunks are already idempotent by offset and contents; do not retain their payload receipts.
-		const readOnly = request.type === "command" && ["snapshot", "history", "asset", "artifact", "file", "tree", "upload_chunk"].includes(request.command.kind);
+		const readOnly = request.type === "command" && ["snapshot", "history", "asset", "artifact", "file", "tree"].includes(request.command.kind);
 		if (!readOnly) {
 			admitted.set(request.id, { operation, fingerprint });
 			void operation.finally(() => {

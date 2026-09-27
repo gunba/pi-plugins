@@ -80,6 +80,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         { label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode },
         { label: "Client identity", value: client }, { label: "Prewarm", value: prewarm ? "On" : "Off" }] };
     remote.publish("codex-wire", { kind: "details", surface: "settings", title: "Codex", data,
+      badges: ctx.model?.api === "openai-codex-responses" ? [{
+        label: "Fast", value: fastEnabled ? "On" : "Off", compact: true,
+        description: "Saved preference for eligible ChatGPT Codex requests. The backend can downgrade priority processing.",
+      }] : [],
       actions: remote.runCommand ? [{ id: "fast", label: fastEnabled ? "Disable Fast mode" : "Enable Fast mode · more credits" },
         { id: "identity", label: "Choose client identity" },
         { id: "prewarm", label: prewarm ? "Disable prewarm" : "Enable prewarm" },
@@ -431,7 +435,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     protocol?.beginTurn(); beganTurn = true;
   });
   pi.on("agent_settled", (_event, ctx) => { beganTurn = false; showWireStatus(ctx); });
-  pi.on("model_select", (_event, ctx) => { abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; });
+  pi.on("model_select", (_event, ctx) => { abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; showWireStatus(ctx); });
   const newWindow = () => {
     if (!protocol) return;
     abortPending(protocol.threadId); transport?.close(); protocol.rotateWindow(); beganTurn = false;

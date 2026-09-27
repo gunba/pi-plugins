@@ -2,7 +2,22 @@ import type { AgentSessionEvent, ExtensionAPI, ExtensionUIContext, SessionEntry 
 
 /** Host-neutral presentations. Domain state and action implementations stay in extensions. */
 export type UiValue = null | boolean | number | string | UiValue[] | { [key: string]: UiValue | undefined };
-export interface UiAction { id: string; label: string; destructive?: boolean }
+export type UiAction = {
+	id: string; label: string; destructive?: boolean;
+	/** Inline message admission: resolve only after the controller has accepted the text. */
+	input?: "message";
+	delivery?: "steer" | "followUp";
+};
+export type UiConversation = {
+	transcript?: string;
+	scope?: string;
+	status: string;
+	active: boolean;
+	subtitle?: string;
+	activity?: string;
+	error?: string;
+	fields?: { label: string; value: string }[];
+};
 export type UiDetails = {
 	summary?: string;
 	links?: { label: string; url: string }[];
@@ -10,13 +25,17 @@ export type UiDetails = {
 	fields?: { label: string; value: string }[];
 	items?: { id: string; title: string; subtitle?: string; body?: string; status?: string;
 		meter?: { value: number; max: number; label: string };
-		actions?: { id: string; label: string; destructive?: boolean }[] }[];
+		actions?: UiAction[] }[];
 };
 export interface UiView {
+	/** Compact always-visible summary; opening it shows this view's normal details. */
+	preview?: { label: string; primary: string; secondary?: string };
 	kind: string;
 	title: string;
 	surface?: "work" | "settings";
 	data: UiValue;
+	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
+	badges?: { label: string; value: string; description?: string; compact?: boolean }[];
 	actions?: UiAction[];
 }
 export interface UiQuestion {
@@ -44,8 +63,9 @@ export type UiAnswer =
 	| { kind: "freeform"; text: string }
 	| { kind: "confirm"; confirmed: boolean };
 export interface Presentation {
-	version: 1;
-	capabilities: readonly ("questions" | "details" | "work" | "scopes" | "transcripts" | "commands")[];
+	version: 2;
+	capabilities: readonly ("questions" | "details" | "work" | "scopes" | "transcripts" | "commands" | "conversations")[];
+	batch(update: () => void): void;
 	publish(id: string, view: UiView | undefined, actions?: Record<string, (value: UiValue) => unknown | Promise<unknown>>): void;
 	open(id: string, section?: string): void;
 	request(interaction: UiInteraction, options?: { signal?: AbortSignal; timeout?: number }): Promise<UiAnswer | null>;
@@ -68,7 +88,7 @@ export interface PresentationScope extends Presentation {
 	close(): void;
 }
 
-export const PRESENTATION_DISCOVER = "pi-ui/discover-v1";
+export const PRESENTATION_DISCOVER = "pi-ui/discover-v2";
 
 export function getPresentation(pi: ExtensionAPI): Presentation | undefined {
 	const probe: { presentation?: Presentation } = {};

@@ -6,6 +6,29 @@ import test from "node:test";
 import { SessionWorker } from "../src/host/worker-client.ts";
 import { WorkerConnectionError, StaleGeneration } from "../src/host/worker-errors.ts";
 
+test("the host carries its runtime pin over IPC without leaking Desk environment or accepting a caller override", async t => {
+	const child = new EventEmitter(), sent = [];
+	let environment;
+	const saved = { runtime: process.env.PI_DESK_RUNTIME, secret: process.env.PI_DESK_TEST_SECRET };
+	process.env.PI_DESK_RUNTIME = "/fixture/host-runtime";
+	process.env.PI_DESK_TEST_SECRET = "fixture secret";
+	child.send = (request, done) => { sent.push(request); done(null); };
+	t.mock.method(childProcess, "spawn", (_node, _args, options) => { environment = options.env; return child; });
+	syncBuiltinESMExports();
+	t.after(() => {
+		t.mock.restoreAll(); syncBuiltinESMExports();
+		for (const [name, value] of [["PI_DESK_RUNTIME", saved.runtime], ["PI_DESK_TEST_SECRET", saved.secret]]) {
+			if (value === undefined) delete process.env[name]; else process.env[name] = value;
+		}
+	});
+	const worker = new SessionWorker({ cwd: process.cwd() }, () => {});
+	const ready = worker.start({ cwd: process.cwd(), runtimeDirectory: "/untrusted/override" });
+	assert.equal(Object.keys(environment).some(key => key.toUpperCase().startsWith("PI_DESK_")), false);
+	assert.equal(sent[0].options.runtimeDirectory, "/fixture/host-runtime");
+	child.emit("message", { type: "result", id: sent[0].id, value: { ui: { generation: "test" } } });
+	await ready;
+});
+
 test("concurrent retries share one IPC request and neither caller loses its reply", async (t) => {
 	const child = new EventEmitter();
 	const sent = [];
@@ -82,4 +105,30 @@ test("worker loss before a close acknowledgement still invalidates the live sess
 	await new Promise(setImmediate);
 	assert.ok(events.some(event => event.type === "fatal"));
 	assert.equal(events.filter(event => event.type === "control").at(-1).control.state, "interrupted");
+});
+
+test("closing before a presentation generation exists uses worker lifecycle IPC and waits for exit", async t => {
+	const child = new EventEmitter(), sent = [], events = [];
+	child.connected = true;
+	child.send = (request, done) => { sent.push(request); done(null); };
+	child.disconnect = () => { child.connected = false; };
+	t.mock.method(childProcess, "spawn", () => child);
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const worker = new SessionWorker({ cwd: process.cwd() }, event => events.push(event));
+	assert.equal(worker.generation, "");
+	assert.equal(worker.submitControl({ kind: "close" }, "", "close-before-start").control.state, "running");
+	assert.equal(sent[0].type, "shutdown");
+	assert.equal(Object.hasOwn(sent[0], "generation"), false);
+	worker.generation = "a-later-presentation";
+	assert.equal(worker.submitControl({ kind: "close" }, worker.generation, "close-before-start").control.state, "running");
+	assert.equal(sent.length, 1);
+	child.emit("message", { type: "result", id: sent[0].id });
+	await new Promise(setImmediate);
+	assert.equal(child.connected, false);
+	assert.equal(events.at(-1).control.state, "running", "IPC disconnect is not process exit");
+	child.emit("exit", 0, null);
+	await new Promise(setImmediate);
+	assert.equal(events.at(-1).control.state, "completed");
+	assert.equal(events.some(event => event.type === "fatal"), false);
 });
