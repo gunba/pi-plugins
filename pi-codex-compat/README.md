@@ -59,8 +59,8 @@ output wait defaults to 10,000ms and is clamped to 250–30,000ms
 (2,000–30,000ms on Windows); a command that outlives it returns an owner-scoped
 random `session_id` in Codex's reserved 1000–99999 range. Sessions are owned by
 the Pi extension/session instance that created them; another session cannot poll
-or shut them down. An omitted `shell` uses the user's `SHELL`/`ComSpec` when
-available and falls back to Pi's shell resolver.
+or shut them down. An omitted `shell` uses the configured `shellPath`, then Pi's
+platform shell resolver.
 
 For `write_stdin`, non-empty writes default to 250ms and clamp to
 250–30,000ms. Omitted or empty `chars` perform a poll whose default and minimum
@@ -81,6 +81,9 @@ LRU, then removed at extension shutdown. Non-truncated logs are removed as soon
 as their process is released. Model-facing output strips terminal escape,
 control, surrogate, and unsafe Unicode format characters while retained logs
 keep the original bytes.
+After the tracked process exits, active trailing output continues to drain.
+A quiet inherited pipe is closed after a short idle grace period; disk-write
+backpressure does not count as idle time. Exited PIDs are never signalled again.
 
 Each session store is capped at 64 processes. Pruning protects the eight most
 recently used sessions, then prefers the oldest exited session before the oldest
@@ -97,11 +100,23 @@ across platforms. This runtime therefore uses ordinary pipes and rejects
 `tty:true` before spawning rather than claiming to provide a PTY. For the
 default `tty:false`, child stdin is closed: `write_stdin` accepts polling and an
 exact U+0003 Ctrl-C interrupt only, rejecting all other non-empty input. Unix
-interrupts target the process group; Windows uses `taskkill /T`, whose signal
-semantics necessarily differ. The `taskkill` result is observed and bounded;
+interrupts target the process group; Windows uses an owned
+[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+and `taskkill /T /F`, whose signal semantics necessarily differ. The job is armed
+before launching the shell, so cancellation cannot miss a child created during
+shell startup. Normal command exit preserves deliberately backgrounded children.
+The `taskkill` result is observed and bounded;
 failure is surfaced instead of falling back to a potentially reused PID or
 claiming successful tree shutdown. Signal exits remain distinct from numeric
 exit codes.
+
+The Windows owner is a small bundled C# helper, compiled on first use by the
+Windows .NET Framework compiler and cached by source hash under
+`%LOCALAPPDATA%\pi\exec`. It inherits the original byte streams; it does not
+route command output through PowerShell or a text decoder. Compilation needs
+no elevation, downloaded compiler or service. If local policy prevents
+compilation or job assignment, the command fails before the shell starts.
+This is process lifecycle ownership, not a sandbox or a grant of extra rights.
 
 Pi cancellation during an active tool call terminates that process. Session IDs
 exist only in the owning Pi session and are released after completion, LRU
@@ -183,7 +198,7 @@ by invocation ID.
 
 Namespaced `image_gen.imagegen`, provider output schemas, per-image detail metadata,
 attached-environment routing, native PTY/ConPTY,
-Windows Job Object ownership, sandbox/approval ownership, and remote execution
+sandbox/approval ownership, and remote execution
 require Pi core support and are not emulated here.
 
 ## Design provenance

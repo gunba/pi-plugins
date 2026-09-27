@@ -278,7 +278,7 @@ test("process tree termination uses taskkill /T on Windows and Unix process grou
 		}),
 		true,
 	);
-	assert.equal(taskkillCalls[0].command, "taskkill");
+	assert.match(taskkillCalls[0].command, /\\System32\\taskkill\.exe$/);
 	assert.deepEqual(taskkillCalls[0].args, ["/PID", "123", "/T", "/F"]);
 
 	const killed = [];
@@ -830,7 +830,7 @@ test("retained complete-output logs are bounded by an in-session LRU", async () 
 	await startExecSessionRuntime();
 });
 
-for (const delay of [25, 75, 150, 300]) {
+for (const delay of [25, 75, 150, 300, 2000]) {
 test(`abort after ${delay}ms terminates managed process trees without a provider timeout field`, async t => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-abort-startup-"));
 	t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 }));

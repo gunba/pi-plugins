@@ -4,9 +4,10 @@ import {
 	spawn,
 } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, win32 } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
 	type AgentToolResult,
@@ -20,6 +21,7 @@ import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
 import { registerWorkResource, completeWorkResource } from "../../pi-work-coordination/index.ts";
 import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
 import { OUTPUT_CHARS } from "../../pi-output-budget/extensions/text.ts";
+import { windowsExecHelper } from "./windows-exec.ts";
 
 export type ExecCommandParams = {
 	cmd: string;
@@ -437,7 +439,7 @@ export function terminateProcessTree(
 	if (dependencies.platform === "win32") {
 		try {
 			const taskkill = dependencies.spawnTaskkill(
-				"taskkill",
+				win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
 				["/PID", String(pid), "/T", ...(force ? ["/F"] : [])],
 				{
 					stdio: "ignore",
@@ -1295,6 +1297,8 @@ async function createExecSession(
 		await pruneExecSessionsForCapacity(owner);
 		throwIfLaunchAborted(signal);
 		const launch = resolveShellLaunch(params, getUnifiedExecDefaultShell, configuredShell);
+		const windowsHelper = process.platform === "win32" ? await windowsExecHelper() : undefined;
+		throwIfLaunchAborted(signal);
 		const logDirectory = await mkdtemp(join(tmpdir(), "pi-codex-exec-"));
 		const logPath = join(logDirectory, "output.log");
 		let logFile: FileHandle;
@@ -1307,13 +1311,17 @@ async function createExecSession(
 			throw error;
 		}
 		let child: ChildProcessWithoutNullStreams;
+		const launchErrorPath = windowsHelper ? join(logDirectory, "launch-error.txt") : undefined;
 		try {
-			child = spawn(launch.shell, launch.args, {
+			child = spawn(windowsHelper ?? launch.shell,
+				windowsHelper ? [launchErrorPath!, normalizedShellName(launch.shell) === "cmd" ? "verbatim" : "quoted",
+					launch.shell, ...launch.args] : launch.args, {
 				cwd: workdir,
 				detached: process.platform !== "win32",
 				env: createUnifiedExecEnvironment(),
 				stdio: "pipe",
 				windowsVerbatimArguments:
+					!windowsHelper &&
 					process.platform === "win32" &&
 					normalizedShellName(launch.shell) === "cmd",
 				windowsHide: true,
@@ -1362,6 +1370,10 @@ async function createExecSession(
 			void cleanupSessionLog(session);
 		});
 		child.once("exit", () => {
+			if (launchErrorPath) {
+				try { session.error = readFileSync(launchErrorPath, "utf8"); }
+				catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") session.error = String(error); }
+			}
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
 			drainExitedProcess(session);
 		});
