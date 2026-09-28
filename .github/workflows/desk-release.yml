@@ -1,0 +1,97 @@
+name: Desk release
+
+on:
+  push:
+    tags: ["pi-desk-v*"]
+
+concurrency:
+  group: desk-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_REPO: ${{ github.repository }}
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node -e 'if ("pi-desk-v" + require("./pi-desk/package.json").version !== process.env.RELEASE_TAG) process.exit(1)'
+          passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch main --event push --json conclusion --jq 'any(.conclusion == "success")')
+          test "$passed" = true
+
+  build:
+    needs: prepare
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            pi-desk/package-lock.json
+      - name: Install Linux keyring support
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-dev
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm --prefix pi-desk ci --ignore-scripts --no-audit --no-fund
+      - run: npm --prefix pi-desk rebuild keytar
+      - name: Build and verify portable runtime
+        shell: bash
+        run: node pi-desk/manage/pack-release.ts "$RUNNER_TEMP/desk-release"
+      # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: runtime-${{ matrix.os }}-${{ matrix.node }}
+          path: ${{ runner.temp }}/desk-release
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: runtime-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/desk-release
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Pi Desk ${RELEASE_TAG#pi-desk-v}" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/desk-release/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

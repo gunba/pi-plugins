@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { removeComputer, renameComputer, refreshDirectory } from "./connection.ts";
+import { api, removeComputer, renameComputer, refreshDirectory } from "./connection.ts";
 import type { Computer } from "./workspace.ts";
 import type { BrowserAccount, AccountDirectory } from "./account.ts";
 import { useConfirmation } from "./confirmation.tsx";
@@ -43,6 +43,18 @@ function ComputerCard({ computer }: { computer: Computer }) {
 			<small>{connectionLabel(computer)}</small></summary>
 		<p className="muted">{computer.id.slice(0, 8)}{computer.error ? ` · ${computer.error}` : ""}</p>
 		{computer.release && <p className="muted">Host {computer.release.version} · API {computer.release.api} · Pi {computer.release.engine}</p>}
+		{computer.updates && <section className="computer-update" aria-label="Software update">
+			<button disabled={busy || !computer.connected || ["preparing", "waiting", "applying"].includes(computer.updates.phase)}
+				onClick={() => run(async () => { await api("/api/runtime/update", {}, computer.id); })}>
+				{computer.updates.phase === "preparing" ? "Preparing update…" : computer.updates.phase === "applying" ? "Applying update…"
+					: computer.updates.phase === "waiting" ? "Update ready" : computer.updates.phase === "failed" ? "Retry update" : "Update"}
+			</button>
+			{computer.updates.phase === "waiting"
+				? <p role="status">Waiting for {computer.updates.activeSessions ?? 0} open Pi sessions to close.
+					{computer.updates.pending && <> Version {computer.updates.pending} is ready.</>}</p>
+				: computer.updates.message && <p role={computer.updates.phase === "failed" ? "alert" : "status"}>{computer.updates.message}</p>}
+			<p className="muted">Updates never stop an open conversation. This computer reconnects automatically after applying one.</p>
+		</section>}
 		{computer.connection === "upgrade" && <button onClick={() => location.reload()}>Reload app</button>}
 		{computer.presence && <p className="muted">Last host report: {computer.presence.online ? "online" : "no recent connection"}.
 			{" "}Last contact {new Date(computer.presence.seen).toLocaleString()}.

@@ -7,6 +7,31 @@ import test from "node:test";
 import { DeskHost } from "../src/host/server.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 import { reduceEvents } from "../src/client/state.ts";
+import { controlRequest } from "../src/host/lifecycle.ts";
+import { readHostRecord } from "../src/host/host-control.ts";
+
+test("updates defer for idle Pi workers and close admission atomically at the empty boundary", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "desk-update-boundary-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	let stopped = 0;
+	try {
+		await host.start();
+		host.runtime = "a".repeat(64);
+		const key = randomUUID();
+		host.sessions.set(key, { view: { key, cwd: dir, state: "ready", created: 1, snapshot: { activity: "idle" } },
+			worker: { close: async () => { stopped++; } } });
+		const record = readHostRecord(dir);
+		const first = await controlRequest(record, "stop-if-idle", { runtime: host.runtime });
+		assert.equal(first.deferred, 1);
+		assert.equal(host.closing, false);
+		assert.equal(stopped, 0, "idle sessions may own plans, timers and children");
+		host.sessions.delete(key);
+		await controlRequest(record, "stop-if-idle", { runtime: host.runtime });
+		assert.equal(host.closing, true);
+		assert.throws(() => host.createSession(dir), /applying an update|shutting down/);
+		assert.equal((await host.api("operator", { method: "POST", path: "/api/sessions", body: {} })).status, 503);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("explicit close removes a workspace session, but retains its native reference", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));

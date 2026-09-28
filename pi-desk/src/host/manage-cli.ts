@@ -4,7 +4,7 @@ import { runOperation, type DeskOperation } from "../../manage/operations.ts";
 
 const [home, action] = process.argv.slice(2);
 try {
-	if (!home || !["stage", "update", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")) throw new Error("Invalid Desk operation.");
+	if (!home || !["stage", "update", "apply", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")) throw new Error("Invalid Desk operation.");
 	const installation = readInstallation(home), state = readState(home);
 	if (!state) throw new Error("Missing runtime state.");
 	let accepted = false;

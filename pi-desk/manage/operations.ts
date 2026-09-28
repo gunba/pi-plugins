@@ -5,17 +5,18 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync 
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
-import { activateRuntime, configureRuntime } from "./activate.ts";
+import { activateIdleRuntime, activateRuntime, configureRuntime } from "./activate.ts";
 import { canonicalPath, launcherPath, readInstallation, type RuntimeInstallation } from "./installation.ts";
 import { atomicJson, readControllerRelease, readRelease, readState, versionDirectory } from "./store.ts";
 import { stageRuntime } from "./stage.ts";
 import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { migrateLogin, removeLogin, stopLogin } from "../src/host/login.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
+import type { RuntimeUpdateState } from "../src/shared/updates.ts";
 
-export type DeskOperation = "setup" | "stage" | "update" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
+export type DeskOperation = "setup" | "stage" | "update" | "apply" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
 export interface Operation {
-	id: string; action: DeskOperation; phase: "running" | "complete" | "failed" | "interrupted";
+	id: string; action: DeskOperation; phase: "running" | "waiting" | "complete" | "failed" | "interrupted";
 	started: string; updated: string; message: string;
 }
 export interface OperationOptions {
@@ -29,8 +30,8 @@ export function operationStatus(home: string): Operation | undefined {
 		let value: Operation;
 		try { value = JSON.parse(readFileSync(operationFile(home), "utf8")); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-		if (!value || !["setup", "stage", "update", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
-			|| !["running", "complete", "failed", "interrupted"].includes(value.phase) || typeof value.message !== "string")
+		if (!value || !["setup", "stage", "update", "apply", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
+			|| !["running", "waiting", "complete", "failed", "interrupted"].includes(value.phase) || typeof value.message !== "string")
 			throw new Error("Invalid Desk operation record.");
 		return value;
 	};
@@ -47,6 +48,35 @@ export function operationStatus(home: string): Operation | undefined {
 	}
 	return value;
 }
+export function runtimeUpdateState(home: string): RuntimeUpdateState | undefined {
+	const state = readState(home);
+	if (!state?.active) return;
+	const operation = operationStatus(home), current = readControllerRelease(home, state.active);
+	return { current: current.desk, pending: state.pending ? readControllerRelease(home, state.pending).desk : undefined,
+		phase: operation?.phase === "running" ? operation.action === "apply" ? "applying" : "preparing"
+			: operation?.phase === "waiting" ? "waiting"
+			: operation && ["failed", "interrupted"].includes(operation.phase) ? "failed" : "idle",
+		message: operation?.message };
+}
+export function automaticUpdatePending(home: string): boolean {
+	const state = readState(home);
+	return !!state?.pending && state.autoApply === state.pending && operationStatus(home)?.phase === "waiting";
+}
+export function releaseSourceSupported(source: string): boolean {
+	const url = source.replace(/^git:/, "").replace(/\.git(?=@|$)/, "");
+	return /^(?:https:\/\/|ssh:\/\/git@|git@)?github\.com[/:]gunba\/pi-plugins(?:@main)?$/.test(url);
+}
+function armUpdate(home: string, id: string): void {
+	const lock = new SessionLease(join(home, "manage"));
+	try {
+		const state = readState(home);
+		if (!state || state.active !== id && state.pending !== id) throw new Error("The prepared runtime changed before activation was requested.");
+		atomicJson(join(home, "state.json"), { ...state, autoApply: state.active === id ? undefined : id });
+	} finally { lock.close(); }
+}
+function configuredNode(home: string): string {
+	return readLoginConfig(readInstallation(home).directory)?.node ?? process.execPath;
+}
 export function extensionLocation(packageRoot: string, agentDir: string) {
 	const root = realpathSync(packageRoot), version = dirname(root);
 	if (basename(root) === "source" && basename(dirname(version)) === "versions" && existsSync(join(version, "runtime.json"))) {
@@ -59,17 +89,20 @@ export async function deskStatus(home: string, directory: string) {
 	const state = readState(home), operation = operationStatus(home);
 	let installation: RuntimeInstallation | undefined;
 	try { installation = readInstallation(home); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-	return { state, installation, operation, host: await probeHost(installation?.directory ?? directory) };
+	return { state, installation, operation, updates: state?.active ? runtimeUpdateState(home) : undefined,
+		host: await probeHost(installation?.directory ?? directory) };
 }
 export function statusText(status: Awaited<ReturnType<typeof deskStatus>>): string {
 	const short = (id?: string) => id?.slice(0, 12) ?? "none";
-	return [`Host: ${status.host.state}`, `Active: ${short(status.state?.active)} · staged: ${short(status.state?.pending)}`,
+	return [`Host: ${status.host.state}`,
+		...(status.updates ? [`Desk ${status.updates.current}${status.updates.pending ? ` · prepared ${status.updates.pending}` : ""}`] : []),
+		`Active: ${short(status.state?.active)} · staged: ${short(status.state?.pending)}`,
 		...(status.host.host ? [`Conversations: ${status.host.host.sessions.active} · working: ${status.host.host.sessions.working}`] : []),
 		...(status.operation ? [`${status.operation.action}: ${status.operation.phase} — ${status.operation.message}`] : [])].join("\n");
 }
 export async function runLauncher(home: string, args: string[], signal?: AbortSignal): Promise<string> {
 	return await new Promise((accept, reject) => {
-		const child = spawn(process.execPath, [launcherPath(home), ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], signal });
+		const child = spawn(configuredNode(home), [launcherPath(home), ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], signal });
 		let output = "";
 		child.stdout.on("data", chunk => { output = (output + chunk).slice(-16000); });
 		// Child errors can contain private startup settings; keep diagnostics in host files.
@@ -115,12 +148,19 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 			source = packages.listConfiguredPackages().find(pkg => pkg.scope === "user" && pkg.installedPath
 				&& canonicalPath(pkg.installedPath) === canonicalPath(options.source));
 			if (!source) throw new Error("Install this Pi package in personal settings before managing Desk.");
+			if (options.action !== "stage" && !releaseSourceSupported(source.source))
+				throw new Error("Prebuilt releases require the unpinned gunba/pi-plugins package. Use /desk stage for a local, pinned or forked source.");
 		}
 		if (options.action === "setup") {
 			const installation = await installationOptions(options);
 			const current = await probeHost(installation.directory);
 			if (current.state !== "stopped") throw new Error("Stop the existing host before setup. Its data and account will be retained.");
-			await stageRuntime({ source: options.source, home, signal: options.signal, progress: message => publish(message) });
+			const state = readState(home);
+			if (state && canonicalPath(state.source) !== canonicalPath(options.source)) throw new Error("This runtime belongs to another source package.");
+			if (!state) atomicJson(join(home, "state.json"), { format: 1, source: realpathSync(options.source) });
+			const { downloadRuntime } = await import("./releases.ts");
+			await downloadRuntime({ source: options.source, home, signal: options.signal, progress: message => publish(message) });
+			options.signal?.throwIfAborted();
 			await configureRuntime(home, installation);
 			publish("Moving login-start to the stable launcher");
 			await migrateLogin(installation.directory, launcherPath(home));
@@ -132,13 +172,27 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 		if (options.action === "update") {
 			const current = await probeHost(installation.directory);
 			if (current.state !== "stopped" && (current.state !== "running" || !current.host?.runtime))
-				throw new Error("Stop the unmanaged or unresponsive host before updating the installed package.");
-			publish("Updating the installed Pi package");
-			packages!.setProgressCallback(event => publish(`Pi package ${event.action}: ${event.type}`));
-			try { await packages!.update(source!.source); }
-			catch { throw new Error("Pi package update failed. Use Pi's package command locally to inspect authentication or network diagnostics."); }
+				throw new Error("The host must be managed and responding before it can be updated.");
+			const { downloadRuntime } = await import("./releases.ts");
+			const release = await downloadRuntime({ source: options.source, home, signal: options.signal, progress: message => publish(message) });
+			options.signal?.throwIfAborted();
+			armUpdate(home, release.id);
 		}
-		if (options.action === "stage" || options.action === "update") {
+		if (options.action === "update" || options.action === "apply") {
+			publish("Checking whether the prepared update can be applied");
+			const result = await activateIdleRuntime(home);
+			if (result.deferred !== undefined) {
+				publish("Update ready. It will apply after all open Pi sessions close.", "waiting");
+			} else {
+				if (result.restart) {
+					publish(`Starting Desk ${result.release}`);
+					await runLauncher(home, ["start"]);
+				}
+				publish(result.release ? `Desk ${result.release} is installed. Native history and account access are retained.` : "Desk is up to date.", "complete");
+			}
+			return value;
+		}
+		if (options.action === "stage") {
 			await stageRuntime({ source: options.source, home, signal: options.signal, progress: message => publish(message) });
 			publish("Prepared. Restart explicitly to apply a pending version.", "complete");
 			return value;
@@ -175,7 +229,8 @@ export async function launchOperation(home: string, action: Exclude<DeskOperatio
 	const file = join(versionDirectory(home, state.active), "source", "pi-desk", "dist", "host", "manage-cli.js");
 	const fd = openSync(join(home, "operation.log"), "a", 0o600);
 	try {
-		const child = spawn(process.execPath, [file, home, action], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"] });
+		const node = action === "update" || action === "apply" ? configuredNode(home) : process.execPath;
+		const child = spawn(node, [file, home, action], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"] });
 		try {
 			await new Promise<void>((accept, reject) => {
 				const timer = setTimeout(() => reject(new Error("Operation startup is unconfirmed. Use /desk status before retrying.")), 10000);

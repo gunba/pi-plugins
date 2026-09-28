@@ -98,6 +98,7 @@ export interface SessionView {
 	inputs?: InputStatus[];
 }
 export interface HostState { release: ReleaseInfo; name: string; platform?: string; cwd: string; sessions: SessionView[];
+	updates?: import("./updates.ts").RuntimeUpdateState;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 export type HostEvent =
 	| { type: "state"; state: HostState }

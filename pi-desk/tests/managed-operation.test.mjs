@@ -6,7 +6,42 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { launchOperation, operationStatus } from "../manage/operations.ts";
-import { atomicJson, readControllerRelease, readRelease } from "../manage/store.ts";
+import { atomicJson, readControllerRelease, readRelease, readState, runtimeIdentity } from "../manage/store.ts";
+import { activateIdleRuntime } from "../manage/activate.ts";
+import { DeskHost } from "../src/host/server.ts";
+
+test("automatic selection retains idle workers and preserves rollback after explicit close", async () => {
+	const root = fs.mkdtempSync(join(tmpdir(), "desk-idle-update-")), home = join(root, "runtime"), directory = join(root, "data");
+	fs.mkdirSync(home); fs.mkdirSync(directory);
+	const ready = (digest, desk) => {
+		const id = runtimeIdentity(digest, process.platform, process.arch, process.versions.modules);
+		const version = join(home, "versions", id), host = join(version, "source", "pi-desk", "dist", "host");
+		fs.mkdirSync(host, { recursive: true });
+		for (const file of ["cli.js", "managed.js", "manage-cli.js"]) fs.writeFileSync(join(host, file), "");
+		atomicJson(join(version, "runtime.json"), { format: 1, id, digest, platform: process.platform, arch: process.arch,
+			node: process.versions.modules, source: root, readyAt: new Date().toISOString(), plugins: "0.25.0", desk, engine: "0.87.1" });
+		return id;
+	};
+	const active = ready("a".repeat(64), "0.4.3"), pending = ready("b".repeat(64), "0.5.0");
+	atomicJson(join(home, "state.json"), { format: 1, source: root, active, pending, autoApply: pending });
+	atomicJson(join(home, "installation.json"), { format: 1, directory, agentDir: root, cwd: root, port: 0 });
+	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: directory, port: 0 });
+	try {
+		await host.start(); host.runtime = active;
+		host.sessions.set("fixture", { view: { key: "fixture", cwd: root, state: "ready", created: 1,
+			snapshot: { activity: "idle" } }, worker: { close: async () => assert.fail("must not interrupt an idle worker") } });
+		assert.deepEqual(await activateIdleRuntime(home), { deferred: 1 });
+		assert.equal(readState(home).active, active);
+		assert.equal(host.closing, false);
+		host.sessions.delete("fixture");
+		assert.deepEqual(await activateIdleRuntime(home), { release: "0.5.0", restart: true });
+		const selected = readState(home);
+		assert.equal(selected.active, pending);
+		assert.equal(selected.previous, active);
+		assert.equal(selected.pending, undefined);
+		assert.equal(selected.autoApply, undefined);
+	} finally { host.sessions.clear(); await host.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("status re-reads completion after acquiring an operation lease instead of reporting a false interruption", t => {
 	const home = fs.mkdtempSync(join(tmpdir(), "desk-operation-")), file = join(home, "operation.json");
