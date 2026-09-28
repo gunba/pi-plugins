@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { NativeAccountIdentity } from "../src/host/account-identity.ts";
 import { BrowserAccount } from "../src/client/account.ts";
 import { ServerError } from "@azure/msal-node";
+import { ServerError as BrowserServerError } from "@azure/msal-browser";
 import { RelayConnector } from "../src/host/relay-connector.ts";
 import { AccountSignInRequired } from "../src/host/account-errors.ts";
 
@@ -56,7 +57,7 @@ for (const code of ["530035", 530035]) test(`explicit native sign-in can recover
 		acquireTokenSilent: async () => {
 			throw new ServerError("invalid_request", "fixture-correlation", "Blocked by security defaults", "", code);
 		},
-		acquireTokenInteractive: async () => { interactive++; return result(owner); },
+		acquireTokenInteractive: async request => { assert.equal(request.prompt, "login"); interactive++; return result(owner); },
 	});
 	identity.device = { id: randomUUID() };
 	await assert.rejects(identity.certificate(), /security defaults.*530035/);
@@ -98,6 +99,30 @@ test("browser login leaves SSO available and selects an account only for a cache
 			await identity.signIn();
 			assert.equal(request.prompt, active === other ? "select_account" : undefined);
 		}
+	} finally {
+		if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+		else delete globalThis.localStorage;
+	}
+});
+test("browser policy refusal offers fresh verification only after an explicit sign-in", async () => {
+	const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+	Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => null, removeItem() {} } });
+	try {
+		let request, changes = 0;
+		const identity = Object.assign(Object.create(BrowserAccount.prototype), {
+			config, logoutKey: "fixture:logout", listeners: new Set([() => changes++]),
+			application: {
+				getActiveAccount: () => owner, getAllAccounts: () => [owner],
+				acquireTokenSilent: async () => { throw new BrowserServerError("invalid_request", "fixture", "Blocked", "", "530035"); },
+				loginRedirect: async value => { request = value; },
+			},
+		});
+		await assert.rejects(identity.request("/workspace"), /Sign in/);
+		assert.equal(identity.signedIn(), false);
+		assert.equal(changes, 1);
+		assert.equal(request, undefined);
+		await identity.signIn();
+		assert.equal(request.prompt, "login");
 	} finally {
 		if (previous) Object.defineProperty(globalThis, "localStorage", previous);
 		else delete globalThis.localStorage;

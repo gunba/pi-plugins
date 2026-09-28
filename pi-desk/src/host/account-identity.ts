@@ -91,10 +91,15 @@ export class NativeAccountIdentity {
 		return result;
 	}
 	async signIn(openBrowser: (url: string) => Promise<void>): Promise<void> {
+		let fresh = false;
 		try { await this.token(); return; }
-		catch (error) { if (!(error instanceof AccountSignInRequired)) throw error; }
+		catch (error) {
+			if (!(error instanceof AccountSignInRequired)) throw error;
+			fresh = error.freshAuthentication;
+		}
 		const request = {
 			scopes: [workspaceScope(this.config)], openBrowser,
+			...(fresh ? { prompt: "login" as const } : {}),
 			successTemplate: "<!doctype html><title>Pi Desk</title><p>Signed in. You can close this window.</p>",
 			errorTemplate: "<!doctype html><title>Pi Desk</title><p>Sign-in did not complete. Return to Pi Desk.</p>",
 		};
@@ -112,10 +117,11 @@ export class NativeAccountIdentity {
 				account, scopes: [workspaceScope(this.config)], forceRefresh,
 			})).accessToken;
 		} catch (error) {
-			if (error instanceof InteractionRequiredAuthError || error instanceof AccountSignInRequired) throw new AccountSignInRequired();
+			if (error instanceof AccountSignInRequired) throw error;
 			if (error instanceof ServerError && String(error.errorNo) === "530035") {
-				throw new AccountSignInRequired("Microsoft security defaults blocked authorization (AADSTS530035). Sign in again. If Microsoft still denies access, contact your tenant administrator.");
+				throw new AccountSignInRequired("Microsoft security defaults blocked authorization (AADSTS530035). Sign in again. If Microsoft still denies access, contact your tenant administrator.", true);
 			}
+			if (error instanceof InteractionRequiredAuthError) throw new AccountSignInRequired();
 			throw new Error("Account refresh is temporarily unavailable. Check the connection before signing in again.");
 		}
 	}

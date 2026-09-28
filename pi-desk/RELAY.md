@@ -157,7 +157,9 @@ avoid another account/password prompt. MFA, expired sessions or another browser
 profile can still require interaction.
 
 `AADSTS530035` means Microsoft blocked authorization under security defaults.
-Use `/desk signin` with the workspace address to try interactive sign-in.
+Use `/desk signin` with the workspace address to request fresh verification
+rather than reuse the refused Microsoft session. The browser's sign-in action
+does the same after this refusal; ordinary sign-ins retain SSO.
 Microsoft's requirements still apply; a continuing denial needs the tenant
 administrator. Background refresh does not open a login or change tenant policy,
 and disconnected computers keep their native sessions running.

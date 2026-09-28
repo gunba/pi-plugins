@@ -1,5 +1,5 @@
 import {
-	PublicClientApplication, BrowserCacheLocation, InteractionRequiredAuthError, LogLevel, EventType,
+	PublicClientApplication, BrowserCacheLocation, InteractionRequiredAuthError, ServerError, LogLevel, EventType,
 	type AccountInfo, type AuthenticationResult,
 } from "@azure/msal-browser";
 import {
@@ -75,6 +75,7 @@ export class BrowserAccount {
 	private eventId: string | null;
 	private revoked = false;
 	private needsSignIn = false;
+	private freshSignIn = false;
 	private closed = false;
 	private epoch = 0;
 	private credentials: CredentialVerifier;
@@ -152,18 +153,23 @@ export class BrowserAccount {
 		const chooseAccount = active ? !this.matches(active)
 			: this.application.getAllAccounts().length > 0 && !this.account();
 		await this.application.loginRedirect({
-			scopes: [workspaceScope(this.config)], ...(chooseAccount ? { prompt: "select_account" } : {}),
+			scopes: [workspaceScope(this.config)],
+			...(this.freshSignIn ? { prompt: "login" } : chooseAccount ? { prompt: "select_account" } : {}),
 		});
 	}
 	private async token(forceRefresh: boolean): Promise<string> {
 		const account = this.account();
 		if (!account) throw new BrowserSignInRequired();
 		try {
-			return this.checked(await this.application.acquireTokenSilent({
+			const result = this.checked(await this.application.acquireTokenSilent({
 				account, scopes: [workspaceScope(this.config)], forceRefresh,
-			})).accessToken;
+			}));
+			this.freshSignIn = false;
+			return result.accessToken;
 		} catch (error) {
-			if (error instanceof InteractionRequiredAuthError || error instanceof BrowserSignInRequired) {
+			const policy = error instanceof ServerError && String(error.errorNo) === "530035";
+			if (policy) this.freshSignIn = true;
+			if (policy || error instanceof InteractionRequiredAuthError || error instanceof BrowserSignInRequired) {
 				this.needsSignIn = true; this.credential = undefined; this.changed(); throw new BrowserSignInRequired();
 			}
 			throw new Error("Account refresh is temporarily unavailable.");
