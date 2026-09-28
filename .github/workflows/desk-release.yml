@@ -3,8 +3,6 @@ name: Desk release
 on:
   push:
     tags: ["pi-desk-v*"]
-  pull_request:
-    paths: ["pi-desk/**", "package*.json", ".github/workflows/desk-release.yml"]
 
 concurrency:
   group: desk-release-${{ github.ref }}
@@ -39,7 +37,6 @@ jobs:
 
   build:
     needs: prepare
-    if: ${{ !cancelled() && (needs.prepare.result == 'success' || github.event_name == 'pull_request') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
