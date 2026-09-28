@@ -36,7 +36,7 @@ async function relocateJunctions(root: string, destination: string): Promise<voi
 			if (item.isSymbolicLink()) {
 				const target = await realpath(file);
 				if (!(await lstat(target)).isDirectory()) continue;
-				if (!within(root, target)) throw new Error("A runtime dependency points outside its snapshot.");
+				if (!within(root, target)) throw new Error(`A runtime dependency points outside its snapshot: ${file} -> ${target} (root ${root}).`);
 				links.push({ path: file, target: join(destination, relative(root, target)) });
 			} else if (item.isDirectory()) await visit(file);
 		}
@@ -52,7 +52,9 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 	let home = resolve(options.home);
 	if (within(source, home) || within(home, source)) throw new Error("Runtime storage must be outside the installed source package.");
 	await mkdir(home, { recursive: true, mode: 0o700 });
-	home = realpathSync(home);
+	// Use native canonical paths on both sides of junction containment checks.
+	// Windows TEMP can use an 8.3 alias while realpath(junction) returns its long name.
+	home = await realpath(home);
 	if (within(source, home) || within(home, source)) throw new Error("Runtime storage must be outside the installed source package.");
 	const lock = new SessionLease(join(home, "manage"));
 	let temporary: string | undefined;

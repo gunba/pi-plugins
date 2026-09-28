@@ -58,7 +58,7 @@ async function verify(file: string, asset: ReleaseAsset): Promise<void> {
 
 /** CI packs regular files separately from relocatable links and reusable dependencies. */
 export async function packRuntime(home: string, id: string, output: string, commit: string): Promise<string> {
-	const release = readRelease(home, id), root = versionDirectory(home, id);
+	const release = readRelease(home, id), root = await realpath(versionDirectory(home, id));
 	await mkdir(output, { recursive: true });
 	const code: string[] = [], dependencies: string[] = [], links: RuntimeLink[] = [];
 	const visit = async (path: string) => {
