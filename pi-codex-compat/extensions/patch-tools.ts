@@ -1135,7 +1135,8 @@ export function registerPatchTools(pi: ExtensionAPI, execRuntimeOwnerFor: ExecRu
 		promptSnippet: "Apply a patch and run its follow-up command in one call",
 		promptGuidelines: [
 			"Use patch_and_run when a specific command should immediately follow a patch; use apply_patch when no command is needed.",
-			"If the command outlives the initial wait, use write_stdin with its session_id to collect the result.",
+			"Omit then_run.yield_time_ms for ordinary commands. Use short waits only for persistent services or when independent useful work can run concurrently.",
+			"If the command outlives the initial wait, rely on its completion notification, then call write_stdin once with its session_id to collect the result rather than repeatedly polling.",
 		],
 		parameters: Type.Object({
 			input: Type.String({ description: "Complete *** Begin Patch / *** End Patch envelope." }),

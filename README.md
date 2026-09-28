@@ -148,20 +148,22 @@ The package manifest at the repository root loads the extension files from the
 `pi-*` subdirectories. Keep plugin directories and package names prefixed with
 `pi-`.
 
-Install the pinned development dependencies and run the same strict typecheck
-and all discovered regression tests as CI:
+Install the pinned development dependencies:
 
 ```bash
 npm ci
 npm --prefix pi-desk ci --ignore-scripts
-npm run check
-npm --prefix pi-desk run typecheck
-npm --prefix pi-desk run build
 ```
 
+Use the focused commands in [AGENTS.md](AGENTS.md) for normal development.
+Full integration/release validation is `npm run check`,
+`npm --prefix pi-desk run typecheck`, and `npm --prefix pi-desk run build`.
+
 The Pi packages remain optional runtime peers; their pinned development copies
-make extension API changes visible to TypeScript before release. CI covers Linux
-and Windows using the pinned Pi 0.87.1 dependencies on Node 22 and Node 24.
+make extension API changes visible to TypeScript before release. Main pushes run
+Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.87.1 dependencies.
+Manual `workflow_dispatch` runs all four OS/Node combinations; feature pushes and
+pull requests do not trigger CI. Native Desk packaging remains release-tag-only.
 Codex Wire carries its own serializer dependency; this does not upgrade
 the installed Pi application.
 

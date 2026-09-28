@@ -106,8 +106,9 @@ successful main CI run. Build jobs have read-only repository access. A separate
 publisher uploads the complete Linux/Windows, Node 22/24 matrix and publishes it only
 after every build succeeds. Bump Desk's version for changes shipped in its
 runtime, including bundled first-party extensions.
-The native package/install matrix runs only for release tags; pull requests use
-regular CI.
+The native package/install matrix runs only for release tags. Main pushes run
+Linux/Node 22 and Windows/Node 24 CI; manual `workflow_dispatch` runs all four
+combinations. Feature pushes and pull requests do not trigger CI.
 
 Downloads are anchored to this repository's GitHub Releases API and its
 [asset SHA-256 digests](https://docs.github.com/en/rest/releases/assets).

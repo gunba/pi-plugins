@@ -1,12 +1,12 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -20,6 +20,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22, 24]
+        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       # v7.0.1

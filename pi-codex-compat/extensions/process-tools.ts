@@ -50,7 +50,8 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		description: "Runs a command with plain pipes, returning output or a session ID for ongoing polling. tty defaults to false; tty:true is rejected because PTY/ConPTY allocation belongs to the Codex core runtime and is unavailable inside this extension.",
 		promptSnippet: "Run commands in managed sessions with the Codex Unified Exec contract",
 		promptGuidelines: [
-			"A command still running after yield_time_ms returns a session ID. Completion notifications arrive automatically; write_stdin collects the result.",
+			"Omit yield_time_ms for ordinary commands. Use short waits only for persistent services or when independent useful work can run concurrently.",
+			"A command still running after the initial wait returns a session ID. Rely on completion notifications, then call write_stdin once to collect the result rather than repeatedly polling.",
 			"exec_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
 			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
 		],
@@ -105,6 +106,7 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		promptSnippet: "Poll a Unified Exec session or send an exact Ctrl-C interrupt",
 		promptGuidelines: [
 			"session_id comes from exec_command. Omitted or empty chars reads output; stdin is closed except for the U+0003 interruption request.",
+			"Rely on completion notifications and collect the result once; omit yield_time_ms for ordinary collection.",
 			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it uses taskkill to terminate the command tree; it does not emit a console Ctrl-C event.",
 		],
 		parameters: Type.Object({
