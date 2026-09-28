@@ -13,7 +13,7 @@ import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
 import { ResumeConversation } from "./resume.tsx";
-import { Computers } from "./computers.tsx";
+import { Computers, SoftwareUpdate } from "./computers.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
@@ -380,12 +380,17 @@ export function App({ account }: { account?: BrowserAccount }) {
           Sessions <span>{state.host.sessions.length}</span>
         </div>
         <nav className="session-list">
-          {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected,
+          {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected, updates: host.updates,
             connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
             <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
           </div>
+          {(computer.updates?.available || computer.updates?.pending || computer.updates?.phase === "preparing") &&
+            <button className="sidebar-update" onClick={() => { setPanel("settings"); setSidebar(false); }}>
+              {computer.updates.phase === "applying" ? "Applying update…" : computer.updates.phase === "preparing" ? "Preparing update…"
+                : computer.updates.pending ? "Update ready" : "Update available"} →
+            </button>}
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
@@ -797,7 +802,11 @@ export function App({ account }: { account?: BrowserAccount }) {
             ))}
           {panel === "settings" && (
             <>
-              {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <Devices />}
+              {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <>
+                {host.updates && <section className="panel-card"><h3>Software updates</h3>
+                  <SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></section>}
+                <Devices />
+              </>}
               <DraftRecovery available={host.sessions.map(item => item.key)} target={session?.key}
                 busy={sending || controlBusy} restored={(target, text) => {
                   if (selectedRef.current === target) setDraft(text);

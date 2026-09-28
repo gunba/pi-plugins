@@ -91,7 +91,7 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 	} finally { launch.close(); }
 }
 
-export async function stopHost(directory: string): Promise<{ stopped: boolean; unclean?: boolean }> {
+export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
 	const current = await probeHost(directory);
 	if (current.state === "stopped") {
 		const record = readHostRecord(directory);
@@ -104,7 +104,9 @@ export async function stopHost(directory: string): Promise<{ stopped: boolean; u
 	if (current.state === "unresponsive") throw new Error(`Host is not responding. No PID was signalled. ${current.error}`);
 	const record = readHostRecord(directory)!;
 	if (record.instance !== current.host!.instance) throw new Error("The host changed. Check status before stopping it.");
-	await controlRequest(record, "stop", {});
+	const result = await controlRequest<{ instance: string; deferred?: number }>(record,
+		options?.idleOnly ? "stop-if-idle" : "stop", options ? { runtime: options.runtime } : {});
+	if (result.deferred !== undefined) return { stopped: false, deferred: result.deferred };
 	const until = Date.now() + 30_000;
 	while (Date.now() < until) {
 		if (readHostRecord(directory)?.instance !== record.instance) return { stopped: true };

@@ -1,15 +1,17 @@
 import { readInstallation } from "../../manage/installation.ts";
-import { readState } from "../../manage/store.ts";
+import { readState, validId } from "../../manage/store.ts";
 import { runOperation, type DeskOperation } from "../../manage/operations.ts";
 
-const [home, action] = process.argv.slice(2);
+const [home, action, prepared] = process.argv.slice(2);
 try {
-	if (!home || !["stage", "update", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")) throw new Error("Invalid Desk operation.");
+	if (!home || !["stage", "update", "apply", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")
+		|| action === "apply-now" && !validId(prepared) || prepared !== undefined && action !== "apply-now")
+		throw new Error("Invalid Desk operation.");
 	const installation = readInstallation(home), state = readState(home);
 	if (!state) throw new Error("Missing runtime state.");
 	let accepted = false;
 	await runOperation({ home, source: state.source, agentDir: installation.agentDir, cwd: installation.cwd,
-		directory: installation.directory, action: action as DeskOperation,
+		directory: installation.directory, action: action as DeskOperation, prepared,
 		progress: value => {
 			if (!accepted) { accepted = true; if (process.connected) process.send?.({ type: "accepted", id: value.id }); }
 		},

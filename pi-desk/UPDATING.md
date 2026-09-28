@@ -1,7 +1,8 @@
 # Installation and updates
 
-Pi Desk requires Node 22.19 or later, npm and a private user directory on Windows
-or Linux. Install this repository as a **personal Pi package**:
+Pi Desk requires Node and a private user directory on Windows or Linux. Published
+x64 runtimes support Node 22.19+ on the Node 22 line, and Node 24. Install this
+repository as a **personal Pi package**:
 
 ```sh
 pi install git:github.com/gunba/pi-plugins
@@ -14,9 +15,10 @@ See [remote access](RELAY.md) if the shared services are not deployed yet.
 
 ## Setup
 
-`/desk setup` prepares an isolated runtime from the installed package and its
-lockfiles. The first build downloads dependencies and can take several minutes.
-It does not alter the global Pi CLI. Desk pins its own Pi SDK.
+`/desk setup` downloads and verifies a published runtime. It does not compile
+Desk, change the global Pi CLI, or require a build toolchain. Desk pins its own
+Pi SDK. The first download includes native dependencies; later code-only updates
+reuse their verified download.
 
 Choose the existing Desk data directory when migrating, or keep the default
 `<Pi agent directory>/desk`. Account configuration, protected credentials and
@@ -29,10 +31,7 @@ session directory empty uses native Pi settings/environment. Leaving the proxy
 empty uses the normal proxy environment. The Pi agent directory comes from the
 current Pi installation, including `PI_CODING_AGENT_DIR` if set.
 
-Microsoft's protected-cache library needs its native `keytar` binding. Setup
-performs the targeted rebuild after installing other dependencies without
-lifecycle scripts. An approved prebuilt binary normally avoids compilation;
-otherwise a supported native build toolchain is needed. Linux also requires
+Native bindings are built and checked before publication. Linux still requires
 libsecret and an available, unlocked desktop Secret Service. Windows uses
 current-user DPAPI. There is no plaintext credential fallback.
 
@@ -47,12 +46,38 @@ does not delete native history or sign out of the workspace.
 
 ## Routine updates
 
+Open **Settings & tools → Computers**, expand a connected computer and click
+**Update**. `/desk update` does the same from Pi. No maintenance conversation,
+service reinstall, terminal restart sequence or administrator access is needed.
+Desk checks for published updates at startup and every six hours, using a local
+cache. The sidebar shows availability and update progress. **Check for updates**
+refreshes it immediately; detection alone does not install anything.
+
+Desk downloads into a separate immutable runtime while conversations continue.
+If any Pi worker is open—even idle—the update waits. Close conversations when
+finished. At the empty boundary, the host blocks new sessions, shuts down
+gracefully, selects the prepared code and starts through the existing launcher.
+The computer reconnects automatically. Interrupted workspace references are not
+running workers and do not block updates. No conversation is automatically resumed.
+
+To apply a prepared update sooner, choose **Stop sessions and update** and
+confirm. It stops every open Pi worker on that computer, but keeps their
+conversations visible as interrupted. After reconnection, select a conversation
+and click **Resume**. Running tools and background work are interrupted, not
+resent. This differs from ordinary **Close**, which removes the conversation
+from the workspace while retaining its native history.
+
+The browser shows preparation, waiting, application and failure states. A failed
+download leaves the running release intact. The updater never cleans or
+reinstalls the Pi package that another terminal process may be using. Website
+publication is separate from native host updates.
+
 | Command | Effect |
 | --- | --- |
 | `/desk` | Open the native management menu |
 | `/desk status` | Show host, active/staged versions and latest operation outcome |
-| `/desk stage` | Prepare the currently installed source without updating it |
-| `/desk update` | Use Pi's package manager to update this personal package, then prepare it |
+| `/desk stage` | Build the installed source explicitly for development; does not activate it |
+| `/desk update` | Download a verified release and apply it automatically when no Pi workers remain |
 | `/desk restart` | Confirm interruption of running sessions, select the staged version and start the host |
 | `/desk rollback` | Confirm interruption and select the previous prepared runtime |
 | `/desk stop` | Stop the host and its workers; keep native history |
@@ -63,37 +88,32 @@ changes run outside their initiating conversation, so stopping that worker does
 not cancel the operation. Reconnect and use `/desk status` to check its outcome.
 Admission is not completion. Failed or unconfirmed operations are not retried.
 
-Normal interactive Pi startup stages changes in the background after a Pi
-package update. It does not fetch updates itself, block Pi startup or restart
-the host. Managed Desk workers, children and offline startup skip this step.
-A previous failed/unconfirmed operation asks for attention instead of being
-overwritten by automatic staging.
+Ordinary Pi startup does not build or fetch Desk updates. Native Pi package
+management remains responsible for terminal extensions and third-party packages.
+Prebuilt Desk delivery supports the unpinned public repository; local, pinned
+and forked sources use explicit source preparation instead.
 
 Each prepared version has its own first-party source, SDK, dependencies and
 build output. Running workers and late child loads retain that version when Pi
 updates the installed source. Third-party packages still use native discovery;
 this isolation does not freeze their updates.
 
-Staging does not activate a release. When ready, finish work or explicitly
-accept its interruption, then run `/desk restart`. Questions, tools, children and
-automatic plans count as live work even when the main conversation is idle.
+Development staging does not activate a release. To use that local build,
+finish work or explicitly accept its interruption, then run `/desk restart`.
+Questions, tools, children and automatic plans count as live work even when the
+main conversation is idle.
 Open sessions remain listed as interrupted after restart; resume or close them
 explicitly. No restart replays
 unfinished prompts or controls. Check receipts/history before repeating
 uncertain work.
 
-Native package behavior applies: offline mode does not fetch, pinned sources
-keep their configured revision, and local development paths are not fetched.
-`stage` and `update` can therefore report the same version. Versions are not
-automatically removed.
-
-After changing Node, restart terminal Pi with the new executable and run
-`/desk stage`, then `/desk restart`. Preparation can use the existing JavaScript
-controller without loading its old native bindings. The running host keeps its
-old runtime until the explicit restart. Login-start then records the new Node
-path while retaining its other settings. A restart or rollback to an incompatible
-runtime is refused **before** stopping the current host; stopping alone remains
-available from either Node version.
+Routine updates use the Node executable saved for the managed host, not a
+different Node used by terminal Pi. An unsupported platform/ABI is refused
+before stopping a host. To deliberately change the saved Node path or run an
+unpublished development build, use `/desk stage` and `/desk restart` with that
+Node. This explicit operation may rebuild native dependencies and retarget
+login-start; routine releases do neither. Prepared versions remain available
+for rollback.
 
 ## Moving from an unmanaged installation
 
@@ -114,7 +134,7 @@ available from either Node version.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Version 0.4 uses API 4 and first-party presentation version 2. Deploy matching
+Version 0.5 uses API 4 and first-party presentation version 2. Deploy matching
 website, account and broker artifacts before treating the cutover as complete.
 Older computers may temporarily show **Update required**. A version mismatch
 is not a reason to delete sessions, credentials or drafts.
@@ -122,7 +142,9 @@ is not a reason to delete sessions, credentials or drafts.
 Keep the website origin to retain browser storage. If it changes, export drafts
 and files first. Do not copy `login.json`, signing keys or protected caches
 between computers. Initial migration still requires local access to stop/update
-an unmanaged host; subsequent managed updates use `/desk`.
+an unmanaged host. A pre-0.5 managed host needs one final source preparation/
+restart to acquire the release updater; subsequent updates use the website
+or `/desk update`.
 
 ## Recovery and rollback
 

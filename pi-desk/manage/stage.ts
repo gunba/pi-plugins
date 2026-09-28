@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, realpathSync, statSync, writeSync } from "node:fs";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, symlink, unlink } from "node:fs/promises";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { captureSource, within, writeSource } from "./source.ts";
 import { atomicJson, readRelease, readState, runtimeId, versionDirectory, type RuntimeRelease } from "./store.ts";
@@ -26,12 +26,35 @@ export function npmEntry(): string {
 export interface StageOptions {
 	source: string; home: string; signal?: AbortSignal; progress?: (phase: string) => void;
 }
+/** npm uses absolute junctions for Windows workspaces; moving the snapshot must retarget them. */
+async function relocateJunctions(root: string, destination: string): Promise<void> {
+	if (process.platform !== "win32") return;
+	const links: { path: string; target: string }[] = [];
+	const visit = async (directory: string) => {
+		for (const item of await readdir(directory, { withFileTypes: true })) {
+			const file = join(directory, item.name);
+			if (item.isSymbolicLink()) {
+				const target = await realpath(file);
+				if (!(await lstat(target)).isDirectory()) continue;
+				if (!within(root, target)) throw new Error(`A runtime dependency points outside its snapshot: ${file} -> ${target} (root ${root}).`);
+				links.push({ path: file, target: join(destination, relative(root, target)) });
+			} else if (item.isDirectory()) await visit(file);
+		}
+	};
+	await visit(root);
+	for (const item of links) {
+		await unlink(item.path);
+		await symlink(item.target, item.path, "junction");
+	}
+}
 export async function stageRuntime(options: StageOptions): Promise<RuntimeRelease> {
 	const source = realpathSync(options.source);
 	let home = resolve(options.home);
 	if (within(source, home) || within(home, source)) throw new Error("Runtime storage must be outside the installed source package.");
 	await mkdir(home, { recursive: true, mode: 0o700 });
-	home = realpathSync(home);
+	// Use native canonical paths on both sides of junction containment checks.
+	// Windows TEMP can use an 8.3 alias while realpath(junction) returns its long name.
+	home = await realpath(home);
 	if (within(source, home) || within(home, source)) throw new Error("Runtime storage must be outside the installed source package.");
 	const lock = new SessionLease(join(home, "manage"));
 	let temporary: string | undefined;
@@ -58,7 +81,7 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 		const snapshot = await captureSource(source), id = runtimeId(snapshot), destination = versionDirectory(home, id);
 		if (existsSync(destination)) {
 			const release = readRelease(home, id);
-			atomicJson(join(home, "state.json"), { ...state, format: 1, source, pending: state?.active === id ? undefined : id });
+			atomicJson(join(home, "state.json"), { ...state, format: 1, source, pending: state?.active === id ? undefined : id, autoApply: undefined });
 			return release;
 		}
 		await mkdir(join(home, "versions"), { recursive: true, mode: 0o700 });
@@ -86,9 +109,10 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 			platform: process.platform, arch: process.arch, node: process.versions.modules, readyAt: new Date().toISOString(),
 		};
 		atomicJson(join(temporary, "runtime.json"), release);
+		await relocateJunctions(temporary, destination);
 		await rename(temporary, destination); temporary = undefined;
 		readRelease(home, id);
-		atomicJson(join(home, "state.json"), { ...state, format: 1, source, pending: state?.active === id ? undefined : id });
+		atomicJson(join(home, "state.json"), { ...state, format: 1, source, pending: state?.active === id ? undefined : id, autoApply: undefined });
 		writeSync(log, "\nReady; active runtime unchanged\n"); options.progress?.("Ready; active runtime unchanged");
 		return release;
 	} finally {

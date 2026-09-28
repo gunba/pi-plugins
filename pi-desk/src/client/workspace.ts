@@ -7,6 +7,7 @@ export interface Computer {
 	diagnostics?: { interruptions: number; last?: ConnectionInterruption };
 	relay?: HostState["relay"];
 	release?: HostState["release"];
+	updates?: HostState["updates"];
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }

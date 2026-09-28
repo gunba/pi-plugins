@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { isManagedChild } from "../../pi-work-coordination/index.ts";
 import { readInstallation, installationFile } from "../manage/installation.ts";
-import { deskStatus, extensionLocation, launchOperation, operationStatus, runLauncher, runOperation, statusText, type DeskOperation } from "../manage/operations.ts";
+import { deskStatus, extensionLocation, launchOperation, runLauncher, runOperation, statusText, type DeskOperation } from "../manage/operations.ts";
 import { openBrowser } from "../src/host/lifecycle.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
 import { chooseStartup } from "../manage/setup.ts";
@@ -12,7 +12,7 @@ import { chooseStartup } from "../manage/setup.ts";
 const commands = ["status", "setup", "open", "stage", "update", "restart", "rollback", "stop", "signin", "login"] as const;
 export default function desk(pi: ExtensionAPI) {
 	const agentDir = getAgentDir(), location = extensionLocation(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), agentDir);
-	let context: ExtensionContext | undefined, automatic = false, shutdown = false;
+	let context: ExtensionContext | undefined, shutdown = false;
 	const initial = new AbortController();
 	const notify = (message: string, level: "info" | "warning" | "error" = "info") => {
 		if (!shutdown && context?.hasUI) context.ui.notify(message, level);
@@ -26,7 +26,7 @@ export default function desk(pi: ExtensionAPI) {
 		},
 	});
 	pi.registerCommand("desk", {
-		description: "Manage the Desk host, prepared updates and login-start",
+		description: "Update Desk, manage its host and sign in",
 		getArgumentCompletions: prefix => commands.filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			if (process.env.PI_SUBAGENT_TASK_PATH || isManagedChild(pi)) throw new Error("Desk management belongs to the parent session.");
@@ -46,7 +46,7 @@ export default function desk(pi: ExtensionAPI) {
 				if (command === "status") { notify(statusText(await status())); return; }
 				if (command === "setup") {
 					if ((await status()).state?.active) { notify("Desk is already configured. Use /desk to manage it."); return; }
-					if (!await ctx.ui.confirm("Set up Desk?", "Prepare an isolated runtime and retain the account and native sessions. Saved login-start options are kept. An existing host must be stopped first.")) return;
+					if (!await ctx.ui.confirm("Set up Desk?", "Download a verified runtime and retain the account and native sessions. Saved login-start options are kept. An existing host must be stopped first.")) return;
 					let data = directory();
 					if (!existsSync(join(data, "account.json")) && !existsSync(join(data, "login.json"))) {
 						const chosen = await ctx.ui.input("Desk data directory (Enter keeps the default)", data);
@@ -91,22 +91,12 @@ export default function desk(pi: ExtensionAPI) {
 						`${current.host.host?.sessions.active ?? 0} running Pi sessions and their background work will stop. Open sessions remain in the workspace as interrupted; resume explicitly afterward.`)) return;
 				}
 				await launchOperation(location.home, command as Exclude<DeskOperation, "setup">);
-				notify("Operation accepted. Use /desk status for its outcome.");
+				notify(command === "update" ? "Update accepted. It applies automatically after open Pi sessions close. See computer settings or /desk status."
+					: "Operation accepted. Use /desk status for its outcome.");
 			} catch (error) { notify(error instanceof Error ? error.message : String(error), "error"); }
 			finally { if (!shutdown) ctx.ui.setStatus("desk", undefined); }
 		},
 	});
-	pi.on("session_start", (_event, ctx) => {
-		context = ctx;
-		if (automatic || location.pinned || ctx.mode !== "tui" || process.env.PI_OFFLINE === "1"
-			|| process.env.PI_SUBAGENT_TASK_PATH || isManagedChild(pi) || !existsSync(installationFile(location.home))) return;
-		automatic = true;
-		const previous = operationStatus(location.home);
-		if (previous?.phase === "running") return;
-		if (previous && previous.phase !== "complete") {
-			notify("A Desk operation needs attention. Use /desk status before preparing another update.", "warning"); return;
-		}
-		void launchOperation(location.home, "stage").catch(error => notify(error instanceof Error ? error.message : String(error), "warning"));
-	});
+	pi.on("session_start", (_event, ctx) => { context = ctx; });
 	pi.on("session_shutdown", () => { shutdown = true; initial.abort(); context = undefined; });
 }
