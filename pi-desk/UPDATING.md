@@ -53,13 +53,13 @@ does not delete native history or sign out of the workspace.
 | `/desk status` | Show host, active/staged versions and latest operation outcome |
 | `/desk stage` | Prepare the currently installed source without updating it |
 | `/desk update` | Use Pi's package manager to update this personal package, then prepare it |
-| `/desk restart` | Confirm closure of all conversations, select the staged version and start the host |
-| `/desk rollback` | Confirm closure and select the previous prepared runtime |
+| `/desk restart` | Confirm interruption of running sessions, select the staged version and start the host |
+| `/desk rollback` | Confirm interruption and select the previous prepared runtime |
 | `/desk stop` | Stop the host and its workers; keep native history |
 | `/desk login` | Inspect, install or remove login-start |
 
 These are native extension commands in both Pi and Desk. Restart and login
-changes run outside their initiating conversation, so closing that worker does
+changes run outside their initiating conversation, so stopping that worker does
 not cancel the operation. Reconnect and use `/desk status` to check its outcome.
 Admission is not completion. Failed or unconfirmed operations are not retried.
 
@@ -75,9 +75,10 @@ updates the installed source. Third-party packages still use native discovery;
 this isolation does not freeze their updates.
 
 Staging does not activate a release. When ready, finish work or explicitly
-accept its closure, then run `/desk restart`. Questions, tools, children and
+accept its interruption, then run `/desk restart`. Questions, tools, children and
 automatic plans count as live work even when the main conversation is idle.
-History stays closed after restart; resume it explicitly. No restart replays
+Open sessions remain listed as interrupted after restart; resume or close them
+explicitly. No restart replays
 unfinished prompts or controls. Check receipts/history before repeating
 uncertain work.
 

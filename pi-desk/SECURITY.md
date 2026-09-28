@@ -62,6 +62,13 @@ Maintained clients require explicit sign-in to enrol again after removal.
 Someone who still has valid owner tokens or can sign in as the owner can enrol
 a new identity. Address Microsoft account compromise at Microsoft as well.
 
+Folder browsing uses that same host-wide authorization. It accepts directory
+paths for navigation, lists folder names and samples native session headers for
+recent projects; it does not load project extensions. Direct network/device
+paths are rejected, but ordinary host permissions and mounted volumes still
+apply. This is separate from file-content downloads, which require a reference
+observed in a conversation.
+
 ## Encrypted connections
 
 Computers connect outbound; no inbound PC port, router forwarding or VPN is

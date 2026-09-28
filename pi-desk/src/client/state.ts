@@ -1,6 +1,7 @@
 import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import type { WorkspaceEvent as HostEvent, WorkspaceState as HostState } from "./workspace.ts";
 import { MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS } from "../shared/history.ts";
+import { isOpenSession } from "../shared/workspace.ts";
 
 export interface CachedMessage extends ChatMessage { replaces?: string }
 export interface ClientState { host?: HostState; messages: Record<string, CachedMessage[]>; focused?: string[] }
@@ -52,8 +53,9 @@ export function reduceEvents(state: ClientState, events: HostEvent[]): ClientSta
 	const messages = { ...state.messages };
 	for (const event of events) {
 		if (event.type === "state" || event.type === "session") {
-			const next = event.type === "state" ? event.state : host ? {
-				...host, sessions: [...host.sessions.filter(item => item.key !== event.session.key), event.session],
+			const next = event.type === "state" ? { ...event.state, sessions: event.state.sessions.filter(isOpenSession) } : host ? {
+				...host, sessions: [...host.sessions.filter(item => item.key !== event.session.key),
+					...(isOpenSession(event.session) ? [event.session] : [])],
 			} : undefined;
 			for (const old of host?.sessions ?? []) {
 				const replacement = next?.sessions.find(item => item.key === old.key);

@@ -2,7 +2,7 @@ import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
 import type { ConnectionInterruption, ConnectionState, HostPresence } from "./connection-state.ts";
 
 export interface Computer {
-	id: string; name: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string;
+	id: string; name: string; platform?: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string;
 	presence?: HostPresence;
 	diagnostics?: { interruptions: number; last?: ConnectionInterruption };
 	relay?: HostState["relay"];

@@ -6,22 +6,21 @@ import { connectionLabel } from "./connection-state.ts";
 import type { Computer } from "./workspace.ts";
 import type { SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
+import { FolderField } from "./folder-picker.tsx";
 
 export const RESUME_NOTICE = "Resuming can deliver overdue reminders and restart queued child work. Goal continuation needs its own Resume action.";
 const scanning = (page?: SavedPage) => page && ["loading", "queued"].includes(page.progress.state);
 
-export function ResumeConversation({ computers, connected, cwd, current, folders, selected, close }: {
+export function ResumeConversation({ computers, connected, cwd, current, selected, close }: {
 	computers?: Computer[]; connected: boolean; cwd: string; current?: { computer?: string; cwd: string };
-	folders: { computer?: string; cwd: string }[]; selected: (key: string) => void; close: () => void;
+	selected: (key: string) => void; close: () => void;
 }) {
 	const [computer, setComputer] = useState<string>();
 	const target = computers?.find(value => value.id === computer);
-	const [project, setProject] = useState(current?.cwd ?? cwd), [draftProject, setDraftProject] = useState("");
-	const [all, setAll] = useState(false), [editing, setEditing] = useState(false);
+	const [project, setProject] = useState(current?.cwd ?? cwd);
+	const [all, setAll] = useState(false);
 	const [query, setQuery] = useState(""), [draft, setDraft] = useState(""), [named, setNamed] = useState(false);
 	const chosen = !computers || !!target;
-	const projects = [...new Set(folders.filter(value => value.computer === computer).map(value => value.cwd))];
-	const options = useId();
 	useEffect(() => { const timer = setTimeout(() => setQuery(draft.trim()), 200); return () => clearTimeout(timer); }, [draft]);
 	return <Modal title="Resume conversation" className="resume-modal" close={close}>
 		<div className="resume-picker">
@@ -29,7 +28,7 @@ export function ResumeConversation({ computers, connected, cwd, current, folders
 				<select data-autofocus aria-label="Computer to resume on" value={computer ?? ""} onChange={event => {
 					const id = event.target.value, next = computers.find(value => value.id === id);
 					setComputer(id); setProject(current?.computer === id ? current.cwd : next?.cwd ?? "");
-					setAll(false); setEditing(false);
+					setAll(false);
 				}}>
 					<option value="" disabled>Choose a computer</option>
 					{computers.map(value => <option key={value.id} value={value.id} disabled={!value.connected}>
@@ -40,21 +39,11 @@ export function ResumeConversation({ computers, connected, cwd, current, folders
 			{!chosen ? <p className="muted">Choose where the conversation is saved.</p> : <>
 				<div className="resume-scope" aria-label="Session scope">
 					<button aria-pressed={!all} onClick={() => setAll(false)}>Project</button>
-					<button aria-pressed={all} onClick={() => { setAll(true); setEditing(false); }}>All projects</button>
+					<button aria-pressed={all} onClick={() => setAll(true)}>All projects</button>
 					<label><input type="checkbox" checked={named} onChange={event => setNamed(event.target.checked)} /> Named only</label>
 				</div>
-				{!all && <div className="resume-location">
-					<p className="resume-path" title={project}>{project || "Choose a project folder."}</p>
-					<button onClick={() => { setDraftProject(project); setEditing(value => !value); }}>Change folder</button>
-				</div>}
-				{editing && <form className="resume-folder" onSubmit={event => {
-					event.preventDefault(); setProject(draftProject.trim()); setEditing(false); setAll(false);
-				}}>
-					<input aria-label="Project folder" placeholder="Full project folder path" list={options}
-						value={draftProject} onChange={event => setDraftProject(event.target.value)} required />
-					<datalist id={options}>{projects.map(path => <option key={path} value={path} />)}</datalist>
-					<button>Use folder</button>
-				</form>}
+				{!all && <FolderField key={computer ?? "local"} value={project} onChange={setProject} computer={computer}
+					disabled={!(target?.connected ?? connected)} />}
 				<input className="search" aria-label="Search saved conversations" placeholder="Search titles, opening text or projects"
 					value={draft} maxLength={200} onChange={event => setDraft(event.target.value)} />
 				{(all || project) && <SessionList key={`${computer ?? "local"}:${all ? "*" : project}:${target?.epoch ?? 0}`}

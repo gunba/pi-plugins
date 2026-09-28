@@ -84,7 +84,9 @@ test("cancellation releases an undispatched file; startup failure preserves reco
 		await restarted.start();
 		const session = restarted.state().sessions.find(session => session.key === f.key);
 		assert.equal(session.state, "closed");
-		assert.equal(session.activation, undefined);
+		assert.ok(session.activation);
+		assert.notEqual(session.activation, f.activation);
+		assert.equal(session.interrupted, true);
 		assert.equal(session.inputs[0].state, "failed");
 		assert.match(session.inputs[0].error, /not retried/);
 		assert.equal(restarted.inputs.read(f.key, retained.id).command.text, "Keep this draft");

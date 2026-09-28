@@ -1,14 +1,11 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { SessionManager, SettingsManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { SavedSession } from "../shared/protocol.ts";
+import { configuredSessionDirectory } from "./session-directories.ts";
 
 const options = workerData as { cwd?: string; baseCwd: string; agentDir: string; sessionDir?: string; directories: string[] };
-const configured = options.sessionDir ?? process.env.PI_CODING_AGENT_SESSION_DIR
-	?? SettingsManager.create(options.cwd ?? options.baseCwd, options.agentDir).getSessionDir();
-const custom = configured ? resolve(configured === "~" ? homedir()
-	: configured.startsWith("~/") || configured.startsWith("~\\") ? join(homedir(), configured.slice(2)) : configured) : undefined;
+const custom = configuredSessionDirectory(options.cwd ?? options.baseCwd, options.agentDir, options.sessionDir);
 const root = join(options.agentDir, "sessions");
 const published = new Set<string>();
 let completed = 0, total = 0;

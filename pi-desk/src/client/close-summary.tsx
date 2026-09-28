@@ -8,7 +8,8 @@ export function CloseSummary({ session }: { session: SessionView }) {
 			return typeof summary === "string" && summary ? [{ id: view.id, title: view.title, summary }] : [];
 		});
 	return <>
-		<p>Stop this Pi worker and all work it owns, including children, plan continuation and timers. Saved history is kept.</p>
+		<p>Close this session and remove it from the workspace. Its Pi process and background work will stop.
+			You can reopen the conversation from Resume conversation.</p>
 		<ul>
 			{session.state === "starting" && <li>Pi is still loading; close waits for startup and cleanup to finish.</li>}
 			{session.snapshot?.activity === "running" && <li>The current run will be stopped.</li>}
@@ -20,6 +21,5 @@ export function CloseSummary({ session }: { session: SessionView }) {
 		{summaries.length > 0 && <details><summary>Work reported by this conversation</summary>
 			{summaries.map(item => <p key={item.id}><strong>{item.title}</strong><br />{item.summary}</p>)}
 		</details>}
-		<p className="muted">Resuming native history can deliver overdue reminders and restart queued child work. Goals need their own Resume action.</p>
 	</>;
 }
