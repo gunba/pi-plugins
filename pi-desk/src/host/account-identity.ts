@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
-import { PublicClientApplication, LogLevel, InteractionRequiredAuthError, type AccountInfo, type AuthenticationResult } from "@azure/msal-node";
+import { PublicClientApplication, LogLevel, InteractionRequiredAuthError, ServerError, type AccountInfo, type AuthenticationResult } from "@azure/msal-node";
 import {
 	PersistenceCreator, PersistenceCachePlugin, DataProtectionScope, type IPersistence,
 } from "@azure/msal-node-extensions";
@@ -14,10 +14,7 @@ import {
 import { accountProof } from "../shared/account-proof.ts";
 import { AccountNetwork } from "./account-network.ts";
 import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
-
-export class AccountSignInRequired extends Error {
-	constructor() { super("Sign in to your Pi Desk account on this computer."); }
-}
+import { AccountSignInRequired } from "./account-errors.ts";
 export interface NativeDeviceIdentity { id: string; key: DeviceKey; thumbprint: string }
 
 /** Microsoft token cache and device signing key both use OS-protected persistence. */
@@ -116,6 +113,9 @@ export class NativeAccountIdentity {
 			})).accessToken;
 		} catch (error) {
 			if (error instanceof InteractionRequiredAuthError || error instanceof AccountSignInRequired) throw new AccountSignInRequired();
+			if (error instanceof ServerError && String(error.errorNo) === "530035") {
+				throw new AccountSignInRequired("Microsoft security defaults blocked authorization (AADSTS530035). Sign in again. If Microsoft still denies access, contact your tenant administrator.");
+			}
 			throw new Error("Account refresh is temporarily unavailable. Check the connection before signing in again.");
 		}
 	}

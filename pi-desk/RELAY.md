@@ -156,6 +156,12 @@ copy tokens between stores. Using the same browser profile lets Microsoft SSO
 avoid another account/password prompt. MFA, expired sessions or another browser
 profile can still require interaction.
 
+`AADSTS530035` means Microsoft blocked authorization under security defaults.
+Use `/desk signin` with the workspace address to try interactive sign-in.
+Microsoft's requirements still apply; a continuing denial needs the tenant
+administrator. Background refresh does not open a login or change tenant policy,
+and disconnected computers keep their native sessions running.
+
 Computers are ordinary user processes: no service elevation, inbound firewall
 rule or router configuration is needed. The PC must be awake and the user
 logged in. Linux needs an unlocked Secret Service; Windows uses current-user
