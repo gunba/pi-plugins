@@ -7,10 +7,13 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { launchOperation, operationStatus } from "../manage/operations.ts";
 import { atomicJson, readControllerRelease, readRelease, readState, runtimeIdentity } from "../manage/store.ts";
-import { activateIdleRuntime } from "../manage/activate.ts";
+import { activatePreparedRuntime } from "../manage/activate.ts";
 import { DeskHost } from "../src/host/server.ts";
+import { SessionCatalog } from "../src/host/session-files.ts";
 
-test("automatic selection retains idle workers and preserves rollback after explicit close", async () => {
+for (const stop of [false, true]) test(stop
+	? "confirmed update stops workers but retains conversations for Resume"
+	: "automatic selection retains idle workers and preserves rollback after explicit close", async () => {
 	const root = fs.mkdtempSync(join(tmpdir(), "desk-idle-update-")), home = join(root, "runtime"), directory = join(root, "data");
 	fs.mkdirSync(home); fs.mkdirSync(directory);
 	const ready = (digest, desk) => {
@@ -26,15 +29,28 @@ test("automatic selection retains idle workers and preserves rollback after expl
 	atomicJson(join(home, "state.json"), { format: 1, source: root, active, pending, autoApply: pending });
 	atomicJson(join(home, "installation.json"), { format: 1, directory, agentDir: root, cwd: root, port: 0 });
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: directory, port: 0 });
+	let stopped = 0;
 	try {
 		await host.start(); host.runtime = active;
 		host.sessions.set("fixture", { view: { key: "fixture", cwd: root, state: "ready", created: 1,
-			snapshot: { activity: "idle" } }, worker: { close: async () => assert.fail("must not interrupt an idle worker") } });
-		assert.deepEqual(await activateIdleRuntime(home), { deferred: 1 });
+			file: join(root, "session.jsonl"), name: "Session", snapshot: { activity: "idle" } },
+			worker: { close: async () => { stopped++; } } });
+		assert.deepEqual(await activatePreparedRuntime(home), { deferred: 1 });
+		await assert.rejects(activatePreparedRuntime(home, "c".repeat(64)), /prepared update changed/);
+		assert.equal(stopped, 0, "neither idle status nor stale approval authorizes stopping workers");
 		assert.equal(readState(home).active, active);
 		assert.equal(host.closing, false);
-		host.sessions.delete("fixture");
-		assert.deepEqual(await activateIdleRuntime(home), { release: "0.5.0", restart: true });
+		if (!stop) host.sessions.delete("fixture");
+		assert.deepEqual(await activatePreparedRuntime(home, stop ? pending : undefined), { release: "0.5.0", restart: true });
+		assert.equal(stopped, Number(stop));
+		const saved = new SessionCatalog(directory).read();
+		assert.equal(saved.length, Number(stop));
+		if (stop) {
+			assert.equal(saved[0].interrupted, true);
+			assert.equal(saved[0].file, join(root, "session.jsonl"));
+			assert.equal(saved[0].key, "fixture");
+			assert.equal(saved[0].name, "Session");
+		}
 		const selected = readState(home);
 		assert.equal(selected.active, pending);
 		assert.equal(selected.previous, active);

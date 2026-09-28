@@ -26,6 +26,7 @@ import { Attachments } from "./attachments.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
 import { automaticUpdatePending, launchOperation, runtimeUpdateState } from "../../manage/operations.ts";
+import { checkRuntimeUpdate, readUpdateCheck, updateCheckInterval } from "../../manage/update-check.ts";
 import type { RuntimeUpdateState } from "../shared/updates.ts";
 import { isOpenSession } from "../shared/workspace.ts";
 import { Folders } from "./folders.ts";
@@ -72,6 +73,11 @@ export class DeskHost {
 	private updateWatch?: FSWatcher;
 	private updateTimer?: ReturnType<typeof setTimeout>;
 	private applyingUpdate = false;
+	private updateCheckTimer?: ReturnType<typeof setTimeout>;
+	private updateCheckAbort = new AbortController();
+	private checkingUpdate = false;
+	private lastUpdateCheck = 0;
+	private updateCheckError?: string;
 	private resolveClosed!: () => void;
 	private rejectClosed!: (error: unknown) => void;
 	readonly closed = new Promise<void>((resolve, reject) => { this.resolveClosed = resolve; this.rejectClosed = reject; });
@@ -139,11 +145,13 @@ export class DeskHost {
 					this.updateWatch.on("error", () => { this.updateWatch?.close(); this.updateWatch = undefined; });
 				} catch { /* The existing heartbeat also refreshes update state. */ }
 				this.refreshUpdates();
+				this.scheduleUpdateCheck();
 			}
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
 			clearInterval(this.heartbeat);
 			this.updateWatch?.close(); clearTimeout(this.updateTimer);
+			clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
 			await this.saved?.close();
 			this.inputs?.close();
 			this.inputs = undefined;
@@ -168,7 +176,7 @@ export class DeskHost {
 		try {
 			const value = runtimeUpdateState(this.runtimeHome);
 			if (!value) throw new Error("The managed runtime selection is missing.");
-			next = { ...value, activeSessions: active };
+			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError };
 		}
 		catch (error) { next = { current: RELEASE.version, phase: "failed", message: error instanceof Error ? error.message : String(error) }; }
 		if (JSON.stringify(next) !== JSON.stringify(this.updates)) {
@@ -181,6 +189,25 @@ export class DeskHost {
 		// The controller rechecks admission atomically in this host. A session
 		// arriving between this hint and that check simply defers activation.
 		void launchOperation(this.runtimeHome, "apply").catch(() => {}).finally(() => { this.applyingUpdate = false; });
+	}
+
+	private scheduleUpdateCheck(): void {
+		if (!this.runtimeHome || !this.runtime || this.closing) return;
+		clearTimeout(this.updateCheckTimer);
+		const checked = Math.max(readUpdateCheck(this.runtimeHome, this.runtime)?.checkedAt ?? 0, this.lastUpdateCheck);
+		this.updateCheckTimer = setTimeout(() => this.checkForUpdates(), Math.max(0, checked + updateCheckInterval - Date.now()));
+		this.updateCheckTimer.unref();
+	}
+	private checkForUpdates(): void {
+		if (!this.runtimeHome || this.closing || this.checkingUpdate) return;
+		clearTimeout(this.updateCheckTimer);
+		this.checkingUpdate = true; this.updateCheckError = undefined; this.refreshUpdates();
+		void checkRuntimeUpdate(this.runtimeHome, this.updateCheckAbort.signal).catch(error => {
+			if (!this.closing) this.updateCheckError = error instanceof Error ? error.message : String(error);
+		}).finally(() => {
+			this.checkingUpdate = false; this.lastUpdateCheck = Date.now();
+			this.refreshUpdates(); this.scheduleUpdateCheck();
+		});
 	}
 
 	private hostStatus(): HostStatus {
@@ -431,6 +458,9 @@ export class DeskHost {
 					const data = await this.body(request);
 					if (data.instance !== this.control.record.instance) { json(response, 409, { error: "The host changed." }); return; }
 					if (url.pathname === "/api/host/stop") {
+						if (data.runtime !== undefined && data.runtime !== this.runtime) {
+							json(response, 409, { error: "The running runtime changed." }); return;
+						}
 						this.closing = true;
 						json(response, 202, { instance: this.control.record.instance });
 						setImmediate(() => { void this.close().catch(() => {}); });
@@ -534,6 +564,18 @@ export class DeskHost {
 			if (url.pathname === "/api/runtime/update" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host does not use a managed runtime." }, 409);
 				await launchOperation(this.runtimeHome, "update");
+				this.refreshUpdates();
+				return reply({ accepted: true }, 202);
+			}
+			if (url.pathname === "/api/runtime/check" && request.method === "POST") {
+				if (!this.runtimeHome) return reply({ error: "This host is not a managed installation." }, 409);
+				this.checkForUpdates();
+				return reply({ accepted: true }, 202);
+			}
+			if (url.pathname === "/api/runtime/apply" && request.method === "POST") {
+				const prepared = string(data.prepared, 64);
+				if (!this.runtimeHome || !/^[a-f0-9]{64}$/.test(prepared)) return reply({ error: "Select a prepared update." }, 409);
+				await launchOperation(this.runtimeHome, "apply-now", prepared);
 				this.refreshUpdates();
 				return reply({ accepted: true }, 202);
 			}
@@ -710,6 +752,7 @@ export class DeskHost {
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat);
 		this.updateWatch?.close(); clearTimeout(this.updateTimer);
+		clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close();
 		this.accountIdentity?.close();

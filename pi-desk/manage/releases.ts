@@ -8,11 +8,22 @@ const repository = "gunba/pi-plugins";
 interface GitHubAsset { name: string; size: number; digest: string; state: string }
 interface GitHubRelease { tag_name: string; draft: boolean; prerelease: boolean; assets: GitHubAsset[] }
 const releaseVersion = (tag: string): string | undefined => /^pi-desk-v(\d+\.\d+\.\d+)$/.exec(tag)?.[1];
-const compare = (a: string, b: string): number => {
+export const compareVersions = (a: string, b: string): number => {
 	const left = a.split(".").map(Number), right = b.split(".").map(Number);
 	for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i]! - right[i]!;
 	return 0;
 };
+export async function publishedRuntime(network: ReleaseNetwork): Promise<{ release: GitHubRelease; version: string }> {
+	const raw = await network.json(`https://api.github.com/repos/${repository}/releases?per_page=20`);
+	if (!Array.isArray(raw)) throw new Error("Invalid GitHub release list.");
+	const release = (raw as GitHubRelease[]).filter(r => typeof r.tag_name === "string" && releaseVersion(r.tag_name)
+		&& r.draft === false && r.prerelease === false && Array.isArray(r.assets))
+		.sort((a, b) => compareVersions(releaseVersion(b.tag_name)!, releaseVersion(a.tag_name)!))[0];
+	if (!release) throw new Error("No Desk runtime release has been published yet.");
+	const version = releaseVersion(release.tag_name)!;
+	asset(release, artifactName(version));
+	return { release, version };
+}
 function asset(release: GitHubRelease, name: string): ReleaseAsset {
 	const value = release.assets.find(item => item.name === name && item.state === "uploaded");
 	if (!value || !/^sha256:[a-f0-9]{64}$/.test(value.digest) || !Number.isSafeInteger(value.size)
@@ -31,19 +42,13 @@ export async function downloadRuntime(options: DownloadOptions): Promise<Runtime
 	let temporary: string | undefined;
 	try {
 		options.progress?.("Checking published releases");
-		const raw = await network.json(`https://api.github.com/repos/${repository}/releases?per_page=20`);
-		if (!Array.isArray(raw)) throw new Error("Invalid GitHub release list.");
-		const release = (raw as GitHubRelease[]).filter(r => typeof r.tag_name === "string" && releaseVersion(r.tag_name)
-			&& r.draft === false && r.prerelease === false && Array.isArray(r.assets))
-			.sort((a, b) => compare(releaseVersion(b.tag_name)!, releaseVersion(a.tag_name)!))[0];
-		if (!release) throw new Error("No Desk runtime release has been published yet.");
-		const version = releaseVersion(release.tag_name)!;
+		const { release, version } = await publishedRuntime(network);
 		if (state.active) {
 			const active = readControllerRelease(home, state.active);
-			if ((compare(active.desk, version) > 0 || compare(active.desk, version) === 0 && active.artifact) && active.node === process.versions.modules) {
+			if ((compareVersions(active.desk, version) > 0 || compareVersions(active.desk, version) === 0 && active.artifact) && active.node === process.versions.modules) {
 				options.progress?.("The current runtime is up to date"); return active;
 			}
-			if (compare(active.desk, version) > 0) throw new Error("This local build is newer than the published release. Stage it again with the new Node runtime.");
+			if (compareVersions(active.desk, version) > 0) throw new Error("This local build is newer than the published release. Stage it again with the new Node runtime.");
 		}
 		await mkdir(home, { recursive: true });
 		temporary = await mkdtemp(join(home, ".release-"));

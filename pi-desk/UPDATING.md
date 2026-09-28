@@ -49,6 +49,9 @@ does not delete native history or sign out of the workspace.
 Open **Settings & tools → Computers**, expand a connected computer and click
 **Update**. `/desk update` does the same from Pi. No maintenance conversation,
 service reinstall, terminal restart sequence or administrator access is needed.
+Desk checks for published updates at startup and every six hours, using a local
+cache. The sidebar shows availability and update progress. **Check for updates**
+refreshes it immediately; detection alone does not install anything.
 
 Desk downloads into a separate immutable runtime while conversations continue.
 If any Pi worker is open—even idle—the update waits. Close conversations when
@@ -56,6 +59,13 @@ finished. At the empty boundary, the host blocks new sessions, shuts down
 gracefully, selects the prepared code and starts through the existing launcher.
 The computer reconnects automatically. Interrupted workspace references are not
 running workers and do not block updates. No conversation is automatically resumed.
+
+To apply a prepared update sooner, choose **Stop sessions and update** and
+confirm. It stops every open Pi worker on that computer, but keeps their
+conversations visible as interrupted. After reconnection, select a conversation
+and click **Resume**. Running tools and background work are interrupted, not
+resent. This differs from ordinary **Close**, which removes the conversation
+from the workspace while retaining its native history.
 
 The browser shows preparation, waiting, application and failure states. A failed
 download leaves the running release intact. The updater never cleans or

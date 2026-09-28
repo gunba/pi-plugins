@@ -91,7 +91,7 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 	} finally { launch.close(); }
 }
 
-export async function stopHost(directory: string, options?: { idleOnly: true; runtime: string }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
+export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
 	const current = await probeHost(directory);
 	if (current.state === "stopped") {
 		const record = readHostRecord(directory);
@@ -105,7 +105,7 @@ export async function stopHost(directory: string, options?: { idleOnly: true; ru
 	const record = readHostRecord(directory)!;
 	if (record.instance !== current.host!.instance) throw new Error("The host changed. Check status before stopping it.");
 	const result = await controlRequest<{ instance: string; deferred?: number }>(record,
-		options ? "stop-if-idle" : "stop", options ? { runtime: options.runtime } : {});
+		options?.idleOnly ? "stop-if-idle" : "stop", options ? { runtime: options.runtime } : {});
 	if (result.deferred !== undefined) return { stopped: false, deferred: result.deferred };
 	const until = Date.now() + 30_000;
 	while (Date.now() < until) {

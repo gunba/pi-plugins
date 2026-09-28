@@ -1,11 +1,10 @@
-import type { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
-import { activateIdleRuntime, activateRuntime, configureRuntime } from "./activate.ts";
+import { activatePreparedRuntime, activateRuntime, configureRuntime } from "./activate.ts";
 import { canonicalPath, launcherPath, readInstallation, type RuntimeInstallation } from "./installation.ts";
 import { atomicJson, readControllerRelease, readRelease, readState, versionDirectory } from "./store.ts";
 import { stageRuntime } from "./stage.ts";
@@ -13,8 +12,10 @@ import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { migrateLogin, removeLogin, stopLogin } from "../src/host/login.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
 import type { RuntimeUpdateState } from "../src/shared/updates.ts";
+import { personalPackageSource, releaseSourceSupported } from "./release-source.ts";
+import { readUpdateCheck } from "./update-check.ts";
 
-export type DeskOperation = "setup" | "stage" | "update" | "apply" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
+export type DeskOperation = "setup" | "stage" | "update" | "apply" | "apply-now" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
 export interface Operation {
 	id: string; action: DeskOperation; phase: "running" | "waiting" | "complete" | "failed" | "interrupted";
 	started: string; updated: string; message: string;
@@ -22,6 +23,7 @@ export interface Operation {
 export interface OperationOptions {
 	home: string; source: string; agentDir: string; cwd: string; directory: string;
 	action: DeskOperation; signal?: AbortSignal; progress?: (value: Operation) => void;
+	prepared?: string;
 	startup?: Pick<RuntimeInstallation, "cwd" | "port" | "sessionDir" | "proxy">;
 }
 const operationFile = (home: string) => join(home, "operation.json");
@@ -30,7 +32,7 @@ export function operationStatus(home: string): Operation | undefined {
 		let value: Operation;
 		try { value = JSON.parse(readFileSync(operationFile(home), "utf8")); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-		if (!value || !["setup", "stage", "update", "apply", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
+		if (!value || !["setup", "stage", "update", "apply", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
 			|| !["running", "waiting", "complete", "failed", "interrupted"].includes(value.phase) || typeof value.message !== "string")
 			throw new Error("Invalid Desk operation record.");
 		return value;
@@ -52,8 +54,10 @@ export function runtimeUpdateState(home: string): RuntimeUpdateState | undefined
 	const state = readState(home);
 	if (!state?.active) return;
 	const operation = operationStatus(home), current = readControllerRelease(home, state.active);
-	return { current: current.desk, pending: state.pending ? readControllerRelease(home, state.pending).desk : undefined,
-		phase: operation?.phase === "running" ? operation.action === "apply" ? "applying" : "preparing"
+	const check = readUpdateCheck(home, state.active);
+	return { current: current.desk, pending: state.pending ? readControllerRelease(home, state.pending).desk : undefined, pendingId: state.pending,
+		available: check?.available, checkedAt: check?.checkedAt, checkError: check?.error,
+		phase: operation?.phase === "running" ? ["apply", "apply-now"].includes(operation.action) ? "applying" : "preparing"
 			: operation?.phase === "waiting" ? "waiting"
 			: operation && ["failed", "interrupted"].includes(operation.phase) ? "failed" : "idle",
 		message: operation?.message };
@@ -61,10 +65,6 @@ export function runtimeUpdateState(home: string): RuntimeUpdateState | undefined
 export function automaticUpdatePending(home: string): boolean {
 	const state = readState(home);
 	return !!state?.pending && state.autoApply === state.pending && operationStatus(home)?.phase === "waiting";
-}
-export function releaseSourceSupported(source: string): boolean {
-	const url = source.replace(/^git:/, "").replace(/\.git(?=@|$)/, "");
-	return /^(?:https:\/\/|ssh:\/\/git@|git@)?github\.com[/:]gunba\/pi-plugins(?:@main)?$/.test(url);
 }
 function armUpdate(home: string, id: string): void {
 	const lock = new SessionLease(join(home, "manage"));
@@ -140,15 +140,9 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 	};
 	try {
 		publish("Checking installation");
-		let packages: DefaultPackageManager | undefined, source: ReturnType<DefaultPackageManager["listConfiguredPackages"]>[number] | undefined;
 		if (["setup", "stage", "update"].includes(options.action)) {
-			const sdk = await import("@earendil-works/pi-coding-agent");
-			const settings = sdk.SettingsManager.create(options.cwd, options.agentDir, { projectTrusted: false });
-			packages = new sdk.DefaultPackageManager({ cwd: options.cwd, agentDir: options.agentDir, settingsManager: settings });
-			source = packages.listConfiguredPackages().find(pkg => pkg.scope === "user" && pkg.installedPath
-				&& canonicalPath(pkg.installedPath) === canonicalPath(options.source));
-			if (!source) throw new Error("Install this Pi package in personal settings before managing Desk.");
-			if (options.action !== "stage" && !releaseSourceSupported(source.source))
+			const source = await personalPackageSource(options.source, options.cwd, options.agentDir);
+			if (options.action !== "stage" && !releaseSourceSupported(source))
 				throw new Error("Prebuilt releases require the unpinned gunba/pi-plugins package. Use /desk stage for a local, pinned or forked source.");
 		}
 		if (options.action === "setup") {
@@ -178,9 +172,10 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 			options.signal?.throwIfAborted();
 			armUpdate(home, release.id);
 		}
-		if (options.action === "update" || options.action === "apply") {
+		if (options.action === "update" || options.action === "apply" || options.action === "apply-now") {
+			if (options.action === "apply-now" && !options.prepared) throw new Error("Select the prepared update before stopping sessions.");
 			publish("Checking whether the prepared update can be applied");
-			const result = await activateIdleRuntime(home);
+			const result = await activatePreparedRuntime(home, options.action === "apply-now" ? options.prepared : undefined);
 			if (result.deferred !== undefined) {
 				publish("Update ready. It will apply after all open Pi sessions close.", "waiting");
 			} else {
@@ -222,15 +217,15 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 	} finally { lock.close(); }
 }
 /** A restart controller must outlive the conversation worker it is stopping. */
-export async function launchOperation(home: string, action: Exclude<DeskOperation, "setup">): Promise<void> {
+export async function launchOperation(home: string, action: Exclude<DeskOperation, "setup">, prepared?: string): Promise<void> {
 	const state = readState(home);
 	if (!state?.active) throw new Error("Run /desk setup first.");
 	readControllerRelease(home, state.active);
 	const file = join(versionDirectory(home, state.active), "source", "pi-desk", "dist", "host", "manage-cli.js");
 	const fd = openSync(join(home, "operation.log"), "a", 0o600);
 	try {
-		const node = action === "update" || action === "apply" ? configuredNode(home) : process.execPath;
-		const child = spawn(node, [file, home, action], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"] });
+		const node = ["update", "apply", "apply-now"].includes(action) ? configuredNode(home) : process.execPath;
+		const child = spawn(node, [file, home, action, ...(prepared ? [prepared] : [])], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"] });
 		try {
 			await new Promise<void>((accept, reject) => {
 				const timer = setTimeout(() => reject(new Error("Operation startup is unconfirmed. Use /desk status before retrying.")), 10000);

@@ -19,7 +19,7 @@ function githubURL(address: string): URL {
 export async function githubProxy(source: string): Promise<string | undefined> {
 	try {
 		const value = (await execute("git", ["config", "--get-urlmatch", "http.proxy", "https://github.com/gunba/pi-plugins"],
-			{ cwd: source, encoding: "utf8", windowsHide: true })).stdout.trim();
+			{ cwd: source, encoding: "utf8", windowsHide: true, timeout: 5000 })).stdout.trim();
 		return value || undefined;
 	} catch { return undefined; }
 }

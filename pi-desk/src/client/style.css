@@ -308,6 +308,9 @@ details[open] > summary:before {
 }
 .session-list > section + section { margin-top: 14px; }
 .computer-heading { display:flex; align-items:center; gap:8px; padding:8px 10px; }
+.sidebar-update { margin:0 10px 6px; padding:4px 8px; font-size:13px; color:var(--accent); background:var(--accent-soft); border:0; }
+.computer-update { margin:12px 0; }
+.computer-update p { margin:8px 0; }
 .computer-name { display:flex; align-items:center; gap:7px; min-width:0; }
 .computer-name strong { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; }
 .os-icon { width:19px; height:19px; flex:none; }

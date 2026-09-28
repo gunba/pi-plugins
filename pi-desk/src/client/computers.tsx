@@ -38,23 +38,12 @@ function ComputerCard({ computer }: { computer: Computer }) {
 		setBusy(true); setError("");
 		void work().catch(error => setError(String(error))).finally(() => setBusy(false));
 	};
-	return <details className="computer-card">
+	return <details className="computer-card" open={!!computer.updates?.available || computer.updates?.phase === "waiting"}>
 		<summary><span className={`status-dot ${connectionTone(computer)}`} />{computer.name}
 			<small>{connectionLabel(computer)}</small></summary>
 		<p className="muted">{computer.id.slice(0, 8)}{computer.error ? ` · ${computer.error}` : ""}</p>
 		{computer.release && <p className="muted">Host {computer.release.version} · API {computer.release.api} · Pi {computer.release.engine}</p>}
-		{computer.updates && <section className="computer-update" aria-label="Software update">
-			<button disabled={busy || !computer.connected || ["preparing", "waiting", "applying"].includes(computer.updates.phase)}
-				onClick={() => run(async () => { await api("/api/runtime/update", {}, computer.id); })}>
-				{computer.updates.phase === "preparing" ? "Preparing update…" : computer.updates.phase === "applying" ? "Applying update…"
-					: computer.updates.phase === "waiting" ? "Update ready" : computer.updates.phase === "failed" ? "Retry update" : "Update"}
-			</button>
-			{computer.updates.phase === "waiting"
-				? <p role="status">Waiting for {computer.updates.activeSessions ?? 0} open Pi sessions to close.
-					{computer.updates.pending && <> Version {computer.updates.pending} is ready.</>}</p>
-				: computer.updates.message && <p role={computer.updates.phase === "failed" ? "alert" : "status"}>{computer.updates.message}</p>}
-			<p className="muted">Updates never stop an open conversation. This computer reconnects automatically after applying one.</p>
-		</section>}
+		<SoftwareUpdate computer={computer} />
 		{computer.connection === "upgrade" && <button onClick={() => location.reload()}>Reload app</button>}
 		{computer.presence && <p className="muted">Last host report: {computer.presence.online ? "online" : "no recent connection"}.
 			{" "}Last contact {new Date(computer.presence.seen).toLocaleString()}.
@@ -79,6 +68,43 @@ function ComputerCard({ computer }: { computer: Computer }) {
 		{error && <p role="alert" className="error-text">{error}</p>}
 		{confirmation.dialog}
 	</details>;
+}
+export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" | "connected" | "updates"> & { id?: string } }) {
+	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+	const confirmation = useConfirmation(`${computer.id ?? "local"}:update`);
+	const updates = computer.updates;
+	if (!updates) return null;
+	const run = (path: string, body = {}) => {
+		setBusy(true); setError("");
+		void api(path, body, computer.id).catch(error => setError(String(error))).finally(() => setBusy(false));
+	};
+	return <section className="computer-update" aria-label="Software update">
+		{updates.available && !updates.pending && <p role="status">Desk {updates.available} is available.</p>}
+		<button disabled={busy || !computer.connected || updates.checking || ["preparing", "waiting", "applying"].includes(updates.phase)}
+			onClick={() => run(updates.available || updates.phase === "failed" ? "/api/runtime/update" : "/api/runtime/check")}>
+			{updates.phase === "preparing" ? "Preparing update…" : updates.phase === "applying" ? "Applying update…"
+				: updates.phase === "waiting" ? "Update ready" : updates.checking ? "Checking for updates…"
+				: updates.phase === "failed" ? "Retry update" : updates.available ? "Update" : "Check for updates"}
+		</button>
+		{updates.phase === "waiting"
+			? <p role="status">Waiting for {updates.activeSessions ?? 0} open Pi sessions to close.
+				{updates.pending && <> Version {updates.pending} is ready.</>}</p>
+			: updates.message && <p role={updates.phase === "failed" ? "alert" : "status"}>{updates.message}</p>}
+		{updates.phase === "waiting" && updates.pendingId && <button disabled={busy || !computer.connected} onClick={() => {
+			const prepared = updates.pendingId;
+			void confirmation.request({ title: "Stop sessions and update?", context: computer.name, accept: "Stop sessions and update",
+				body: <p>Stop all open Pi sessions on this computer and apply the prepared update.
+					Running tools and background work will be interrupted. Conversations stay in the workspace with Resume available after reconnecting.
+					Unfinished work will not be resent automatically.</p>,
+			}).then(accepted => { if (accepted) run("/api/runtime/apply", { prepared }); });
+		}}>Stop sessions and update</button>}
+		{updates.checkError && <p className="muted">Update check: {updates.checkError}</p>}
+		{updates.checkedAt && !updates.checking && <p className="muted">{!updates.available && !updates.checkError ? "Up to date · " : ""}
+			Checked {new Date(updates.checkedAt).toLocaleString()}</p>}
+		<p className="muted">Updates wait for open conversations unless you choose to stop them. This computer reconnects automatically.</p>
+		{error && <p role="alert" className="error-text">{error}</p>}
+		{confirmation.dialog}
+	</section>;
 }
 function AccountBrowsers({ account }: { account: BrowserAccount }) {
 	const [devices, setDevices] = useState<AccountDirectory["devices"]>([]), [error, setError] = useState(""), [busy, setBusy] = useState(false);

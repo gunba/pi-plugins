@@ -24,13 +24,23 @@ The host watches update records and worker exits; the existing heartbeat is a
 fallback wake-up. An `apply` controller revalidates the request. It holds the
 normal management/startup locks while the authenticated local control endpoint
 atomically checks the worker count and closes admission. A new worker arriving
-before that check defers activation. Waiting controllers are not supervisors.
+before that check defers activation.
 
 The login-start wrapper exits with the host. Selection waits for it, reuses the
 saved launcher/Node and restarts without reinstalling the service/task. Idle
 sessions still count as workers; interrupted references do not. Browser update
 requests authorize only this fixed release operation, not shell commands or
 client-supplied download URLs.
+
+An explicit browser confirmation can instead request `apply-now`. It is bound
+to the prepared runtime identity and rejected if that identity changes before
+selection. This uses the same launcher path but allows graceful worker shutdown;
+the workspace retains interrupted references for explicit Resume.
+
+Release detection runs at startup and every six hours, cached against the active
+runtime identity in `release-check.json`. It checks public release metadata only,
+never prepares or activates code. Network failures are shown separately from
+host connectivity and do not stop work. Manual checks use the same bounded path.
 
 `stageRuntime` publishes a ready version and changes only `state.json.pending`.
 `configureRuntime` binds an installation to its existing host data directory.
@@ -96,6 +106,7 @@ successful main CI run. Build jobs have read-only repository access. A separate
 publisher uploads the complete Linux/Windows, Node 22/24 matrix and publishes it only
 after every build succeeds. Bump Desk's version for changes shipped in its
 runtime, including bundled first-party extensions.
+Desk pull requests exercise the same package/install matrix without publishing.
 
 Downloads are anchored to this repository's GitHub Releases API and its
 [asset SHA-256 digests](https://docs.github.com/en/rest/releases/assets).

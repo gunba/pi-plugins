@@ -68,12 +68,14 @@ export async function activateRuntime(home: string, requested?: string) {
 	} finally { lock.close(); }
 }
 
-/** Hold startup admission across the host's atomic idle check and selection. */
-export async function activateIdleRuntime(home: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
+/** Hold startup admission; interrupt workers only with consent for this exact prepared release. */
+export async function activatePreparedRuntime(home: string, stopFor?: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
 	const manage = new SessionLease(join(home, "manage"));
 	let edit: SessionLease | undefined, launch: SessionLease | undefined, host: SessionLease | undefined;
 	try {
 		const state = readState(home), installation = readInstallation(home);
+		if (stopFor && (state?.pending !== stopFor || state.autoApply !== stopFor))
+			throw new Error("The prepared update changed. Review it before stopping sessions.");
 		if (!state?.pending || state.autoApply !== state.pending) return {};
 		const release = readRelease(home, state.pending);
 		if (canonicalPath(release.source) !== canonicalPath(state.source)) throw new Error("Runtime source does not match this installation.");
@@ -91,7 +93,7 @@ export async function activateIdleRuntime(home: string): Promise<{ release?: str
 		}
 		if (before.state === "running") {
 			if (!state.active || before.host?.runtime !== state.active) throw new Error("The running host does not match the selected runtime.");
-			const result = await stopHost(installation.directory, { idleOnly: true, runtime: state.active });
+			const result = await stopHost(installation.directory, { idleOnly: !stopFor, runtime: state.active });
 			if (result.deferred !== undefined) return { deferred: result.deferred };
 		}
 		if (login) {
