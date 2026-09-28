@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -30,6 +30,25 @@ import {
 
 after(async () => {
 	await shutdownExecSessions();
+});
+
+test("Windows commands launch without a compiled helper or helper cache", { skip: process.platform !== "win32" }, async t => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-direct-shell-"));
+	const previous = process.env.LOCALAPPDATA;
+	process.env.LOCALAPPDATA = directory;
+	t.after(async () => {
+		if (previous === undefined) delete process.env.LOCALAPPDATA;
+		else process.env.LOCALAPPDATA = previous;
+		await rm(directory, { recursive: true, force: true });
+	});
+	const result = await executeManagedExecCommand({
+		cmd: "[Console]::Out.WriteLine('direct-output'); [Console]::Error.WriteLine('direct-error'); exit 17",
+		shell: "powershell.exe", login: false, yield_time_ms: 30_000,
+	}, undefined, { cwd: directory });
+	assert.equal(result.details.exit_code, 17);
+	assert.match(result.details.output, /direct-output/);
+	assert.match(result.details.output, /direct-error/);
+	assert.deepEqual(await readdir(directory), []);
 });
 
 test("exec_command uses configured shellPath before the operating-system shell", async t => {
@@ -263,22 +282,23 @@ test("model output defaults to 10k tokens and preserves a UTF-8-safe head and ta
 	assert.match(formatted.output, /…2500 tokens truncated…/);
 });
 
-test("process termination uses the owned Windows job handle and Unix process groups", async () => {
-	const ownerSignals = [];
+test("process termination uses Windows taskkill and Unix process groups", async () => {
+	const trees = [];
 	assert.equal(
-		await terminateProcessTree({ pid: 123, kill(signal) { ownerSignals.push(signal); return true; } }, "SIGTERM", {
+		await terminateProcessTree({ pid: 123, exitCode: null, signalCode: null }, "SIGTERM", {
 			platform: "win32",
+			async killWindowsTree(pid) { trees.push(pid); },
 			kill() {
-				assert.fail("Windows must not signal a PID lookup");
+				assert.fail("Windows must terminate the tree, not only the shell");
 			},
 		}),
 		true,
 	);
-	assert.deepEqual(ownerSignals, ["SIGKILL"]);
+	assert.deepEqual(trees, [123]);
 
 	const killed = [];
 	assert.equal(
-		await terminateProcessTree({ pid: 456, kill() { assert.fail("Unix must target the group"); } }, "SIGINT", {
+		await terminateProcessTree({ pid: 456, exitCode: null, signalCode: null }, "SIGINT", {
 			platform: "linux",
 			kill(pid, signal) {
 				killed.push([pid, signal]);
@@ -289,24 +309,30 @@ test("process termination uses the owned Windows job handle and Unix process gro
 	assert.deepEqual(killed, [[-456, "SIGINT"]]);
 });
 
-test("Windows job termination failures never fall back to a PID lookup", async () => {
-	for (const throws of [false, true]) {
-		const failures = [];
-		const success = await terminateProcessTree({
-			pid: 789,
-			kill() {
-				if (throws) throw new Error("owner termination denied");
-				return false;
-			},
-		}, "SIGTERM", {
-			platform: "win32",
-			onFailure: message => failures.push(message),
-			kill() {
-				assert.fail("must not fall back to a potentially reused PID");
-			},
-		});
-		assert.equal(success, false);
-		assert.deepEqual(failures, throws ? ["Windows job termination failed: Error: owner termination denied"] : []);
+test("Windows tree failures are reported without a shell-only fallback", async () => {
+	const failures = [];
+	const success = await terminateProcessTree({ pid: 789, exitCode: null, signalCode: null }, "SIGTERM", {
+		platform: "win32",
+		onFailure: message => failures.push(message),
+		async killWindowsTree() { throw new Error("tree termination denied"); },
+		kill() { assert.fail("must not kill only the shell"); },
+	});
+	assert.equal(success, false);
+	assert.deepEqual(failures, ["Windows process-tree termination failed: Error: tree termination denied"]);
+});
+
+test("termination never targets an exited command", async () => {
+	for (const platform of ["win32", "linux"]) {
+		for (const child of [
+			{ pid: 123, exitCode: 0, signalCode: null },
+			{ pid: 123, exitCode: null, signalCode: "SIGKILL" },
+		]) {
+			assert.equal(await terminateProcessTree(child, "SIGTERM", {
+				platform,
+				kill() { assert.fail("exited process"); },
+				async killWindowsTree() { assert.fail("exited process"); },
+			}), true);
+		}
 	}
 });
 

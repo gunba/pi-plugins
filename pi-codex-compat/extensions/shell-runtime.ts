@@ -3,7 +3,6 @@ import {
 	spawn,
 } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -20,7 +19,7 @@ import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
 import { registerWorkResource, completeWorkResource } from "../../pi-work-coordination/index.ts";
 import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
 import { OUTPUT_CHARS } from "../../pi-output-budget/extensions/text.ts";
-import { windowsExecHelper } from "./windows-exec.ts";
+import { terminateWindowsProcessTree } from "./windows-exec.ts";
 
 export type ExecCommandParams = {
 	cmd: string;
@@ -126,6 +125,7 @@ export type ProcessTreeDependencies = {
 	platform: NodeJS.Platform;
 	onFailure?: (message: string) => void;
 	kill: (pid: number, signal: NodeJS.Signals) => void;
+	killWindowsTree?: (pid: number) => Promise<void>;
 };
 
 export type HeadTailSnapshot = {
@@ -414,33 +414,33 @@ export function resolveShellLaunch(
 	};
 }
 
-export function terminateProcessTree(
-	child: Pick<ChildProcessWithoutNullStreams, "pid" | "kill">,
+export async function terminateProcessTree(
+	child: Pick<ChildProcessWithoutNullStreams, "pid" | "exitCode" | "signalCode">,
 	signal: NodeJS.Signals,
 	dependencies: ProcessTreeDependencies = defaultProcessTreeDependencies,
 ): Promise<boolean> {
+	if (child.exitCode !== null || child.signalCode !== null) return true;
+	const pid = child.pid;
+	if (!pid) return false;
 	if (dependencies.platform === "win32") {
 		try {
-			// Kill the owned handle, not a PID lookup. Closing this owner's
-			// non-inheritable job handle terminates the kernel-owned command tree.
-			return Promise.resolve(child.kill("SIGKILL"));
+			await (dependencies.killWindowsTree ?? terminateWindowsProcessTree)(pid);
+			return true;
 		} catch (error) {
-			dependencies.onFailure?.(`Windows job termination failed: ${String(error)}`);
-			return Promise.resolve(false);
+			dependencies.onFailure?.(`Windows process-tree termination failed: ${String(error)}`);
+			return false;
 		}
 	}
 
-	const pid = child.pid;
-	if (!pid) return Promise.resolve(false);
 	try {
 		dependencies.kill(-pid, signal);
-		return Promise.resolve(true);
+		return true;
 	} catch {
 		try {
 			dependencies.kill(pid, signal);
-			return Promise.resolve(true);
+			return true;
 		} catch {
-			return Promise.resolve(false);
+			return false;
 		}
 	}
 }
@@ -1254,8 +1254,6 @@ async function createExecSession(
 		await pruneExecSessionsForCapacity(owner);
 		throwIfLaunchAborted(signal);
 		const launch = resolveShellLaunch(params, getUnifiedExecDefaultShell, configuredShell);
-		const windowsHelper = process.platform === "win32" ? await windowsExecHelper() : undefined;
-		throwIfLaunchAborted(signal);
 		const logDirectory = await mkdtemp(join(tmpdir(), "pi-codex-exec-"));
 		const logPath = join(logDirectory, "output.log");
 		let logFile: FileHandle;
@@ -1268,17 +1266,13 @@ async function createExecSession(
 			throw error;
 		}
 		let child: ChildProcessWithoutNullStreams;
-		const launchErrorPath = windowsHelper ? join(logDirectory, "launch-error.txt") : undefined;
 		try {
-			child = spawn(windowsHelper ?? launch.shell,
-				windowsHelper ? [launchErrorPath!, normalizedShellName(launch.shell) === "cmd" ? "verbatim" : "quoted",
-					launch.shell, ...launch.args] : launch.args, {
+			child = spawn(launch.shell, launch.args, {
 				cwd: workdir,
 				detached: process.platform !== "win32",
 				env: createUnifiedExecEnvironment(),
 				stdio: "pipe",
 				windowsVerbatimArguments:
-					!windowsHelper &&
 					process.platform === "win32" &&
 					normalizedShellName(launch.shell) === "cmd",
 				windowsHide: true,
@@ -1327,10 +1321,6 @@ async function createExecSession(
 			void cleanupSessionLog(session);
 		});
 		child.once("exit", () => {
-			if (launchErrorPath) {
-				try { session.error = readFileSync(launchErrorPath, "utf8"); }
-				catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") session.error = String(error); }
-			}
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
 			drainExitedProcess(session);
 		});

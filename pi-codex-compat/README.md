@@ -100,24 +100,15 @@ across platforms. This runtime therefore uses ordinary pipes and rejects
 `tty:true` before spawning rather than claiming to provide a PTY. For the
 default `tty:false`, child stdin is closed: `write_stdin` accepts polling and an
 exact U+0003 Ctrl-C interrupt only, rejecting all other non-empty input. Unix
-interrupts target the process group; Windows uses an owned
-[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
-whose owner is terminated through its held process handle, not a PID lookup.
-Its signal semantics necessarily differ. The job is armed
-before launching the shell, so cancellation cannot miss a child created during
-shell startup. Normal command exit preserves deliberately backgrounded children.
-Termination is observed and bounded;
-failure is surfaced instead of falling back to a potentially reused PID or
-claiming successful tree shutdown. Signal exits remain distinct from numeric
-exit codes.
-
-The Windows owner is a small bundled C# helper, compiled on first use by the
-Windows .NET Framework compiler and cached by source hash under
-`%LOCALAPPDATA%\pi\exec`. It inherits the original byte streams; it does not
-route command output through PowerShell or a text decoder. Compilation needs
-no elevation, downloaded compiler or service. If local policy prevents
-compilation or job assignment, the command fails before the shell starts.
-This is process lifecycle ownership, not a sandbox or a grant of extra rights.
+interrupts target the process group; Windows launches the selected shell directly
+and uses the system `taskkill.exe /F /T` to stop its process tree, as Pi's native
+shell tool does. No compiled helper, compiler or elevation is required. Output
+stays on the original byte streams. Termination is observed and bounded; a failed
+attempt is reported rather than silently killing only the shell. Exited commands
+are not targeted. Windows tree discovery is PID-based, not a kernel Job Object:
+it cannot guarantee containment during process-creation/exit races or abrupt Pi
+process death. Normal exits preserve deliberately backgrounded children.
+Signal exits remain distinct from numeric exit codes.
 
 Pi cancellation during an active tool call terminates that process. Session IDs
 exist only in the owning Pi session and are released after completion, LRU
