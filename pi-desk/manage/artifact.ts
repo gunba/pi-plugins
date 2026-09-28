@@ -100,6 +100,7 @@ export async function packRuntime(home: string, id: string, output: string, comm
 export async function installArtifact(home: string, input: RuntimeArtifact, code: string, dependencies: string): Promise<RuntimeRelease> {
 	const artifact = runtimeArtifact(input);
 	await mkdir(home, { recursive: true });
+	home = await realpath(home);
 	const lease = new SessionLease(join(home, "manage"));
 	let temporary: string | undefined;
 	try {
