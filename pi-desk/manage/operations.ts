@@ -150,7 +150,7 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 		if (options.action !== "stop") readRelease(home, selected ?? state.active!);
 		const login = readLoginConfig(installation.directory);
 		if (options.action === "login-install" && login) throw new Error("Login-start is already configured.");
-		publish("Stopping the host; saved sessions will remain closed");
+		publish("Stopping the host; open sessions will be interrupted");
 		if (login) await stopLogin(login); else await stopHost(installation.directory);
 		if (options.action === "login-remove") await removeLogin(installation.directory);
 		if (options.action === "login-install") await runLauncher(home, ["login", "install"]);

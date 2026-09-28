@@ -1,21 +1,16 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fileLink } from "../../../pi-local-links/extensions/links.ts";
 import { ExpiredReference } from "./references.ts";
+import { localPath } from "./local-path.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, type FileCommand, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
 interface Grant extends FileReference { path: string; snapshot?: FileInfo }
 const safeName = (name: string) => basename(name.replaceAll("\\", "/")).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "_").slice(0, 240) || "download";
-function localPath(path: string): boolean {
-	if (!isAbsolute(path) || path.startsWith("\\\\") || path.startsWith("//")) return false;
-	if (process.platform === "win32" && (path.slice(2).includes(":")
-		|| path.split(/[\\/]/).slice(1).some(part => /^(con|nul|prn|aux|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)))) return false;
-	return true;
-}
 async function stamp(file: FileHandle): Promise<{ size: number; version: string }> {
 	const info = await file.stat({ bigint: true });
 	if (!info.isFile() || info.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Only regular files can be opened.");

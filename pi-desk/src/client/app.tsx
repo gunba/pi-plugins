@@ -12,8 +12,10 @@ import { ReferenceContext } from "./reference-origin.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
 import { RELEASE } from "../shared/release.ts";
-import { ResumeConversation, RESUME_NOTICE } from "./resume.tsx";
+import { ResumeConversation } from "./resume.tsx";
 import { Computers } from "./computers.tsx";
+import { OsIcon } from "./os-icon.tsx";
+import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
 import { Inspector, Modal, Navigation } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
@@ -91,7 +93,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const attachments = useAttachments(selected, setError);
   const fileInput = useRef<HTMLInputElement>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const [filter, setFilter] = useState("");
   const [latestRequest, setLatestRequest] = useState(0);
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
@@ -102,6 +103,14 @@ export function App({ account }: { account?: BrowserAccount }) {
   const session = state.host?.sessions.find(
     (session) => session.key === selected,
   );
+  const previousSession = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!session && previousSession.current === selected) {
+      setSelected(""); setPanel(undefined);
+    }
+    previousSession.current = session?.key;
+  }, [session?.key, selected]);
+  const canCompose = session?.state === "starting" || session?.state === "ready";
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
   const connected = state.host?.computers
     ? currentComputer?.connected ?? state.host.computers.some(computer => computer.connected)
@@ -242,16 +251,18 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (request === createRequest.current) setCreateError(errorText(error));
     } finally { if (request === createRequest.current) setCreating(false); }
   }
-  async function resume(file: string, computer?: string) {
+  async function restartSession() {
+    if (!session || !connected) return;
     try {
-      const result = await api<{ key: string }>("/resume", { file }, computer);
-      setSelected(result.key); setPanel(undefined); setSidebar(false);
+      await api(`/sessions/${session.key}/restart`, {});
     } catch (error) { setError(errorText(error)); }
   }
   function openNewConversation() {
     const computer = currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
-    setNewComputer(computer?.id); setCwd(computer?.cwd ?? state.host?.cwd ?? ""); setCreate(true);
+    setNewComputer(computer?.id);
+    setCwd(session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? state.host?.cwd ?? "");
+    setCreate(true);
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
   async function closeSession() {
@@ -358,7 +369,6 @@ export function App({ account }: { account?: BrowserAccount }) {
         <div className="brand">
           <span className="brand-mark small">π</span>
           <strong>Pi Desk</strong>
-          <span className="quiet">workspace</span>
         </div>
         <button className="new-chat" onClick={openNewConversation}>
           <span>＋</span> New conversation
@@ -366,30 +376,19 @@ export function App({ account }: { account?: BrowserAccount }) {
         <button className="resume-chat" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
           <span>◷</span> Resume conversation
         </button>
-        <input
-          className="search"
-          aria-label="Search conversations"
-          placeholder="Search conversations"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
         <div className="nav-label">
-          CONVERSATIONS <span>{state.host.sessions.length}</span>
+          Sessions <span>{state.host.sessions.length}</span>
         </div>
         <nav className="session-list">
-          {(state.host.computers ?? [{ id: undefined, name: state.host.name, connected,
+          {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected,
             connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
-          {host.computers && <div className="nav-label computer-heading">
-            <span>{computer.name}</span><small>{connectionLabel(computer)}</small>
-          </div>}
+          <div className="computer-heading">
+            <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
+            <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
+          </div>
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
-            .filter((item) =>
-              `${title(item)} ${item.cwd}`
-                .toLowerCase()
-                .includes(filter.toLowerCase()),
-            )
             .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)
             .map((item) => (
               <button
@@ -402,22 +401,17 @@ export function App({ account }: { account?: BrowserAccount }) {
                 }}
               >
                 <span
-                  className={`status-dot ${item.snapshot?.activity ?? item.state}`}
+                  className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`}
                 />
                 <span>
                   <strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
-                  <small>{basename(item.cwd)}</small>
+                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small>
                 </span>
               </button>
             ))}
-          {host.computers && computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
-            <p className="sidebar-hint">{computer.connected ? "No conversations yet." : "Sessions will appear when this app connects."}</p>}
+          {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
+            <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
-          {!state.host.sessions.length && (
-            <p className="sidebar-hint">
-              A clear place for every conversation.
-            </p>
-          )}
         </nav>
         <div className="sidebar-bottom">
           <button
@@ -451,8 +445,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             <strong>{session ? title(session) : "Welcome"}</strong>
           </div>
           <div className="top-actions">
-            {session?.activation && ["starting", "ready"].includes(session.state) && <button
-              className="close-conversation" title="Stop this worker; keep saved history" aria-label="Close conversation"
+            {session?.activation && <button
+              className="close-conversation" title="Close this session and remove it from the workspace" aria-label="Close conversation"
               disabled={!connected || closing || sending} onClick={() => void closeSession()}>{closing ? "Closing…" : "Close"}</button>}
             {session?.snapshot && (
               <button
@@ -491,14 +485,10 @@ export function App({ account }: { account?: BrowserAccount }) {
         </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
         {session && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
-        {session && (session.state === "closed" || session.state === "failed") && (
+        {session && !canCompose && messages.length > 0 && (
           <div className="connection-banner">
-            <span>{session.error || (session.interrupted ? "This session was interrupted. Desk did not resend input or retry controls." : "This session is closed.")}
-              {session.file && <small className="resume-hint">{RESUME_NOTICE}</small>}
-            </span>
-            <button disabled={!connected} onClick={() => {
-              void api(`/sessions/${session.key}/restart`, {}).catch(error => setError(errorText(error)));
-            }}>{session.file ? "Resume saved history" : "Start again"}</button>
+            <span>{session.error || "Pi was interrupted. Resume to continue."}</span>
+            <button disabled={!connected} onClick={() => void restartSession()}>{session.file ? "Resume" : "Retry"}</button>
           </div>
         )}
         {session?.snapshot?.extensions.some(extension => extension.error) && <div className="error-banner" role="alert">
@@ -541,13 +531,12 @@ export function App({ account }: { account?: BrowserAccount }) {
                     : "A LITTLE SPACE TO THINK BIG"}
                 </div>
                 <h1>
-                  {session?.state === "failed" ? "Session stopped"
-                    : session?.state === "closed" ? "Conversation saved"
+                  {session && !canCompose ? "Pi is not running"
                     : session?.state === "starting" ? controlBusy ? "Updating this conversation…" : "Opening this conversation…"
                     : session ? "What shall we work on?" : "Make something good."}
                 </h1>
                 <p>
-                  {session && session.state !== "ready" ? "Your saved history stays on this computer." : session
+                  {session && !canCompose ? session.error || "Resume Pi to load this conversation. Nothing has been resent." : session
                     ? "Your tools, context, and conversations. All in one place."
                     : "Start a conversation in any project. Pick it up on any device."}
                 </p>
@@ -556,6 +545,12 @@ export function App({ account }: { account?: BrowserAccount }) {
                     Start a conversation <span>↗</span>
                   </button>
                 )}
+                {session && !canCompose && <>
+                  <button className="primary" disabled={!connected} onClick={() => void restartSession()}>
+                    {session.file ? "Resume" : "Retry"}
+                  </button>
+                  {!!draft.trim() && <p className="muted">Your unsent draft is kept on this device.</p>}
+                </>}
                 {session?.state === "starting" && !controlBusy && (
                   <p className="muted">Loading your Pi setup. You can send now; messages will wait on this computer.</p>
                 )}
@@ -568,7 +563,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
           )}
         />
-        {session && (
+        {session && canCompose && (
           <div className="composer-dock">
             {ui && <EditorSuggestion key={selected} session={selected} id={ui.editorId} text={ui.editorText}
               draft={draft} context={confirmationContext} edit={text => { setDraft(text); localStorage.setItem(draftKey(selected), text); }} />}
@@ -945,14 +940,14 @@ export function App({ account }: { account?: BrowserAccount }) {
         </Inspector>
       )}
       {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
-        current={session} folders={host.sessions} close={() => setResumeOpen(false)} selected={key => {
+        current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
         }} />}
       {create && (
         <Modal title="New conversation" close={closeNewConversation}>
           <form onSubmit={(event) => void newSession(event)}>
             {state.host.computers && <label>Computer
-              <select aria-label="Computer for new conversation" value={newComputer ?? ""} onChange={event => {
+              <select aria-label="Computer for new conversation" disabled={creating} value={newComputer ?? ""} onChange={event => {
                 setNewComputer(event.target.value);
                 setCwd(state.host!.computers!.find(computer => computer.id === event.target.value)?.cwd ?? "");
               }}>
@@ -962,16 +957,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </option>)}
               </select>
             </label>}
-            <label>
-              Workspace
-              <input
-                value={cwd}
-                onChange={(event) => setCwd(event.target.value)}
-                data-autofocus
-                placeholder="Project folder on your computer"
-                required
-              />
-            </label>
+            <FolderField key={newComputer ?? "local"} value={cwd} onChange={setCwd} computer={newComputer}
+              disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)} />
             <p className="muted">
               Pi loads this project's instructions, tools, and settings.
             </p>
@@ -980,7 +967,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               <button type="button" onClick={closeNewConversation}>
                 Cancel
               </button>
-              <button className="primary" disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)}>{creating ? "Creating…" : "Create conversation"}</button>
+              <button className="primary" disabled={!cwd || creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)}>{creating ? "Creating…" : "Create conversation"}</button>
             </div>
           </form>
         </Modal>

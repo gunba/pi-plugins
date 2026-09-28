@@ -79,8 +79,8 @@ export default function desk(pi: ExtensionAPI) {
 					if (!choice) return;
 					if (parameters.length > 1 || !["status", "install", "remove"].includes(choice)) throw new Error("Use /desk login status, install or remove.");
 					if (choice !== "status" && !await ctx.ui.confirm("Change login-start?", choice === "install"
-						? "Restart this host and enable it at user login. Conversations will close; resume them explicitly afterward."
-						: "Restart without login-start. Conversations will close; native history is retained.")) return;
+						? "Restart this host and enable it at user login. Open sessions and background work will be interrupted; resume explicitly afterward."
+						: "Restart without login-start. Open sessions and background work will be interrupted; native history is retained.")) return;
 					if (choice === "status") notify(await runLauncher(location.home, ["login", "status"]));
 					else { await launchOperation(location.home, choice === "install" ? "login-install" : "login-remove"); notify("Login-start change accepted. Use /desk status after reconnecting."); }
 					return;
@@ -88,10 +88,10 @@ export default function desk(pi: ExtensionAPI) {
 				if (["restart", "rollback", "stop"].includes(command)) {
 					const current = await status();
 					if (!await ctx.ui.confirm(command === "stop" ? "Stop Desk?" : command === "rollback" ? "Use the previous runtime?" : "Restart Desk?",
-						`${current.host.host?.sessions.active ?? 0} conversations will close, including background work. Native history is retained; resume explicitly afterward.`)) return;
+						`${current.host.host?.sessions.active ?? 0} running Pi sessions and their background work will stop. Open sessions remain in the workspace as interrupted; resume explicitly afterward.`)) return;
 				}
 				await launchOperation(location.home, command as Exclude<DeskOperation, "setup">);
-				notify("Operation accepted. Use /desk status for its outcome; closed conversations will not resume automatically.");
+				notify("Operation accepted. Use /desk status for its outcome.");
 			} catch (error) { notify(error instanceof Error ? error.message : String(error), "error"); }
 			finally { if (!shutdown) ctx.ui.setStatus("desk", undefined); }
 		},

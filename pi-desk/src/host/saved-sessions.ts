@@ -5,6 +5,7 @@ import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import { SAVED_PAGE_SIZE, type CatalogProgress, type SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
+import type { RecentProject } from "../shared/folders.ts";
 
 export class CatalogChanged extends Error {}
 interface View {
@@ -43,6 +44,10 @@ export class SavedSessionIndex {
 		} catch (error) { this.db.close(); throw error; }
 	}
 	invalidate(): void { for (const view of this.views.values()) view.dirty = true; }
+	recentProjects(): RecentProject[] {
+		return this.db.prepare(`SELECT json_extract(data,'$.cwd') AS path, MAX(modified) AS modified
+			FROM saved GROUP BY path ORDER BY modified DESC LIMIT 64`).all() as unknown as RecentProject[];
+	}
 	private view(cwd?: string): View {
 		const scope = cwd === undefined ? "*" : resolve(cwd);
 		let view = this.views.get(scope);

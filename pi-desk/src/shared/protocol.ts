@@ -97,7 +97,7 @@ export interface SessionView {
 	activation?: string;
 	inputs?: InputStatus[];
 }
-export interface HostState { release: ReleaseInfo; name: string; cwd: string; sessions: SessionView[];
+export interface HostState { release: ReleaseInfo; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 export type HostEvent =
 	| { type: "state"; state: HostState }

@@ -74,11 +74,24 @@ output directory would replace the host build as well.
 current project, another folder or all projects. Settings provides branch,
 fork, compaction, name and pin controls. **Close** is in the conversation header,
 including during startup. Its confirmation identifies the worker and outstanding
-work. Closing stops that worker but keeps the saved conversation. Native Pi
+work. Closing stops that worker and removes the session from the workspace;
+its native history remains available in **Resume conversation**. The sidebar
+lists open sessions, including interrupted sessions awaiting an explicit Resume,
+not every previously opened conversation. Native Pi
 messages still queued for delivery are discarded; unresolved host admissions
 remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay prompts
-or restart workers automatically.
+or restart workers automatically. An interrupted session can be resumed or closed;
+its composer is unavailable until Pi starts again.
+
+**Project folder** opens the same folder browser in New conversation and Resume.
+It browses the selected computer, with breadcrumbs, parent/home navigation,
+name filtering, hidden-folder controls and optional direct path entry. Recent
+projects come from native session headers, cached Pi metadata and Desk references,
+without loading transcripts or starting Pi. Locations include home, the default
+project and local Windows drives or the Linux filesystem root. Drive discovery
+runs separately so a slow Windows query does not block folders or projects.
+Folder rows are paged; only the selected computer is queried.
 
 Closing or suspending a browser does not stop a worker: questions, children,
 timers and goal continuation remain with the owning computer. Stop the session
@@ -520,7 +533,7 @@ input reuses its receipt, including when Pi finished loading while the reply was
 lost. Accepted payloads are removed from the admission store; native JSONL remains
 conversation history. Failed or unconfirmed input retains its text and files.
 **Review** lets you inspect, explicitly send again, or discard it. Startup failure
-offers **Start again**; saved conversations instead resume their native history.
+offers **Retry**; saved conversations instead offer **Resume**.
 Restart never automatically sends retained input. Undispatched cancellations
 release their file references for normal unused-upload cleanup.
 

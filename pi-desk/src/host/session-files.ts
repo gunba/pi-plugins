@@ -2,16 +2,20 @@ import { closeSync, existsSync, openSync, readSync, readFileSync, renameSync, wr
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SessionView } from "../shared/protocol.ts";
+import { isOpenSession } from "../shared/workspace.ts";
+
+export function parseSessionHeader(text: string): { cwd: string; id: string } {
+	const header = JSON.parse(text.split("\n", 1)[0]!);
+	if (header.type !== "session" || typeof header.cwd !== "string" || typeof header.id !== "string") throw new Error("Not a Pi session file.");
+	return { cwd: header.cwd, id: header.id };
+}
 
 export function readSessionHeader(file: string): { cwd: string; id: string } {
 	const fd = openSync(file, "r");
 	try {
 		const buffer = Buffer.alloc(65_536);
 		const text = buffer.subarray(0, readSync(fd, buffer)).toString("utf8");
-		const line = text.split("\n", 1)[0]!;
-		const header = JSON.parse(line);
-		if (header.type !== "session" || typeof header.cwd !== "string" || typeof header.id !== "string") throw new Error("Not a Pi session file.");
-		return { cwd: header.cwd, id: header.id };
+		return parseSessionHeader(text);
 	} finally { closeSync(fd); }
 }
 
@@ -25,11 +29,11 @@ export class SessionCatalog {
 		if (value.version !== 1 || !Array.isArray(value.sessions)) throw new Error("Invalid Desk session catalog.");
 		return value.sessions.map((item: SessionView) => {
 			if (typeof item.key !== "string" || typeof item.cwd !== "string") throw new Error("Invalid Desk session reference.");
-			return { ...item, state: "closed", interrupted: item.state !== "closed" || item.interrupted,
+			return { ...item, state: "closed", interrupted: isOpenSession(item),
 				controls: item.controls?.map(control => control.state === "running"
 					? { ...control, state: "interrupted", error: "The host stopped before the outcome was recorded. Check saved history; this operation was not replayed." }
 					: control),
-				error: item.state === "closed" ? item.error : "The host stopped. Resume saved history to continue; unfinished operations were not replayed." };
+				error: item.state === "closed" ? item.error : "Pi was interrupted. Resume to continue; unfinished work was not replayed." };
 		});
 	}
 	write(sessions: SessionView[]): void {

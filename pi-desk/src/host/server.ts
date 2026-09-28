@@ -25,6 +25,8 @@ import { InputLedger } from "./inputs.ts";
 import { Attachments } from "./attachments.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
 import { assertRuntimeHost } from "../../manage/installation.ts";
+import { isOpenSession } from "../shared/workspace.ts";
+import { Folders } from "./folders.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
@@ -40,6 +42,7 @@ export class DeskHost {
 	private access: AccessStore;
 	private catalog?: SessionCatalog;
 	private saved?: SavedSessionIndex;
+	private folders?: Folders;
 	private inputs?: InputLedger;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private server = createServer((request, response) => { void this.handle(request, response); });
@@ -90,7 +93,16 @@ export class DeskHost {
 					const file = view.snapshot?.file ?? view.file;
 					return file ? [dirname(file)] : [];
 				}));
-			for (const view of this.catalog.read()) this.sessions.set(view.key, { view: { ...view, inputs: this.inputs.pending(view.key) } });
+			for (const view of this.catalog.read()) this.sessions.set(view.key, {
+				view: { ...view, activation: randomUUID(), inputs: this.inputs.pending(view.key) },
+			});
+			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
+				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
+					path: view.snapshot?.cwd ?? view.cwd, modified: view.created,
+				}))],
+				directories: () => [...new Set([...this.sessions.values()].flatMap(({ view }) =>
+					view.file ? [dirname(view.file)] : []))],
+			});
 			await new Promise<void>((resolve, reject) => {
 				this.server.once("error", reject);
 				this.server.listen(this.options.port ?? 8910, "127.0.0.1", () => {
@@ -124,7 +136,8 @@ export class DeskHost {
 	}
 
 	state(): HostState {
-		return { release: RELEASE, name: hostname(), cwd: this.options.cwd, sessions: [...this.sessions.values()].map(item => item.view), relay: this.relayStatus };
+		return { release: RELEASE, name: hostname(), platform: process.platform, cwd: this.options.cwd,
+			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession), relay: this.relayStatus };
 	}
 
 	private hostStatus(): HostStatus {
@@ -203,7 +216,7 @@ export class DeskHost {
 			if (message.control.kind === "close" && message.control.state === "completed") {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
-				managed.view = { ...managed.view, state: "closed", snapshot: undefined, ui: undefined, error: undefined,
+				managed.view = { ...managed.view, state: "closed", interrupted: false, snapshot: undefined, ui: undefined, error: undefined,
 					inputs: this.inputs?.pending(key) };
 			}
 			this.emit({ type: "session", session: managed.view });
@@ -458,6 +471,12 @@ export class DeskHost {
 			const url = new URL(request.path, this.origin);
 			const data = request.body ?? {};
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
+			if (url.pathname === "/api/folders/places" && request.method === "GET") return reply(await this.folders!.places());
+			if (url.pathname === "/api/folders/drives" && request.method === "GET") return reply(await this.folders!.volumes());
+			if (url.pathname === "/api/folders" && request.method === "GET") return reply(await this.folders!.page({
+				path: url.searchParams.get("path") ?? undefined, query: url.searchParams.get("query") ?? undefined,
+				hidden: url.searchParams.get("hidden") === "1", offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
+			}));
 			if (url.pathname === "/api/sessions" && request.method === "POST") {
 				return reply({ key: this.createSession(string(data.cwd, 4000) || this.options.cwd) }, 202);
 			}
@@ -523,8 +542,15 @@ export class DeskHost {
 				const managed = this.sessions.get(control[1]!);
 				if (!managed) throw new Error("Unknown session.");
 				if (control[2] === "close") {
-					if (!managed.worker) return reply({ accepted: true });
 					if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
+					if (!managed.worker) {
+						this.inputs!.interrupt(managed.view.key, "The conversation closed");
+						managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined,
+							snapshot: undefined, ui: undefined, inputs: this.inputs!.pending(managed.view.key) };
+						this.persist(true);
+						this.emit({ type: "session", session: managed.view });
+						return reply({ accepted: true });
+					}
 					const result = managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
 					if (result.control.state === "running") {
 						this.inputs!.interrupt(managed.view.key, "The conversation is closing");
@@ -543,7 +569,7 @@ export class DeskHost {
 			if (route) {
 				const managed = this.sessions.get(route[1]!);
 				if (!managed) return reply({ error: "Unknown session." }, 404);
-				if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this saved session before using its controls.");
+				if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this conversation before using its controls.");
 				const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };
 				if (route[2] === "command" && request.method === "POST") {
 					const command = workerCommandFrom(data.command);

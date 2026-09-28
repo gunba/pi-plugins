@@ -37,7 +37,7 @@ function workspace(): WorkspaceState {
 			(remote.state?.sessions ?? []).map(session => ({ ...session, computer: id, key: sessionKey(id, session.key) }))),
 		computers: [...remotes.entries()].map(([id, remote]) => ({
 			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state,
-			epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
+			platform: remote.state?.platform, epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
 			release: remote.state?.release, diagnostics: remote.client.diagnostics,
 			presence: { online: remote.device.online, seen: remote.device.seen, checked: remote.checked },
 		})).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
