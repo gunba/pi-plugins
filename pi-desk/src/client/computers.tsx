@@ -81,7 +81,7 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 	return <section className="computer-update" aria-label="Software update">
 		{updates.available && !updates.pending && <p role="status">Desk {updates.available} is available.</p>}
 		<button disabled={busy || !computer.connected || updates.checking || ["preparing", "waiting", "applying"].includes(updates.phase)}
-			onClick={() => run(updates.available || updates.phase === "failed" ? "/api/runtime/update" : "/api/runtime/check")}>
+			onClick={() => run(updates.available || updates.phase === "failed" ? "/runtime/update" : "/runtime/check")}>
 			{updates.phase === "preparing" ? "Preparing update…" : updates.phase === "applying" ? "Applying update…"
 				: updates.phase === "waiting" ? "Update ready" : updates.checking ? "Checking for updates…"
 				: updates.phase === "failed" ? "Retry update" : updates.available ? "Update" : "Check for updates"}
@@ -96,7 +96,7 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 				body: <p>Stop all open Pi sessions on this computer and apply the prepared update.
 					Running tools and background work will be interrupted. Conversations stay in the workspace with Resume available after reconnecting.
 					Unfinished work will not be resent automatically.</p>,
-			}).then(accepted => { if (accepted) run("/api/runtime/apply", { prepared }); });
+			}).then(accepted => { if (accepted) run("/runtime/apply", { prepared }); });
 		}}>Stop sessions and update</button>}
 		{updates.checkError && <p className="muted">Update check: {updates.checkError}</p>}
 		{updates.checkedAt && !updates.checking && <p className="muted">{!updates.available && !updates.checkError ? "Up to date · " : ""}
