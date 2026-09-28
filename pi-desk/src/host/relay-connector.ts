@@ -10,6 +10,7 @@ import { EventWindow } from "./event-window.ts";
 import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload } from "../shared/relay-protocol.ts";
 import type { HostEvent } from "../shared/protocol.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
+import { AccountSignInRequired } from "./account-errors.ts";
 
 interface Peer {
 	id: string; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;
@@ -82,9 +83,10 @@ export class RelayConnector {
 			this.hostLeaseUntil = membershipDeadline(lease, started);
 			if (this.stopped) return;
 			this.open();
-		} catch {
+		} catch (error) {
 			if (!this.stopped) {
-				this.update("offline", "Account access is unavailable. Check sign-in, the account service, proxy and network policy.");
+				this.update("offline", error instanceof AccountSignInRequired ? error.message
+					: "Account access is unavailable. Check sign-in, the account service, proxy and network policy.");
 				this.retry();
 			}
 		} finally { this.connecting = false; }
