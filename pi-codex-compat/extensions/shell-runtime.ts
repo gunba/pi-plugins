@@ -746,8 +746,18 @@ function isSessionRunning(session: ExecSession): boolean {
 	return !isSessionDone(session);
 }
 
-function hasProcessExited(session: ExecSession): boolean {
+function hasProcessExited(session: Pick<ExecSession, "child">): boolean {
 	return session.child.exitCode !== null || session.child.signalCode !== null;
+}
+
+export async function waitForProcessTreeTermination(
+	session: Pick<ExecSession, "child" | "terminationAttempt">,
+	platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+	const attempt = session.terminationAttempt;
+	// taskkill can finish after the shell closes. Its outcome, not just the
+	// shell's exit, determines whether Windows tree cleanup succeeded.
+	return !attempt || await attempt || (platform !== "win32" && hasProcessExited(session));
 }
 
 function drainExitedProcess(session: ExecSession): void {
@@ -859,6 +869,7 @@ function closeSessionLog(session: ExecSession): Promise<void> {
 function completeExecWork(session: ExecSession): void {
 	if (!session.workSessionId || !session.workGeneration || session.workCompleted || !isSessionDone(session)) return;
 	const status = session.error ? "failed to launch"
+		: session.terminationError ? `failed to terminate: ${session.terminationError}`
 		: session.terminationReason ? `ended (${session.terminationReason})`
 		: `exited with code ${session.exitCode ?? "unknown"}${session.exitSignal ? ` (${session.exitSignal})` : ""}`;
 	const preview = formatUnifiedExecOutput(session.pendingOutput.snapshot(), 1000);
@@ -944,7 +955,7 @@ function recordTerminationAttempt(
 	session.terminationAttempt = attempt;
 	void attempt.then((success) => {
 		if (session.terminationAttempt !== attempt) return;
-		session.terminationError = success || hasProcessExited(session) ? undefined
+		session.terminationError = success || (process.platform !== "win32" && hasProcessExited(session)) ? undefined
 			: failure ?? `process-tree termination failed for session ${session.id}`;
 	});
 }
@@ -1137,6 +1148,7 @@ async function sessionResult(
 			session.artifactError = error instanceof Error ? error.message : String(error);
 		}
 	}
+	await waitForProcessTreeTermination(session);
 	return buildSessionResult(session, call, snapshot, true);
 }
 
@@ -1218,7 +1230,7 @@ async function pruneExecSessionsForCapacity(
 		if (!isSessionDone(session)) {
 			requestTermination(session, "prune", "SIGKILL", true);
 			await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-			if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
+			if (!(await waitForProcessTreeTermination(session))) {
 				throw new Error(
 					session.terminationError ??
 						`exec_command process-tree termination failed for session ${session.id}`,
@@ -1330,7 +1342,8 @@ async function createExecSession(
 			session.exitSignal = exitSignal;
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
 			if (session.stdioDrainTimeout) clearTimeout(session.stdioDrainTimeout);
-			void closeSessionLog(session).then(() => {
+			void closeSessionLog(session).then(async () => {
+				await waitForProcessTreeTermination(session);
 				completeExecWork(session);
 				return cleanupSessionLog(session);
 			});
@@ -1441,8 +1454,7 @@ export async function executeManagedExecCommand(
 			}
 		} catch (error) {
 			requestTermination(session, "abort", "SIGTERM");
-			const terminationSucceeded = !session.terminationAttempt
-				|| await session.terminationAttempt || hasProcessExited(session);
+			const terminationSucceeded = await waitForProcessTreeTermination(session);
 			if (terminationSucceeded) {
 				await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
 			}
@@ -1559,7 +1571,7 @@ async function performExecSessionShutdown(
 		waitForActiveOperations(owner),
 		...sessions.map(async (session) => {
 			await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-			if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
+			if (!(await waitForProcessTreeTermination(session))) {
 				throw new Error(
 					session.terminationError ??
 						`Unified Exec process-tree termination failed for session ${session.id}`,
@@ -1568,7 +1580,7 @@ async function performExecSessionShutdown(
 			if (!isSessionDone(session)) {
 				requestTermination(session, "shutdown", "SIGKILL", true);
 				await settleSession(session, SHUTDOWN_WAIT_MS, undefined);
-				if (session.terminationAttempt && !(await session.terminationAttempt) && !hasProcessExited(session)) {
+				if (!(await waitForProcessTreeTermination(session))) {
 					throw new Error(
 						session.terminationError ??
 							`Unified Exec process-tree termination failed for session ${session.id}`,

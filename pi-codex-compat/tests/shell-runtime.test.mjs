@@ -25,6 +25,7 @@ import {
 	shutdownExecSessions,
 	startExecSessionRuntime,
 	terminateProcessTree,
+	waitForProcessTreeTermination,
 	writeBufferFully,
 } from "../extensions/shell-runtime.ts";
 
@@ -319,6 +320,25 @@ test("Windows tree failures are reported without a shell-only fallback", async (
 	});
 	assert.equal(success, false);
 	assert.deepEqual(failures, ["Windows process-tree termination failed: Error: tree termination denied"]);
+});
+
+test("Windows tree completion waits for taskkill after shell close and preserves failure", async () => {
+	for (const success of [true, false]) {
+		let finish;
+		const session = {
+			child: { exitCode: 1, signalCode: null },
+			terminationAttempt: new Promise(resolve => { finish = resolve; }),
+		};
+		let completed = false;
+		const pending = waitForProcessTreeTermination(session, "win32").then(result => {
+			completed = true;
+			return result;
+		});
+		await new Promise(resolve => setImmediate(resolve));
+		assert.equal(completed, false, "shell close must not complete pending tree cleanup");
+		finish(success);
+		assert.equal(await pending, success, "shell exit must not hide failed tree cleanup");
+	}
 });
 
 test("termination never targets an exited command", async () => {
