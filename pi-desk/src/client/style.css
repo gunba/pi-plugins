@@ -590,6 +590,12 @@ details[open] > summary:before {
 .markdown p {
   margin: 0 0 14px;
 }
+.message-plan-round { padding:12px 16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.plan-round-heading { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
+.plan-round-heading strong { color:var(--text); font-weight:600; }
+.plan-round-heading .ui-icon { width:16px; height:16px; color:var(--accent); }
+.plan-round-heading time { margin-left:auto; font-size:11px; }
+.message-plan-round > p { margin:8px 0 0 24px; color:var(--muted); font-size:13px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
 .markdown h1,
 .markdown h2,
 .markdown h3 {

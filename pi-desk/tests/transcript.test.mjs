@@ -3,6 +3,40 @@ import test from "node:test";
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";
+import { planRoundNotice } from "../src/client/plan-round.ts";
+import { renderPlanRoundPrompt } from "../../pi-plan/src/prompt.ts";
+import { PLAN_ROUND_MESSAGE } from "../../pi-plan/src/constants.ts";
+
+test("live and saved plan rounds have a readable notice without changing the native prompt", () => {
+	const transcript = new Transcript();
+	const plan = { id: "plan-test", revision: 3, objective: 'Check the "calendar"\nlayout', maxRounds: 128,
+		steps: [{ content: "Check keyboard navigation", status: "in_progress" }] };
+	for (const steps of [plan.steps, []]) {
+		const content = renderPlanRoundPrompt({ ...plan, steps }, 4);
+		const live = transcript.message({ role: "custom", customType: PLAN_ROUND_MESSAGE, content, display: true });
+		const saved = transcript.entry({ type: "custom_message", id: "round", timestamp: new Date(1000).toISOString(),
+			customType: PLAN_ROUND_MESSAGE, content, display: true });
+		for (const message of [live, saved]) {
+			assert.equal(message.blocks[0].text, content);
+			assert.deepEqual(planRoundNotice(message), { objective: plan.objective, round: 4, maxRounds: 128 });
+		}
+	}
+});
+
+test("plan display leaves ordinary markup, incomplete previews and malformed envelopes alone", () => {
+	const content = renderPlanRoundPrompt({ id: "plan-test", revision: 1, objective: "Calendar", maxRounds: 8, steps: [] }, 2);
+	const note = { role: "note", blocks: [{ type: "text", text: content }] };
+	for (const role of ["user", "assistant", "tool"]) assert.equal(planRoundNotice({ ...note, role }), undefined);
+	for (const text of [
+		`Example: ${content}`, `\`\`\`\n${content}\n\`\`\``, `${content}\nAnother note`,
+		content.replace("</plan_round>", ""), content.replace('"Calendar"', "not-json"),
+		content.replace("2/8", "2/0"), content.replace("2/8", "9/8"),
+		content.replace("2/8", "9007199254740992/9007199254740993"),
+	]) assert.equal(planRoundNotice({ ...note, blocks: [{ type: "text", text }] }), undefined);
+	assert.equal(planRoundNotice({ ...note, blocks: [{ ...note.blocks[0], truncated: true }] }), undefined);
+	assert.equal(planRoundNotice({ ...note, blocks: [{ ...note.blocks[0], full: "asset" }] }), undefined);
+	assert.equal(planRoundNotice({ ...note, blocks: [...note.blocks, { type: "image", asset: "image" }] }), undefined);
+});
 
 test("saved tool timing metadata survives projection without replacing the process duration", () => {
 	const transcript = new Transcript();

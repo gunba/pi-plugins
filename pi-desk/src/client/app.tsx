@@ -33,6 +33,7 @@ import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
 import { PlanView } from "./plan-view.tsx";
+import { planRoundNotice } from "./plan-round.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
@@ -1069,6 +1070,15 @@ const Message = memo(function Message({
   sessionKey: string;
   source?: string;
 }) {
+  const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], {
+    hour: "2-digit", minute: "2-digit",
+  }) : "";
+  const round = planRoundNotice(message);
+  if (round) return <article className="message message-plan-round">
+    <div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
+      <span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div>
+    <p>{round.objective}</p>
+  </article>;
   return (
     <ReferenceContext value={{ message: message.id, source }}>
     <article className={`message message-${message.role}`}>
@@ -1085,14 +1095,7 @@ const Message = memo(function Message({
               : (message.toolName ?? "Note")}
         </span>
         {message.role === "assistant" && <strong>Pi</strong>}
-        <time>
-          {message.timestamp
-            ? new Date(message.timestamp).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : ""}
-        </time>
+        <time>{time}</time>
       </div>
       <div className="message-body">
         {message.tool && <div className={`tool-status tool-${message.tool.state}`}>
