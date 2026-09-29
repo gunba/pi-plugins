@@ -4,21 +4,28 @@ import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, type HistoryPosition } from "../shared/history.ts";
 import { api } from "./connection.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
-import { readPosition, savePosition, type ReadingPosition } from "./reading-position.ts";
+interface ReadingPosition {
+	from?: string; anchor?: string; offset: number; follow: boolean; sizes?: Record<string, number>;
+}
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
-export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest }: {
+export function TranscriptView({ session, source, generation, connected, epoch, starting, messages, onLatest, renderMessage, empty, footer, latestRequest }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
+	starting?: boolean;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
 }) {
 	const storageKey = transcriptKey(session, source);
-	const saved = useRef(readPosition(storageKey));
+	// Returning to a conversation opens its tail. Preserve a reading position only
+	// across reconnects while this particular view remains mounted.
+	const saved = useRef<ReadingPosition | undefined>(undefined);
 	const [page, setPage] = useState<HistoryPage>();
-	const [live, setLive] = useState(saved.current?.follow !== false);
+	const [live, setLive] = useState(true);
+	const [atEnd, setAtEnd] = useState(true);
 	const [loading, setLoading] = useState(false), [error, setError] = useState("");
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
+	const loadingRef = useRef(false);
 	const userScroll = useRef(false), restoring = useRef(false);
 	const target = useRef<ReadingPosition | "start" | "end" | undefined>(undefined);
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -50,7 +57,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const persist = () => {
 		clearTimeout(timer.current);
 		const position = capture.current();
-		if (position) { saved.current = position; savePosition(storageKey, position); }
+		if (position) saved.current = position;
 	};
 	capture.current = () => {
 		if (!page || restoring.current || !scroller.current || !visible.length) return;
@@ -58,7 +65,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		const row = virtualizer.getVirtualItemForOffset(top);
 		const index = Math.min(row?.index ?? 0, visible.length - 1);
 		return {
-			from: visible.find(message => message.entryId)?.entryId,
+			from: visible.slice(Math.max(0, index - 10)).find(message => message.entryId)?.entryId,
 			anchor: visible[index]?.entryId, offset: Math.max(0, top - (row?.start ?? 0)), follow: live && !moreRecent,
 			sizes: Object.fromEntries(virtualizer.takeSnapshot().slice(-HISTORY_COUNT - 1).map(item => [String(item.key), item.size])),
 		};
@@ -67,6 +74,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		const id = ++request.current;
 		if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
 		restoring.current = true; userScroll.current = false;
+		loadingRef.current = true;
 		setLoading(true); setError("");
 		const query = new URLSearchParams(position as Record<string, string>);
 		if (source) query.set("source", source);
@@ -74,7 +82,19 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			const data = await api<HistoryPage>(`/sessions/${session}/history?${query}`);
 			if (id !== request.current || data.generation !== generation) return;
 			target.current = restore;
-			setPage(data); setLive(!position.before && !position.after && !position.from);
+			if ((position.before || position.after) && typeof restore === "object") {
+				const combined = mergeMessages(visible, data.messages);
+				const window = position.before
+					? recentMessages([...combined].reverse(), HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2).reverse()
+					: recentMessages(combined, HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2);
+				const hasBefore = position.before ? !!data.before : !!older || window.length < combined.length;
+				const hasAfter = position.after ? !!data.after : !!moreRecent || window.length < combined.length;
+				setPage({ ...data, messages: window,
+					before: hasBefore ? window.find(message => message.entryId)?.entryId : undefined,
+					after: hasAfter ? window.slice().reverse().find(message => message.entryId)?.entryId : undefined });
+			} else setPage(data);
+			const latest = !position.before && !position.after && !position.from;
+			setLive(latest); setAtEnd(latest);
 			setPinned("");
 			if (!position.before && !position.after && !position.from) onLatest(source, data);
 		} catch (error) {
@@ -84,7 +104,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				saved.current = undefined; void load(); return;
 			}
 			setError(String(error));
-		} finally { if (id === request.current) setLoading(false); }
+		} finally { if (id === request.current) { loadingRef.current = false; setLoading(false); } }
 	};
 	useEffect(() => {
 		if (connected) {
@@ -93,7 +113,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			else void load();
 		}
 		return () => { request.current++; };
-	}, [session, source, generation, connected, epoch]);
+	}, [session, source, generation, connected, epoch, starting]);
 	useEffect(() => {
 		if (lastLatestRequest.current !== latestRequest && connected) {
 			lastLatestRequest.current = latestRequest; void load();
@@ -118,6 +138,15 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			restoreFrame.current = requestAnimationFrame(() => { restoring.current = false; persist(); });
 		});
 	}, [page]);
+	// The bounded tail replaces its oldest row as new messages arrive, so its
+	// item count (and final spacer key) need not change for the virtualizer.
+	useLayoutEffect(() => {
+		if (!live || restoring.current) return;
+		const frame = requestAnimationFrame(() => {
+			if (!restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [visible, live]);
 	// A reading window stays put while current output advances. Existing live rows still finish.
 	useEffect(() => {
 		if (live || !page) return;
@@ -156,21 +185,30 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		setLive(false);
 	};
 	return <div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`}>
-		{(visible.length > 0 || loading || error) && <div className="transcript-controls">
-			<button disabled={!older || loading || !connected} onClick={() => void load({ before: older }, "end")}>Older</button>
-			<button disabled={!moreRecent || loading || !connected} onClick={() => void load({ after: moreRecent }, "start")}>Newer</button>
-			<button disabled={loading || !connected} onClick={() => void load()}>Latest</button>
-			<small className="muted">{loading ? "Loading…" : live ? "Live" : moreRecent ? "Reading · newer messages" : "Reading"}</small>
-		</div>}
+		{loading && <div className="history-status" role="status">Loading messages…</div>}
+		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
+			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
 		{error && <p className="error-text" role="alert">{error}</p>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
 			tabIndex={0} aria-label={source ? "Child conversation" : "Conversation"}
-			onWheel={() => { userScroll.current = true; }} onTouchStart={() => { userScroll.current = true; }}
-			onPointerDown={() => { userScroll.current = true; }}
-			onKeyDown={event => { if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) userScroll.current = true; }}
+			onWheel={() => { userScroll.current = true; }} onTouchMove={() => { userScroll.current = true; }}
+			onPointerDown={event => { if (event.target === event.currentTarget) userScroll.current = true; }}
+			onKeyDown={event => {
+				if (event.key === "End" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (connected) void load(); }
+				else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) userScroll.current = true;
+			}}
 			onScroll={() => {
 				if (restoring.current) return;
-				if (userScroll.current && !virtualizer.isAtEnd(80)) hold();
+				const viewport = scroller.current!;
+				const end = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 80; setAtEnd(end);
+				if (userScroll.current) {
+					if (!end) hold();
+					if (!loadingRef.current && connected) {
+						const anchor = capture.current();
+						if (scroller.current!.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
+						else if (end && !live) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
+					}
+				}
 				clearTimeout(timer.current); timer.current = setTimeout(persist, 200);
 			}}>
 			<div className={`virtual-window ${source ? "" : "conversation"}`} style={{ height: virtualizer.getTotalSize(), position: "relative", padding: 0 }}>
@@ -189,7 +227,9 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 						}}
 						onFocusCapture={() => { if (message) setPinned(message.id); }}
 						onClickCapture={event => {
-							if (message && (event.target as HTMLElement).closest(".file-link,.artifact-link,summary")) { setPinned(message.id); hold(); }
+							if (message && (event.target as HTMLElement).closest(".file-link,.artifact-link,summary")) {
+								userScroll.current = false; setPinned(message.id);
+							}
 						}}
 						style={{ position: "absolute", width: "100%", top: 0, left: 0, transform: `translateY(${row.start}px)` }}>
 						{message ? renderMessage(message) : <>

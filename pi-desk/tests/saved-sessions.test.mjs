@@ -5,6 +5,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { SavedSessionIndex, CatalogChanged } from "../src/host/saved-sessions.ts";
+import { catalogPath } from "../src/host/catalog-path.ts";
+import { savedProgressLabel } from "../src/shared/catalog.ts";
+
+test("catalog identities fold Windows path casing but preserve Linux case", () => {
+	assert.equal(catalogPath("C:\\Workspace\\", "win32"), catalogPath("c:/workspace", "win32"));
+	assert.notEqual(catalogPath("/Workspace", "linux"), catalogPath("/workspace", "linux"));
+});
+
+test("a cold or cancelled scan is not presented as a completed zero-result search", () => {
+	const page = { matched: 0, progress: { state: "loading", loaded: 0, total: 0 } };
+	assert.match(savedProgressLabel(page), /Reading saved conversations/);
+	assert.doesNotMatch(savedProgressLabel(page), /0 conversations|0 matches/);
+	assert.match(savedProgressLabel({ ...page, progress: { ...page.progress, state: "cancelled" } }), /scan stopped/);
+});
 
 async function complete(catalog, options = {}) {
 	let page = await catalog.page(options);
@@ -110,4 +124,44 @@ test("large libraries return immediately with project scope and cancellable nati
 	}) + "\n");
 	assert.equal((await complete(catalog, { cwd: one, refresh: true })).total, 0,
 		"native scope membership replaces a preview whose project changed");
+});
+
+test("a newly selected scope immediately reuses previews instead of showing an empty cold list", async t => {
+	const root = await mkdtemp(join(tmpdir(), "desk-cached-scope-")), source = join(root, "sessions"), data = join(root, "index");
+	await mkdir(source); await mkdir(data);
+	const project = join(root, "project"), other = join(root, "other");
+	for (const [id, cwd] of [["one", project], ["two", other]]) await writeFile(join(source, `${id}.jsonl`), [
+		{ type: "session", version: 3, id, cwd, timestamp: "2020-01-01T00:00:00Z" },
+		{ type: "session_info", name: id },
+	].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+	const catalog = new SavedSessionIndex(data, project, root, source);
+	t.after(async () => { await catalog.close(); await rm(root, { recursive: true, force: true }); });
+	assert.equal((await complete(catalog, { cwd: project })).matched, 1);
+	const all = await catalog.page();
+	assert.equal(all.progress.state, "loading");
+	assert.equal(all.matched, 1, "the known project should be visible while the rest of history is scanned");
+	const finished = await complete(catalog, { scan: all.progress.id });
+	assert.equal(finished.matched, 2);
+	const next = await catalog.page({ cwd: other });
+	assert.equal(next.progress.state, "loading");
+	assert.deepEqual(next.sessions.map(item => item.name), ["two"], "seed only this project's previews from the wider cache");
+});
+
+test("Windows project casing shares one scan and includes mixed-case headers in custom stores", {
+	skip: process.platform !== "win32",
+}, async t => {
+	const root = await mkdtemp(join(tmpdir(), "desk-windows-catalog-")), source = join(root, "sessions"), data = join(root, "index");
+	await mkdir(source); await mkdir(data);
+	const project = join(root, "Workspace");
+	await writeFile(join(source, "sample.jsonl"), JSON.stringify({
+		type: "session", version: 3, id: "sample", cwd: project.toUpperCase(), timestamp: "2020-01-01T00:00:00Z",
+	}) + "\n");
+	const catalog = new SavedSessionIndex(data, project, root, source);
+	t.after(async () => { await catalog.close(); await rm(root, { recursive: true, force: true }); });
+	const first = await complete(catalog, { cwd: project.toLowerCase() });
+	assert.equal(first.matched, 1);
+	const same = await catalog.page({ cwd: project.toUpperCase() });
+	assert.equal(same.progress.id, first.progress.id);
+	assert.equal(same.progress.state, "ready");
+	assert.equal(same.matched, 1);
 });

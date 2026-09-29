@@ -11,6 +11,7 @@ import {
 	ProjectTrustStore,
 	SessionManager,
 	SettingsManager,
+	readStoredCredential,
 	type AgentSession,
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -30,9 +31,13 @@ import type { UiDetails } from "../../../pi-ui/index.ts";
 import type { UiTranscriptSource, UiTranscriptHandle } from "../../../pi-ui/index.ts";
 import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
+import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin } from "./runtime-resources.ts";
+import { openingMessage, sessionTitle } from "../shared/session-title.ts";
+import { providerIdentity } from "./provider-identity.ts";
+import { providerChoices } from "./provider-prompts.ts";
 
 /** The only app module that owns Pi engine/session lifecycle. */
 export class DeskEngine {
@@ -52,12 +57,14 @@ export class DeskEngine {
 	private sources = new Map<string, TranscriptFeed>();
 	private managers = new Set<SessionManager>();
 	private reserved?: SessionLease;
+	private starting = new AbortController();
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
 	private authentication?: AbortController;
 	private providerFilter = "";
 	private attachmentScope?: string;
 	private usageRevision = 0;
+	private opening?: { manager: SessionManager; text?: string };
 	private usageCache?: { manager: SessionManager; leaf: string | null; revision: number; value: SessionSnapshot["usage"] };
 
 	constructor(send: (message: WorkerMessage) => void) {
@@ -106,19 +113,29 @@ export class DeskEngine {
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
 		const cwd = realpathSync(options.cwd);
 		const settings = SettingsManager.create(cwd, agentDir);
-		if (options.sessionFile) this.reserved = new SessionLease(options.sessionFile);
+		let desktop = false;
+		if (options.sessionFile) {
+			const acquired = await resumeLease(options.sessionFile, { takeover: options.takeover, signal: this.starting.signal });
+			this.reserved = acquired.lease; desktop = acquired.desktop;
+		}
 		let manager: SessionManager;
 		try {
+			this.starting.signal.throwIfAborted();
 			manager = options.sessionFile ? SessionManager.open(realpathSync(options.sessionFile))
 				: options.ephemeral ? SessionManager.inMemory(cwd)
 				: SessionManager.create(cwd, options.sessionDir ?? process.env.PI_CODING_AGENT_SESSION_DIR ?? settings.getSessionDir());
 			this.claim(manager);
-			if (options.leaf === null) manager.resetLeaf();
-			else if (options.leaf) {
+			// Desktop may have advanced or changed branches since Desk last saw
+			// this file. Its newly flushed native head wins after a handoff.
+			if (!desktop && options.leaf === null) manager.resetLeaf();
+			else if (!desktop && options.leaf) {
 				if (!manager.getEntry(options.leaf)) throw new Error("Saved branch position no longer exists.");
 				manager.branch(options.leaf);
 			}
 		} catch (error) { this.reserved?.close(); this.reserved = undefined; this.releaseManagers(); throw error; }
+		// Native Pi has loaded and selected the branch. Browsing it need not wait
+		// for resource discovery, project trust or extension startup.
+		this.openTranscript(manager);
 		const create: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -246,15 +263,27 @@ export class DeskEngine {
 		return choice === "Trust and remember" || choice === "Trust once";
 	}
 
+	private openTranscript(manager: SessionManager): TranscriptFeed {
+		this.feed?.close();
+		let leaf: string | null | undefined;
+		let branch: ReturnType<SessionManager["getBranch"]> = [];
+		const feed = this.feed = new TranscriptFeed(this.transcript, () => {
+			const current = manager.getLeafId();
+			if (current !== leaf) { branch = manager.getBranch(); leaf = current; }
+			return branch;
+		}, () => this.presentation.generation, this.send, () => manager.getCwd());
+		this.send({ type: "ui", snapshot: this.presentation.snapshot() });
+		this.send({ type: "history_ready", generation: this.presentation.generation });
+		return feed;
+	}
+
 	private async bind(session: AgentSession): Promise<void> {
 		this.releaseManagers(session.sessionManager);
 		this.replacing = false;
 		this.unsubscribe?.();
 		this.running = false;
 		this.failed = false;
-		this.feed?.close();
-		const feed = this.feed = new TranscriptFeed(this.transcript, () => session.sessionManager.getBranch(),
-			() => this.presentation.generation, this.send, () => session.sessionManager.getCwd());
+		const feed = this.openTranscript(session.sessionManager);
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
 			if (event.type === "message_end" || event.type === "agent_settled") this.usageRevision++;
@@ -301,15 +330,21 @@ export class DeskEngine {
 		if (!current()) return;
 		const actions: Record<string, () => unknown | Promise<unknown>> = {};
 		const data: UiDetails = {
-			summary: "Configured credentials are not a live sign-in check. OAuth opens a provider page; tokens stay on this computer. Set API keys or cloud credentials through Pi on the host. Other running sessions may need Reload resources after an account change.",
+			summary: "Accounts are saved on this computer, independently of your Desk login. Pi stores one account per provider; signing in again replaces it. For sign-in from another computer or phone, choose device code when offered. Other running sessions keep their current credentials until refreshed.",
+			controls: [{ kind: "text", label: "Find provider", value: this.providerFilter, placeholder: "Provider name",
+				help: "Press Enter to filter. Leave blank to show configured accounts and subscription sign-ins.",
+				action: { id: "search", label: "Filter providers" } }],
 			items: models.getProviders().filter(provider => `${provider.id} ${provider.name}`.toLowerCase().includes(this.providerFilter.toLowerCase()))
+				.filter(provider => this.providerFilter.trim() || provider.auth.oauth || models.getProviderAuthStatus(provider.id).configured)
+				.sort((a, b) => Number(models.getProviderAuthStatus(b.id).configured) - Number(models.getProviderAuthStatus(a.id).configured) || a.name.localeCompare(b.name))
 				.map(provider => {
 					const status = models.getProviderAuthStatus(provider.id);
 					const credential = credentials.find(item => item.providerId === provider.id);
+					const identity = credential?.type === "oauth" ? providerIdentity(readStoredCredential(provider.id)) : undefined;
 					const itemActions = [];
 					if (provider.auth.oauth) {
 						const id = `login:${provider.id}`;
-						itemActions.push({ id, label: provider.auth.oauth.loginLabel ?? "Sign in" });
+						itemActions.push({ id, label: credential ? "Change account" : provider.auth.oauth.loginLabel ?? "Sign in" });
 						actions[id] = () => { if (current()) this.login(provider.id); };
 					}
 					if (credential) {
@@ -328,14 +363,14 @@ export class DeskEngine {
 					}
 					return { id: provider.id, title: provider.name, subtitle: provider.id,
 						status: status.configured ? `Configured · ${status.source ?? "host"}` : "Not configured",
-						body: credential ? `Saved ${credential.type === "oauth" ? "OAuth" : "API key"} credential` : undefined, actions: itemActions };
+						body: identity ?? (credential ? credential.type === "oauth" ? "Account identity was not provided by this provider." : "Saved API key" : undefined),
+						actions: itemActions };
 				}),
 		};
 		this.presentation.publish("desk-providers", { kind: "details", surface: "settings", title: "Model accounts", data,
-			actions: [{ id: "search", label: this.providerFilter ? `Filter: ${this.providerFilter}` : "Find provider" }, { id: "refresh", label: "Refresh configuration" }],
-		}, { ...actions, search: async () => {
-			const answer = await this.presentation.request({ kind: "input", title: "Find provider", value: this.providerFilter });
-			if (current() && answer?.kind === "freeform") { this.providerFilter = answer.text; await this.publishProviders(); }
+			actions: [{ id: "refresh", label: "Refresh accounts" }],
+		}, { ...actions, search: async value => {
+			if (current() && typeof value === "string") { this.providerFilter = value.slice(0, 200); await this.publishProviders(); }
 		}, refresh: async () => {
 			await models.refresh({ allowNetwork: false });
 			if (current()) { await this.publishProviders(); this.scheduleSnapshot(); }
@@ -359,7 +394,7 @@ export class DeskEngine {
 			signal: controller.signal,
 			notify: event => {
 				if (!current()) return;
-				if (event.type === "auth_url") data = { summary: event.instructions ?? "Open the provider page to continue.",
+				if (event.type === "auth_url") data = { summary: `${event.instructions ?? "Open the provider page to continue."}\nThe callback goes to the computer running Pi. If you are using another device and the final page cannot connect, copy its full address into the completion field here.`,
 					links: [{ label: "Open sign-in page", url: event.url }] };
 				else if (event.type === "device_code") data = {
 					summary: "Open the provider page and enter this code.", fields: [{ label: "Code", value: event.userCode }],
@@ -373,13 +408,14 @@ export class DeskEngine {
 			prompt: async prompt => {
 				if (prompt.type === "secret") throw new Error("This provider needs secret input. Complete its setup with /login in Pi on the host.");
 				const signal = prompt.signal ? AbortSignal.any([controller.signal, prompt.signal]) : controller.signal;
-				const answer = await this.presentation.request(prompt.type === "select"
-					? { kind: "question", title: prompt.message, options: prompt.options.map(option => ({ title: option.id, description: option.label })),
-						allowMultiple: false, allowFreeform: false, allowComment: false }
-					: { kind: "input", title: "Complete provider sign-in", context: prompt.message, links: data.links, placeholder: prompt.placeholder }, { signal });
+				const choices = prompt.type === "select" ? providerChoices(prompt) : undefined;
+				const answer = await this.presentation.request(choices
+					? choices.form
+					: { kind: "input", title: "Complete provider sign-in", context: prompt.message, links: data.links,
+						placeholder: "placeholder" in prompt ? prompt.placeholder : undefined }, { signal });
 				signal.throwIfAborted();
 				if (!current() || !answer) { controller.abort(); throw new Error("Sign-in cancelled."); }
-				return answer.kind === "selection" ? answer.selections[0] : answer.kind === "freeform" ? answer.text : "";
+				return answer.kind === "selection" ? choices?.resolve(answer.selections[0]!) ?? "" : answer.kind === "freeform" ? answer.text : "";
 			},
 		}).then(() => { if (current()) this.presentation.notify("Provider sign-in saved on this computer."); })
 			.catch(error => {
@@ -413,6 +449,8 @@ export class DeskEngine {
 		const context = session.getContextUsage();
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(text => text.length > 300 ? `${text.slice(0, 300)}…` : text) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
+		if (this.opening?.manager !== manager || !this.opening.text)
+			this.opening = { manager, text: openingMessage(manager.getEntries()) };
 		if (!this.usageCache || this.usageCache.manager !== manager || this.usageCache.leaf !== leaf || this.usageCache.revision !== this.usageRevision) {
 			const { usage } = reduceSessionUsage(manager.getEntries());
 			this.usageCache = { manager, leaf, revision: this.usageRevision, value: usage ? {
@@ -421,6 +459,7 @@ export class DeskEngine {
 		}
 		return {
 			id: session.sessionId, file: session.sessionFile, cwd: this.runtime.cwd, name: session.sessionName,
+			title: sessionTitle(session.sessionName, this.opening.text),
 			leaf: session.sessionManager.getLeafId(),
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
@@ -446,7 +485,20 @@ export class DeskEngine {
 	async command(generation: string, command: WorkerCommand): Promise<unknown> {
 		if (generation !== this.presentation.generation) throw new StaleGeneration();
 		if (command.kind === "answer") { this.presentation.answer(command.id, command.answer); return; }
-		if (!this.runtime || this.closed || this.replacing) throw new Error("Session is unavailable.");
+		if (this.closed || this.replacing) throw new Error("Session is unavailable.");
+		// These reads depend on the owned native branch, not a running agent.
+		switch (command.kind) {
+			case "history": {
+				const feed = command.source === undefined ? this.feed : this.sources.get(command.source);
+				if (!feed) throw new Error("This transcript is no longer available.");
+				return feed.history(command);
+			}
+			case "asset": return this.reference(command.id, command.origin, () => this.transcript.getAsset(command.id));
+			case "artifact": return { ...await this.reference(command.id, command.origin,
+				() => this.transcript.artifactPage(command.id, command.offset, command.query)), generation };
+			case "file": return this.reference(command.id, command.origin, () => this.transcript.files.command(command));
+		}
+		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
 		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
@@ -455,11 +507,6 @@ export class DeskEngine {
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
-			case "history": {
-				const feed = command.source === undefined ? this.feed : this.sources.get(command.source);
-				if (!feed) throw new Error("This transcript is no longer available.");
-				return feed.history(command);
-			}
 			case "tree": return this.tree(command.after);
 			case "navigate": return this.change(async () => {
 				const result = await session.navigateTree(command.entry, { summarize: command.summarize });
@@ -480,10 +527,6 @@ export class DeskEngine {
 				this.scheduleSnapshot();
 				return { tokensBefore: result.tokensBefore };
 			});
-			case "asset": return this.reference(command.id, command.origin, () => this.transcript.getAsset(command.id));
-			case "artifact": return { ...await this.reference(command.id, command.origin,
-				() => this.transcript.artifactPage(command.id, command.offset, command.query)), generation };
-			case "file": return this.reference(command.id, command.origin, () => this.transcript.files.command(command));
 			case "model": {
 				const model = this.runtime.services.modelRuntime.getModel(command.provider, command.id);
 				if (!model) throw new Error("Model is unavailable.");
@@ -586,6 +629,7 @@ export class DeskEngine {
 	close(): Promise<void> {
 		if (this.closeJob) return this.closeJob;
 		this.closed = true;
+		this.starting.abort();
 		this.closeJob = Promise.resolve().then(async () => {
 			this.authentication?.abort();
 			clearTimeout(this.snapshotTimer);

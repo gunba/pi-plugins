@@ -1,10 +1,12 @@
-import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
+import type { UiAction, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import { ExternalLinks } from "./external-links.tsx";
+import { SettingControl } from "./settings-controls.tsx";
 
-export function DetailsView({ data, invoke, disabled }: { data: UiDetails; invoke: (action: UiAction) => void; disabled?: boolean }) {
+export function DetailsView({ data, invoke, disabled }: { data: UiDetails; invoke: (action: UiAction, value?: UiValue) => void; disabled?: boolean }) {
 	return <>
 		{data.summary && <p className="detail-copy">{data.summary}</p>}
 		<ExternalLinks links={data.links} />
+		{data.controls?.map(control => <SettingControl key={control.action.id} control={control} invoke={invoke} disabled={disabled} />)}
 		{data.fields && <dl className="detail-fields">{data.fields.map(field => <div key={field.label}>
 			<dt>{field.label}</dt><dd>{field.value}</dd>
 		</div>)}</dl>}

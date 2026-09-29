@@ -11,15 +11,13 @@ import { FileLink } from "./file-view.tsx";
 import { ReferenceContext } from "./reference-origin.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
-import { RELEASE } from "../shared/release.ts";
 import { ResumeConversation } from "./resume.tsx";
-import { Computers, SoftwareUpdate } from "./computers.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
 import { Inspector, Modal, Navigation } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
-import { ControlActivity, ControlHistory, EditorSuggestion } from "./control-status.tsx";
+import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
@@ -27,14 +25,14 @@ import { AssetImage, AssetLink } from "./assets.tsx";
 import { AttachmentList, useAttachments } from "./attachments.tsx";
 import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
-import { Devices } from "./devices.tsx";
-import { DraftRecovery } from "./draft-recovery.tsx";
-import { SessionControls } from "./session-controls.tsx";
+import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
+import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
+import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
-import { CloseSummary } from "./close-summary.tsx";
+import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
@@ -57,7 +55,7 @@ import type { UiAnswer } from "../../../pi-ui/index.ts";
 const basename = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const title = (session: SessionView) =>
-  session.snapshot?.name ?? session.name ?? "New conversation";
+  sessionTitle(session.snapshot?.name ?? session.name, session.snapshot?.title ?? session.title);
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const draftKey = (key: string) => `pi-desk:draft:${key}`;
@@ -82,6 +80,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [createError, setCreateError] = useState("");
   const createRequest = useRef(0);
   const [focusedView, setFocusedView] = useState("");
+  const [settingsSection, setSettingsSection] = useState("general");
   const [focusedAgent, setFocusedAgent] = useState("");
   const autoAgents = useRef("");
   const [cwd, setCwd] = useState("");
@@ -97,7 +96,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
-  const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
+  const [dismissedNotices, setDismissedNotices] = useState(() => readDismissals(localStorage));
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const session = state.host?.sessions.find(
@@ -123,6 +122,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
+  const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
+  const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
   const chooseAgent = (id: string) => { setFocusedAgent(id); localStorage.setItem(`pi-desk:agent-selection:${selected}`, id); };
@@ -170,7 +171,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     !!question;
   const notice = ui?.notifications
     .filter(
-      (item) => !dismissedNotices.includes(item.id) && item.level !== "info",
+      (item) => !dismissedNotices.includes(noticeIdentity(selected, ui!.generation, item.id)) && item.level !== "info",
     )
     .at(-1);
 
@@ -254,7 +255,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   async function restartSession() {
     if (!session || !connected) return;
     try {
-      await api(`/sessions/${session.key}/restart`, {});
+      await api(`/sessions/${session.key}/restart`, { takeover: true });
     } catch (error) { setError(errorText(error)); }
   }
   function openNewConversation() {
@@ -265,15 +266,6 @@ export function App({ account }: { account?: BrowserAccount }) {
     setCreate(true);
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
-  async function closeSession() {
-    if (!session?.activation || !await confirmation.request({
-      title: "Close conversation?", context: confirmationContext, accept: "Close conversation",
-      body: <CloseSummary session={session} />,
-    })) return;
-    setPanel(undefined);
-    try { await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation }); }
-    catch (error) { setError(errorText(error)); }
-  }
   async function send(delivery: Delivery = "steer") {
     if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
       || !session?.activation || !["starting", "ready"].includes(session.state)) return;
@@ -396,8 +388,8 @@ export function App({ account }: { account?: BrowserAccount }) {
           {host.sessions.filter(item => item.computer === computer.id)
             .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)
             .map((item) => (
+              <div className="session-row" key={item.key}>
               <button
-                key={item.key}
                 className={`session-item ${selected === item.key ? "selected" : ""}`}
                 onClick={() => {
                   setSelected(item.key);
@@ -413,6 +405,10 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small>
                 </span>
               </button>
+              <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
+                disabled={selected === item.key && sending} report={setError}
+                confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
+              </div>
             ))}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
             <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
@@ -450,9 +446,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             <strong>{session ? title(session) : "Welcome"}</strong>
           </div>
           <div className="top-actions">
-            {session?.activation && <button
-              className="close-conversation" title="Close this session and remove it from the workspace" aria-label="Close conversation"
-              disabled={!connected || closing || sending} onClick={() => void closeSession()}>{closing ? "Closing…" : "Close"}</button>}
+            {session?.activation && <CloseConversationButton session={session} name={title(session)}
+              computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
+              confirmed={() => setPanel(undefined)} />}
             {session?.snapshot && (
               <button
                 className={`work-button ${question ? "attention" : ""}`}
@@ -515,7 +511,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             <button
               aria-label="Dismiss notification"
               onClick={() =>
-                setDismissedNotices((previous) => [...previous, notice.id])
+                setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, ui!.generation, notice.id)))
               }
             >
               ×
@@ -524,7 +520,8 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
         <TranscriptView key={`${selected}/${session?.ui?.generation ?? ""}`}
           session={selected} generation={session?.ui?.generation ?? ""}
-          connected={connected && session?.state === "ready"} epoch={epoch}
+          connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
+          starting={session?.state === "starting"}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           renderMessage={message => <Message message={message} sessionKey={selected} />}
           empty={
@@ -537,7 +534,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </div>
                 <h1>
                   {session && !canCompose ? "Pi is not running"
-                    : session?.state === "starting" ? controlBusy ? "Updating this conversation…" : "Opening this conversation…"
+                    : session?.state === "starting" ? closing ? "Closing this conversation…" : controlBusy ? "Updating this conversation…" : "Opening this conversation…"
                     : session ? "What shall we work on?" : "Make something good."}
                 </h1>
                 <p>
@@ -564,7 +561,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           footer={busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
-                {question ? "Waiting for your answer" : "Pi is working…"}
+                {question ? "Waiting for your answer" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
               </div>
           )}
         />
@@ -730,15 +727,14 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
       </main>
       {panel && (
-        <Inspector className={panel === "agents" ? "agents-panel" : ""} title={panel === "agents" ? "Agents" : panel === "work" ? "Work" : panel === "view" ? visibleViews[0]?.title ?? "Details"
-          : "Settings & tools"} close={() => setPanel(undefined)}
-          back={panel === "view" ? () => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work") : undefined}>
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
+          close={() => setPanel(undefined)} back={panel === "view" && !settings ? () => setPanel("work") : undefined}>
           <div className="panel-title">
-            {panel === "view" && <button className="icon-button"
+            {panel === "view" && !settings && <button className="icon-button"
               aria-label={visibleViews[0]?.surface === "settings" ? "Back to settings" : "Back to Work"}
               onClick={() => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {panel === "agents" ? "Agents" : panel === "work"
+              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work"
                 ? "Work"
                 : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
@@ -752,6 +748,12 @@ export function App({ account }: { account?: BrowserAccount }) {
               ×
             </button>
           </div>
+          <SettingsLayout enabled={settings} active={panel === "view" ? focusedView : settingsSection}
+            sections={[...settingsSections.slice(0, 2), ...settingsViews.map(view => ({ id: view.id, title: view.title })), ...settingsSections.slice(2)]}
+            choose={id => {
+              if (settingsViews.some(view => view.id === id)) { setFocusedView(id); setPanel("view"); }
+              else { setSettingsSection(id); setPanel("settings"); }
+            }}>
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
@@ -762,7 +764,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             (visibleViews.length ? (
               visibleViews.map((view) => (
                 <section className="panel-card" key={view.id} data-view={view.id}>
-                  {panel !== "view" && <h3>{view.title}</h3>}
+                  {(panel !== "view" || settings) && <h3>{view.title}</h3>}
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
                   {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
                   <div className="panel-actions">
@@ -772,8 +774,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                     </button>)}
                   </div>
                   {view.kind === "details" ? <>
-                    <DetailsView data={view.data as UiDetails} disabled={!!view.working} invoke={action => run({
-                      kind: "action", view: view.id, revision: view.revision, action: action.id,
+                    <DetailsView data={view.data as UiDetails} disabled={!!view.working} invoke={(action, value) => run({
+                      kind: "action", view: view.id, revision: view.revision, action: action.id, value,
                     })} />
                     {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
                       source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
@@ -800,152 +802,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                   : "Goals, tasks, agents and scheduled work will appear here."}
               </p>
             ))}
-          {panel === "settings" && (
-            <>
-              {account ? <Computers computers={state.host.computers ?? []} account={account} /> : <>
-                {host.updates && <section className="panel-card"><h3>Software updates</h3>
-                  <SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></section>}
-                <Devices />
-              </>}
-              <DraftRecovery available={host.sessions.map(item => item.key)} target={session?.key}
-                busy={sending || controlBusy} restored={(target, text) => {
-                  if (selectedRef.current === target) setDraft(text);
-                }} />
-              {!!ui?.views.some(view => view.surface === "settings") && <section className="panel-card"><h3>Pi settings</h3><div className="panel-actions">
-              {ui.views.filter(view => view.surface === "settings").map(view => <button key={view.id} onClick={() => {
-                setPanel("view"); setFocusedView(view.id);
-              }}>{view.title}</button>)}
-              </div></section>}
-              {session && <section className="panel-card">
-                <button onClick={() => { void api(`/sessions/${session.key}/metadata`, { generation: session.ui?.generation, pinned: !session.pinned }).catch(error => setError(errorText(error))); }}>
-                  {session.pinned ? "Unpin conversation" : "Pin conversation"}
-                </button>
-              </section>}
-              {session?.state === "ready" && session.ui && <SessionControls key={selected} generation={session.ui.generation}
-                busy={busy || !connected} invoke={command} />}
-              <ControlHistory controls={controls} />
-              <section className="panel-card">
-                <h3>Pi Desk</h3><p>App {RELEASE.version} · API {RELEASE.api}</p>
-                {(currentComputer?.release ?? (!host.computers ? host.release : undefined)) && <p className="muted">
-                  Host {(currentComputer?.release ?? host.release).version} · Pi {(currentComputer?.release ?? host.release).engine}
-                </p>}
-                <button onClick={() => location.reload()}>Reload app</button>
-              </section>
-              <section className="panel-card">
-                <h3>Appearance</h3>
-                <button
-                  onClick={() => {
-                    const dark =
-                      document.documentElement.dataset.theme !== "dark";
-                    document.documentElement.dataset.theme = dark
-                      ? "dark"
-                      : "light";
-                    localStorage.setItem(
-                      "pi-desk:theme",
-                      dark ? "dark" : "light",
-                    );
-                  }}
-                >
-                  Switch light / dark
-                </button>
-              </section>
-              {session?.snapshot && (
-                <>
-                  <section className="panel-card">
-                    <h3>Conversation</h3>
-                    <form
-                      key={`${selected}:${session.snapshot.id}`}
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        run({
-                          kind: "name",
-                          name: String(
-                            new FormData(event.currentTarget).get("name"),
-                          ),
-                        });
-                      }}
-                    >
-                      <input
-                        name="name"
-                        aria-label="Conversation name"
-                        defaultValue={session.snapshot.name ?? ""}
-                        placeholder="Give this conversation a name"
-                      />
-                      <button>Save name</button>
-                    </form>
-                    <button disabled={busy || !connected} onClick={() => run({ kind: "reload" })}>
-                      Reload Pi resources
-                    </button>
-                  </section>
-                  <section className="panel-card">
-                    <h3>Commands</h3>
-                    <div className="command-list">
-                      {session.snapshot.commands.map((command) => (
-                        <button
-                          key={command.name}
-                          title={command.description}
-                          onClick={() => {
-                            setDraft(`/${command.name} `);
-                            setPanel(undefined);
-                          }}
-                        >
-                          /{command.name}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                  <section className="panel-card">
-                    <h3>
-                      {session.snapshot.tools.length} tools ·{" "}
-                      {session.snapshot.extensions.length} extensions
-                    </h3>
-                    <details>
-                      <summary>Extension inventory</summary>
-                      {session.snapshot.extensions.map((extension) => (
-                        <p
-                          className={
-                            extension.error ? "error-text" : "inventory-item"
-                          }
-                          key={extension.path}
-                        >
-                          {basename(extension.path)}
-                          {extension.error ? `: ${extension.error}` : ""}
-                        </p>
-                      ))}
-                    </details>
-                    <details>
-                      <summary>Available tools</summary>
-                      {session.snapshot.tools.map((tool) => (
-                        <p className="inventory-item" key={tool.name}>
-                          {tool.name}
-                          {tool.active ? "" : " · inactive"}
-                        </p>
-                      ))}
-                    </details>
-                  </section>
-                  <section className="panel-card">
-                    <h3>Status</h3>
-                    {Object.entries(ui?.statuses ?? {}).map(([key, text]) => (
-                      <p className="status-item" key={key}>
-                        {text}
-                      </p>
-                    ))}
-                  </section>
-                  <section className="panel-card">
-                    <h3>Activity</h3>
-                    {ui?.notifications.map((item) => (
-                      <details key={item.id}>
-                        <summary>
-                          {item.level === "info" ? "Update" : item.level}
-                        </summary>
-                        <div className="detail-copy">{item.text}</div>
-                      </details>
-                    ))}
-                  </section>
-                </>
-              )}
-            </>
-          )}
+          {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
+            session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy}
+            invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
+            restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}
+          </SettingsLayout>
         </Inspector>
       )}
       {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}

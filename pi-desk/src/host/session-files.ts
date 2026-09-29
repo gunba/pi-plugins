@@ -40,6 +40,7 @@ export class SessionCatalog {
 		const records = sessions.map(view => ({
 			key: view.key, cwd: view.snapshot?.cwd ?? view.cwd, created: view.created, state: view.state,
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
+			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
 			pinned: view.pinned, interrupted: view.interrupted, error: view.error,
 			controls: view.controls,

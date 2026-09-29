@@ -213,22 +213,21 @@ export class Transcript {
 	}
 
 	history(branch: readonly SessionEntry[], position: HistoryPosition = {}, live?: unknown, liveId?: string, cwd?: string): Omit<HistoryPage, "generation"> {
-		const visible: { entry: SessionEntry; order: number }[] = [];
-		for (let order = 0; order < branch.length; order++) {
-			const entry = branch[order]!;
-			if (entry.type === "message" && entry.message.role !== "system" || entry.type === "custom_message" && entry.display
-				|| entry.type === "custom" && entry.customType === LEDGER_ENTRY) visible.push({ entry, order });
-		}
+		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
+			&& !(entry.message.role === "custom" && entry.message.display === false)
+			|| entry.type === "custom_message" && entry.display
+			|| entry.type === "custom" && entry.customType === LEDGER_ENTRY;
 		const anchor = position.before ?? position.after ?? position.from;
-		const index = anchor ? visible.findIndex(item => item.entry.id === anchor) : visible.length;
-		if (index < 0) throw new Error("History position no longer exists on this branch.");
+		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;
+		if (index < 0 || anchor && !visible(branch[index]!)) throw new Error("History position no longer exists on this branch.");
 		const forward = position.after !== undefined || position.from !== undefined;
 		const messages: ChatMessage[] = [];
 		let cursor = forward ? index + (position.after ? 1 : 0) : index - 1, used = 0;
-		let first = visible.length, last = -1;
-		while (cursor >= 0 && cursor < visible.length && messages.length < HISTORY_COUNT) {
-			const { entry, order } = visible[cursor]!;
-			const message = this.entry(entry, order, cwd);
+		let first = branch.length, last = -1;
+		// Walk only the requested window, rather than filtering every old entry.
+		while (cursor >= 0 && cursor < branch.length && messages.length < HISTORY_COUNT) {
+			const entry = branch[cursor]!;
+			const message = visible(entry) ? this.entry(entry, cursor, cwd) : undefined;
 			if (message) {
 				const size = JSON.stringify(message).length;
 				if (messages.length && used + size > HISTORY_CHARACTERS) break;
@@ -237,11 +236,16 @@ export class Transcript {
 			cursor += forward ? 1 : -1;
 		}
 		if (!forward) messages.reverse();
-		if ((last === visible.length - 1 || forward && cursor >= visible.length) && live) {
+		const hasVisible = (start: number, step: number) => {
+			for (let i = start; i >= 0 && i < branch.length; i += step) if (visible(branch[i]!)) return true;
+			return false;
+		};
+		const before = first < branch.length && hasVisible(first - 1, -1) ? branch[first]!.id : undefined;
+		const after = last >= 0 && hasVisible(last + 1, 1) ? branch[last]!.id : undefined;
+		if (!position.before && !after && (!anchor || last >= 0 || forward && cursor >= branch.length) && live) {
 			const current = this.message(live, undefined, liveId, branch.length, cwd);
 			if (current && !messages.some(message => message.id === current.id)) messages.push({ ...current, complete: false });
 		}
-		return { messages, before: first > 0 && first < visible.length ? visible[first]?.entry.id : undefined,
-			after: last >= 0 && last < visible.length - 1 ? visible[last]?.entry.id : undefined, revision: 0 };
+		return { messages, before, after, revision: 0 };
 	}
 }

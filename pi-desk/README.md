@@ -563,9 +563,15 @@ need Chrome remote debugging or access to the host's loopback port.
 ### Session ownership
 
 Desk acquires a writer lease before opening a session. Install the repository's
-`pi-session-ownership` integration and restart existing terminals before moving
-sessions between the app and CLI. Close the terminal session before resuming it
-in Desk. The CLI opens files before the extension runs, so its guard cannot
+`pi-session-ownership` integration before moving sessions between the app and CLI.
+An explicit **Resume** stops active work in the participating desktop Pi session,
+requests its normal shutdown, and waits for its writer lease to release. Desk then
+opens the newly saved history, including desktop branch changes. Unrelated
+sessions are not stopped, and automatic recovery does not request takeovers.
+Existing terminals must reload the updated extension or be closed manually once.
+Desk never force-kills a PID or removes a live lock.
+
+The CLI opens files before the extension runs, so its guard cannot
 prevent earlier legacy-file migration or metadata repair. Unmodified writers
 do not participate in the lease. Desk does not patch Pi to hide this boundary.
 Use `--session-dir` to select a session store; otherwise the normal environment

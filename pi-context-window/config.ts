@@ -1,10 +1,12 @@
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getBuiltinModels, type BuiltinProvider } from "@earendil-works/pi-ai/providers/all";
 import { readOptional, replaceFile, withFileLocks } from "../pi-config/files.ts";
 
 export const EXTENDED_WINDOW = 1_000_000;
 export const EXTENDED_CHECKPOINT = 900_000;
 export const EXTENDED_RESERVE = EXTENDED_WINDOW - EXTENDED_CHECKPOINT;
+export const EXTENDED_CAPACITY = 1_050_000;
 
 const LONG_CONTEXT_MODELS = new Set([
 	"gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
@@ -36,6 +38,10 @@ function cleanEmpty(parent: JsonObject, key: string): void {
 
 export function allowsExtendedWindow(provider: string, modelId: string): boolean {
 	return (provider === "openai-codex" || provider === "openai") && LONG_CONTEXT_MODELS.has(modelId);
+}
+export function modelCapacity(model: { provider: string; id: string; contextWindow: number }): number {
+	const catalog = getBuiltinModels(model.provider as BuiltinProvider).find(item => item.id === model.id)?.contextWindow ?? 0;
+	return Math.max(catalog, model.contextWindow, allowsExtendedWindow(model.provider, model.id) ? EXTENDED_CAPACITY : 0);
 }
 
 export function configuredWindow(text: string | undefined, provider: string, modelId: string): number | undefined {

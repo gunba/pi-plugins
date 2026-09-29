@@ -233,7 +233,8 @@ export class DeskPresentation implements Presentation {
 		if (this.actions.has(id)) throw new Error("This action is already in progress.");
 		const handler = view.actions[action];
 		const itemActions = view.snapshot.kind === "details" ? (view.snapshot.data as UiDetails).items?.flatMap(item => item.actions ?? []) ?? [] : [];
-		const descriptor = [...view.snapshot.actions ?? [], ...itemActions].find(item => item.id === action);
+		const controls = view.snapshot.kind === "details" ? (view.snapshot.data as UiDetails).controls ?? [] : [];
+		const descriptor = [...view.snapshot.actions ?? [], ...itemActions, ...controls.map(control => control.action)].find(item => item.id === action);
 		if (!handler || !descriptor) throw new Error("Unknown action.");
 		if (descriptor.input === "message" && (typeof value !== "string" || !value.trim() || value.length > 1_000_000))
 			throw new Error("Enter a message of at most 1,000,000 characters.");

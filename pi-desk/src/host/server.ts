@@ -286,7 +286,7 @@ export class DeskHost {
 			if (message.control.kind === "close" && message.control.state === "completed") {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
-				managed.view = { ...managed.view, state: "closed", interrupted: false, snapshot: undefined, ui: undefined, error: undefined,
+				managed.view = { ...managed.view, state: "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
 					inputs: this.inputs?.pending(key) };
 			}
 			this.emit({ type: "session", session: managed.view });
@@ -299,13 +299,16 @@ export class DeskHost {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
-				name: message.snapshot.name, leaf: message.snapshot.leaf, state: "ready", snapshot: message.snapshot, ui: message.snapshot.ui };
+				name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", snapshot: message.snapshot, ui: message.snapshot.ui };
+		} else if (message.type === "history_ready") {
+			if (managed.view.ui?.generation !== message.generation) return;
+			managed.view = { ...managed.view, historyReady: true };
 		} else if (message.type === "ui") managed.view = { ...managed.view, ui: message.snapshot,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
-				? { state: "starting" as const, snapshot: undefined } : {}) };
+				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
 		else if (message.type === "fatal") {
 			this.inputs?.interrupt(key, "The session worker stopped");
-			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined,
+			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined, historyReady: false,
 				inputs: this.inputs?.pending(key) };
 			const worker = managed.worker;
 			void worker?.close().catch(() => {}).finally(() => {
@@ -374,7 +377,7 @@ export class DeskHost {
 		} else if (!this.catalogTimer) this.catalogTimer = setTimeout(() => this.persist(true), 500);
 	}
 
-	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession): string {
+	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false): string {
 		if (this.closing) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
@@ -384,14 +387,14 @@ export class DeskHost {
 			cwd = readSessionHeader(sessionFile).cwd;
 		}
 		const key = existing?.view.key ?? randomUUID();
-		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key,
+		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
 		const worker = new SessionWorker(options, message => {
 			if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
 		});
 		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
-			snapshot: undefined, ui: undefined, activation: randomUUID(), inputs: this.inputs!.pending(key) }, worker };
+			snapshot: undefined, ui: undefined, historyReady: false, activation: randomUUID(), inputs: this.inputs!.pending(key) }, worker };
 		this.sessions.set(key, managed);
 		this.emit({ type: "session", session: managed.view });
 		this.persist(true);
@@ -400,7 +403,7 @@ export class DeskHost {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			managed.view = { ...managed.view, snapshot, ui: snapshot.ui, state: "ready",
-				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, leaf: snapshot.leaf };
+				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf };
 			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
@@ -410,7 +413,7 @@ export class DeskHost {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			this.inputs!.interrupt(key, "Session startup failed");
-			managed.view = { ...managed.view, state: "failed", error: error instanceof Error ? error.message : String(error),
+			managed.view = { ...managed.view, state: "failed", historyReady: false, error: error instanceof Error ? error.message : String(error),
 				inputs: this.inputs!.pending(key) };
 			this.emit({ type: "session", session: managed.view });
 			this.persist(true);
@@ -591,7 +594,7 @@ export class DeskHost {
 			if (url.pathname === "/api/resume" && request.method === "POST") {
 				const file = realpathSync(string(data.file, 4000));
 				const old = [...this.sessions.values()].find(item => (item.view.snapshot?.file ?? item.view.file) === file);
-				return reply({ key: this.createSession(this.options.cwd, file, old) }, 202);
+				return reply({ key: this.createSession(this.options.cwd, file, old, data.takeover === true) }, 202);
 			}
 			const inputRoute = /^\/api\/sessions\/([a-f0-9-]+)\/(inputs|uploads|restart)(?:\/([a-f0-9-]+)(?:\/(cancel|dismiss))?)?$/.exec(url.pathname);
 			if (inputRoute) {
@@ -609,7 +612,7 @@ export class DeskHost {
 					if (inputRoute[2] === "restart") {
 						if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
 						if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
-						return reply({ key: this.createSession(managed.view.cwd, managed.view.file, managed) }, 202);
+						return reply({ key: this.createSession(managed.view.cwd, managed.view.file, managed, data.takeover === true) }, 202);
 					}
 					const command = commandFrom(data.command);
 					const activation = string(data.activation, 100);

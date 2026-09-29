@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
+import { HISTORY_COUNT } from "../src/shared/history.ts";
 
 test("saved tool timing metadata survives projection without replacing the process duration", () => {
 	const transcript = new Transcript();
@@ -38,4 +39,36 @@ test("native branch order wins over message clocks", () => {
 		{ id: "a", type: "message", message: { role: "assistant", timestamp: 900, content: [{ type: "text", text: "answer" }] } },
 	];
 	assert.deepEqual(mergeMessages([], transcript.history(branch).messages).map(message => message.role), ["user", "assistant"]);
+});
+
+test("opening the tail does not inspect the entire conversation", () => {
+	const entries = Array.from({ length: 10_000 }, (_, order) => ({ id: String(order), type: "message",
+		message: { role: "user", content: `Message ${order}`, timestamp: 0 } }));
+	const branch = new Proxy(entries, { get(target, key, receiver) {
+		if (/^\d+$/.test(String(key)) && Number(key) < entries.length - HISTORY_COUNT - 1)
+			assert.fail("The latest page must not walk old entries.");
+		return Reflect.get(target, key, receiver);
+	} });
+	const page = new Transcript().history(branch);
+	assert.equal(page.messages.length, HISTORY_COUNT);
+	assert.equal(page.before, String(entries.length - HISTORY_COUNT));
+	assert.equal(page.after, undefined);
+});
+
+test("history pages cross hidden entries without gaps or false continuation links", () => {
+	const branch = [{ id: "root", type: "model_change" }];
+	for (let i = 0; i < 95; i++) branch.push(
+		{ id: `m${i}`, type: "message", message: { role: "user", content: String(i) } },
+		{ id: `hidden${i}`, type: "custom_message", display: false, content: "hidden" });
+	const transcript = new Transcript(), tail = transcript.history(branch);
+	const middle = transcript.history(branch, { before: tail.before });
+	const first = transcript.history(branch, { before: middle.before });
+	assert.deepEqual([...first.messages, ...middle.messages, ...tail.messages].map(m => m.entryId),
+		Array.from({ length: 95 }, (_, i) => `m${i}`));
+	assert.equal(first.before, undefined);
+	assert.equal(tail.after, undefined);
+	assert.deepEqual(transcript.history(branch, { after: first.after }).messages.map(m => m.entryId),
+		Array.from({ length: 40 }, (_, i) => `m${i + 15}`));
+	assert.equal(transcript.history(branch, { from: "m94" }).after, undefined);
+	assert.throws(() => transcript.history(branch, { from: "hidden94" }), /no longer exists/);
 });

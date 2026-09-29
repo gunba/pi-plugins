@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { SAVED_PAGE_SIZE, type CatalogProgress, type SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
 import type { RecentProject } from "../shared/folders.ts";
+import { catalogPath } from "./catalog-path.ts";
 
 export class CatalogChanged extends Error {}
 interface View {
@@ -41,6 +42,8 @@ export class SavedSessionIndex {
 					modified INTEGER NOT NULL, searchable TEXT NOT NULL, seen TEXT NOT NULL,
 					PRIMARY KEY(scope,file));
 				CREATE INDEX IF NOT EXISTS saved_order ON saved(scope,modified DESC,file);`);
+			this.db.function("project_path", { deterministic: true }, value =>
+				typeof value === "string" && value ? catalogPath(value) : null);
 		} catch (error) { this.db.close(); throw error; }
 	}
 	invalidate(): void { for (const view of this.views.values()) view.dirty = true; }
@@ -49,7 +52,7 @@ export class SavedSessionIndex {
 			FROM saved GROUP BY path ORDER BY modified DESC LIMIT 64`).all() as unknown as RecentProject[];
 	}
 	private view(cwd?: string): View {
-		const scope = cwd === undefined ? "*" : resolve(cwd);
+		const scope = cwd === undefined ? "*" : catalogPath(cwd);
 		let view = this.views.get(scope);
 		if (!view) {
 			if (this.views.size >= 16) {
@@ -58,11 +61,25 @@ export class SavedSessionIndex {
 				if (!oldest) throw new Error("Too many session catalogues are being read.");
 				this.views.delete(oldest.scope);
 			}
-			view = { scope, cwd: cwd === undefined ? undefined : scope, revision: randomUUID(), scanned: 0,
+			this.seed(scope);
+			view = { scope, cwd: cwd === undefined ? undefined : resolve(cwd), revision: randomUUID(), scanned: 0,
 				dirty: true, accessed: Date.now(), readers: new Map(), progress: { id: randomUUID(), state: "ready", loaded: 0, total: 0 } };
 			this.views.set(scope, view);
 		}
 		view.accessed = Date.now(); return view;
+	}
+	private seed(scope: string): void {
+		// Reuse only small previews while native Pi refreshes scope membership.
+		// Case variants and previously scanned wider scopes need not start empty.
+		this.db.exec("BEGIN");
+		try {
+			this.db.prepare(`INSERT OR IGNORE INTO saved
+				SELECT ?, project_path(file), data, modified, searchable, seen FROM saved
+				WHERE ?='*' OR project_path(json_extract(data,'$.cwd'))=?
+				ORDER BY modified DESC`).run(scope, scope, scope);
+			this.db.prepare("DELETE FROM saved WHERE scope=? AND file<>project_path(file)").run(scope);
+			this.db.exec("COMMIT");
+		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	private terminate(view: View): void {
 		const worker = view.worker; view.worker = undefined;
@@ -94,7 +111,7 @@ export class SavedSessionIndex {
 						const save = this.db.prepare("INSERT OR REPLACE INTO saved VALUES(?,?,?,?,?,?)");
 						this.db.exec("BEGIN");
 						try {
-							for (const item of update.items) save.run(view.scope, item.file, JSON.stringify(item),
+							for (const item of update.items) save.run(view.scope, catalogPath(item.file), JSON.stringify(item),
 								Date.parse(item.modified), `${item.name ?? ""}\n${item.firstMessage}\n${item.cwd}`.toLowerCase(), id);
 							this.db.exec("COMMIT");
 						} catch (error) { this.db.exec("ROLLBACK"); throw error; }

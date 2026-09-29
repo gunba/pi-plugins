@@ -4,7 +4,7 @@ import { api, ApiError } from "./connection.ts";
 import { Modal } from "./surfaces.tsx";
 import { connectionLabel } from "./connection-state.ts";
 import type { Computer } from "./workspace.ts";
-import type { SavedPage } from "../shared/catalog.ts";
+import { savedProgressLabel, type SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
 import { FolderField } from "./folder-picker.tsx";
 
@@ -132,19 +132,14 @@ function SessionList({ computer, cwd, online, query, named, selected }: {
 		if (!online || resuming) return;
 		setResuming(true); setError("");
 		try {
-			const result = await api<{ key: string }>("/resume", { file }, computer);
+			const result = await api<{ key: string }>("/resume", { file, takeover: true }, computer);
 			if (mounted.current) selected(result.key);
 		} catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); }
 		finally { if (mounted.current) setResuming(false); }
 	};
 	return <>
 		<div className="resume-progress">
-			<span role="status">{!online ? "Connecting to this computer…" : !page ? "Opening session catalogue…"
-				: scanning(page) ? `${page.progress.loaded} of ${page.progress.total || "…"} files read · ${page.matched} matches so far`
-					: `${page.matched} ${query || named ? page.matched === 1 ? "match" : "matches"
-						: page.matched === 1 ? "conversation" : "conversations"} · most recent first`}
-				{page?.progress.state === "cancelled" && " · scan stopped"}
-			</span>
+			<span role="status">{!online ? "Connecting to this computer…" : savedProgressLabel(page, !!query || named)}</span>
 			{scanning(page) ? <button onClick={() => {
 				paused.current = true; setBusy(false);
 				setPage(value => value && ({ ...value, progress: { ...value.progress, state: "cancelled" } }));
@@ -155,7 +150,7 @@ function SessionList({ computer, cwd, online, query, named, selected }: {
 		</div>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{page?.warning && <p className="error-text" role="alert">{page.warning}</p>}
-		<div className="resume-results" ref={scroll} role="listbox" aria-label="Saved conversations" tabIndex={0}
+		<div className="resume-results" ref={scroll} role="listbox" aria-label="Saved conversations" aria-busy={!!scanning(page)} tabIndex={0}
 			aria-activedescendant={active >= 0 && rows.some(row => row.index === active) ? `${prefix}-${active}` : undefined}
 			onKeyDown={event => {
 				if (event.key === "Enter" && active >= 0) { event.preventDefault(); void resume(choice); return; }
@@ -178,10 +173,14 @@ function SessionList({ computer, cwd, online, query, named, selected }: {
 					</div>;
 				})}
 			</div>
-			{!items.length && page && !scanning(page) && <p className="muted">No conversations found in this selection.</p>}
+			{!items.length && scanning(page) && <p className="muted">Reading this computer's saved history. Conversations will appear here as they are found.</p>}
+			{!items.length && page?.progress.state === "ready" && <p className="muted">{query || named
+				? "No conversations match these filters." : cwd ? "No conversations found for this project. Try All projects."
+					: "No saved conversations found on this computer."}</p>}
 		</div>
-		<details className="resume-notice"><summary>Before resuming</summary>
-			<p>Close the conversation in its terminal first. {RESUME_NOTICE}</p>
+		<p className="muted resume-notice">If this conversation is open in desktop Pi, Resume stops its active work and closes that Pi session first. Other conversations stay open.</p>
+		<details className="resume-notice"><summary>What resumes</summary>
+			<p>{RESUME_NOTICE}</p>
 		</details>
 		<div className="dialog-actions">
 			<span className="muted">{active >= 0 ? items[active].name || items[active].firstMessage || "Untitled conversation" : "Select a conversation"}</span>

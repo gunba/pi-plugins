@@ -93,3 +93,44 @@ export default async function(){writeFileSync(${JSON.stringify(entered)},"ready"
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("resumed history is readable while SDK extensions are still loading", async () => {
+	const root = mkdtempSync(join(tmpdir(), "desk-history-start-")), agent = join(root, "agent");
+	mkdirSync(join(agent, "extensions"), { recursive: true });
+	const entered = join(root, "entered"), release = join(root, "release"), file = join(root, "session.jsonl");
+	const header = { type: "session", version: 3, id: "history-start", cwd: root, timestamp: new Date().toISOString() };
+	const entries = Array.from({ length: 90 }, (_, i) => ({ type: "message", id: `entry${i}`,
+		parentId: i ? `entry${i - 1}` : null, timestamp: header.timestamp,
+		message: { role: "user", content: `Message ${i}`, timestamp: i } }));
+	writeFileSync(file, [header, ...entries].map(value => JSON.stringify(value)).join("\n") + "\n");
+	writeFileSync(join(agent, "extensions", "gate.ts"), `import {existsSync,writeFileSync,watch} from "node:fs";
+export default async function(){writeFileSync(${JSON.stringify(entered)},"ready");await new Promise(resolve=>{
+ const watcher=watch(${JSON.stringify(root)},()=>{if(existsSync(${JSON.stringify(release)})){watcher.close();resolve()}});
+});}`);
+	const oldAgent = process.env.PI_CODING_AGENT_DIR, events = [], engine = new DeskEngine(event => events.push(event));
+	let timer, watcher, result, closing;
+	const waiting = new Promise((resolve, reject) => {
+		watcher = watch(root, () => { if (existsSync(entered)) resolve(); });
+		timer = setTimeout(() => reject(Error("Startup did not reach its gate")), 10_000);
+	});
+	try {
+		result = engine.start({ cwd: root, agentDir: agent, sessionFile: file }).catch(error => error);
+		await waiting; clearTimeout(timer); watcher.close();
+		const generation = engine.presentation.generation;
+		const tail = await engine.command(generation, { kind: "history" });
+		assert.equal(tail.messages.length, 40);
+		assert.equal(tail.messages.at(-1).entryId, "entry89");
+		assert.equal(tail.before, "entry50");
+		assert.ok(events.some(event => event.type === "history_ready" && event.generation === generation));
+		assert.equal(events.some(event => event.type === "snapshot"), false);
+		assert.equal((await engine.command(generation, { kind: "history", before: tail.before })).messages.length, 40);
+		await assert.rejects(engine.command(generation, { kind: "prompt", text: "not yet" }), /unavailable/);
+	} finally {
+		clearTimeout(timer); watcher?.close();
+		closing = engine.close();
+		writeFileSync(release, "go");
+		await result; await closing;
+		if (oldAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgent;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

@@ -7,6 +7,16 @@ export function sessionPath(file: string): string {
 	return existsSync(file) ? realpathSync.native(file) : join(realpathSync.native(dirname(resolve(file))), basename(file));
 }
 
+export function sessionLockPath(file: string): string {
+	const path = sessionPath(file);
+	const identity = process.platform === "win32" ? path.toLowerCase() : path;
+	return join(dirname(path), ".pi-ownership", `${createHash("sha256").update(identity).digest("hex")}.sqlite`);
+}
+
+export class SessionOwnedError extends Error {
+	constructor() { super("This session is already open in another Pi process. Close that session before resuming it here."); }
+}
+
 /** An OS-backed SQLite lock, not a heartbeat that could expire while Pi is suspended. */
 export class SessionLease {
 	readonly file: string;
@@ -17,8 +27,7 @@ export class SessionLease {
 		if (existsSync(this.file) && statSync(this.file).nlink > 1) throw new Error("Hard-linked session files cannot have a unique writer.");
 		const directory = join(dirname(this.file), ".pi-ownership");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
-		const identity = process.platform === "win32" ? this.file.toLowerCase() : this.file;
-		const lock = join(directory, `${createHash("sha256").update(identity).digest("hex")}.sqlite`);
+		const lock = sessionLockPath(this.file);
 		const db = new DatabaseSync(lock, { timeout: 0 });
 		try {
 			db.exec("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE");
@@ -26,7 +35,7 @@ export class SessionLease {
 		} catch (error) {
 			db.close();
 			if ([5, 6].includes((error as { errcode?: number }).errcode ?? 0)) {
-				throw new Error("This session is already open in another Pi process. Close that session before resuming it here.");
+				throw new SessionOwnedError();
 			}
 			throw error;
 		}

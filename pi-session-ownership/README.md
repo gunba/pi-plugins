@@ -14,6 +14,27 @@ switches when the destination is occupied. In-memory sessions need no lease.
 Hard-linked session files are rejected; symlinks use their canonical target.
 Use a local filesystem with working SQLite locks.
 
+## Resume in Desk
+
+An explicit Resume in Desk can take over a conversation from desktop Pi.
+The desktop extension stops the current operation and requests Pi's native
+orderly shutdown. Desk waits for the exclusive lease before reading the session,
+so shutdown hooks can finish saving history. Unrelated sessions are not stopped.
+Automatic host recovery never requests a takeover.
+
+Each participating terminal publishes a loopback-only control endpoint and a
+private random capability in `~/.pi/agent/session-handoffs`, inside the user's
+profile even when the session directory is shared. The endpoint checks that it still owns
+that exact session. It cannot run commands or select a different process to stop.
+Desk workers do not publish this endpoint. Requests do not use HTTP proxies, and
+browser-origin requests are rejected.
+
+If shutdown does not release the lock within a minute, Desk reports the delay
+without opening the file. It never deletes a live lock or force-kills a PID.
+Terminals must load the updated extension before they can be taken over; otherwise
+close them manually once. Endpoint metadata left by a crash does not confer
+ownership and is replaced only by the next lease holder.
+
 ## Cutover
 
 Restart existing terminals after installing this extension. Processes started

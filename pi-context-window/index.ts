@@ -3,7 +3,7 @@ import { getPresentation, type UiDetails } from "../pi-ui/index.ts";
 import { SelectList, truncateToWidth, type SelectItem } from "@earendil-works/pi-tui";
 import {
 	EXTENDED_CHECKPOINT, EXTENDED_RESERVE, EXTENDED_WINDOW, allowsExtendedWindow,
-	configuredReserve, configuredWindow, readWindowFiles, writeWindowPreset,
+	configuredReserve, configuredWindow, readWindowFiles, writeWindowPreset, modelCapacity,
 } from "./config.ts";
 
 function tokens(value: number): string { return value.toLocaleString("en-US"); }
@@ -65,7 +65,7 @@ function contextSettings(ctx: ExtensionContext) {
 		enabled ? `${checkpoint} · ${projectReserve !== undefined ? "workspace override" : "model/global reserve"}` : checkpoint,
 		...(extended ? ["OpenAI model capacity: 1,050,000; Codex catalog may choose a lower default."] : []),
 	];
-	return { model, provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines };
+	return { model, provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines, effectiveReserve };
 }
 
 export default function contextWindow(pi: ExtensionAPI): void {
@@ -74,16 +74,25 @@ export default function contextWindow(pi: ExtensionAPI): void {
 		const remote = getPresentation(pi);
 		if (!remote?.runCommand) return;
 		let data: UiDetails;
+		let context: { capacity: number; limit: number } | undefined;
 		try {
 			const current = contextSettings(ctx), usage = ctx.getContextUsage();
+			context = { capacity: modelCapacity(current.model), limit: current.model.contextWindow };
 			data = { summary: current.lines.join("\n"), fields: [
 				{ label: "Current conversation", value: usage?.tokens == null ? "Not measured yet" : `${tokens(usage.tokens)} tokens${usage.percent == null ? "" : ` · ${usage.percent.toFixed(1)}%`}` },
 				{ label: "Capacity", value: "Applies to this model. Other running sessions need reload after a change." },
-			] };
+			], controls: [{ kind: "range", label: "Context budget", value: current.model.contextWindow,
+				min: Math.max(4096, current.effectiveReserve + 1), max: context.capacity, step: 1,
+				used: usage?.tokens, unit: "tokens", disabled: current.projectReserve !== undefined,
+				help: "Choose how much of the model's window Pi can use. Applying refreshes this conversation's model settings; other conversations are unchanged.",
+				action: { id: "set-window", label: "Apply budget" } }] };
 		} catch (error) { data = { summary: error instanceof Error ? error.message : String(error) }; }
-		remote.publish("context-window", { kind: "details", surface: "settings", title: "Context capacity", data,
-			actions: [{ id: "configure", label: "Choose capacity" }, { id: "refresh", label: "Refresh" }] },
-			{ configure: () => remote.runCommand!("context-window"), refresh: () => publish(ctx) });
+		remote.publish("context-window", { kind: "details", surface: "settings", title: "Context capacity", data, context,
+			actions: [{ id: "configure", label: "Presets" }] },
+			{ configure: () => remote.runCommand!("context-window"), "set-window": value => {
+				if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new Error("Enter a whole number of tokens.");
+				return remote.runCommand!("context-window", String(value));
+			} });
 	};
 	pi.on("session_start", (_event, ctx) => { revision++; publish(ctx); });
 	pi.on("session_tree", (_event, ctx) => { revision++; publish(ctx); });
@@ -95,11 +104,10 @@ export default function contextWindow(pi: ExtensionAPI): void {
 		description: "Choose the active model's context window and automatic checkpoint threshold.",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui" && !getPresentation(pi)?.capabilities.includes("questions")) { ctx.ui.notify("Context settings require an interactive presentation.", "error"); return; }
-			if (args.trim()) { ctx.ui.notify("Open /context-window without arguments to choose in the dialog.", "error"); return; }
 			if (!ctx.model) { ctx.ui.notify("Select a model first.", "error"); return; }
 			try {
 				await ctx.waitForIdle();
-				const { provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines } = contextSettings(ctx);
+				const { model, provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines, effectiveReserve } = contextSettings(ctx);
 				const captured = revision, session = ctx.sessionManager.getSessionId();
 				const assertCurrent = () => {
 					if (revision !== captured || ctx.sessionManager.getSessionId() !== session ||
@@ -107,13 +115,14 @@ export default function contextWindow(pi: ExtensionAPI): void {
 						throw new Error("The session or model changed. Reopen context settings.");
 				};
 				const items: SelectItem[] = [
+					{ value: "custom", label: "Set a token budget", description: `Enter up to ${tokens(modelCapacity(model))} tokens.` },
 					{ value: "catalog", label: "Use Pi catalog settings",
 						description: "Remove this model's window and checkpoint overrides." },
 					...(extended ? [{ value: "extended", label: enabled ? "1M window · 900K checkpoint" : "1M window · compaction off",
 						description: "Opt in for this model; long context can use more quota." }] : []),
 				];
-				const selected = override === EXTENDED_WINDOW && reserve === EXTENDED_RESERVE ? 1 : 0;
-				const choice = await selectPreset(pi, ctx, lines, items, selected);
+				const selected = override === EXTENDED_WINDOW && reserve === EXTENDED_RESERVE ? 2 : 1;
+				const choice = args.trim() ? "custom" : await selectPreset(pi, ctx, lines, items, selected);
 				if (!choice) return;
 				assertCurrent();
 				if (projectReserve !== undefined) {
@@ -126,10 +135,18 @@ export default function contextWindow(pi: ExtensionAPI): void {
 				if (choice === "catalog" && (override !== undefined || reserve !== undefined) &&
 					!await ctx.ui.confirm("Restore catalog settings?",
 						"Remove this model's window and checkpoint overrides. Other model settings stay unchanged.")) return;
-				const target = choice === "extended" ? EXTENDED_WINDOW : undefined;
+				let target = choice === "extended" ? EXTENDED_WINDOW : undefined;
+				if (choice === "custom") {
+					const input = args.trim() || await ctx.ui.input("Context budget (tokens)", String(model.contextWindow));
+					if (input == null) return;
+					target = Number(input.replace(/[,_ ]/g, ""));
+					if (!Number.isSafeInteger(target) || target < 4096 || target <= effectiveReserve || target > modelCapacity(model))
+						throw new Error(`Enter ${tokens(Math.max(4096, effectiveReserve + 1))}–${tokens(modelCapacity(model))} tokens.`);
+				}
+				const targetReserve = choice === "extended" ? EXTENDED_RESERVE : choice === "custom" ? reserve : undefined;
 				const changed = await writeWindowPreset({
 					provider, modelId: id, window: target,
-					reserve: choice === "extended" ? EXTENDED_RESERVE : undefined,
+					reserve: targetReserve,
 				}, { assertCurrent, expected: { window: override, reserve } });
 				if (!changed) { ctx.ui.notify("Context settings are already selected.", "info"); return; }
 				await ctx.modelRegistry.refresh({ providers: [provider], allowNetwork: false });
@@ -138,7 +155,7 @@ export default function contextWindow(pi: ExtensionAPI): void {
 					throw new Error(ctx.modelRegistry.getError() ?? "Saved model context could not be applied; inspect models.json.");
 				}
 				if (!await pi.setModel(current)) throw new Error("Saved context settings, but model authentication is unavailable.");
-				ctx.ui.notify(`Context set to ${tokens(current.contextWindow)}; ${enabled ? `${mechanism.toLowerCase()} near ${tokens(current.contextWindow - (choice === "extended" ? EXTENDED_RESERVE : settings.getCompactionReserveTokens()))}` : "automatic compaction off"}. Reloading settings.`, "info");
+				ctx.ui.notify(`Context set to ${tokens(current.contextWindow)}; ${enabled ? `${mechanism.toLowerCase()} near ${tokens(current.contextWindow - (targetReserve ?? settings.getCompactionReserveTokens()))}` : "automatic compaction off"}. Reloading settings.`, "info");
 				await ctx.reload();
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

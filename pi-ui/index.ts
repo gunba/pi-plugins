@@ -23,10 +23,19 @@ export type UiDetails = {
 	links?: { label: string; url: string }[];
 	transcript?: string;
 	fields?: { label: string; value: string }[];
+	controls?: UiControl[];
 	items?: { id: string; title: string; subtitle?: string; body?: string; status?: string;
 		meter?: { value: number; max: number; label: string };
 		actions?: UiAction[] }[];
 };
+export type UiControl = {
+	label: string; action: UiAction; help?: string; disabled?: boolean;
+} & (
+	| { kind: "toggle"; value: boolean }
+	| { kind: "select"; value: string; options: { value: string; label: string }[] }
+	| { kind: "text"; value: string; placeholder?: string }
+	| { kind: "range"; value: number; min: number; max: number; step?: number; used?: number | null; unit?: string }
+);
 export interface UiView {
 	/** Compact always-visible summary; opening it shows this view's normal details. */
 	preview?: { label: string; primary: string; secondary?: string };
@@ -36,6 +45,8 @@ export interface UiView {
 	data: UiValue;
 	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
 	badges?: { label: string; value: string; description?: string; compact?: boolean }[];
+	/** Model capacity and the selected working window, in tokens. */
+	context?: { capacity: number; limit: number };
 	actions?: UiAction[];
 }
 export interface UiQuestion {

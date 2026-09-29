@@ -32,6 +32,7 @@ export interface SessionSnapshot {
 	file?: string;
 	cwd: string;
 	name?: string;
+	title?: string;
 	leaf?: string | null;
 	model?: { id: string; provider: string; name: string; images: boolean };
 	thinking: string;
@@ -86,10 +87,13 @@ export interface SessionView {
 	created: number;
 	state: "starting" | "ready" | "failed" | "closed";
 	snapshot?: SessionSnapshot;
+	/** Native history can be browsed before extensions finish starting. */
+	historyReady?: boolean;
 	ui?: PresentationSnapshot;
 	error?: string;
 	file?: string;
 	name?: string;
+	title?: string;
 	pinned?: boolean;
 	interrupted?: boolean;
 	leaf?: string | null;
@@ -109,6 +113,8 @@ export interface WorkerInit {
 	leaf?: string | null; attachmentScope?: string;
 	/** Host-owned code location, carried over private IPC rather than worker environment. */
 	runtimeDirectory?: string;
+	/** Explicit user resume may ask a participating terminal owner to shut down. */
+	takeover?: boolean;
 }
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
@@ -140,6 +146,7 @@ export type WorkerMessage =
 	| { type: "result"; id: string; value?: unknown; error?: string; code?: "stale_generation" | "receipt_conflict" }
 	| { type: "control"; control: ControlStatus }
 	| { type: "snapshot"; snapshot: SessionSnapshot }
+	| { type: "history_ready"; generation: string }
 	| { type: "event"; event: unknown }
 	| TranscriptEvent
 	| { type: "transcript"; source: string; event: TranscriptEvent }

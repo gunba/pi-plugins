@@ -76,32 +76,25 @@ export default function codexWire(pi: ExtensionAPI): void {
     const remote = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
     if (!remote) return;
     const data: UiDetails = { summary: "Fast mode requests priority processing on eligible ChatGPT Codex models and uses more credits. The backend can downgrade a request. Prewarming adds a full-prompt request; it is normally left off.",
-      fields: [{ label: "Fast mode", value: fastEnabled ? "On" : "Off" },
-        { label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode },
-        { label: "Client identity", value: client }, { label: "Prewarm", value: prewarm ? "On" : "Off" }] };
+      fields: [{ label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode }],
+      controls: remote.runCommand ? [
+        { kind: "toggle", label: "Fast mode", value: fastEnabled, action: { id: "fast", label: "Change Fast mode" }, help: "Priority processing uses more credits." },
+        { kind: "select", label: "Client identity", value: client, options: [{ value: "cli", label: "CLI" }, { value: "desktop", label: "Desktop" }],
+          action: { id: "identity", label: "Change client identity" } },
+        { kind: "toggle", label: "Prewarm", value: prewarm, action: { id: "prewarm", label: "Change prewarming" } },
+      ] : [] };
     remote.publish("codex-wire", { kind: "details", surface: "settings", title: "Codex", data,
       badges: ctx.model?.api === "openai-codex-responses" ? [{
         label: "Fast", value: fastEnabled ? "On" : "Off", compact: true,
         description: "Saved preference for eligible ChatGPT Codex requests. The backend can downgrade priority processing.",
       }] : [],
-      actions: remote.runCommand ? [{ id: "fast", label: fastEnabled ? "Disable Fast mode" : "Enable Fast mode · more credits" },
-        { id: "identity", label: "Choose client identity" },
-        { id: "prewarm", label: prewarm ? "Disable prewarm" : "Enable prewarm" },
-        { id: "reconnect", label: "Reconnect transport" },
-        { id: "refresh", label: "Refresh view" }] : [] }, {
-      fast: () => remote.runCommand?.("fast", fastEnabled ? "off" : "on"),
-      identity: async () => {
-        const answer = await remote.request({ kind: "question", title: "Codex client identity",
-          context: "Both identities use Pi's existing transport and model. Changing identity recreates the catalog and connections.",
-          options: [{ title: "CLI" }, { title: "Desktop" }], allowMultiple: false, allowFreeform: false, allowComment: false });
-        if (answer?.kind === "selection") {
-          const selected = answer.selections[0] === "Desktop" ? "desktop" : "cli";
-          await remote.runCommand?.("codex-wire", `client ${selected}`);
-        }
+      actions: remote.runCommand ? [{ id: "reconnect", label: "Reconnect transport" }] : [] }, {
+      fast: value => { if (typeof value === "boolean") return remote.runCommand?.("fast", value ? "on" : "off"); },
+      identity: value => {
+        if (value === "desktop" || value === "cli") return remote.runCommand?.("codex-wire", `client ${value}`);
       },
-      prewarm: () => remote.runCommand?.("codex-wire", `prewarm ${prewarm ? "off" : "on"}`),
+      prewarm: value => { if (typeof value === "boolean") return remote.runCommand?.("codex-wire", `prewarm ${value ? "on" : "off"}`); },
       reconnect: () => remote.runCommand?.("codex-wire", "reconnect"),
-      refresh: () => showWireStatus(ctx),
     });
   }
 
