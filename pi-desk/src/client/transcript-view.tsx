@@ -147,6 +147,21 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [visible, live]);
+	// Opening a panel or moving queued messages changes the viewport, not the
+	// history. Keep a live tail pinned without disturbing an older reading window.
+	useLayoutEffect(() => {
+		const viewport = scroller.current;
+		if (!viewport || !live) return;
+		let frame: number | undefined;
+		const observer = new ResizeObserver(() => {
+			if (frame !== undefined) cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => {
+				if (!restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
+			});
+		});
+		observer.observe(viewport);
+		return () => { observer.disconnect(); if (frame !== undefined) cancelAnimationFrame(frame); };
+	}, [live, storageKey]);
 	// A reading window stays put while current output advances. Existing live rows still finish.
 	useEffect(() => {
 		if (live || !page) return;

@@ -9,6 +9,7 @@ import { SessionControls } from "./session-controls.tsx";
 import type { Computer, WorkspaceState } from "./workspace.ts";
 import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
+import { SectionIcon } from "./icons.tsx";
 
 export const settingsSections = [
 	{ id: "general", title: "General" }, { id: "conversation", title: "Conversation" },
@@ -22,7 +23,7 @@ export function SettingsLayout({ active, sections, choose, children, enabled = t
 	return <div className="settings-layout">
 		<nav className="settings-nav" aria-label="Settings sections">
 			{sections.map(section => <button key={section.id} aria-current={active === section.id ? "page" : undefined}
-				onClick={() => choose(section.id)}>{section.title}</button>)}
+				onClick={() => choose(section.id)}><SectionIcon id={section.id} /><span>{section.title}</span></button>)}
 		</nav>
 		<label className="settings-mobile-nav">Section
 			<select value={active} onChange={event => choose(event.target.value)}>
@@ -63,11 +64,6 @@ export function SettingsContent({ section, host, account, session, computer, con
 		</>)}
 		{section === "conversation" && <>
 			{session ? <section className="panel-card"><h3>Conversation</h3>
-				{snapshot && <form key={`${session.key}:${snapshot.id}:${snapshot.name}`} className="setting-name"
-					onSubmit={event => { event.preventDefault(); run(invoke({ kind: "name", name: String(new FormData(event.currentTarget).get("name")) })); }}>
-					<label>Name<input name="name" defaultValue={snapshot.name ?? ""} placeholder="Name this conversation" disabled={busy || !connected} /></label>
-					<button disabled={busy || !connected}>Save</button>
-				</form>}
 				<label className="setting-control">Pin conversation<input type="checkbox" role="switch" checked={!!session.pinned}
 					disabled={busy || !connected} onChange={event => run(api(`/sessions/${session.key}/metadata`,
 						{ generation: ui?.generation, pinned: event.target.checked }))} /></label>

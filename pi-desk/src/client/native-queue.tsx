@@ -1,11 +1,14 @@
 import type { SessionSnapshot } from "../shared/protocol.ts";
+import { Icon } from "./icons.tsx";
 export function NativeQueue({ queue }: { queue: SessionSnapshot["queue"] }) {
 	if (!queue.steering.count && !queue.followUp.count) return null;
-	return <details className="native-queue">
-		<summary>In Pi: {queue.steering.count} steering · {queue.followUp.count} follow-up</summary>
-		{([["Steering", queue.steering], ["Follow-up", queue.followUp]] as const).filter(([, group]) => group.count).map(([title, group]) => <div key={title}>
-			<strong>{title}</strong><ol>{group.previews.map((text, index) => <li key={index}>{text}</li>)}</ol>
-			{group.count > group.previews.length && <small>Showing the first {group.previews.length} of {group.count}.</small>}
-		</div>)}
-	</details>;
+	return <section className="native-queue" aria-label="Messages waiting in Pi" aria-live="polite">
+		{([["Steering", "steer", queue.steering], ["Queued", "queue", queue.followUp]] as const)
+			.filter(([, , group]) => group.count).map(([title, icon, group]) => <div className="queue-group" key={title}>
+				<div className="queue-heading"><Icon name={icon} /><strong>{title}</strong><span>{group.count}</span>
+					<small>{title === "Steering" ? "Next opportunity" : "After the current response"}</small></div>
+				<ul>{group.previews.map((text, index) => <li key={index}>{text}</li>)}</ul>
+				{group.count > group.previews.length && <small>{group.count - group.previews.length} more waiting</small>}
+			</div>)}
+	</section>;
 }

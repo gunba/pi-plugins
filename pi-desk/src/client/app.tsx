@@ -15,7 +15,7 @@ import { ResumeConversation } from "./resume.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
-import { Inspector, Modal, Navigation } from "./surfaces.tsx";
+import { Inspector, Modal, Navigation, useMedia } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { isControl } from "../shared/controls.ts";
@@ -30,6 +30,10 @@ import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissa
 import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
+import { ConversationTitle } from "./conversation-title.tsx";
+import { WorkRail } from "./work-rail.tsx";
+import { PlanView } from "./plan-view.tsx";
+import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
@@ -71,6 +75,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [transportConnected, setConnected] = useState(false);
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
+  const wideWorkspace = useMedia("(min-width: 1280px)");
   const [panel, setPanel] = useState<
     "work" | "settings" | "view" | "agents" | undefined
   >();
@@ -123,6 +128,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
+  const showWorkRail = wideWorkspace && !!session && (!panel || settings);
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -133,10 +139,10 @@ export function App({ account }: { account?: BrowserAccount }) {
     const activation = `${selected}:${session?.activation}`;
     if (activeAgents && autoAgents.current !== activation) {
       autoAgents.current = activation;
-      if (!panel && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
+      if (!wideWorkspace && !panel && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
         && matchMedia("(min-width:1181px)").matches) setPanel("agents");
     }
-  }, [panel, focusedView, activeAgents, selected, session?.activation, ui]);
+  }, [panel, focusedView, activeAgents, selected, session?.activation, ui, wideWorkspace]);
   const questions = ui?.interactions ?? [];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
   useEffect(() => {
@@ -443,7 +449,9 @@ export function App({ account }: { account?: BrowserAccount }) {
           </button>
           <div className="conversation-heading">
             <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${basename(session.cwd)}` : "Your workspace"}</span>
-            <strong>{session ? title(session) : "Welcome"}</strong>
+            {session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
+              disabled={!connected || session.state !== "ready" || closing}
+              rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
           </div>
           <div className="top-actions">
             {session?.activation && <CloseConversationButton session={session} name={title(session)}
@@ -479,13 +487,13 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
-        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope)} open={id => { setFocusedView(id); setPanel("view"); }} />
-        {!!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (!showWorkRail || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
+        {!showWorkRail && !!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {agentViews.length} total</span><span>View →</span>
         </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
-        {session && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
+        {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && !canCompose && messages.length > 0 && (
           <div className="connection-banner">
             <span>{session.error || "Pi was interrupted. Resume to continue."}</span>
@@ -567,6 +575,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         />
         {session && canCompose && (
           <div className="composer-dock">
+            {!showWorkRail && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
             {ui && <EditorSuggestion key={selected} session={selected} id={ui.editorId} text={ui.editorText}
               draft={draft} context={confirmationContext} edit={text => { setDraft(text); localStorage.setItem(draftKey(selected), text); }} />}
             {question && (
@@ -579,7 +588,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+            {!showWorkRail && session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
             <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}
@@ -726,6 +735,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
       </main>
+      {showWorkRail && session && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
+        invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
+        pending={canCompose && !!(session.inputs?.length || session.snapshot?.queue.steering.count || session.snapshot?.queue.followUp.count) && <>
+          <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />
+          {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+        </>} />}
       {panel && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)} back={panel === "view" && !settings ? () => setPanel("work") : undefined}>
@@ -764,17 +779,23 @@ export function App({ account }: { account?: BrowserAccount }) {
             (visibleViews.length ? (
               visibleViews.map((view) => (
                 <section className="panel-card" key={view.id} data-view={view.id}>
-                  {(panel !== "view" || settings) && <h3>{view.title}</h3>}
+                  {view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
+                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
+                  <div className="panel-section-heading">
+                  {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
+                  {!!view.actions?.length && <div className="panel-actions">
+                    {view.actions.map(action => <button key={action.id} disabled={!!view.working || !connected}
+                      className={view.id === "desk-providers" && action.id === "refresh" ? "icon-button" : undefined}
+                      title={action.label} aria-label={action.label}
+                      onClick={() => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })}>
+                      {view.id === "desk-providers" && action.id === "refresh" ? <Icon name="refresh" /> : action.label}
+                    </button>)}
+                  </div>}
+                  </div>
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
                   {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
-                  <div className="panel-actions">
-                    {view.actions?.map(action => <button key={action.id} disabled={!!view.working}
-                      onClick={() => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })}>
-                      {action.label}
-                    </button>)}
-                  </div>
                   {view.kind === "details" ? <>
-                    <DetailsView data={view.data as UiDetails} disabled={!!view.working} invoke={(action, value) => run({
+                    <DetailsView data={view.data as UiDetails} accounts={view.id === "desk-providers"} disabled={!!view.working || !connected} invoke={(action, value) => run({
                       kind: "action", view: view.id, revision: view.revision, action: action.id, value,
                     })} />
                     {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
@@ -794,6 +815,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                         : JSON.stringify(view.data, null, 2)}
                     </pre>
                   )}
+                  </>}
                 </section>
               ))
             ) : (
