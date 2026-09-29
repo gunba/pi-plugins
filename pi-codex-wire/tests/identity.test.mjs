@@ -9,8 +9,8 @@ test("Desktop app-server identity uses Desktop originator and initialized client
   const options = { client: "desktop", system, env: {} };
   const desktop = codexIdentity(options);
   assert.equal(desktop.originator, "Codex Desktop");
-  assert.equal(desktop.version, "0.155.0");
-  assert.equal(desktop.userAgent, "Codex Desktop/0.155.0 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.903.61454)");
+  assert.equal(desktop.version, "0.159.1");
+  assert.equal(desktop.userAgent, "Codex Desktop/0.159.1 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.903.61454)");
   assert.deepEqual(codexIdentity({ ...options, userAgent: desktop.userAgent }), desktop);
   assert.match(codexIdentity({ ...options, desktopVersion: "26.904.12345" }).userAgent, /26\.904\.12345\)$/);
   assert.throws(() => codexIdentity({ ...options, desktopVersion: "bad\nheader" }), /application version/);
@@ -52,10 +52,10 @@ test("tmux detection uses environment hints without executing terminal helpers",
 test("native originator precedence, suffix and exact explicit profile", () => {
   assert.deepEqual(codexIdentity({ system, env: { TERM_PROGRAM: "WezTerm" } }), identity);
   assert.equal(codexIdentity({ system, originator: "provided", env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "override" }, suffix: " host; 1 " }).userAgent,
-    "override/0.155.0 (Windows 10.0.26100; x86_64) unknown (host; 1)");
+    "override/0.159.1 (Windows 10.0.26100; x86_64) unknown (host; 1)");
   assert.equal(codexIdentity({ system, env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "bad\nheader" } }).originator, "codex_cli_rs");
   assert.deepEqual(codexIdentity({ env: {}, userAgent: identity.userAgent }), identity);
-  assert.throws(() => codexIdentity({ env: {}, userAgent: "codex_cli_rs/0.153.4 anything" }), /0\.155\.0/);
+  assert.throws(() => codexIdentity({ env: {}, userAgent: "codex_cli_rs/0.155.0 anything" }), /0\.159\.1/);
   assert.throws(() => codexIdentity({ env: {}, userAgent: `${identity.userAgent}\r\nInjected: 1` }), /single-line/);
 });
 
@@ -76,9 +76,9 @@ test("automatic Linux Desktop identity uses native system fields without a saved
   const native = linuxSystem();
   assert.match(native.architecture, /^[a-zA-Z0-9_]+$/);
   assert.equal(codexIdentity({ client: "desktop", env: { TERM_PROGRAM: "ghostty", TERM_PROGRAM_VERSION: "1.2.3" } }).userAgent,
-    `Codex Desktop/0.155.0 (${native.osType} ${native.version}; ${native.architecture}) ghostty/1.2.3 (Codex Desktop; 26.903.61454)`);
+    `Codex Desktop/0.159.1 (${native.osType} ${native.version}; ${native.architecture}) ghostty/1.2.3 (Codex Desktop; 26.903.61454)`);
   assert.equal(codexIdentity({ env: { TERM_PROGRAM: "ghostty" } }).userAgent,
-    `codex_cli_rs/0.155.0 (${native.osType} ${native.version}; ${native.architecture}) ghostty`);
+    `codex_cli_rs/0.159.1 (${native.osType} ${native.version}; ${native.architecture}) ghostty`);
 });
 
 test("automatic Windows identity uses native API values", { skip: process.platform !== "win32" }, () => {
@@ -87,5 +87,5 @@ test("automatic Windows identity uses native API values", { skip: process.platfo
   assert.match(native.version, /^\d+\.\d+\.\d+$/);
   assert.match(codexIdentity({ env: { WT_SESSION: "x" } }).userAgent, /\) WindowsTerminal$/);
   assert.equal(codexIdentity({ env: {} }).userAgent,
-    `codex_cli_rs/0.155.0 (Windows ${native.version}; ${native.architecture}) unknown`);
+    `codex_cli_rs/0.159.1 (Windows ${native.version}; ${native.architecture}) unknown`);
 });

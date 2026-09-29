@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.155.0**, commit [`f0a1b8f0849d90960bc406b848f32e5a129b0457`](https://github.com/openai/codex/tree/f0a1b8f0849d90960bc406b848f32e5a129b0457). The bundle requires Pi **0.87.1+** and Node **22.19+**.
+Protocol reference: **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **0.87.1+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -46,7 +46,7 @@ preference.
 
 CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header. On Windows and Linux, neither client needs a saved User-Agent profile.
 
-The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/f0a1b8f0849d90960bc406b848f32e5a129b0457/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. This models Desktop initialization of Wire's pinned **0.155.0** app-server protocol; it does not claim to reproduce the installed Desktop binary's exact core version.
+The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. This models Desktop initialization of Wire's pinned **0.159.1** app-server protocol; it does not claim to reproduce the installed Desktop binary's exact core version.
 
 Desktop identity applies to both catalog and inference requests. Switching clients discards the old catalog and connections. Conflicting Desktop originator overrides are rejected. This is request-identity emulation, not the Desktop runtime, its attestation or a guarantee of Desktop allowance treatment.
 
@@ -151,14 +151,14 @@ saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. This
 controls only the extra `generate:false` request, not Wire, Codex identity,
 WebSocket reuse or continuation. Reconnects follow the same setting.
 
-`--codex-wire-compression on` matches Codex 0.155.0's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
+`--codex-wire-compression on` matches Codex 0.159.1's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
 On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. On Linux, Wire reads `lsb_release` (then `/etc/os-release`) and `uname -m` for the native OS/version/architecture fields. Terminal detection follows the native environment-only precedence and sanitization rules, including Windows Terminal and terminal hints under tmux. It does not launch Codex or terminal helpers.
 
-For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.155.0 (...) terminal"`. It must match the selected originator and pinned version. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
+For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.159.1 (...) terminal"`. It must match the selected originator and pinned version. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
 
 You can save a verified native profile for this machine with
-`/codex-wire user-agent codex_cli_rs/0.155.0 (...) terminal`. The profile is stored
+`/codex-wire user-agent codex_cli_rs/0.159.1 (...) terminal`. The profile is stored
 under `~/.pi/agent/codex-wire/user-agent` and is used on activation, resume, and
 reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI and Desktop User-Agent profiles are saved separately; the current client determines which profile is written.
 
@@ -173,15 +173,21 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - The server's one-hour WebSocket expiry triggers one internal reconnect when no model output has arrived. A fresh connection follows the selected prewarm setting and the request is replayed. Partial output is not replayed, cancellation still works during recovery, and an exhausted recovery is surfaced rather than retried by Pi's HTTP-fetch loop.
 - Native `x-codex-routing-hint` on HTTP requests and WebSocket handshakes, using the final model and explicitly selected service tier.
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
-- Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Effort mapping follows the 0.155.0 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
+- Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Pi's named effort levels follow the 0.159.1 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
 - Wire owns the passive allowance footer and `/pi-usage`. Counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. No global WebSocket interception is installed. The footer handles a 7-day window reported as the primary window.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
-On the first model request, the plugin reads `/codex/models?client_version=0.155.0` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions. Catalogs and inference support can depend on this version: updating Pi's model list does not update Wire's pinned client identity.
+On the first model request, the plugin reads `/codex/models?client_version=0.159.1` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions. Catalogs and inference support can depend on this version: updating Pi's model list does not update Wire's pinned client identity.
+
+GPT-6.1 Sol is discovered through Pi's native model catalog; run `pi update --models`
+to refresh it. No custom model definition is needed. Existing Desk workers need
+the updated runtime as well as the refreshed catalog. Updating the protocol pin
+does not enable Codex's experimental in-stream effort changes, numeric effort
+values, graceful-interrupt protocol, access programs or native tool execution.
 
 Snapshots are scoped to endpoint, account and credential. Reversed completion order cannot replace another scope's capabilities. Concurrent lookups have independent cancellation; the first successful result freezes that scope, and returned metadata is detached from the cache. Aborted or failed requests do not publish snapshots. Each activation retains up to 16 catalog scopes. Catalog fetch failures or malformed entries stop the request before inference.
 
-Model lookup follows native Codex: longest matching prefix, then a single simple provider-namespace suffix. If neither matches, the plugin uses Codex 0.155.0's fallback capabilities, displays a warning and records `nativeFallback: true`. It keeps the requested model ID and reasoning effort. The catalog is not an allowlist: a model can accept requests without appearing there. The backend still decides whether the account can use that model.
+Model lookup follows native Codex: longest matching prefix, then a single simple provider-namespace suffix. If neither matches, the plugin uses Codex 0.159.1's fallback capabilities, displays a warning and records `nativeFallback: true`. It keeps the requested model ID and reasoning effort. The catalog is not an allowlist: a model can accept requests without appearing there. The backend still decides whether the account can use that model.
 
 ## Controlled comparison
 

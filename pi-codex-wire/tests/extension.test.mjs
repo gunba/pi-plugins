@@ -157,7 +157,7 @@ test("Desktop selection changes both catalog and inference identity and persists
     assert.equal(requests.at(-2).catalog, true);
     for (const request of requests.slice(-2)) {
       assert.equal(request.headers.get("originator"), originator);
-      assert.ok(request.headers.get("user-agent").startsWith(`${originator}/0.155.0 `));
+      assert.ok(request.headers.get("user-agent").startsWith(`${originator}/0.159.1 `));
     }
   }
   assert.equal(requests.length, 4, "each client must refresh its own catalog identity");
@@ -175,10 +175,10 @@ test("GPT-6 Sol uses the current catalog and inference version with native Lite 
   let sent = 0;
   const fetcher = async (url, init) => {
     const headers = new Headers(init.headers);
-    assert.equal(headers.get("version"), "0.155.0");
-    assert.match(headers.get("user-agent"), /^codex_cli_rs\/0\.155\.0 /);
+    assert.equal(headers.get("version"), "0.159.1");
+    assert.match(headers.get("user-agent"), /^codex_cli_rs\/0\.159\.1 /);
     if (String(url).includes("/models?")) {
-      assert.equal(new URL(url).searchParams.get("client_version"), "0.155.0");
+      assert.equal(new URL(url).searchParams.get("client_version"), "0.159.1");
       return Response.json({ models: [{ slug: sol.id, use_responses_lite: true }] });
     }
     const body = decode(init);

@@ -1,5 +1,5 @@
-/** Native model shaping, pinned to openai/codex rust-v0.155.0.
- * https://github.com/openai/codex/tree/f0a1b8f0849d90960bc406b848f32e5a129b0457/codex-rs
+/** Native model shaping, pinned to openai/codex rust-v0.159.1.
+ * https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24/codex-rs
  * Sources: core/src/client.rs; core/src/client_common.rs;
  * codex-api/src/common.rs (serde omission matters);
  * tools/src/tool_spec.rs; protocol/src/openai_models.rs.

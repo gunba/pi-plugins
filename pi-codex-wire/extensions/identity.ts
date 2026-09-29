@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const CODEX_VERSION = "0.155.0";
+export const CODEX_VERSION = "0.159.1";
 // Electron package.json version, not the Windows Store package version.
 export const DESKTOP_APP_VERSION = "26.903.61454";
 export type Client = "cli" | "desktop";
@@ -21,7 +21,7 @@ export interface IdentityOptions {
 const nonblank = (value: string | undefined) => value?.trim() ? value : undefined;
 const terminalSafe = (value: string) => value.replace(/[^a-zA-Z0-9._/-]/gu, "_");
 
-/** Codex 0.155.0 terminal-detection: environment-only terminal detection. */
+/** Codex 0.159.1 terminal-detection: environment-only terminal detection. */
 export function terminalToken(env: NodeJS.ProcessEnv): string {
   const versioned = (name: string, version?: string) => `${name}${nonblank(version) ? `/${version}` : ""}`;
   const program = nonblank(env.TERM_PROGRAM);
@@ -126,7 +126,7 @@ export function linuxSystem(): NativeSystem {
   return { ...release, architecture: command("uname", ["-m"]) || "unknown" };
 }
 
-/** Pinned default_client.rs:40-79, 159-212. Full explicit profiles never use OS guesses. */
+/** Pinned login/src/auth/default_client.rs. Full explicit profiles never use OS guesses. */
 export function codexIdentity(options: IdentityOptions = {}): Identity {
   const env = options.env ?? process.env;
   const desktop = options.client === "desktop";

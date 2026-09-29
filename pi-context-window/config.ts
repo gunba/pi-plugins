@@ -14,6 +14,10 @@ const LONG_CONTEXT_MODELS = new Set([
 	"gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
 ]);
 
+// Codex 0.159.1 authenticated model catalog: max_context_window, not the
+// default 272k working budget. This model does not offer the 1M preset.
+const CODEX_CAPACITIES: Record<string, number> = { "gpt-6.1-sol": 872_000 };
+
 type JsonObject = Record<string, unknown>;
 
 function object(value: unknown, label: string): JsonObject {
@@ -41,7 +45,8 @@ export function allowsExtendedWindow(provider: string, modelId: string): boolean
 }
 export function modelCapacity(model: { provider: string; id: string; contextWindow: number }): number {
 	const catalog = getBuiltinModels(model.provider as BuiltinProvider).find(item => item.id === model.id)?.contextWindow ?? 0;
-	return Math.max(catalog, model.contextWindow, allowsExtendedWindow(model.provider, model.id) ? EXTENDED_CAPACITY : 0);
+	return Math.max(catalog, model.contextWindow, allowsExtendedWindow(model.provider, model.id) ? EXTENDED_CAPACITY : 0,
+		model.provider === "openai-codex" ? CODEX_CAPACITIES[model.id] ?? 0 : 0);
 }
 
 export function configuredWindow(text: string | undefined, provider: string, modelId: string): number | undefined {
