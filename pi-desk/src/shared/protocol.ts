@@ -54,7 +54,7 @@ export type ChatBlock =
 	| { type: "ledger"; ledger: Ledger }
 	| { type: "text" | "thinking"; text: string; full?: string; truncated?: boolean }
 	| { type: "image"; asset: string; mimeType: string }
-	| { type: "toolCall"; id: string; name: string; arguments: string; full?: string; truncated?: boolean };
+	| { type: "toolCall"; id: string; name: string; arguments: string; full?: string; truncated?: boolean; file?: FileReference };
 export interface ChatMessage {
 	id: string;
 	order: number;

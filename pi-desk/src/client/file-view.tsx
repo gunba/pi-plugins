@@ -27,7 +27,7 @@ async function fileBlob(session: string, file: FileInfo, origin: string, signal:
 
 export function FileLink({ session, file, children }: { session: string; file: FileReference; children?: ReactNode }) {
 	const [open, setOpen] = useState(false);
-	return <><button type="button" className="file-link" onClick={() => setOpen(true)}>{children ?? file.name}</button>
+	return <><button type="button" className="file-link" onClick={event => { event.stopPropagation(); setOpen(true); }}>{children ?? file.name}</button>
 		{open && <FileViewer session={session} reference={file} close={() => setOpen(false)} />}</>;
 }
 function FileViewer({ session, reference, close }: { session: string; reference: FileReference; close: () => void }) {

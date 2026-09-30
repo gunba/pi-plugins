@@ -571,19 +571,18 @@ details[open] > summary:before {
 .message-user { margin-left:auto; width:fit-content; min-width:160px; max-width:88%; }
 .message-user .message-heading { justify-content:flex-end; margin-bottom:7px; color:var(--muted); }
 .message-user .message-heading > span:first-child { display:none; }
-.message-tool { border-left:2px solid var(--border); padding-left:12px; margin:0 0 12px 12px; }
-.message-tool .message-heading { margin-bottom:6px; color:var(--muted); font-size:11px; }
-.message-tool .message-heading > span:first-child { color:var(--accent); }
-.message-tool .message-body { font-size:12px; }
-.message-assistant .message-body { padding-left:34px; }
-.message-activity { margin-bottom:6px; }
-.message-activity .message-body { padding-left:12px; border-left:2px solid var(--border); margin-left:12px; }
-.message-activity .tool-card, .message-tool .tool-card { margin:4px 0; background:transparent; border:0; border-radius:6px; }
-.message-activity .tool-card > summary, .message-tool .tool-card > summary { padding:5px 4px; }
-.message-activity .tool-card > summary:hover, .message-tool .tool-card > summary:hover { background:var(--hover); }
-.message-tool .message-heading { margin-bottom:0; flex-wrap:wrap; }
-.message-heading .tool-status { margin:0 0 0 auto; gap:6px; }
-.message-tool .full-output { margin-top:2px; }
+.message-assistant > .message-body { padding-left:34px; }
+.message-activity { margin:0 0 6px 34px; }
+.message-activity > .message-body { padding-left:0; }
+.tool-pill .message-body { padding:0; font-size:12px; }
+.tool-pill > summary:hover { background:var(--hover); }
+.tool-pill .tool-status { margin-left:auto; gap:6px; white-space:nowrap; font-size:10px; }
+.tool-pill .tool-argument-preview .file-link { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-output { padding:4px 14px 12px; max-height:560px; overflow:auto; }
+.tool-arguments { padding:0 14px 10px; color:var(--muted); }
+.tool-arguments > summary { font-size:11px; }
+.tool-arguments > pre { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); }
+.tool-pill .full-output { margin-top:2px; }
 .tool-argument-preview { min-width:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:11px; }
 .tool-card > summary > time { color:var(--muted); font-size:10px; white-space:nowrap; }
 .tool-card > summary > .muted { white-space:nowrap; }
@@ -1675,7 +1674,8 @@ details[open] > summary:before {
   .budget-entry { flex-wrap:wrap; }
   .setting-control .budget-entry > input[type="number"] { width:125px; flex-basis:125px; }
   .message-user { max-width:95%; }
-  .message-assistant .message-body { padding-left:0; }
+  .message-assistant > .message-body { padding-left:0; }
+  .message-activity { margin-left:0; }
   .conversation-footer .footer-context { font-size:10px; }
   .footer-context .context-meter { width:70px; }
 }

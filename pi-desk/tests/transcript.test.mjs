@@ -3,10 +3,26 @@ import test from "node:test";
 import { TranscriptFeed } from "../src/host/transcript-feed.ts";
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
+import { transcriptRows } from "../src/client/transcript-rows.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";
 import { planRoundNotice } from "../src/client/plan-round.ts";
 import { renderPlanRoundPrompt } from "../../pi-plan/src/prompt.ts";
 import { PLAN_ROUND_MESSAGE } from "../../pi-plan/src/constants.ts";
+
+test("a file tool call and its result form one display row without a separate source-file block", () => {
+	const transcript = new Transcript();
+	const call = transcript.message({ role: "assistant", content: [{ type: "toolCall", id: "read-skill", name: "read",
+		arguments: { path: "SKILL.md" } }] }, "call", undefined, 0, process.cwd());
+	const result = transcript.message({ role: "toolResult", toolName: "read", toolCallId: "read-skill",
+		content: [{ type: "text", text: "Skill content" }], details: { sourcePath: "SKILL.md", firstLine: 1 } }, "result", undefined, 1, process.cwd());
+	assert.equal(call.blocks.length, 1);
+	assert.equal(call.blocks[0].file.name, "SKILL.md");
+	const rows = transcriptRows([call, result]);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].message, call);
+	assert.equal(rows[0].results["read-skill"], result);
+	assert.equal(result.id, "entry:result");
+});
 
 test("nested tool calls stay on their calling result instead of orphaning transcript rows", () => {
 	const transcript = new Transcript();
