@@ -19,6 +19,7 @@ import {
 	type UiTranscriptHandle,
 } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot, PresentationSnapshot, ViewSnapshot } from "../shared/protocol.ts";
+import { FEEDBACK_ENTRY, type Feedback } from "../shared/feedback.ts";
 
 interface PendingInteraction {
 	snapshot: InteractionSnapshot;
@@ -52,6 +53,7 @@ export class DeskPresentation implements Presentation {
 	private interactions = new Map<string, PendingInteraction>();
 	private statuses: Record<string, string> = {};
 	private notifications: PresentationSnapshot["notifications"] = [];
+	private recordFeedback: (feedback: Feedback) => void = () => {};
 	private editorText = "";
 	private editorId = randomUUID();
 	private title = "Pi Desk";
@@ -82,6 +84,7 @@ export class DeskPresentation implements Presentation {
 		let active = true;
 		const revision = this.presentationRevision;
 		const current = () => active && revision === this.presentationRevision && !this.retired;
+		this.recordFeedback = feedback => { if (current()) pi.appendEntry(FEEDBACK_ENTRY, feedback); };
 		const lease: Presentation = {
 			version: 2,
 			capabilities: this.capabilities,
@@ -298,7 +301,9 @@ export class DeskPresentation implements Presentation {
 
 	notify(text: string, level: "info" | "warning" | "error" = "info"): void {
 		if (this.retired) return;
-		this.notifications.push({ id: randomUUID(), text: plain(text), level });
+		const feedback = { id: randomUUID(), text: plain(text), level, timestamp: Date.now(), generation: this.generation };
+		if (level !== "info") this.recordFeedback({ ...feedback, level });
+		this.notifications.push(feedback);
 		this.notifications = this.notifications.slice(-30);
 		this.update();
 	}

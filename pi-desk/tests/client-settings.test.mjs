@@ -4,6 +4,25 @@ import { dismissNotice, noticeIdentity, readDismissals } from "../src/client/not
 import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { providerChoices } from "../src/host/provider-prompts.ts";
+import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
+
+test("errors stay at their point in chat, deduplicate saved notices and stay dismissed after reopening", () => {
+	const values = new Map(), storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
+	const feedback = { id: "error", text: "Failed operation", level: "error", timestamp: 200, generation: "original-worker" };
+	const messages = [100, 300].map((timestamp, order) => ({ id: `message:${order}`, role: "user", timestamp, order,
+		revision: 0, blocks: [{ type: "text", text: "Message" }] }));
+	const inline = conversationFeedback(messages, [feedback], "one", []);
+	assert.deepEqual(inline.map(message => message.timestamp), [100, 200, 300]);
+	assert.deepEqual(conversationFeedback(inline, [feedback], "one", []), inline);
+	const native = { ...inline[1], id: "entry:error", entryId: "error", order: inline[1].order };
+	assert.deepEqual(conversationFeedback([...inline, native], [feedback], "one", []).filter(message => message.feedback), [native]);
+	saveFeedback(storage, { one: [feedback] });
+	assert.deepEqual(readFeedback(storage).one, [feedback]);
+	const hidden = dismissNotice(storage, noticeIdentity("one", feedback.generation, feedback.id));
+	assert.deepEqual(conversationFeedback(inline, readFeedback(storage).one, "one", hidden), messages);
+	assert.equal(conversationFeedback(inline, [feedback], "two", hidden).length, 3);
+	assert.equal(conversationFeedback(messages.slice(1), [feedback], "one", [], { before: "earlier" }).length, 1);
+});
 
 test("dismissed notifications survive reopening, without hiding another session's errors", () => {
 	const values = new Map(), storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };

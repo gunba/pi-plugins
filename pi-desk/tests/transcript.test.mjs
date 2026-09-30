@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TranscriptFeed } from "../src/host/transcript-feed.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { FEEDBACK_ENTRY } from "../src/shared/feedback.ts";
+
+test("saved errors keep their native branch position without entering model context", () => {
+	const manager = SessionManager.inMemory("/tmp");
+	const feedback = { id: "error", text: "The provider failed", level: "error", timestamp: 123, generation: "first-worker" };
+	manager.appendMessage({ role: "user", content: "Hello", timestamp: 100 });
+	manager.appendCustomEntry(FEEDBACK_ENTRY, feedback);
+	manager.appendMessage({ role: "user", content: "Try again", timestamp: 200 });
+	const history = new Transcript().history(manager.getBranch());
+	assert.deepEqual(history.messages.map(message => message.role), ["user", "note", "user"]);
+	assert.deepEqual(history.messages[1].feedback, feedback);
+	assert.deepEqual(manager.buildSessionContext().messages.map(message => message.role), ["user", "user"]);
+});
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";

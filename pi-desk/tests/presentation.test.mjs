@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DeskPresentation } from "../src/host/presentation.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
+import { FEEDBACK_ENTRY } from "../src/shared/feedback.ts";
+
+test("native UI failures are timestamped saved metadata, not new model messages", () => {
+	const entries = [], handlers = new Map();
+	const presentation = new DeskPresentation(() => {}, () => {});
+	presentation.install({ appendEntry: (type, data) => entries.push({ type, data }), on() {},
+		events: { on: (name, fn) => { handlers.set(name, fn); return () => handlers.delete(name); } } });
+	presentation.notify("Failed to authenticate", "error");
+	presentation.notify("Connected", "info");
+	assert.equal(entries.length, 1);
+	assert.equal(entries[0].type, FEEDBACK_ENTRY);
+	assert.equal(entries[0].data.level, "error");
+	assert.ok(entries[0].data.timestamp > 0);
+	assert.equal(entries[0].data.generation, presentation.generation);
+	assert.deepEqual(presentation.snapshot().notifications[0], entries[0].data);
+});
 
 test("native selection context does not become an oversized modal heading", async () => {
 	const presentation = new DeskPresentation(() => {}, () => {});

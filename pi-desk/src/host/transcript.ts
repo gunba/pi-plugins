@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ChatBlock, ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { LEDGER_ENTRY, readLedger } from "../../../pi-context-ledger/model.ts";
@@ -213,6 +214,16 @@ export class Transcript {
 		if (entry.type === "custom_message") return this.message({
 			role: "custom", content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
 		}, entry.id, undefined, order, cwd);
+		if (entry.type === "custom" && entry.customType === FEEDBACK_ENTRY) {
+			const data = record(entry.data);
+			if (typeof data.id !== "string" || typeof data.text !== "string" ||
+				!["error", "warning"].includes(String(data.level))) return;
+			const timestamp = typeof data.timestamp === "number" && Number.isFinite(data.timestamp) ? data.timestamp : Date.parse(entry.timestamp);
+			return { id: `entry:${entry.id}`, entryId: entry.id, revision: 0, order, role: "note", timestamp, complete: true,
+				feedback: { id: data.id, text: data.text.slice(0, 12_000), level: data.level as "error" | "warning", timestamp,
+					generation: typeof data.generation === "string" ? data.generation : "" },
+				blocks: [{ type: "text", text: data.text.slice(0, 12_000) }] };
+		}
 		if (entry.type !== "custom" || entry.customType !== LEDGER_ENTRY) return;
 		const ledger = readLedger(entry.data);
 		return { id: `entry:${entry.id}`, entryId: entry.id, revision: 0, order, role: "note",
@@ -224,7 +235,7 @@ export class Transcript {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
-			|| entry.type === "custom" && entry.customType === LEDGER_ENTRY;
+			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY].includes(entry.customType);
 		const anchor = position.before ?? position.after ?? position.from;
 		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;
 		if (index < 0 || anchor && !visible(branch[index]!)) throw new Error("History position no longer exists on this branch.");

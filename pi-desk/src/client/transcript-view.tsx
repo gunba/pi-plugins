@@ -4,16 +4,21 @@ import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, type HistoryPosition } from "../shared/history.ts";
 import { api } from "./connection.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
+import { conversationFeedback } from "./chat-feedback.ts";
+import type { Feedback } from "../shared/feedback.ts";
+const noFeedback: Feedback[] = [], noDismissals: string[] = [];
 interface ReadingPosition {
 	from?: string; anchor?: string; offset: number; follow: boolean; sizes?: Record<string, number>;
 }
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
-export function TranscriptView({ session, source, generation, connected, epoch, starting, messages, onLatest, renderMessage, empty, footer, latestRequest }: {
+export function TranscriptView({ session, source, generation, connected, epoch, starting, messages, onLatest, renderMessage, empty, footer, latestRequest,
+	feedback = noFeedback, dismissed = noDismissals }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	starting?: boolean;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
+	feedback?: Feedback[]; dismissed?: string[];
 }) {
 	const storageKey = transcriptKey(session, source);
 	// Returning to a conversation opens its tail. Preserve a reading position only
@@ -22,7 +27,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const [page, setPage] = useState<HistoryPage>();
 	const [live, setLive] = useState(true);
 	const [atEnd, setAtEnd] = useState(true);
-	const [loading, setLoading] = useState(false), [error, setError] = useState("");
+	const [loading, setLoading] = useState(false), [errors, setErrors] = useState<Feedback[]>([]);
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
@@ -35,9 +40,9 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const details = useRef(new Map<string, boolean[]>());
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
 	const visible = useMemo(() => {
-		if (live) return recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS);
-		return page?.messages ?? [];
-	}, [page, messages, live]);
+		const native = live ? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS) : page?.messages ?? [];
+		return conversationFeedback(native, [...feedback, ...errors], session, dismissed, live ? { before: page?.before } : page ?? {});
+	}, [page, messages, live, feedback, errors, dismissed, session]);
 	const newest = messages.at(-1);
 	const moreRecent = page?.after ?? (newest && visible.at(-1) && newest.order > visible.at(-1)!.order
 		? visible.slice().reverse().find(message => message.entryId)?.entryId : undefined);
@@ -75,7 +80,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
 		restoring.current = true; userScroll.current = false;
 		loadingRef.current = true;
-		setLoading(true); setError("");
+		setLoading(true);
 		const query = new URLSearchParams(position as Record<string, string>);
 		if (source) query.set("source", source);
 		try {
@@ -103,7 +108,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			if (position.from && /position no longer exists/.test(String(error))) {
 				saved.current = undefined; void load(); return;
 			}
-			setError(String(error));
+			setErrors(previous => [...previous, { id: crypto.randomUUID(), text: String(error).slice(0, 12_000),
+				level: "error" as const, timestamp: Date.now(), generation }].slice(-10));
 		} finally { if (id === request.current) { loadingRef.current = false; setLoading(false); } }
 	};
 	useEffect(() => {
@@ -203,7 +209,6 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		{loading && <div className="history-status" role="status">Loading messages…</div>}
 		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
-		{error && <p className="error-text" role="alert">{error}</p>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
 			tabIndex={0} aria-label={source ? "Child conversation" : "Conversation"}
 			onWheel={() => { userScroll.current = true; }} onTouchMove={() => { userScroll.current = true; }}

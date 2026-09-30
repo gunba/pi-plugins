@@ -812,6 +812,13 @@ details[open] > summary:before {
 .queue-group li > span { flex:none; color:var(--muted); font-size:11px; }
 .queue-group li > p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
 .queue-group li + li { border-top:1px solid var(--border); margin-top:6px; padding-top:6px; }
+.message-feedback { padding:12px 16px; border:1px solid var(--border); border-left:3px solid var(--danger); border-radius:10px; background:var(--surface); }
+.feedback-heading { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--danger); }
+.feedback-heading time { margin-left:auto; color:var(--muted); font-size:10px; }
+.feedback-heading .icon-button { width:24px; height:24px; }
+.message-feedback p { margin:8px 0 0; font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.feedback-warning { border-left-color:var(--muted); }
+.feedback-warning .feedback-heading { color:var(--muted); }
 .agent-activity-bar { display: flex; gap: 12px; align-items: center; flex-shrink: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; padding: 9px 28px; text-align: left; font-size: 12px; }
 .agent-activity-bar > span { color: var(--muted); }
 .agent-activity-bar > span:last-child { margin-left: auto; color: var(--accent); }

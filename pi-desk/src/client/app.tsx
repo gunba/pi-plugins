@@ -27,6 +27,8 @@ import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
 import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
+import type { Feedback } from "../shared/feedback.ts";
+import { readFeedback, saveFeedback } from "./chat-feedback.ts";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
@@ -94,8 +96,15 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState(() => readFeedback(localStorage));
+  useEffect(() => saveFeedback(localStorage, feedback), [feedback]);
+  const setError = useCallback((text: string, key = selected) => {
+    if (!text) return;
+    setFeedback(previous => ({ ...previous, [key]: [...(previous[key] ?? []),
+      { id: crypto.randomUUID(), text: text.slice(0, 12_000), level: "error" as const, timestamp: Date.now(), generation: "browser" }].slice(-80) }));
+  }, [selected]);
   const attachments = useAttachments(selected, setError);
+  const error = feedback[selected]?.at(-1)?.text ?? "";
   const fileInput = useRef<HTMLInputElement>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [latestRequest, setLatestRequest] = useState(0);
@@ -176,11 +185,19 @@ export function App({ account }: { account?: BrowserAccount }) {
     session?.snapshot?.activity === "waiting" ||
     !!session?.inputs?.some(input => input.state === "sending") ||
     !!question;
-  const notice = ui?.notifications
-    .filter(
-      (item) => !dismissedNotices.includes(noticeIdentity(selected, ui!.generation, item.id)) && item.level !== "info",
-    )
-    .at(-1);
+  useEffect(() => {
+    const notices = (ui?.notifications ?? []).filter(item => item.level !== "info").map(item => ({
+      ...item, level: item.level as "warning" | "error", timestamp: item.timestamp ?? Date.now(), generation: item.generation ?? ui!.generation,
+    }));
+    if (session?.error) notices.push({ id: `failure:${session.activation ?? ui?.generation ?? ""}:${session.error}`,
+      text: session.error, level: "error", timestamp: Date.now(), generation: session.activation ?? ui?.generation ?? "browser" });
+    if (!notices.length) return;
+    setFeedback(previous => {
+      const old = previous[selected] ?? [], known = new Set(old.map(item => item.id));
+      const added = notices.filter(item => !known.has(item.id));
+      return added.length ? { ...previous, [selected]: [...old, ...added].slice(-80) } : previous;
+    });
+  }, [selected, ui?.notifications, ui?.generation, session?.error, session?.activation]);
 
   const refresh = async () => {
     try {
@@ -413,7 +430,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
-                disabled={selected === item.key && sending} report={setError}
+                 disabled={selected === item.key && sending} report={text => setError(text, item.key)}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
               </div>
             ))}
@@ -497,42 +514,19 @@ export function App({ account }: { account?: BrowserAccount }) {
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && !canCompose && messages.length > 0 && (
           <div className="connection-banner">
-            <span>{session.error || "Pi was interrupted. Resume to continue."}</span>
+            <span>Pi is not running. Resume to continue.</span>
             <button disabled={!connected} onClick={() => void restartSession()}>{session.file ? "Resume" : "Retry"}</button>
           </div>
         )}
-        {session?.snapshot?.extensions.some(extension => extension.error) && <div className="error-banner" role="alert">
-          Some Pi extensions failed to load. Prompts are paused until they are fixed.
-          <button onClick={() => setPanel("settings")}>View errors</button>
-        </div>}
         {host.directoryError && <div className="connection-banner" role="status">{host.directoryError}</div>}
-        {error && (
-          <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button aria-label="Dismiss error" onClick={() => setError("")}>
-              ×
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div className="error-banner" role="status">
-            <span>{notice.text}</span>
-            <button
-              aria-label="Dismiss notification"
-              onClick={() =>
-                setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, ui!.generation, notice.id)))
-              }
-            >
-              ×
-            </button>
-          </div>
-        )}
         <TranscriptView key={`${selected}/${session?.ui?.generation ?? ""}`}
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           starting={session?.state === "starting"}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
-          renderMessage={message => <Message message={message} sessionKey={selected} />}
+          feedback={feedback[selected]} dismissed={dismissedNotices}
+          renderMessage={message => <Message message={message} sessionKey={selected}
+            dismissFeedback={item => setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, item.generation, item.id)))} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>
@@ -1069,14 +1063,22 @@ const Message = memo(function Message({
   message,
   sessionKey,
   source,
+  dismissFeedback,
 }: {
   message: ChatMessage;
   sessionKey: string;
   source?: string;
+  dismissFeedback?: (feedback: Feedback) => void;
 }) {
   const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit", minute: "2-digit",
   }) : "";
+  if (message.feedback) return <article className={`message message-feedback feedback-${message.feedback.level}`} role="status">
+    <div className="feedback-heading"><Icon name="warning" /><strong>{message.feedback.level === "error" ? "Error" : "Warning"}</strong><time>{time}</time>
+      {dismissFeedback && <button className="icon-button" aria-label="Dismiss notification" onClick={() => dismissFeedback(message.feedback!)}>
+        <Icon name="close" /></button>}</div>
+    <p>{message.feedback.text}</p>
+  </article>;
   const round = planRoundNotice(message);
   if (round) return <article className="message message-plan-round">
     <div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>

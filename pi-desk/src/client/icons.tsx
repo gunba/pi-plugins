@@ -22,6 +22,7 @@ const paths: Record<string, ReactNode> = {
 	edit: <><path d="m4 16 12-12 4 4L8 20H4Zm10-10 4 4" /></>,
 	check: <path d="m5 12 4 4L19 6" />,
 	close: <path d="m6 6 12 12M18 6 6 18" />,
+	warning: <><path d="m12 3 10 18H2Z" /><path d="M12 9v5m0 3v.1" /></>,
 	more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
 	plus: <path d="M12 5v14M5 12h14" />,
 	expand: <path d="M14 3h7v7m0-7-8 8M10 21H3v-7m0 7 8-8" />,

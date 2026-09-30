@@ -22,7 +22,7 @@ export interface PresentationSnapshot {
 	views: ViewSnapshot[];
 	interactions: InteractionSnapshot[];
 	statuses: Record<string, string>;
-	notifications: { id: string; text: string; level: "info" | "warning" | "error" }[];
+	notifications: { id: string; text: string; level: "info" | "warning" | "error"; timestamp?: number; generation?: string }[];
 	editorText: string;
 	editorId: string;
 	title: string;
@@ -69,6 +69,7 @@ export interface ChatMessage {
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };
 	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number }[] };
+	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
