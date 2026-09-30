@@ -47,7 +47,7 @@ import { TranscriptView } from "./transcript-view.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
-import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
+import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, isActivityOnly, type ClientState } from "./state.ts";
 import type {
   ChatMessage,
   HistoryPage,
@@ -1083,8 +1083,7 @@ const Message = memo(function Message({
       <span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div>
     <p>{round.objective}</p>
   </article>;
-  const activityOnly = message.role === "assistant" && message.blocks.length > 0 &&
-    message.blocks.every(block => block.type === "toolCall" || block.type === "thinking");
+  const activityOnly = isActivityOnly(message);
   return (
     <ReferenceContext value={{ message: message.id, source }}>
     <article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}`}>

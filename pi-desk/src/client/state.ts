@@ -7,6 +7,12 @@ export interface CachedMessage extends ChatMessage { replaces?: string }
 export interface ClientState { host?: HostState; messages: Record<string, CachedMessage[]>; focused?: string[] }
 export const transcriptKey = (session: string, source?: string) => source ? `${session}/${source}` : session;
 const weights = new WeakMap<ChatMessage, number>();
+export function isActivityOnly(message: ChatMessage): boolean {
+	if (message.role !== "assistant") return false;
+	// Native block indexes can arrive out of order during streaming.
+	const blocks = message.blocks.filter(Boolean);
+	return blocks.length > 0 && blocks.every(block => block.type === "toolCall" || block.type === "thinking");
+}
 export function messageWeight(message: ChatMessage): number {
 	let weight = weights.get(message);
 	if (weight === undefined) { weight = JSON.stringify(message).length; weights.set(message, weight); }
