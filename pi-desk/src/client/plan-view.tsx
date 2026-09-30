@@ -36,8 +36,8 @@ export function PlanView({ view, invoke, disabled, showHeading = true, expand }:
 			const mark = item.status === "completed" ? <Icon name="check" /> : item.status === "in progress" ? <span className="step-active-dot" /> : <span>{index + 1}</span>;
 			return <li className={`plan-step ${item.status?.replaceAll(" ", "-")}`} key={item.id}>
 				{status ? <button className="step-status" disabled={locked} aria-label={`Change status: ${item.title} (${item.status})`}
-					title={`Change status · ${item.status}`} onClick={() => invoke(status)}>{mark}</button>
-					: <span className="step-status" aria-label={item.status}>{mark}</span>}
+					title={`Change status · ${item.status}`} onClick={() => invoke(status)}><span className="step-marker">{mark}</span></button>
+					: <span className="step-status" aria-label={item.status}><span className="step-marker">{mark}</span></span>}
 				<div className="step-content"><span>{item.title}</span>{item.status === "in progress" && <small>In progress</small>}</div>
 				<ActionMenu actions={item.actions?.filter(action => action !== status) ?? []} invoke={invoke}
 					disabled={locked} label={`Actions for step ${index + 1}`} />

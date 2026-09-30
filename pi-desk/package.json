@@ -1,6 +1,6 @@
 {
   "name": "@gunba/pi-desk",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "A desktop and mobile client for Pi.",
   "type": "module",
   "license": "MIT",
@@ -47,6 +47,7 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "typescript": "5.9.3",
     "vite": "8.3.1"
   }

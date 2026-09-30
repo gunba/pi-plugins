@@ -2,7 +2,7 @@ import { WebSocket } from "ws";
 import { ProxyAgent } from "proxy-agent";
 import { object, string } from "./commands.ts";
 import { SecureChannel, validId, MAX_WIRE, PROTOCOL_VERSION } from "../shared/secure-channel.ts";
-import { acceptChannelOffer, hostAdmission, ChannelVersionError, type ChannelIdentity } from "../shared/account-channel.ts";
+import { acceptChannelOffer, ClientHandshake, hostAdmission, ChannelVersionError, type ChannelIdentity, type ChannelPurpose } from "../shared/account-channel.ts";
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
@@ -11,9 +11,10 @@ import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type Remot
 import type { HostEvent } from "../shared/protocol.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
 import { AccountSignInRequired } from "./account-errors.ts";
+import { MAX_NETWORK_PACKET } from "../../../pi-party/network.ts";
 
 interface Peer {
-	id: string; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;
+	id: string; purpose: ChannelPurpose; initiator?: boolean; handshake?: ClientHandshake; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;
 	timer: ReturnType<typeof setTimeout>; unwatch?: () => void; pending: number; events: EventWindow;
 	leaseUntil: number; ownExpires: number; sentCredential?: string; handshaking: boolean; renewing: boolean;
 }
@@ -21,7 +22,7 @@ export interface RemoteAccess { id: string; authorized: () => boolean }
 export interface HostAccount extends ChannelIdentity {
 	config: AccountConfiguration; device: { id: string; thumbprint: string };
 	verifier(): CredentialVerifier;
-	lease(peers: MembershipPeer[]): Promise<MembershipLease>;
+	lease(peers: MembershipPeer[], purpose?: "party"): Promise<MembershipLease>;
 	heartbeat(connected: boolean): Promise<unknown>;
 }
 export interface RelayStatus { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string }
@@ -30,6 +31,10 @@ interface Options {
 	request: (access: RemoteAccess, request: ApiRequest) => Promise<ApiResponse>;
 	watch: (handler: (event: HostEvent) => void) => () => void;
 	status: (status: RelayStatus) => void;
+	party?: {
+		connected: (id: string, send: (payload: unknown) => Promise<void>, close: () => void) => () => void;
+		receive: (id: string, payload: unknown) => void | Promise<void>;
+	};
 }
 
 export class RelayConnector {
@@ -37,6 +42,7 @@ export class RelayConnector {
 	private verifier: CredentialVerifier;
 	private socket?: WebSocket;
 	private peers = new Map<string, Peer>();
+	private computers: string[] = [];
 	private timer?: ReturnType<typeof setTimeout>;
 	private heartbeat?: ReturnType<typeof setTimeout>;
 	private refresh?: ReturnType<typeof setInterval>;
@@ -127,6 +133,7 @@ export class RelayConnector {
 					}
 					if (message.type !== "admitted" || !authenticating || message.protocol !== PROTOCOL_VERSION) throw new Error("Invalid admission.");
 					this.admitted = true; this.backoff = 1000; this.update("online");
+					if (this.options.party) socket.send(JSON.stringify({ type: "party-enable" }));
 					this.refresh = setInterval(maintain, 20_000); this.refresh.unref();
 					this.expiry = setInterval(() => {
 						if (performance.now() >= this.hostLeaseUntil) { socket.terminate(); return; }
@@ -135,14 +142,23 @@ export class RelayConnector {
 					maintain(); return;
 				}
 				if (message.type === "renewed") return;
+				if (message.type === "hosts") {
+					if (!Array.isArray(message.hosts) || message.hosts.length > 256 || !message.hosts.every(validId)) throw new Error("Invalid computer directory.");
+					this.computers = message.hosts; this.connectParties(); return;
+				}
 				if (!validId(message.peer)) throw new Error("Invalid relay peer.");
 				const id = message.peer;
 				if (message.type === "opened") {
 					if (this.peers.has(id) || this.peers.size >= 32) throw new Error("Too many relay peers.");
-					const peer: Peer = { id, ready: false, pending: 0, events: new EventWindow(),
+					const purpose = message.purpose === "party" ? "party" : "control";
+					if (purpose === "party" && (!this.options.party || id === this.options.account.device.id)) {
+						socket.send(JSON.stringify({ type: "party-close", peer: id })); return;
+					}
+					const peer: Peer = { id, purpose, initiator: purpose === "party" && message.initiator === true, ready: false, pending: 0, events: new EventWindow(),
 						leaseUntil: 0, ownExpires: 0, handshaking: false, renewing: false,
 						timer: setTimeout(() => this.drop(id, true, 1013), 30_000) };
 					this.peers.set(id, peer);
+					if (purpose === "party" && message.initiator === true) void this.offerParty(peer).catch(() => this.drop(id, true, 1013));
 				} else if (message.type === "closed") this.drop(id);
 				else if (message.type === "frame") {
 					const peer = this.peers.get(id);
@@ -152,10 +168,10 @@ export class RelayConnector {
 					else {
 						if (peer.handshaking) { this.drop(id, true); return; }
 						peer.handshaking = true;
-						void this.identify(peer, frame).catch(error => {
+						void (peer.handshake ? this.finishParty(peer, frame) : this.identify(peer, frame)).catch(error => {
 							if (this.peers.get(id) !== peer) return;
 							if (error instanceof ChannelVersionError) {
-								socket.send(JSON.stringify({ type: "frame", peer: id,
+								socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-frame" : "frame", peer: id,
 									frame: JSON.stringify({ type: "upgrade-required", api: API_VERSION }) }));
 								this.drop(id, true, 4003);
 							} else this.drop(id, true, error instanceof MembershipDenied ? 4001 : 1013);
@@ -169,7 +185,7 @@ export class RelayConnector {
 		});
 		socket.on("close", () => {
 			if (this.socket !== socket) return;
-			this.socket = undefined; this.admitted = false;
+			this.socket = undefined; this.admitted = false; this.computers = [];
 			clearTimeout(this.heartbeat); clearInterval(this.refresh); clearInterval(this.expiry);
 			for (const id of this.peers.keys()) this.drop(id);
 			if (this.stopped) return;
@@ -180,13 +196,16 @@ export class RelayConnector {
 	private async maintain(socket: WebSocket): Promise<void> {
 		const peers = [...this.peers.values()].filter(peer => peer.device);
 		const started = performance.now();
-		const lease = await this.options.account.lease(peers.map(peer => ({ id: peer.device!.id, thumbprint: peer.device!.thumbprint })));
+		const leaseFor = (purpose: ChannelPurpose) => this.options.account.lease(peers.filter(peer => peer.purpose === purpose)
+			.map(peer => ({ id: peer.device!.id, thumbprint: peer.device!.thumbprint })), purpose === "party" ? "party" : undefined);
+		const [control, party] = await Promise.all([leaseFor("control"), this.options.party ? leaseFor("party") : Promise.resolve(undefined)]);
 		if (this.socket !== socket || this.stopped) return;
-		this.hostLeaseUntil = membershipDeadline(lease, started);
+		this.hostLeaseUntil = membershipDeadline(control, started);
 		for (const peer of peers) if (this.peers.get(peer.id) === peer) {
-			try { peer.leaseUntil = membershipDeadline(lease, started, peer.device!.id); }
+			try { peer.leaseUntil = membershipDeadline(peer.purpose === "party" ? party! : control, started, peer.device!.id); }
 			catch (error) { this.drop(peer.id, true, error instanceof MembershipDenied ? 4001 : 1013); }
 		}
+		this.connectParties();
 		const current = await this.certificate();
 		if (this.socket !== socket || socket.readyState !== WebSocket.OPEN || this.stopped) return;
 		socket.send(JSON.stringify({ type: "renew", credential: current.token }));
@@ -203,21 +222,66 @@ export class RelayConnector {
 			&& !!peer.device && peer.device.expires > now && peer.ownExpires > now
 			&& peer.leaseUntil > monotonic && this.hostLeaseUntil > monotonic;
 	}
+	private connectParties(): void {
+		if (!this.options.party || !this.admitted || this.socket?.readyState !== WebSocket.OPEN
+			|| performance.now() >= this.hostLeaseUntil) return;
+		let capacity = 32 - this.peers.size;
+		for (const id of this.computers) if (this.options.account.device.id < id && !this.peers.has(id)) {
+			if (capacity-- <= 0) break;
+			this.socket.send(JSON.stringify({ type: "party-open", peer: id }));
+		}
+	}
+	private async wire(peer: Peer, frame: string): Promise<void> {
+		const socket = this.socket;
+		if (this.stopped || !this.admitted || this.peers.get(peer.id) !== peer || socket?.readyState !== WebSocket.OPEN
+			|| performance.now() >= this.hostLeaseUntil || socket.bufferedAmount > 2 * 1024 * 1024 || Buffer.byteLength(frame) > MAX_WIRE) {
+			throw new Error("Connection unavailable.");
+		}
+		await new Promise<void>((yes, no) => socket.send(JSON.stringify({
+			type: peer.purpose === "party" ? "party-frame" : "frame", peer: peer.id, frame,
+		}), error => error ? no(error) : yes()));
+	}
+	private async offerParty(peer: Peer): Promise<void> {
+		peer.handshaking = true;
+		const handshake = await ClientHandshake.create(peer.id, this.options.account, this.verifier, "party");
+		if (this.peers.get(peer.id) !== peer) { handshake.close(); return; }
+		peer.handshake = handshake; peer.handshaking = false;
+		await this.wire(peer, JSON.stringify(handshake.offer));
+	}
+	private async finishParty(peer: Peer, frame: string): Promise<void> {
+		const handshake = peer.handshake!; peer.handshake = undefined;
+		const session = await handshake.finish(JSON.parse(frame), {
+			output: wire => this.output(peer, wire),
+			input: payload => { void this.message(peer, payload).catch(() => this.drop(peer.id, true)); },
+			failed: () => this.drop(peer.id, true, 1013),
+		});
+		try {
+			const started = performance.now(), lease = await this.options.account.lease([
+				{ id: session.peer.id, thumbprint: session.peer.thumbprint },
+			], "party");
+			const deadline = membershipDeadline(lease, started, session.peer.id);
+			if (this.peers.get(peer.id) !== peer) { session.channel.close(); return; }
+			peer.device = session.peer; peer.ownExpires = session.own.expires; peer.leaseUntil = deadline;
+			peer.sentCredential = handshake.offer.credential; peer.channel = session.channel; peer.handshaking = false;
+			await peer.channel.send({ type: "hello", api: API_VERSION } satisfies RemotePayload);
+		} catch (error) { session.channel.close(); throw error; }
+	}
 	private async output(peer: Peer, frame: string): Promise<void> {
 		const socket = this.socket;
 		if (!this.valid(peer) || !socket || socket.bufferedAmount > 2 * 1024 * 1024) throw new Error("Connection authorization or capacity unavailable.");
-		await new Promise<void>((yes, no) => socket.send(JSON.stringify({ type: "frame", peer: peer.id, frame }), error => error ? no(error) : yes()));
+		await this.wire(peer, frame);
 	}
 	private async identify(peer: Peer, wire: string): Promise<void> {
 		const session = await acceptChannelOffer(JSON.parse(wire), this.options.account.device.id, this.options.account, this.verifier, async device => {
+			if (peer.purpose === "party" && device.id !== peer.id) throw new Error("Party computer identity changed.");
 			const started = performance.now();
-			const lease = await this.options.account.lease([{ id: device.id, thumbprint: device.thumbprint }]);
+			const lease = await this.options.account.lease([{ id: device.id, thumbprint: device.thumbprint }], peer.purpose === "party" ? "party" : undefined);
 			peer.leaseUntil = membershipDeadline(lease, started, device.id);
 		}, {
 			output: frame => this.output(peer, frame),
 			input: payload => { void this.message(peer, payload).catch(() => this.drop(peer.id, true)); },
 			failed: () => this.drop(peer.id, true, 1013),
-		});
+		}, peer.purpose);
 		if (this.peers.get(peer.id) !== peer) { session.channel.close(); return; }
 		peer.device = session.peer; peer.ownExpires = session.own.expires; peer.sentCredential = session.accept.credential;
 		peer.channel = session.channel;
@@ -227,14 +291,22 @@ export class RelayConnector {
 		if (!this.valid(peer)) { this.drop(peer.id, true, 1013); return; }
 		const message = object(raw), device = peer.device!;
 		if (!peer.ready) {
-			if (message.type !== "hello") throw new Error("Expected device proof.");
-			if (!apiMatches(message.api)) {
+			if (message.type !== (peer.initiator ? "ready" : "hello")) throw new Error("Expected device proof.");
+			if (!apiMatches(peer.initiator ? object(message.release).api : message.api)) {
 				await peer.channel!.send({ type: "upgrade-required", api: API_VERSION });
 				this.drop(peer.id, true, 4003); return;
 			}
 			peer.ready = true; clearTimeout(peer.timer);
-			await peer.channel!.send({ type: "ready", release: RELEASE } satisfies RemotePayload);
+			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE } satisfies RemotePayload);
 			if (!this.valid(peer)) return;
+			if (peer.purpose === "party") {
+				peer.unwatch = this.options.party!.connected(device.id, payload => {
+					if (!this.valid(peer)) return Promise.reject(new Error("Party computer is offline."));
+					return peer.channel!.send({ type: "party", payload });
+				}, () => this.drop(peer.id, true, 1013));
+				if (!this.valid(peer)) peer.unwatch();
+				return;
+			}
 			peer.unwatch = this.options.watch(event => {
 				if (!this.valid(peer)) { this.drop(peer.id, true, 1013); return; }
 				const sequence = peer.events.reserve(event);
@@ -248,11 +320,16 @@ export class RelayConnector {
 			if (peer.renewing) throw new Error("Credential renewal already in progress.");
 			peer.renewing = true;
 			try {
-				const updated = await this.verifier.verify(string(message.credential, 8000), "browser", device.id);
+				const updated = await this.verifier.verify(string(message.credential, 8000), peer.purpose === "party" ? "host" : "browser", device.id);
 				if (updated.thumbprint !== device.thumbprint) throw new Error("Device identity changed.");
 				if (this.valid(peer)) peer.device = updated;
 			} finally { peer.renewing = false; }
 			return;
+		}
+		if (peer.purpose === "party") {
+			if (message.type === "ready") return;
+			if (message.type !== "party" || Buffer.byteLength(JSON.stringify(message.payload)) > MAX_NETWORK_PACKET) throw new Error("Invalid party payload.");
+			await this.options.party!.receive(device.id, message.payload); return;
 		}
 		if (message.type === "events_ack") { peer.events.acknowledge(message.sequence); return; }
 		if (message.type !== "request" || !validId(message.id) || peer.pending >= 32) throw new Error("Invalid remote request.");
@@ -270,8 +347,8 @@ export class RelayConnector {
 	private drop(id: string, notify = false, code = 4001): void {
 		const peer = this.peers.get(id);
 		if (!peer) return;
-		this.peers.delete(id); clearTimeout(peer.timer); peer.channel?.close(); peer.unwatch?.();
-		if (notify && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: "close", peer: id, code }));
+		this.peers.delete(id); clearTimeout(peer.timer); peer.handshake?.close(); peer.channel?.close(); peer.unwatch?.();
+		if (notify && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-close" : "close", peer: id, code }));
 	}
 	close(): void {
 		this.stopped = true; clearTimeout(this.timer); clearTimeout(this.heartbeat); clearInterval(this.refresh); clearInterval(this.expiry);

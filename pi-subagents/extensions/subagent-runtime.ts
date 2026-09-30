@@ -239,7 +239,7 @@ export type ChildToolFactory = (
 	mode: ChildMode,
 ) => ToolDefinition[];
 
-type QueueSource = "initial" | "followup" | "report" | "settlement";
+type QueueSource = "initial" | "followup" | "report" | "settlement" | "party";
 
 type QueueItem = {
 	messageId: string;
@@ -663,7 +663,7 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 		if (entry.customType === INBOX_ENTRY && entry.data.action === "accepted") {
 			const { messageId, content, source, acceptedAt } = entry.data;
 			if (typeof messageId === "string" && typeof content === "string" &&
-				(source === "initial" || source === "followup" || source === "report" || source === "settlement") &&
+				(source === "initial" || source === "followup" || source === "report" || source === "settlement" || source === "party") &&
 				typeof acceptedAt === "number") {
 				accepted.set(messageId, { messageId, content, source, acceptedAt, started: false });
 				updatedAt = Math.max(updatedAt ?? 0, acceptedAt);
@@ -842,6 +842,7 @@ export class SubagentRuntime {
 	readonly maxActive: number;
 	private readonly openTimeoutMs: number;
 	private readonly records = new Map<string, ChildRecord>();
+	private readonly closingChildren = new Set<string>();
 	private readonly leases = new Map<string, SessionLease>();
 	private readonly ownedManagers = new Map<string, SessionManager>();
 	private readonly openingFiles = new Map<string, number>();
@@ -1308,6 +1309,7 @@ export class SubagentRuntime {
 		source: QueueSource,
 		messageId: string = randomUUID(),
 	): QueueItem {
+		if (this.closingChildren.has(record.descriptor.childSessionId)) throw Error("The subagent is closing.");
 		const queued = record.queue.find((item) => item.messageId === messageId);
 		if (queued) return queued;
 		const item: QueueItem = {
@@ -1376,6 +1378,47 @@ export class SubagentRuntime {
 		this.startPump(record);
 		this.emit();
 		return item.messageId;
+	}
+
+	resumePartyAgent(caller: Authority, childId: string): string {
+		this.assertLive(caller);
+		if (caller !== this.rootAuthority) throw Error("Party child controls require the owning runtime.");
+		const record = this.records.get(childId);
+		if (!record || record.descriptor.mode !== "continuable") throw Error("This managed child is not resumable.");
+		if (this.closingChildren.has(childId)) throw Error("The subagent is closing.");
+		if (record.opening || record.activation?.current || record.queue.length && !record.parked) return "already_running";
+		if (!record.queue.length) this.accept(record, "Read the pending peer messages with party_read and respond as needed.", "party");
+		registerWorkResource(record.descriptor.parentSessionId, { kind: "child", id: childId }, true, record.workId);
+		this.setParked(record, false);
+		if (!record.pendingSettlement) record.settlementOutcome = undefined;
+		record.pendingSettlement = true; this.startPump(record); this.emit();
+		return "queued";
+	}
+
+	async closePartyAgent(caller: Authority, childId: string): Promise<string> {
+		this.assertLive(caller);
+		if (caller !== this.rootAuthority) throw Error("Party child controls require the owning runtime.");
+		if (!this.records.has(childId)) throw Error("The managed child is unavailable.");
+		const ids = new Set([childId]);
+		for (let size = -1; size !== ids.size;) {
+			size = ids.size;
+			for (const record of this.records.values()) if (ids.has(record.descriptor.parentSessionId)) ids.add(record.descriptor.childSessionId);
+		}
+		const records = [...ids].map(id => this.records.get(id)!).sort((a, b) => b.descriptor.depth - a.descriptor.depth);
+		try {
+			for (const record of records) {
+				this.closingChildren.add(record.descriptor.childSessionId); this.setParked(record, true);
+				for (const item of record.queue) item.cancelled = true;
+				record.opening?.abort(); record.activation?.driver.interrupt();
+			}
+			await Promise.allSettled(records.map(record => record.pump));
+			for (const record of records) {
+				while (record.queue.length) this.finishCancelledItem(record, record.queue[0]);
+				const failure = await this.disposeActivation(record); if (failure) throw failure;
+				await this.maybeSettle(record);
+			}
+			return "closed";
+		} finally { for (const id of ids) this.closingChildren.delete(id); this.emit(); }
 	}
 
 	interrupt(caller: Authority, targetId: string): boolean {

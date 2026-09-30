@@ -1,5 +1,6 @@
 export interface PartyAgent {
 	id: string;
+	epoch: string;
 	label: string;
 	cwd: string;
 	description: string;

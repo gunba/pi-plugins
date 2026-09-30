@@ -42,7 +42,7 @@ export async function runRelay(args: string[]): Promise<void> {
 	process.once("SIGINT", close); process.once("SIGTERM", close);
 }
 
-interface Room { socket: WebSocket; peers: Map<string, WebSocket>; credential: DeviceCredential }
+interface Room { socket: WebSocket; peers: Map<string, WebSocket>; parties: Set<string>; partyEnabled: boolean; credential: DeviceCredential }
 function requestUrl(target: string | undefined, origin: string): URL | undefined {
 	try {
 		const url = new URL(target ?? "/", origin);
@@ -89,7 +89,7 @@ export class RelayServer {
 				this.sockets.handleUpgrade(request, socket, head, ws => this.admit(host, ws));
 			} else if (url.pathname === "/connect") {
 				const room = this.rooms.get(host);
-				if (request.headers.origin !== this.appOrigin || !room || room.peers.size >= 32) { reject(403); return; }
+				if (request.headers.origin !== this.appOrigin || !room || room.peers.size + room.parties.size >= 32) { reject(403); return; }
 				this.sockets.handleUpgrade(request, socket, head, ws => this.client(room, ws));
 			} else reject(404);
 		});
@@ -137,13 +137,14 @@ export class RelayServer {
 				clearTimeout(deadline); socket.off("message", identify);
 				this.host(id, socket, credential);
 				this.send(socket, { type: "admitted", protocol: PROTOCOL_VERSION });
+				this.announceHosts();
 			})().catch(() => socket.close(4001, "Host authorization failed"));
 		};
 		socket.on("message", identify);
 		this.send(socket, { type: "admission", protocol: PROTOCOL_VERSION, nonce });
 	}
 	private host(id: string, socket: WebSocket, credential: DeviceCredential): void {
-		const room: Room = { socket, peers: new Map(), credential }; this.rooms.set(id, room);
+		const room: Room = { socket, peers: new Map(), parties: new Set(), partyEnabled: false, credential }; this.rooms.set(id, room);
 		let renewing = false;
 		socket.on("message", (raw, binary) => {
 			try {
@@ -160,7 +161,30 @@ export class RelayServer {
 					}).catch(() => socket.close(4001, "Host authorization failed")).finally(() => { renewing = false; });
 					return;
 				}
+				if (message.type === "party-enable") { room.partyEnabled = true; this.announceHosts(); return; }
+				if (message.type === "party-open") {
+					if (!room.partyEnabled) throw new Error("Party transport is not enabled.");
+					if (!validId(message.peer) || message.peer === id) throw new Error("Invalid party computer.");
+					const target = this.rooms.get(message.peer);
+					if (!target?.partyEnabled || target.credential.expires <= Date.now() / 1000) return;
+					if (room.parties.has(message.peer)) return;
+					if (room.parties.size + room.peers.size >= 32 || target.parties.size + target.peers.size >= 32) return;
+					room.parties.add(message.peer); target.parties.add(id);
+					this.send(target.socket, { type: "opened", peer: id, purpose: "party", initiator: false });
+					this.send(socket, { type: "opened", peer: message.peer, purpose: "party", initiator: true });
+					return;
+				}
 				if (!validId(message.peer)) throw new Error("Invalid peer.");
+				if (message.type === "party-frame" || message.type === "party-close") {
+					if (!room.parties.has(message.peer)) return;
+					const target = this.rooms.get(message.peer);
+					if (!target || !target.parties.has(id) || target.credential.expires <= Date.now() / 1000) return;
+					if (message.type === "party-close") this.closeParty(id, message.peer);
+					else if (typeof message.frame === "string" && Buffer.byteLength(message.frame) <= MAX_WIRE) {
+						this.send(target.socket, { type: "frame", peer: id, frame: message.frame });
+					} else throw new Error("Invalid party frame.");
+					return;
+				}
 				const peer = room.peers.get(message.peer);
 				if (!peer) return;
 				if (message.type === "close") peer.close([1000, 1012, 1013, 4001, 4002, 4003].includes(message.code) ? message.code : 4002, "Device connection closed");
@@ -172,7 +196,19 @@ export class RelayServer {
 			if (this.rooms.get(id) !== room) return;
 			this.rooms.delete(id);
 			for (const peer of room.peers.values()) peer.close(1012, "Host disconnected");
+			for (const other of room.parties) this.closeParty(id, other);
+			this.announceHosts();
 		});
+	}
+	private announceHosts(): void {
+		const hosts = [...this.rooms].filter(([, room]) => room.partyEnabled).map(([id]) => id);
+		for (const room of this.rooms.values()) if (room.partyEnabled) this.send(room.socket, { type: "hosts", hosts });
+	}
+	private closeParty(id: string, other: string): void {
+		const room = this.rooms.get(id), target = this.rooms.get(other);
+		room?.parties.delete(other); target?.parties.delete(id);
+		if (room) this.send(room.socket, { type: "closed", peer: other });
+		if (target) this.send(target.socket, { type: "closed", peer: id });
 	}
 	private client(room: Room, socket: WebSocket): void {
 		if (room.credential.expires <= Date.now() / 1000) { socket.close(1012, "Host authorization expired"); return; }

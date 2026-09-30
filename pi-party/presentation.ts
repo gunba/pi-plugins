@@ -14,7 +14,7 @@ export interface PartyUiOperations {
 	leave(): void;
 	delivery(enabled: boolean): void;
 	profile(description: string): void;
-	remove(id: string): void;
+	remove(id: string): unknown | Promise<unknown>;
 	send(to: string, text: string, wake: boolean, invite: boolean): void;
 }
 
@@ -128,7 +128,7 @@ export class PartyPresentation {
 				...(state.self.party && peer.party === state.self.party ? [
 					action(`remove:${peer.id}`, "Remove", async () => {
 						if (await this.confirm("Remove member", `Remove ${peer.label} from ${state.self.party}? They can rejoin.`)) {
-							this.checkParty(state.self.party); this.ops.remove(peer.id);
+							this.checkParty(state.self.party); await this.ops.remove(peer.id);
 						}
 					}, true),
 				] : []),
@@ -165,7 +165,7 @@ export class PartyPresentation {
 			controls.push(action("latest", "Latest messages", () => { this.historyQuery = undefined; }));
 		} else if (this.page === "discover") {
 			const found = this.ops.discover(this.query, this.offline, this.offset);
-			details.summary = `Discover local agents${this.query ? ` · ${this.query}` : ""}`;
+			details.summary = `Discover agents${this.query ? ` · ${this.query}` : ""}`;
 			details.items = found.agents.map(peerItem);
 			controls.push(action("search", "Search agents", async () => {
 				const query = await this.text("Name, directory, description or party", this.query);

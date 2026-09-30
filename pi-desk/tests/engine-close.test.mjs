@@ -48,6 +48,30 @@ test("close aborts active work but retains lifecycle ownership until a transitio
 	await assert.rejects(engine.change(async () => assert.fail("A closed runtime must not start another transition")), /closing/);
 });
 
+test("explicit Stop starts a native turn for stranded steering, but never during closure", async () => {
+	const engine = new DeskEngine(() => {}), steering = ["No need", "I uploaded it"], calls = [];
+	engine.snapshot = () => ({});
+	const session = {
+		isIdle: true, abortCompaction() {}, abortBranchSummary() {}, abort: async () => {},
+		getSteeringMessages: () => steering,
+		sendCustomMessage: async (message, options) => { calls.push({ message, options }); },
+	};
+	engine.runtime = { session, dispose: async () => {} };
+	try {
+		await engine.command(engine.presentation.generation, { kind: "abort" });
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].message.display, false);
+		assert.equal(calls[0].options.triggerTurn, true);
+		assert.deepEqual(steering, ["No need", "I uploaded it"], "native queues, including their attachments, are not rebuilt from text");
+		steering.length = 0;
+		await engine.command(engine.presentation.generation, { kind: "abort" });
+		assert.equal(calls.length, 1, "Stop without steering remains stopped");
+		steering.push("late"); session.abort = async () => { engine.closed = true; };
+		await engine.command(engine.presentation.generation, { kind: "abort" });
+		assert.equal(calls.length, 1, "closure cannot launch another model turn");
+	} finally { engine.closed = false; await engine.close(); }
+});
+
 test("native shutdown hooks can settle a tool that is still aborting", async () => {
 	const engine = new DeskEngine(() => {});
 	let release, disposed = false;

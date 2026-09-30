@@ -77,8 +77,8 @@ enrolled key. Browser and computer then independently verify each other's
 authority-issued credential and possession proof.
 
 Each channel uses fresh ephemeral ECDH P-256 keys. Signed proofs bind the
-intended computer, both roles, API/protocol revisions, nonces and ephemeral
-keys. HKDF binds the handshake transcript and derives separate AES-256-GCM
+intended computer, both roles, channel purpose, API/protocol revisions, nonces
+and ephemeral keys. HKDF binds the handshake transcript and derives separate AES-256-GCM
 direction keys. Ordered counters reject reused frames; message sizes,
 incomplete transfers and queues are bounded. Credential renewal cannot change
 the peer's identity or key. HTTPS/WSS protects the outer connection.
@@ -86,6 +86,16 @@ the peer's identity or key. HTTPS/WSS protects the outer connection.
 This replaces durable shared message secrets with ephemeral channel keys. It
 is not a claim of audited forward secrecy or guaranteed erasure of JavaScript
 runtime memory. A compromised endpoint can access its live keys and content.
+
+Party traffic uses a separate host-to-host purpose, authorized only between
+computers belonging to the same owner. It carries bounded agent directories,
+party messages and membership/lifecycle operations, not transcripts or a browser
+API tunnel. Receiving computers validate local membership epochs and own their
+sessions and child drivers. Resuming an existing party member does not require a
+new human approval; creating an agent requires the native approval dialog.
+Discovery and invitations cannot start it. Paused delivery and wake budgets
+remain in force. This shares agent-written context across trusted computers;
+it does not make peer text trusted human instructions.
 
 The broker can observe connection metadata, withhold traffic, disconnect peers
 and record ciphertext. It must not also serve the app or hold its publishing

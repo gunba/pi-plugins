@@ -4,7 +4,11 @@ import { CredentialVerifier, type DeviceCredential } from "./device-credential.t
 import { API_VERSION } from "./release.ts";
 import { base64, newSecret, PROTOCOL_VERSION, SecureChannel, validId, validSecret } from "./secure-channel.ts";
 
-export type ProofPurpose = "pi-desk-client-hello+jws" | "pi-desk-host-hello+jws" | "pi-desk-host-admission+jws";
+export type ProofPurpose = "pi-desk-client-hello+jws" | "pi-desk-host-hello+jws" | "pi-desk-host-admission+jws"
+	| "pi-desk-party-offer+jws" | "pi-desk-party-accept+jws";
+export type ChannelPurpose = "control" | "party";
+const offerPurpose = (purpose: ChannelPurpose): ProofPurpose => purpose === "party" ? "pi-desk-party-offer+jws" : "pi-desk-client-hello+jws";
+const acceptPurpose = (purpose: ChannelPurpose): ProofPurpose => purpose === "party" ? "pi-desk-party-accept+jws" : "pi-desk-host-hello+jws";
 export interface ChannelIdentity {
 	certificate(): Promise<string>;
 	signProof(payload: Uint8Array<ArrayBuffer>, purpose: ProofPurpose): Promise<string>;
@@ -59,7 +63,7 @@ async function ephemeral(): Promise<{ privateKey: CryptoKey; publicKey: DeviceKe
 	return { privateKey: pair.privateKey, publicKey: (await deviceKey(await crypto.subtle.exportKey("jwk", pair.publicKey))).key };
 }
 async function channel(privateKey: CryptoKey, remote: DeviceKey, offer: ChannelWire, accept: ChannelWire,
-	client: Hello, host: Hello, device: string, role: "host" | "client", handlers: ChannelHandlers): Promise<SecureChannel> {
+	client: Hello, host: Hello, device: string, role: "host" | "client", handlers: ChannelHandlers, purpose: ChannelPurpose): Promise<SecureChannel> {
 	const publicKey = await crypto.subtle.importKey("jwk", remote, { name: "ECDH", namedCurve: "P-256" }, false, []);
 	const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: publicKey }, privateKey, 256));
 	let material: CryptoKey;
@@ -67,7 +71,7 @@ async function channel(privateKey: CryptoKey, remote: DeviceKey, offer: ChannelW
 	finally { shared.fill(0); }
 	const root = new Uint8Array(await crypto.subtle.deriveBits({
 		name: "HKDF", hash: "SHA-256", salt: await digest([offer, accept]),
-		info: bytes(["pi-desk-account-channel", PROTOCOL_VERSION]),
+		info: bytes([purpose === "party" ? "pi-desk-party-channel" : "pi-desk-account-channel", PROTOCOL_VERSION]),
 	}, material, 256));
 	try {
 		return await SecureChannel.create({
@@ -83,46 +87,51 @@ export class ClientHandshake {
 	private own: DeviceCredential;
 	private data: Hello;
 	private verifier: CredentialVerifier;
-	private constructor(offer: ChannelWire, key: CryptoKey, own: DeviceCredential, data: Hello, verifier: CredentialVerifier) {
-		this.offer = offer; this.privateKey = key; this.own = own; this.data = data; this.verifier = verifier;
+	private purpose: ChannelPurpose;
+	private constructor(offer: ChannelWire, key: CryptoKey, own: DeviceCredential, data: Hello, verifier: CredentialVerifier,
+		purpose: ChannelPurpose) {
+		this.offer = offer; this.privateKey = key; this.own = own; this.data = data; this.verifier = verifier; this.purpose = purpose;
 	}
-	static async create(host: string, identity: ChannelIdentity, verifier: CredentialVerifier): Promise<ClientHandshake> {
+	static async create(host: string, identity: ChannelIdentity, verifier: CredentialVerifier, purpose: ChannelPurpose = "control"): Promise<ClientHandshake> {
 		if (!validId(host)) throw new Error("Invalid target computer.");
-		const credential = await identity.certificate(), own = await verifier.verify(credential, "browser");
+		const credential = await identity.certificate(), own = await verifier.verify(credential, purpose === "party" ? "host" : "browser");
+		if (own.id === host) throw new Error("A computer cannot connect to itself.");
 		const key = await ephemeral();
 		const data: Hello = { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: newSecret(),
 			key: key.publicKey, credential: base64(await digest(credential)) };
 		const offer: ChannelWire = { type: "offer", credential,
-			proof: await identity.signProof(bytes(data), "pi-desk-client-hello+jws") };
-		return new ClientHandshake(offer, key.privateKey, own, data, verifier);
+			proof: await identity.signProof(bytes(data), offerPurpose(purpose)) };
+		return new ClientHandshake(offer, key.privateKey, own, data, verifier, purpose);
 	}
 	async finish(value: unknown, handlers: ChannelHandlers): Promise<ChannelSession> {
 		const key = this.privateKey; this.privateKey = undefined;
 		if (!key) throw new Error("Channel handshake is no longer available.");
 		const accept = wire(value, "accept"), peer = await this.verifier.verify(accept.credential, "host", this.data.host);
-		const data = await hello(accept, peer, "pi-desk-host-hello+jws", this.data.host);
+		const data = await hello(accept, peer, acceptPurpose(this.purpose), this.data.host);
 		if (data.offer !== base64(await digest(this.offer)) || Math.min(this.own.expires, peer.expires) <= Date.now() / 1000) {
 			throw new Error("Host response does not authorize this handshake.");
 		}
-		return { channel: await channel(key, data.key, this.offer, accept, this.data, data, this.own.id, "client", handlers),
+		return { channel: await channel(key, data.key, this.offer, accept, this.data, data, this.own.id, "client", handlers, this.purpose),
 			peer, own: this.own };
 	}
 	close(): void { this.privateKey = undefined; }
 }
 
 export async function acceptChannelOffer(value: unknown, host: string, identity: ChannelIdentity, verifier: CredentialVerifier,
-	authorize: (peer: DeviceCredential) => Promise<void>, handlers: ChannelHandlers): Promise<ChannelSession & { accept: ChannelWire }> {
-	const offer = wire(value, "offer"), peer = await verifier.verify(offer.credential, "browser");
-	const client = await hello(offer, peer, "pi-desk-client-hello+jws", host);
+	authorize: (peer: DeviceCredential) => Promise<void>, handlers: ChannelHandlers,
+	purpose: ChannelPurpose = "control"): Promise<ChannelSession & { accept: ChannelWire }> {
+	const offer = wire(value, "offer"), peer = await verifier.verify(offer.credential, purpose === "party" ? "host" : "browser");
+	if (peer.id === host) throw new Error("A computer cannot connect to itself.");
+	const client = await hello(offer, peer, offerPurpose(purpose), host);
 	await authorize(peer);
 	const credential = await identity.certificate(), own = await verifier.verify(credential, "host", host);
 	const key = await ephemeral();
 	const data: Hello = { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: newSecret(),
 		key: key.publicKey, credential: base64(await digest(credential)), offer: base64(await digest(offer)) };
 	const accept: ChannelWire = { type: "accept", credential,
-		proof: await identity.signProof(bytes(data), "pi-desk-host-hello+jws") };
+		proof: await identity.signProof(bytes(data), acceptPurpose(purpose)) };
 	if (Math.min(own.expires, peer.expires) <= Date.now() / 1000) throw new Error("Channel authorization expired.");
-	return { channel: await channel(key.privateKey, client.key, offer, accept, client, data, peer.id, "host", handlers),
+	return { channel: await channel(key.privateKey, client.key, offer, accept, client, data, peer.id, "host", handlers, purpose),
 		peer, own, accept };
 }
 

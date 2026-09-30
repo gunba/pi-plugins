@@ -162,8 +162,8 @@ export class NativeAccountIdentity {
 		return signChannelProof(payload, purpose, this.key);
 	}
 	verifier() { return this.network.verifier(this.config); }
-	lease(peers: MembershipPeer[]): Promise<MembershipLease> {
-		return this.request(`/devices/${this.device.id}/lease`, { peers });
+	lease(peers: MembershipPeer[], purpose?: "party"): Promise<MembershipLease> {
+		return this.request(`/devices/${this.device.id}/lease`, { peers, ...(purpose ? { purpose } : {}) });
 	}
 	heartbeat(connected: boolean): Promise<unknown> {
 		return this.request(`/devices/${this.device.id}/heartbeat`, { connected });

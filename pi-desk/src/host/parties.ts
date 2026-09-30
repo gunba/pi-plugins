@@ -6,7 +6,7 @@ import type { PartyDirectory } from "../shared/parties.ts";
 
 /** Metadata and user controls over the same local registry used by pi-party. */
 export class Parties {
-	private store: PartyStore;
+	readonly store: PartyStore;
 	private watcher: FSWatcher;
 	private timer?: ReturnType<typeof setTimeout>;
 	private directory: string;
@@ -23,12 +23,7 @@ export class Parties {
 	}
 	refresh(sessionIds: string[]): boolean {
 		const peers = new Map<string, Member>();
-		let offset: number | undefined = 0;
-		do {
-			const page = this.store.discover("", false, offset);
-			for (const peer of page.agents) peers.set(peer.session, peer);
-			offset = page.nextOffset;
-		} while (offset !== undefined);
+		for (const peer of this.store.localMembers()) peers.set(peer.session, peer);
 		for (const id of sessionIds) {
 			const peer = this.store.member(id);
 			if (peer) peers.set(peer.session, peer);
@@ -36,10 +31,10 @@ export class Parties {
 		const rooms = new Set<string>();
 		for (const peer of [...peers.values()]) if (peer.room && !rooms.has(peer.room)) {
 			rooms.add(peer.room);
-			for (const member of this.store.group(peer.room)) peers.set(member.session, member);
+			for (const member of this.store.group(peer.room)) if (!member.computer) peers.set(member.session, member);
 		}
 		const now = Date.now();
-		const agents = [...peers.values()].map(peer => ({ id: peer.session, label: peer.label, cwd: peer.cwd,
+		const agents = [...peers.values()].map(peer => ({ id: peer.session, epoch: peer.epoch, label: peer.label, cwd: peer.cwd,
 			description: peer.description, kind: peer.kind, party: peer.room || null,
 			state: peer.heartbeat > now - LEASE_MS ? peer.state : "offline" })).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
 		const groups = [...rooms].sort().map(name => ({ name, members: agents.filter(agent => agent.party === name).map(agent => agent.id) }));
@@ -54,5 +49,6 @@ export class Parties {
 		this.store.setMembership(agents, room, expectedRoom);
 		writeFileSync(join(this.directory, "changed"), randomUUID(), { mode: 0o600 });
 	}
+	networkChanged(): void { writeFileSync(join(this.directory, "network-changed"), randomUUID(), { mode: 0o600 }); }
 	close(): void { clearTimeout(this.timer); this.watcher.close(); this.store.close(); }
 }

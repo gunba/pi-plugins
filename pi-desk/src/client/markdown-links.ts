@@ -1,3 +1,4 @@
+import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "../shared/protocol.ts";
 
 type MarkdownNode = { type: string; url?: string; children?: MarkdownNode[] };
@@ -16,6 +17,9 @@ export function fileLinkPlugin(links: ChatMessage["links"]) {
 			stack.push(...node.children ?? []);
 		}
 	};
+}
+export function markdownPlugins(links?: ChatMessage["links"]) {
+	return [remarkGfm, fileLinkPlugin(links)];
 }
 export function markdownFile(links: ChatMessage["links"], href?: string) {
 	return links?.find(link => `#desk-file-${link.file.id}` === href)?.file;

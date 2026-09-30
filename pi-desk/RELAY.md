@@ -2,7 +2,8 @@
 
 Linux and Windows computers sign into one Microsoft-account-owned workspace.
 Every signed-in browser uses the same website and discovers its computers,
-including offline ones. Sessions and tools stay on their owning computers.
+including offline ones. Sessions and tools stay on their owning computers. Connected computers also share
+party discovery, membership and messages through an encrypted host-only channel.
 See [Security](SECURITY.md) for the authority and publisher trust boundaries.
 
 ## Services
@@ -102,7 +103,10 @@ relay.example.com {
 Preserve Host, Origin and `X-Pi-Desk-App-Origin`, and support WebSocket upgrades.
 The broker serves `/health` and routing, not application files or redirects.
 Its health response includes release/API information. An outage disconnects
-browsers without stopping PC workers.
+browsers without stopping PC workers. Host-to-host party channels have a separate
+signed purpose and authority membership lease; they do not expose browser control
+routes. The broker only forwards their encrypted frames. When enabling shared
+parties, deploy the updated authority and broker before activating new PC hosts.
 
 ## Static app
 

@@ -174,6 +174,8 @@ export class AccountServer {
 				this.reply(response, 200, { accepted: true }); return;
 			}
 			if (!Array.isArray(input.value.peers) || input.value.peers.length > 32) throw new AccountError(400, "invalid_peers");
+			const party = input.value.purpose === "party";
+			if (input.value.purpose !== undefined && (!party || device.kind !== "host")) throw new AccountError(400, "invalid_lease_purpose");
 			const snapshot = this.store.snapshot();
 			// Re-read the host alongside peers after asynchronous proof verification.
 			if (!snapshot.devices.some(item => item.id === deviceId && item.revoked === undefined)) {
@@ -181,7 +183,7 @@ export class AccountServer {
 			}
 			const allowed = input.value.peers.map(value => {
 				const peer = object(value), peerId = id(peer.id);
-				const record = snapshot.devices.find(item => item.id === peerId && item.kind === (device.kind === "host" ? "browser" : "host")
+				const record = snapshot.devices.find(item => item.id === peerId && item.id !== deviceId && item.kind === (party ? "host" : device.kind === "host" ? "browser" : "host")
 					&& item.revoked === undefined && item.thumbprint === peer.thumbprint);
 				return record?.id;
 			}).filter((value): value is string => !!value);

@@ -454,6 +454,7 @@ export class DeskEngine {
 		const active = new Set(session.getActiveToolNames());
 		const ui = this.presentation.snapshot();
 		const context = session.getContextUsage();
+		const defaults = session.settingsManager.getGlobalSettings();
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(text => text.length > 300 ? `${text.slice(0, 300)}…` : text) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
@@ -469,6 +470,7 @@ export class DeskEngine {
 			title: sessionTitle(session.sessionName, this.opening.text),
 			leaf: session.sessionManager.getLeafId(),
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
+			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
 			activity: ui.interactions.length ? "waiting" : this.running || this.transition || this.authentication || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			tools: session.getAllTools().map(tool => ({ name: tool.name, description: tool.description, active: active.has(tool.name) })),
@@ -537,7 +539,8 @@ export class DeskEngine {
 			case "model": {
 				const model = this.runtime.services.modelRuntime.getModel(command.provider, command.id);
 				if (!model) throw new Error("Model is unavailable.");
-				await session.setModel(model);
+				await session.setModel(model, { persist: command.makeDefault === true });
+				if (command.makeDefault) await session.settingsManager.flush();
 				this.scheduleSnapshot();
 				return;
 			}
@@ -548,7 +551,17 @@ export class DeskEngine {
 				this.scheduleSnapshot();
 				return;
 			}
-			case "abort": this.authentication?.abort(); this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary(); await session.abort(); return;
+			case "abort": {
+				this.authentication?.abort(); this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
+				await session.abort();
+				if (!this.closed && !this.replacing && !this.transition && this.runtime?.session === session && session.isIdle && session.getSteeringMessages().length) {
+					// Trigger through AgentSession so native retry, settlement, queues and images remain intact.
+					void session.sendCustomMessage({ customType: "desk-steering-resume", content: "Process the pending steering messages.", display: false },
+						{ triggerTurn: true }).catch(error => this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
+					this.scheduleSnapshot();
+				}
+				return;
+			}
 			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value);
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
 			case "reload": await this.reload(); return this.snapshot();

@@ -20,7 +20,9 @@ panels. Initial-context breakdowns, model accounts, MCP
 connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
-connection states and account-wide access controls. Unsent drafts stay in their
+connection states and account-wide access controls. Parties share encrypted
+discovery, membership and messages across those computers; their sidebar groups
+open shared membership controls and a confirmed close-all action. Unsent drafts stay in their
 browser. An unavailable computer does not
 block the others.
 The included `/desk` command handles setup, staged updates, restart and optional
@@ -80,9 +82,12 @@ lists open sessions, including interrupted sessions awaiting an explicit Resume,
 not every previously opened conversation. Native Pi
 messages still queued for delivery are discarded; unresolved host admissions
 remain available for review. A host restart restores
-session references and marks interrupted sessions; it does not replay prompts
-or restart workers automatically. An interrupted session can be resumed or closed;
-its composer is unavailable until Pi starts again.
+session references and marks interrupted sessions; it does not replay browser
+prompts. An interrupted session can be resumed or closed; its composer is unavailable
+until Pi starts again. A new wake-requesting message from a current party member
+can resume an interrupted open workspace member through its owning session or
+parent driver. Explicitly closed conversations are not reopened by automatic
+peer delivery.
 
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
@@ -119,8 +124,10 @@ Shutdown cancels native work and questions, then joins pending startup,
 transitions and native cleanup before releasing the writer;
 overlapping stop requests wait for the same cleanup.
 
-The footer uses native model/thinking/context state and the same recorded-usage
-reducer as the first-party terminal footer. Unreported context or usage stays
+The composer uses native model and thinking selectors. Its star action saves the
+selected model as this computer's default; ordinary selections only change the
+current session. The footer shows context and the same recorded-usage reducer
+as the first-party terminal footer. Unreported context or usage stays
 unknown. Usage includes recorded child charges once; cost is not a subscription
 bill. Structured view badges expose the owning plugin's settings without parsing
 terminal strings: Fast is a preference, not a guarantee that the provider used
@@ -320,6 +327,10 @@ assistant text/thinking, tool cards, images and complete-output links. Finished
 agents remain available through **Include finished**. A new active collection
 can open the desktop pane when no other panel or text editor is in use.
 
+Pending steering and follow-ups remain visible above the composer. **Stop**
+interrupts the current reply and starts the next native turn when steering is
+waiting; it does not invent another prompt when that queue is empty.
+
 **Steer** updates a running direct child; **Queue** accepts a native follow-up.
 An idle continuable child offers **Send** to wake it. The owning subagent runtime
 enforces direct-parent messaging and ancestor interruption, just as the terminal
@@ -332,6 +343,9 @@ controller admission. Uncertain replies retain the draft and exact request ID:
 **Check delivery** asks for that same result, not another message. A new send
 requires confirmation; reconnect never sends automatically. Each view has its
 own action lock, so a launch dialog does not block another agent's controls.
+
+Chat and detail views render GitHub-flavoured Markdown tables. Transcript errors
+appear at their recorded time rather than accumulating in a global banner.
 
 History uses the already-owned Pi managers, not filesystem paths supplied by
 the browser or another conversation store. Earlier pages stay bounded; Latest returns

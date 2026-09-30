@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { PartyDriver } from "../../pi-party/driver.ts";
 import { SESSION_USAGE_CHANGED } from "../../pi-session-usage/index.ts";
 import {
 	getAgentDir,
@@ -250,6 +252,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	let activityUi: WorkUiSource | undefined;
 	let closeDashboard: (() => void) | undefined;
 	let runtime: SubagentRuntime | undefined;
+	let partyDriver: PartyDriver | undefined;
 	let presentation: SubagentPresentation | undefined;
 	let notices: NoticeBatcher | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
@@ -284,6 +287,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		partyDriver?.close(); partyDriver = undefined;
 		presentation?.close();
 		presentation = undefined;
 		const active = runtime;
@@ -409,8 +413,12 @@ export default function subagents(pi: ExtensionAPI): void {
 				toolCallId: `human:${randomUUID()}`, cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(),
 			}), permissions);
 		}
-		unsubscribeRuntime = created.subscribe(() => updateActivity(activity, created));
+		unsubscribeRuntime = created.subscribe(() => { updateActivity(activity, created); partyDriver?.refresh(); });
 		created.initialize();
+		partyDriver = new PartyDriver(join(getAgentDir(), "party"), ctx.sessionManager.getSessionId(), () => ctx.sessionManager.getSessionFile() ?? "",
+			() => created.snapshot().filter(child => !child.diagnosticReason).map(child => child.id),
+			request => request.kind === "resume" ? Promise.resolve(created.resumePartyAgent(created.rootAuthority, request.target))
+				: created.closePartyAgent(created.rootAuthority, request.target));
 		for (const notice of recoveredNotices) notices.add(notice);
 
 		updateActivity(activity, created);

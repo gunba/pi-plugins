@@ -10,7 +10,7 @@ import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
 import { planRoundNotice } from "./plan-round.ts";
 import { isActivityOnly } from "./state.ts";
-import { fileLinkPlugin, markdownFile, markdownUrl } from "./markdown-links.ts";
+import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
 import type { Feedback } from "../shared/feedback.ts";
 
 const timeLabel = (timestamp: number) => timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -60,7 +60,7 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
 	return <div className="markdown">{message.notice?.kind === "process" ? <CodeBlock><code>{block.text}</code></CodeBlock> : <Markdown
-		remarkPlugins={[fileLinkPlugin(message.links)]} urlTransform={url => markdownUrl(message.links, url)}
+		remarkPlugins={markdownPlugins(message.links)} urlTransform={url => markdownUrl(message.links, url)}
 		components={{
 			pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
 			a: ({ children, href, node }) => {

@@ -35,6 +35,7 @@ export interface SessionSnapshot {
 	title?: string;
 	leaf?: string | null;
 	model?: { id: string; provider: string; name: string; images: boolean };
+	defaultModel?: { id: string; provider: string };
 	thinking: string;
 	thinkingLevels: string[];
 	activity: "idle" | "running" | "waiting" | "error";
@@ -137,7 +138,7 @@ export type WorkerCommand =
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }
-	| { kind: "model"; provider: string; id: string }
+	| { kind: "model"; provider: string; id: string; makeDefault?: boolean }
 	| { kind: "thinking"; level: string }
 	| { kind: "reload" };
 export type WorkerRequest =

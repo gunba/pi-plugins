@@ -6,6 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import Markdown from "react-markdown";
+import { markdownPlugins } from "./markdown-links.ts";
 import { MessageView as Message } from "./message-view.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
@@ -373,6 +374,12 @@ export function App({ account }: { account?: BrowserAccount }) {
     );
 
   const host = state.host;
+  const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates,
+    connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }];
+  const partyComputers = computers.map(computer => ({ id: computer.id, name: computer.name, connected: computer.connected, directory: computer.parties }));
+  const selectedModel = session?.snapshot?.model;
+  const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
+    && selectedModel.id === session.snapshot.defaultModel.id;
   return (
     <div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <Navigation open={sidebar} close={() => setSidebar(false)}>
@@ -390,8 +397,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           Sessions <span>{state.host.sessions.length}</span>
         </div>
         <nav className="session-list">
-          {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected, updates: host.updates,
-            connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
+          {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
             <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
@@ -403,7 +409,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>}
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
-          <PartySessions directory={computer.parties} computer={computer.id} computerName={computer.name} connected={computer.connected}
+          <PartySessions directory={computer.parties} computer={computer.id} computers={partyComputers} connected={computer.connected}
             sessions={host.sessions.filter(item => item.computer === computer.id)
               .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
             renderSession={item => <div className="session-row" key={item.key}>
@@ -645,6 +651,13 @@ export function App({ account }: { account?: BrowserAccount }) {
                       </option>
                     ))}
                   </select>
+                  <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
+                    aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
+                    title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}
+                    disabled={isDefaultModel || busy || !connected || session.state !== "ready" || !selectedModel}
+                    onClick={() => selectedModel && run({ kind: "model", provider: selectedModel.provider, id: selectedModel.id, makeDefault: true })}>
+                    <Icon name="star" />
+                  </button>
                   <select
                     aria-label="Reasoning level"
                     value={session.snapshot?.thinking ?? ""}
@@ -939,7 +952,7 @@ function Question({
           <>
             {form.context && (
               <div className="question-context">
-                <Markdown>{form.context}</Markdown>
+                <Markdown remarkPlugins={markdownPlugins()}>{form.context}</Markdown>
               </div>
             )}
             <div className="choices">

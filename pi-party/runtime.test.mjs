@@ -36,7 +36,7 @@ function harness(t, session, branch = [], child = false) {
 		},
 	};
 	const ctx = { cwd: `C:/work/${session}`, mode: "print", hasUI: false, isIdle: () => idle,
-		sessionManager: { getSessionId: () => session, getBranch: () => branch },
+		sessionManager: { getSessionId: () => session, getSessionFile: () => undefined, getBranch: () => branch },
 		ui: { notify: (...args) => notifications.push(args), setWidget() {} } };
 	const priorTask = process.env.PI_SUBAGENT_TASK_PATH;
 	if (child) process.env.PI_SUBAGENT_TASK_PATH = "fixture-child";

@@ -6,6 +6,8 @@ import test from "node:test";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { PartyStore, LEASE_MS } from "./store.ts";
+import { PartyOperations } from "./operations.ts";
+import { randomUUID } from "node:crypto";
 
 function fixture(t) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-test-"));
@@ -15,6 +17,26 @@ function fixture(t) {
 	t.after(() => { a.close(); b.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { a, b, directory, advance: ms => { time += ms; } };
 }
+
+test("late lifecycle results cannot overwrite a stopped controller's receipt", async t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-party-controller-test-"));
+	const store = new PartyStore(directory), operations = new PartyOperations(directory);
+	t.after(() => { operations.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+	operations.startHost();
+	const sender = randomUUID(), recipient = randomUUID(), owner = randomUUID();
+	for (const id of [sender, recipient]) {
+		store.register(id, owner, id); store.join(id, owner, "shared", id);
+	}
+	const request = operations.queue(store, sender, owner, { kind: "resume", target: recipient });
+	let finish;
+	const pending = operations.receive("local", request, () => new Promise(resolve => { finish = resolve; }));
+	operations.startHost();
+	finish({ session: recipient, state: "ready" });
+	assert.match((await pending).error, /host stopped/);
+	const repeated = await operations.receive("local", request, () => assert.fail("Must not replay an interrupted operation"));
+	assert.match(repeated.error, /host stopped/);
+	assert.match(operations.recent(sender).find(row => row.id === request.id).response.error, /host stopped/);
+});
 
 test("registered agents exchange direct messages across party boundaries", t => {
 	const { a, b } = fixture(t);
@@ -196,6 +218,20 @@ test("discovery registers ungrouped agents, searches metadata, and excludes expi
 	assert.equal(next.agents.length, 6);
 	assert.equal(new Set([...first.agents, ...next.agents].map(x => x.session)).size, 56);
 	assert.equal(next.nextOffset, undefined);
+});
+
+test("network discovery retains active agents beyond a large archived party registry", t => {
+	const { a } = fixture(t);
+	for (let i = 0; i < 700; i++) {
+		const id = `00000000-0000-4000-a000-${i.toString(16).padStart(12, "0")}`;
+		a.register(id, "owner", "Archived"); a.join(id, "owner", "history", "Archived"); a.release(id, "owner");
+	}
+	const live = "ffffffff-ffff-4fff-afff-ffffffffffff";
+	a.register(live, "live-owner", "Active");
+	const directory = a.networkDirectory();
+	assert.equal(directory.length, 701);
+	assert.equal(directory.find(peer => peer.session === live)?.state, "idle");
+	assert.ok(directory.every(peer => !("owner" in peer) && !("heartbeat" in peer)));
 });
 
 test("invitations are direct messages, never implicit membership changes", t => {
