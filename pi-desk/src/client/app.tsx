@@ -34,6 +34,7 @@ import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
+import { PartySessions } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
@@ -373,7 +374,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </div>
         <nav className="session-list">
           {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected, updates: host.updates,
-            connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
+            connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
             <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
@@ -385,31 +386,21 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>}
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
-          {host.sessions.filter(item => item.computer === computer.id)
-            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)
-            .map((item) => (
-              <div className="session-row" key={item.key}>
-              <button
-                className={`session-item ${selected === item.key ? "selected" : ""}`}
-                onClick={() => {
-                  setSelected(item.key);
-                  setSidebar(false);
-                  setPanel(undefined);
-                }}
-              >
-                <span
-                  className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`}
-                />
-                <span>
-                  <strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
-                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small>
-                </span>
+          <PartySessions directory={computer.parties} computer={computer.id} computerName={computer.name} connected={computer.connected}
+            sessions={host.sessions.filter(item => item.computer === computer.id)
+              .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
+            renderSession={item => <div className="session-row" key={item.key}>
+              <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
+                setSelected(item.key); setSidebar(false); setPanel(undefined);
+              }}>
+                <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} />
+                <span><strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
+                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                 disabled={selected === item.key && sending} report={setError}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
-              </div>
-            ))}
+            </div>} />
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
             <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
@@ -525,7 +516,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           starting={session?.state === "starting"}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
-          renderMessage={(message, results) => <Message message={message} results={results} sessionKey={selected} />}
+          renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>
@@ -763,7 +754,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
-            onLatest={storeHistory} renderMessage={(message, source, results) => <Message message={message} results={results} sessionKey={selected} source={source} />}
+            onLatest={storeHistory} renderMessage={(message, source, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={source} />}
             answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {(panel === "work" || panel === "view") &&
@@ -793,7 +784,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                       source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
                       connected={connected} epoch={epoch}
                       messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
-                      onLatest={storeHistory} renderMessage={(message, results) => <Message message={message} results={results} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
+                      onLatest={storeHistory} renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
                   </> : view.kind === "ledger" ? <div>
                     <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
                     {(view.data as { ledger?: Ledger }).ledger

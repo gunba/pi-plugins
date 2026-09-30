@@ -19,7 +19,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	starting?: boolean;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
-	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
+	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
 }) {
 	const storageKey = transcriptKey(session, source);
 	const saved = useRef<ReadingPosition | undefined>(readingPositions.get(storageKey));
@@ -136,7 +136,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		if (position === "end") virtualizer.scrollToEnd();
 		else if (position === "start") virtualizer.scrollToOffset(0);
 		else {
-			const index = Math.max(0, visible.findIndex(message => message.entryId === position.anchor));
+			const index = Math.max(0, rows.findIndex(row => row.message.entryId === position.anchor || row.thinking?.some(message => message.entryId === position.anchor)));
 			virtualizer.scrollToIndex(index, { align: "start" });
 		}
 		let lastOffset: number | undefined;
@@ -146,7 +146,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			const maximum = Math.max(0, virtualizer.getTotalSize() - viewport.clientHeight);
 			let offset = position === "end" ? maximum : 0;
 			if (typeof position === "object") {
-				const index = Math.max(0, visible.findIndex(message => message.entryId === position.anchor));
+				const index = Math.max(0, rows.findIndex(row => row.message.entryId === position.anchor || row.thinking?.some(message => message.entryId === position.anchor)));
 				const start = virtualizer.getOffsetForIndex(index, "start")?.[0] ?? 0;
 				offset = Math.min(maximum, start + Math.min(position.offset, virtualizer.measurementsCache[index]?.size ?? position.offset));
 			}
@@ -268,7 +268,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 							}
 						}}
 						style={{ position: "absolute", width: "100%", top: 0, left: 0, transform: `translateY(${row.start}px)` }}>
-						{message ? renderMessage(message, rows[row.index]!.results) : <>
+						{message ? renderMessage(message, rows[row.index]!.results, rows[row.index]!.thinking) : <>
 							{!visible.length && !loading && (empty ?? <p className="muted">No messages yet.</p>)}
 							{footer}<div style={{ height: 28 }} />
 						</>}

@@ -70,6 +70,7 @@ export interface ChatMessage {
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };
 	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number }[] };
 	links?: { target: string; file: FileReference }[];
+	notice?: { kind: "party" | "process" | "work" | "agent"; title: string };
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }
@@ -84,6 +85,8 @@ export interface SavedSession {
 }
 export interface SessionView {
 	key: string;
+	/** Native Pi identity, distinct from the Desk workspace key. */
+	agentId?: string;
 	cwd: string;
 	created: number;
 	state: "starting" | "ready" | "failed" | "closed";
@@ -103,6 +106,7 @@ export interface SessionView {
 	inputs?: InputStatus[];
 }
 export interface HostState { release: ReleaseInfo; name: string; platform?: string; cwd: string; sessions: SessionView[];
+	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 export type HostEvent =

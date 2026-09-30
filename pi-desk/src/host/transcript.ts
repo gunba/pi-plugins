@@ -5,6 +5,7 @@ import { LEDGER_ENTRY, readLedger } from "../../../pi-context-ledger/model.ts";
 import type { ArtifactStore } from "../../../pi-output-budget/extensions/artifacts.ts";
 import { LocalFiles } from "./local-files.ts";
 import { projectFileLinks } from "./file-links.ts";
+import { receivedNotice } from "./received-notice.ts";
 import { ExpiredReference } from "./references.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS, type HistoryPosition } from "../shared/history.ts";
 
@@ -158,8 +159,9 @@ export class Transcript {
 				? [{ name: call.name.slice(0, 200), status: call.status as "ok" | "error" | "unfinished",
 					...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) }] : [];
 		}) : [];
-		const content = typeof message.content === "string" ? [{ type: "text", text: message.content }]
-			: Array.isArray(message.content) ? message.content : [];
+		const received = receivedNotice(message);
+		const content = typeof received.content === "string" ? [{ type: "text", text: received.content }]
+			: Array.isArray(received.content) ? received.content : [];
 		for (const item of content) {
 			const block = record(item);
 			if (block.type === "text" || block.type === "thinking") {
@@ -183,7 +185,7 @@ export class Transcript {
 		const tool = role === "tool" ? this.resultDetails(message, blocks, cwd) : undefined;
 		const result: ChatMessage = {
 			id: entryId ? `entry:${entryId}` : liveId ?? `live:${randomUUID()}`,
-			revision: 0, order, entryId, role, timestamp, blocks,
+			revision: 0, order, entryId, role, timestamp, blocks, notice: received.notice,
 			toolName: typeof message.toolName === "string" ? message.toolName : undefined,
 			toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
 			isError: message.isError === true || message.stopReason === "error" || tool?.state === "error", complete: true, tool,
@@ -207,7 +209,8 @@ export class Transcript {
 	entry(entry: SessionEntry, order = 0, cwd?: string): ChatMessage | undefined {
 		if (entry.type === "message") return this.message(entry.message, entry.id, undefined, order, cwd);
 		if (entry.type === "custom_message") return this.message({
-			role: "custom", content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
+			role: "custom", customType: entry.customType, details: entry.details,
+			content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
 		}, entry.id, undefined, order, cwd);
 		if (entry.type !== "custom" || entry.customType !== LEDGER_ENTRY) return;
 		const ledger = readLedger(entry.data);

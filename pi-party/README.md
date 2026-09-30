@@ -7,6 +7,12 @@ and party messages, removal, and delivery controls. Sending offers an explicit
 choice between queueing quietly and requesting a reply. Invitations do not
 change membership.
 
+The sidebar groups agents by party under their computer. **New party** creates
+a party with selected registered agents; the group controls add or remove members.
+These are direct user membership changes, not invitations. They preserve agent
+ownership, paused delivery and wake budgets. Removing the last member ends the
+group; it does not stop any agent. Native conversation files remain separate.
+
 History is paged and direct messages are participant-scoped. Opening a message
 does not deliver it to Pi, consume its wake budget, or start an agent. Long
 messages have a paged full-text view. The app and terminal use the same party

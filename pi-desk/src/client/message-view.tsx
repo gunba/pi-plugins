@@ -56,6 +56,42 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 		</details>}
 	</details>;
 }
+type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
+function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
+	return <div className="markdown">{message.notice?.kind === "process" ? <CodeBlock><code>{block.text}</code></CodeBlock> : <Markdown
+		remarkPlugins={[fileLinkPlugin(message.links)]} urlTransform={url => markdownUrl(message.links, url)}
+		components={{
+			pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+			a: ({ children, href, node }) => {
+				const file = markdownFile(message.links, href);
+				const label = node?.children.some(child => child.type === "element" && child.tagName === "img")
+					? node.children.map(child => child.type === "text" ? child.value : child.type === "element" && child.tagName === "img" ? String(child.properties.alt ?? "Image") : "").join("") : children;
+				return file ? <FileLink session={sessionKey} file={file}>{label}</FileLink>
+					: href ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{label}</a> : <span>{label}</span>;
+			},
+			img: ({ alt, src }) => {
+				const file = markdownFile(message.links, src);
+				return file ? <FileLink session={sessionKey} file={file}>{alt || file.name}</FileLink>
+					: src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>;
+			},
+		}}>{block.text}</Markdown>}
+		{block.full && <AssetLink session={sessionKey} asset={block.full} />}
+		{block.truncated && !block.full && <p className="muted">Preview only. Complete output exceeds the viewer's asset limit.</p>}
+	</div>;
+}
+function ThinkingGroup({ parts, sessionKey, source }: {
+	parts: { message: ChatMessage; block: TextBlock; index: number }[]; sessionKey: string; source?: string;
+}) {
+	return <details className="tool-card thinking-pill"><summary><Icon name="thinking" /><strong>Thinking</strong>
+		{parts.length > 1 && <span className="thinking-count">×{parts.length}</span>}</summary>
+		<div className="thinking-output">{parts.map(({ message, block, index }) => <ReferenceContext key={`${message.id}:${index}`} value={{ message: message.id, source }}>
+			<RenderedText message={message} block={block} sessionKey={sessionKey} />
+		</ReferenceContext>)}</div>
+	</details>;
+}
+function thinkingParts(messages: ChatMessage[]) {
+	return messages.flatMap(message => message.blocks.flatMap((block, index) => block?.type === "thinking" ? [{ message, block, index }] : []));
+}
 function MessageBody({ message, sessionKey, source, results, omitFile }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; omitFile?: string;
 }) {
@@ -73,44 +109,40 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 			if (block.type === "ledger") return <LedgerCard key={index} ledger={block.ledger} />;
 			if (block.type === "image") return <AssetImage key={index} session={sessionKey} asset={block.asset} />;
 			if (block.type === "toolCall") return <ToolPill key={index} owner={message} call={block} result={results?.[block.id]} sessionKey={sessionKey} source={source} />;
-			const rendered = <div className="markdown"><Markdown
-				remarkPlugins={[fileLinkPlugin(message.links)]}
-				urlTransform={url => markdownUrl(message.links, url)}
-				components={{
-					pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-					a: ({ children, href, node }) => {
-						const file = markdownFile(message.links, href);
-						const label = node?.children.some(child => child.type === "element" && child.tagName === "img")
-							? node.children.map(child => child.type === "text" ? child.value : child.type === "element" && child.tagName === "img" ? String(child.properties.alt ?? "Image") : "").join("") : children;
-						return file ? <FileLink session={sessionKey} file={file}>{label}</FileLink>
-							: href ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{label}</a> : <span>{label}</span>;
-					},
-					img: ({ alt, src }) => {
-						const file = markdownFile(message.links, src);
-						return file ? <FileLink session={sessionKey} file={file}>{alt || file.name}</FileLink>
-							: src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>;
-					},
-				}}>{block.text}</Markdown>
-				{block.full && <AssetLink session={sessionKey} asset={block.full} />}
-				{block.truncated && !block.full && <p className="muted">Preview only. Complete output exceeds the viewer's asset limit.</p>}
-			</div>;
-			return block.type === "thinking" ? <details className="tool-card" key={index}><summary>Thinking</summary>{rendered}</details> : <div key={index}>{rendered}</div>;
+			if (block.type === "thinking") {
+				if (message.blocks[index - 1]?.type === "thinking") return null;
+				const end = message.blocks.findIndex((next, i) => i > index && next?.type !== "thinking");
+				const parts = message.blocks.slice(index, end < 0 ? undefined : end).flatMap((next, i) => next?.type === "thinking" ? [{ message, block: next, index: index + i }] : []);
+				return <ThinkingGroup key={index} parts={parts} sessionKey={sessionKey} source={source} />;
+			}
+			return <RenderedText key={index} message={message} block={block} sessionKey={sessionKey} />;
 		})}
 	</div>;
 }
-export const MessageView = memo(function MessageView({ message, sessionKey, source, results }: {
-	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>;
+export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking }: {
+	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; thinking?: ChatMessage[];
 }) {
 	const time = timeLabel(message.timestamp), round = planRoundNotice(message);
 	if (round) return <article className="message message-plan-round"><div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
 		<span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div><p>{round.objective}</p></article>;
+	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
+		const notice = message.notice;
+		return <ReferenceContext value={{ message: message.id, source }}><article className="message message-received">
+			<details className={`received-notice notice-${notice?.kind ?? "info"}`} open={!notice || notice.kind === "party"}>
+				<summary><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : "info"} />
+					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></summary>
+				<MessageBody message={message} sessionKey={sessionKey} source={source} />
+			</details>
+		</article></ReferenceContext>;
+	}
 	const activityOnly = message.role === "tool" || isActivityOnly(message);
 	return <ReferenceContext value={{ message: message.id, source }}>
 		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}`}>
 			{!activityOnly && <div className="message-heading"><span className={message.role === "assistant" ? "assistant-avatar" : "message-label"}>
 				{message.role === "assistant" ? "π" : message.role === "user" ? source ? "Input" : "You" : "Note"}</span>
 				{message.role === "assistant" && <strong>Pi</strong>}<time>{time}</time></div>}
-			{message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
+			{thinking ? <div className="message-body"><ThinkingGroup parts={thinkingParts(thinking)} sessionKey={sessionKey} source={source} /></div>
+				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
 		</article>
 	</ReferenceContext>;

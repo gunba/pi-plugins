@@ -42,7 +42,7 @@ terminal command to the model as a substitute.
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
 | `pi-context-ledger` | Expandable initial-context card and Settings controls; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
-| `pi-party` | Settings and Work: discovery, membership, profiles, delivery, messages and paged history |
+| `pi-party` | Sidebar groups and user membership controls per computer; Settings and Work for discovery, profiles, delivery, messages and paged history |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
 | `pi-subagents` | Dedicated **Agents** pane for live transcripts, steering, follow-ups, Stop and scoped questions; `/subagents` manages launches/settings |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |

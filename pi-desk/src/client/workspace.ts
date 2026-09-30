@@ -8,6 +8,7 @@ export interface Computer {
 	relay?: HostState["relay"];
 	release?: HostState["release"];
 	updates?: HostState["updates"];
+	parties?: HostState["parties"];
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }
