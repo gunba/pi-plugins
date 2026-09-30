@@ -17,7 +17,7 @@ export function AgentPane({ session, context, views, focused, choose, connected,
 	context: string;
 	session: SessionView; views: ViewSnapshot[]; focused: string; choose: (id: string) => void; connected: boolean; epoch: number;
 	messages: Record<string, CachedMessage[]>; onLatest: (source: string | undefined, page: HistoryPage) => void;
-	renderMessage: (message: ChatMessage, source: string) => ReactNode; answer: (id: string) => void;
+	renderMessage: (message: ChatMessage, source: string, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode; answer: (id: string) => void;
 	openView: (id: string) => void;
 }) {
 	const [all, setAll] = useState(() => !views.some(view => data(view).active)), [search, setSearch] = useState("");
@@ -66,7 +66,7 @@ export function AgentPane({ session, context, views, focused, choose, connected,
 function AgentConversation({ session, context, view, connected, epoch, messages, onLatest, renderMessage, answer, onEditing, openView }: {
 	context: string;
 	session: SessionView; view: ViewSnapshot; connected: boolean; epoch: number; messages: Record<string, CachedMessage[]>;
-	onLatest: (source: string | undefined, page: HistoryPage) => void; renderMessage: (message: ChatMessage, source: string) => ReactNode;
+	onLatest: (source: string | undefined, page: HistoryPage) => void; renderMessage: (message: ChatMessage, source: string, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode;
 	answer: (id: string) => void;
 	onEditing: () => void;
 	openView: (id: string) => void;
@@ -142,7 +142,7 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 		{item.scope && <ViewPreviews views={session.ui!.views.filter(view => view.scope?.id === item.scope)} open={openView} />}
 		{source ? <TranscriptView key={source} session={session.key} source={source} generation={session.ui!.generation}
 			connected={connected && session.state === "ready"} epoch={epoch} messages={messages[transcriptKey(session.key, source)] ?? empty}
-			onLatest={onLatest} renderMessage={message => renderMessage(message, source)} latestRequest={latest} />
+			onLatest={onLatest} renderMessage={(message, results, thinking) => renderMessage(message, source, results, thinking)} latestRequest={latest} />
 			: <p className="muted">This agent has no available transcript.</p>}
 		{receipt && <div className="agent-receipt" role="status">
 			<p>{sending ? "Confirming message admission…" : "Delivery is not confirmed. The draft is retained; check the transcript before sending again."}</p>

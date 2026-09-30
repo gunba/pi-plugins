@@ -4,11 +4,17 @@ import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, type HistoryPosition } from "../shared/history.ts";
 import { api } from "./connection.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
+import { transcriptRows } from "./transcript-rows.ts";
 import { conversationFeedback } from "./chat-feedback.ts";
 import type { Feedback } from "../shared/feedback.ts";
 const noFeedback: Feedback[] = [], noDismissals: string[] = [];
 interface ReadingPosition {
 	from?: string; anchor?: string; offset: number; follow: boolean; sizes?: Record<string, number>;
+}
+const readingPositions = new Map<string, ReadingPosition>();
+function rememberPosition(key: string, position: ReadingPosition): void {
+	readingPositions.delete(key); readingPositions.set(key, position);
+	while (readingPositions.size > 16) readingPositions.delete(readingPositions.keys().next().value!);
 }
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
@@ -17,36 +23,40 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	starting?: boolean;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
-	renderMessage: (message: ChatMessage) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
+	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
 	feedback?: Feedback[]; dismissed?: string[];
 }) {
 	const storageKey = transcriptKey(session, source);
-	// Returning to a conversation opens its tail. Preserve a reading position only
-	// across reconnects while this particular view remains mounted.
-	const saved = useRef<ReadingPosition | undefined>(undefined);
-	const [page, setPage] = useState<HistoryPage>();
-	const [live, setLive] = useState(true);
-	const [atEnd, setAtEnd] = useState(true);
-	const [loading, setLoading] = useState(false), [errors, setErrors] = useState<Feedback[]>([]);
+	const saved = useRef<ReadingPosition | undefined>(readingPositions.get(storageKey));
+	const [page, setPage] = useState<HistoryPage | undefined>(() => messages.length
+		&& (saved.current?.follow !== false || messages.some(message => message.entryId === saved.current?.anchor))
+		? { messages: recentMessages(messages, HISTORY_COUNT, HISTORY_CHARACTERS), generation,
+			revision: Math.max(0, ...messages.map(message => message.revision)) } : undefined);
+	const [live, setLive] = useState(saved.current?.follow !== false);
+	const [atEnd, setAtEnd] = useState(saved.current?.follow !== false);
+	const [positioned, setPositioned] = useState(!page && !connected);
+	const [loading, setLoading] = useState(!page && connected), [errors, setErrors] = useState<Feedback[]>([]);
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
-	const userScroll = useRef(false), restoring = useRef(false);
-	const target = useRef<ReadingPosition | "start" | "end" | undefined>(undefined);
+	const userScroll = useRef(false), restoring = useRef(true);
+	const target = useRef<ReadingPosition | "start" | "end" | undefined>(saved.current?.follow === false ? saved.current : "end");
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const restoreFrame = useRef<number | undefined>(undefined);
 	const capture = useRef<() => ReadingPosition | undefined>(() => undefined);
 	const lastLatestRequest = useRef(latestRequest);
 	const details = useRef(new Map<string, boolean[]>());
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
-	const visible = useMemo(() => {
+	const nativeMessages = useMemo(() => {
 		const native = live ? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS) : page?.messages ?? [];
 		return conversationFeedback(native, [...feedback, ...errors], session, dismissed, live ? { before: page?.before } : page ?? {});
 	}, [page, messages, live, feedback, errors, dismissed, session]);
+	const rows = useMemo(() => transcriptRows(nativeMessages), [nativeMessages]);
+	const visible = useMemo(() => rows.map(row => row.message), [rows]);
 	const newest = messages.at(-1);
-	const moreRecent = page?.after ?? (newest && visible.at(-1) && newest.order > visible.at(-1)!.order
-		? visible.slice().reverse().find(message => message.entryId)?.entryId : undefined);
-	const older = page?.before || live && messages.length > visible.length ? visible.find(message => message.entryId)?.entryId : undefined;
+	const moreRecent = page?.after ?? (newest && nativeMessages.at(-1) && newest.order > nativeMessages.at(-1)!.order
+		? nativeMessages.slice().reverse().find(message => message.entryId)?.entryId : undefined);
+	const older = page?.before || live && messages.length > nativeMessages.length ? nativeMessages.find(message => message.entryId)?.entryId : undefined;
 	const pinnedIndex = visible.findIndex(message => message.id === pinned);
 	const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
 		count: visible.length + 1, getScrollElement: () => scroller.current,
@@ -62,7 +72,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const persist = () => {
 		clearTimeout(timer.current);
 		const position = capture.current();
-		if (position) saved.current = position;
+		if (position) { saved.current = position; rememberPosition(storageKey, position); }
 	};
 	capture.current = () => {
 		if (!page || restoring.current || !scroller.current || !visible.length) return;
@@ -80,6 +90,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
 		restoring.current = true; userScroll.current = false;
 		loadingRef.current = true;
+		if (!visible.length) setPositioned(false);
 		setLoading(true);
 		const query = new URLSearchParams(position as Record<string, string>);
 		if (source) query.set("source", source);
@@ -88,7 +99,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			if (id !== request.current || data.generation !== generation) return;
 			target.current = restore;
 			if ((position.before || position.after) && typeof restore === "object") {
-				const combined = mergeMessages(visible, data.messages);
+				const combined = mergeMessages(nativeMessages, data.messages);
 				const window = position.before
 					? recentMessages([...combined].reverse(), HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2).reverse()
 					: recentMessages(combined, HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2);
@@ -128,22 +139,32 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	useLayoutEffect(() => {
 		const position = target.current;
 		if (!position || !page) return;
-		target.current = undefined;
 		if (position === "end") virtualizer.scrollToEnd();
 		else if (position === "start") virtualizer.scrollToOffset(0);
 		else {
-			const index = Math.max(0, visible.findIndex(message => message.entryId === position.anchor));
+			const index = Math.max(0, rows.findIndex(row => row.message.entryId === position.anchor || row.thinking?.some(message => message.entryId === position.anchor)));
 			virtualizer.scrollToIndex(index, { align: "start" });
 		}
-		restoreFrame.current = requestAnimationFrame(() => {
+		let lastOffset: number | undefined;
+		const reveal = () => {
+			const viewport = scroller.current;
+			if (!viewport) return;
+			const maximum = Math.max(0, virtualizer.getTotalSize() - viewport.clientHeight);
+			let offset = position === "end" ? maximum : 0;
 			if (typeof position === "object") {
-				const index = Math.max(0, visible.findIndex(message => message.entryId === position.anchor));
-				const offset = virtualizer.getOffsetForIndex(index, "start")?.[0] ?? 0;
-				virtualizer.scrollToOffset(offset + Math.min(position.offset, virtualizer.measurementsCache[index]?.size ?? position.offset));
+				const index = Math.max(0, rows.findIndex(row => row.message.entryId === position.anchor || row.thinking?.some(message => message.entryId === position.anchor)));
+				const start = virtualizer.getOffsetForIndex(index, "start")?.[0] ?? 0;
+				offset = Math.min(maximum, start + Math.min(position.offset, virtualizer.measurementsCache[index]?.size ?? position.offset));
 			}
-			restoreFrame.current = requestAnimationFrame(() => { restoring.current = false; persist(); });
-		});
-	}, [page]);
+			if (lastOffset !== offset || Math.abs(viewport.scrollTop - offset) > 1) {
+				lastOffset = offset; virtualizer.scrollToOffset(offset);
+				restoreFrame.current = requestAnimationFrame(reveal); return;
+			}
+			target.current = undefined; restoring.current = false; setPositioned(true); persist();
+		};
+		restoreFrame.current = requestAnimationFrame(reveal);
+		return () => { if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current); };
+	}, [page, visible]);
 	// The bounded tail replaces its oldest row as new messages arrive, so its
 	// item count (and final spacer key) need not change for the virtualizer.
 	useLayoutEffect(() => {
@@ -202,11 +223,11 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	}, [storageKey]);
 	const hold = () => {
 		if (!live) return;
-		setPage(previous => ({ generation, revision: previous?.revision ?? 0, before: older, messages: visible }));
+		setPage(previous => ({ generation, revision: previous?.revision ?? 0, before: older, messages: nativeMessages }));
 		setLive(false);
 	};
-	return <div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`}>
-		{loading && <div className="history-status" role="status">Loading messages…</div>}
+	return <div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
+		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
 		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
@@ -231,7 +252,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				}
 				clearTimeout(timer.current); timer.current = setTimeout(persist, 200);
 			}}>
-			<div className={`virtual-window ${source ? "" : "conversation"}`} style={{ height: virtualizer.getTotalSize(), position: "relative", padding: 0 }}>
+			<div className={`virtual-window ${source ? "" : "conversation"}`} style={{ height: virtualizer.getTotalSize(), position: "relative", padding: 0, visibility: positioned ? "visible" : "hidden" }}>
 				{virtualizer.getVirtualItems().map(row => {
 					const message = visible[row.index];
 					return <div className="virtual-row" key={row.key} data-index={row.index} data-chat-entry={message?.entryId} data-chat-id={message?.id}
@@ -252,7 +273,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 							}
 						}}
 						style={{ position: "absolute", width: "100%", top: 0, left: 0, transform: `translateY(${row.start}px)` }}>
-						{message ? renderMessage(message) : <>
+						{message ? renderMessage(message, rows[row.index]!.results, rows[row.index]!.thinking) : <>
 							{!visible.length && !loading && (empty ?? <p className="muted">No messages yet.</p>)}
 							{footer}<div style={{ height: 28 }} />
 						</>}

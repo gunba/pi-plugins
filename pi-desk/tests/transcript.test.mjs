@@ -17,10 +17,59 @@ test("saved errors keep their native branch position without entering model cont
 });
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
+import { transcriptRows } from "../src/client/transcript-rows.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";
 import { planRoundNotice } from "../src/client/plan-round.ts";
 import { renderPlanRoundPrompt } from "../../pi-plan/src/prompt.ts";
 import { PLAN_ROUND_MESSAGE } from "../../pi-plan/src/constants.ts";
+
+test("a file tool call and its result form one display row without a separate source-file block", () => {
+	const transcript = new Transcript();
+	const call = transcript.message({ role: "assistant", content: [{ type: "toolCall", id: "read-skill", name: "read",
+		arguments: { path: "SKILL.md" } }] }, "call", undefined, 0, process.cwd());
+	const result = transcript.message({ role: "toolResult", toolName: "read", toolCallId: "read-skill",
+		content: [{ type: "text", text: "Skill content" }], details: { sourcePath: "SKILL.md", firstLine: 1 } }, "result", undefined, 1, process.cwd());
+	assert.equal(call.blocks.length, 1);
+	assert.equal(call.blocks[0].file.name, "SKILL.md");
+	const rows = transcriptRows([call, result]);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].message, call);
+	assert.equal(rows[0].results["read-skill"], result);
+	assert.equal(result.id, "entry:result");
+});
+
+test("adjacent thinking messages share a display group without merging native identities", () => {
+	const transcript = new Transcript();
+	const thought = (id, texts) => transcript.message({ role: "assistant", content: texts.map(thinking => ({ type: "thinking", thinking })) }, id);
+	const first = thought("first", ["One", "Two"]), second = thought("second", ["Three"]);
+	const speech = transcript.message({ role: "assistant", content: [{ type: "text", text: "Answer" }] }, "speech");
+	const third = thought("third", ["Four"]);
+	const rows = transcriptRows([first, second, speech, third]);
+	assert.equal(rows.length, 3);
+	assert.deepEqual(rows[0].thinking.map(message => message.id), ["entry:first", "entry:second"]);
+	assert.equal(rows[0].thinking.reduce((count, message) => count + message.blocks.length, 0), 3);
+	assert.equal(first.blocks.length, 2);
+	assert.equal(second.blocks.length, 1);
+	assert.equal(rows[1].thinking, undefined);
+	assert.deepEqual(rows[2].thinking, [third]);
+});
+
+test("saved and live party notices retain their type and sender without duplicating the native heading", () => {
+	const transcript = new Transcript();
+	const content = "Direct message · Reviewer (peer-id)\n\nJoined review-room. Send the evidence when ready.";
+	const saved = transcript.entry({ type: "custom_message", id: "notice", customType: "pi-party/message",
+		content, display: true, details: { sender: "peer-id" }, timestamp: new Date(1000).toISOString() });
+	const live = transcript.message({ role: "custom", customType: "pi-party/message", content, display: true, details: { sender: "peer-id" } });
+	assert.deepEqual(saved.notice, { kind: "party", title: "Direct message · Reviewer" });
+	assert.deepEqual(live.notice, saved.notice);
+	assert.equal(saved.blocks[0].text, "Joined review-room. Send the evidence when ready.");
+	assert.equal(transcript.message({ role: "user", content }).notice, undefined);
+	const process = transcript.entry({ type: "custom_message", id: "process", customType: "pi-work/wake-v1", display: true,
+		content: "Managed process 123 exited with code 0.\n*literal stdout*\nUse write_stdin session_id=123 once.", timestamp: new Date(2000).toISOString() });
+	assert.equal(process.notice.kind, "process");
+	assert.equal(process.notice.title, "Managed process 123 exited with code 0.");
+	assert.equal(process.blocks[0].text, "*literal stdout*\nUse write_stdin session_id=123 once.");
+});
 
 test("nested tool calls stay on their calling result instead of orphaning transcript rows", () => {
 	const transcript = new Transcript();

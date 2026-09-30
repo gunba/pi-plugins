@@ -60,7 +60,7 @@ export class TranscriptFeed {
 		this.dirtyTools.clear();
 		const content = (this.live as { content?: unknown[] } | undefined)?.content;
 		if (this.liveId && content) for (const index of this.dirtyArguments) {
-			const block = this.transcript.toolCall(content[index], false);
+			const block = this.transcript.toolCall(content[index], false, this.cwd());
 			if (!block || index >= 128) continue;
 			const used = [...this.previews].reduce((sum, [key, count]) => key === index ? sum : sum + count, 0);
 			const argumentsText = block.arguments.slice(0, Math.max(0, MESSAGE_TEXT_CHARACTERS - used));

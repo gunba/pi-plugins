@@ -1,5 +1,4 @@
 import {
-  memo,
   useCallback,
   useEffect,
   useRef,
@@ -7,8 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import Markdown from "react-markdown";
-import { FileLink } from "./file-view.tsx";
-import { ReferenceContext } from "./reference-origin.tsx";
+import { MessageView as Message } from "./message-view.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
 import type { BrowserAccount } from "./account.ts";
 import { ResumeConversation } from "./resume.tsx";
@@ -21,10 +19,7 @@ import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
-import { AssetImage, AssetLink } from "./assets.tsx";
 import { AttachmentList, useAttachments } from "./attachments.tsx";
-import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
-import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
 import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
 import type { Feedback } from "../shared/feedback.ts";
@@ -35,13 +30,13 @@ import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
 import { PlanView } from "./plan-view.tsx";
-import { planRoundNotice } from "./plan-round.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
+import { PartySessions } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
@@ -49,9 +44,8 @@ import { TranscriptView } from "./transcript-view.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
-import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, isActivityOnly, type ClientState } from "./state.ts";
+import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
 import type {
-  ChatMessage,
   HistoryPage,
   InteractionSnapshot,
   SessionView,
@@ -397,7 +391,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </div>
         <nav className="session-list">
           {(state.host.computers ?? [{ id: undefined, name: state.host.name, platform: state.host.platform, connected, updates: host.updates,
-            connection: connected ? "connected" as const : "reconnecting" as const }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
+            connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }]).map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
             <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
@@ -409,31 +403,21 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>}
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
-          {host.sessions.filter(item => item.computer === computer.id)
-            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)
-            .map((item) => (
-              <div className="session-row" key={item.key}>
-              <button
-                className={`session-item ${selected === item.key ? "selected" : ""}`}
-                onClick={() => {
-                  setSelected(item.key);
-                  setSidebar(false);
-                  setPanel(undefined);
-                }}
-              >
-                <span
-                  className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`}
-                />
-                <span>
-                  <strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
-                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small>
-                </span>
+          <PartySessions directory={computer.parties} computer={computer.id} computerName={computer.name} connected={computer.connected}
+            sessions={host.sessions.filter(item => item.computer === computer.id)
+              .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
+            renderSession={item => <div className="session-row" key={item.key}>
+              <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
+                setSelected(item.key); setSidebar(false); setPanel(undefined);
+              }}>
+                <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} />
+                <span><strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
+                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
-              </div>
-            ))}
+            </div>} />
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
             <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
@@ -525,7 +509,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           starting={session?.state === "starting"}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           feedback={feedback[selected]} dismissed={dismissedNotices}
-          renderMessage={message => <Message message={message} sessionKey={selected}
+          renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected}
             dismissFeedback={item => setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, item.generation, item.id)))} />}
           empty={
               <div className="welcome">
@@ -764,7 +748,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
-            onLatest={storeHistory} renderMessage={(message, source) => <Message message={message} sessionKey={selected} source={source} />}
+            onLatest={storeHistory} renderMessage={(message, source, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={source} />}
             answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {(panel === "work" || panel === "view") &&
@@ -794,7 +778,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                       source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
                       connected={connected} epoch={epoch}
                       messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
-                      onLatest={storeHistory} renderMessage={message => <Message message={message} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
+                      onLatest={storeHistory} renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
                   </> : view.kind === "ledger" ? <div>
                     <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
                     {(view.data as { ledger?: Ledger }).ledger
@@ -1052,158 +1036,5 @@ function Question({
     </Modal>
   );
 }
-function toolArgumentPreview(serialized: string): string {
-  try {
-    const args = JSON.parse(serialized);
-    const value = args.path ?? args.command ?? args.cmd ?? args.q ?? args.query;
-    return typeof value === "string" ? value.replace(/\s+/g, " ").slice(0, 160) : "";
-  } catch { return ""; }
-}
-const Message = memo(function Message({
-  message,
-  sessionKey,
-  source,
-  dismissFeedback,
-}: {
-  message: ChatMessage;
-  sessionKey: string;
-  source?: string;
-  dismissFeedback?: (feedback: Feedback) => void;
-}) {
-  const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString([], {
-    hour: "2-digit", minute: "2-digit",
-  }) : "";
-  if (message.feedback) return <article className={`message message-feedback feedback-${message.feedback.level}`} role="status">
-    <div className="feedback-heading"><Icon name="warning" /><strong>{message.feedback.level === "error" ? "Error" : "Warning"}</strong><time>{time}</time>
-      {dismissFeedback && <button className="icon-button" aria-label="Dismiss notification" onClick={() => dismissFeedback(message.feedback!)}>
-        <Icon name="close" /></button>}</div>
-    <p>{message.feedback.text}</p>
-  </article>;
-  const round = planRoundNotice(message);
-  if (round) return <article className="message message-plan-round">
-    <div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
-      <span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div>
-    <p>{round.objective}</p>
-  </article>;
-  const activityOnly = isActivityOnly(message);
-  return (
-    <ReferenceContext value={{ message: message.id, source }}>
-    <article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}`}>
-      {!activityOnly &&
-      <div className="message-heading">
-        <span
-          className={
-            message.role === "assistant" ? "assistant-avatar" : "message-label"
-          }
-        >
-          {message.role === "assistant"
-            ? "π"
-            : message.role === "user"
-              ? source ? "Input" : "You"
-              : (message.toolName ?? "Note")}
-        </span>
-        {message.role === "assistant" && <strong>Pi</strong>}
-        <time>{time}</time>
-        {message.tool && <div className={`tool-status tool-${message.tool.state}`}>
-          <span>{message.tool.state === "running" ? "Running" : message.tool.state === "interrupted" ? "Stopped"
-            : message.tool.state === "error" ? "Failed" : "Completed"}</span>
-          {message.tool.state === "running" ? <Elapsed started={message.timestamp} />
-            : message.tool.seconds !== undefined && <span>{message.tool.seconds.toFixed(1)}s</span>}
-          {message.tool.exitCode !== undefined && <span>Exit {message.tool.exitCode}</span>}
-          {message.tool.processRunning && <span>Process{message.tool.processId ? ` #${message.tool.processId}` : ""} was running when this result was returned</span>}
-        </div>}
-      </div>}
-      <div className="message-body">
-        {message.nested && <details className="tool-card nested-tools">
-          <summary><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</summary>
-          <ul>{message.nested.calls.map((call, index) => <li key={index}>
-            <span>{call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small>
-          </li>)}</ul>
-        </details>}
-        {message.blocks.map((block, index) => {
-          if (!block) return null;
-          if (block.type === "file") return <FileLink key={index} session={sessionKey} file={block.file} />;
-          if (block.type === "artifact") return <ArtifactLink key={index} session={sessionKey} id={block.id} label={block.label} />;
-          if (block.type === "diff") return <DiffCard key={index} session={sessionKey} block={block} />;
-          if (block.type === "text" && message.tool?.state === "running") return <LiveOutput key={index} text={block.text} />;
-          if (block.type === "ledger") return <LedgerCard key={index} ledger={block.ledger} />;
-          if (block.type === "image")
-            return (
-              <AssetImage key={index} session={sessionKey} asset={block.asset} />
-            );
-          if (block.type === "toolCall")
-            return (
-              <details className="tool-card" key={index}>
-                <summary>
-                  <span className="tool-icon">⌘</span>
-                  <strong>{block.name}</strong>
-                  <span className="tool-argument-preview">{toolArgumentPreview(block.arguments)}</span>
-                  {activityOnly && <time>{time}</time>}
-                  <span className="muted">Tool call</span>
-                </summary>
-                <pre>{block.arguments}</pre>
-                {block.full && <AssetLink session={sessionKey} asset={block.full} />}
-                {block.truncated && !block.full && <p className="muted">Preview only. Complete arguments exceed the viewer's asset limit.</p>}
-              </details>
-            );
-          const rendered = (
-            <div className="markdown">
-              <Markdown
-                urlTransform={url => {
-                  const file = message.links?.find(link => link.target === url)?.file;
-                  return file ? `#desk-file-${file.id}` : /^(https?:|mailto:|tel:|#)/i.test(url) && !url.startsWith("#desk-file-") ? url : "";
-                }}
-                components={{
-                  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-                  a: ({ children, href, node }) => {
-                    const file = message.links?.find(link => `#desk-file-${link.file.id}` === href)?.file;
-                    const label = node?.children.some(child => child.type === "element" && child.tagName === "img")
-                      ? node.children.map(child => child.type === "text" ? child.value
-                        : child.type === "element" && child.tagName === "img" ? String(child.properties.alt ?? "Image") : "").join("")
-                      : children;
-                    return file ? <FileLink session={sessionKey} file={file}>{label}</FileLink>
-                      : href ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{label}</a> : <span>{label}</span>;
-                  },
-                  img: ({ alt, src }) => {
-                    const file = message.links?.find(link => `#desk-file-${link.file.id}` === src)?.file;
-                    return file ? <FileLink session={sessionKey} file={file}>{alt || file.name}</FileLink>
-                      : src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>;
-                  },
-                }}
-              >
-                {block.text}
-              </Markdown>
-              {block.full && (
-                <AssetLink session={sessionKey} asset={block.full} />
-              )}
-              {block.truncated && !block.full && <p className="muted">Preview only. Complete output exceeds the viewer's asset limit.</p>}
-            </div>
-          );
-          return block.type === "thinking" || message.role === "tool" ? (
-            <details
-              className={`tool-card ${message.isError ? "tool-error" : ""}`}
-              key={index}
-            >
-              <summary>
-                {block.type === "thinking"
-                  ? "Thinking"
-                  : message.tool?.state === "running"
-                    ? "Live output"
-                  : message.isError
-                    ? "Tool error"
-                    : "Tool result"}
-              </summary>
-              {rendered}
-            </details>
-          ) : (
-            <div key={index}>{rendered}</div>
-          );
-        })}
-      </div>
-    </article>
-    </ReferenceContext>
-  );
-});
-
 document.documentElement.dataset.theme =
   localStorage.getItem("pi-desk:theme") ?? "light";

@@ -6,6 +6,7 @@ import { LEDGER_ENTRY, readLedger } from "../../../pi-context-ledger/model.ts";
 import type { ArtifactStore } from "../../../pi-output-budget/extensions/artifacts.ts";
 import { LocalFiles } from "./local-files.ts";
 import { projectFileLinks } from "./file-links.ts";
+import { receivedNotice } from "./received-notice.ts";
 import { ExpiredReference } from "./references.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS, type HistoryPosition } from "../shared/history.ts";
 
@@ -36,13 +37,16 @@ export class Transcript {
 		return { text: result.text, offset, next: result.next_offset, total: result.total_chars };
 	}
 
-	toolCall(value: unknown, complete: boolean): Extract<ChatBlock, { type: "toolCall" }> | undefined {
+	toolCall(value: unknown, complete: boolean, cwd?: string): Extract<ChatBlock, { type: "toolCall" }> | undefined {
 		const block = record(value);
 		if (block.type !== "toolCall") return;
-		const argumentsText = JSON.stringify(block.arguments ?? {}, null, 2);
+		const args = record(block.arguments);
+		const argumentsText = JSON.stringify(args, null, 2);
+		const file = cwd && ["read", "edit", "write", "view_image"].includes(String(block.name)) && typeof args.path === "string"
+			? this.files.observePath(args.path, cwd) : undefined;
 		return {
 			type: "toolCall", id: String(block.id), name: String(block.name),
-			arguments: argumentsText.slice(0, 12_000), truncated: argumentsText.length > 12_000,
+			arguments: argumentsText.slice(0, 12_000), truncated: argumentsText.length > 12_000, ...(file ? { file } : {}),
 			...(complete && argumentsText.length > 12_000 ? { full: this.asset(argumentsText, "text/plain; charset=utf-8") } : {}),
 		};
 	}
@@ -156,9 +160,9 @@ export class Transcript {
 				? [{ name: call.name.slice(0, 200), status: call.status as "ok" | "error" | "unfinished",
 					...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) }] : [];
 		}) : [];
-		const linkedFiles: ChatBlock[] = [];
-		const content = typeof message.content === "string" ? [{ type: "text", text: message.content }]
-			: Array.isArray(message.content) ? message.content : [];
+		const received = receivedNotice(message);
+		const content = typeof received.content === "string" ? [{ type: "text", text: received.content }]
+			: Array.isArray(received.content) ? received.content : [];
 		for (const item of content) {
 			const block = record(item);
 			if (block.type === "text" || block.type === "thinking") {
@@ -174,21 +178,15 @@ export class Transcript {
 				if (asset) blocks.push({ type: "image", asset, mimeType });
 				else blocks.push({ type: "text", text: "This image exceeds the viewer's 16 MiB asset limit." });
 			} else if (block.type === "toolCall") {
-				blocks.push(this.toolCall(block, true)!);
-				if (cwd && (entryId || !liveId) && ["read", "edit", "write", "view_image"].includes(String(block.name))) {
-					const path = record(block.arguments).path;
-					const file = typeof path === "string" ? this.files.observePath(path, cwd) : undefined;
-					if (file) linkedFiles.push({ type: "file", file });
-				}
+				blocks.push(this.toolCall(block, true, cwd)!);
 			}
 		}
-		blocks.push(...linkedFiles);
 		const timestamp = typeof message.timestamp === "number" ? message.timestamp : 0;
 		if (typeof message.errorMessage === "string") blocks.push({ type: "text", text: message.errorMessage.slice(0, 16_000) });
 		const tool = role === "tool" ? this.resultDetails(message, blocks, cwd) : undefined;
 		const result: ChatMessage = {
 			id: entryId ? `entry:${entryId}` : liveId ?? `live:${randomUUID()}`,
-			revision: 0, order, entryId, role, timestamp, blocks,
+			revision: 0, order, entryId, role, timestamp, blocks, notice: received.notice,
 			toolName: typeof message.toolName === "string" ? message.toolName : undefined,
 			toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
 			isError: message.isError === true || message.stopReason === "error" || tool?.state === "error", complete: true, tool,
@@ -212,7 +210,8 @@ export class Transcript {
 	entry(entry: SessionEntry, order = 0, cwd?: string): ChatMessage | undefined {
 		if (entry.type === "message") return this.message(entry.message, entry.id, undefined, order, cwd);
 		if (entry.type === "custom_message") return this.message({
-			role: "custom", content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
+			role: "custom", customType: entry.customType, details: entry.details,
+			content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
 		}, entry.id, undefined, order, cwd);
 		if (entry.type === "custom" && entry.customType === FEEDBACK_ENTRY) {
 			const data = record(entry.data);

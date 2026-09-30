@@ -125,6 +125,23 @@ export class PartyStore {
 	release(session: string, owner: string): void {
 		this.db.prepare("UPDATE members SET heartbeat=0,state='offline',delivery=0 WHERE session=? AND owner=?").run(session, owner);
 	}
+	/** Explicit user membership changes, atomic across the selected registered agents. */
+	setMembership(sessions: string[], room: string | null, expectedRoom?: string): void {
+		const next = room === null ? "" : this.roomId(room);
+		const expected = expectedRoom === undefined ? undefined : this.roomId(expectedRoom);
+		this.tx(() => {
+			const members = [...new Set(sessions)].map(session => {
+				const member = this.member(session);
+				if (!member) throw Error("Agent is no longer registered.");
+				if (expected !== undefined && member.room !== expected) throw Error("Agent party changed; refresh before removing it.");
+				return member;
+			});
+			for (const member of members) if (member.room !== next) {
+				this.revokeRoom(member.session);
+				this.db.prepare("UPDATE members SET room=?,epoch=? WHERE session=?").run(next, randomUUID(), member.session);
+			}
+		});
+	}
 	leave(session: string, owner: string): void {
 		this.tx(() => {
 			this.owned(session, owner);
@@ -145,7 +162,10 @@ export class PartyStore {
 	members(session: string, owner: string): Member[] {
 		const self = this.owned(session, owner);
 		if (!self.room) return [];
-		return this.db.prepare("SELECT * FROM members WHERE room=? ORDER BY label,session").all(self.room) as unknown as Member[];
+		return this.group(self.room);
+	}
+	group(room: string): Member[] {
+		return this.db.prepare("SELECT * FROM members WHERE room=? ORDER BY label,session").all(this.roomId(room)) as unknown as Member[];
 	}
 	/** Read room history without admitting messages, renewing leases or reserving wakes. */
 	history(session: string, owner: string, query?: HistoryQuery, direct = false): HistoryPage {

@@ -29,7 +29,8 @@ export class SessionCatalog {
 		if (value.version !== 1 || !Array.isArray(value.sessions)) throw new Error("Invalid Desk session catalog.");
 		return value.sessions.map((item: SessionView) => {
 			if (typeof item.key !== "string" || typeof item.cwd !== "string") throw new Error("Invalid Desk session reference.");
-			return { ...item, state: "closed", interrupted: isOpenSession(item),
+			return { ...item, agentId: item.file && existsSync(item.file) ? readSessionHeader(item.file).id : item.agentId,
+				state: "closed", interrupted: isOpenSession(item),
 				controls: item.controls?.map(control => control.state === "running"
 					? { ...control, state: "interrupted", error: "The host stopped before the outcome was recorded. Check saved history; this operation was not replayed." }
 					: control),
@@ -38,7 +39,8 @@ export class SessionCatalog {
 	}
 	write(sessions: SessionView[]): void {
 		const records = sessions.map(view => ({
-			key: view.key, cwd: view.snapshot?.cwd ?? view.cwd, created: view.created, state: view.state,
+			key: view.key, agentId: view.snapshot?.id ?? view.agentId,
+			cwd: view.snapshot?.cwd ?? view.cwd, created: view.created, state: view.state,
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,

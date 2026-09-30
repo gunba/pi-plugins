@@ -30,6 +30,7 @@ import { checkRuntimeUpdate, readUpdateCheck, updateCheckInterval } from "../../
 import type { RuntimeUpdateState } from "../shared/updates.ts";
 import { isOpenSession } from "../shared/workspace.ts";
 import { Folders } from "./folders.ts";
+import { Parties } from "./parties.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
@@ -47,6 +48,7 @@ export class DeskHost {
 	private saved?: SavedSessionIndex;
 	private folders?: Folders;
 	private inputs?: InputLedger;
+	private parties?: Parties;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private server = createServer((request, response) => { void this.handle(request, response); });
 	private sessions = new Map<string, ManagedSession>();
@@ -110,6 +112,8 @@ export class DeskHost {
 			for (const view of this.catalog.read()) this.sessions.set(view.key, {
 				view: { ...view, activation: randomUUID(), inputs: this.inputs.pending(view.key) },
 			});
+			this.parties = new Parties(this.options.agentDir!, () => this.refreshParties());
+			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
 					path: view.snapshot?.cwd ?? view.cwd, modified: view.created,
@@ -130,7 +134,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
-				this.refreshUpdates();
+				this.refreshUpdates(); this.refreshParties();
 			}, 20_000);
 			this.heartbeat.unref();
 			await this.connectAccount();
@@ -155,6 +159,7 @@ export class DeskHost {
 			await this.saved?.close();
 			this.inputs?.close();
 			this.inputs = undefined;
+			this.parties?.close();
 			this.relay?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
@@ -166,7 +171,15 @@ export class DeskHost {
 
 	state(): HostState {
 		return { release: RELEASE, name: hostname(), platform: process.platform, cwd: this.options.cwd,
-			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession), relay: this.relayStatus, updates: this.updates };
+			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
+			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates };
+	}
+
+	private refreshParties(): void {
+		if (this.closing || !this.parties) return;
+		const ids = [...this.sessions.values()].filter(item => isOpenSession(item.view))
+			.flatMap(({ view }) => view.snapshot?.id ?? view.agentId ?? []);
+		if (this.parties.refresh(ids)) this.emit({ type: "state", state: this.state() });
 	}
 
 	private refreshUpdates(): void {
@@ -299,7 +312,7 @@ export class DeskHost {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
-				name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", snapshot: message.snapshot, ui: message.snapshot.ui };
+				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", snapshot: message.snapshot, ui: message.snapshot.ui };
 		} else if (message.type === "history_ready") {
 			if (managed.view.ui?.generation !== message.generation) return;
 			managed.view = { ...managed.view, historyReady: true };
@@ -319,7 +332,7 @@ export class DeskHost {
 		else { this.emit({ type: "worker", key, message }); return; }
 		this.emit({ type: "session", session: managed.view });
 		this.persist();
-		if (message.type === "snapshot") this.drainInputs(managed);
+		if (message.type === "snapshot") { this.refreshParties(); this.drainInputs(managed); }
 	}
 
 	private inputEvent(managed: ManagedSession): void {
@@ -402,13 +415,13 @@ export class DeskHost {
 		void worker.start(options).then(snapshot => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
-			managed.view = { ...managed.view, snapshot, ui: snapshot.ui, state: "ready",
+			managed.view = { ...managed.view, agentId: snapshot.id, snapshot, ui: snapshot.ui, state: "ready",
 				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf };
 			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
 			this.persist(true);
-			this.drainInputs(managed);
+			this.refreshParties(); this.drainInputs(managed);
 		}).catch(error => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
@@ -564,6 +577,13 @@ export class DeskHost {
 			const url = new URL(request.path, this.origin);
 			const data = request.body ?? {};
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
+			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
+				const party = string(data.party, 48);
+				this.parties!.setMembership(data.agents, url.pathname.endsWith("/leave") ? null : party,
+					url.pathname.endsWith("/leave") ? party : undefined);
+				this.refreshParties();
+				return reply(this.parties!.snapshot);
+			}
 			if (url.pathname === "/api/runtime/update" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host does not use a managed runtime." }, 409);
 				await launchOperation(this.runtimeHome, "update");
@@ -759,6 +779,7 @@ export class DeskHost {
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close();
 		this.accountIdentity?.close();
+		try { this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => item.worker?.close()));
