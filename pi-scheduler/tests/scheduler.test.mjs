@@ -36,7 +36,7 @@ function harness(directory, mode = "tui") {
   };
   const pi = {
     events: createEventBus(),
-    registerTool: (tool) => tools.set(tool.name, wrapRegisteredTool({ definition: tool }, { createContext: () => ctx, getActiveTools: () => [] })),
+    registerTool: (tool) => tools.set(tool.name, wrapRegisteredTool({ definition: tool }, { createToolContext: () => ctx, getActiveTools: () => [] })),
     registerMessageRenderer: (name, fn) => renderers.set(name, fn),
     registerCommand: (name, cmd) => commands.set(name, cmd), registerShortcut() {},
     on: (name, fn) => { const previous = events.get(name); events.set(name, async (...args) => { await previous?.(...args); return fn(...args); }); },

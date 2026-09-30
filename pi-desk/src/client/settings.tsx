@@ -9,7 +9,7 @@ import { SessionControls } from "./session-controls.tsx";
 import type { Computer, WorkspaceState } from "./workspace.ts";
 import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
-import { SectionIcon } from "./icons.tsx";
+import { Icon, SectionIcon } from "./icons.tsx";
 
 export const settingsSections = [
 	{ id: "general", title: "General" }, { id: "conversation", title: "Conversation" },
@@ -45,16 +45,16 @@ export function SettingsContent({ section, host, account, session, computer, con
 	return <>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{section === "general" && <>
-			<section className="panel-card"><h3>Appearance</h3>
+			<section className="panel-card"><h3><Icon name="settings" />Appearance</h3>
 				<label className="setting-control">Theme<select value={theme} onChange={event => {
 					setTheme(event.target.value); document.documentElement.dataset.theme = event.target.value;
 					localStorage.setItem("pi-desk:theme", event.target.value);
 				}}><option value="dark">Dark</option><option value="light">Light</option></select></label>
 			</section>
-			<section className="panel-card"><h3>Pi Desk</h3><p>App {RELEASE.version} · API {RELEASE.api}</p>
+			<section className="panel-card"><h3><Icon name="info" />Pi Desk</h3><p>App {RELEASE.version} · API {RELEASE.api}</p>
 				{(computer?.release ?? (!host.computers ? host.release : undefined)) && <p className="muted">
 					Host {(computer?.release ?? host.release).version} · Pi {(computer?.release ?? host.release).engine}</p>}
-				<button onClick={() => location.reload()}>Reload app</button>
+				<button className="quiet-action" onClick={() => location.reload()}><Icon name="refresh" />Reload app</button>
 			</section>
 		</>}
 		{section === "computers" && (account ? <Computers computers={host.computers ?? []} account={account} /> : <>
@@ -63,7 +63,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 			<Devices />
 		</>)}
 		{section === "conversation" && <>
-			{session ? <section className="panel-card"><h3>Conversation</h3>
+			{session ? <section className="panel-card"><h3><Icon name="chat" />Conversation</h3>
 				<label className="setting-control">Pin conversation<input type="checkbox" role="switch" checked={!!session.pinned}
 					disabled={busy || !connected} onChange={event => run(api(`/sessions/${session.key}/metadata`,
 						{ generation: ui?.generation, pinned: event.target.checked }))} /></label>
@@ -73,19 +73,20 @@ export function SettingsContent({ section, host, account, session, computer, con
 			<DraftRecovery available={host.sessions.map(item => item.key)} target={session?.key} busy={busy} restored={restore} />
 		</>}
 		{section === "tools" && (snapshot ? <>
-			<section className="panel-card"><h3>Commands</h3>
+			<section className="panel-card"><h3><Icon name="code" />Commands</h3>
 				<label className="setting-control">Add a command to your message<select value="" onChange={event => {
 					if (event.target.value) compose(`/${event.target.value} `);
 				}}><option value="">Choose a command…</option>{snapshot.commands.map(command =>
 					<option key={command.name} value={command.name}>/{command.name}{command.description ? ` — ${command.description}` : ""}</option>)}</select></label>
 			</section>
-			<section className="panel-card"><h3>{snapshot.tools.length} tools · {snapshot.extensions.length} extensions</h3>
-				<details><summary>Extensions</summary>{snapshot.extensions.map(extension =>
-					<p className={extension.error ? "error-text" : "inventory-item"} key={extension.path}>
-						{extension.path.split(/[\\/]/).at(-1)}{extension.error ? `: ${extension.error}` : ""}</p>)}</details>
-				<details><summary>Tools</summary>{snapshot.tools.map(tool =>
-					<p className="inventory-item" key={tool.name}>{tool.name}{tool.active ? "" : " · inactive"}</p>)}</details>
-				<button disabled={busy || !connected} onClick={() => run(invoke({ kind: "reload" }))}>Reload Pi resources</button>
+			<section className="panel-card"><h3><Icon name="tools" />{snapshot.tools.length} tools · {snapshot.extensions.length} extensions</h3>
+				<details className="settings-inventory"><summary>Extensions</summary><ul>{snapshot.extensions.map(extension =>
+					<li className={extension.error ? "error-text" : ""} key={extension.path} title={extension.path}>
+						<Icon name={extension.error ? "info" : "plug"} /><span>{extension.path.split(/[\\/]/).at(-1)}{extension.error ? `: ${extension.error}` : ""}</span></li>)}</ul></details>
+				<details className="settings-inventory"><summary>Tools</summary><ul>{snapshot.tools.map(tool =>
+					<li key={tool.name}><span className={`status-dot ${tool.active ? "running" : "idle"}`} /><span>{tool.name}</span>
+						<small>{tool.active ? "Active" : "Available"}</small></li>)}</ul></details>
+				<button className="quiet-action" disabled={busy || !connected} onClick={() => run(invoke({ kind: "reload" }))}><Icon name="refresh" />Reload Pi resources</button>
 			</section>
 		</> : <p className="muted">Open a conversation to see its tools and extensions.</p>)}
 		{section === "activity" && <>

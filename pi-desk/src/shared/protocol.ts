@@ -68,6 +68,7 @@ export interface ChatMessage {
 	isError?: boolean;
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };
+	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number }[] };
 	links?: { target: string; file: FileReference }[];
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }

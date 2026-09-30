@@ -25,6 +25,8 @@ test("exec_command is a hard-cut strict Unified Exec schema", () => {
 	assert.ok(execCommand);
 	assert.ok(writeStdin);
 	assert.equal(tools.has("shell_command"), false);
+	assert.equal(tools.has("apply_patch"), false);
+	assert.equal(tools.has("patch_and_run"), false);
 	assert.deepEqual(execCommand.parameters.required, ["cmd"]);
 	assert.equal(execCommand.parameters.additionalProperties, false);
 	assert.deepEqual(Object.keys(execCommand.parameters.properties).sort(), [
@@ -169,19 +171,4 @@ test("custom command renderers collapse successes and retain expanded or error o
 		/full command output/,
 	);
 
-	const applyPatch = tools.get("apply_patch");
-	assert.equal(
-		render(
-			applyPatch.renderResult(
-				{
-					content: [{ type: "text", text: "Applied patch.\n- updated a.ts" }],
-					details: { changes: [{ action: "updated", path: "a.ts" }] },
-				},
-				options,
-				theme,
-				{ isError: false, lastComponent: undefined },
-			),
-		),
-		"✓ Patched 1 file",
-	);
 });

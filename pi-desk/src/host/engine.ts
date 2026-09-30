@@ -6,6 +6,9 @@ import {
 	createAgentSessionServices,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
+	createCodemodeExtension,
+	createMcpExtension,
+	createToolSearchExtension,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
@@ -142,7 +145,11 @@ export class DeskEngine {
 			const services = await createAgentSessionServices({
 				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
-					extensionFactories: [{ name: "pi-desk", factory: pi => {
+					extensionFactories: [
+						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
+						{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
+						{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
+						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi);
 						installIntegrations(pi);
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });

@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerImageTools } from "./image-tools.ts";
 import { CODEX_COMPAT_TOOL_NAMES, type ToolActivationState, syncCodexCompatTools } from "./model-tools.ts";
-import { registerPatchTools } from "./patch-tools.ts";
 import { createExecLifecycle, registerProcessTools } from "./process-tools.ts";
 
 export default function codexCompat(pi: ExtensionAPI): void {
@@ -22,7 +21,6 @@ export default function codexCompat(pi: ExtensionAPI): void {
 		const details = event.details as { error?: unknown; aborted?: unknown };
 		if (typeof details.error === "string" || details.aborted === true) return { isError: true };
 	});
-	registerPatchTools(pi, ownerFor);
 	registerProcessTools(pi, ownerFor);
 	registerImageTools(pi);
 }

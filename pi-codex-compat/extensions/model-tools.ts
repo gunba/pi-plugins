@@ -13,12 +13,9 @@ export type ToolActivationState = {
 	enabled: boolean;
 	eligibleToolNames?: string[];
 	managedToolNames?: string[];
-	suppressedEditWasActive?: boolean;
 };
 
 export const CODEX_COMPAT_TOOL_NAMES = [
-	"apply_patch",
-	"patch_and_run",
 	"exec_command",
 	"write_stdin",
 	"view_image",
@@ -34,7 +31,6 @@ export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
  * host-owned bash behavior while Unified Exec remains a plain-pipe fallback.
  */
 export const PRESERVE_BUILTIN_BASH = true;
-export const PREFER_APPLY_PATCH_OVER_EDIT = true;
 
 function mergeToolNames(...groups: string[][]): string[] {
 	return [...new Set(groups.flat())];
@@ -49,7 +45,7 @@ function normalized(value: string | undefined): string {
 }
 
 function isGptModelId(id: string): boolean {
-	return id === "gpt-5" || id.startsWith("gpt-5-") || id.startsWith("gpt-5.");
+	return /^gpt-\d(?:[.\d-]|$)/.test(id);
 }
 
 function isCopilotProvider(provider: string): boolean {
@@ -107,8 +103,8 @@ export function toolsForModel(
 	model: ModelDescriptor | null | undefined,
 	capabilities: ToolActivationCapabilities = {},
 ): string[] {
-	if (!isCodexLikeModel(model)) return [];
-	const tools = ["apply_patch", "patch_and_run", "exec_command", "write_stdin"];
+	if (!model) return [];
+	const tools = ["exec_command", "write_stdin"];
 	const canGenerateImages =
 		capabilities.imageGenerationAuthenticated === true &&
 		isImageGenerationModel(model);
@@ -145,29 +141,15 @@ export function syncCodexCompatTools(
 	eligibleToolNames = mergeToolNames(eligibleToolNames, activeOwnedTools);
 
 	const adapterTools = toolsForModel(model, capabilities).filter((name) =>
-		eligibleToolNames.includes(name) &&
-		(name !== "patch_and_run" || eligibleToolNames.includes("apply_patch")),
+		eligibleToolNames.includes(name),
 	);
-	let base = withoutCodexCompatTools(activeTools);
-	let suppressedEditWasActive = state.suppressedEditWasActive === true;
-	if (
-		PREFER_APPLY_PATCH_OVER_EDIT &&
-		adapterTools.includes("apply_patch")
-	) {
-		suppressedEditWasActive =
-			suppressedEditWasActive || base.includes("edit");
-		base = base.filter((name) => name !== "edit");
-	} else if (suppressedEditWasActive) {
-		base = mergeToolNames(base, ["edit"]);
-		suppressedEditWasActive = false;
-	}
+	const base = withoutCodexCompatTools(activeTools);
 	return {
 		activeTools: mergeToolNames(base, adapterTools),
 		state: {
 			enabled: adapterTools.length > 0,
 			eligibleToolNames,
 			managedToolNames: adapterTools,
-			...(suppressedEditWasActive && { suppressedEditWasActive: true }),
 		},
 	};
 }

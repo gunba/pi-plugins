@@ -3,7 +3,7 @@ import { access, lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createReadToolDefinition, detectSupportedImageMimeTypeFromFile, getAgentDir, SettingsManager,
-  type ExtensionAPI, type ExtensionContext,
+  type ExtensionAPI, type ExtensionContext, type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { ArtifactStore, boundedText } from "./artifacts.ts";
@@ -88,7 +88,7 @@ export function outputArtifactStore(): ArtifactStore {
 
 /** Use the native reader for path resolution, image processing, errors and cancellation. */
 export async function readSnapshot(id: string, params: Static<typeof readSchema>, signal: AbortSignal | undefined,
-  ctx: ExtensionContext, store: ArtifactStore, budget = params.full ? MAX_CHARS : READ_CHARS) {
+  ctx: ExtensionToolContext, store: ArtifactStore, budget = params.full ? MAX_CHARS : READ_CHARS) {
   let snapshot: Buffer | undefined;
   let image = false;
   const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });

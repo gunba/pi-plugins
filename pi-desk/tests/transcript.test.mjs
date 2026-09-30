@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { TranscriptFeed } from "../src/host/transcript-feed.ts";
 import { Transcript } from "../src/host/transcript.ts";
 import { mergeMessages } from "../src/client/state.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";
 import { planRoundNotice } from "../src/client/plan-round.ts";
 import { renderPlanRoundPrompt } from "../../pi-plan/src/prompt.ts";
 import { PLAN_ROUND_MESSAGE } from "../../pi-plan/src/constants.ts";
+
+test("nested tool calls stay on their calling result instead of orphaning transcript rows", () => {
+	const transcript = new Transcript();
+	const feed = new TranscriptFeed(transcript, () => [], () => "generation", () => {}, () => "/tmp");
+	try {
+		feed.event({ type: "tool_execution_start", toolName: "read", toolCallId: "outer/1", parentToolCallId: "outer", args: { path: "fixture" } });
+		feed.event({ type: "tool_execution_end", toolName: "read", toolCallId: "outer/1", parentToolCallId: "outer", isError: false,
+			result: { content: [{ type: "text", text: "fixture" }] } });
+		assert.deepEqual(feed.history().messages, []);
+		const message = transcript.message({ role: "toolResult", toolName: "codemode", toolCallId: "outer", content: [],
+			nestedCalls: { complete: false, calls: [{ id: "outer/1", name: "read", status: "ok", durationMs: 12,
+				arguments: { token: "private" }, error: "unprojected" }] } });
+		assert.deepEqual(message.nested, { complete: false, calls: [{ name: "read", status: "ok", seconds: .012 }] });
+	} finally { feed.close(); }
+});
 
 test("live and saved plan rounds have a readable notice without changing the native prompt", () => {
 	const transcript = new Transcript();

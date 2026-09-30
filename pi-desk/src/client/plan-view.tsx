@@ -3,8 +3,8 @@ import type { ViewSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
 
-export function PlanView({ view, invoke, disabled, showHeading = true }: {
-	view: ViewSnapshot; invoke: (action: UiAction) => void; disabled?: boolean; showHeading?: boolean;
+export function PlanView({ view, invoke, disabled, showHeading = true, expand }: {
+	view: ViewSnapshot; invoke: (action: UiAction) => void; disabled?: boolean; showHeading?: boolean; expand?: () => void;
 }) {
 	const data = view.data as UiDetails, items = data.items ?? [], actions = view.actions ?? [];
 	const field = (label: string) => data.fields?.find(field => field.label === label)?.value;
@@ -17,7 +17,8 @@ export function PlanView({ view, invoke, disabled, showHeading = true }: {
 	const locked = disabled || !!view.working;
 	return <section className="plan-view" aria-label="Plan">
 		<header className={`plan-heading${showHeading ? "" : " compact"}`}>{showHeading && <span><Icon name="plan" /><strong>Plan</strong></span>}
-			<div>{primary && <button type="button" className="quiet-action" disabled={locked} onClick={() => invoke(primary)}>
+			<div>{expand && <button type="button" className="icon-button" title="Expand plan" aria-label="Expand plan" onClick={expand}><Icon name="expand" /></button>}
+				{primary && <button type="button" className="quiet-action" disabled={locked} onClick={() => invoke(primary)}>
 				<Icon name={primary.id === "pause" ? "pause" : primary.id === "resume" ? "play" : primary.id === "create" ? "plus" : "check"} />{primary.label}</button>}
 				<ActionMenu actions={actions.filter(action => action !== primary && action !== add && action !== edit)}
 					invoke={invoke} disabled={locked} label="Plan actions" /></div>

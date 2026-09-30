@@ -1,4 +1,3 @@
-type ApplyPatchRenderArgs = { input?: unknown; workdir?: unknown };
 type ExecCommandRenderArgs = {
 	cmd?: unknown;
 	workdir?: unknown;
@@ -51,11 +50,6 @@ export function renderExecResult(
 	return text;
 }
 
-type ApplyPatchResultDetails = {
-	changes?: Array<{ action?: string; path?: string; movePath?: string }>;
-	error?: string;
-};
-
 const MAX_CALL_TEXT = 140;
 
 function compactText(value: unknown, maxLength = MAX_CALL_TEXT): string {
@@ -104,21 +98,6 @@ export function formatWriteStdinCall(args: WriteStdinRenderArgs): string {
 	return `write_stdin ${session} · send "${compactText(visibleInput(args.chars), 70)}"`;
 }
 
-export function formatApplyPatchCall(args: ApplyPatchRenderArgs): string {
-	const input = typeof args.input === "string" ? args.input : "";
-	const paths = [
-		...input.matchAll(/^\*\*\* (?:Add|Delete|Update) File: (.+)$/gm),
-	].flatMap((match) => {
-		const path = match[1]?.trim();
-		return path ? [path] : [];
-	});
-	const uniquePaths = [...new Set(paths)];
-	let target = `${uniquePaths.length} files`;
-	if (uniquePaths.length === 0) target = "patch";
-	if (uniquePaths.length === 1) target = compactText(uniquePaths[0], 80);
-	return `apply_patch ${target}${displayWorkdir(args.workdir)}`;
-}
-
 export function resultText(result: { content?: unknown }): string {
 	if (!Array.isArray(result.content)) return "";
 	return result.content
@@ -165,12 +144,5 @@ export function summarizeExecResult(details: unknown): string {
 	return summary;
 }
 
-export function summarizeApplyPatchResult(details: unknown): string {
-	const value = (details ?? {}) as ApplyPatchResultDetails;
-	if (value.error) return "Patch failed";
-	const count = Array.isArray(value.changes) ? value.changes.length : 0;
-	if (count === 0) return "Patch applied";
-	return `Patched ${count} ${count === 1 ? "file" : "files"}`;
-}
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";

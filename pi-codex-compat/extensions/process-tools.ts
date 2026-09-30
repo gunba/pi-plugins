@@ -1,15 +1,13 @@
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { executeApplyPatch, renderApplyPatchResult, type ApplyPatchDetails } from "./patch-tools.ts";
 import { resolveToolPath } from "./paths.ts";
-import { extractShellApplyPatch } from "./shell-apply-patch.ts";
 import {
 	type ExecRuntimeOwner, type ExecRuntimeOwnerFor, createExecRuntimeOwner,
 	executeManagedExecCommand, executeWriteStdin, prepareExecCommandArguments, prepareWriteStdinArguments,
 	shutdownExecSessions, startExecSessionRuntime,
 } from "./shell-runtime.ts";
-import { formatApplyPatchCall, formatExecCommandCall, formatWriteStdinCall, renderExecResult } from "./tool-rendering.ts";
+import { formatExecCommandCall, formatWriteStdinCall, renderExecResult } from "./tool-rendering.ts";
 
 export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	let fallback: ExecRuntimeOwner | undefined;
@@ -37,22 +35,15 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	return ownerFor;
 }
 
-function interceptedPatchWorkdir(cwd: string, execWorkdir: string | undefined, shellWorkdir: string | undefined): string | undefined {
-	const outer = execWorkdir ? resolveToolPath(cwd, execWorkdir) : cwd;
-	if (shellWorkdir) return resolveToolPath(outer, shellWorkdir);
-	return execWorkdir ? outer : undefined;
-}
-
 export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwnerFor): void {
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
-		description: "Runs a command with plain pipes, returning output or a session ID for ongoing polling. tty defaults to false; tty:true is rejected because PTY/ConPTY allocation belongs to the Codex core runtime and is unavailable inside this extension.",
-		promptSnippet: "Run commands in managed sessions with the Codex Unified Exec contract",
+		description: "Run a command with plain pipes, returning output or a session ID for background work. Interactive terminal allocation is not supported.",
+		promptSnippet: "Run a command with background process control and completion notifications",
 		promptGuidelines: [
 			"Omit yield_time_ms for ordinary commands. Use short waits only for persistent services or when independent useful work can run concurrently.",
 			"A command still running after the initial wait returns a session ID. Rely on completion notifications, then call write_stdin once to collect the result rather than repeatedly polling.",
-			"exec_command intercepts `apply_patch <<'PATCH'` heredocs and routes them to apply_patch instead of executing a shell binary.",
 			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
 		],
 		parameters: Type.Object({
@@ -73,31 +64,16 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		prepareArguments: prepareExecCommandArguments,
 		executionMode: "parallel",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const patch = extractShellApplyPatch(params.cmd);
-			if (patch) {
-				return executeApplyPatch(patch.input,
-					interceptedPatchWorkdir(ctx.cwd, params.workdir, patch.workdir), ctx, signal);
-			}
 			const workdir = params.workdir ? resolveToolPath(ctx.cwd, params.workdir) : ctx.cwd;
 			return executeManagedExecCommand({ ...params, workdir }, signal, ctx, onUpdate, ownerFor(ctx));
 		},
 		renderCall(args, theme, context) {
-			const patch = typeof args.cmd === "string" ? extractShellApplyPatch(args.cmd) : undefined;
-			const label = patch ? formatApplyPatchCall({
-				input: patch.input,
-				workdir: interceptedPatchWorkdir(context.cwd, typeof args.workdir === "string" ? args.workdir : undefined, patch.workdir),
-			}) : formatExecCommandCall(args);
+			const label = formatExecCommandCall(args);
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			text.setText(theme.fg("toolTitle", theme.bold(label)));
 			return text;
 		},
-		renderResult(result, options, theme, context) {
-			const cmd = (context.args as { cmd?: unknown } | undefined)?.cmd;
-			if (typeof cmd === "string" && extractShellApplyPatch(cmd)) {
-				return renderApplyPatchResult(result as AgentToolResult<ApplyPatchDetails>, options, theme, context);
-			}
-			return renderExecResult(result, options, theme, context);
-		},
+		renderResult: renderExecResult,
 	});
 	pi.registerTool({
 		name: "write_stdin",

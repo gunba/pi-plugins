@@ -1,8 +1,8 @@
 OpenAI Codex
 Copyright 2025 OpenAI
 
-extensions/patch-grammar.ts adapts the Apache-2.0-licensed patch grammar from:
-https://github.com/openai/codex/blob/459a79eb85400af759e9220c7bafb4429ae07516/codex-rs/core/assets/tools/apply_patch.lark
+The managed process contract and standalone image request/result formats derive
+from the Apache-2.0-licensed OpenAI Codex project:
+https://github.com/openai/codex
 
-This adaptation embeds the grammar in a TypeScript module for Pi's native
-constrained-sampling API. See LICENSE-APACHE-2.0 for the license text.
+See LICENSE-APACHE-2.0 for the license text.

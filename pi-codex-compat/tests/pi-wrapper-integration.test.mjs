@@ -382,7 +382,7 @@ function assertMiddlewareRun(run, expectedIsError) {
 test("pi-codex-compat tools run through a real AgentSession agent loop", async (t) => {
 	const harness = await createHarness();
 	try {
-		await t.test("registers and wraps all five owned tools", () => {
+		await t.test("registers and wraps the managed process and image tools", () => {
 			assert.deepEqual(harness.extensionsResult.errors, []);
 			assert.equal(harness.extensionsResult.extensions.length, 2);
 			assert.deepEqual(
@@ -405,30 +405,10 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 				assert.notEqual(wrapped.execute, registered.execute, name);
 			}
 			assert.equal(
-				typeof agentTools.get("apply_patch").prepareArguments,
-				"function",
-			);
-			assert.equal(
 				typeof agentTools.get("view_image").prepareArguments,
 				"function",
 			);
 		});
-
-		await t.test(
-			"invalid apply_patch is a true error with shaped details",
-			async () => {
-				const run = await harness.invoke("apply_patch", {
-					input: "not a patch",
-				});
-				assertErrorOutcome(run, true);
-				assertMiddlewareRun(run, true);
-				assert.deepEqual(run.end.result.details.changes, []);
-				assert.equal(run.end.result.details.exitCode, 1);
-				assert.equal(typeof run.end.result.details.wallTimeSeconds, "number");
-				assert.match(run.end.result.details.error, /first line.*Begin Patch/);
-				assert.match(textContent(run.end.result), /^Exit code: 1/m);
-			},
-		);
 
 		await t.test("HTTP client names pass through the native tool wrapper", async () => {
 			const run = await harness.invoke("exec_command", {
@@ -528,20 +508,9 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 		);
 
 		await t.test(
-			"TypeBox rejects unknown fields for all five owned tools after argument preparation",
+			"TypeBox rejects unknown fields for owned tools after argument preparation",
 			async () => {
-				const legacyPatch = [
-					"*** Begin Patch",
-					"*** Add File: unknown-field-must-not-run.txt",
-					"+not written",
-					"*** End Patch",
-				].join("\n");
 				const cases = [
-					{
-						toolName: "apply_patch",
-						args: { patch: legacyPatch, cwd: ".", unexpected: true },
-						expected: { input: legacyPatch, workdir: ".", unexpected: true },
-					},
 					{
 						toolName: "exec_command",
 						args: { cmd: "printf should-not-run", unexpected: true },
@@ -583,10 +552,6 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 					);
 				}
 
-				await assert.rejects(
-					access(join(harness.cwd, "unknown-field-must-not-run.txt")),
-					(error) => error?.code === "ENOENT",
-				);
 			},
 		);
 
@@ -621,7 +586,6 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 			"raw argument preparation rejects lossy type coercion",
 			async () => {
 				for (const scenario of [
-					{ toolName: "apply_patch", args: { input: 42 } },
 					{ toolName: "exec_command", args: { cmd: 42 } },
 					{ toolName: "exec_command", args: { cmd: "true", tty: 1 } },
 					{ toolName: "write_stdin", args: { session_id: 1, chars: 7 } },

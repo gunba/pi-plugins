@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.87.1+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.99.1+.
 
 ## Pi Desk
 
@@ -15,19 +15,14 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 
 ## Extensions
 
-- `pi-codex-compat` — adds Codex-shaped `apply_patch`, `patch_and_run`, `exec_command`,
-  `write_stdin`, `view_image`, and `image_gen` tools for GPT-5.x/Codex models.
-  The tool overlay activates only for Codex-like models and preserves unrelated
-  tools, except that active `apply_patch` replaces built-in `edit` so repeated
-  text is handled with contextual hunks rather than text-rewrite scripts.
+- `pi-codex-compat` — managed `exec_command` and `write_stdin` process control,
+  plus `view_image` and `image_gen`. Native Pi `edit`, `write` and `bash` remain
+  available, including through codemode. Process control works across providers.
   Text-only Codex models receive saved image artifacts and delegate visual
   inspection to an authenticated image-capable model for concise descriptions.
-  `apply_patch` accepts Codex envelopes, moves, and structurally recognized
-  heredoc bodies, with native grammar input on supported models and cancellable,
-  alias-safe file mutation. `patch_and_run` applies the same patch then starts a
-  follow-up command only on success. Managed shell sessions launch independently, stream partial output, terminate
+  Managed shell sessions launch independently, stream partial output, terminate
   process trees, retain complete logs when display output is truncated, and use
-  compact tool rendering while preserving context-mode HTTP-output guardrails.
+  compact tool rendering.
   `view_image` validates image data and emits Pi-native image blocks.
   `image_gen` follows OpenAI Codex's standalone image tool, generates or edits
   with GPT Image 2.5 Sunburst or Flare, and saves outputs under
@@ -161,7 +156,7 @@ Full integration/release validation is `npm run check`,
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. Main pushes run
-Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.87.1 dependencies.
+Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.99.1 dependencies.
 Manual `workflow_dispatch` runs all four OS/Node combinations; feature pushes and
 pull requests do not trigger CI. Native Desk packaging remains release-tag-only.
 Codex Wire carries its own serializer dependency; this does not upgrade

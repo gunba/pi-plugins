@@ -148,6 +148,13 @@ export class Transcript {
 		const role = message.role === "user" || message.role === "assistant" ? message.role
 			: message.role === "toolResult" ? "tool" : "note";
 		const blocks: ChatBlock[] = [];
+		const nested = record(message.nestedCalls);
+		const nestedCalls = Array.isArray(nested.calls) ? nested.calls.slice(0, 256).flatMap(value => {
+			const call = record(value);
+			return typeof call.name === "string" && ["ok", "error", "unfinished"].includes(String(call.status))
+				? [{ name: call.name.slice(0, 200), status: call.status as "ok" | "error" | "unfinished",
+					...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) }] : [];
+		}) : [];
 		const linkedFiles: ChatBlock[] = [];
 		const content = typeof message.content === "string" ? [{ type: "text", text: message.content }]
 			: Array.isArray(message.content) ? message.content : [];
@@ -184,6 +191,7 @@ export class Transcript {
 			toolName: typeof message.toolName === "string" ? message.toolName : undefined,
 			toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
 			isError: message.isError === true || message.stopReason === "error" || tool?.state === "error", complete: true, tool,
+			...(role === "tool" && nestedCalls.length ? { nested: { calls: nestedCalls, complete: nested.complete === true } } : {}),
 		};
 		let remaining = MESSAGE_TEXT_CHARACTERS;
 		let thinking = THINKING_CHARACTERS;

@@ -7,7 +7,7 @@ export function NativeQueue({ queue }: { queue: SessionSnapshot["queue"] }) {
 			.filter(([, , group]) => group.count).map(([title, icon, group]) => <div className="queue-group" key={title}>
 				<div className="queue-heading"><Icon name={icon} /><strong>{title}</strong><span>{group.count}</span>
 					<small>{title === "Steering" ? "Next opportunity" : "After the current response"}</small></div>
-				<ul>{group.previews.map((text, index) => <li key={index}>{text}</li>)}</ul>
+				<ul>{group.previews.map((text, index) => <li key={index}><span>{index + 1}</span><p>{text}</p></li>)}</ul>
 				{group.count > group.previews.length && <small>{group.count - group.previews.length} more waiting</small>}
 			</div>)}
 	</section>;

@@ -51,10 +51,8 @@ async function withTempDir(t) {
 test("every owned tool publishes a strict top-level schema", () => {
 	const tools = registeredTools();
 	assert.deepEqual([...tools.keys()].sort(), [
-		"apply_patch",
 		"exec_command",
 		"image_gen",
-		"patch_and_run",
 		"view_image",
 		"write_stdin",
 	]);
@@ -65,7 +63,6 @@ test("every owned tool publishes a strict top-level schema", () => {
 
 test("image tool metadata describes its model and reference contract without choosing the workflow", () => {
 	const tools = registeredTools();
-	const applyPatch = tools.get("apply_patch");
 	const viewImage = tools.get("view_image");
 	const imageGen = tools.get("image_gen");
 	assert.match(imageGen.description, /GPT Image 2\.5 Sunburst or Flare/);
@@ -96,14 +93,6 @@ test("image tool metadata describes its model and reference contract without cho
 			args,
 		);
 	}
-	assert.doesNotMatch(
-		[
-			applyPatch.description,
-			applyPatch.promptSnippet,
-			...applyPatch.promptGuidelines,
-		].join("\n"),
-		/Environment ID/,
-	);
 	assert.equal(
 		viewImage.description,
 		"View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",

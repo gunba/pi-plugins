@@ -24,6 +24,7 @@ const paths: Record<string, ReactNode> = {
 	close: <path d="m6 6 12 12M18 6 6 18" />,
 	more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
 	plus: <path d="M12 5v14M5 12h14" />,
+	expand: <path d="M14 3h7v7m0-7-8 8M10 21H3v-7m0 7 8-8" />,
 	plan: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m7 8 1 1 2-2m3 1h4m-10 7 1 1 2-2m3 1h4" /></>,
 	pause: <path d="M8 5v14m8-14v14" />,
 	play: <path d="m8 4 12 8-12 8Z" />,

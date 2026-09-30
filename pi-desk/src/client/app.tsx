@@ -576,7 +576,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         />
         {session && canCompose && (
           <div className="composer-dock">
-            {!showWorkRail && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
+            <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />
             {ui && <EditorSuggestion key={selected} session={selected} id={ui.editorId} text={ui.editorText}
               draft={draft} context={confirmationContext} edit={text => { setDraft(text); localStorage.setItem(draftKey(selected), text); }} />}
             {question && (
@@ -589,7 +589,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {!showWorkRail && session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+            {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
             <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}
@@ -738,12 +738,9 @@ export function App({ account }: { account?: BrowserAccount }) {
       </main>
       {showWorkRail && session && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
         invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
-        pending={canCompose && !!(session.inputs?.length || session.snapshot?.queue.steering.count || session.snapshot?.queue.followUp.count) && <>
-          <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />
-          {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
-        </>} />}
+        openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
       {panel && (
-        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)} back={panel === "view" && !settings ? () => setPanel("work") : undefined}>
           <div className="panel-title">
             {panel === "view" && !settings && <button className="icon-button"
@@ -1061,6 +1058,13 @@ function Question({
     </Modal>
   );
 }
+function toolArgumentPreview(serialized: string): string {
+  try {
+    const args = JSON.parse(serialized);
+    const value = args.path ?? args.command ?? args.cmd ?? args.q ?? args.query;
+    return typeof value === "string" ? value.replace(/\s+/g, " ").slice(0, 160) : "";
+  } catch { return ""; }
+}
 const Message = memo(function Message({
   message,
   sessionKey,
@@ -1079,9 +1083,12 @@ const Message = memo(function Message({
       <span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div>
     <p>{round.objective}</p>
   </article>;
+  const activityOnly = message.role === "assistant" && message.blocks.length > 0 &&
+    message.blocks.every(block => block.type === "toolCall" || block.type === "thinking");
   return (
     <ReferenceContext value={{ message: message.id, source }}>
-    <article className={`message message-${message.role}`}>
+    <article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}`}>
+      {!activityOnly &&
       <div className="message-heading">
         <span
           className={
@@ -1096,8 +1103,6 @@ const Message = memo(function Message({
         </span>
         {message.role === "assistant" && <strong>Pi</strong>}
         <time>{time}</time>
-      </div>
-      <div className="message-body">
         {message.tool && <div className={`tool-status tool-${message.tool.state}`}>
           <span>{message.tool.state === "running" ? "Running" : message.tool.state === "interrupted" ? "Stopped"
             : message.tool.state === "error" ? "Failed" : "Completed"}</span>
@@ -1106,6 +1111,14 @@ const Message = memo(function Message({
           {message.tool.exitCode !== undefined && <span>Exit {message.tool.exitCode}</span>}
           {message.tool.processRunning && <span>Process{message.tool.processId ? ` #${message.tool.processId}` : ""} was running when this result was returned</span>}
         </div>}
+      </div>}
+      <div className="message-body">
+        {message.nested && <details className="tool-card nested-tools">
+          <summary><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</summary>
+          <ul>{message.nested.calls.map((call, index) => <li key={index}>
+            <span>{call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small>
+          </li>)}</ul>
+        </details>}
         {message.blocks.map((block, index) => {
           if (!block) return null;
           if (block.type === "file") return <FileLink key={index} session={sessionKey} file={block.file} />;
@@ -1123,6 +1136,8 @@ const Message = memo(function Message({
                 <summary>
                   <span className="tool-icon">⌘</span>
                   <strong>{block.name}</strong>
+                  <span className="tool-argument-preview">{toolArgumentPreview(block.arguments)}</span>
+                  {activityOnly && <time>{time}</time>}
                   <span className="muted">Tool call</span>
                 </summary>
                 <pre>{block.arguments}</pre>

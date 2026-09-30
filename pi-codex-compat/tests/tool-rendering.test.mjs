@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-	formatApplyPatchCall,
 	formatExecCommandCall,
 	formatWriteStdinCall,
 	liveOutputPreview,
-	summarizeApplyPatchResult,
 	summarizeExecResult,
 } from "../extensions/tool-rendering.ts";
 
@@ -27,26 +25,9 @@ test("tool calls render as compact useful one-liners", () => {
 		formatWriteStdinCall({ session_id: 7, chars: "\u0003" }),
 		'write_stdin #7 · send "^C"',
 	);
-	assert.equal(
-		formatApplyPatchCall({
-			input: [
-				"*** Begin Patch",
-				"*** Update File: src/a.ts",
-				"*** Add File: src/b.ts",
-				"*** Update File: src/a.ts",
-				"*** End Patch",
-			].join("\n"),
-			workdir: "repo",
-		}),
-		"apply_patch 2 files in repo",
-	);
 });
 
 test("collapsed result summaries stay terse and expose important state", () => {
-	assert.equal(
-		summarizeApplyPatchResult({ changes: [{ action: "updated" }] }),
-		"Patched 1 file",
-	);
 	assert.equal(
 		summarizeExecResult({ running: true, session_id: 12 }),
 		"Session #12 running",

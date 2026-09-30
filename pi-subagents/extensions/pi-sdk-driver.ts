@@ -1,6 +1,9 @@
 import { join } from "node:path";
 import {
 	createAgentSession,
+	createCodemodeExtension,
+	createMcpExtension,
+	createToolSearchExtension,
 	DefaultResourceLoader,
 	ExtensionRunner,
 	ModelRegistry,
@@ -345,7 +348,13 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			agentDir: this.host.agentDir,
 			settingsManager,
 			noExtensions: true,
+			additionalExtensionPaths: [...new Set((toolInfo ?? [])
+				.map(tool => tool.sourceInfo?.path)
+				.filter((path): path is string => !!path && ["builtin:codemode", "builtin:tool-search", "builtin:mcp"].includes(path)))],
 			extensionFactories: [
+				{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
+				{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
+				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
 				...(presentation ? [{ name: "child-presentation", factory: (pi: ExtensionAPI) => presentation.install(pi) }] : []),
 				{ name: "work-coordination", factory: (pi) => {
 					ensureWorkCoordination(pi, { child: true });
@@ -385,7 +394,9 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 					pi.on("tool_call", (event) => {
 						checkProvider();
 						if (extensionErrors.length) return { block: true, reason: `Child extension lifecycle failed: ${extensionErrors.join("; ")}` };
-						if (!enabledTools().includes(event.toolName)) {
+						const callable = event.parentToolCallId && this.host.getToolInfo?.().some(tool =>
+							tool.name === event.toolName && ["codemode", "deferred"].includes(tool.exposure ?? ""));
+						if (!enabledTools().includes(event.toolName) && !callable) {
 							return { block: true, reason: `Tool "${event.toolName}" is not enabled in the parent session.` };
 						}
 						if (localDenied.has(event.toolName)) {

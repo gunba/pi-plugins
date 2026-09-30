@@ -75,6 +75,10 @@ export class TranscriptFeed {
 	}
 	event(event: AgentSessionEvent): void {
 		if (this.closed) return;
+		// Nested calls have no native transcript entry. Their bounded record lives
+		// on the calling tool's result; treating them as roots leaves orphan rows.
+		if ((event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end")
+			&& event.parentToolCallId) return;
 		const generation = this.generation(), epoch = this.epoch;
 		if (event.type === "tool_execution_start") {
 			if (this.tools.size >= 128) return;

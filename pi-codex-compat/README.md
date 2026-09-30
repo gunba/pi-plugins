@@ -1,218 +1,44 @@
-# pi-codex-compat
+# Process and image tools
 
-Codex-shaped `apply_patch`, `patch_and_run`, `exec_command`, `write_stdin`,
-`view_image`, and `image_gen` tools for Pi. The overlay activates for compatible Codex/OpenAI
-models with exact provider/API checks and preserves the rest of the active tool
-set without resurrecting tools removed while the overlay is active. When
-`apply_patch` is active, the overlay suppresses built-in `edit` so Codex models
-use contextual patch hunks for repeated text instead of falling back to
-text-rewrite scripts. Disabling `apply_patch` or changing to another model
-restores `edit` if it was previously active. Pi's
-built-in `bash` deliberately remains visible beside `exec_command`: suppressing
-it would lose host-owned behavior, and Pi does not expose enough state to later
-distinguish extension suppression from a manual disable. Generated images are
-published under `CODEX_HOME/generated_images` (default `~/.codex/generated_images`).
-Text-only Codex models use an authenticated image-capable model for concise
-`view_image` descriptions and receive saved paths from `image_gen`.
+This extension adds managed process execution and image tools to Pi. File changes
+use native `edit` and `write`; native `bash` remains available. Tools work directly
+or through Pi's native codemode.
 
-## Apply patch
+## Managed processes
 
-`apply_patch` accepts the Codex Begin/End Patch envelope through Pi's JSON
-function fallback. Add, delete, update, move, CRLF, EOF markers, blank context,
-and the four Codex context-matching tiers are supported. Repeated pure additions
-at the same location retain patch order. Unchanged hunk context targets repeated
-text precisely. Shell interception uses a structural
-recognizer for the complete `apply_patch <<DELIMITER` and
-`cd <one argument> && apply_patch <<DELIMITER` forms; extra commands, arguments,
-connectors, redirects, or expansions are left to the normal shell.
+`exec_command` runs a shell command with piped output. It returns completed output
+or a session ID for background work. Processes are owned by the native Pi session,
+so different sessions do not share process IDs or output cursors.
 
-`*** Environment ID:` is rejected because extensions cannot route filesystem
-operations to attached environments. File mutations remain staged with
-best-effort rollback, same-path moves remain safe, sequential sections can use
-earlier staged changes, and rendering reports effective original-to-final
-changes. Rollback attempts every file, removes directories created by the
-failed application, verifies residual state, and reports any rollback errors.
-Existing CRLF files retain their line-ending style. These are intentional
-safety improvements over partial mutation.
+- Omit `yield_time_ms` for ordinary commands.
+- Short waits are useful for persistent services or independent concurrent work.
+- Completion notifications announce finished background commands.
+- `write_stdin` collects the result once, or accepts exact Ctrl+C to interrupt the
+  process tree. Other input is unavailable because this runner uses plain pipes.
+- Full output is saved outside the project when the display budget is exceeded.
+- Launches can run concurrently; polls on one process serialize their output cursor.
 
-Successful and failed model output uses Codex's exit-code, wall-time, and
-`Output:` framing. Pi's `tool_result` lifecycle marks verification/application
-failures as real tool errors while retaining structured change/error details.
-
-`patch_and_run` combines a patch and a follow-up command in one tool call.
-It uses the same patch parser and rollback behavior as `apply_patch`; the command
-runs only after the patch succeeds and the changed files still match the
-post-patch snapshot. A command failure does not roll back the successful patch.
-The command uses the managed `exec_command` runtime; a long command can return
-a session ID for `write_stdin`. This is an adaptation of the [Action Fusion
-idea from NVIDIA's SoL-Pi](https://github.com/NVlabs/SoL-Pi) (MIT), tailored to
-our primary patch tool rather than Pi's built-in `edit` and `write` tools.
-
-## Unified Exec sessions
-
-The provider-visible surface is the Unified Exec `exec_command` contract:
-`cmd` is required; `workdir`, `tty`, `yield_time_ms`, `max_output_tokens`,
-`shell`, and `login` are optional; unknown properties are rejected. There is no
-provider hard-timeout field. Wrong-type and fractional integer values are
-rejected before Pi's schema coercion. Login-shell behavior defaults to true. The initial
-output wait defaults to 10,000ms and is clamped to 250–30,000ms
-(2,000–30,000ms on Windows); a command that outlives it returns an owner-scoped
-random `session_id` in Codex's reserved 1000–99999 range. Sessions are owned by
-the Pi extension/session instance that created them; another session cannot poll
-or shut them down. An omitted `shell` uses the configured `shellPath`, then Pi's
-platform shell resolver.
-
-For `write_stdin`, non-empty writes default to 250ms and clamp to
-250–30,000ms. Omitted or empty `chars` perform a poll whose default and minimum
-are 5,000ms. Empty polls are capped by
-`PI_CODEX_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS`, which defaults to 300,000ms and
-is normalized to at least 5,000ms. Each call returns only newly available
-output while Pi receives throttled incremental updates during the call.
-
-Each result follows Codex's model-facing shape: a six-hex-digit chunk ID, wall
-time, exit or session status, approximate original token count, and `Output:`
-body. Output is collected as bytes in a UTF-8-safe 1MiB symmetric head/tail
-buffer. The model-facing budget defaults to 10,000 approximate tokens and also
-preserves the head and tail. When either limit truncates output, the complete
-combined stdout/stderr stream remains available at the returned Pi temp-log
-path. Raw log writes apply stream backpressure. A complete log is capped at
-64 MiB; retained logs are session-scoped and bounded to eight files/64 MiB by
-LRU, then removed at extension shutdown. Non-truncated logs are removed as soon
-as their process is released. Model-facing output strips terminal escape,
-control, surrogate, and unsafe Unicode format characters while retained logs
-keep the original bytes.
-After the tracked process exits, active trailing output continues to drain.
-A quiet inherited pipe is closed after a short idle grace period; disk-write
-backpressure does not count as idle time. Exited PIDs are never signalled again.
-
-Each session store is capped at 64 processes. Pruning protects the eight most
-recently used sessions, then prefers the oldest exited session before the oldest
-remaining live session. Spawned commands receive Codex's noninteractive
-defaults (`NO_COLOR=1`, `TERM=dumb`, UTF-8 locale variables, disabled colour,
-`cat` pagers, and `CODEX_CI=1`).
-
-### Deliberate host-level differences
-
-Codex core owns its PTY/ConPTY, sandbox, approval, remote-exec, and turn lifecycle.
-Those facilities are not exposed to an extension, and adding a native PTY shim
-here would not reproduce their ownership or cancellation semantics reliably
-across platforms. This runtime therefore uses ordinary pipes and rejects
-`tty:true` before spawning rather than claiming to provide a PTY. For the
-default `tty:false`, child stdin is closed: `write_stdin` accepts polling and an
-exact U+0003 Ctrl-C interrupt only, rejecting all other non-empty input. Unix
-interrupts target the process group; Windows launches the selected shell directly
-and uses the system `taskkill.exe /F /T` to stop its process tree, as Pi's native
-shell tool does. No compiled helper, compiler or elevation is required. Output
-stays on the original byte streams. Termination is observed and bounded; a failed
-attempt is reported rather than silently killing only the shell. Exited commands
-are not targeted. Windows tree discovery is PID-based, not a kernel Job Object:
-it cannot guarantee containment during process-creation/exit races or abrupt Pi
-process death. Normal exits preserve deliberately backgrounded children.
-Signal exits remain distinct from numeric exit codes.
-
-Pi cancellation during an active tool call terminates that process. Session IDs
-exist only in the owning Pi session and are released after completion, LRU
-pruning, or session shutdown. `apply_patch` heredoc interception remains in
-front of execution. HTTP clients use the same bounded output and retained-log
-handling as other commands; no context-mode tool dependency or HTTP-name
-blocklist is applied. Save large response bodies to files and inspect selected
-fields or ranges. Pi output artifacts provide further recovery where enabled.
-Unknown sessions, launch/transport failures, and aborted calls are real Pi
-tool errors. Ordinary nonzero process exits remain successful
-Unified Exec results, matching Codex protocol semantics.
+The runner does not allocate PTYs or ConPTY. `tty: true` is rejected. Defaults and
+metadata follow the Unified Exec contract; process control is not model-specific.
 
 ## Images
 
-`image_gen` requires a `model` on every call, for both generation and editing:
+`view_image` validates local image data and returns native Pi image blocks for
+image-capable models. Text-only models can use an authenticated image-capable
+model for a concise description instead.
 
-- `gpt-image-2.5-sunburst` prioritizes editing precision.
-- `gpt-image-2.5-flare` prioritizes fast, high-quality everyday generation.
+`image_gen` generates or edits images with GPT Image 2.5 Sunburst or Flare.
+Generation needs `prompt` and `model`. Edits also take one reference mode:
+`referenced_image_paths` for local files, or `num_last_images_to_include` for recent
+conversation images. Each supports up to five references.
 
-These identifiers follow OpenAI's
-[image generation guide](https://developers.openai.com/api/docs/guides/image-generation).
-There is no default or automatic fallback. The chosen identifier is sent unchanged
-and recorded in the result details; size, quality and background remain `auto`.
+Outputs are saved under `$CODEX_HOME/generated_images` (default `~/.codex/generated_images`).
+Image generation requires an eligible OpenAI/ChatGPT model and configured
+authentication. Available image tools change with model capabilities and
+authentication, while explicit tool selections are preserved.
 
-Model selection extends Codex's current tool contract:
-[Codex source at c4017a8](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/ext/image-generation/src/tool.rs)
-still fixes `gpt-image-2` and exposes no model argument. That source does not
-establish which image model OpenAI may route to internally.
+## Attribution
 
-`view_image` and local `image_gen` references are limited to 20 MiB per file.
-Image-generation HTTP response bodies are read through a 32 MiB bounded stream,
-and decoded generated images are limited to 20 MiB. Images are byte-validated
-against their declared MIME type when read, generated, or selected as edit
-references. BMP is converted to a provider-supported format at that boundary.
-Provider requests do not rehash or rewrite saved image history.
-
-Recent-image editing uses Pi's compaction-aware context entries, excludes orphan
-tool outputs, retains chronological order, and falls back to the saved path in
-text-only `image_gen` result details. Generated results retain call ID, saved
-path, byte count, operation, and any API-provided revised prompt. Saving remains
-atomic and mandatory. The image tool metadata directs immediate generation
-without redundant reconfirmation and prefers `image_gen` over Python editing
-unless the user explicitly asks otherwise.
-
-Image generation shares `pi-codex-service` with search for request-time registry
-auth, base-URL/header overrides, cancellation, a five-minute deadline, and bounded
-response reading. Image payloads and the default `originator: pi` remain specific
-to the standalone tool; Wire's Responses client identity does not replace them.
-
-Image generation is advertised only for supported OpenAI/Codex model metadata
-when Pi reports configured authentication. Text-only activation remains an
-intentional Pi adaptation so generated files and delegated visual descriptions
-remain usable.
-
-## Host boundaries
-
-### Tool integration
-
-Pi 0.84.3 provides native `constrainedSampling`: `apply_patch` supplies a Lark
-patch grammar, selected by Pi when model metadata enables OpenAI grammar tools.
-Pi also handles custom-tool results; unsupported metadata uses the JSON schema.
-Grammar calls resolve relative paths from the session cwd; use absolute paths
-for other directories. JSON calls may set `workdir`.
-
-Patch locks and staged state use canonical paths, including missing files under
-symlinked directories. Aliases address target content; moving a regular file to
-its own alias is an update. Deleting or moving a symbolic-link entry is rejected:
-unlink that entry explicitly so its target cannot be removed accidentally.
-Cancellation is checked after locks and filesystem operations; rollback settles before locks
-release. Locks coordinate this Pi process, not external filesystem writers or
-adversarial symlink replacement.
-
-Independent exec commands run concurrently; polls sharing a process serialize
-access to its output cursor. Image validation uses native base64 decoding and
-PNG chunk CRC checks. Vision-description usage passes through tool results.
-Wire's `/pi-usage` and the fast footer share a reducer covering billed tools,
-compaction/branch summaries, native usage entries, and child charges deduplicated
-by invocation ID.
-
-Namespaced `image_gen.imagegen`, provider output schemas, per-image detail metadata,
-attached-environment routing, native PTY/ConPTY,
-sandbox/approval ownership, and remote execution
-require Pi core support and are not emulated here.
-
-## Design provenance
-
-The general tool-surface design is informed by the MIT-licensed
-[`pi-codex-conversion`](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/2483569cf389a7d199c74a89087a0257b23bed0e/packages/pi-codex-conversion)
-package. The image-generation request contract, edit-reference behavior, and
-fixed defaults follow the Apache-2.0 licensed
-[`openai/codex` image-generation extension](https://github.com/openai/codex/tree/54c44b9ed4c7d6d1ec9bf7897bb76f6411d8e033/codex-rs/ext/image-generation) and
-[`ImagesClient`](https://github.com/openai/codex/blob/54c44b9ed4c7d6d1ec9bf7897bb76f6411d8e033/codex-rs/codex-api/src/endpoint/images.rs).
-The Unified Exec schema, result shape, buffering, environment, process-store,
-timing, and polling policy follow Apache-2.0 licensed
-[`openai/codex` Unified Exec at `d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf`](https://github.com/openai/codex/tree/d7ba5ff9553a6aa0898a8e3bd5cb3bc00d0c9ddf).
-This implementation keeps the compatibility layer integrated with the local
-`pi-plugins` package and its bounded-output handling, atomic file publication,
-image validation, and regression suite.
-
-## Internal modules
-
-- `codex-compat.ts`: model-dependent activation and tool-result error handling.
-- `patch-tools.ts`: patch parsing, staged mutations, rollback, rendering, and patch tools.
-- `process-tools.ts`: session ownership and process-tool registration, backed by `shell-runtime.ts`.
-- `image-tools.ts`: image-tool registration and local image inspection.
-- `tool-rendering.ts`: shared process-result rendering and compact summaries.
-- `paths.ts`: shared tool-path resolution and display.
+The process contract and standalone image protocol derive from
+[OpenAI Codex](https://github.com/openai/codex), under Apache-2.0. See
+[`NOTICE`](NOTICE) and [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0).
