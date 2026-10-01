@@ -502,7 +502,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
-        {session && !canCompose && messages.length > 0 && (
+        {session && !canCompose && (
           <div className="connection-banner">
             <span>Pi is not running. Resume to continue.</span>
             <button disabled={!connected} onClick={() => void restartSession()}>{session.file ? "Resume" : "Retry"}</button>
@@ -540,12 +540,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     Start a conversation <span>↗</span>
                   </button>
                 )}
-                {session && !canCompose && <>
-                  <button className="primary" disabled={!connected} onClick={() => void restartSession()}>
-                    {session.file ? "Resume" : "Retry"}
-                  </button>
-                  {!!draft.trim() && <p className="muted">Your unsent draft is kept on this device.</p>}
-                </>}
+                {session && !canCompose && !!draft.trim() && <p className="muted">Your unsent draft is kept on this device.</p>}
                 {session?.state === "starting" && !controlBusy && (
                   <p className="muted">Loading your Pi setup. You can send now; messages will wait on this computer.</p>
                 )}

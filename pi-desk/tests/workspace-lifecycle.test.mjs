@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -71,6 +71,12 @@ test("host restart preserves open membership without starting Pi; explicit close
 		assert.equal(host.state().sessions.length, 0);
 		assert.equal(new SessionCatalog(dir).read()[0].interrupted, false);
 	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("Resume remains available with only interruption feedback in the transcript", () => {
+	const source = readFileSync(new URL("../src/client/app.tsx", import.meta.url), "utf8");
+	assert.equal(/\{session\s*&&\s*!canCompose\s*&&\s*\(\s*<div className="connection-banner">/.test(source), true,
+		"the Resume control must not depend on native messages; feedback alone can fill the transcript");
 });
 
 test("closed rows and their transcript leave every browser, without hiding interrupted rows", () => {
