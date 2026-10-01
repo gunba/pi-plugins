@@ -8,6 +8,7 @@ import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
+import { Disclosure } from "./disclosure.tsx";
 import { planRoundNotice } from "./plan-round.ts";
 import { isActivityOnly } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
@@ -38,24 +39,24 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 		? result?.blocks.find(block => block?.type === "file") : undefined;
 	const file = resultFile?.type === "file" ? resultFile.file : call?.file;
 	const fileMessage = resultFile ? result!.id : owner.id;
-	return <details className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}>
-		<summary><span className="tool-icon">⌘</span><strong>{name}</strong>
+	return <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
+		summary={<><span className="tool-icon">⌘</span><strong>{name}</strong>
 			<span className="tool-argument-preview">{file
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
 				: toolArgumentPreview(call?.arguments)}</span>
 			<ToolStatus message={result} />
 			{!result?.tool && <time>{timeLabel(owner.timestamp)}</time>}
-		</summary>
+		</>}>
 		{result && <ReferenceContext value={{ message: result.id, source }}>
 			<div className="tool-output"><MessageBody message={result} sessionKey={sessionKey} source={source} omitFile={resultFile?.type === "file" ? resultFile.file.id : undefined} />
 				{result.tool?.processRunning && <p className="muted">Process{result.tool.processId ? ` #${result.tool.processId}` : ""} was running when this result was returned.</p>}
 			</div>
 		</ReferenceContext>}
-		{call && <details className="tool-arguments"><summary>Arguments</summary><pre>{call.arguments}</pre>
+		{call && <Disclosure id={`arguments:${call.id}`} className="tool-arguments" summary="Arguments"><pre>{call.arguments}</pre>
 			{call.full && <AssetLink session={sessionKey} asset={call.full} />}
 			{call.truncated && !call.full && <p className="muted">Preview only. Complete arguments exceed the viewer's asset limit.</p>}
-		</details>}
-	</details>;
+		</Disclosure>}
+	</Disclosure>;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
@@ -83,12 +84,15 @@ function RenderedText({ message, block, sessionKey }: { message: ChatMessage; bl
 function ThinkingGroup({ parts, sessionKey, source }: {
 	parts: { message: ChatMessage; block: TextBlock; index: number }[]; sessionKey: string; source?: string;
 }) {
-	return <details className="tool-card thinking-pill"><summary><Icon name="thinking" /><strong>Thinking</strong>
-		{parts.length > 1 && <span className="thinking-count">×{parts.length}</span>}</summary>
+	const active = parts.find(part => part.message.complete === false)?.message;
+	return <Disclosure id={`thinking:${parts[0]?.message.id}:${parts[0]?.index}`} className="tool-card thinking-pill"
+		summary={<><Icon name="thinking" /><strong>Thinking</strong>
+		{parts.length > 1 && <span className="thinking-count" title="Reasoning sections in this reply">{parts.length} sections</span>}
+		{active && <span className="tool-status"><Elapsed started={active.timestamp} /></span>}</>}>
 		<div className="thinking-output">{parts.map(({ message, block, index }) => <ReferenceContext key={`${message.id}:${index}`} value={{ message: message.id, source }}>
 			<RenderedText message={message} block={block} sessionKey={sessionKey} />
 		</ReferenceContext>)}</div>
-	</details>;
+	</Disclosure>;
 }
 function thinkingParts(messages: ChatMessage[]) {
 	return messages.flatMap(message => message.blocks.flatMap((block, index) => block?.type === "thinking" ? [{ message, block, index }] : []));
@@ -97,10 +101,10 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; omitFile?: string;
 }) {
 	return <div className="message-body">
-		{message.nested && <details className="tool-card nested-tools">
-			<summary><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</summary>
+		{message.nested && <Disclosure id={`nested:${message.id}`} className="tool-card nested-tools"
+			summary={<><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</>}>
 			<ul>{message.nested.calls.map((call, index) => <li key={index}><span>{call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small></li>)}</ul>
-		</details>}
+		</Disclosure>}
 		{message.blocks.map((block, index) => {
 			if (!block) return null;
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
@@ -136,11 +140,11 @@ export const MessageView = memo(function MessageView({ message, sessionKey, sour
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
 		const notice = message.notice;
 		return <ReferenceContext value={{ message: message.id, source }}><article className="message message-received">
-			<details className={`received-notice notice-${notice?.kind ?? "info"}`} open={!notice || notice.kind === "party"}>
-				<summary><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : "info"} />
-					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></summary>
+			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party"}
+				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : "info"} />
+					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></>}>
 				<MessageBody message={message} sessionKey={sessionKey} source={source} />
-			</details>
+			</Disclosure>
 		</article></ReferenceContext>;
 	}
 	const activityOnly = message.role === "tool" || isActivityOnly(message);

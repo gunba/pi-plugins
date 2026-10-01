@@ -107,6 +107,9 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
   const [dismissedNotices, setDismissedNotices] = useState(() => readDismissals(localStorage));
+  const dismissFeedback = useCallback((item: Feedback) => {
+    setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, item.generation, item.id)));
+  }, [selected]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const session = state.host?.sessions.find(
@@ -387,12 +390,14 @@ export function App({ account }: { account?: BrowserAccount }) {
           <span className="brand-mark small">π</span>
           <strong>Pi Desk</strong>
         </div>
-        <button className="new-chat" onClick={openNewConversation}>
-          <span>＋</span> New conversation
-        </button>
-        <button className="resume-chat" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
-          <span>◷</span> Resume conversation
-        </button>
+        <div className="sidebar-actions">
+          <button className="new-chat" onClick={openNewConversation}>
+            <span>＋</span> New conversation
+          </button>
+          <button className="resume-chat" title="Resume conversation" aria-label="Resume conversation" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
+            <span>◷</span> Resume
+          </button>
+        </div>
         <div className="nav-label">
           Sessions <span>{state.host.sessions.length}</span>
         </div>
@@ -512,11 +517,10 @@ export function App({ account }: { account?: BrowserAccount }) {
         <TranscriptView key={`${selected}/${session?.ui?.generation ?? ""}`}
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
-          starting={session?.state === "starting"}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           feedback={feedback[selected]} dismissed={dismissedNotices}
           renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected}
-            dismissFeedback={item => setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, item.generation, item.id)))} />}
+            dismissFeedback={dismissFeedback} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>
@@ -717,8 +721,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               )}
             </form>
             <div className="composer-help">Enter to send or steer · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
-            <ConversationFooter session={session} computer={currentComputer?.name ?? state.host.name} connected={connected}
-              open={view => { setPanel("view"); setFocusedView(view.id); }} />
+            <ConversationFooter key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
+              open={view => { setPanel("view"); setFocusedView(view.id); }}
+              invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
           </div>
         )}
       </main>
@@ -942,7 +947,7 @@ function Question({
         }}
       >
         {form.kind === "confirm" ? (
-          <p>{form.message}</p>
+          <div className="request-description" tabIndex={0} aria-label="Request details">{form.message}</div>
         ) : form.kind === "question" ? (
           <>
             {form.context && (

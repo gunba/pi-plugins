@@ -6,6 +6,7 @@ import { api } from "./connection.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
 import { transcriptRows } from "./transcript-rows.ts";
 import { conversationFeedback } from "./chat-feedback.ts";
+import { DisclosureStates } from "./disclosure.tsx";
 import type { Feedback } from "../shared/feedback.ts";
 const noFeedback: Feedback[] = [], noDismissals: string[] = [];
 interface ReadingPosition {
@@ -18,10 +19,9 @@ function rememberPosition(key: string, position: ReadingPosition): void {
 }
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
-export function TranscriptView({ session, source, generation, connected, epoch, starting, messages, onLatest, renderMessage, empty, footer, latestRequest,
+export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest,
 	feedback = noFeedback, dismissed = noDismissals }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
-	starting?: boolean;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
 	feedback?: Feedback[]; dismissed?: string[];
@@ -46,6 +46,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const capture = useRef<() => ReadingPosition | undefined>(() => undefined);
 	const lastLatestRequest = useRef(latestRequest);
 	const details = useRef(new Map<string, boolean[]>());
+	const disclosures = useRef(new Map<string, boolean>());
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
 	const nativeMessages = useMemo(() => {
 		const native = live ? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS) : page?.messages ?? [];
@@ -130,10 +131,12 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			else void load();
 		}
 		return () => { request.current++; };
-	}, [session, source, generation, connected, epoch, starting]);
+	}, [session, source, generation, connected, epoch]);
 	useEffect(() => {
 		if (lastLatestRequest.current !== latestRequest && connected) {
-			lastLatestRequest.current = latestRequest; void load();
+			lastLatestRequest.current = latestRequest;
+			if (live) { virtualizer.scrollToEnd(); setAtEnd(true); }
+			else void load();
 		}
 	}, [latestRequest]);
 	useLayoutEffect(() => {
@@ -207,11 +210,12 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		const onLeave = () => persist();
 		const node = scroller.current;
 		const onToggle = (event: Event) => {
+			if ((event.target as HTMLElement).hasAttribute("data-disclosure")) return;
 			const row = (event.target as HTMLElement).closest<HTMLElement>("[data-chat-id]");
 			const id = row?.dataset.chatId;
 			if (!row || !id) return;
 			details.current.delete(id);
-			details.current.set(id, [...row.querySelectorAll("details")].map(node => node.open));
+			details.current.set(id, [...row.querySelectorAll<HTMLDetailsElement>("details:not([data-disclosure])")].map(node => node.open));
 			while (details.current.size > 80) details.current.delete(details.current.keys().next().value!);
 		};
 		addEventListener("pagehide", onLeave);
@@ -226,7 +230,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		setPage(previous => ({ generation, revision: previous?.revision ?? 0, before: older, messages: nativeMessages }));
 		setLive(false);
 	};
-	return <div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
+	return <DisclosureStates.Provider value={disclosures.current}><div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
 		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
 		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
@@ -260,7 +264,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 							if (element && message && !mountedRows.current.has(element)) {
 								mountedRows.current.add(element);
 								const states = details.current.get(message.id);
-								if (states) element.querySelectorAll("details").forEach((node, index) => {
+								if (states) element.querySelectorAll<HTMLDetailsElement>("details:not([data-disclosure])").forEach((node, index) => {
 									if (states[index] !== undefined && node.open !== states[index]) node.open = states[index]!;
 								});
 							}
@@ -281,5 +285,5 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				})}
 			</div>
 		</div>
-	</div>;
+	</div></DisclosureStates.Provider>;
 }

@@ -471,17 +471,22 @@ pinned and bundled into the client. It is not a host or terminal dependency.
 ### Files
 
 Markdown file links, local images, patch paths and supported tool path fields
-open a host file viewer. Relative paths use that conversation's native working
+open in the associated application on the file's computer. The link's tooltip
+names that destination. Hover or keyboard-focus a link to reveal its folder,
+download a copy here, or open Preview. On phones, the primary action downloads
+here. Relative paths use that conversation's native working
 directory, including child conversations. Encoded filenames, file URLs and
 `#L123` line references are supported. Submitted attachments show their original
 names. These are display projections; native messages and model input do not
 change.
 
-Opening a link resolves it on the host and shows the actual path, size and type.
+Preview resolves the link on its host and shows the actual path, size and type.
 UTF-8 text uses 32,000-byte pages with line navigation and copying. PNG, JPEG,
 GIF and WebP previews are limited to 16 MiB; selecting an image opens its full
-size. HTML, SVG and scripts are displayed as text, never executed. Other binary
-files, including PDFs, are download-only.
+size. Preview displays HTML, SVG and scripts as text, never executed in Desk. Other
+binary files, including PDFs, can be downloaded or opened by their host's
+associated application. Executable formats and launcher files are not launched
+from Desk.
 
 Downloads use checked, bounded chunks over the same authenticated local or
 encrypted remote connection. The browser assembles at most 128 MiB per file.

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { calculateCost, type Api, type Context, type Model, type Usage } from "@earendil-works/pi-ai";
-import { buildContextEntries, sessionEntryToContextMessages, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, type AgentSession, type ProjectedSessionEntry, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { object, type JsonObject } from "./diagnostics.ts";
 
 export const CHECKPOINT = "codexWireCheckpoint";
@@ -71,12 +71,8 @@ function carrier(value: unknown, timestamp: number): Carrier {
 		[CHECKPOINT]: structuredClone(value) as Checkpoint };
 }
 
-export function checkpointMessages(entries: SessionEntry[]): AgentMessage[] {
-	return entries.flatMap(entry => {
-		const checkpoint = entryCheckpoint(entry);
-		return checkpoint === undefined ? sessionEntryToContextMessages(entry)
-			: [carrier(checkpoint, Date.parse(entry.timestamp))];
-	});
+export function checkpointMessages(entries: ProjectedSessionEntry[]): AgentMessage[] {
+	return entries.flatMap(({ sourceEntry, messages }) => projectCheckpoints(messages, [sourceEntry]));
 }
 
 /** Replace only typed session summaries; user text is never a checkpoint discriminator. */
@@ -97,9 +93,9 @@ export function projectCheckpoints(messages: AgentMessage[], entries: SessionEnt
 	});
 }
 
-export function assertCheckpointContext(context: Context, provider: string, expected?: SessionEntry[]): void {
+export function assertCheckpointContext(context: Context, provider: string, expected?: ProjectedSessionEntry[]): void {
 	const carriers = context.messages.filter(message => Object.hasOwn(message, CHECKPOINT));
-	if (expected && expected.filter(entry => entryCheckpoint(entry) !== undefined).length > carriers.length) {
+	if (expected && expected.filter(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined).length > carriers.length) {
 		throw new Error("Codex checkpoint was lost during context conversion. Request cancelled.");
 	}
 	if (carriers.length && provider !== "openai-codex") throw new Error("This context requires Codex Wire. Select a Codex model or branch before its checkpoint.");
@@ -135,9 +131,9 @@ export function replayCheckpoints(body: JsonObject, context: Context, url: strin
 	return { ...body, input };
 }
 
-export function compactionPrefix(branch: SessionEntry[], firstKeptEntryId: string): SessionEntry[] {
-	const active = buildContextEntries(branch);
-	const index = active.findIndex(entry => entry.id === firstKeptEntryId);
+export function compactionPrefix(branch: SessionEntry[], firstKeptEntryId: string): ProjectedSessionEntry[] {
+	const active = buildSessionProjection(branch).entries;
+	const index = active.findIndex(entry => entry.sourceEntry.id === firstKeptEntryId);
 	if (index < 1) throw new Error("No complete context prefix is available for Codex compaction.");
 	return active.slice(0, index);
 }

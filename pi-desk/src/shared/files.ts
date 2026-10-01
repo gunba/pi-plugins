@@ -11,4 +11,6 @@ export type FileCommand = { kind: "file"; id: string } & (
 	| { operation: "info" }
 	| { operation: "text"; version: string; offset?: number; line?: number }
 	| { operation: "chunk"; version: string; offset: number }
+	| { operation: "open"; version: string }
+	| { operation: "reveal"; version: string }
 );

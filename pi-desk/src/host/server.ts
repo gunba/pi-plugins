@@ -915,7 +915,7 @@ export class DeskHost {
 				this.emit({ type: "session", session: managed.view });
 				return reply({});
 			}
-			const route = /^\/api\/sessions\/([a-f0-9-]+)\/(command|history|assets\/([a-f0-9]{64})|artifacts\/(sha256-[a-f0-9]{64})|files\/([a-f0-9]{64})(?:\/(text|chunk))?)$/.exec(url.pathname);
+			const route = /^\/api\/sessions\/([a-f0-9-]+)\/(command|history|assets\/([a-f0-9]{64})|artifacts\/(sha256-[a-f0-9]{64})|files\/([a-f0-9]{64})(?:\/(text|chunk|open|reveal))?)$/.exec(url.pathname);
 			if (route) {
 				const managed = this.sessions.get(route[1]!);
 				if (!managed) return reply({ error: "Unknown session." }, 404);
@@ -947,7 +947,11 @@ export class DeskHost {
 						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
 						query: url.searchParams.has("query") ? url.searchParams.get("query") : undefined })));
 				}
-				if (route[5] && request.method === "GET") {
+				if (route[5] && ["open", "reveal"].includes(route[6] ?? "") && request.method === "POST") {
+					return reply(await managed.worker.command(workerCommandFrom({ kind: "file", id: route[5], origin, operation: route[6], version: data.version }),
+						undefined, string(data.id, 100)));
+				}
+				if (route[5] && !["open", "reveal"].includes(route[6] ?? "") && request.method === "GET") {
 					return reply(await managed.worker.command(workerCommandFrom({ kind: "file", id: route[5], origin, operation: route[6] ?? "info",
 						version: url.searchParams.get("version"),
 						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,

@@ -3,6 +3,9 @@ import type { ReactNode } from "react";
 const paths: Record<string, ReactNode> = {
 	settings: <><path d="m9 3-1 3-3 1v4l3 1 1 3h4l1-3 3-1V7l-3-1-1-3Z" transform="translate(1 3)" /><circle cx="12" cy="12" r="3" /></>,
 	chat: <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3V6a2 2 0 0 1 1-2Z" />,
+	folder: <path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />,
+	download: <><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" /></>,
+	preview: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
 	computer: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></>,
 	tools: <path d="m14 6 4 4 3-3a6 6 0 0 1-8 7l-7 7-3-3 7-7a6 6 0 0 1 7-8Z" />,
 	activity: <path d="M2 12h5l3-8 4 16 3-8h5" />,

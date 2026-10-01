@@ -167,8 +167,13 @@ export class DeskEngine {
 			// Only native resource discovery keeps the read projection. Session
 			// settings and extension controls retain the original file-backed API.
 			services.settingsManager = settingsManager;
+			const saved = sessionManager.buildSessionProjection();
+			const model = saved.model && services.modelRuntime.getModel(saved.model.provider, saved.model.modelId);
 			return {
-				...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent }),
+				...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
+					...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
+					...(sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
+				}),
 				services, diagnostics: services.diagnostics,
 			};
 		};
@@ -539,8 +544,10 @@ export class DeskEngine {
 			case "model": {
 				const model = this.runtime.services.modelRuntime.getModel(command.provider, command.id);
 				if (!model) throw new Error("Model is unavailable.");
-				await session.setModel(model, { persist: command.makeDefault === true });
-				if (command.makeDefault) await session.settingsManager.flush();
+				if (command.makeDefault) {
+					session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+					await session.settingsManager.flush();
+				} else await session.setModel(model, { persist: false });
 				this.scheduleSnapshot();
 				return;
 			}

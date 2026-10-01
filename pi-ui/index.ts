@@ -44,7 +44,9 @@ export interface UiView {
 	surface?: "work" | "settings";
 	data: UiValue;
 	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
-	badges?: { label: string; value: string; description?: string; compact?: boolean }[];
+	badges?: { label: string; value: string; description?: string; compact?: boolean;
+		/** Action ID of a published toggle control for direct interaction. */
+		control?: string }[];
 	/** Model capacity and the selected working window, in tokens. */
 	context?: { capacity: number; limit: number };
 	actions?: UiAction[];

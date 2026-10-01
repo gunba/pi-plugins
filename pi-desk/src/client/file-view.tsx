@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SurfaceFrame } from "./surfaces.tsx";
-import { api } from "./connection.ts";
+import { api, fileComputerName } from "./connection.ts";
+import { Icon } from "./icons.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
 import { useReferenceQuery } from "./reference-origin.tsx";
 import { decodeBase64 } from "./blob-pool.ts";
@@ -26,9 +27,47 @@ async function fileBlob(session: string, file: FileInfo, origin: string, signal:
 }
 
 export function FileLink({ session, file, children }: { session: string; file: FileReference; children?: ReactNode }) {
-	const [open, setOpen] = useState(false);
-	return <><button type="button" className="file-link" onClick={event => { event.stopPropagation(); setOpen(true); }}>{children ?? file.name}</button>
-		{open && <FileViewer session={session} reference={file} close={() => setOpen(false)} />}</>;
+	const origin = useReferenceQuery(), computer = fileComputerName(session) ?? (session.includes(":") ? "the file’s computer" : "this computer");
+	const mobile = typeof navigator !== "undefined" && /Android|iPhone|iPad/i.test(navigator.userAgent);
+	const [open, setOpen] = useState(false), [pending, setPending] = useState(false), [status, setStatus] = useState(""), [error, setError] = useState("");
+	const transfer = useRef<AbortController | undefined>(undefined), statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => { transfer.current?.abort(); clearTimeout(statusTimer.current); }, []);
+	const action = async (operation: "open" | "reveal" | "download") => {
+		if (pending) return;
+		clearTimeout(statusTimer.current); setPending(true); setError(""); setStatus(operation === "download" ? "Downloading…" : "Opening…");
+		try {
+			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
+			if (operation === "download") {
+				const controller = transfer.current = new AbortController();
+				const blob = await fileBlob(session, info, origin, controller.signal, bytes => setStatus(`Downloading ${Math.round(bytes / Math.max(info.size, 1) * 100)}%`));
+				controller.signal.throwIfAborted();
+				const url = URL.createObjectURL(blob), link = document.createElement("a");
+				link.href = url; link.download = info.name; document.body.append(link); link.click(); link.remove();
+				setTimeout(() => URL.revokeObjectURL(url), 60_000); setStatus("");
+			} else {
+				await api(`/sessions/${session}/files/${file.id}/${operation}?${origin}`, { id: crypto.randomUUID(), version: info.version });
+				setStatus(`Open requested on ${computer}`);
+				statusTimer.current = setTimeout(() => setStatus(""), 2500);
+			}
+		} catch (error) { setError(error instanceof Error ? error.message : "File unavailable."); setStatus(""); }
+		finally { setPending(false); }
+	};
+	return <span className="file-link-wrap">
+		<button type="button" className="file-link" disabled={pending} title={mobile ? "Download here" : `Open on ${computer}`}
+			onClick={event => { event.stopPropagation(); void action(mobile ? "download" : "open"); }}>{children ?? file.name}</button>
+		<span className="file-link-actions">
+			<button type="button" className="icon-button" disabled={pending} aria-label={`Show containing folder on ${computer}`} title={`Show containing folder on ${computer}`}
+				onClick={event => { event.stopPropagation(); void action("reveal"); }}><Icon name="folder" /></button>
+			<button type="button" className="icon-button" disabled={pending} aria-label="Download here" title="Download here"
+				onClick={event => { event.stopPropagation(); void action("download"); }}><Icon name="download" /></button>
+			<button type="button" className="icon-button" aria-label="Preview file" title="Preview file"
+				onClick={event => { event.stopPropagation(); setOpen(true); }}><Icon name="preview" /></button>
+		</span>
+		{pending && <span className="file-action-status" role="status">{status}</span>}
+		{!pending && status && <span className="file-action-status">{status}</span>}
+		{error && <span className="file-action-error" role="alert">{error}<button className="icon-button" aria-label="Dismiss file error" onClick={event => { event.stopPropagation(); setError(""); }}><Icon name="close" /></button></span>}
+		{open && <FileViewer session={session} reference={file} close={() => setOpen(false)} />}
+	</span>;
 }
 function FileViewer({ session, reference, close }: { session: string; reference: FileReference; close: () => void }) {
 	const origin = useReferenceQuery();

@@ -2,7 +2,7 @@
 
 `getPresentation(pi)` discovers a host presentation through
 `pi-ui/discover-v2`. Ordinary terminal sessions return `undefined`; their
-existing UI remains in use. Desk supplies version 1 and advertises supported
+existing UI remains in use. Desk supplies version 2 and advertises supported
 capabilities.
 
 ```ts
@@ -22,12 +22,13 @@ The controller remains the state owner. Views contain plain data; action,
 interaction and transcript callbacks stay in the host. This module has no
 browser or terminal dependency at runtime.
 
-Views may include `badges: [{ label, value, description?, compact? }]` for compact facts
-beside the conversation. The publishing controller owns their meaning and
-updates, just like the full view. Desk shows root badges in its footer and links
-back to their views; child-scope badges do not describe the parent session.
-`compact: true` keeps an important badge in the collapsed mobile summary;
-other badges remain in its expanded details.
+Views may include `badges: [{ label, value, description?, compact?, control? }]`
+for compact facts beside the conversation. The publishing controller owns their
+meaning and updates. Desk shows root badges in its footer; child-scope badges
+do not describe the parent session. `compact: true` keeps a badge visible on
+mobile. `control` is the action ID of a toggle in that view's `data.controls`;
+clicking the badge invokes the same control directly, with the next boolean
+value and the normal view revision/action lock. Other badges are read-only.
 Badges are not a parsing contract for terminal status strings.
 
 ## Side conversations

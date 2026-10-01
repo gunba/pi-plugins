@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.99.1+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.99.2+.
 
 ## Pi Desk
 
@@ -156,7 +156,7 @@ Full integration/release validation is `npm run check`,
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. Main pushes run
-Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.99.1 dependencies.
+Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.99.2 dependencies.
 Manual `workflow_dispatch` runs all four OS/Node combinations; feature pushes and
 pull requests do not trigger CI. Native Desk packaging remains release-tag-only.
 Codex Wire carries its own serializer dependency; this does not upgrade

@@ -120,6 +120,32 @@ async function harness(t, checkpoint) {
 		setToken: value => { token = value; }, setResponse: fn => { compactResponse = fn; } };
 }
 
+test("a live session can continue immediately after native compaction without reloading", async t => {
+	const h = await harness(t);
+	const compacted = await h.session.compact();
+	await h.session.prompt("Continue after compaction.", { expandPromptTemplates: false });
+	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
+	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"),
+		compacted.details[CHECKPOINT].output.filter(item => item.type === "compaction"));
+});
+
+test("retaining an older compaction entry does not require or replay its superseded checkpoint", async t => {
+	const h = await harness(t);
+	const first = await h.session.compact();
+	const latest = structuredClone(first.details[CHECKPOINT]);
+	latest.output = latest.output.map(item => item.type === "compaction" ? { ...item, id: "cmp_latest", encrypted_content: "latest-checkpoint" } : item);
+	h.manager.appendCompaction(`${CHECKPOINT_CAPTION}\nLatest fixture checkpoint`, first.firstKeptEntryId, 10000, { [CHECKPOINT]: latest });
+	assert.equal(h.manager.buildContextEntries().filter(entry => entry.details?.[CHECKPOINT]).length, 2);
+	assert.equal(h.manager.buildSessionProjection().entries.filter(entry => entry.messages.length && entry.sourceEntry.details?.[CHECKPOINT]).length, 1);
+	const before = readFileSync(h.manager.getSessionFile());
+	await h.session.prompt("Continue with the latest checkpoint. " + "z".repeat(2400), { expandPromptTemplates: false });
+	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
+	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"), latest.output.filter(item => item.type === "compaction"));
+	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, before.length).equals(before));
+	await h.session.compact();
+	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"), latest.output.filter(item => item.type === "compaction"));
+});
+
 test("real AgentSession compacts through native Responses, persists, resumes and replays the exact checkpoint", async t => {
 	const h = await harness(t);
 	const oldBytes = readFileSync(h.manager.getSessionFile());
@@ -166,10 +192,10 @@ test("real AgentSession compacts through native Responses, persists, resumes and
 	assert.deepEqual(replayCheckpoints(compactInput(h.model, context, "xhigh"), context, responsesUrl).input.filter(item => item.type === "compaction"), [output[1]]);
 	const child = SessionManager.create(h.directory, h.directory);
 	copyCompletedParentTurns(reopened, child, "absent");
-	const forkContext = { messages: convertToLlm(checkpointMessages(child.buildContextEntries())) };
+	const forkContext = { messages: convertToLlm(checkpointMessages(child.buildSessionProjection().entries)) };
 	assert.deepEqual(replayCheckpoints(compactInput(h.model, forkContext, "xhigh"), forkContext, responsesUrl).input.filter(item => item.type === "compaction"), [output[1]]);
 	assert.throws(() => assertCheckpointContext(forkContext, "anthropic"), /requires Codex Wire/);
-	assert.throws(() => assertCheckpointContext({ messages: [] }, "openai-codex", reopened.buildContextEntries()), /lost during context conversion/);
+	assert.throws(() => assertCheckpointContext({ messages: [] }, "openai-codex", reopened.buildSessionProjection().entries), /lost during context conversion/);
 	for (const url of ["https://api.openai.com/v1/responses", "https://example.com/responses",
 		"http://chatgpt.com/backend-api/codex/responses", "https://chatgpt.com/other/responses",
 		`${responsesUrl}?route=other`, "https://chatgpt.com:444/backend-api/codex/responses"]) {

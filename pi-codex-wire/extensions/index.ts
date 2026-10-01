@@ -85,7 +85,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       ] : [] };
     remote.publish("codex-wire", { kind: "details", surface: "settings", title: "Codex", data,
       badges: ctx.model?.api === "openai-codex-responses" ? [{
-        label: "Fast", value: fastEnabled ? "On" : "Off", compact: true,
+        label: "Fast", value: fastEnabled ? "On" : "Off", compact: true, control: "fast",
         description: "Saved preference for eligible ChatGPT Codex requests. The backend can downgrade priority processing.",
       }] : [],
       actions: remote.runCommand ? [{ id: "reconnect", label: "Reconnect transport" }] : [] }, {

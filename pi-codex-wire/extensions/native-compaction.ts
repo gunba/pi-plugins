@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
-import { SettingsManager, convertToLlm, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, convertToLlm, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import { CHECKPOINT, CHECKPOINT_CAPTION, assertCheckpointContext, checkpointMessages, checkpointUsage, compactionPrefix, entryCheckpoint, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 
@@ -17,8 +17,8 @@ export interface CompactOperation {
 	timeoutMs: number;
 }
 type Compactor = (operation: CompactOperation) => Promise<Checkpoint>;
-const stateKey = Symbol.for("pi.codex-wire.checkpoints.v1");
-type State = { compactors: WeakMap<object, Compactor>; sources: Map<string, () => SessionEntry[]> };
+const stateKey = Symbol.for("pi.codex-wire.checkpoints.v2");
+type State = { compactors: WeakMap<object, Compactor>; sources: Map<string, () => ProjectedSessionEntry[]> };
 const shared = globalThis as typeof globalThis & { [stateKey]?: State };
 // Pi loads extension entrypoints independently. Child and parent loaders must share ownership.
 const { compactors, sources } = shared[stateKey] ??= { compactors: new WeakMap(), sources: new Map() };
@@ -55,7 +55,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 	let registeredSession: string | undefined;
 	const guardSelected = (ctx: ExtensionContext) => {
 		if (!ctx.model || ctx.model.provider === "openai-codex" || guards.has(ctx.model.provider)) return;
-		if (!ctx.sessionManager.buildContextEntries().some(entry => entryCheckpoint(entry) !== undefined)) return;
+		if (!ctx.sessionManager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)) return;
 		const original = ctx.modelRegistry.getProvider(ctx.model.provider);
 		if (!original) return;
 		const installed: Provider = { ...original,
@@ -73,7 +73,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 	};
 	pi.on("session_start", (_event, ctx) => {
 		registeredSession = ctx.sessionManager.getSessionId();
-		sources.set(registeredSession, () => ctx.sessionManager.buildContextEntries());
+		sources.set(registeredSession, () => ctx.sessionManager.buildSessionProjection().entries);
 		guardSelected(ctx);
 	});
 	pi.on("model_select", (_event, ctx) => { guardSelected(ctx); });
@@ -97,7 +97,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 			const model = ctx.model;
 			const endpoint = model?.provider === "openai-codex" ? new URL(model.baseUrl) : undefined;
 			if (!model || model.provider !== "openai-codex" || endpoint?.protocol !== "https:" || endpoint.hostname !== "chatgpt.com") {
-				if (ctx.sessionManager.buildContextEntries().some(entry => entryCheckpoint(entry) !== undefined)) {
+				if (ctx.sessionManager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)) {
 					ctx.ui.notify("This checkpoint requires a Codex model for compaction.", "error");
 					return { cancel: true };
 				}
@@ -142,7 +142,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 				: "Summarize the conversation branch being left for a return to another branch. Preserve the user's objective, constraints, completed work, open questions and concrete next steps."
 					+ (event.preparation.customInstructions ? `\n\nAdditional focus:\n${event.preparation.customInstructions}` : "");
 			const context: Context = { systemPrompt: ctx.getSystemPrompt(),
-				messages: [...convertToLlm(checkpointMessages(ctx.sessionManager.buildContextEntries())),
+				messages: [...convertToLlm(checkpointMessages(ctx.sessionManager.buildSessionProjection().entries)),
 					{ role: "user", content: instruction, timestamp: Date.now() }] };
 			const sessionId = randomUUID();
 			const level = ctx.thinkingLevel ?? pi.getThinkingLevel();

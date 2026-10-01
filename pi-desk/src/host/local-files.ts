@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { fileLink } from "../../../pi-local-links/extensions/links.ts";
 import { ExpiredReference } from "./references.ts";
 import { localPath } from "./local-path.ts";
+import { openDesktopFile, type DesktopFileAction } from "./desktop-files.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, type FileCommand, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
 interface Grant extends FileReference { path: string; snapshot?: FileInfo }
@@ -40,6 +41,8 @@ async function bytesAt(file: FileHandle, offset: number, length: number): Promis
 
 /** References are minted from displayed content; API requests never supply filesystem paths. */
 export class LocalFiles {
+	private readonly desktop: (path: string, action: DesktopFileAction) => Promise<void>;
+	constructor(desktop = openDesktopFile) { this.desktop = desktop; }
 	private readonly secret = randomBytes(32);
 	private readonly grants = new Map<string, Grant>();
 	private retained?: string;
@@ -110,6 +113,16 @@ export class LocalFiles {
 		if (info.version !== command.version) throw new Error("File changed. Refresh it before continuing.");
 		return this.opened(info.path, async file => {
 			if ((await stamp(file)).version !== command.version) throw new Error("File changed. Refresh it before continuing.");
+			if (command.operation === "open" || command.operation === "reveal") {
+				if (command.operation === "open") {
+					const head = await bytesAt(file, 0, Math.min(4, info.size));
+					if (head.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || head.subarray(0, 2).toString("ascii") === "MZ"
+						|| process.platform === "linux" && ((await file.stat()).mode & 0o111) !== 0)
+						throw new Error("Desk does not launch executable files. Show the containing folder or use Preview instead.");
+				}
+				await this.desktop(info.path, command.operation);
+				return { launched: true };
+			}
 			let offset = command.offset ?? 0;
 			if (command.operation === "text") {
 				if (info.kind !== "text") throw new Error("This file has no UTF-8 text preview.");

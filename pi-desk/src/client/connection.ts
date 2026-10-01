@@ -154,6 +154,10 @@ export function dispose(): void {
 function convert(error: unknown): Error {
 	return error instanceof RemoteError ? new ApiError(error.status, error.message) : error instanceof Error ? error : new Error(String(error));
 }
+export function fileComputerName(session: string): string | undefined {
+	const computer = /^([a-f0-9-]{36}):/.exec(session)?.[1];
+	return computer ? remotes.get(computer)?.device.name : undefined;
+}
 function route(path: string, computer?: string): { remote: ComputerConnection; path: string; computer: string } {
 	const match = /^\/sessions\/([a-f0-9-]{36}):([a-f0-9-]{36})(\/.*)?$/.exec(path);
 	if (match) { computer = match[1]; path = `/sessions/${match[2]}${match[3] ?? ""}`; }
