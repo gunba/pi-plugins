@@ -19,7 +19,7 @@ test("file clicks launch the referenced file or folder only after checking its c
 			const command = workerCommandFrom({ kind: "file", id: reference.id, operation, version: info.version, origin: { message: "fixture" } });
 			assert.deepEqual(await files.command(command), { launched: true });
 		}
-		assert.deepEqual(launches, [[realpathSync(path), "open"], [realpathSync(path), "reveal"]]);
+		assert.deepEqual(launches, [[realpathSync.native(path), "open"], [realpathSync.native(path), "reveal"]]);
 		writeFileSync(path, "changed fixture");
 		await assert.rejects(files.command({ kind: "file", id: reference.id, operation: "open", version: info.version }), /File changed/);
 		await assert.rejects(files.command({ kind: "file", id: "unregistered", operation: "open", version: info.version }), /no longer available/);

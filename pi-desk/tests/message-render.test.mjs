@@ -19,7 +19,7 @@ try {
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
 		plugins: [{ name: "shared-react", setup(builder) {
-			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: require.resolve(args.path), external: true }));
+			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
 	({ MessageView, DisclosureStates } = await import(pathToFileURL(file).href));
