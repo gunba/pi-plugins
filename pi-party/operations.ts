@@ -5,7 +5,9 @@ import { DatabaseSync } from "node:sqlite";
 import { agentId, nativeId, operationResult, partyOperation, type OperationResult, type PartyOperation } from "./network.ts";
 import { CURRENT_MESSAGE_SQL, LEASE_MS, type PartyStore } from "./store.ts";
 
-type OperationInput = { kind: "remove" | "resume"; target: string } | { kind: "create"; computer?: string; cwd: string; task: string; label: string };
+type OperationInput = { kind: "remove" | "resume"; target: string }
+	| { kind: "create"; computer?: string; cwd: string; task: string; label: string }
+	| { kind: "fork"; cwd: string; task: string; label: string; call: string };
 interface Outgoing { id: string; computer: string; request: string; status: string; response: string | null }
 interface Incoming { request: string; status: string; response: string | null }
 export interface DriverControl {
@@ -73,9 +75,10 @@ export class PartyOperations {
 		let computer = "local";
 		const now = Date.now(), operation: PartyOperation = { id: randomUUID(), sender: session, sender_epoch: self.epoch,
 			party: self.room, kind: input.kind, created: now, expires: now + 300_000 };
-		if (input.kind === "create") {
-			computer = input.computer ?? "local";
-			Object.assign(operation, { cwd: input.cwd, task: input.task, label: input.label });
+		if (input.kind === "create" || input.kind === "fork") {
+			computer = input.kind === "create" ? input.computer ?? "local" : "local";
+			Object.assign(operation, { cwd: input.cwd, task: input.task, label: input.label,
+				...(input.kind === "fork" ? { call: input.call } : {}) });
 		} else {
 			const peer = store.partyTarget(session, owner, input.target);
 			computer = peer.computer ?? "local";
@@ -157,7 +160,8 @@ export class PartyOperations {
 		const sender = store.member(computer === "local" ? request.sender : agentId(computer, request.sender));
 		if (!sender || sender.heartbeat <= Date.now() - LEASE_MS || sender.room !== request.party || sender.epoch !== request.sender_epoch
 			|| computer !== "local" && (!store.computerOnline(computer) || sender.computer !== computer)) throw Error("The requesting agent's party membership changed.");
-		if (request.kind !== "create") {
+		if (request.kind === "fork" && computer !== "local") throw Error("Fork the agent on its source computer.");
+		if (request.kind !== "create" && request.kind !== "fork") {
 			const target = store.member(request.target!);
 			if (!target || target.computer || target.room !== request.party || target.epoch !== request.target_epoch
 				|| target.session === sender.session) throw Error("The target agent's party membership changed.");

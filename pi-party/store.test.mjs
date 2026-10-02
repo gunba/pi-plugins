@@ -301,7 +301,7 @@ test("upgrading the original database preserves membership, inbox and admitted r
 	t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 	db.register("b", "new-owner", "B");
 	assert.equal(db.member("b").epoch, "eb");
-	assert.equal(db.member("b").wakes, 7);
+	assert.equal(db.member("b").wakes, 0, "legacy batch counts cannot represent autonomous idle starts");
 	assert.deepEqual(db.pending("b", "new-owner").map(x => x.id), ["pending"]);
 	assert.equal(db.history("b", "new-owner").messages.length, 2);
 	db.admit("b", "new-owner", ["pending"]);

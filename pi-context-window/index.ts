@@ -85,7 +85,7 @@ export default function contextWindow(pi: ExtensionAPI): void {
 				min: Math.max(4096, current.effectiveReserve + 1), max: context.capacity, step: 1,
 				used: usage?.tokens, unit: "tokens", disabled: current.projectReserve !== undefined,
 				help: "Choose how much of the model's window Pi can use. Applying refreshes this conversation's model settings; other conversations are unchanged.",
-				action: { id: "set-window", label: "Apply budget" } }] };
+				action: { id: "set-window", label: "Apply budget", interrupt: "resume" } }] };
 		} catch (error) { data = { summary: error instanceof Error ? error.message : String(error) }; }
 		remote.publish("context-window", { kind: "details", surface: "settings", title: "Context capacity", data, context,
 			actions: [{ id: "configure", label: "Presets" }] },

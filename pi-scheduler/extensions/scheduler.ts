@@ -177,7 +177,7 @@ export default function (pi: ExtensionAPI): void {
   }
 
   function deliverDue(pi: ExtensionAPI, ctx: ExtensionContext): void {
-    if (sendingDue) return;
+    if (sendingDue || getPresentation(pi)?.suspended) return;
     sendingDue = true;
     try {
       const now = Date.now();
@@ -317,7 +317,7 @@ export default function (pi: ExtensionAPI): void {
       if (!activeCtx || epoch !== timerEpoch || sessionId(activeCtx) !== sessionId(ctx)) return;
       try { deliverDue(pi, ctx); refreshWidget(ctx); armTimer(ctx); }
       catch (error) { reportError(ctx, error); }
-    }, Math.min(2_147_483_647, Math.max(0, next.dueAt - Date.now())));
+    }, Math.min(2_147_483_647, Math.max(getPresentation(pi)?.suspended ? 1000 : 0, next.dueAt - Date.now())));
   }
 
   function startTicker(pi: ExtensionAPI, ctx: ExtensionContext): void {

@@ -41,6 +41,11 @@ import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { providerIdentity } from "./provider-identity.ts";
 import { providerChoices } from "./provider-prompts.ts";
+import { promptCommands } from "./prompt-commands.ts";
+import { NativeContext } from "./context.ts";
+import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
+import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
+import { promptCommandName } from "../shared/prompt-commands.ts";
 
 /** The only app module that owns Pi engine/session lifecycle. */
 export class DeskEngine {
@@ -63,10 +68,13 @@ export class DeskEngine {
 	private starting = new AbortController();
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
+	private checkpointHold?: { id: string; running: boolean };
 	private authentication?: AbortController;
 	private providerFilter = "";
 	private attachmentScope?: string;
 	private usageRevision = 0;
+	private contexts = new WeakMap<AgentSession, NativeContext>();
+	private queueGuards = new WeakMap<AgentSession, NativeQueueGuard>();
 	private opening?: { manager: SessionManager; text?: string };
 	private usageCache?: { manager: SessionManager; leaf: string | null; revision: number; value: SessionSnapshot["usage"] };
 
@@ -78,8 +86,10 @@ export class DeskEngine {
 			undefined,
 			source => this.registerTranscript(source),
 			async (name, args) => {
-				if (/\s/.test(name) || !this.runtime?.session.extensionRunner?.getCommand(name)) throw new Error("Extension command is unavailable.");
-				await this.command(this.presentation.generation, { kind: "prompt", text: `/${name}${args ? ` ${args}` : ""}` });
+				const session = this.runtime?.session;
+				if (/\s/.test(name) || !session?.extensionRunner?.getCommand(name)) throw new Error("Extension command is unavailable.");
+				// This registered native command is already inside its owned setting action.
+				await session.prompt(`/${name}${args ? ` ${args}` : ""}`, { source: "interactive" });
 			},
 		);
 	}
@@ -104,6 +114,11 @@ export class DeskEngine {
 
 	async start(options: WorkerInit): Promise<SessionSnapshot> {
 		if (this.closed || this.startJob) throw new Error("Session engine is already started or closing.");
+		if (options.checkpoint) {
+			if (!/^[a-zA-Z0-9_-]{1,128}$/.test(options.checkpoint)) throw new Error("Invalid restore checkpoint.");
+			this.checkpointHold = { id: options.checkpoint, running: false };
+			this.transition = true; this.presentation.setSuspended(true);
+		}
 		this.startJob = this.initialize(options);
 		return this.startJob;
 	}
@@ -142,6 +157,7 @@ export class DeskEngine {
 		const create: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
+			let context: NativeContext | undefined;
 			const services = await createAgentSessionServices({
 				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
@@ -154,7 +170,9 @@ export class DeskEngine {
 						installIntegrations(pi);
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);
+						pi.on("before_agent_start", () => { context?.apply(); });
 						pi.on("session_tree", () => {
+							context?.apply();
 							this.feed?.reset();
 							this.presentation.advance();
 						});
@@ -167,15 +185,17 @@ export class DeskEngine {
 			// Only native resource discovery keeps the read projection. Session
 			// settings and extension controls retain the original file-backed API.
 			services.settingsManager = settingsManager;
+			context = new NativeContext(sessionManager, services.resourceLoader, pin ? [pin.root] : []);
+			services.resourceLoader = context.resources;
 			const saved = sessionManager.buildSessionProjection();
 			const model = saved.model && services.modelRuntime.getModel(saved.model.provider, saved.model.modelId);
-			return {
-				...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
-					...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
-					...(sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
-				}),
-				services, diagnostics: services.diagnostics,
-			};
+			const result = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
+				...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
+				...(sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
+			});
+			context.attach(result.session); this.contexts.set(result.session, context);
+			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
+			return { ...result, services, diagnostics: services.diagnostics };
 		};
 		try {
 			this.runtime = await createAgentSessionRuntime(create, { cwd: manager.getCwd(), agentDir, sessionManager: manager,
@@ -193,6 +213,7 @@ export class DeskEngine {
 			this.presentation.reset();
 		});
 		await this.bind(this.runtime.session);
+		if (this.checkpointHold) await this.presentation.maintenance(this.checkpointHold.id, "restore");
 		if (this.closed) throw new Error("Session startup was cancelled.");
 		for (const diagnostic of this.runtime.diagnostics) this.presentation.notify(diagnostic.message, diagnostic.type);
 		return this.snapshot();
@@ -483,9 +504,7 @@ export class DeskEngine {
 				...loaded.extensions.map(extension => ({ path: extension.path })),
 				...loaded.errors.map(error => ({ path: error.path, error: error.error })),
 			],
-			commands: (session.extensionRunner?.getRegisteredCommands() ?? []).map(command => ({
-				name: command.name, description: command.description ?? "",
-			})),
+			commands: promptCommands(session, this.runtime.services.resourceLoader),
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({
 				id: model.id, provider: model.provider, name: model.name,
 			})),
@@ -514,13 +533,19 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
+			case "context_inspect": return this.contexts.get(session)!.inspect();
+			case "context_read": return this.contexts.get(session)!.read(command.path);
+			case "context_update": case "context_save": return this.change(async () => {
+				const context = this.contexts.get(session)!;
+				return command.kind === "context_update" ? context.update(command) : context.save(command.path, command.version, command.text);
+			}, true);
 			case "tree": return this.tree(command.after);
 			case "navigate": return this.change(async () => {
 				const result = await session.navigateTree(command.entry, { summarize: command.summarize });
@@ -547,15 +572,18 @@ export class DeskEngine {
 				if (command.makeDefault) {
 					session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 					await session.settingsManager.flush();
-				} else await session.setModel(model, { persist: false });
+				} else {
+					// Resolve credentials before interrupting healthy work.
+					if (!(await this.runtime.services.modelRuntime.checkAuth(model.provider))) throw new Error(`No API key for ${model.provider}/${model.id}`);
+					await this.change(() => session.setModel(model, { persist: false }), true);
+				}
 				this.scheduleSnapshot();
 				return;
 			}
 			case "thinking": {
 				const level = session.getAvailableThinkingLevels().find(level => level === command.level);
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");
-				session.setThinkingLevel(level);
-				this.scheduleSnapshot();
+				await this.change(async () => { session.setThinkingLevel(level); }, true);
 				return;
 			}
 			case "abort": {
@@ -569,20 +597,17 @@ export class DeskEngine {
 				}
 				return;
 			}
-			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value);
+			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value,
+				operation => this.change(operation, true));
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
 			case "reload": await this.reload(); return this.snapshot();
 			case "prompt": {
 				if (this.authentication) throw new Error("Finish or cancel provider sign-in before prompting.");
 				if (!command.text.trim() && !command.attachments?.length) throw new Error("Enter a message or attach a file.");
-				const slash = /^\/([^\s]+)/.exec(command.text)?.[1];
+				const slash = promptCommandName(command.text);
 				const registered = slash ? session.extensionRunner?.getCommand(slash) : undefined;
-				if (slash && command.attachments?.length) throw new Error("Send attachments in a message, not a slash command.");
-				if (slash && !registered
-					&& !session.promptTemplates.some(template => template.name === slash)
-					&& !slash.startsWith("skill:")) {
-					throw new Error(`/${slash} is not an extension command. Use the corresponding Pi Desk control.`);
-				}
+				const resourceCommand = slash && (session.promptTemplates.some(template => template.name === slash) || slash.startsWith("skill:"));
+				if ((registered || resourceCommand) && command.attachments?.length) throw new Error("Send attachments in a message, not a slash command.");
 				const attached = new Attachments(getAgentDir(), this.attachmentScope ?? session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
 				// Preflight reports admission without holding an HTTP request through inference.
 				return new Promise<{ accepted: true }>((resolve, reject) => {
@@ -622,19 +647,90 @@ export class DeskEngine {
 		};
 	}
 
-	private async change<T>(operation: () => Promise<T>): Promise<T> {
+	private checkpointSnapshot(): CheckpointSnapshot {
+		const session = this.runtime?.session;
+		if (!session || this.replacing || this.closed) throw new Error("Finish opening this conversation before updating.");
+		if (session.agent.hasQueuedMessages() || session.pendingMessageCount || this.queueGuards.get(session)?.pending)
+			throw new Error("Send or cancel queued Pi input before updating. This Pi version cannot export every queued message and image safely.");
+		this.presentation.inspectMaintenance();
+		if (!session.isIdle && !this.running)
+			throw new Error("Wait for Pi's pending prompt or retry to settle before updating.");
+		const manager = session.sessionManager, file = manager.getSessionFile();
+		if (!file) throw new Error("This conversation has no saved session to restore.");
+		return { session: manager.getSessionId(), file, cwd: manager.getCwd(), leaf: manager.getLeafId(),
+			running: this.checkpointHold?.running ?? this.running };
+	}
+
+	async checkpoint(id: string, action: CheckpointAction): Promise<CheckpointSnapshot | undefined> {
+		if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error("Invalid maintenance checkpoint.");
+		if (action === "release") {
+			if (!this.checkpointHold || this.checkpointHold.id !== id) return;
+			await this.transitionJob?.catch(() => {});
+			const resume = this.checkpointHold.running, session = this.runtime?.session;
+			this.presentation.setSuspended(false);
+			try { await this.presentation.maintenance(id, "release"); }
+			catch (error) { this.presentation.setSuspended(true); throw error; }
+			this.checkpointHold = undefined; this.transition = false;
+			this.scheduleSnapshot();
+			if (resume && !this.closed && session?.isIdle)
+				void session.prompt("Continue", { source: "interactive" }).catch(error =>
+					this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
+			return;
+		}
+		if (this.checkpointHold) {
+			if (this.checkpointHold.id !== id) throw new Error("Another maintenance checkpoint holds this conversation.");
+			await this.transitionJob;
+			return this.checkpointSnapshot();
+		}
+		if (this.transition || this.authentication || this.runtime?.session.isCompacting)
+			throw new Error("Finish the pending setting, sign-in or compaction before updating.");
+		const snapshot = this.checkpointSnapshot();
+		if (action === "inspect") return snapshot;
+		this.checkpointHold = { id, running: snapshot.running };
+		this.transition = true; this.presentation.setSuspended(true); this.scheduleSnapshot();
+		const session = this.runtime!.session;
+		const job = Promise.resolve().then(async () => {
+			this.presentation.cancelInteractions();
+			// Owners capture/park synchronously before abort yields. Stop the parent
+			// concurrently so a foreground child result cannot start another model turn.
+			const stopped = await Promise.allSettled([this.presentation.maintenance(id, "hold"), session.abort()]);
+			for (const result of stopped) if (result.status === "rejected") throw result.reason;
+			if (!session.isIdle) throw new Error("Pi started another turn during the checkpoint.");
+			return this.checkpointSnapshot();
+		});
+		this.transitionJob = job;
+		try { return await job; }
+		finally { this.transitionJob = undefined; }
+	}
+
+	private async change<T>(operation: () => Promise<T>, interrupt = false): Promise<T> {
 		if (this.closed) throw new Error("This session is closing.");
-		if (this.transition || this.running || this.authentication || this.runtime!.session.isCompacting || this.presentation.snapshot().interactions.length) throw new Error("Finish or stop active work before changing this session.");
+		const session = this.runtime!.session;
+		if (this.transition || this.authentication || session.isCompacting || this.presentation.snapshot().interactions.length
+			|| !interrupt && (this.running || !session.isIdle)) throw new Error("Finish the pending control or interaction before changing this session.");
+		const resume = interrupt && (this.running || !session.isIdle);
 		this.transition = true;
 		this.send({ type: "snapshot", snapshot: this.snapshot() });
-		const job = Promise.resolve().then(operation);
+		const job = Promise.resolve().then(async () => {
+			if (resume) await session.abort();
+			if (this.closed || this.runtime?.session !== session) throw new Error("This session is closing or changed.");
+			if (interrupt && !session.isIdle) throw new Error("Pi started another turn. Retry the setting change.");
+			return operation();
+		});
 		this.transitionJob = job;
 		try { return await job; }
 		catch (error) {
 			if (this.replacing && !this.closed) this.send({ type: "fatal", error: `Session replacement failed: ${String(error)}. Resume saved history to recover.` });
 			throw error;
 		}
-		finally { this.transitionJob = undefined; this.transition = false; this.scheduleSnapshot(); }
+		finally {
+			this.transitionJob = undefined; this.transition = false; this.scheduleSnapshot();
+			// Keep native queues, including image/custom content. Never auto-start idle work
+			// or add a second turn if an extension has already started one.
+			if (resume && !this.closed && !this.replacing && this.runtime?.session === session && session.isIdle)
+				void session.prompt("Continue", { source: "interactive" }).catch(error =>
+					this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
+		}
 	}
 
 	private async reload(): Promise<void> {
@@ -651,6 +747,14 @@ export class DeskEngine {
 				await this.publishProviders();
 			} catch (error) { this.failed = true; throw error; }
 		});
+	}
+
+	async shutdownCheckpoint(): Promise<(CheckpointSnapshot & { checkpoint: string }) | undefined> {
+		const hold = this.checkpointHold;
+		await this.close();
+		const manager = this.runtime?.session.sessionManager, file = manager?.getSessionFile();
+		return hold && manager && file ? { checkpoint: hold.id, session: manager.getSessionId(), file,
+			cwd: manager.getCwd(), leaf: manager.getLeafId(), running: hold.running } : undefined;
 	}
 
 	close(): Promise<void> {

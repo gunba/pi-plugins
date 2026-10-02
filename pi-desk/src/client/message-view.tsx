@@ -10,7 +10,7 @@ import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { planRoundNotice } from "./plan-round.ts";
-import { isActivityOnly } from "./state.ts";
+import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
 import type { Feedback } from "../shared/feedback.ts";
 
@@ -106,7 +106,7 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 			<ul>{message.nested.calls.map((call, index) => <li key={index}><span>{call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small></li>)}</ul>
 		</Disclosure>}
 		{message.blocks.map((block, index) => {
-			if (!block) return null;
+			if (!block || isEmptyText(block)) return null;
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
 			if (block.type === "artifact") return <ArtifactLink key={index} session={sessionKey} id={block.id} label={block.label} />;
 			if (block.type === "diff") return <DiffCard key={index} session={sessionKey} block={block} />;

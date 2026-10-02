@@ -69,7 +69,8 @@ export async function activateRuntime(home: string, requested?: string) {
 }
 
 /** Hold startup admission; interrupt workers only with consent for this exact prepared release. */
-export async function activatePreparedRuntime(home: string, stopFor?: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
+export async function activatePreparedRuntime(home: string, stopFor?: string, checkpoint?: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
+	if (stopFor && !checkpoint) throw new Error("Forced activation requires a native checkpoint.");
 	const manage = new SessionLease(join(home, "manage"));
 	let edit: SessionLease | undefined, launch: SessionLease | undefined, host: SessionLease | undefined;
 	try {
@@ -93,7 +94,8 @@ export async function activatePreparedRuntime(home: string, stopFor?: string): P
 		}
 		if (before.state === "running") {
 			if (!state.active || before.host?.runtime !== state.active) throw new Error("The running host does not match the selected runtime.");
-			const result = await stopHost(installation.directory, { idleOnly: !stopFor, runtime: state.active });
+			const result = await stopHost(installation.directory, { idleOnly: !stopFor, runtime: state.active,
+				...(stopFor ? { checkpoint: { id: checkpoint!, target: stopFor } } : {}) });
 			if (result.deferred !== undefined) return { deferred: result.deferred };
 		}
 		if (login) {

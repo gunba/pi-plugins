@@ -39,10 +39,11 @@ and agents can join or leave through tools.
 | `party_remove` | Remove another member of the current party, including on a connected computer. |
 | `party_resume` | Reopen an existing party member on its own Desk computer. |
 | `party_create` | Ask for user approval, then create an agent and queue its task in the current party. |
+| `party_fork` | Ask for user approval, then fork completed context into an independent agent in the same party. |
 | `party_members` | List the current party's members and availability. |
 | `party_send` | Send a direct message to an agent ID, or broadcast to `all` in the current party. |
 | `party_read` | Read queued messages, invitations, delivery receipts and lifecycle outcomes. |
-| `party_delivery` | Pause or resume automatic delivery; resuming resets its batch budget. |
+| `party_delivery` | Pause or resume automatic delivery; resuming resets its idle-wake budget. |
 
 Agents register when their sessions start, including managed children. Discovery
 defaults to live registrations; `includeOffline` also includes previously
@@ -53,7 +54,12 @@ groups of 50 using `nextOffset`. Remote IDs use `session-id@computer-id`; their
 native session prefix remains usable when unambiguous. Results identify the
 computer separately. `computers` lists connected computer IDs; `local` means this computer.
 
-Resume and creation require a running Desk host. `party_resume` targets an existing
+Resume, creation and forks require a running Desk host. `party_fork` stays on the
+source computer and directory, preserves native model/reasoning and branch context,
+and excludes the executing assistant turn. It leaves the parent running; its tools
+are not replayed. Like creation, a fork requires approval in the human interface.
+
+`party_resume` targets an existing
 member, uses the native saved-session path, and preserves explicit delivery pauses
 and wake budgets. Already-running sessions are not replaced. A resumed unpaused
 session can receive queued peer context through its normal delivery controller.
@@ -99,9 +105,12 @@ it can be awakened. Queued does not mean received or answered. Cross-computer re
 the receiving inbox accepted the message, or why delivery failed. Sending to a
 disconnected computer fails explicitly rather than silently queueing it.
 
-Automatic delivery is limited to eight batches per recipient between resets,
-including delivery to busy agents. Agents can read held messages with
-`party_read` or reset the budget with `party_delivery({enabled:true})`.
+Automatic idle starts are limited to eight per recipient between resets.
+Coordination delivered to working agents, silent messages and context attached
+to a human prompt do not spend that budget. Managed child starts are counted by
+their owning driver. Party controls and the Desk sidebar show when a wake is held.
+Agents can read held messages with `party_read` or reset the budget with
+`party_delivery({enabled:true})`.
 A human input or `/party resume` also resets it. Discovery and membership
 changes do not reset the budget. `party_delivery({enabled:false})` pauses
 automatic delivery until explicitly resumed.
@@ -120,7 +129,7 @@ Managed children have independent profiles and membership, not their parent's.
 They can discover, join, invite and send messages using their inherited active
 tools. Incoming messages are delivered during managed work or at the next
 managed turn. With an available owning driver, a wake-requesting party message
-queues an idle child's next turn. Explicit pauses and the eight-batch budget are
+queues an idle child's next turn. Explicit pauses and the eight-start budget are
 preserved, and repeated delivery does not queue another turn. Native task queues,
 cancellation and usage accounting still apply. Without an owning driver, use
 `party_resume` or resume the parent conversation. Discovery and invitations do

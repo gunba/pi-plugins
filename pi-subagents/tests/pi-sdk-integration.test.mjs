@@ -152,3 +152,32 @@ test("Pi SDK driver runs a real isolated AgentSession with inherited provider co
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("Pi SDK driver reports a failed native shutdown hook instead of confirming disposal", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-subagents-sdk-shutdown-"));
+	const manager = SessionManager.create(root, join(root, "sessions"), { id: "shutdown-child" });
+	const scope = { version: 2, ui: {}, cancelInteractions() {}, close() {},
+		install(pi) { pi.on("session_shutdown", () => { throw new Error("fixture native save failure"); }); } };
+	const host = { rootSessionId: "root", cwd: root, agentDir: root, activeRootLaunchIds: new Set(),
+		isProjectTrusted: () => false, recordRootLaunch() {}, deliverRootNotice() { return true; },
+		resolveModel: () => model, createPresentation: () => scope,
+		async prepareModelRuntime(_ref, runtime) {
+			runtime.registerProvider(providerId, { name: "Offline", baseUrl: model.baseUrl,
+				apiKey: "offline-test-key", api: model.api, models: [model], streamSimple });
+		} };
+	let driver;
+	try {
+		driver = await new PiSdkDriverFactory(host).open({ signal: new AbortController().signal,
+			sessionManager: manager, descriptor: { version: 2, projectTrusted: false,
+				childSessionId: manager.getSessionId(), rootSessionId: "root", parentSessionId: "root",
+				mode: "continuable", context: "fresh", provider: "pi-sdk", label: "shutdown fixture",
+				depth: 1, cwd: root, createdAt: Date.now(), model: { provider: providerId, id: modelId },
+				thinkingLevel: "off", toolNames: [] },
+			authority: { sessionId: manager.getSessionId(), rootSessionId: "root", depth: 1,
+				generation: "fixture", token: Symbol() }, customTools: [] });
+		await assert.rejects(driver.dispose(), /fixture native save failure/);
+	} finally {
+		await driver?.dispose().catch(() => {});
+		rmSync(root, { recursive: true, force: true });
+	}
+});

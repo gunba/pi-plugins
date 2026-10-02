@@ -47,7 +47,12 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (!Number.isSafeInteger(data.offset)) throw new Error("Invalid upload position.");
 			return { kind: data.kind, id: string(data.id, 64), offset: Number(data.offset), base64: string(data.base64, CHUNK_BYTES / 3 * 4) };
 		case "upload_finish": case "upload_discard": return { kind: data.kind, id: string(data.id, 64) };
-		case "snapshot": case "abort": case "reload": return { kind: data.kind };
+		case "snapshot": case "abort": case "reload": case "context_inspect": return { kind: data.kind };
+		case "context_read": return { kind: data.kind, path: string(data.path, 8000) };
+		case "context_update":
+			if (!["tool", "skill", "instruction"].includes(String(data.resource)) || typeof data.included !== "boolean") throw Error("Invalid context choice.");
+			return { kind: data.kind, resource: data.resource as "tool" | "skill" | "instruction", id: string(data.id, 8000), included: data.included, revision: string(data.revision, 100) };
+		case "context_save": return { kind: data.kind, path: string(data.path, 8000), version: string(data.version, 64), text: string(data.text, 512_000) };
 		case "history": {
 			if (["before", "after", "from"].filter(key => data[key] !== undefined).length > 1) throw new Error("Use one history position.");
 			return { kind: data.kind, before: data.before === undefined ? undefined : string(data.before, 100),

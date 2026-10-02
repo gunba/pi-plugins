@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { LEASE_MS, PartyStore, type Member } from "../../../pi-party/store.ts";
 import type { PartyDirectory } from "../shared/parties.ts";
+import { partyDelivery } from "../../../pi-party/availability.ts";
 
 /** Metadata and user controls over the same local registry used by pi-party. */
 export class Parties {
@@ -34,9 +35,12 @@ export class Parties {
 			for (const member of this.store.group(peer.room)) if (!member.computer) peers.set(member.session, member);
 		}
 		const now = Date.now();
-		const agents = [...peers.values()].map(peer => ({ id: peer.session, epoch: peer.epoch, label: peer.label, cwd: peer.cwd,
-			description: peer.description, kind: peer.kind, party: peer.room || null,
-			state: peer.heartbeat > now - LEASE_MS ? peer.state : "offline" })).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+		const agents = [...peers.values()].map(peer => {
+			const state = peer.heartbeat > now - LEASE_MS ? peer.state : "offline";
+			return { id: peer.session, epoch: peer.epoch, label: peer.label, cwd: peer.cwd,
+				description: peer.description, kind: peer.kind, party: peer.room || null, state,
+				...partyDelivery(peer, !!peer.delivery, state) };
+		}).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
 		const groups = [...rooms].sort().map(name => ({ name, members: agents.filter(agent => agent.party === name).map(agent => agent.id) }));
 		const next = { agents, groups }, signature = JSON.stringify(next);
 		if (signature === this.signature) return false;

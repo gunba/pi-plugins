@@ -32,6 +32,7 @@ const paths: Record<string, ReactNode> = {
 	warning: <><path d="m12 3 10 18H2Z" /><path d="M12 9v5m0 3v.1" /></>,
 	more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
 	plus: <path d="M12 5v14M5 12h14" />,
+	send: <path d="M12 18V6m-5 5 5-5 5 5" />,
 	expand: <path d="M14 3h7v7m0-7-8 8M10 21H3v-7m0 7 8-8" />,
 	plan: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m7 8 1 1 2-2m3 1h4m-10 7 1 1 2-2m3 1h4" /></>,
 	pause: <path d="M8 5v14m8-14v14" />,
@@ -44,7 +45,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 		fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name] ?? paths.settings}</svg>;
 }
 const sections: Record<string, string> = {
-	general: "settings", conversation: "chat", computers: "computer", tools: "tools", activity: "activity",
+	general: "settings", conversation: "chat", computers: "computer", context: "context", tools: "tools", activity: "activity",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
 	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", "desk-providers": "account", plan: "plan", "pi-party": "party",
 };

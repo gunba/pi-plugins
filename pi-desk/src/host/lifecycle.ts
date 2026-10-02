@@ -91,7 +91,7 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 	} finally { launch.close(); }
 }
 
-export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
+export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string; checkpoint?: { id: string; target: string } }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
 	const current = await probeHost(directory);
 	if (current.state === "stopped") {
 		const record = readHostRecord(directory);
@@ -104,8 +104,25 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 	if (current.state === "unresponsive") throw new Error(`Host is not responding. No PID was signalled. ${current.error}`);
 	const record = readHostRecord(directory)!;
 	if (record.instance !== current.host!.instance) throw new Error("The host changed. Check status before stopping it.");
-	const result = await controlRequest<{ instance: string; deferred?: number }>(record,
-		options?.idleOnly ? "stop-if-idle" : "stop", options ? { runtime: options.runtime } : {});
+	let result: { instance: string; deferred?: number };
+	try {
+		if (options?.checkpoint) {
+			const { id, target } = options.checkpoint;
+			const body = { runtime: options.runtime, checkpoint: id, target };
+			let preparation = await controlRequest<{ instance: string; checkpoint: import("./checkpoints.ts").CheckpointStatus }>(record, "prepare-update", body);
+			const until = Date.now() + 120_000;
+			while (preparation.checkpoint.state === "preparing" && Date.now() < until)
+				preparation = await controlRequest(record, `update-checkpoint?id=${encodeURIComponent(id)}`);
+			if (preparation.checkpoint.state !== "ready" || preparation.checkpoint.id !== id || preparation.checkpoint.target !== target)
+				throw new Error(preparation.checkpoint.error ?? "Native checkpoints are not ready. The host was not stopped.");
+		}
+		result = await controlRequest<{ instance: string; deferred?: number }>(record,
+			options?.checkpoint ? "stop-for-update" : options?.idleOnly ? "stop-if-idle" : "stop",
+			options ? { runtime: options.runtime, ...(options.checkpoint ? { checkpoint: options.checkpoint.id, target: options.checkpoint.target } : {}) } : {});
+	} catch (error) {
+		if (options?.checkpoint) await controlRequest(record, "cancel-update", { checkpoint: options.checkpoint.id }).catch(() => {});
+		throw error;
+	}
 	if (result.deferred !== undefined) return { stopped: false, deferred: result.deferred };
 	const until = Date.now() + 30_000;
 	while (Date.now() < until) {

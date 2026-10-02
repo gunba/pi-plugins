@@ -14,13 +14,17 @@ const agentCount = (count: number) => `${count} ${count === 1 ? "agent" : "agent
 const peersOn = (computers: PartyComputer[]): Peer[] => computers.flatMap(computer => (computer.directory?.agents ?? [])
 	.map(agent => ({ ...agent, computer: computer.id, computerName: computer.name, connected: computer.connected })));
 const computerGroups = (peers: Peer[]) => [...new Set(peers.map(peer => peer.computer))].map(id => ({ id, peers: peers.filter(peer => peer.computer === id) }));
+export function PartyWakeMarker({ agent }: { agent?: PartyAgent }) {
+	return agent?.delivery === "limited" ? <span className="party-wake-held" role="img" aria-label="Automatic wake held"
+		title={agent.deliveryReason}><Icon name="pause" /><span>Wake held</span></span> : null;
+}
 function AgentLabel({ agent, computerName }: { agent: PartyAgent; computerName?: string }) {
-	return <><span className={`status-dot ${agent.state}`} /><span><strong>{agent.label}</strong>
+	return <><span className={`status-dot ${agent.state}`} /><span><span className="session-label-line"><strong>{agent.label}</strong><PartyWakeMarker agent={agent} /></span>
 		<small>{computerName && `${computerName} · `}{agent.kind === "child" ? "Child agent · " : ""}{agent.state === "offline" ? "Offline · " : ""}{basename(agent.cwd)}</small></span></>;
 }
 export function PartySessions({ directory, sessions, computer, connected, computers, renderSession }: {
 	directory?: PartyDirectory; sessions: SessionView[]; computer?: string; connected: boolean; computers: PartyComputer[];
-	renderSession: (session: SessionView) => ReactNode;
+	renderSession: (session: SessionView, agent?: PartyAgent) => ReactNode;
 }) {
 	const [dialog, setDialog] = useState<{ party?: string }>();
 	const [closing, setClosing] = useState<string>();
@@ -43,7 +47,7 @@ export function PartySessions({ directory, sessions, computer, connected, comput
 				onClick={() => setClosing(group.name)}><Icon name="close" /></button></div>
 			{!collapsed.has(group.name) && <div className="sidebar-party-members">{group.members.map(id => {
 				const root = roots.get(id), agent = agents.get(id);
-				return root ? <Fragment key={id}>{renderSession(root)}</Fragment> : agent && <div className="party-member" key={id} title={agent.description || agent.label}><AgentLabel agent={agent} /></div>;
+				return root ? <Fragment key={id}>{renderSession(root, agent)}</Fragment> : agent && <div className="party-member" key={id} title={agent.description || agent.label}><AgentLabel agent={agent} /></div>;
 			})}</div>}
 		</section>)}
 		{sessions.filter(session => !grouped.has(nativeId(session) ?? "")).map(session => <Fragment key={session.key}>{renderSession(session)}</Fragment>)}

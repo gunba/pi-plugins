@@ -12,6 +12,8 @@ import { getPresentation } from "../pi-ui/index.ts";
 import { PartyPresentation } from "./presentation.ts";
 import { PartyOperations } from "./operations.ts";
 import { agentId } from "./network.ts";
+import { partyForkPoint } from "./fork.ts";
+import { partyDelivery } from "./availability.ts";
 
 export const PARTY_MESSAGE = "pi-party/message";
 export function deliveredPartyIds(entries: readonly unknown[]): string[] {
@@ -75,12 +77,11 @@ export default function party(pi: ExtensionAPI): void {
 		const available = peer.kind === "child"
 			? peer.computer ? database().computerOnline(peer.computer) : (operations().driver(peer.session)?.seen ?? 0) > Date.now() - LEASE_MS
 			: !!peer.delivery && peer.heartbeat > Date.now() - LEASE_MS;
+		const state = peer.heartbeat <= Date.now() - LEASE_MS ? "offline" : peer.state;
 		return {
 			id: peer.session, computer: peer.computer ?? null, label: peer.label, description: peer.description, cwd: peer.cwd,
 			kind: peer.kind, party: peer.room || null, self: peer.session === session,
-			state: peer.heartbeat <= Date.now() - LEASE_MS ? "offline" : peer.state,
-			delivery: peer.muted ? "paused" : peer.wakes >= 8 ? "limited" : available ? "ready" : "paused",
-			wakeable: !peer.muted && peer.wakes < 8 && available,
+			state, ...partyDelivery(peer, available, state),
 		};
 	};
 	const publish = () => {
@@ -98,27 +99,30 @@ export default function party(pi: ExtensionAPI): void {
 			return `${peer.label}${peer.session === session ? " (you)" : ""} · ${state}`;
 		});
 		if (!self.room && !pending) { source?.set(undefined); signature = ""; return; }
-		const status = `${self.room ? `${self.room} · ${peers.length} members` : "Direct inbox"}${pending ? ` · ${pending} unread` : ""}`;
+		const wakeHeld = self.wakes >= 8 && !!ctx?.isIdle();
+		const status = `${self.room ? `${self.room} · ${peers.length} members` : "Direct inbox"}${pending ? ` · ${pending} unread` : ""}${wakeHeld ? " · Wake limit" : ""}`;
 		const members = peers.map((peer, index) => `${rows[index]}\nID: ${peer.session}\nDirectory: ${peer.cwd}${peer.description ? `\n${peer.description}` : ""}`);
-		const detail = [members.join("\n\n"), "", ...(self.wakes >= 8 ? ["Automatic delivery paused. party_delivery or /party resume resets the budget.", ""] : []),
+		const detail = [members.join("\n\n"), "", ...(self.wakes >= 8 ? ["Automatic idle-wake limit reached; working delivery continues. party_delivery or /party resume resets the budget.", ""] : []),
 			...(!armed ? [paused ? "Delivery paused. party_delivery or /party resume can resume it." : "Delivery paused until work resumes, or use party_delivery.", ""] : []),
 			"/party chat opens party history; /party chat direct opens direct messages."].join("\n");
 		const next = JSON.stringify([status, detail]);
 		if (next === signature) return;
 		signature = next;
 		source?.set({ label: "Party", status, summary: rows.filter((_row, index) => peers[index].session !== session).join("; "),
-			detail, tone: pending ? "warning" : "accent", manage: { label: "Chat", run: context => handleParty("chat", context) } });
+			detail, tone: pending || wakeHeld ? "warning" : "accent", manage: { label: "Chat", run: context => handleParty("chat", context) } });
 	};
 	const pump = (starting = preparingPrompt) => {
-		if (stopped || !armed || pumping || !ctx || !store || member()?.owner !== owner) return;
+		if (stopped || !armed || pumping || !ctx || !store || member()?.owner !== owner || getPresentation(pi)?.suspended) return;
 		// A managed child's driver owns its turns and usage accounting.
 		if (child && ctx.isIdle() && !starting) return;
 		pumping = true;
 		try {
 			syncFlight();
 			const pending = store.pending(session, owner).filter(message => !inFlight.has(message.id)).slice(0, 8);
-			const wantsWake = pending.some(message => message.wake === 1);
-			if (pending.length && !store.reserveWake(session, owner)) { publish(); return; }
+			const wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
+			// Working steering and silent delivery do not start an autonomous run.
+			// Managed child starts are accounted by their owning driver.
+			if (wake && !store.reserveWake(session, owner)) { publish(); return; }
 			for (let index = 0; index < pending.length; index++) {
 				const message = pending[index];
 				inFlight.add(message.id);
@@ -131,7 +135,7 @@ export default function party(pi: ExtensionAPI): void {
 						// Pi has not claimed the low-level run in before_agent_start.
 						// Attach to that prompt instead of starting a competing run.
 						deliverAs: "steer",
-						triggerTurn: !starting && !child && wantsWake && index === pending.length - 1,
+						triggerTurn: wake && index === pending.length - 1,
 					});
 				} catch (error) { inFlight.delete(message.id); throw error; }
 			}
@@ -407,6 +411,25 @@ export default function party(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerTool({
+		name: "party_fork", label: "Fork into party", exposure: "model-only",
+		description: "Ask the user to approve an independent agent in this party, inheriting this agent\'s completed native context, model and reasoning. Starts on the same computer and working directory; the parent stays open. The new task is appended without replaying tools.",
+		parameters: Type.Object({ label: Type.String({ minLength: 1, maxLength: 120 }),
+			task: Type.String({ minLength: 1, maxLength: 32000 }) }),
+		async execute(id, params, abort, _update, context) {
+			const self = member();
+			if (!self?.room || self.owner !== owner) throw Error("Join a party before forking into it.");
+			if (!context.hasUI) throw Error("Forking a party agent requires user approval in Pi\'s interface.");
+			if (!context.sessionManager.getSessionFile()) throw Error("Save this native session before forking.");
+			partyForkPoint(context.sessionManager.getBranch(), id);
+			if (!(await context.ui.confirm("Fork into party", `${params.label}\nParty: ${self.room}\nDirectory: ${context.cwd}\nContext: completed branch, current model and reasoning\n\n${params.task}`))) return result({ approved: false });
+			if (abort?.aborted) throw Error("Agent fork was cancelled.");
+			if (member()?.session !== self.session || member()?.epoch !== self.epoch) throw Error("Party membership changed during approval.");
+			const request = operations().queue(database(), session, owner, { ...params, kind: "fork", cwd: context.cwd, call: id });
+			const response = await operations().wait(request.id, abort);
+			return result({ ...response, agent: response.result!.session, parent: session });
+		},
+	});
+	pi.registerTool({
 		name: "party_invite", label: "Invite agent",
 		description: "Invite a discovered agent to this agent's current party. The recipient can join with party_join; invitations do not change their membership. wake defaults to true.",
 		parameters: Type.Object({ agent: Type.String({ minLength: 1 }), message: Type.Optional(Type.String()), wake: Type.Optional(Type.Boolean()) }),
@@ -419,7 +442,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "party_delivery", label: "Party delivery",
-		description: "Pause or resume automatic peer-message delivery for this agent. Resuming resets the eight-batch automatic-delivery budget. party_read works while paused or limited.",
+		description: "Pause or resume automatic peer-message delivery for this agent. Resuming resets the eight-start automatic idle-wake budget. party_read works while paused or limited.",
 		parameters: Type.Object({ enabled: Type.Boolean() }),
 		async execute(_id, params) { return result(delivery(params.enabled)); },
 	});

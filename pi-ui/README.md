@@ -67,6 +67,19 @@ its own revision, action lock and failure state.
   interactive SDK path. It is not arbitrary shell execution or a core-TUI
   command emulator.
 
+## Maintenance
+
+A host may expose `registerMaintenance(owner)`. The owner identifies its scope IDs,
+checks admission in `inspect()`, and implements `hold(id)`, `restore(id)` and
+`release(id)`. It retains its own native sessions, cursor saves and continuation
+receipts. These callbacks are local capabilities, not browser data or a queue-export
+API. Close the registration when its runtime ends.
+
+During a hold, `suspended` is true. Pending notices and autonomous work remain
+with their producer. A restore runs while the parent is suspended; release resumes
+only confirmed interrupted work. Unowned scopes and unsupported pending input
+refuse maintenance rather than silently dropping context.
+
 Desk owns transport admission, presentation generations and bounded projection.
 Extensions still enforce their domain revisions, validation, permissions and
 durable writes. The contract is implemented in

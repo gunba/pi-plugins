@@ -4,6 +4,8 @@ import type { AgentSessionEvent, ExtensionAPI, ExtensionUIContext, SessionEntry 
 export type UiValue = null | boolean | number | string | UiValue[] | { [key: string]: UiValue | undefined };
 export type UiAction = {
 	id: string; label: string; destructive?: boolean;
+	/** A session host may stop active work, apply this setting and continue that turn. */
+	interrupt?: "resume";
 	/** Inline message admission: resolve only after the controller has accepted the text. */
 	input?: "message";
 	delivery?: "steer" | "followUp";
@@ -77,6 +79,8 @@ export type UiAnswer =
 	| { kind: "confirm"; confirmed: boolean };
 export interface Presentation {
 	version: 2;
+	/** The host is holding this session for maintenance. Autonomous producers keep their pending work. */
+	readonly suspended?: boolean;
 	capabilities: readonly ("questions" | "details" | "work" | "scopes" | "transcripts" | "commands" | "conversations")[];
 	batch(update: () => void): void;
 	publish(id: string, view: UiView | undefined, actions?: Record<string, (value: UiValue) => unknown | Promise<unknown>>): void;
@@ -84,8 +88,17 @@ export interface Presentation {
 	request(interaction: UiInteraction, options?: { signal?: AbortSignal; timeout?: number }): Promise<UiAnswer | null>;
 	createScope?(id: string, label: string): PresentationScope;
 	registerTranscript?(source: UiTranscriptSource): UiTranscriptHandle;
+	/** Session-local owners save and restore their scopes; no queued payloads leave the owner. */
+	registerMaintenance?(owner: UiMaintenance): UiTranscriptHandle;
 	/** Execute a registered extension command through its normal interactive SDK path. */
 	runCommand?(name: string, args?: string): Promise<void>;
+}
+export interface UiMaintenance {
+	scopes(): readonly string[];
+	inspect(): void;
+	hold(id: string): Promise<void>;
+	restore(id: string): Promise<void>;
+	release(id: string): Promise<void>;
 }
 /** Read-only native history and events; these callbacks never leave the host. */
 export interface UiTranscriptSource {

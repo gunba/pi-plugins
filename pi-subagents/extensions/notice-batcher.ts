@@ -16,6 +16,11 @@ export class NoticeBatcher {
   private timer?: ReturnType<typeof setTimeout>;
   private closed = false;
   private sending = false;
+  private paused = false;
+  setPaused(value: boolean): void {
+    this.paused = value;
+    if (!value) this.flush();
+  }
   private readonly send: (notices: ParentNotice[]) => void;
   private readonly error: (error: unknown) => void;
   private readonly drained: () => void;
@@ -28,6 +33,7 @@ export class NoticeBatcher {
   add(notice: ParentNotice): void {
     if (this.closed) return;
     this.pending.set(notice.messageId, notice);
+    if (this.paused) return;
     if (this.sending) {
       if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, 0);
     }
@@ -35,7 +41,7 @@ export class NoticeBatcher {
     else if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, NOTICE_BATCH_MS);
   }
   flush(): void {
-    if (this.closed || this.sending || !this.pending.size) return;
+    if (this.closed || this.paused || this.sending || !this.pending.size) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     const batch = [...this.pending.values()];

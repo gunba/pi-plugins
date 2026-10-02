@@ -11,6 +11,8 @@ export interface HostStatus {
 	instance: string; pid: number; started: number; origin: string; stopping: boolean;
 	cwd: string; agentDir: string; sessionDir?: string;
 	runtime?: string;
+	checkpoint?: import("./checkpoints.ts").CheckpointStatus;
+	restore?: { id: string; pending: boolean; failures: number };
 	sessions: { active: number; working: number; questions: number };
 	relay?: { state: string; origin: string; appOrigin: string; error?: string };
 }

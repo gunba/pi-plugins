@@ -10,10 +10,11 @@ import type { Computer, WorkspaceState } from "./workspace.ts";
 import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
+import { ContextPanel } from "./context-panel.tsx";
 
 export const settingsSections = [
 	{ id: "general", title: "General" }, { id: "conversation", title: "Conversation" },
-	{ id: "computers", title: "Computers & access" }, { id: "tools", title: "Tools & extensions" },
+	{ id: "computers", title: "Computers & access" }, { id: "context", title: "Opening context" }, { id: "tools", title: "Tools & extensions" },
 	{ id: "activity", title: "Activity" },
 ];
 export function SettingsLayout({ active, sections, choose, children, enabled = true }: {
@@ -33,9 +34,9 @@ export function SettingsLayout({ active, sections, choose, children, enabled = t
 		<div className="settings-content">{children}</div>
 	</div>;
 }
-export function SettingsContent({ section, host, account, session, computer, connected, busy, invoke, compose, restore }: {
+export function SettingsContent({ section, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore }: {
 	section: string; host: WorkspaceState; account?: BrowserAccount; session?: SessionView; computer?: Computer;
-	connected: boolean; busy: boolean; invoke: (command: WorkerCommand) => Promise<unknown>;
+	connected: boolean; busy: boolean; settingBusy: boolean; invoke: (command: WorkerCommand) => Promise<unknown>;
 	compose: (text: string) => void; restore: (target: string, text: string) => void;
 }) {
 	const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "dark");
@@ -72,6 +73,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 			<ControlHistory controls={controls} />
 			<DraftRecovery available={host.sessions.map(item => item.key)} target={session?.key} busy={busy} restored={restore} />
 		</>}
+		{section === "context" && (session?.state === "ready" ? <ContextPanel key={session.key} session={session} disabled={settingBusy || !connected} invoke={invoke} /> : <p className="muted">Open a conversation to inspect its context.</p>)}
 		{section === "tools" && (snapshot ? <>
 			<section className="panel-card"><h3><Icon name="code" />Commands</h3>
 				<label className="setting-control">Add a command to your message<select value="" onChange={event => {

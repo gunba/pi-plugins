@@ -3,6 +3,44 @@ import test from "node:test";
 import { TranscriptFeed } from "../src/host/transcript-feed.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { FEEDBACK_ENTRY } from "../src/shared/feedback.ts";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sessionMemory from "../../pi-session-memory/extensions/session-memory.ts";
+import { PRESENTATION_DISCOVER } from "../../pi-ui/index.ts";
+
+test("a transcript host preserves and restores compacted user bodies without changing model context", () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-desk-history-"));
+	try {
+		for (const released of [false, true]) {
+			const manager = SessionManager.create(directory, directory);
+			const original = "Earlier request with its original content.";
+			const id = manager.appendMessage({ role: "user", content: [{ type: "text", text: original }], timestamp: 1 });
+			manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], timestamp: 2 });
+			const kept = manager.appendMessage({ role: "user", content: "Current request", timestamp: 3 });
+			manager.appendCompaction("Native summary", kept, 100);
+			const archive = readFileSync(manager.getSessionFile());
+			const context = structuredClone(manager.buildSessionContext());
+			let hosted = !released;
+			const hooks = {};
+			sessionMemory({
+				on: (name, fn) => { hooks[name] = fn; }, registerCommand() {},
+				events: { emit: (name, probe) => {
+					if (name === PRESENTATION_DISCOVER && hosted) probe.presentation = { version: 2, capabilities: ["transcripts"] };
+				} },
+			});
+			const ctx = { sessionManager: manager, ui: { notify() {} } };
+			if (released) { hooks.session_start({}, ctx); assert.deepEqual(manager.getEntry(id).message.content, []); }
+			hosted = true;
+			hooks.session_start({}, ctx);
+			hooks.session_compact({}, ctx);
+			const history = new Transcript().history(manager.getBranch());
+			assert.deepEqual(history.messages.find(message => message.entryId === id).blocks, [{ type: "text", text: original, truncated: false }]);
+			assert.deepEqual(manager.buildSessionContext(), context);
+			assert.deepEqual(readFileSync(manager.getSessionFile()), archive);
+		}
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("saved errors keep their native branch position without entering model context", () => {
 	const manager = SessionManager.inMemory("/tmp");

@@ -34,8 +34,25 @@ persisted archive are not pruned.
 - `/session-memory prune` — prune now if the session has compacted.
 - `/session-memory on|off` — toggle pruning for the current runtime.
 
-Pruning is enabled by default. Set `PI_RESIDENT_SESSION_PRUNE=0` before starting
-Pi to disable it.
+Pruning is enabled by default in the terminal. Set `PI_RESIDENT_SESSION_PRUNE=0`
+before starting Pi to disable it.
+
+## Hosted history
+
+Pruning pauses when an attached presentation supports native transcripts, including
+Desk and its child panes. These views read raw branch entries without entering
+Pi's terminal tree navigation. Clearing those entries would produce empty message
+bubbles and change measured row heights during history paging.
+
+At session start or reload, any previously released payloads are restored once
+from the matching archive. Subsequent compactions keep them resident; history
+paging does not repeatedly reopen the archive. The model still receives Pi's
+compaction-aware context, not the full display history. Commands report the pause
+and cannot enable destructive pruning while the transcript host is attached.
+
+This retains more native session data in memory. Desk still loads and renders only
+its bounded history window; it does not duplicate the complete archive in the
+browser.
 
 ## Restoring history
 

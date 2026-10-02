@@ -30,7 +30,7 @@ test("close aborts active work but retains lifecycle ownership until a transitio
 	let release, disposed = false, aborted = false, ended = false;
 	engine.snapshot = () => ({});
 	engine.runtime = {
-		session: { isCompacting: false, abortCompaction() {}, abortBranchSummary() {}, abort: async () => { aborted = true; } },
+		session: { isIdle: true, isCompacting: false, abortCompaction() {}, abortBranchSummary() {}, abort: async () => { aborted = true; } },
 		dispose: async () => { disposed = true; },
 	};
 	const transition = engine.change(() => new Promise(resolve => { release = resolve; }));

@@ -23,6 +23,7 @@ import {
 } from "./subagent-dashboard.ts";
 import {
 	LAUNCH_ENTRY,
+	MAINTENANCE_ENTRY,
 	BACKGROUND_USAGE_ENTRY,
 	NOTICE_ENTRY,
 	undispatchedNotices,
@@ -40,7 +41,7 @@ import { ensureWorkCoordination, getWorkCoordinator, completeWorkResource } from
 import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
-import { getPresentation } from "../../pi-ui/index.ts";
+import { getPresentation, type UiTranscriptHandle } from "../../pi-ui/index.ts";
 import { SubagentPresentation } from "./presentation.ts";
 
 
@@ -256,6 +257,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	let presentation: SubagentPresentation | undefined;
 	let notices: NoticeBatcher | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
+	let maintenanceHandle: UiTranscriptHandle | undefined;
 	let modelPermissions: ConversationModelPermissions | undefined;
 	const feed: string[] = [];
 	const providerAuth = new Map<string, CachedProviderAuth>();
@@ -287,6 +289,7 @@ export default function subagents(pi: ExtensionAPI): void {
 	};
 
 	const stopRuntime = async (): Promise<void> => {
+		maintenanceHandle?.close(); maintenanceHandle = undefined;
 		partyDriver?.close(); partyDriver = undefined;
 		presentation?.close();
 		presentation = undefined;
@@ -319,6 +322,8 @@ export default function subagents(pi: ExtensionAPI): void {
 			entry.type === "custom" && entry.customType === BACKGROUND_USAGE_ENTRY && isRecord(entry.data)
 				? [`${entry.data.childId}:${entry.data.messageId}`] : []));
 		const recoveredNotices = undispatchedNotices(ctx.sessionManager.getBranch());
+		const remote = getPresentation(pi);
+		let maintenanceDelivery = false;
 		notices = new NoticeBatcher((batch) => {
 			const coordinator = getWorkCoordinator(ctx.sessionManager.getSessionId());
 			let matched = false;
@@ -331,8 +336,9 @@ export default function subagents(pi: ExtensionAPI): void {
 				content: noticeBatchContent(batch),
 				display: true,
 				details: noticeBatch(batch),
-			}, { deliverAs: "steer", triggerTurn: urgent || matched || !coordinator?.blocked });
+			}, { deliverAs: "steer", triggerTurn: !maintenanceDelivery && (urgent || matched || !coordinator?.blocked) });
 		}, (error) => ctx.ui.notify(`Subagent notice delivery failed; receipts remain recoverable: ${error instanceof Error ? error.message : String(error)}`, "error"));
+		notices.setPaused(!!remote?.suspended);
 		const host: RuntimeHost = {
 			rootSessionId: ctx.sessionManager.getSessionId(),
 			rootSessionFile: ctx.sessionManager.getSessionFile(),
@@ -340,6 +346,13 @@ export default function subagents(pi: ExtensionAPI): void {
 			agentDir: getAgentDir(),
 			activeRootLaunchIds: launches,
 			isProjectTrusted: () => ctx.isProjectTrusted(),
+			isSuspended: () => !!remote?.suspended,
+			readMaintenance: id => {
+				const entry = [...ctx.sessionManager.getBranch()].reverse().find(entry =>
+					entry.type === "custom" && entry.customType === MAINTENANCE_ENTRY && isRecord(entry.data) && entry.data.id === id);
+				return entry?.type === "custom" ? entry.data : undefined;
+			},
+			saveMaintenance: checkpoint => pi.appendEntry(MAINTENANCE_ENTRY, checkpoint),
 			getActiveToolNames: () => pi.getActiveTools(),
 			getToolInfo: () => pi.getAllTools(),
 			getChildPolicySources: () => childPolicySources(pi),
@@ -405,7 +418,6 @@ export default function subagents(pi: ExtensionAPI): void {
 				),
 		);
 		runtime = created;
-		const remote = getPresentation(pi);
 		if (remote?.capabilities.includes("details")) {
 			presentation = new SubagentPresentation(remote, created, () => ({
 				authority: created.rootAuthority, sessionManager: ctx.sessionManager as ParentInvocation["sessionManager"],
@@ -415,6 +427,16 @@ export default function subagents(pi: ExtensionAPI): void {
 		}
 		unsubscribeRuntime = created.subscribe(() => { updateActivity(activity, created); partyDriver?.refresh(); });
 		created.initialize();
+		maintenanceHandle = remote?.registerMaintenance?.({
+			scopes: () => created.maintenanceScopes(), inspect: () => created.checkpointReady(),
+			hold: async id => { notices!.setPaused(true); await created.holdMaintenance(id); },
+			restore: async id => { created.restoreMaintenance(id); },
+			release: async id => {
+				maintenanceDelivery = true;
+				try { await created.releaseMaintenance(id); notices!.setPaused(false); }
+				finally { maintenanceDelivery = false; }
+			},
+		});
 		partyDriver = new PartyDriver(join(getAgentDir(), "party"), ctx.sessionManager.getSessionId(), () => ctx.sessionManager.getSessionFile() ?? "",
 			() => created.snapshot().filter(child => !child.diagnosticReason).map(child => child.id),
 			request => request.kind === "resume" ? Promise.resolve(created.resumePartyAgent(created.rootAuthority, request.target))

@@ -389,6 +389,39 @@ cancels the request. Questions identify their computer and conversation; input
 errors appear inside the form. Draft answers stay in memory and are scoped to
 their conversation and question.
 
+Type `/` in the composer to discover loaded extension commands, templates and
+skills. Arrow keys select a match, Tab completes it and Escape hides the list.
+Desk also provides `/settings [section]`, `/new [directory]`, `/resume`,
+`/name [name]`, `/compact [instructions]` and `/reload`. A loaded native command
+with the same name keeps precedence. `/name` opens the inline title editor.
+Literal file paths remain messages, not commands.
+
+### Opening context
+
+The context icon beside conversation settings, or Settings → Opening context,
+opens a lazy inspector of Pi’s system prompt, instruction files, skills and
+native tool loadout. Choices are stored on the native session branch and applied
+by Desk’s SDK resource loader; they survive resume and forks. They do not delete
+installed resources or remove content already read into history. A terminal
+resume uses that terminal’s configured resource loader.
+
+Tool selection controls native declarations, not permissions. Codemode and
+deferred catalogs may still call undeclared tools. Their availability is shown
+separately. The prompt-size estimate uses characters / 4, including direct tool
+schemas; it is not a provider token measurement.
+
+Instruction files have a separate editor. Saving changes the loaded file on its
+computer, with a version check against concurrent disk changes. Managed runtime
+files are read-only. Other sessions pick up file changes on resource reload;
+conversation-only exclusions do not change the files.
+
+Changing the selected model, reasoning, opening context, Fast mode or context
+budget stops an active turn, applies the change, and sends Continue once.
+Native queued messages and images stay in the same session. Idle conversations
+stay idle; setting the default only changes preferences for new conversations.
+Pending questions, sign-in and compaction must finish first. This interrupt
+behavior is declared by owned setting actions, not imposed on third-party actions.
+
 Registered slash commands acknowledge dispatch without waiting for interactive
 input to finish. Questions and command execution remain owned by the host.
 

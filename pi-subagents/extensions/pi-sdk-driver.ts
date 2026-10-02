@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
+import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import outputBudget from "../../pi-output-budget/extensions/index.ts";
 import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
@@ -135,12 +136,23 @@ class PiSdkChildDriver implements ChildDriver {
 	private disposal?: Promise<void>;
 	private readonly noticeIds = new Set<string>();
 	private readonly presentation?: PresentationScope;
+	private readonly queueGuard: NativeQueueGuard;
 
 	constructor(session: AgentSession, noticeState: { received: number; consumed: number }, extensionErrors: string[], presentation?: PresentationScope) {
 		this.session = session;
 		this.noticeState = noticeState;
 		this.extensionErrors = extensionErrors;
 		this.presentation = presentation;
+		// Install before bindExtensions emits session_start, including deferred custom context.
+		this.queueGuard = new NativeQueueGuard(session, () => !!this.presentation?.suspended);
+	}
+
+	checkpointReady(): void {
+		if (this.extensionErrors.length) throw new Error(`Child lifecycle needs attention before updating: ${this.extensionErrors.join("; ")}`);
+		if (this.session.agent.hasQueuedMessages() || this.session.pendingMessageCount || this.queueGuard.pending)
+			throw new Error("Send or cancel queued child input before updating; native queued images and deferred context cannot be exported safely.");
+		if (this.session.isCompacting || !this.session.isIdle && !this.isRunning)
+			throw new Error("Wait for the child prompt, retry or compaction to settle before updating.");
 	}
 
 	get sessionFile(): string | undefined {
@@ -265,7 +277,12 @@ class PiSdkChildDriver implements ChildDriver {
 		if (this.disposal) return this.disposal;
 		this.runAbort?.abort();
 		this.disposal = (async () => {
-			try { await this.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" }); }
+			const priorErrors = this.extensionErrors.length;
+			try {
+				await this.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });
+				const failures = this.extensionErrors.slice(priorErrors);
+				if (failures.length) throw new Error(`Child shutdown failed: ${failures.join("; ")}`);
+			}
 			finally { this.presentation?.close(); releaseWorkCoordinator(this.session.sessionId); this.session.dispose(); }
 		})();
 		return this.disposal;

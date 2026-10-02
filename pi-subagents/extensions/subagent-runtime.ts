@@ -30,6 +30,11 @@ export const DELIVERY_ENTRY = "pi-subagents/delivery-v1";
 export const LAUNCH_ENTRY = "pi-subagents/launch-v1";
 export const SETTLEMENT_ENTRY = "pi-subagents/settlement-v1";
 export const CONTROL_ENTRY = "pi-subagents/control-v1";
+export const MAINTENANCE_ENTRY = "pi-subagents/maintenance-v1";
+export type SubagentCheckpoint = {
+	id: string; phase: "held" | "final" | "released";
+	children: { id: string; leaf: string | null; end: string | null; running: boolean; parked: boolean; error?: string }[];
+};
 export const DESCRIPTOR_VERSION = 2;
 export const DEFAULT_MAX_DEPTH = 3;
 export const DEFAULT_MAX_ACTIVE = 8;
@@ -206,6 +211,9 @@ export interface RuntimeHost {
 	getChildPolicySources?(): ChildPolicySource[];
 	getFlag?(name: string): boolean | string | undefined;
 	createPresentation?(descriptor: ChildDescriptor): PresentationScope;
+	isSuspended?(): boolean;
+	readMaintenance?(id: string): unknown;
+	saveMaintenance?(checkpoint: SubagentCheckpoint): void;
 }
 
 export interface ChildDriver {
@@ -213,6 +221,8 @@ export interface ChildDriver {
 	readonly sessionFile?: string;
 	readonly isRunning: boolean;
 	readonly activity?: string;
+	/** Refuse maintenance when native admission or opaque queued context cannot be saved safely. */
+	checkpointReady?(): void;
 	subscribeActivity?(listener: () => void): () => void;
 	prompt(message: string): Promise<RunOutcome>;
 	receiveNotice(notice: ParentNotice): void;
@@ -239,7 +249,7 @@ export type ChildToolFactory = (
 	mode: ChildMode,
 ) => ToolDefinition[];
 
-type QueueSource = "initial" | "followup" | "report" | "settlement" | "party";
+type QueueSource = "initial" | "followup" | "report" | "settlement" | "party" | "maintenance";
 
 type QueueItem = {
 	messageId: string;
@@ -280,6 +290,7 @@ type ChildRecord = {
 	updatedAt: number;
 	finishedAt?: number;
 	pendingSettlement: boolean;
+	maintenanceSettlement?: boolean;
 	pendingSettlementNotices: ParentNotice[];
 };
 
@@ -551,6 +562,7 @@ type RecoveredChildState = {
 	finishedAt?: number;
 	parked: boolean;
 	needsSettlement: boolean;
+	maintenanceSettlement: boolean;
 	pendingSettlementNotices: ParentNotice[];
 };
 
@@ -656,6 +668,7 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 	let finishedAt: number | undefined;
 	let parked = false;
 	let needsSettlement = false;
+	let maintenanceSettlement = false;
 	for (const entry of entries) {
 		if (entry.type !== "custom" || !isRecord(entry.data)) continue;
 		if (entry.customType === CONTROL_ENTRY && (entry.data.action === "parked" || entry.data.action === "unparked"))
@@ -663,7 +676,7 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 		if (entry.customType === INBOX_ENTRY && entry.data.action === "accepted") {
 			const { messageId, content, source, acceptedAt } = entry.data;
 			if (typeof messageId === "string" && typeof content === "string" &&
-				(source === "initial" || source === "followup" || source === "report" || source === "settlement" || source === "party") &&
+				(source === "initial" || source === "followup" || source === "report" || source === "settlement" || source === "party" || source === "maintenance") &&
 				typeof acceptedAt === "number") {
 				accepted.set(messageId, { messageId, content, source, acceptedAt, started: false });
 				updatedAt = Math.max(updatedAt ?? 0, acceptedAt);
@@ -704,9 +717,12 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 				}
 			}
 			lastOutcome = terminalOutcome;
-			settlementOutcome = mergeSettlementOutcome(settlementOutcome, terminalOutcome);
+			if (typeof entry.data.maintenance !== "string") settlementOutcome = mergeSettlementOutcome(settlementOutcome, terminalOutcome);
 			totalUsage = addUsage(totalUsage, terminalOutcome.usage);
-			needsSettlement = true;
+			if (typeof entry.data.maintenance !== "string") {
+				needsSettlement = true;
+				maintenanceSettlement ||= accepted.get(entry.data.messageId)?.source === "maintenance";
+			}
 		}
 		if (entry.customType === SETTLEMENT_ENTRY) {
 			if (entry.data.action === "pending") {
@@ -715,12 +731,21 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 					pendingNotices.set(notice.messageId, notice);
 					if (notice.kind === "settlement") {
 						needsSettlement = false;
+						maintenanceSettlement = false;
 						settlementOutcome = undefined;
 					}
 				}
 			} else if (entry.data.action === "delivered" && typeof entry.data.messageId === "string") {
 				pendingNotices.delete(entry.data.messageId);
 			}
+		}
+	}
+	// Ordinary task recovery remains at-least-once. Maintenance continuation is not:
+	// an admitted start without a terminal record needs a fresh request, not replay.
+	for (const item of accepted.values()) if (item.source === "maintenance" && startedAt.has(item.messageId) && !consumed.has(item.messageId)) {
+		consumed.add(item.messageId);
+		if (![...accepted.values()].some(later => later.source !== "maintenance" && later.acceptedAt >= startedAt.get(item.messageId)!)) {
+			parked = true; lastError = "An update continuation has an unconfirmed outcome. Review this child's history before assigning fresh work.";
 		}
 	}
 	return {
@@ -734,6 +759,7 @@ function recoverChildState(entries: readonly SessionEntry[]): RecoveredChildStat
 		...(finishedAt !== undefined ? { finishedAt } : {}),
 		parked,
 		needsSettlement,
+		maintenanceSettlement,
 		pendingSettlementNotices: [...pendingNotices.values()],
 	};
 }
@@ -855,6 +881,8 @@ export class SubagentRuntime {
 	private readonly noticeBatchers = new Map<string, NoticeBatcher>();
 	private readonly generation = randomUUID();
 	private closing = false;
+	private maintenance?: SubagentCheckpoint;
+	private maintenanceStopped = new Set<string>();
 	readonly host: RuntimeHost;
 	private readonly driverFactory: ChildDriverFactory;
 	private readonly childToolFactory: ChildToolFactory;
@@ -1028,7 +1056,8 @@ export class SubagentRuntime {
 					...(recovered.totalUsage ? { totalUsage: recovered.totalUsage } : {}),
 					activeDurationMs: recovered.activeDurationMs,
 					...(recovered.lastError ? { lastError: recovered.lastError } : {}),
-					pendingSettlement: descriptor.mode === "continuable" && recovered.needsSettlement,
+					pendingSettlement: (descriptor.mode === "continuable" || recovered.maintenanceSettlement) && recovered.needsSettlement,
+					maintenanceSettlement: recovered.maintenanceSettlement,
 					pendingSettlementNotices: recovered.pendingSettlementNotices,
 				});
 				this.leases.set(file, lease);
@@ -1158,6 +1187,7 @@ export class SubagentRuntime {
 
 	async start(request: StartRequest): Promise<StartResult> {
 		if (this.closing) throw new Error("subagent runtime is shutting down");
+		this.requireAdmission();
 		this.assertLive(request.parent.authority);
 		if (request.parent.authority.depth >= this.maxDepth)
 			throw new Error(`subagent depth limit ${this.maxDepth} reached`);
@@ -1309,6 +1339,7 @@ export class SubagentRuntime {
 		source: QueueSource,
 		messageId: string = randomUUID(),
 	): QueueItem {
+		if (source !== "maintenance") this.requireAdmission();
 		if (this.closingChildren.has(record.descriptor.childSessionId)) throw Error("The subagent is closing.");
 		const queued = record.queue.find((item) => item.messageId === messageId);
 		if (queued) return queued;
@@ -1344,6 +1375,7 @@ export class SubagentRuntime {
 	}
 
 	sendMessage(caller: Authority, childId: string, message: string): string {
+		this.requireAdmission();
 		if (this.closing) throw new Error("subagent runtime is shutting down");
 		this.assertLive(caller);
 		const record = this.records.get(childId);
@@ -1381,6 +1413,7 @@ export class SubagentRuntime {
 	}
 
 	resumePartyAgent(caller: Authority, childId: string): string {
+		this.requireAdmission();
 		this.assertLive(caller);
 		if (caller !== this.rootAuthority) throw Error("Party child controls require the owning runtime.");
 		const record = this.records.get(childId);
@@ -1533,6 +1566,7 @@ export class SubagentRuntime {
 			if (parent.pump || this.closing) return;
 			void this.maybeSettle(parent).then(() => this.settleAncestors(parent.descriptor.parentSessionId)).catch((error) => { parent.lastError = error instanceof Error ? error.message : String(error); });
 		});
+		batcher.setPaused(!!this.maintenance || !!this.host.isSuspended?.());
 		this.noticeBatchers.set(id, batcher);
 		return batcher;
 	}
@@ -1567,7 +1601,7 @@ export class SubagentRuntime {
 	}
 
 	private startPump(record: ChildRecord): void {
-		if (record.pump || record.parked || this.closing) return;
+		if (record.pump || record.parked || this.closing || this.maintenance || this.host.isSuspended?.()) return;
 		if (!record.activation && this.openingFiles.has(record.manager.getSessionFile()!)) return;
 		if (!record.activation && record.queue.length > 0 && this.activeCount() >= this.maxActive) return;
 		record.pump = this.pump(record)
@@ -1780,6 +1814,7 @@ export class SubagentRuntime {
 				this.finishCancelledItem(record, item);
 				break;
 			}
+			if (item.source === "maintenance") { record.maintenanceSettlement = true; record.pendingSettlement = true; }
 			activation.current = item;
 			activation.interrupted = false;
 			item.started = true;
@@ -1804,7 +1839,8 @@ export class SubagentRuntime {
 			if (activation.interrupted && outcome.stopReason === "completed")
 				outcome = { ...outcome, stopReason: "aborted" };
 			record.lastOutcome = outcome;
-			record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, outcome);
+			const held = this.maintenance?.children.some(child => child.id === record.descriptor.childSessionId && child.running) && outcome.stopReason === "aborted";
+			if (!held) record.settlementOutcome = mergeSettlementOutcome(record.settlementOutcome, outcome);
 			record.totalUsage = addUsage(record.totalUsage, outcome.usage);
 			record.lastError = outcome.errorMessage;
 			record.updatedAt = Date.now();
@@ -1820,6 +1856,7 @@ export class SubagentRuntime {
 				...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
 				...(outcome.usage ? { usage: outcome.usage } : {}),
 				backgroundBilling: !item.resolve || outcome.stopReason !== "completed",
+				...(held ? { maintenance: this.maintenance!.id } : {}),
 			});
 			if (outcome.usage && (!item.resolve || outcome.stopReason !== "completed"))
 				this.recordBackgroundUsage(record, item.messageId, outcome.usage);
@@ -1871,6 +1908,7 @@ export class SubagentRuntime {
 	}
 
 	private async maybeSettle(record: ChildRecord): Promise<void> {
+		if (this.maintenance || this.host.isSuspended?.()) return;
 		if (record.queue.length > 0 || this.noticeBatchers.get(record.descriptor.childSessionId)?.size || this.hasLiveChildren(record.descriptor.childSessionId)) {
 			this.emit();
 			return;
@@ -1895,7 +1933,7 @@ export class SubagentRuntime {
 				error: message,
 			});
 		}
-		if (record.pendingSettlement && record.descriptor.mode === "continuable") {
+		if (record.pendingSettlement && (record.descriptor.mode === "continuable" || record.maintenanceSettlement)) {
 			const outcome = record.settlementOutcome ?? record.lastOutcome ?? {
 				output: "",
 				stopReason: "completed" as const,
@@ -1911,7 +1949,7 @@ export class SubagentRuntime {
 				workId: record.workId,
 				childId: record.descriptor.childSessionId,
 				content: truncateForParent(
-					`Background subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
+					`${record.descriptor.mode === "one-shot" ? "Resumed foreground" : "Background"} subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
 				),
 			};
 			record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {
@@ -1921,6 +1959,7 @@ export class SubagentRuntime {
 			});
 			record.pendingSettlementNotices.push(notice);
 			record.pendingSettlement = false;
+			record.maintenanceSettlement = false;
 			record.settlementOutcome = undefined;
 			this.retryPendingSettlements(record);
 		}
@@ -2065,6 +2104,122 @@ export class SubagentRuntime {
 		return [...(this.records.get(caller.sessionId)?.descriptor.toolNames ?? [])];
 	}
 
+	private requireAdmission(): void {
+		if (this.maintenance || this.host.isSuspended?.()) throw new Error("The subagent runtime is held for maintenance.");
+	}
+
+	maintenanceScopes(): string[] { return [...this.records.keys()]; }
+
+	async holdMaintenance(id: string): Promise<void> {
+		if (this.maintenance) {
+			if (this.maintenance.id !== id) throw new Error("Another checkpoint holds the subagents.");
+			return;
+		}
+		this.checkpointReady();
+		if (!this.host.saveMaintenance) throw new Error("The parent cannot save a subagent checkpoint.");
+		const children = [...this.records.values()].filter(record => record.activation)
+			.sort((a, b) => b.descriptor.depth - a.descriptor.depth);
+		this.maintenance = { id, phase: "held", children: children.map(record => ({ id: record.descriptor.childSessionId,
+			leaf: record.manager.getLeafId(), end: record.manager.getEntries().at(-1)?.id ?? null, running: !!record.activation?.driver.isRunning, parked: record.parked })) };
+		this.host.saveMaintenance(this.maintenance);
+		for (const batcher of this.noticeBatchers.values()) batcher.setPaused(true);
+		for (const record of children) {
+			this.setParked(record, true);
+			if (record.activation!.driver.isRunning) this.maintenanceStopped.add(record.descriptor.childSessionId);
+			record.activation!.driver.interrupt();
+		}
+		await Promise.all(children.map(record => record.pump));
+		this.checkpointReady();
+	}
+
+	restoreMaintenance(id: string): void {
+		const value = this.host.readMaintenance?.(id);
+		if (value === undefined) {
+			if ([...this.records.values()].some(record => record.queue.length)) throw new Error("No saved owner checkpoint confirms these queued child tasks.");
+			return;
+		}
+		if (!isRecord(value) || value.id !== id || value.phase !== "final" || !Array.isArray(value.children))
+			throw new Error("The subagent checkpoint has no confirmed final save.");
+		const children: SubagentCheckpoint["children"] = [];
+		for (const child of value.children) {
+			if (!isRecord(child) || typeof child.id !== "string" || typeof child.running !== "boolean" || typeof child.parked !== "boolean" ||
+				(child.leaf !== null && typeof child.leaf !== "string") || (child.end !== null && typeof child.end !== "string") || child.error || children.some(row => row.id === child.id))
+				throw new Error("The saved subagent checkpoint needs manual recovery.");
+			const record = this.records.get(child.id);
+			if (!record || record.activation || record.opening || record.pump) throw new Error("The saved subagent is unavailable or already active.");
+			if ((record.manager.getEntries().at(-1)?.id ?? null) !== child.end)
+				throw new Error("Child history changed after its final checkpoint. Resume it manually without rewinding.");
+			if (child.leaf === null) record.manager.resetLeaf();
+			else {
+				if (!record.manager.getEntry(child.leaf)) throw new Error("The saved child branch position is unavailable.");
+				record.manager.branch(child.leaf);
+			}
+			const saved = recoverChildState(record.manager.getBranch());
+			Object.assign(record, saved, { lastOutcome: saved.lastOutcome, settlementOutcome: saved.settlementOutcome,
+				lastError: saved.lastError, finishedAt: saved.finishedAt, totalUsage: saved.totalUsage,
+				pendingSettlement: (record.descriptor.mode === "continuable" || saved.maintenanceSettlement) && saved.needsSettlement });
+			children.push({ id: child.id, leaf: child.leaf, end: child.end, running: child.running, parked: child.parked });
+		}
+		this.maintenance = { id, phase: "final", children };
+	}
+
+	async releaseMaintenance(id: string): Promise<void> {
+		const saved = this.maintenance;
+		if (!saved || saved.id !== id) return;
+		// A failed initial save may leave background work untouched. Do not add
+		// a later Continue to a task that never stopped or finished naturally.
+		if (saved.phase === "held") for (const child of saved.children) {
+			const record = this.records.get(child.id)!;
+			child.running &&= this.maintenanceStopped.has(child.id) ||
+				!record.activation?.driver.isRunning && record.lastOutcome?.stopReason === "aborted";
+		}
+		// Inspect every receipt before admitting any resumed work.
+		for (const child of saved.children) if (child.running) {
+			const record = this.records.get(child.id)!;
+			const messageId = this.maintenanceMessage(id, child.id);
+			const branch = record.manager.getBranch();
+			const started = branch.some(entry => entry.type === "custom" && entry.customType === DELIVERY_ENTRY && isRecord(entry.data) && entry.data.messageId === messageId && entry.data.action === "started");
+			const finished = branch.some(entry => entry.type === "custom" && entry.customType === DELIVERY_ENTRY && isRecord(entry.data) && entry.data.messageId === messageId && (entry.data.action === "finished" || entry.data.action === "failed"));
+			if (started && !finished) throw new Error("A child continuation has an unconfirmed admission. Resume it manually.");
+		}
+		for (const child of saved.children) {
+			const record = this.records.get(child.id)!;
+			if (child.running) {
+				const messageId = this.maintenanceMessage(id, child.id);
+				if (!record.manager.getBranch().some(entry => entry.type === "custom" && entry.customType === INBOX_ENTRY && isRecord(entry.data) && entry.data.messageId === messageId))
+					this.accept(record, "Continue", "maintenance", messageId);
+				record.pendingSettlement = true;
+				record.maintenanceSettlement = true;
+			}
+			this.setParked(record, child.running ? false : child.parked);
+		}
+		this.host.saveMaintenance?.({ ...saved, phase: "released" });
+		this.maintenance = undefined;
+		this.maintenanceStopped.clear();
+		for (const batcher of this.noticeBatchers.values()) batcher.setPaused(false);
+		for (const child of saved.children) if (child.running) this.startPump(this.records.get(child.id)!);
+		this.emit();
+	}
+
+	private maintenanceMessage(id: string, child: string): string {
+		return `maintenance-${createHash("sha256").update(`${id}\0${child}`).digest("hex")}`;
+	}
+
+	checkpointReady(): void {
+		if (this.closing || !this.initialized) throw new Error("Wait for the subagent runtime to open before updating.");
+		for (const record of this.records.values()) {
+			if (record.opening || record.disposing)
+				throw new Error(`Wait for subagent "${record.descriptor.label}" to finish opening or closing before updating.`);
+			if (record.queue.some(item => item !== record.activation?.current))
+				throw new Error(`Finish queued tasks for subagent "${record.descriptor.label}" before updating.`);
+			if (record.activation) {
+				if (!record.activation.driver.checkpointReady)
+					throw new Error(`Subagent "${record.descriptor.label}" has no owning-driver maintenance checkpoint.`);
+				record.activation.driver.checkpointReady();
+			}
+		}
+	}
+
 	async shutdown(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
@@ -2084,8 +2239,15 @@ export class SubagentRuntime {
 		await Promise.allSettled(active.map((record) => record.pump).filter(Boolean));
 		for (const record of active) {
 			const failure = await this.disposeActivation(record);
-			if (failure) record.lastError = failure instanceof Error ? failure.message : String(failure);
+			if (failure) {
+				record.lastError = failure instanceof Error ? failure.message : String(failure);
+				const saved = this.maintenance?.children.find(child => child.id === record.descriptor.childSessionId);
+				if (saved) saved.error = record.lastError;
+			}
 		}
+		if (this.maintenance) this.host.saveMaintenance?.({ ...this.maintenance, phase: "final",
+			children: this.maintenance.children.map(child => ({ ...child, leaf: this.records.get(child.id)!.manager.getLeafId(),
+				end: this.records.get(child.id)!.manager.getEntries().at(-1)?.id ?? null })) });
 		this.authorities.clear();
 		this.listeners.clear();
 		this.transcriptListeners.clear();

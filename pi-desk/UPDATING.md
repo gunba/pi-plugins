@@ -46,26 +46,31 @@ does not delete native history or sign out of the workspace.
 
 ## Routine updates
 
-Open **Settings & tools → Computers**, expand a connected computer and click
-**Update**. `/desk update` does the same from Pi. No maintenance conversation,
-service reinstall, terminal restart sequence or administrator access is needed.
-Desk checks for published updates at startup and every six hours, using a local
-cache. The sidebar shows availability and update progress. **Check for updates**
-refreshes it immediately; detection alone does not install anything.
+Open **Settings & tools → Computers**, expand a connected computer and choose
+**Update now**. Confirmation selects that computer and captures the published
+version or prepared runtime. Desk prepares verified code before interrupting any
+work; a changed published version needs a new selection. No maintenance
+conversation, service reinstall or administrator access is needed.
 
-Desk downloads into a separate immutable runtime while conversations continue.
-If any Pi worker is open—even idle—the update waits. Close conversations when
-finished. At the empty boundary, the host blocks new sessions, shuts down
-gracefully, selects the prepared code and starts through the existing launcher.
-The computer reconnects automatically. Interrupted workspace references are not
-running workers and do not block updates. No conversation is automatically resumed.
+Desk checks for updates at startup and every six hours, using a local cache.
+**Check for updates** refreshes availability; detection alone installs nothing.
+`/desk update` retains the quieter path: download while conversations continue,
+then apply automatically when no Pi workers remain, including idle workers.
 
-To apply a prepared update sooner, choose **Stop sessions and update** and
-confirm. It stops every open Pi worker on that computer, but keeps their
-conversations visible as interrupted. After reconnection, select a conversation
-and click **Resume**. Running tools and background work are interrupted, not
-resent. This differs from ordinary **Close**, which removes the conversation
-from the workspace while retaining its native history.
+The confirmed website update holds input, saves native files and final branch
+positions, stops that computer's workers and starts the prepared runtime through
+the stable launcher. Its conversations reopen after reconnection. Previously
+running work receives one `Continue`; idle conversations stay idle. Managed
+children use their owning runtime and native task receipts. Model, thinking and
+context choices are retained. Original prompts, controls and tools are not
+resent. Other computers keep running.
+
+Queued opaque Pi context, pending host input, child task queues, opening workers
+and scopes without an owning checkpoint refuse the interruption rather than
+lose data. Failed or unconfirmed saves need manual attention, not replay.
+Ordinary **Close** still removes a conversation from the workspace while keeping
+its native history. Native `/desk restart` and rollback remain explicit lifecycle
+operations; they do not opt into the website's continuation checkpoint.
 
 The browser shows preparation, waiting, application and failure states. A failed
 download leaves the running release intact. The updater never cleans or
@@ -134,7 +139,7 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Version 0.5 uses API 4 and first-party presentation version 2. Deploy matching
+Version 0.5.9 uses API 5 and first-party presentation version 2. Deploy matching
 website, account and broker artifacts before treating the cutover as complete.
 Older computers may temporarily show **Update required**. A version mismatch
 is not a reason to delete sessions, credentials or drafts.
@@ -145,6 +150,12 @@ between computers. Initial migration still requires local access to stop/update
 an unmanaged host. A pre-0.5 managed host needs one final source preparation/
 restart to acquire the release updater; subsequent updates use the website
 or `/desk update`.
+
+Computers running API 4 or earlier need a paused-work bootstrap to acquire the
+API 5 checkpoint controller. Prepare the verified release while work continues,
+then pause work and restart through the installed stable launcher. Do not send
+the new Update now request to an older controller. Once API 5 is active, the
+website can checkpoint running work during subsequent updates.
 
 ## Recovery and rollback
 

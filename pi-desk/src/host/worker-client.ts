@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { SessionSnapshot, WorkerCommand, WorkerInit, WorkerMessage, WorkerRequest } from "../shared/protocol.ts";
 import type { ControlCommand, ControlStatus } from "../shared/controls.ts";
+import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { ReceiptConflict, StaleGeneration, WorkerCommandError, WorkerConnectionError } from "./worker-errors.ts";
 
 export class SessionWorker {
@@ -17,6 +18,7 @@ export class SessionWorker {
 	private controls = new Map<string, { fingerprint: string; status: ControlStatus }>();
 	generation = "";
 	snapshot?: SessionSnapshot;
+	closedCheckpoint?: CheckpointSnapshot & { checkpoint: string };
 	private readonly event: (message: WorkerMessage) => void;
 	private readonly runtimeDirectory: string | undefined;
 
@@ -78,6 +80,10 @@ export class SessionWorker {
 		return promise;
 	}
 
+	checkpoint(id: string, action: CheckpointAction): Promise<CheckpointSnapshot | undefined> {
+		return this.request({ type: "checkpoint", id: `${id}:${action}`, checkpoint: id, action }) as Promise<CheckpointSnapshot | undefined>;
+	}
+
 	submitControl(command: ControlCommand | { kind: "close" }, generation: string, id: string): { accepted: true; control: ControlStatus } {
 		const fingerprint = createHash("sha256").update(JSON.stringify({ command, ...(command.kind === "close" ? {} : { generation }) })).digest("hex");
 		const previous = this.controls.get(id);
@@ -135,7 +141,10 @@ export class SessionWorker {
 		this.stopping = true;
 		this.shutdownConfirmed = false;
 		try {
-			if (!this.stopped) { await this.request({ type: "shutdown", id: randomUUID() }); this.shutdownConfirmed = true; }
+			if (!this.stopped) {
+				this.closedCheckpoint = await this.request({ type: "shutdown", id: randomUUID() }) as typeof this.closedCheckpoint;
+				this.shutdownConfirmed = true;
+			}
 		}
 		catch (error) {
 			if (!force) { this.stopping = false; throw error; }

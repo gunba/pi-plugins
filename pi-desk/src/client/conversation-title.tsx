@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Icon } from "./icons.tsx";
 
-export function ConversationTitle({ title, disabled, rename }: {
-	title: string; disabled?: boolean; rename: (name: string) => Promise<unknown>;
+export function ConversationTitle({ title, disabled, rename, control }: {
+	title: string; disabled?: boolean; rename: (name: string) => Promise<unknown>; control?: Ref<{ edit: () => void }>;
 }) {
 	const [editing, setEditing] = useState(false), [draft, setDraft] = useState(title);
 	const [saving, setSaving] = useState(false), [error, setError] = useState("");
 	const input = useRef<HTMLInputElement>(null), trigger = useRef<HTMLButtonElement>(null);
 	useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
+	useImperativeHandle(control, () => ({ edit: () => { if (!disabled) { setDraft(title); setEditing(true); } } }), [title, disabled]);
 	const cancel = () => { setEditing(false); setError(""); requestAnimationFrame(() => trigger.current?.focus()); };
 	const save = async () => {
 		if (saving || disabled || !draft.trim()) return;

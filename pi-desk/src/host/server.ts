@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdirSync, readdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { uuid } from "../../../pi-party/network.ts";
+import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
@@ -23,6 +24,9 @@ import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worke
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
 import { InputLedger } from "./inputs.ts";
+import { UpdateCheckpoints } from "./checkpoints.ts";
+import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
+import { readState } from "../../manage/store.ts";
 import { Attachments } from "./attachments.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
@@ -56,6 +60,9 @@ export class DeskHost {
 	private saved?: SavedSessionIndex;
 	private folders?: Folders;
 	private inputs?: InputLedger;
+	private checkpoints?: UpdateCheckpoints;
+	private restoringUpdate = false;
+	private restoreUpdateJob?: Promise<void>;
 	private parties?: Parties;
 	private partyNetwork?: PartyNetwork;
 	private partyOperations?: PartyOperations;
@@ -123,6 +130,16 @@ export class DeskHost {
 			for (const view of this.catalog.read()) this.sessions.set(view.key, {
 				view: { ...view, activation: randomUUID(), inputs: this.inputs.pending(view.key) },
 			});
+			const restoreTicket = this.recoverUpdateReferences();
+			this.restoringUpdate = !!restoreTicket;
+			this.checkpoints = new UpdateCheckpoints(this.inputs, () => [...this.sessions.values()].flatMap(managed => managed.worker ? [{
+				key: managed.view.key, worker: managed.worker, ready: !!managed.initialized && managed.view.state === "ready",
+				controlBusy: !!managed.view.controls?.some(control => control.state === "running"), draining: managed.draining,
+			}] : []), () => {
+				this.refreshUpdates();
+				for (const managed of this.sessions.values()) this.drainInputs(managed);
+				this.flushPartyWakes(); this.flushLocalPartyOperations();
+			});
 			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); this.flushPartyWakes(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
 			this.partyOperations.startHost(); this.flushLocalPartyOperations(); this.flushPartyWakes();
@@ -166,12 +183,25 @@ export class DeskHost {
 				this.refreshUpdates();
 				this.scheduleUpdateCheck();
 			}
+			if (restoreTicket) this.restoreUpdateJob = this.restoreUpdatedConversations(restoreTicket).catch(error => {
+				console.error("Conversation restoration failed:", error instanceof Error ? error.message : String(error));
+			}).finally(() => {
+				if (!this.closing && this.inputs?.checkpoint()?.state !== "complete")
+					this.inputs?.interrupt(undefined, "Conversation restoration could not complete");
+				this.restoringUpdate = false;
+				if (!this.closing) {
+					this.refreshUpdates();
+					for (const managed of this.sessions.values()) this.drainInputs(managed);
+					this.flushPartyWakes(); this.flushLocalPartyOperations();
+				}
+			});
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
 			clearInterval(this.heartbeat);
 			this.updateWatch?.close(); clearTimeout(this.updateTimer);
 			clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
 			await this.saved?.close();
+			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.relay?.close(); this.partyNetwork?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
@@ -180,6 +210,59 @@ export class DeskHost {
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
 			throw error;
+		}
+	}
+
+	private recoverUpdateReferences(): UpdateCheckpoint | undefined {
+		const ticket = this.inputs!.checkpoint();
+		if (!ticket || !this.runtime || ![ticket.source, ticket.target].includes(this.runtime)
+			|| !["held", "committed"].includes(ticket.state)) return;
+		for (const actor of ticket.sessions) {
+			const managed = this.sessions.get(actor.key);
+			if (managed && isOpenSession(managed.view) && managed.view.file === actor.file && managed.view.agentId === actor.session)
+				managed.view.leaf = actor.leaf;
+		}
+		if (ticket.state === "held") { ticket.state = "cancelled"; this.inputs!.writeCheckpoint(ticket); return; }
+		return ticket;
+	}
+
+	private async restoreUpdatedConversations(ticket: UpdateCheckpoint): Promise<void> {
+		const workers: { key: string; worker: SessionWorker }[] = [];
+		try {
+			await Promise.all(ticket.sessions.map(async actor => {
+				try {
+					const existing = this.sessions.get(actor.key);
+					if (!existing || !isOpenSession(existing.view) || existing.view.file !== actor.file || existing.view.agentId !== actor.session)
+						throw new Error("The saved conversation was closed or changed; it was not restarted.");
+					if (existing.worker) throw new Error("This conversation is already open; its work was not resent.");
+					const key = this.createSession(actor.cwd, actor.file, existing, false, ticket.id);
+					if (key !== actor.key) throw new Error("This native session is open in another conversation; its work was not resent.");
+					workers.push({ key, worker: this.sessions.get(key)!.worker! });
+					const managed = await this.waitForSession(key);
+					if (managed.view.snapshot?.id !== actor.session || managed.view.snapshot.file !== actor.file)
+						throw new Error("The native conversation changed during restoration.");
+					if (actor.running && !actor.dispatched && !actor.error) {
+						const digest = createHash("sha256").update(`desk-update:${ticket.id}:${actor.key}`).digest("hex");
+						const id = [digest.slice(0, 8), digest.slice(8, 12), digest.slice(12, 16), digest.slice(16, 20), digest.slice(20, 32)].join("-");
+						this.inputs!.continueCheckpoint(ticket.id, key, { id, activation: managed.view.activation!,
+							generation: managed.worker!.generation, command: { kind: "prompt", text: "Continue" } });
+						this.inputEvent(managed);
+					} else this.inputs!.finishCheckpointActor(ticket.id, key);
+				} catch (error) {
+					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key, error instanceof Error ? error.message : String(error));
+				}
+			}));
+			if (!this.closing) this.inputs!.completeCheckpoint(ticket.id);
+		} finally {
+			await Promise.all(workers.map(async ({ key, worker }) => {
+				try { await worker.checkpoint(ticket.id, "release"); }
+				catch (error) {
+					if (!this.closing) {
+						this.inputs!.interrupt(key, "The updated worker could not confirm release");
+						this.inputs!.finishCheckpointActor(ticket.id, key, error instanceof Error ? error.message : String(error));
+					}
+				}
+			}));
 		}
 	}
 
@@ -204,13 +287,14 @@ export class DeskHost {
 			const value = runtimeUpdateState(this.runtimeHome);
 			if (!value) throw new Error("The managed runtime selection is missing.");
 			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError };
+			if (this.restoringUpdate) next = { ...next, phase: "applying", message: "Restoring conversations…" };
 		}
 		catch (error) { next = { current: RELEASE.version, phase: "failed", message: error instanceof Error ? error.message : String(error) }; }
 		if (JSON.stringify(next) !== JSON.stringify(this.updates)) {
 			this.updates = next;
 			this.emit({ type: "state", state: this.state() });
 		}
-		if (active || this.applyingUpdate || next?.phase !== "waiting") return;
+		if (active || this.restoringUpdate || this.checkpoints?.held || this.applyingUpdate || next?.phase !== "waiting") return;
 		try { if (!automaticUpdatePending(this.runtimeHome)) return; } catch { return; }
 		this.applyingUpdate = true;
 		// The controller rechecks admission atomically in this host. A session
@@ -239,10 +323,14 @@ export class DeskHost {
 
 	private hostStatus(): HostStatus {
 		const active = [...this.sessions.values()].filter(item => item.worker);
+		const ticket = this.inputs?.checkpoint();
 		return {
 			release: RELEASE, instance: this.control!.record.instance, pid: process.pid, started: this.control!.record.started,
 			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir!,
-			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime,
+			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime, checkpoint: this.checkpoints?.status(),
+			restore: ticket && this.runtime && [ticket.source, ticket.target].includes(this.runtime)
+				&& ["committed", "complete"].includes(ticket.state)
+				? { id: ticket.id, pending: this.restoringUpdate, failures: ticket.sessions.filter(actor => actor.error).length } : undefined,
 			sessions: { active: active.length,
 				working: active.filter(({ view }) => view.state === "starting" || view.snapshot?.activity !== "idle"
 					|| view.controls?.some(control => control.state === "running")).length,
@@ -370,12 +458,12 @@ export class DeskHost {
 	}
 
 	private drainInputs(managed: ManagedSession): void {
-		if (managed.draining || !managed.initialized || this.closing || managed.view.state !== "ready"
+		if (managed.draining || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
 			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
 		const worker = managed.worker, key = managed.view.key;
 		// Admission returns before IPC dispatch, leaving queued input cancellable.
 		managed.draining = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
-			while (!this.closing && managed.worker === worker && managed.view.state === "ready"
+			while (!this.closing && !this.checkpoints?.held && !this.restoringUpdate && managed.worker === worker && managed.view.state === "ready"
 				&& !managed.view.controls?.some(control => control.state === "running")) {
 				const next = this.inputs!.next(key);
 				if (!next) break;
@@ -429,7 +517,7 @@ export class DeskHost {
 		return root;
 	}
 	private flushPartyWakes(): void {
-		if (this.closing || !this.partyOperations || !this.parties) return;
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate || !this.partyOperations || !this.parties) return;
 		try {
 			const targets: string[] = [];
 			for (const { view, worker } of this.sessions.values()) {
@@ -447,7 +535,7 @@ export class DeskHost {
 	}
 
 	private flushLocalPartyOperations(): void {
-		if (this.closing || !this.partyOperations) return;
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate || !this.partyOperations) return;
 		let requests: PartyOperation[];
 		try { requests = this.partyOperations.outgoing("local"); }
 		catch { console.error("Party operations could not be read."); return; }
@@ -555,7 +643,7 @@ export class DeskHost {
 	}
 
 	private async executePartyOperation(computer: string, request: PartyOperation): Promise<OperationResult["result"]> {
-		if (this.closing) throw Error("Desk is shutting down.");
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw Error("Desk is updating or shutting down.");
 		const store = this.parties!.store;
 		this.partyOperations!.validate(store, computer, request);
 		if (request.kind === "remove") {
@@ -586,7 +674,15 @@ export class DeskHost {
 			store.resumeDelivery(member.session, request.target_epoch!); this.parties!.networkChanged(); this.partyNetwork?.flush();
 			return { session: member.session, state: "ready", key: managed.view.key };
 		}
-		const key = this.createSession(request.cwd!);
+		let fork: { cwd: string; file: string } | undefined;
+		if (request.kind === "fork") {
+			const member = store.member(request.sender)!;
+			const file = store.sessionFile(member.session)
+				?? SessionManager.findById(member.cwd, member.session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir));
+			if (!file) throw Error("The source agent\'s saved native session is unavailable.");
+			fork = createPartyFork(file, member.session, request.call!);
+		}
+		const key = this.createSession(fork?.cwd ?? request.cwd!, fork?.file);
 		try {
 			const managed = await this.waitForSession(key), worker = managed.worker!;
 			this.partyOperations!.validate(store, computer, request);
@@ -608,8 +704,8 @@ export class DeskHost {
 		}
 	}
 
-	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false): string {
-		if (this.closing) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
+	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, checkpoint?: string): string {
+		if (this.closing || this.checkpoints?.held) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
@@ -619,7 +715,7 @@ export class DeskHost {
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
-			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
+			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const worker = new SessionWorker(options, message => {
 			if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
 		});
@@ -688,9 +784,33 @@ export class DeskHost {
 				if (url.pathname === "/api/host/status" && request.method === "GET") {
 					json(response, 200, this.hostStatus()); return;
 				}
+				if (url.pathname === "/api/host/update-checkpoint" && request.method === "GET" && this.checkpoints) {
+					const checkpoint = await this.checkpoints.wait(string(url.searchParams.get("id"), 128));
+					json(response, 200, { instance: this.control.record.instance, checkpoint }); return;
+				}
 				if (request.method === "POST") {
 					const data = await this.body(request);
 					if (data.instance !== this.control.record.instance) { json(response, 409, { error: "The host changed." }); return; }
+					if (url.pathname === "/api/host/cancel-update" && this.checkpoints) {
+						this.checkpoints.cancel(string(data.checkpoint, 128));
+						json(response, 202, { instance: this.control.record.instance }); return;
+					}
+					if (["/api/host/prepare-update", "/api/host/stop-for-update"].includes(url.pathname)) {
+						const target = string(data.target, 64), id = string(data.checkpoint, 128);
+						const state = this.runtimeHome ? readState(this.runtimeHome) : undefined;
+						if (this.closing || this.restoringUpdate || !this.runtime || data.runtime !== this.runtime || state?.active !== this.runtime
+							|| state.pending !== target || state.autoApply !== target || !this.checkpoints) {
+							json(response, 409, { error: "The host or prepared update changed." }); return;
+						}
+						if (url.pathname.endsWith("prepare-update")) {
+							const checkpoint = this.checkpoints.prepare(id, this.runtime, target);
+							json(response, 202, { instance: this.control.record.instance, checkpoint }); return;
+						}
+						await this.checkpoints.commit(id, target);
+						this.closing = true;
+						json(response, 202, { instance: this.control.record.instance });
+						setImmediate(() => { void this.close().catch(() => {}); }); return;
+					}
 					if (url.pathname === "/api/host/stop") {
 						if (data.runtime !== undefined && data.runtime !== this.runtime) {
 							json(response, 409, { error: "The running runtime changed." }); return;
@@ -794,6 +914,10 @@ export class DeskHost {
 			if (this.closing) return reply({ error: "Desk is applying an update or shutting down. Reconnect shortly." }, 503);
 			const url = new URL(request.path, this.origin);
 			const data = request.body ?? {};
+			const restorationControl = this.restoringUpdate && (/^\/api\/sessions\/[a-f0-9-]+\/close$/.test(url.pathname)
+				|| /^\/api\/sessions\/[a-f0-9-]+\/command$/.test(url.pathname) && (data.command as { kind?: string } | undefined)?.kind === "answer");
+			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
+				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
 			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
 			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
@@ -806,6 +930,13 @@ export class DeskHost {
 			if (url.pathname === "/api/runtime/update" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host does not use a managed runtime." }, 409);
 				await launchOperation(this.runtimeHome, "update");
+				this.refreshUpdates();
+				return reply({ accepted: true }, 202);
+			}
+			if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
+				const version = string(data.version, 40);
+				if (!this.runtimeHome || !/^\d+\.\d+\.\d+$/.test(version)) return reply({ error: "Select the published update." }, 409);
+				await launchOperation(this.runtimeHome, "update-now", version);
 				this.refreshUpdates();
 				return reply({ accepted: true }, 202);
 			}
@@ -994,6 +1125,7 @@ export class DeskHost {
 
 	private async stop(): Promise<void> {
 		this.closing = true;
+		this.checkpoints?.dispose();
 		for (const cancel of this.startupWaits) cancel();
 		const errors: unknown[] = [];
 		try { this.persist(true); } catch (error) { errors.push(error); }
@@ -1008,7 +1140,19 @@ export class DeskHost {
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => item.worker?.close()));
 		for (const result of workers) if (result.status === "rejected") errors.push(result.reason);
+		try {
+			const ticket = this.inputs?.checkpoint();
+			if (ticket?.state === "committed") {
+				for (const actor of ticket.sessions) {
+					const final = this.sessions.get(actor.key)?.worker?.closedCheckpoint;
+					if (final?.checkpoint === ticket.id && final.session === actor.session && final.file === actor.file) actor.leaf = final.leaf;
+					else actor.error = "The previous worker did not confirm its final saved cursor. Resume manually before continuing work.";
+				}
+				this.inputs!.writeCheckpoint(ticket);
+			}
+		} catch (error) { errors.push(error); }
 		await Promise.all([...this.sessions.values()].map(item => item.draining));
+		await this.checkpoints?.settled(); await this.restoreUpdateJob;
 		try { this.inputs?.interrupt(undefined, "The host stopped"); this.inputs?.close(); } catch (error) { errors.push(error); }
 		const closed = new Promise<void>(resolve => this.server.close(() => resolve()));
 		this.server.closeAllConnections();

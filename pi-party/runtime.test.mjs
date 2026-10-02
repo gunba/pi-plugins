@@ -177,7 +177,7 @@ test("leaving filters queued peer context that was not yet admitted", async t =>
 	assert.deepEqual(result.messages, []);
 });
 
-test("automatic delivery is bounded even while the recipient is working", async t => {
+test("working delivery does not exhaust idle wakes; actual idle wakes stay bounded", async t => {
 	environment(t);
 	const a = harness(t, "first"), b = harness(t, "second");
 	await a.emit("session_start"); await b.emit("session_start");
@@ -187,13 +187,27 @@ test("automatic delivery is bounded even while the recipient is working", async 
 		t.mock.timers.tick(10_000);
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 	}
-	assert.equal(b.sent.length, 8);
+	assert.equal(b.sent.length, 10, "working coordination must not wait for another human message");
+	assert.ok(b.sent.every(item => !item.options.triggerTurn), "steering must not start another run");
+	b.setBusy(false);
+	for (let i = 10; i < 19; i++) {
+		await a.call("party_send", { to: "second", message: `Idle coordination ${i}` });
+		t.mock.timers.tick(10_000);
+		await b.emit("context", { messages: b.branch.map(x => x.message) });
+	}
+	assert.equal(b.sent.length, 18);
+	const peers = JSON.parse((await b.call("party_members")).content[0].text);
+	assert.equal(peers.find(peer => peer.self).delivery, "limited");
+	assert.match(peers.find(peer => peer.self).deliveryReason, /wake limit/i);
+	await b.emit("session_start");
+	assert.equal(JSON.parse((await b.call("party_members")).content[0].text).find(peer => peer.self).delivery, "limited",
+		"a wake limit must not be hidden by dormant startup delivery");
 	await b.emit("input", { source: "extension" });
 	t.mock.timers.tick(10_000);
-	assert.equal(b.sent.length, 8);
+	assert.equal(b.sent.length, 18);
 	await b.emit("input", { source: "terminal" });
 	t.mock.timers.tick(10_000);
-	assert.equal(b.sent.length, 10);
+	assert.equal(b.sent.length, 19);
 });
 
 test("native session entries retain party receipt IDs through compaction and reopening without rewriting JSONL", t => {

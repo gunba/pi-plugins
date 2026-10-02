@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { existsSync, readFileSync } from "node:fs";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { getPresentation } from "../../pi-ui/index.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -129,6 +130,7 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
  */
 export function pruneCompactedSession(
 	sessionManager: ResidentSessionManager,
+	retainHistory = false,
 ): ResidentPruneReport {
 	const entries = sessionManager.getEntries();
 	const active = sessionManager.buildContextEntries();
@@ -141,7 +143,7 @@ export function pruneCompactedSession(
 		compactionId: compaction?.id,
 	};
 	const file = sessionManager.getSessionFile();
-	if (!compaction || !file || !existsSync(file)) return report;
+	if (retainHistory || !compaction || !file || !existsSync(file)) return report;
 
 	const activeIds = new Set(active.map((entry) => entry.id));
 	const currentBranchIds = new Set(sessionManager.getBranch().map((entry) => entry.id));
@@ -236,6 +238,8 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 	let enabled = enabledByEnvironment();
 	let lastReport: ResidentPruneReport | undefined;
 	let totalEstimatedBytesReleased = 0;
+	const historyAttached = () => getPresentation(pi)?.capabilities.includes("transcripts") === true;
+	const mode = () => !enabled ? "disabled" : historyAttached() ? "paused while transcript history is attached" : "enabled";
 
 	const prune = (
 		ctx: {
@@ -244,7 +248,7 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		},
 		notify: boolean,
 	): ResidentPruneReport => {
-		const report = pruneCompactedSession(ctx.sessionManager);
+		const report = pruneCompactedSession(ctx.sessionManager, historyAttached());
 		lastReport = report;
 		totalEstimatedBytesReleased += report.estimatedBytesReleased;
 		if (notify && report.estimatedBytesReleased >= NOTICE_THRESHOLD_BYTES) {
@@ -257,6 +261,7 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		if (historyAttached()) restorePrunedSession(ctx.sessionManager);
 		if (enabled) prune(ctx, false);
 	});
 
@@ -282,15 +287,15 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim().toLowerCase();
 			if (command === "on" || command === "off") {
-				if (command === "off") restorePrunedSession(ctx.sessionManager);
+				if (command === "off" || historyAttached()) restorePrunedSession(ctx.sessionManager);
 				enabled = command === "on";
 				if (enabled) prune(ctx, false);
-				ctx.ui.notify(`Resident session pruning ${enabled ? "enabled" : "disabled"}`, "info");
+				ctx.ui.notify(`Resident session pruning ${mode()}`, "info");
 				return;
 			}
 			if (command === "prune") {
-				if (!enabled) {
-					ctx.ui.notify("Resident session pruning is disabled", "warning");
+				if (!enabled || historyAttached()) {
+					ctx.ui.notify(`Resident session pruning is ${mode()}`, "warning");
 					return;
 				}
 				const report = prune(ctx, false);
@@ -309,7 +314,7 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 			const report = lastReport ?? (enabled ? prune(ctx, false) : undefined);
 			ctx.ui.notify(
 				[
-					`Resident pruning: ${enabled ? "on" : "off"}`,
+					`Resident pruning: ${mode()}`,
 					report
 						? `Entries: ${report.activeEntries} active / ${report.totalEntries} total`
 						: "Entries: not inspected",

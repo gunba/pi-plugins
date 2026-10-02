@@ -38,3 +38,14 @@ test("closed tool output and thinking do not build their hidden Markdown bodies"
 	assert.match(render({ message: tool }, new Map([["tool:call", true]])), /HIDDEN_TOOL_BODY/);
 	assert.match(render({ message: thought }, new Map([["thinking:thought:0", true]])), /HIDDEN_THINKING_BODY/);
 });
+
+test("empty text does not give activity rows a chat header or an invisible gap", () => {
+	for (const block of [{ type: "thinking", text: "reasoning" }, { type: "toolCall", id: "call", name: "read", arguments: "{}" }]) {
+		const html = render({ message: message("activity", "assistant", [block, { type: "text", text: " \n" }]) });
+		assert.match(html, /message-activity/);
+		assert.doesNotMatch(html, /message-heading|class="markdown"/);
+	}
+	const text = render({ message: message("reply", "assistant", [{ type: "thinking", text: "reasoning" }, { type: "text", text: "A reply" }]) });
+	assert.match(text, /message-heading/);
+	assert.match(text, /A reply/);
+});

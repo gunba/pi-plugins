@@ -1,7 +1,7 @@
 import manifest from "../../package.json" with { type: "json" };
 
 // Increment when the app/host DTO or command contract changes incompatibly.
-export const API_VERSION = 4;
+export const API_VERSION = 5;
 export const API_HEADER = "X-Pi-Desk-API";
 export const MINIMUM_NODE = manifest.engines.node.slice(2);
 export function supportsNode(version: string): boolean {

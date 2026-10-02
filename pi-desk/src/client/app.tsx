@@ -36,8 +36,10 @@ import { AgentPane } from "./agent-pane.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
+import { useCommandCompletion } from "./command-completion.tsx";
+import { deskCommand, deskCommandCatalog } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
-import { PartySessions } from "./party-sessions.tsx";
+import { PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
@@ -101,6 +103,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const attachments = useAttachments(selected, setError);
   const error = feedback[selected]?.at(-1)?.text ?? "";
   const fileInput = useRef<HTMLInputElement>(null);
+  const titleControl = useRef<{ edit: () => void }>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [latestRequest, setLatestRequest] = useState(0);
   const [dismissedQuestion, setDismissedQuestion] = useState("");
@@ -161,6 +164,9 @@ export function App({ account }: { account?: BrowserAccount }) {
       session.ui?.interactions.map(question => `${session.key}/${question.id}`) ?? []));
     for (const id of questionDrafts.current.keys()) if (!pending.has(id)) questionDrafts.current.delete(id);
   }, [state.host?.sessions]);
+  const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? []), text => {
+    setDraft(text); localStorage.setItem(draftKey(selected), text);
+  });
   const messages = state.messages[selected] ?? emptyMessages;
   const storeHistory = useCallback((source: string | undefined, page: HistoryPage) => {
     setState(previous => {
@@ -177,6 +183,8 @@ export function App({ account }: { account?: BrowserAccount }) {
     const card = [...document.querySelectorAll<HTMLElement>("[data-view]")].find(element => element.dataset.view === focusedView);
     card?.scrollIntoView({ block: "start" });
   }, [panel, focusedView, selected]);
+  const settingBusy = controlBusy || sending || closing || !!question || session?.snapshot?.activity === "waiting"
+    || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
   const busy =
     controlBusy ||
     session?.snapshot?.activity === "running" ||
@@ -295,6 +303,27 @@ export function App({ account }: { account?: BrowserAccount }) {
     const fileIds = attachments.files.map(file => file.id);
     sendingRef.current = true; setSending(true);
     try {
+      const local = deskCommand(text, session.snapshot?.commands ?? []);
+      if (local) {
+        if (fileIds.length) throw Error("Commands cannot include file attachments.");
+        switch (local.name) {
+          case "settings": {
+            const section = local.args || "general";
+            if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
+            setSettingsSection(section); setPanel("settings"); break;
+          }
+          case "new": openNewConversation(); if (local.args) setCwd(local.args); break;
+          case "resume": if (local.args) throw Error("Use /resume to choose a saved session."); setResumeOpen(true); break;
+          case "name":
+            if (session.state !== "ready") throw Error("Wait for Pi to finish opening this conversation before renaming it.");
+            if (local.args) await command({ kind: "name", name: local.args }); else titleControl.current?.edit(); break;
+          case "compact": await command({ kind: "compact", instructions: local.args || undefined }); break;
+          case "reload": if (local.args) throw Error("Use /reload without arguments."); await command({ kind: "reload" }); break;
+        }
+        if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
+        if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
+        return;
+      }
       const receiptKey = `pi-desk:submission:${selected}`;
       const previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as {
         id: string; activation: string; generation?: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
@@ -417,12 +446,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           <PartySessions directory={computer.parties} computer={computer.id} computers={partyComputers} connected={computer.connected}
             sessions={host.sessions.filter(item => item.computer === computer.id)
               .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
-            renderSession={item => <div className="session-row" key={item.key}>
+            renderSession={(item, agent) => <div className="session-row" key={item.key}>
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
                 <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} />
-                <span><strong>{item.pinned ? "★ " : ""}{title(item)}</strong>
+                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><PartyWakeMarker agent={agent} /></span>
                   <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
@@ -464,7 +493,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${basename(session.cwd)}` : "Your workspace"}</span>
             {session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
               disabled={!connected || session.state !== "ready" || closing}
-              rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
+              control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
           </div>
           <div className="top-actions">
             {session?.activation && <CloseConversationButton session={session} name={title(session)}
@@ -479,6 +508,9 @@ export function App({ account }: { account?: BrowserAccount }) {
                 {question ? "Needs your input" : busy ? "Working" : "Work"}
               </button>
             )}
+            <button type="button" className="icon-button" title="Opening context" aria-label="Opening context"
+              disabled={session?.state !== "ready"} aria-pressed={panel === "settings" && settingsSection === "context"}
+              onClick={() => { setSettingsSection("context"); setPanel("settings"); }}><Icon name="context" /></button>
             <button
               className="icon-button"
               aria-label="Conversation settings"
@@ -583,8 +615,12 @@ export function App({ account }: { account?: BrowserAccount }) {
               <AttachmentList files={attachments.files} disabled={sending} remove={attachments.remove} />
               <input ref={fileInput} type="file" multiple hidden aria-label="Choose attachments" disabled={sending || !attachments.ready}
                 onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
+              {completion.menu}
               <textarea
                 aria-label="Message Pi"
+                aria-autocomplete="list"
+                aria-controls={completion.active ? "command-completion" : undefined}
+                aria-activedescendant={completion.selected}
                 disabled={sending}
                 placeholder={
                   busy
@@ -601,6 +637,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   localStorage.setItem(draftKey(selected), event.target.value);
                 }}
                 onKeyDown={(event) => {
+                  if (completion.keyDown(event)) return;
                   const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
                     metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
                     matchMedia("(pointer:fine)").matches);
@@ -621,7 +658,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                   {session.snapshot && <>
                   <select
                     aria-label="Model"
-                    disabled={busy || !connected || session.state !== "ready"}
+                    title="Change model; active work stops and continues with the new setting"
+                    disabled={settingBusy || !connected || session.state !== "ready"}
                     value={
                       session.snapshot?.model
                         ? `${session.snapshot.model.provider}:${session.snapshot.model.id}`
@@ -653,14 +691,15 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
                     aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
                     title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}
-                    disabled={isDefaultModel || busy || !connected || session.state !== "ready" || !selectedModel}
+                    disabled={isDefaultModel || settingBusy || !connected || session.state !== "ready" || !selectedModel}
                     onClick={() => selectedModel && run({ kind: "model", provider: selectedModel.provider, id: selectedModel.id, makeDefault: true })}>
                     <Icon name="star" />
                   </button>
                   <select
                     aria-label="Reasoning level"
+                    title="Change reasoning; active work stops and continues with the new setting"
                     value={session.snapshot?.thinking ?? ""}
-                    disabled={busy || !connected || session.state !== "ready"}
+                    disabled={settingBusy || !connected || session.state !== "ready"}
                     onChange={(event) =>
                       run({ kind: "thinking", level: event.target.value })
                     }
@@ -711,7 +750,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                        !session.activation || !["starting", "ready"].includes(session.state)
                     }
                   >
-                    {busy && !controlBusy ? "Steer" : "↑"}
+                    {busy && !controlBusy ? <><Icon name="steer" /><span>Steer</span></> : <Icon name="send" />}
                   </button>
                 </div>
               </div>
@@ -814,7 +853,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               </p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
-            session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy}
+            session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy}
             invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}
           </SettingsLayout>

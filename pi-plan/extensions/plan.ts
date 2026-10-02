@@ -282,7 +282,7 @@ class PlanController {
 	}
 	private drive(ctx: ExtensionContext): void {
 		if (this.editing || getWorkCoordinator(ctx.sessionManager.getSessionId())?.blocked
-			|| !ctx.isIdle() || ctx.hasPendingMessages() || this.attempt) return;
+			|| !ctx.isIdle() || ctx.hasPendingMessages() || this.attempt || this.remote?.suspended) return;
 		this.store.reconcile(ctx.sessionManager.getBranch());
 		const plan = this.current();
 		if (!plan?.autoContinue || plan.phase !== "active" || plan.activation !== "armed") return;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { InputStatus, InputSubmission, PromptCommand } from "../shared/inputs.ts";
 import { ReceiptConflict } from "./worker-errors.ts";
+import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 
 interface Row {
 	id: string; session: string; activation: string; generation: string | null;
@@ -30,8 +31,52 @@ export class InputLedger {
 				fingerprint TEXT NOT NULL, payload TEXT, state TEXT NOT NULL,
 				created INTEGER NOT NULL, updated INTEGER NOT NULL, preview TEXT NOT NULL,
 				files INTEGER NOT NULL, error TEXT, PRIMARY KEY(session, id));
-			CREATE INDEX IF NOT EXISTS inputs_pending ON inputs(session, state, created);`);
+			CREATE INDEX IF NOT EXISTS inputs_pending ON inputs(session, state, created);
+			CREATE TABLE IF NOT EXISTS update_checkpoint (singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL);`);
 		this.interrupt(undefined, "The host stopped");
+	}
+	checkpoint(): UpdateCheckpoint | undefined {
+		const row = this.db.prepare("SELECT payload FROM update_checkpoint WHERE singleton=1").get() as { payload: string } | undefined;
+		return row ? JSON.parse(row.payload) as UpdateCheckpoint : undefined;
+	}
+	writeCheckpoint(ticket: UpdateCheckpoint): void {
+		if (!/^[a-f0-9]{64}$/.test(ticket.source) || !/^[a-f0-9]{64}$/.test(ticket.target) || ticket.source === ticket.target)
+			throw new Error("Invalid update checkpoint runtime.");
+		this.db.prepare("INSERT INTO update_checkpoint VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload")
+			.run(JSON.stringify(ticket));
+	}
+	finishCheckpointActor(id: string, key: string, error?: string): void {
+		const ticket = this.checkpoint(), actor = ticket?.sessions.find(actor => actor.key === key);
+		if (!ticket || ticket.id !== id || !["committed", "complete"].includes(ticket.state) || !actor) throw new Error("The restore checkpoint changed.");
+		actor.restored = true;
+		if (error) actor.error = error.slice(0, 2000);
+		this.writeCheckpoint(ticket);
+	}
+	completeCheckpoint(id: string): void {
+		const ticket = this.checkpoint();
+		if (!ticket || ticket.id !== id || ticket.state !== "committed" || ticket.sessions.some(actor => !actor.restored))
+			throw new Error("Conversation restoration is not complete.");
+		ticket.state = "complete"; this.writeCheckpoint(ticket);
+	}
+	assertCheckpointInputs(): void {
+		if (this.db.prepare("SELECT 1 FROM inputs WHERE state IN ('queued','sending') LIMIT 1").get())
+			throw new Error("Wait for pending Desk input to reach Pi before updating.");
+	}
+	/** The continuation receipt and dispatch marker commit together; unknown admission is never replayed. */
+	continueCheckpoint(id: string, key: string, input: InputSubmission): InputStatus | undefined {
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			const ticket = this.checkpoint(), actor = ticket?.sessions.find(actor => actor.key === key);
+			if (!ticket || ticket.id !== id || ticket.state !== "committed" || !actor?.running)
+				throw new Error("This conversation has no active-work continuation checkpoint.");
+			let result: InputStatus | undefined;
+			if (!actor.dispatched) {
+				result = this.admit(key, input);
+				actor.dispatched = true; actor.restored = true;
+				this.writeCheckpoint(ticket);
+			}
+			this.db.exec("COMMIT"); return result;
+		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	private row(session: string, id: string): Row | undefined {
 		return this.db.prepare("SELECT * FROM inputs WHERE session=? AND id=?").get(session, id) as unknown as Row | undefined;

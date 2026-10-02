@@ -23,7 +23,8 @@ process.on("message", (request: WorkerRequest) => {
 	let operation = previous?.operation;
 	if (!operation) {
 		operation = Promise.resolve().then(async () => {
-			if (request.type === "shutdown") return engine.close();
+			if (request.type === "shutdown") return engine.shutdownCheckpoint();
+			if (request.type === "checkpoint") return engine.checkpoint(request.checkpoint, request.action);
 			if (request.type === "init") {
 				if (started) throw new Error("Worker already initialized.");
 				started = true;
@@ -33,7 +34,8 @@ process.on("message", (request: WorkerRequest) => {
 			if (isControl(request.command)) send({ type: "snapshot", snapshot: engine.snapshot() });
 			return result;
 		});
-		const readOnly = request.type === "command" && ["snapshot", "history", "asset", "artifact", "file", "tree"].includes(request.command.kind);
+		const readOnly = request.type === "checkpoint" && request.action === "inspect"
+			|| request.type === "command" && ["snapshot", "history", "asset", "artifact", "file", "tree", "context_inspect", "context_read"].includes(request.command.kind);
 		if (!readOnly) {
 			admitted.set(request.id, { operation, fingerprint });
 			void operation.finally(() => {

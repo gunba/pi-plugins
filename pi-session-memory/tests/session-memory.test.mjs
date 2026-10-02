@@ -186,6 +186,7 @@ test("extension prunes on startup and compaction and supports runtime toggles", 
 	const hooks = {};
 	const commands = {};
 	extension({
+		events: { emit() {} },
 		on: (name, handler) => { hooks[name] = handler; },
 		registerCommand: (name, command) => { commands[name] = command; },
 	});
@@ -233,7 +234,7 @@ test("restores old branches and checkpoint details before navigation without wri
 	const archive = readFileSync(sm.getSessionFile());
 	const oldContext = sm.getBranch(old).map(entry => structuredClone(entry));
 	const hooks = {};
-	extension({ on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
+	extension({ events: { emit() {} }, on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
 	const ctx = { sessionManager: sm, ui: { notify() {} } };
 	hooks.session_start({}, ctx);
 	assert.deepEqual(sm.getEntry(first).message.content, []);
@@ -270,7 +271,7 @@ test("archive failure cancels navigation and restoration is atomic", () => {
 	];
 	const sm = manager(entries, "compact");
 	const hooks = {};
-	extension({ on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
+	extension({ events: { emit() {} }, on: (name, fn) => { hooks[name] = fn; }, registerCommand() {} });
 	const notifications = [];
 	const ctx = { sessionManager: sm, ui: { notify: text => notifications.push(text) } };
 	hooks.session_start({}, ctx);

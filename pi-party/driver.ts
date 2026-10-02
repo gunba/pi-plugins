@@ -76,6 +76,7 @@ export class PartyDriver {
 				: request.kind === "resume" && target.wakes >= 8 ? "limited"
 				: request.kind === "resume" && !this.store.pending(target.session, target.owner).length ? "ready"
 				: await this.control(request);
+			if (request.kind === "resume" && request.peer && state === "queued") this.store.reserveChildWake(target.session, target.epoch);
 			if (!this.closed) this.operations.finishDriver(request.id, { id: request.id, result: { session: request.target, state } });
 		} catch (error) {
 			if (!this.closed) this.operations.finishDriver(request.id, { id: request.id, error: (error instanceof Error ? error.message : String(error)).slice(0, 2000) });

@@ -40,6 +40,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
 	const userScroll = useRef(false), restoring = useRef(true);
+	const touchY = useRef<number | undefined>(undefined);
 	const target = useRef<ReadingPosition | "start" | "end" | undefined>(saved.current?.follow === false ? saved.current : "end");
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const restoreFrame = useRef<number | undefined>(undefined);
@@ -230,17 +231,40 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		setPage(previous => ({ generation, revision: previous?.revision ?? 0, before: older, messages: nativeMessages }));
 		setLive(false);
 	};
+	// Collapsed activity can fill a native page without filling the viewport.
+	// There is then no scroll event: page on an explicit navigation gesture.
+	const navigateShortPage = (earlier: boolean, target: EventTarget | null) => {
+		const viewport = scroller.current;
+		if (!viewport || restoring.current || loadingRef.current || !connected || viewport.scrollHeight > viewport.clientHeight + 1) return;
+		for (let node = target instanceof HTMLElement ? target : null; node && node !== viewport; node = node.parentElement) {
+			if (node.scrollHeight > node.clientHeight + 1 && /^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) return;
+		}
+		const anchor = capture.current();
+		if (!anchor) return;
+		if (earlier && older) void load({ before: older }, anchor);
+		else if (!earlier && !live && moreRecent) void load({ after: moreRecent }, anchor);
+	};
 	return <DisclosureStates.Provider value={disclosures.current}><div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
 		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
 		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
 			tabIndex={0} aria-label={source ? "Child conversation" : "Conversation"}
-			onWheel={() => { userScroll.current = true; }} onTouchMove={() => { userScroll.current = true; }}
+			onWheel={event => { userScroll.current = true; if (event.deltaY) navigateShortPage(event.deltaY < 0, event.target); }}
+			onTouchStart={event => { touchY.current = event.touches[0]?.clientY; }}
+			onTouchMove={event => {
+				userScroll.current = true;
+				const y = event.touches[0]?.clientY, previous = touchY.current;
+				touchY.current = y;
+				if (y !== undefined && previous !== undefined && Math.abs(y - previous) > 4) navigateShortPage(y > previous, event.target);
+			}}
 			onPointerDown={event => { if (event.target === event.currentTarget) userScroll.current = true; }}
 			onKeyDown={event => {
 				if (event.key === "End" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (connected) void load(); }
-				else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) userScroll.current = true;
+				else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) {
+					userScroll.current = true;
+					if (event.target === event.currentTarget) navigateShortPage(["PageUp", "Home", "ArrowUp"].includes(event.key) || event.key === " " && event.shiftKey, event.target);
+				}
 			}}
 			onScroll={() => {
 				if (restoring.current) return;

@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../shared/protocol.ts";
-import type { CachedMessage } from "./state.ts";
+import { isEmptyText, type CachedMessage } from "./state.ts";
 
 const noResults: Record<string, ChatMessage> = {};
 export interface TranscriptRow {
@@ -14,7 +14,7 @@ export function transcriptRows(messages: CachedMessage[]): TranscriptRow[] {
 	for (const message of messages) {
 		const parent = message.role === "tool" && message.toolCallId ? calls.get(message.toolCallId) : undefined;
 		if (parent) { parent.results = { ...parent.results, [message.toolCallId!]: message }; continue; }
-		const blocks = message.blocks.filter(Boolean);
+		const blocks = message.blocks.filter(block => block && !isEmptyText(block));
 		const thinkingOnly = message.role === "assistant" && blocks.length > 0 && blocks.every(block => block.type === "thinking");
 		const previous = rows.at(-1);
 		if (thinkingOnly && previous?.thinking) { previous.thinking.push(message); continue; }

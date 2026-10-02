@@ -3,7 +3,7 @@ import type { HistoryPage, HistoryQuery } from "./store.ts";
 
 export interface PartyPeer {
 	id: string; label: string; description: string; cwd: string; kind: string; party: string | null;
-	self: boolean; state: string; delivery: string; wakeable: boolean;
+	self: boolean; state: string; delivery: string; wakeable: boolean; deliveryReason?: string;
 }
 export interface PartyUiOperations {
 	state(): { self: PartyPeer; pending: number; armed: boolean };
@@ -115,11 +115,12 @@ export class PartyPresentation {
 			fields: [
 				{ label: "Session", value: state.self.label },
 				{ label: "Delivery", value: state.armed ? state.self.delivery : "Paused until work resumes" },
+				...(state.self.deliveryReason ? [{ label: "Reason", value: state.self.deliveryReason }] : []),
 			], items: [],
 		};
 		const peerItem = (peer: PartyPeer) => ({
 			id: peer.id, title: `${peer.label}${peer.self ? " (you)" : ""}`, subtitle: `${peer.state} · ${peer.kind} · ${peer.party ?? "No party"}`,
-			body: `${peer.description}\n${peer.cwd}\n${peer.id}`.trim(), status: `Delivery ${peer.delivery}`,
+			body: `${peer.description}\n${peer.cwd}\n${peer.id}`.trim(), status: peer.deliveryReason ?? `Delivery ${peer.delivery}`,
 			actions: peer.self ? [] : [
 				action(`send:${peer.id}`, "Message", () => this.compose(peer.id)),
 				...(state.self.party && peer.party !== state.self.party ? [

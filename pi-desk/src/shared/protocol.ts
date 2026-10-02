@@ -41,7 +41,7 @@ export interface SessionSnapshot {
 	activity: "idle" | "running" | "waiting" | "error";
 	tools: { name: string; description: string; active: boolean }[];
 	extensions: { path: string; error?: string }[];
-	commands: { name: string; description: string }[];
+	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string }[];
 	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	context?: { tokens: number | null; contextWindow: number; percent: number | null };
@@ -122,10 +122,16 @@ export interface WorkerInit {
 	runtimeDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
+	/** Reopen saved native state without autonomous work until restoration finishes. */
+	checkpoint?: string;
 }
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
 	| { kind: "snapshot" }
+	| { kind: "context_inspect" }
+	| { kind: "context_read"; path: string }
+	| ({ kind: "context_update" } & import("./context.ts").ContextChange)
+	| { kind: "context_save"; path: string; version: string; text: string }
 	| ({ kind: "history"; source?: string } & HistoryPosition)
 	| { kind: "tree"; after?: string }
 	| { kind: "navigate"; entry: string; summarize?: boolean }
@@ -144,6 +150,7 @@ export type WorkerCommand =
 export type WorkerRequest =
 	| { type: "init"; id: string; options: WorkerInit }
 	| { type: "shutdown"; id: string }
+	| { type: "checkpoint"; id: string; action: import("./checkpoint.ts").CheckpointAction; checkpoint: string }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
 	| { type: "chat"; generation: string; message: ChatMessage; replaces?: string }

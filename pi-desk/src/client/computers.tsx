@@ -80,28 +80,28 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 	};
 	return <section className="computer-update" aria-label="Software update">
 		{updates.available && !updates.pending && <p role="status">Desk {updates.available} is available.</p>}
-		<button disabled={busy || !computer.connected || updates.checking || ["preparing", "waiting", "applying"].includes(updates.phase)}
-			onClick={() => run(updates.available || updates.phase === "failed" ? "/runtime/update" : "/runtime/check")}>
-			{updates.phase === "preparing" ? "Preparing update…" : updates.phase === "applying" ? "Applying update…"
-				: updates.phase === "waiting" ? "Update ready" : updates.checking ? "Checking for updates…"
-				: updates.phase === "failed" ? "Retry update" : updates.available ? "Update" : "Check for updates"}
+		<button disabled={busy || !computer.connected || updates.checking || ["preparing", "applying"].includes(updates.phase)}
+			onClick={() => {
+				const prepared = updates.pendingId, version = updates.available;
+				if (!prepared && !version) { run("/runtime/check"); return; }
+				void confirmation.request({ title: `Update ${computer.name}?`, context: `Desk ${prepared ? updates.pending : version}`, accept: "Update now",
+					body: <p>Checkpoint and restart Pi on this computer. Running tools are interrupted;
+						previously running agents continue once after reconnecting, and idle conversations stay idle.
+						Pending input must finish before its conversation can be checkpointed.</p>,
+				}).then(accepted => { if (accepted) run(prepared ? "/runtime/apply" : "/runtime/update-now", prepared ? { prepared } : { version }); });
+			}}>
+			{updates.phase === "preparing" ? "Preparing update…" : updates.phase === "applying" ? "Updating…"
+				: updates.checking ? "Checking for updates…" : updates.pendingId || updates.available ? "Update now" : "Check for updates"}
 		</button>
 		{updates.phase === "waiting"
 			? <p role="status">Waiting for {updates.activeSessions ?? 0} open Pi sessions to close.
 				{updates.pending && <> Version {updates.pending} is ready.</>}</p>
 			: updates.message && <p role={updates.phase === "failed" ? "alert" : "status"}>{updates.message}</p>}
-		{updates.phase === "waiting" && updates.pendingId && <button disabled={busy || !computer.connected} onClick={() => {
-			const prepared = updates.pendingId;
-			void confirmation.request({ title: "Stop sessions and update?", context: computer.name, accept: "Stop sessions and update",
-				body: <p>Stop all open Pi sessions on this computer and apply the prepared update.
-					Running tools and background work will be interrupted. Conversations stay in the workspace with Resume available after reconnecting.
-					Unfinished work will not be resent automatically.</p>,
-			}).then(accepted => { if (accepted) run("/runtime/apply", { prepared }); });
-		}}>Stop sessions and update</button>}
+
 		{updates.checkError && <p className="muted">Update check: {updates.checkError}</p>}
 		{updates.checkedAt && !updates.checking && <p className="muted">{!updates.available && !updates.checkError ? "Up to date · " : ""}
 			Checked {new Date(updates.checkedAt).toLocaleString()}</p>}
-		<p className="muted">Updates wait for open conversations unless you choose to stop them. This computer reconnects automatically.</p>
+		<p className="muted">Update now restarts this computer and restores its conversations. This browser reconnects automatically.</p>
 		{error && <p role="alert" className="error-text">{error}</p>}
 		{confirmation.dialog}
 	</section>;

@@ -74,6 +74,12 @@ export class PartyStore {
 				CREATE TABLE IF NOT EXISTS network_messages (message TEXT PRIMARY KEY, computer TEXT NOT NULL,
 					status TEXT NOT NULL, error TEXT);
 			`);
+			const policy = this.db.prepare("SELECT value FROM network_meta WHERE key=\'wake-policy\'").get() as { value: string } | undefined;
+			if (policy?.value !== "idle-starts") {
+				// Old delivery-batch counts cannot represent actual autonomous starts.
+				this.db.exec("UPDATE members SET wakes=0");
+				this.db.prepare("INSERT INTO network_meta VALUES (\'wake-policy\',\'idle-starts\') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+			}
 			const fields = ["session", "room", "epoch", "label", "owner", "heartbeat", "state", "wakes",
 				"agent_epoch", "cwd", "description", "kind", "delivery", "muted"];
 			this.db.exec(`CREATE VIEW IF NOT EXISTS party_agents AS SELECT ${fields.join(",")}, NULL AS computer FROM members
@@ -424,5 +430,9 @@ export class PartyStore {
 	}
 	reserveWake(session: string, owner: string): boolean {
 		return this.db.prepare("UPDATE members SET wakes=wakes+1 WHERE session=? AND owner=? AND wakes<8").run(session, owner).changes === 1;
+	}
+	/** The validated owning driver can account a cold child before its process lease changes. */
+	reserveChildWake(session: string, epoch: string): boolean {
+		return this.db.prepare("UPDATE members SET wakes=wakes+1 WHERE session=? AND epoch=? AND kind=\'child\' AND wakes<8").run(session, epoch).changes === 1;
 	}
 }

@@ -7,6 +7,8 @@ export interface PartyAgent {
 	kind: string;
 	party: string | null;
 	state: string;
+	delivery: string;
+	deliveryReason?: string;
 }
 export interface PartyDirectory {
 	agents: PartyAgent[];

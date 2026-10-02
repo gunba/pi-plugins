@@ -32,7 +32,7 @@ function asset(release: GitHubRelease, name: string): ReleaseAsset {
 	return { name, size: value.size, sha256: value.digest.slice(7) };
 }
 export interface DownloadOptions {
-	home: string; source: string; progress?: (message: string) => void; signal?: AbortSignal;
+	home: string; source: string; progress?: (message: string) => void; signal?: AbortSignal; expected?: string;
 }
 /** Published releases never invoke Pi's mutable-source package updater. */
 export async function downloadRuntime(options: DownloadOptions): Promise<RuntimeRelease> {
@@ -43,6 +43,7 @@ export async function downloadRuntime(options: DownloadOptions): Promise<Runtime
 	try {
 		options.progress?.("Checking published releases");
 		const { release, version } = await publishedRuntime(network);
+		if (options.expected && options.expected !== version) throw new Error("The published release changed. Check for updates before trying again.");
 		if (state.active) {
 			const active = readControllerRelease(home, state.active);
 			if ((compareVersions(active.desk, version) > 0 || compareVersions(active.desk, version) === 0 && active.artifact) && active.node === process.versions.modules) {

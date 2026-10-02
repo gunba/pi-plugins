@@ -17,6 +17,7 @@ import {
 	type PresentationScope,
 	type UiTranscriptSource,
 	type UiTranscriptHandle,
+	type UiMaintenance,
 } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot, PresentationSnapshot, ViewSnapshot } from "../shared/protocol.ts";
 import { FEEDBACK_ENTRY, type Feedback } from "../shared/feedback.ts";
@@ -44,6 +45,28 @@ export class DeskPresentation implements Presentation {
 	private batchChanged = false;
 	private nextRevision: () => number;
 	private scopes = new Map<string, { label: string; presentation: DeskPresentation; close: () => void }>();
+	suspended = false;
+	private maintenanceOwners = new Map<string, UiMaintenance>();
+	registerMaintenance(owner: UiMaintenance): UiTranscriptHandle {
+		if (this.retired) throw new Error("The presentation has closed.");
+		const id = randomUUID(); this.maintenanceOwners.set(id, owner);
+		return { id, close: () => { this.maintenanceOwners.delete(id); } };
+	}
+	inspectMaintenance(): void {
+		const covered = new Set<string>();
+		for (const owner of this.maintenanceOwners.values()) {
+			owner.inspect(); for (const scope of owner.scopes()) covered.add(scope);
+		}
+		if ([...this.scopes.keys()].some(id => !covered.has(id)))
+			throw new Error("A scoped session has no owning-driver maintenance checkpoint.");
+	}
+	async maintenance(id: string, action: "hold" | "restore" | "release"): Promise<void> {
+		for (const owner of this.maintenanceOwners.values()) await owner[action](id);
+	}
+	setSuspended(value: boolean): void {
+		this.suspended = value;
+		for (const { presentation } of this.scopes.values()) presentation.setSuspended(value);
+	}
 	private retired = false;
 	private uiRevision = 0;
 	private presentationRevision = 0;
@@ -85,8 +108,10 @@ export class DeskPresentation implements Presentation {
 		const revision = this.presentationRevision;
 		const current = () => active && revision === this.presentationRevision && !this.retired;
 		this.recordFeedback = feedback => { if (current()) pi.appendEntry(FEEDBACK_ENTRY, feedback); };
+		const host = this;
 		const lease: Presentation = {
 			version: 2,
+			get suspended() { return !current() || host.suspended; },
 			capabilities: this.capabilities,
 			batch: update => { if (current()) this.batch(update); },
 			...(this.command ? { runCommand: async (name: string, args?: string) => {
@@ -96,6 +121,10 @@ export class DeskPresentation implements Presentation {
 			publish: (id, view, actions) => { if (current()) this.publish(id, view, actions); },
 			open: (id, section) => { if (current()) this.open(id, section); },
 			request: (form, options) => current() ? this.request(form, options) : Promise.resolve(null),
+			registerMaintenance: owner => {
+				if (!current()) throw new Error("The maintenance owner belongs to a previous session.");
+				return this.registerMaintenance(owner);
+			},
 			createScope: (id, label) => {
 				if (!current()) throw new Error("The presentation belongs to a previous session.");
 				return this.createScope(id, label);
@@ -157,6 +186,7 @@ export class DeskPresentation implements Presentation {
 	reset(): void {
 		this.uiRevision++;
 		this.presentationRevision++;
+		this.maintenanceOwners.clear();
 		for (const source of [...this.transcripts]) source.close();
 		this.generation = randomUUID();
 		for (const scope of [...this.scopes.values()]) scope.close();
@@ -198,6 +228,7 @@ export class DeskPresentation implements Presentation {
 		this.scopes.get(id)?.close();
 		const child = new DeskPresentation(() => { if (!child.retired) this.update(); },
 			(view, section) => this.open(`scope:${id}/${view}`, section), this.nextRevision, this.registerSource);
+		child.setSuspended(this.suspended);
 		const ui = child.createUi(this.theme);
 		const close = () => {
 			if (child.retired) return;
@@ -208,6 +239,7 @@ export class DeskPresentation implements Presentation {
 		this.scopes.set(id, { label: plain(label), presentation: child, close });
 		return {
 			version: 2, capabilities: child.capabilities, ui,
+			get suspended() { return child.retired || child.suspended; },
 			batch: child.batch.bind(child),
 			publish: child.publish.bind(child), open: child.open.bind(child), request: child.request.bind(child),
 			createScope: child.createScope.bind(child), install: child.install.bind(child),
@@ -226,7 +258,8 @@ export class DeskPresentation implements Presentation {
 		return handle;
 	}
 
-	async act(id: string, revision: number, action: string, value: UiValue = null): Promise<{ accepted: true }> {
+	async act(id: string, revision: number, action: string, value: UiValue = null,
+		interrupt?: (operation: () => Promise<unknown>) => Promise<unknown>): Promise<{ accepted: true }> {
 		for (const [scope, child] of this.scopes) {
 			const prefix = `scope:${scope}/`;
 			if (id.startsWith(prefix)) return child.presentation.act(id.slice(prefix.length), revision, action, value);
@@ -248,7 +281,7 @@ export class DeskPresentation implements Presentation {
 		const current = () => !this.retired && operation.generation === this.generation && this.actions.get(id) === operation;
 		const work = Promise.resolve().then(() => {
 			if (!current()) throw new Error("The action belongs to a previous session.");
-			return handler(value);
+			return descriptor.interrupt === "resume" && interrupt ? interrupt(async () => handler(value)) : handler(value);
 		}).catch(error => {
 			if (!current()) throw error;
 			const message = plain(`${operation.label}: ${error instanceof Error ? error.message : String(error)}`).slice(0, 2000);
@@ -260,7 +293,7 @@ export class DeskPresentation implements Presentation {
 			this.actions.delete(id); this.update();
 		});
 		// Interactive actions remain asynchronous; inline text waits for actual admission.
-		if (descriptor.input === "message") await work;
+		if (descriptor.input === "message" || descriptor.interrupt === "resume") await work;
 		else void work.catch(() => {});
 		return { accepted: true };
 	}

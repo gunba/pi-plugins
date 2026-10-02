@@ -1,4 +1,4 @@
-import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
+import type { ChatBlock, ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import type { WorkspaceEvent as HostEvent, WorkspaceState as HostState } from "./workspace.ts";
 import { MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS } from "../shared/history.ts";
 import { isOpenSession } from "../shared/workspace.ts";
@@ -7,10 +7,13 @@ export interface CachedMessage extends ChatMessage { replaces?: string }
 export interface ClientState { host?: HostState; messages: Record<string, CachedMessage[]>; focused?: string[] }
 export const transcriptKey = (session: string, source?: string) => source ? `${session}/${source}` : session;
 const weights = new WeakMap<ChatMessage, number>();
+export function isEmptyText(block: ChatBlock): boolean {
+	return block.type === "text" && !block.text.trim() && !block.full && !block.truncated;
+}
 export function isActivityOnly(message: ChatMessage): boolean {
 	if (message.role !== "assistant") return false;
 	// Native block indexes can arrive out of order during streaming.
-	const blocks = message.blocks.filter(Boolean);
+	const blocks = message.blocks.filter(block => block && !isEmptyText(block));
 	return blocks.length > 0 && blocks.every(block => block.type === "toolCall" || block.type === "thinking");
 }
 export function messageWeight(message: ChatMessage): number {

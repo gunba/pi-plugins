@@ -116,7 +116,9 @@ or permission to create a root goal.
 - Each child has a versioned model-hidden descriptor in its Pi session.
 - Accepted new tasks are persisted and processed in append-order FIFO.
   A started message without a terminal delivery record is replayed after a crash,
-  which provides at-least-once rather than exactly-once execution.
+  which provides at-least-once rather than exactly-once execution. Maintenance
+  continuations are an exception: unconfirmed started turns require fresh work,
+  not automatic replay.
 - A settled child releases its SDK activation but retains its session and ID.
   The next direct-parent `followup_task` cold-resumes it from the descriptor.
 - Only an exact live direct parent handle can send a follow-up.
@@ -185,6 +187,15 @@ Pi branch navigation is blocked while the current session owns live children.
 Session replacement drains live SDK activations and reconstructs the durable
 catalog for the replacement root.
 
+Desk maintenance uses this same owning runtime. It checks native admission and
+accepted work before parking and stopping children, then saves their final native
+branch positions in parent metadata. Restored children stay held until release;
+only interrupted work receives a durable `Continue`. Idle children stay idle,
+and resumed foreground work reports its result to the parent as a notice.
+Pending opaque native context, queued tasks, opening/closing activations and
+failed saves require attention before an update; changed child history is never
+rewound.
+
 ### Pi Desk
 
 The Work view and `/subagents` expose new/fork, transcript preview, follow-up,
@@ -218,6 +229,8 @@ The child session contains model-hidden custom entries for:
 - `pi-subagents/inbox-v1` — accepted FIFO work;
 - `pi-subagents/delivery-v1` — started and finished delivery records;
 - `pi-subagents/control-v1` — durable explicit-interrupt parking and waking;
+- `pi-subagents/maintenance-v1` in the root — owning-driver holds, final child
+  cursor proofs and release state;
 - `pi-subagents/launch-v1` — branch-aware child ownership;
 - `pi-subagents/settlement-v1` — pending and acknowledged report and settlement
   outbox records;
