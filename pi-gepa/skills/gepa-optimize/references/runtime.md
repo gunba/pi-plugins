@@ -9,7 +9,7 @@
 
 Use Node 22.19+ and Python 3.10–3.14. Use the host's `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` packages with the native `ModelRuntime` API (Pi 1.0). Do not install another SDK copy for this skill.
 
-If normal ESM package resolution cannot find the host SDK, set `PI_GEPA_MODULE_ROOT` for this invocation to the directory containing its `node_modules`. Standalone Node scripts do not receive Pi's extension import mapping. `PI_CODING_AGENT_DIR` selects the existing native auth/models directory, defaulting to `~/.pi/agent`.
+If package resolution cannot find the host SDK, set `PI_GEPA_MODULE_ROOT` for this invocation to the directory containing its `node_modules` (the pinned runtime's `source/pi-desk` for managed Desk). The bridge resolves public ESM exports from that SDK, including its nested AI dependency. Standalone Node scripts do not receive Pi's extension import mapping. `PI_CODING_AGENT_DIR` selects the existing native auth/models directory, defaulting to `~/.pi/agent`.
 
 The bridge reads native credentials without modifying them, uses an in-memory model store and does not refresh catalogs. Tokens requiring refresh stop the run; let an authenticated Pi session refresh normally before retrying. It supports built-in chat providers and compatible endpoints in `models.json`, not providers or virtual models registered only by extensions. It sends isolated text completions, not autonomous agents. No skills, tools, instructions or session history are loaded. Codex uses Pi's native `openai-codex` provider and existing OAuth, not the Codex CLI or an `OPENAI_API_KEY` fallback.
 

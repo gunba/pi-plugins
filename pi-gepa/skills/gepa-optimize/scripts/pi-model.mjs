@@ -2,14 +2,16 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
+import { createJiti } from "jiti";
 
-// Standalone scripts do not inherit Pi's extension module mapping.
-const importPackage = (name) => import(process.env.PI_GEPA_MODULE_ROOT
-  ? pathToFileURL(join(resolve(process.env.PI_GEPA_MODULE_ROOT), "node_modules", name, "dist", "index.js")).href
-  : name);
-const { ModelRuntime, readStoredCredential } = await importPackage("@earendil-works/pi-coding-agent");
-const { InMemoryModelsStore } = await importPackage("@earendil-works/pi-ai");
+// Standalone scripts need an explicit host anchor and the SDK's own AI instance.
+const host = createJiti(process.env.PI_GEPA_MODULE_ROOT
+  ? join(resolve(process.env.PI_GEPA_MODULE_ROOT), "package.json")
+  : import.meta.url);
+const sdkEntry = host.esmResolve("@earendil-works/pi-coding-agent");
+const sdk = createJiti(sdkEntry);
+const { ModelRuntime, readStoredCredential } = await import(sdkEntry);
+const { InMemoryModelsStore } = await import(sdk.esmResolve("@earendil-works/pi-ai"));
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 const authPath = join(agentDir, "auth.json");
 
