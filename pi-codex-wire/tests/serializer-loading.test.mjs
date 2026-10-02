@@ -1,11 +1,41 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createRequire, findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+
+test("native serializers use the host SDK when extension peers are absent", t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-wire-host-sdk-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const source = join(directory, "source"), host = join(directory, "host");
+	const sdk = join(host, "node_modules", "@earendil-works", "pi-coding-agent");
+	const ai = join(sdk, "node_modules", "@earendil-works", "pi-ai");
+	mkdirSync(join(source, "node_modules"), { recursive: true });
+	mkdirSync(join(sdk, "node_modules", "@earendil-works"), { recursive: true });
+	writeFileSync(join(source, "package.json"), '{"type":"module"}');
+	writeFileSync(join(sdk, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./index.js" } } }));
+	writeFileSync(join(sdk, "index.js"), "export {};\n");
+	symlinkSync(resolve("node_modules/jiti"), join(source, "node_modules", "jiti"), "junction");
+	symlinkSync(resolve(findPackageJSON("@earendil-works/pi-ai", import.meta.url), ".."), ai, "junction");
+	for (const name of ["serializer.ts", "native-import.mjs"]) copyFileSync(new URL(`../extensions/${name}`, import.meta.url), join(source, name));
+	assert.equal(existsSync(join(source, "node_modules", "@earendil-works")), false);
+	const entry = join(host, "probe.mjs");
+	writeFileSync(entry, `import assert from "node:assert/strict";
+import * as serializer from "../source/serializer.ts";
+for (const value of Object.values(serializer)) assert.equal(typeof value, "function");
+console.log("host serializers loaded");`);
+	const launcher = join(directory, "launcher.mjs");
+	symlinkSync(entry, launcher, "file");
+	for (const executable of [entry, launcher]) {
+		const result = spawnSync(process.execPath, [executable], { encoding: "utf8", timeout: 30_000 });
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /host serializers loaded/);
+	}
+});
 
 test("Pi reload upgrades a cached native serializer and preserves compaction retry errors", async t => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-wire-serializer-reload-"));
