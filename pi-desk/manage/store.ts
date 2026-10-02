@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync, unlinkSync, realpathSync, lstatSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, realpathSync, lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { SourceSnapshot } from "./source.ts";
 import { within } from "./source.ts";
+import { publishFileSync } from "../src/host/file-publication.ts";
 
 export interface RuntimeRelease {
 	format: 1; id: string; source: string; digest: string; plugins: string; desk: string; engine: string;
@@ -25,7 +26,7 @@ export function atomicJson(file: string, data: unknown): void {
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	try {
 		writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-		renameSync(temporary, file);
+		publishFileSync(temporary, file);
 	} finally { try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
 }
 export function readState(home: string): RuntimeState | undefined {

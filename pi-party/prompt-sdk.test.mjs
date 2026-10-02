@@ -6,6 +6,7 @@ import { setImmediate as nextTick } from "node:timers/promises";
 import test from "node:test";
 import { AssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { PartyStore } from "./store.ts";
+import { NativeQueueGuard } from "../pi-work-coordination/native-queue.ts";
 const { default: party } = await import(process.env.PI_PARTY_TEST_EXTENSION || new URL("./index.ts", import.meta.url).href);
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
 	await import(process.env.PI_PARTY_TEST_SDK || "@earendil-works/pi-coding-agent");
@@ -16,7 +17,7 @@ const modelData = { id: "offline", name: "Offline party fixture", api: "openai-c
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
-async function fixture(t, extraExtensions = []) {
+async function fixture(t, extraExtensions = [], uiContext) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-prompt-"));
 	const priorDir = process.env.PI_CODING_AGENT_DIR, priorFetch = globalThis.fetch;
 	process.env.PI_CODING_AGENT_DIR = directory;
@@ -48,12 +49,12 @@ async function fixture(t, extraExtensions = []) {
 			contexts.push(context.messages);
 			const stream = new AssistantMessageEventStream();
 			let done = false;
-			const finish = (aborted = false) => {
+			const finish = (aborted = false, content) => {
 				if (done) return;
 				done = true;
-				const message = { role: "assistant", content: [{ type: "text", text: aborted ? "" : "Fixture reply." }],
-					api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now(), stopReason: aborted ? "aborted" : "stop" };
-				stream.push(aborted ? { type: "error", reason: "aborted", error: message } : { type: "done", reason: "stop", message });
+				const message = { role: "assistant", content: content ?? [{ type: "text", text: aborted ? "" : "Fixture reply." }],
+					api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now(), stopReason: aborted ? "aborted" : content?.some(block => block.type === "toolCall") ? "toolUse" : "stop" };
+				stream.push(aborted ? { type: "error", reason: "aborted", error: message } : { type: "done", reason: message.stopReason, message });
 			};
 			options.signal?.addEventListener("abort", () => finish(true), { once: true });
 			requests.push({ finish, signal: options.signal });
@@ -68,11 +69,38 @@ async function fixture(t, extraExtensions = []) {
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime,
 		model: runtime.getModel("party-fixture", "offline"), resourceLoader: loader, sessionManager: manager, settingsManager: settings }));
-	await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
+	new NativeQueueGuard(session, () => false);
+	await session.bindExtensions({ mode: "rpc", uiContext, onError: error => errors.push(error) });
 	db = new PartyStore(join(directory, "party"));
 	db.register("sender", "sender-process", "Peer");
-	return { session, db, contexts, requests, errors, started: started.promise };
+	return { session, runtime, db, contexts, requests, errors, started: started.promise };
 }
+
+test("human and peer messages remain queued while party creation awaits user approval", { timeout: 15000 }, async t => {
+	const entered = Promise.withResolvers(), approval = Promise.withResolvers();
+	t.after(() => approval.resolve(false));
+	const f = await fixture(t, [], { confirm: async () => { entered.resolve(); return approval.promise; } });
+	await f.session.agent.state.tools.find(tool => tool.name === "party_join").execute("join", { party: "approval-room" });
+	const running = f.session.prompt("REVIEW TASK");
+	await f.started;
+	f.requests[0].finish(false, [{ type: "toolCall", id: "create", name: "party_create", arguments: {
+		cwd: "/fixture", label: "Reviewer", task: "Inspect the separate implementation.",
+	} }]);
+	await entered.promise;
+	await f.session.prompt("HUMAN COMMENT WHILE WAITING", { streamingBehavior: "steer" });
+	f.db.send("sender", "sender-process", "recipient", "PEER COMMENT WHILE WAITING", true);
+	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("pulse", { enabled: true });
+	await nextTick();
+	assert.equal(f.requests.length, 1, "an approval wait cannot start another model run");
+	approval.resolve(false);
+	await running;
+	assert.equal(f.requests.length, 2);
+	assert.match(JSON.stringify(f.contexts[1]), /HUMAN COMMENT WHILE WAITING/);
+	assert.match(JSON.stringify(f.contexts[1]), /PEER COMMENT WHILE WAITING/);
+	const result = f.contexts[1].find(message => message.role === "toolResult" && message.toolCallId === "create");
+	assert.deepEqual(JSON.parse(result.content[0].text), { approved: false });
+	assert.deepEqual(f.errors, []);
+});
 
 test("queued party wakes join a human prompt without launching a second low-level run", { timeout: 15000 }, async t => {
 	const f = await fixture(t);
@@ -117,6 +145,32 @@ test("party arrivals during an asynchronous prompt hook are attached to that pro
 	assert.equal(f.requests.length, 1);
 	assert.match(JSON.stringify(f.contexts[0]), /HUMAN TASK/);
 	assert.match(JSON.stringify(f.contexts[0]), /LATE PEER FINDING/);
+	await f.session.abort(); await running;
+	assert.deepEqual(f.errors, []);
+});
+
+test("party wakes cannot overtake native authentication preflight", { timeout: 15000 }, async t => {
+	const entered = Promise.withResolvers(), gate = Promise.withResolvers();
+	t.after(() => gate.resolve());
+	const f = await fixture(t), check = f.runtime.checkAuth.bind(f.runtime);
+	let first = true, promptError;
+	f.runtime.hasConfiguredAuth = () => false;
+	f.runtime.checkAuth = async (...args) => {
+		if (first) { first = false; entered.resolve(); await gate.promise; }
+		return check(...args);
+	};
+	const running = f.session.prompt("HUMAN TASK", { streamingBehavior: "steer" }).catch(error => { promptError = error; });
+	await entered.promise;
+	f.db.send("sender", "sender-process", "recipient", "AUTH-PREFLIGHT PEER FINDING", true);
+	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("resume", { enabled: true });
+	await nextTick();
+	const requestsBeforeAdmission = f.requests.length;
+	gate.resolve(); await f.started; await nextTick();
+	assert.equal(promptError, undefined, `human input collided with a party wake: ${promptError}`);
+	assert.equal(requestsBeforeAdmission, 0, "automatic party wake must wait for the human prompt's native admission");
+	assert.equal(f.requests.length, 1);
+	assert.match(JSON.stringify(f.contexts[0]), /HUMAN TASK/);
+	assert.match(JSON.stringify(f.contexts[0]), /AUTH-PREFLIGHT PEER FINDING/);
 	await f.session.abort(); await running;
 	assert.deepEqual(f.errors, []);
 });

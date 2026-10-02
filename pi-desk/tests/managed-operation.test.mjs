@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import childProcess from "node:child_process";
+import timers from "node:timers/promises";
+import { publishDirectory } from "../src/host/file-publication.ts";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +70,56 @@ for (const stop of [false, true]) test(stop
 		assert.equal(selected.pending, undefined);
 		assert.equal(selected.autoApply, undefined);
 	} finally { host.sessions.clear(); await host.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Windows metadata publication recovers transient EPERM without replacing the old record early", t => {
+	const root = fs.mkdtempSync(join(tmpdir(), "desk-publish-")), file = join(root, "operation.json");
+	atomicJson(file, { value: "before" });
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "win32" });
+	const rename = fs.renameSync; let calls = 0;
+	t.mock.method(Atomics, "wait", () => "timed-out");
+	t.mock.method(fs, "renameSync", (...args) => {
+		calls++;
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { value: "before" });
+		if (calls < 3) throw Object.assign(new Error("fixture file is temporarily locked"), { code: "EPERM" });
+		return rename(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { Object.defineProperty(process, "platform", platform); t.mock.restoreAll(); syncBuiltinESMExports(); fs.rmSync(root, { recursive: true, force: true }); });
+	atomicJson(file, { value: "after" });
+	assert.equal(calls, 3);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { value: "after" });
+});
+
+test("Windows runtime publication retries a verified tree, bounds lock failures and rejects other errors", async t => {
+	const root = fs.mkdtempSync(join(tmpdir(), "desk-directory-publish-")), stage = join(root, "stage"), ready = join(root, "ready");
+	fs.mkdirSync(stage); fs.writeFileSync(join(stage, "payload"), "verified");
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "win32" });
+	t.after(() => { Object.defineProperty(process, "platform", platform); t.mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true }); });
+	const rename = fs.promises.rename; let calls = 0, failure;
+	const waits = []; t.mock.method(timers, "setTimeout", async ms => { waits.push(ms); });
+	t.mock.method(fs.promises, "rename", async (...args) => {
+		calls++;
+		assert.equal(fs.readFileSync(join(stage, "payload"), "utf8"), "verified");
+		if (failure) throw failure;
+		if (calls < 3) throw Object.assign(new Error("fixture temporary lock"), { code: "EBUSY" });
+		return rename(...args);
+	});
+	const progress = [];
+	await publishDirectory(stage, ready, text => progress.push(text));
+	assert.equal(calls, 3); assert.deepEqual(waits, [250, 500]); assert.equal(progress.length, 2);
+	assert.equal(fs.readFileSync(join(ready, "payload"), "utf8"), "verified");
+	await rename(ready, stage);
+	for (const [platform, code, expectedCalls] of [["win32", "EPERM", 5], ["win32", "EACCES", 1], ["linux", "EPERM", 1]]) {
+		Object.defineProperty(process, "platform", { value: platform }); calls = 0; waits.length = 0;
+		failure = Object.assign(new Error("fixture publication refused"), { code });
+		await assert.rejects(publishDirectory(stage, ready), error => error === failure);
+		assert.equal(calls, expectedCalls); assert.equal(waits.length, expectedCalls - 1);
+		assert.equal(fs.readFileSync(join(stage, "payload"), "utf8"), "verified");
+		assert.equal(fs.existsSync(ready), false);
+	}
 });
 
 test("status re-reads completion after acquiring an operation lease instead of reporting a false interruption", t => {

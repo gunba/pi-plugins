@@ -1,0 +1,4 @@
+interface:
+  display_name: "GEPA Optimisation"
+  short_description: "Optimise prompts with measured held-out results"
+  default_prompt: "Use $gepa-optimize to improve this prompt against my evaluator and report held-out results."

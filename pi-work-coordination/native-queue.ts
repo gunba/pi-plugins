@@ -1,12 +1,22 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
+// Desk's bundle and Pi's extension loader can instantiate this module separately.
+const ADMISSION_GUARDS = Symbol.for("pi-work-coordination/native-admission-guards");
+const shared = globalThis as typeof globalThis & { [ADMISSION_GUARDS]?: WeakMap<object, { readonly admittingPrompt: boolean }> };
+const admissionGuards = shared[ADMISSION_GUARDS] ??= new WeakMap<object, { readonly admittingPrompt: boolean }>();
+
+/** Native input preparation can be asynchronous while isIdle() is still true. */
+export const nativePromptPreparing = (sessionManager: object): boolean => admissionGuards.get(sessionManager)?.admittingPrompt ?? false;
+
 /** Observe public admission; do not inspect, export or rewrite native queues. */
 export class NativeQueueGuard {
 	private nextTurn = 0;
 	private preparing = 0;
 	get pending(): boolean { return this.nextTurn > 0 || this.preparing > 0; }
+	get admittingPrompt(): boolean { return this.preparing > 0; }
 
 	constructor(session: AgentSession, suspended: () => boolean) {
+		admissionGuards.set(session.sessionManager, this);
 		const prompt = session.prompt.bind(session), custom = session.sendCustomMessage.bind(session);
 		session.prompt = async (text, options) => {
 			if (suspended()) throw new Error("This conversation is held for an update.");

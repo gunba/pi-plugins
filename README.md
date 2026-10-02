@@ -79,6 +79,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-party`](pi-party/README.md) — local agent discovery, self-managed parties,
   invitations and direct or group messaging, with message previews and a live
   `/party chat` conversation viewer.
+- [`pi-gepa`](pi-gepa/skills/gepa-optimize/SKILL.md) — bounded GEPA optimisation
+  of prompts and other text artifacts, with task evaluators, held-out checks and
+  native Pi model authentication. Python experiments run in a private environment.
 - [`pi-browser`](pi-browser/README.md) — a focused browser skill for
   `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
   observations limit context, and full text uses the output archive.

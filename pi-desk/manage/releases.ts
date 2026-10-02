@@ -83,7 +83,7 @@ export async function downloadRuntime(options: DownloadOptions): Promise<Runtime
 		const code = await download(manifest.code, temporary);
 		options.signal?.throwIfAborted();
 		options.progress?.("Preparing the verified runtime");
-		return await installArtifact(home, manifest, code, dependencyFile);
+		return await installArtifact(home, manifest, code, dependencyFile, options.progress);
 	} finally {
 		network.close();
 		if (temporary) await rm(temporary, { recursive: true, force: true });

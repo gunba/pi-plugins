@@ -77,6 +77,30 @@ test("direct messages deliver once without broadcasting to unrelated agents", as
 	assert.equal(b.sent.length, 1);
 });
 
+test("idle peer delivery resumes from persisted state when a network wake signal is missed", async t => {
+	environment(t);
+	const a = harness(t, "sender"), b = harness(t, "recipient");
+	await a.emit("session_start"); await b.emit("session_start");
+	const db = new PartyStore(join(process.env.PI_CODING_AGENT_DIR, "party"));
+	try {
+		// The host resumes delivery in SQLite; its filesystem notification is lost.
+		const member = db.member("recipient");
+		db.resumeDelivery("recipient", member.epoch);
+		await a.call("party_send", { to: "recipient", message: "Continue the approved check.", wake: true });
+		assert.equal(db.member("recipient").delivery, 1);
+		t.mock.timers.tick(10_000);
+		assert.equal(b.sent.length, 1, "ready idle delivery must recover without human input or another filesystem signal");
+		assert.equal(b.sent[0].options.triggerTurn, true);
+		await b.emit("context", { messages: b.branch.map(x => x.message) });
+		t.mock.timers.tick(20_000);
+		assert.equal(b.sent.length, 1, "polling cannot replay an admitted message");
+		await b.call("party_delivery", { enabled: false });
+		await a.call("party_send", { to: "recipient", message: "Keep this paused.", wake: true });
+		t.mock.timers.tick(20_000);
+		assert.equal(b.sent.length, 1, "the persisted explicit pause still holds");
+	} finally { db.close(); }
+});
+
 test("reload reconnects membership without waking inference until work resumes", async t => {
 	environment(t);
 	const a = harness(t, "first"), old = harness(t, "second");

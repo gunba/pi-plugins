@@ -1,8 +1,9 @@
-import { closeSync, existsSync, openSync, readSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SessionView } from "../shared/protocol.ts";
 import { isOpenSession } from "../shared/workspace.ts";
+import { publishFileSync } from "./file-publication.ts";
 
 export function parseSessionHeader(text: string): { cwd: string; id: string } {
 	const header = JSON.parse(text.split("\n", 1)[0]!);
@@ -48,7 +49,12 @@ export class SessionCatalog {
 			controls: view.controls,
 		}));
 		const temporary = `${this.file}.${randomUUID()}.tmp`;
-		writeFileSync(temporary, JSON.stringify({ version: 1, sessions: records }), { mode: 0o600 });
-		renameSync(temporary, this.file);
+		try {
+			writeFileSync(temporary, JSON.stringify({ version: 1, sessions: records }), { flag: "wx", mode: 0o600 });
+			publishFileSync(temporary, this.file);
+		} finally {
+			try { unlinkSync(temporary); }
+			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("Catalog temporary-file cleanup failed:", error); }
+		}
 	}
 }

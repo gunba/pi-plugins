@@ -5,6 +5,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { Type } from "typebox";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../pi-work-ui/index.ts";
 import { isManagedChild } from "../pi-work-coordination/index.ts";
+import { nativePromptPreparing } from "../pi-work-coordination/native-queue.ts";
 import { LEASE_MS, PartyStore, type Member } from "./store.ts";
 import { PartyChat } from "./chat.ts";
 import { renderPartyCall, renderPartyResult, renderPartyNotice } from "./render.ts";
@@ -112,9 +113,17 @@ export default function party(pi: ExtensionAPI): void {
 			detail, tone: pending || wakeHeld ? "warning" : "accent", manage: { label: "Chat", run: context => handleParty("chat", context) } });
 	};
 	const pump = (starting = preparingPrompt) => {
-		if (stopped || !armed || pumping || !ctx || !store || member()?.owner !== owner || getPresentation(pi)?.suspended) return;
+		const self = member();
+		if (stopped || pumping || !ctx || !store || self?.owner !== owner || getPresentation(pi)?.suspended) return;
+		// Filesystem notifications can be lost. The periodic pump must reconcile
+		// the same persisted delivery state used by the roster and host controls.
+		if (!child) { paused = !!self.muted; armed = !!self.delivery && !paused; }
+		if (!armed) return;
 		// A managed child's driver owns its turns and usage accounting.
 		if (child && ctx.isIdle() && !starting) return;
+		// Do not start a competing turn during native auth/input preflight.
+		// before_agent_start attaches these messages to the human turn instead.
+		if (!starting && ctx.isIdle() && nativePromptPreparing(ctx.sessionManager)) return;
 		pumping = true;
 		try {
 			syncFlight();
@@ -158,10 +167,6 @@ export default function party(pi: ExtensionAPI): void {
 		stopTransport();
 		watcher = watch(directory, (_event, filename) => {
 			if (["changed", "network-changed", "operations-changed"].includes(String(filename))) safely(() => {
-				if (String(filename) === "network-changed" && !child) {
-					const self = member();
-					if (self?.owner === owner) { paused = !!self.muted; armed = !!self.delivery && !paused; }
-				}
 				pump(); publish();
 			});
 		});

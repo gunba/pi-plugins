@@ -23,7 +23,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	feedback = noFeedback, dismissed = noDismissals }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
-	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[]) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
+	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[], traceContinues?: boolean) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
 	feedback?: Feedback[]; dismissed?: string[];
 }) {
 	const storageKey = transcriptKey(session, source);
@@ -301,7 +301,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 							}
 						}}
 						style={{ position: "absolute", width: "100%", top: 0, left: 0, transform: `translateY(${row.start}px)` }}>
-						{message ? renderMessage(message, rows[row.index]!.results, rows[row.index]!.thinking) : <>
+						{message ? renderMessage(message, rows[row.index]!.results, rows[row.index]!.thinking, rows[row.index]!.traceContinues) : <>
 							{!visible.length && !loading && (empty ?? <p className="muted">No messages yet.</p>)}
 							{footer}<div style={{ height: 28 }} />
 						</>}

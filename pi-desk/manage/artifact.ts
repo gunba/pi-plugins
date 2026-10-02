@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import * as tar from "tar";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
+import { publishDirectory, retryablePublicationError } from "../src/host/file-publication.ts";
 import { within } from "./source.ts";
 import { atomicJson, readRelease, readState, runtimeIdentity, validId, versionDirectory, type RuntimeRelease } from "./store.ts";
 
@@ -97,7 +98,7 @@ export async function packRuntime(home: string, id: string, output: string, comm
 }
 
 /** No npm, Git cleanup or installed-source mutation occurs while preparing a release. */
-export async function installArtifact(home: string, input: RuntimeArtifact, code: string, dependencies: string): Promise<RuntimeRelease> {
+export async function installArtifact(home: string, input: RuntimeArtifact, code: string, dependencies: string, progress?: (message: string) => void): Promise<RuntimeRelease> {
 	const artifact = runtimeArtifact(input);
 	await mkdir(home, { recursive: true });
 	home = await realpath(home);
@@ -157,7 +158,15 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 		}
 		await mkdir(dirname(destination), { recursive: true });
 		// Moving first also makes Windows junctions valid during the isolated smoke check.
-		await rename(temporary, destination); temporary = undefined;
+		progress?.("Publishing the verified runtime");
+		try { await publishDirectory(temporary, destination, progress); }
+		catch (error) {
+			if (retryablePublicationError(error)) throw Object.assign(new Error(
+				"Windows blocked runtime publication after bounded retries. The active runtime was not changed. Retry preparation using the verified download cache; persistent failures need a storage/lock diagnosis. " + String(error),
+				{ cause: error }), { code: (error as NodeJS.ErrnoException).code });
+			throw error;
+		}
+		temporary = undefined;
 		try {
 			const app = join(destination, "source", "pi-desk"), options = { cwd: app, windowsHide: true, timeout: 60_000 };
 			await execute(process.execPath, [join(app, "dist", "host", "cli.js"), "--help"], options);

@@ -9,9 +9,30 @@ import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 
 const initial = { provider: "fixture", id: "initial" }, writing = { provider: "fixture", id: "writing" };
 
+test("native extension package warnings reach Desk presentation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "desk-loader-warning-")), agent = join(root, "agent"), pkg = join(root, "fixture");
+	mkdirSync(agent); mkdirSync(pkg);
+	writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "warning-fixture", type: "module",
+		pi: { extensions: ["./index.ts"] }, dependencies: { typebox: "1.3.27" } }));
+	writeFileSync(join(pkg, "index.ts"), "export default function () {}\n");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [pkg], defaultProjectTrust: "always" }));
+	const old = process.env.PI_CODING_AGENT_DIR, engine = new DeskEngine(() => {});
+	process.env.PI_CODING_AGENT_DIR = agent;
+	try {
+		await engine.start({ cwd: root, agentDir: agent, ephemeral: true });
+		assert.ok(engine.runtime.services.resourceLoader.getExtensions().warnings.some(item => /Host-provided.*typebox/.test(item.warning)));
+		assert.ok(engine.presentation.snapshot().notifications.some(item => item.level === "warning" && /Host-provided.*typebox/.test(item.text)),
+			"native loader warning must not be lost between resource discovery and the Desk UI");
+	} finally {
+		await engine.close();
+		if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("next-turn custom context remains pending through handled commands and queued steering", async () => {
 	let result = "handled", suspended = false;
-	const session = { sendCustomMessage: async () => {}, prompt: async (_text, options) => options.preflightResult(result) };
+	const session = { sessionManager: {}, sendCustomMessage: async () => {}, prompt: async (_text, options) => options.preflightResult(result) };
 	const guard = new NativeQueueGuard(session, () => suspended);
 	await session.sendCustomMessage({ customType: "aside", content: "Context", display: true }, { deliverAs: "nextTurn" });
 	assert.equal(guard.pending, true);

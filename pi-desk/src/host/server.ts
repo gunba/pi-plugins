@@ -57,6 +57,7 @@ export class DeskHost {
 	private options: Options;
 	private access: AccessStore;
 	private catalog?: SessionCatalog;
+	private storageError?: string;
 	private saved?: SavedSessionIndex;
 	private folders?: Folders;
 	private inputs?: InputLedger;
@@ -269,7 +270,7 @@ export class DeskHost {
 	state(): HostState {
 		return { release: RELEASE, name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
-			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates };
+			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError };
 	}
 
 	private refreshParties(): void {
@@ -415,7 +416,7 @@ export class DeskHost {
 					inputs: this.inputs?.pending(key) };
 			}
 			this.emit({ type: "session", session: managed.view });
-			this.persist(true);
+			this.persistEvent(true);
 			if (message.control.kind === "close" && message.control.state === "completed") this.refreshUpdates();
 			if (message.control.state !== "running") this.drainInputs(managed);
 			return;
@@ -498,8 +499,22 @@ export class DeskHost {
 	private persist(immediate = false): void {
 		if (immediate) {
 			clearTimeout(this.catalogTimer); this.catalogTimer = undefined;
-			this.catalog?.write([...this.sessions.values()].map(item => item.view));
-		} else if (!this.catalogTimer) this.catalogTimer = setTimeout(() => this.persist(true), 500);
+			try { this.catalog?.write([...this.sessions.values()].map(item => item.view)); }
+			catch (error) {
+				const message = "Conversation references were not saved. Native histories remain intact; leave Desk running and check storage before restarting. " + (error instanceof Error ? error.message : String(error));
+				if (this.storageError !== message) { this.storageError = message; this.emit({ type: "state", state: this.state() }); }
+				throw error;
+			}
+			if (this.storageError) { this.storageError = undefined; this.emit({ type: "state", state: this.state() }); }
+		} else if (!this.catalogTimer) this.catalogTimer = setTimeout(() => {
+			try { this.persist(true); }
+			catch (error) { console.error("Background catalog publication failed:", error); }
+		}, 500);
+	}
+
+	private persistEvent(immediate = false): void {
+		try { this.persist(immediate); }
+		catch (error) { console.error("Catalog publication failed:", error); }
 	}
 
 	private rememberPartyDriver(view: SessionView): string | undefined {
@@ -716,15 +731,28 @@ export class DeskHost {
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
-		const worker = new SessionWorker(options, message => {
-			if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
-		});
 		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
-			snapshot: undefined, ui: undefined, historyReady: false, activation: randomUUID(), inputs: this.inputs!.pending(key) }, worker };
+			snapshot: undefined, ui: undefined, historyReady: false, activation: randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
 		this.emit({ type: "session", session: managed.view });
-		this.persist(true);
+		try { this.persist(true); }
+		catch (error) {
+			if (existing) this.sessions.set(key, existing); else this.sessions.delete(key);
+			this.emit({ type: "state", state: this.state() });
+			throw error;
+		}
+		let worker: SessionWorker;
+		try {
+			worker = new SessionWorker(options, message => {
+				if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
+			});
+		} catch (error) {
+			if (existing) this.sessions.set(key, existing); else this.sessions.delete(key);
+			this.persistEvent(true); this.emit({ type: "state", state: this.state() });
+			throw error;
+		}
+		managed.worker = worker;
 		this.refreshUpdates();
 		void worker.start(options).then(snapshot => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
@@ -734,7 +762,7 @@ export class DeskHost {
 			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
-			this.persist(true);
+			this.persistEvent(true);
 			this.refreshParties(); this.drainInputs(managed);
 		}).catch(error => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
@@ -743,7 +771,7 @@ export class DeskHost {
 			managed.view = { ...managed.view, state: "failed", historyReady: false, error: error instanceof Error ? error.message : String(error),
 				inputs: this.inputs!.pending(key) };
 			this.emit({ type: "session", session: managed.view });
-			this.persist(true);
+			this.persistEvent(true);
 			void worker.close().catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.refreshUpdates(); });
 		});
 		return key;
@@ -919,6 +947,7 @@ export class DeskHost {
 			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
+			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
 			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
 			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
 				const party = string(data.party, 48);

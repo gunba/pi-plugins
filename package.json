@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -43,13 +43,15 @@
       "./pi-output-budget/extensions/index.ts"
     ],
     "skills": [
-      "./pi-browser/skills/browse"
+      "./pi-browser/skills/browse",
+      "./pi-gepa/skills/gepa-optimize"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.99.2",
-    "@earendil-works/pi-coding-agent": ">=0.99.2",
-    "@earendil-works/pi-tui": ">=0.99.2"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
@@ -60,6 +62,9 @@
     },
     "@earendil-works/pi-tui": {
       "optional": true
+    },
+    "typebox": {
+      "optional": true
     }
   },
   "license": "MIT",
@@ -69,13 +74,13 @@
     "mdast-util-from-markdown": "^2.0.2",
     "proper-lockfile": "4.1.2",
     "proxy-agent": "6.5.0",
-    "tar": "7.5.22",
-    "typebox": "^1.1.38"
+    "tar": "7.5.22"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.99.2",
-    "@earendil-works/pi-coding-agent": "0.99.2",
-    "@earendil-works/pi-tui": "0.99.2",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
+    "typebox": "1.3.27",
     "@types/node": "22.19.19",
     "@types/proper-lockfile": "4.1.4",
     "typescript": "5.9.3"

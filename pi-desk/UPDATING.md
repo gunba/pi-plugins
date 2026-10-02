@@ -139,7 +139,7 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Version 0.5.9 uses API 5 and first-party presentation version 2. Deploy matching
+Versions 0.5.9 and 0.5.10 use API 5 and first-party presentation version 2. Deploy matching
 website, account and broker artifacts before treating the cutover as complete.
 Older computers may temporarily show **Update required**. A version mismatch
 is not a reason to delete sessions, credentials or drafts.
@@ -158,6 +158,17 @@ the new Update now request to an older controller. Once API 5 is active, the
 website can checkpoint running work during subsequent updates.
 
 ## Recovery and rollback
+
+On Windows, metadata replacement and verified runtime publication retry bounded
+access/busy failures without deleting the destination or changing permissions.
+A persistent preparation failure leaves the active runtime unchanged; use its
+verified download cache when retrying preparation, rather than reinstalling the
+service. Check status before retrying an unconfirmed activation.
+
+A failed background catalog save does not stop the host. The machine shows
+**Session save delayed** and offers **Retry saving**. Native histories are
+separate from this catalog. Leave Desk running until its references are saved;
+explicit update checkpoints still refuse an unsuccessful durability barrier.
 
 The stable launcher is `<Pi agent directory>/desk/runtime/launch.mjs`. It uses
 the saved installation defaults and accepts the normal lifecycle commands:

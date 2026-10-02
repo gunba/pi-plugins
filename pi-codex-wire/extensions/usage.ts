@@ -404,11 +404,15 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
   if (!allowance) data.items = [{ id: "no-snapshot", title: "No current Codex allowance snapshot",
     body: "Allowance arrives passively with Codex responses. No polling or extra provider request is made." }];
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
-    badges: state.enabled && currentUsageSource(model) === "codex" ? [allowance?.primary, allowance?.secondary].flatMap(window =>
-      window?.usedPercent === undefined ? [] : [{
-        label: `${window.label} left`, value: `${100 - window.usedPercent}%`,
-        description: `Reported Codex allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}`,
-      }]) : [],
+    badges: state.enabled && currentUsageSource(model) === "codex" ? [allowance?.primary, allowance?.secondary].flatMap(window => {
+      if (!window || window.usedPercent === undefined) return [];
+      const reset = formatDurationUntil(window.resetAtMs);
+      return [{
+        label: window.label === "7d" ? "Weekly" : window.label,
+        value: `${100 - window.usedPercent}% left${reset ? ` · resets in ${reset}` : ""}`,
+        description: `Reported Codex allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}${window.resetAtMs ? ` · resets ${new Date(window.resetAtMs).toLocaleString()}` : " · reset time unknown"}`,
+      }];
+    }) : [],
     actions: [{ id: "refresh", label: "Refresh view" }, { id: "status", label: state.enabled ? "Hide status" : "Show status" }] }, {
     refresh: () => updateUsageStatus(ctx, state),
     status: () => { state.enabled = !state.enabled; updateUsageStatus(ctx, state); },

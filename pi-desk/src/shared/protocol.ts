@@ -72,7 +72,7 @@ export interface ChatMessage {
 	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number }[] };
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
-	notice?: { kind: "party" | "process" | "work" | "agent"; title: string };
+	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule"; title: string; queuedAt?: number; dueAt?: number };
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }
@@ -107,7 +107,7 @@ export interface SessionView {
 	activation?: string;
 	inputs?: InputStatus[];
 }
-export interface HostState { release: ReleaseInfo; name: string; platform?: string; cwd: string; sessions: SessionView[];
+export interface HostState { release: ReleaseInfo; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }

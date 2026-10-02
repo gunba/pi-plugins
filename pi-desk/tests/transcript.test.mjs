@@ -76,6 +76,22 @@ test("a file tool call and its result form one display row without a separate so
 	assert.equal(result.id, "entry:result");
 });
 
+test("trace spacing crosses mixed assistant rows without joining other speakers or prose", () => {
+	const transcript = new Transcript();
+	const message = (id, role, content) => transcript.message({ role, content }, id);
+	const thought = { type: "thinking", thinking: "Inspect the next step." };
+	const mixed = message("mixed", "assistant", [{ type: "text", text: "Here is the approach." }, thought,
+		{ type: "toolCall", id: "write", name: "write", arguments: { path: "source.ts" } }]);
+	const continuation = message("next", "assistant", [thought]);
+	const human = message("human", "user", "Continue");
+	const answer = message("answer", "assistant", [{ type: "text", text: "Done" }]);
+	const rows = transcriptRows([mixed, continuation, human, answer, continuation]);
+	assert.equal(rows[0].traceContinues, true);
+	assert.equal(rows[1].traceContinues, undefined);
+	assert.equal(rows[3].traceContinues, undefined);
+	assert.equal(rows[0].message, mixed);
+});
+
 test("adjacent thinking messages share a display group without merging native identities", () => {
 	const transcript = new Transcript();
 	const thought = (id, texts) => transcript.message({ role: "assistant", content: texts.map(thinking => ({ type: "thinking", thinking })) }, id);
@@ -90,6 +106,20 @@ test("adjacent thinking messages share a display group without merging native id
 	assert.equal(second.blocks.length, 1);
 	assert.equal(rows[1].thinking, undefined);
 	assert.deepEqual(rows[2].thinking, [third]);
+});
+
+test("scheduled deliveries display their payload and times without changing native context", () => {
+	const transcript = new Transcript(), manager = SessionManager.inMemory("/tmp");
+	const content = "Automated delivery instructions\n\n<scheduled-message>\nReview the result.\n</scheduled-message>";
+	const details = { id: "timer", createdAt: 1000, dueAt: 601000, message: "Review the result.", delivery: "steer" };
+	manager.appendCustomMessageEntry("pi-scheduler-scheduled-message", content, true, details);
+	const saved = transcript.history(manager.getBranch()).messages[0];
+	const live = transcript.message({ role: "custom", customType: "pi-scheduler-scheduled-message", content, details });
+	assert.deepEqual(saved.notice, { kind: "schedule", title: "Scheduled message", queuedAt: 1000, dueAt: 601000 });
+	assert.deepEqual(saved.notice, live.notice);
+	assert.deepEqual(saved.blocks, [{ type: "text", text: details.message, truncated: false }]);
+	assert.equal(manager.buildSessionContext().messages[0].content, content);
+	assert.equal(transcript.message({ role: "user", content, details }).notice, undefined);
 });
 
 test("saved and live party notices retain their type and sender without duplicating the native heading", () => {

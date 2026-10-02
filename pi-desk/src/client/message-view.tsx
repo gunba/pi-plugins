@@ -124,9 +124,9 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 		})}
 	</div>;
 }
-export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, dismissFeedback }: {
+export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues, dismissFeedback }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; thinking?: ChatMessage[];
-	dismissFeedback?: (feedback: Feedback) => void;
+	traceContinues?: boolean; dismissFeedback?: (feedback: Feedback) => void;
 }) {
 	const time = timeLabel(message.timestamp), round = planRoundNotice(message);
 	if (message.feedback) return <article className={`message message-feedback feedback-${message.feedback.level}`} role="status">
@@ -140,16 +140,20 @@ export const MessageView = memo(function MessageView({ message, sessionKey, sour
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
 		const notice = message.notice;
 		return <ReferenceContext value={{ message: message.id, source }}><article className="message message-received">
-			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party"}
-				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : "info"} />
+			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule"}
+				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : "info"} />
 					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></>}>
+				{notice?.kind === "schedule" && <div className="notice-metadata">
+					<span title={new Date(notice.queuedAt!).toLocaleString()}>Queued {timeLabel(notice.queuedAt!)}</span>
+					<span title={new Date(notice.dueAt!).toLocaleString()}>Due {timeLabel(notice.dueAt!)}</span>
+				</div>}
 				<MessageBody message={message} sessionKey={sessionKey} source={source} />
 			</Disclosure>
 		</article></ReferenceContext>;
 	}
 	const activityOnly = message.role === "tool" || isActivityOnly(message);
 	return <ReferenceContext value={{ message: message.id, source }}>
-		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}`}>
+		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}${traceContinues ? " message-trace-tail" : ""}`}>
 			{!activityOnly && <div className="message-heading"><span className={message.role === "assistant" ? "assistant-avatar" : "message-label"}>
 				{message.role === "assistant" ? "π" : message.role === "user" ? source ? "Input" : "You" : "Note"}</span>
 				{message.role === "assistant" && <strong>Pi</strong>}<time>{time}</time></div>}

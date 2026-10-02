@@ -156,6 +156,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, activeAgents, selected, session?.activation, ui, wideWorkspace]);
   const questions = ui?.interactions ?? [];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
+  const inlineQuestion = question?.form.kind === "question" || question?.form.kind === "confirm";
   useEffect(() => {
     if (!questions.some(question => question.id === activeQuestion)) setActiveQuestion(questions[0]?.id ?? "");
   }, [questions, activeQuestion]);
@@ -288,8 +289,9 @@ export function App({ account }: { account?: BrowserAccount }) {
       await api(`/sessions/${session.key}/restart`, { takeover: true });
     } catch (error) { setError(errorText(error)); }
   }
-  function openNewConversation() {
-    const computer = currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
+  function openNewConversation(computerId?: string) {
+    const computer = computerId ? state.host?.computers?.find(computer => computer.id === computerId)
+      : currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
     setNewComputer(computer?.id);
     setCwd(session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? state.host?.cwd ?? "");
@@ -406,7 +408,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     );
 
   const host = state.host;
-  const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates,
+  const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }];
   const partyComputers = computers.map(computer => ({ id: computer.id, name: computer.name, connected: computer.connected, directory: computer.parties }));
   const selectedModel = session?.snapshot?.model;
@@ -420,7 +422,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           <strong>Pi Desk</strong>
         </div>
         <div className="sidebar-actions">
-          <button className="new-chat" onClick={openNewConversation}>
+          <button className="new-chat" onClick={() => openNewConversation()}>
             <span>＋</span> New conversation
           </button>
           <button className="resume-chat" title="Resume conversation" aria-label="Resume conversation" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
@@ -435,7 +437,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
             <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
+            <button className="icon-button computer-create" aria-label={`New agent on ${computer.name}`} title={`New agent on ${computer.name}`}
+              disabled={!computer.connected} onClick={() => openNewConversation(computer.id)}><Icon name="plus" /></button>
           </div>
+          {computer.storageError && <details className="computer-storage-error"><summary><Icon name="warning" />Session save delayed</summary>
+            <p>{computer.storageError}</p><button disabled={!computer.connected} onClick={() => void api("/storage/retry", {}, computer.id).catch(error => console.error("Catalog retry failed:", error))}>Retry saving</button>
+          </details>}
           {(computer.updates?.available || computer.updates?.pending || computer.updates?.phase === "preparing") &&
             <button className="sidebar-update" onClick={() => { setPanel("settings"); setSidebar(false); }}>
               {computer.updates.phase === "applying" ? "Applying update…" : computer.updates.phase === "preparing" ? "Preparing update…"
@@ -551,7 +558,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           feedback={feedback[selected]} dismissed={dismissedNotices}
-          renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected}
+          renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
             dismissFeedback={dismissFeedback} />}
           empty={
               <div className="welcome">
@@ -572,7 +579,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     : "Start a conversation in any project. Pick it up on any device."}
                 </p>
                 {!session && (
-                  <button className="primary" onClick={openNewConversation}>
+                  <button className="primary" onClick={() => openNewConversation()}>
                     Start a conversation <span>↗</span>
                   </button>
                 )}
@@ -582,12 +589,16 @@ export function App({ account }: { account?: BrowserAccount }) {
                 )}
               </div>
           }
-          footer={busy && (
+          footer={<>
+            {question && inlineQuestion && <Question inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`} context=""
+              question={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
+              close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
+            {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
                 {question ? "Waiting for your answer" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
               </div>
-          )}
+            )}</>}
         />
         {session && canCompose && (
           <div className="composer-dock">
@@ -597,7 +608,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {question && (
               <button
                 className="question-banner"
-                onClick={() => setDismissedQuestion("")}
+                onClick={() => { setDismissedQuestion(""); if (inlineQuestion) setLatestRequest(value => value + 1); }}
               >
                 <span>✦</span>
                 <strong>{question.scope ? `${question.scope.label}: ` : ""}{question.form.title}</strong>
@@ -800,7 +811,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
-            onLatest={storeHistory} renderMessage={(message, source, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={source} />}
+            onLatest={storeHistory} renderMessage={(message, source, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={source} />}
             answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {(panel === "work" || panel === "view") &&
@@ -830,7 +841,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                       source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
                       connected={connected} epoch={epoch}
                       messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
-                      onLatest={storeHistory} renderMessage={(message, results, thinking) => <Message message={message} results={results} thinking={thinking} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
+                      onLatest={storeHistory} renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
                   </> : view.kind === "ledger" ? <div>
                     <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
                     {(view.data as { ledger?: Ledger }).ledger
@@ -893,7 +904,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </Modal>
       )}
       {confirmation.dialog}
-      {question && `${selected}/${question.id}` !== dismissedQuestion && (
+      {question && !inlineQuestion && `${selected}/${question.id}` !== dismissedQuestion && (
         <Question
           key={`${selected}/${question.id}`}
           draftKey={`${selected}/${question.id}`}
@@ -912,6 +923,7 @@ export function App({ account }: { account?: BrowserAccount }) {
 
 type QuestionDraft = { choices: string[]; text: string; comment: string; freeform: boolean };
 function Question({
+  inline = false,
   draftKey,
   context,
   question,
@@ -921,6 +933,7 @@ function Question({
   close,
   answer,
 }: {
+  inline?: boolean;
   draftKey: string;
   context: string;
   question: InteractionSnapshot;
@@ -953,8 +966,7 @@ function Question({
       setSubmitting(false);
     }
   };
-  return (
-    <Modal title={form.title} close={close}>
+  const content = <>
       {context && <p className="muted question-owner">{context}</p>}
       {questions.length > 1 && <label>
         {questions.length} pending questions
@@ -1081,12 +1093,16 @@ function Question({
                 (freeform ? !text.trim() : !choices.length))
             }
           >
-            {form.kind === "confirm" ? "Confirm" : "submitLabel" in form && form.submitLabel ? form.submitLabel : "Send answer"}
+            {form.kind === "confirm" ? "Confirm" : "submitLabel" in form && form.submitLabel ? form.submitLabel
+              : form.kind === "question" ? "Send answer" : form.kind === "input" || form.kind === "editor" ? "Save" : "Apply"}
           </button>
         </div>
       </form>
-    </Modal>
-  );
+    </>;
+  return inline ? <section className="inline-question" aria-labelledby={`question-${question.id}`}>
+    <header><Icon name={form.kind === "confirm" ? "check" : "chat"} /><h3 id={`question-${question.id}`}>{form.title}</h3></header>
+    {content}
+  </section> : <Modal title={form.title} close={close}>{content}</Modal>;
 }
 document.documentElement.dataset.theme =
   localStorage.getItem("pi-desk:theme") ?? "light";

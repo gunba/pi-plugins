@@ -195,7 +195,12 @@ export class DeskEngine {
 			});
 			context.attach(result.session); this.contexts.set(result.session, context);
 			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
-			return { ...result, services, diagnostics: services.diagnostics };
+			const loaded = services.resourceLoader.getExtensions();
+			return { ...result, services, diagnostics: [
+				...services.diagnostics,
+				...loaded.errors.map(({ path, error }) => ({ type: "error" as const, message: `Extension "${path}" error: ${error}` })),
+				...(loaded.warnings ?? []).map(({ path, warning }) => ({ type: "warning" as const, message: `Extension "${path}" warning: ${warning}` })),
+			] };
 		};
 		try {
 			this.runtime = await createAgentSessionRuntime(create, { cwd: manager.getCwd(), agentDir, sessionManager: manager,
