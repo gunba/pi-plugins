@@ -10,7 +10,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | --- | --- |
 | New, saved and running conversations | Sidebar and **Resume conversation**: choose computer and project, then search a virtualized native catalogue |
 | Model and reasoning | Composer selectors use the worker's native runtime; the star saves a default on that computer |
-| Provider accounts | **Settings → Model accounts**; host-owned native sign-in, Codex device codes, saved accounts per conversation and cancellation |
+| Provider accounts | **Settings → Model accounts**; host-owned native sign-in, Codex device codes, a default for new conversations on each computer, conversation account choices and cancellation |
 | Prompt, steer, follow-up and stop | Composer and visible queue bars; Stop dispatches pending steering into the next native turn |
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
@@ -67,6 +67,13 @@ downloads. Native views expose ChatGPT's activity, profile, approvals and
 cloud-computer controls without implementing another task engine. External
 sign-in windows, browser permission dialogs, microphone capture and audio are
 not forwarded. Unconfirmed sends/uploads are retained for review, not replayed.
+
+## Account selection
+
+A computer's account default applies when a new conversation is created. Existing
+conversations retain their saved account. New subagents inherit their parent's
+selection; existing subagents retain their own saved selection on recovery.
+Changing a default does not sign in again or replace Pi's credential file.
 
 ## Boundaries
 

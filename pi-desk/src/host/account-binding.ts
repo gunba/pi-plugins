@@ -3,6 +3,7 @@ import { ModelRuntime, type SessionManager } from "@earendil-works/pi-coding-age
 import type { CredentialStore, Credential, CredentialInfo, AuthOperationOptions } from "@earendil-works/pi-ai";
 import type { ModelCredentials } from "../../../pi-subagents/model-credentials.ts";
 import { AccountCredentials, type AccountSelection } from "./account-credentials.ts";
+import { accountDefaults } from "./account-defaults.ts";
 
 export const ACCOUNT_ENTRY = "pi-desk/provider-accounts";
 export function accountSelection(manager: Pick<SessionManager, "getBranch">): AccountSelection | undefined {
@@ -11,6 +12,14 @@ export function accountSelection(manager: Pick<SessionManager, "getBranch">): Ac
 	const selection = (entry.data as { selection?: unknown } | undefined)?.selection;
 	if (!selection || typeof selection !== "object" || Array.isArray(selection) || Object.values(selection).some(id => typeof id !== "string")) throw Error("Saved account selection is invalid.");
 	return { ...selection as AccountSelection };
+}
+
+export function initializeAccountSelection(manager: Pick<SessionManager, "getBranch" | "appendCustomEntry">, directory: string, fresh: boolean): AccountSelection {
+	const saved = accountSelection(manager);
+	if (saved) return saved;
+	const selected = fresh ? accountDefaults(directory) : {};
+	manager.appendCustomEntry(ACCOUNT_ENTRY, { selection: selected });
+	return selected;
 }
 
 /** Each native session owns a router; child factories freeze their own branch binding. */

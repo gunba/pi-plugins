@@ -78,7 +78,7 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 		setAdmission(request);
 		void run(async () => {
 			const receipt = await api<ProviderSignIn>("/provider-accounts/sign-ins", request, computer);
-			if (alive.current) { setName(""); setSnapshot(previous => ({ providers: previous?.providers ?? [], accounts: previous?.accounts ?? [], signIns: [receipt, ...previous?.signIns.filter(item => item.id !== receipt.id) ?? []] })); }
+			if (alive.current) { setName(""); setSnapshot(previous => ({ defaults: previous?.defaults ?? {}, providers: previous?.providers ?? [], accounts: previous?.accounts ?? [], signIns: [receipt, ...previous?.signIns.filter(item => item.id !== receipt.id) ?? []] })); }
 		});
 	};
 	const cancel = (id: string) => run(async () => {
@@ -107,6 +107,17 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 					<div><strong>{account.name}</strong>{account.identity && <small>{account.identity}</small>}</div>
 					{session && account.id === selected && <span className="muted">This conversation</span>}
 				</li>)}</ul> : <p className="muted">No accounts saved for {providerName}.</p>}
+			<label className="setting-control">Default for new conversations<select aria-label="Default provider account" value={snapshot ? snapshot.defaults[providerId] ?? "pi" : ""}
+				disabled={!connected || !snapshot || working} onChange={event => {
+					const id = event.target.value;
+					void run(async () => { const value = await api<ProviderAccountsSnapshot>("/provider-accounts/default", { provider: providerId, id }, computer); if (alive.current) setSnapshot(value); });
+				}}>
+				{!snapshot && <option value="">{connected ? "Loading computer default…" : "Connect to view the computer default"}</option>}
+				{!accounts.some(account => account.id === "pi") && <option value="pi">Default Pi credentials</option>}
+				{snapshot?.defaults[providerId] && snapshot.defaults[providerId] !== "pi" && !accounts.some(account => account.id === snapshot.defaults[providerId]) && <option value={snapshot.defaults[providerId]}>Saved default unavailable</option>}
+				{accounts.map(account => <option key={account.id} value={account.id}>{account.name}{account.identity ? ` · ${account.identity}` : ""}</option>)}
+			</select></label>
+			<p className="muted">Applies to new conversations on {computerName}. Existing conversations and their subagents keep their saved accounts.</p>
 			{session ? <label className="setting-control">{connected ? "Conversation account" : "Last confirmed account"}<select aria-label="Conversation provider account" value={changing ? "" : selected ?? ""}
 				disabled={!connected || !snapshot || selected === undefined || !idle || busy || working || changing} onChange={event => {
 					const id = event.target.value; setSelecting(true);
@@ -118,7 +129,7 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 				{accounts.map(account => <option key={account.id} value={account.id}>{account.name}{account.identity ? ` · ${account.identity}` : ""}</option>)}
 			</select></label> : <p className="muted">Select a conversation on this computer to choose its account.</p>}
 			{lastChange && ["failed", "interrupted"].includes(lastChange.state) && <p className="error-text" role="alert">Last account change {lastChange.state}: {lastChange.error ?? "Check the current selection before trying again."}</p>}
-			{session && !idle && <p className="muted">{session.state === "closed" ? "Resume this conversation to view or change its account." : "Account changes are available when the conversation and its queued work are idle."}</p>}
+			{session && !idle && <p className="muted">{session.state === "closed" ? "This conversation is closed. Changing the computer default does not change its saved account." : "Account changes are available when the conversation and its queued work are idle."}</p>}
 			<button className="quiet-action" disabled={!connected || working} onClick={() => void refresh()}><Icon name="refresh" />Refresh accounts</button>
 		</section>
 		<section className="panel-card provider-sign-in"><h3><Icon name="login" />Add account</h3>

@@ -473,33 +473,38 @@ details[open] > summary:before {
   white-space:nowrap;
 }
 .status-dot {
+  --status-color: var(--muted);
   display: inline-block;
   flex-shrink: 0;
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--status-color), black 25%);
+  background: var(--status-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-color) 18%, transparent);
 }
 .status-dot.online,
 .status-dot.idle,
 .status-dot.ready {
-  background: #77a390;
+  --status-color: #43ca87;
 }
 .status-dot.running,
+.status-dot.working,
 .status-dot.connecting,
 .status-dot.starting {
-  background: var(--accent);
+  --status-color: #5ca9ed;
 }
 .status-dot.waiting,
 .status-dot.attention {
-  background: #d3a253;
+  --status-color: #efab47;
 }
 .status-dot.failed,
 .status-dot.interrupted,
 .status-dot.error,
 .status-dot.offline {
-  background: #c87070;
+  --status-color: #f07878;
 }
+.session-activity { font-weight: 600; color: var(--text); }
 .sidebar-hint {
   font-size: 12px;
   color: var(--muted);

@@ -11,4 +11,4 @@ export interface ProviderSignIn {
 	device?: { code: string; expires?: number };
 	prompt?: { id: string; kind: "select" | "text" | "manual_code" | "secret"; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[] };
 }
-export interface ProviderAccountsSnapshot { providers: AccountProvider[]; accounts: ProviderAccount[]; signIns: ProviderSignIn[] }
+export interface ProviderAccountsSnapshot { defaults: Readonly<Record<string, string>>; providers: AccountProvider[]; accounts: ProviderAccount[]; signIns: ProviderSignIn[] }

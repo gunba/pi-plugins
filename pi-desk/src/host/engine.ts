@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
-import { AccountBinding, accountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
+import { AccountBinding, accountSelection, initializeAccountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
 import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
 import { join } from "node:path";
 import {
@@ -156,7 +156,9 @@ export class DeskEngine {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			let context: NativeContext | undefined;
-			const accounts = new AccountBinding(agentDir, options.providerAccountsDirectory ?? join(agentDir, "desk", "provider-accounts"), accountSelection(sessionManager));
+			const accountsDirectory = options.providerAccountsDirectory ?? join(agentDir, "desk", "provider-accounts");
+			const selected = initializeAccountSelection(sessionManager, accountsDirectory, sessionStartEvent?.reason === "startup" || sessionStartEvent?.reason === "new");
+			const accounts = new AccountBinding(agentDir, accountsDirectory, selected);
 			const modelRuntime = await accounts.runtime(this.starting.signal);
 			this.accountBindings.set(modelRuntime, accounts);
 			const services = await createAgentSessionServices({

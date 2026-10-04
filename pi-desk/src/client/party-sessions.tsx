@@ -3,6 +3,7 @@ import type { PartyAgent, PartyDirectory } from "../shared/parties.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
+import { activityLabel } from "./activity.ts";
 import { Modal } from "./surfaces.tsx";
 
 export interface PartyComputer { id?: string; name: string; connected: boolean; directory?: PartyDirectory }
@@ -19,8 +20,8 @@ export function PartyWakeMarker({ agent }: { agent?: PartyAgent }) {
 		title={agent.deliveryReason}><Icon name="pause" /><span>Wake held</span></span> : null;
 }
 function AgentLabel({ agent, computerName }: { agent: PartyAgent; computerName?: string }) {
-	return <><span className={`status-dot ${agent.state}`} /><span><span className="session-label-line"><strong>{agent.label}</strong><PartyWakeMarker agent={agent} /></span>
-		<small>{computerName && `${computerName} · `}{agent.kind === "child" ? "Child agent · " : ""}{agent.state === "offline" ? "Offline · " : ""}{basename(agent.cwd)}</small></span></>;
+	return <><span className={`status-dot ${agent.state}`} role="img" aria-label={activityLabel(agent.state)} title={activityLabel(agent.state)} /><span><span className="session-label-line"><strong>{agent.label}</strong><PartyWakeMarker agent={agent} /></span>
+		<small><span className="session-activity">{activityLabel(agent.state)}</span> · {computerName && `${computerName} · `}{agent.kind === "child" ? "Child agent · " : ""}{basename(agent.cwd)}</small></span></>;
 }
 export function PartySessions({ directory, sessions, computer, connected, computers, renderSession }: {
 	directory?: PartyDirectory; sessions: SessionView[]; computer?: string; connected: boolean; computers: PartyComputer[];

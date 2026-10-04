@@ -6,6 +6,7 @@ import type { AuthPrompt, AuthEvent } from "@earendil-works/pi-ai";
 import { atomicJson } from "../../manage/store.ts";
 import { providerIdentity } from "./provider-identity.ts";
 import { AccountCredentials } from "./account-credentials.ts";
+import { accountDefaults } from "./account-defaults.ts";
 import type { ProviderAccount, ProviderSignIn, ProviderAccountsSnapshot, AccountProvider, ProviderAuthType } from "../shared/provider-accounts.ts";
 
 const uuid = (value: string) => /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
@@ -53,6 +54,13 @@ export class ProviderAccounts {
 		if (!account || account.provider !== provider) throw Error("This account is no longer available.");
 		return join(this.folder(id), "auth.json");
 	}
+	setDefault(provider: string, id: string): ProviderAccountsSnapshot {
+		if (!this.providers.some(item => item.id === provider)) throw Error("Account defaults are unavailable for this provider.");
+		const path = this.authPath(provider, id);
+		if (id !== "pi" && !readStoredCredential(provider, path)) throw Error("Selected account is unavailable.");
+		atomicJson(join(this.directory, "defaults.json"), { ...accountDefaults(this.directory), [provider]: id });
+		return this.view();
+	}
 	private publish(operation: ProviderSignIn): void {
 		const current = this.operations.get(operation.id);
 		if (current && current !== operation) { Object.assign(current, operation); operation = current; }
@@ -85,7 +93,7 @@ export class ProviderAccounts {
 			const credential = readStoredCredential(account.provider, join(this.folder(id), "auth.json"));
 			if (credential) accounts.push({ ...account, identity: providerIdentity(credential) });
 		}
-		return structuredClone({ providers: this.providers, accounts, signIns: [...this.operations.values()].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 15) });
+		return structuredClone({ defaults: accountDefaults(this.directory), providers: this.providers, accounts, signIns: [...this.operations.values()].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 15) });
 	}
 	start(id: string, provider: string, name: string, type: ProviderAuthType = "oauth"): ProviderSignIn {
 		if (!uuid(id) || !provider || provider.length > 200 || !["oauth", "api_key"].includes(type) || typeof name !== "string" || !name.trim() || name.length > 100 || /[\x00-\x1f]/.test(name)) throw Error("Choose a provider, sign-in method and account name.");

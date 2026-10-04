@@ -960,6 +960,7 @@ export class DeskHost {
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
 			if (url.pathname === "/api/provider-accounts" && request.method === "GET") return reply(await this.providerAccounts!.snapshot());
+			if (url.pathname === "/api/provider-accounts/default" && request.method === "POST") return reply(this.providerAccounts!.setDefault(string(data.provider, 200), string(data.id, 36)));
 			if (url.pathname === "/api/provider-accounts/sign-ins" && request.method === "POST") return reply(this.providerAccounts!.start(
 				string(data.id, 36), string(data.provider, 200), string(data.name, 100), string(data.type, 10) as import("../shared/provider-accounts.ts").ProviderAuthType), 202);
 			const signIn = /^\/api\/provider-accounts\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);

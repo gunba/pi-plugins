@@ -53,6 +53,34 @@ test("host-owned Codex sign-in selects device flow and keeps separate account st
 	} finally { await accounts.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("computer defaults bind new conversations once without changing existing accounts", async () => {
+	const { mkdirSync } = await import("node:fs");
+	const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+	const { initializeAccountSelection, accountSelection } = await import("../src/host/account-binding.ts");
+	const directory = mkdtempSync(join(tmpdir(), "pi-account-default-")), id = randomUUID();
+	const profiles = join(directory, "provider-accounts");
+	const accounts = new ProviderAccounts(directory, directory, async () => { throw Error("Defaults must not create a model runtime"); });
+	try {
+		mkdirSync(join(profiles, id), { recursive: true });
+		writeFileSync(join(profiles, id, "account.json"), JSON.stringify({ id, provider: "openai-codex", name: "Work" }));
+		const credential = JSON.stringify({ "openai-codex": { type: "api_key", key: "fixture-only" } });
+		writeFileSync(join(profiles, id, "auth.json"), credential);
+		writeFileSync(join(directory, "auth.json"), "{}\n");
+		accounts.setDefault("openai-codex", id);
+		assert.deepEqual(new ProviderAccounts(directory, directory).view().defaults, { "openai-codex": id });
+		const fresh = SessionManager.inMemory(directory), legacy = SessionManager.inMemory(directory);
+		assert.deepEqual(initializeAccountSelection(fresh, profiles, true), { "openai-codex": id });
+		assert.deepEqual(initializeAccountSelection(legacy, profiles, false), {});
+		accounts.setDefault("openai-codex", "pi");
+		assert.deepEqual(initializeAccountSelection(fresh, profiles, true), { "openai-codex": id });
+		assert.deepEqual(accountSelection(legacy), {});
+		assert.deepEqual(initializeAccountSelection(SessionManager.inMemory(directory), profiles, true), { "openai-codex": "pi" });
+		assert.throws(() => accounts.setDefault("openai-codex", randomUUID()), /available/);
+		assert.equal(readFileSync(join(profiles, id, "auth.json"), "utf8"), credential);
+		assert.equal(readFileSync(join(directory, "auth.json"), "utf8"), "{}\n");
+	} finally { await accounts.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("interrupted sign-in is not restarted and cannot select a localhost browser flow", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-accounts-"));
 	let calls = 0;

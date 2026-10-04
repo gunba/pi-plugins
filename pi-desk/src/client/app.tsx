@@ -14,6 +14,7 @@ import { ResumeConversation } from "./resume.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
+import { activityLabel } from "./activity.ts";
 import { Inspector, Modal, Navigation, useMedia } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
@@ -481,9 +482,10 @@ export function App({ account }: { account?: BrowserAccount }) {
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
-                <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} />
+                <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} role="img"
+                  aria-label={activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)} title={activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><PartyWakeMarker agent={agent} /></span>
-                  <small>{item.interrupted || item.state === "failed" ? "Interrupted · " : ""}{basename(item.cwd)}</small></span>
+                  <small><span className="session-activity">{activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)}</span> · {basename(item.cwd)}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
