@@ -13,7 +13,8 @@ export class DotBrowser {
 	private session?: string;
 	private target?: string;
 	private listeners = new Set<(event: CdpEvent) => void>();
-	constructor(private agentDir: string) {}
+	private agentDir: string;
+	constructor(agentDir: string) { this.agentDir = agentDir; }
 
 	onEvent(listener: (event: CdpEvent) => void): () => void {
 		this.listeners.add(listener); return () => { this.listeners.delete(listener); };

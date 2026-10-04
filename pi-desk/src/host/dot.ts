@@ -35,7 +35,9 @@ export class DotConnection {
 	private stopped = false;
 	private members: Member[] = [];
 
-	constructor(private dataDir: string, private agentDir: string) {
+	private agentDir: string;
+	constructor(dataDir: string, agentDir: string) {
+		this.agentDir = agentDir;
 		this.directory = join(dataDir, "dot");
 		mkdirSync(this.directory, { recursive: true, mode: 0o700 });
 		this.config = { enabled: false };
