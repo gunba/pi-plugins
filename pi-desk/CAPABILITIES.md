@@ -10,7 +10,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | --- | --- |
 | New, saved and running conversations | Sidebar and **Resume conversation**: choose computer and project, then search a virtualized native catalogue |
 | Model and reasoning | Composer selectors use the worker's native runtime; the star saves a default on that computer |
-| Provider accounts | **Settings & tools → Providers**; native login methods and cancellation |
+| Provider accounts | **Settings → Model accounts**; host-owned native sign-in, Codex device codes, saved accounts per conversation and cancellation |
 | Prompt, steer, follow-up and stop | Composer and visible queue bars; Stop dispatches pending steering into the next native turn |
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
@@ -56,13 +56,17 @@ terminal command to the model as a substitute.
 
 ## Dot
 
-**Workspace → Dot** connects an existing ChatGPT Dot through the chosen
-computer's signed-in Chrome session. Text chat, live message updates, paged
-history and durable delivery receipts are separate from native Pi sessions.
-The **Plan** tab retains the selected Pi conversation's plan and agent summary.
+The Dot sidebar entry opens an existing ChatGPT Dot in the main
+conversation area. **Connection settings** chooses its signed-in Chrome connection.
+Text chat, live message updates, paged history and durable delivery receipts
+are separate from native Pi sessions. Pi's Workspace retains its plan and
+agent summary; it is hidden when viewing Dot.
 Dot's cloud execution and memory remain at OpenAI. This private web adapter
-needs a background Chrome tab; attachments, approvals and cloud-computer
-controls are not reproduced in Desk.
+needs a background Chrome tab. Desk stages attachments and captures native blob
+downloads. Native views expose ChatGPT's activity, profile, approvals and
+cloud-computer controls without implementing another task engine. External
+sign-in windows, browser permission dialogs, microphone capture and audio are
+not forwarded. Unconfirmed sends/uploads are retained for review, not replayed.
 
 ## Boundaries
 

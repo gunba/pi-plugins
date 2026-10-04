@@ -14,6 +14,7 @@ export interface ViewSnapshot extends UiView {
 export interface InteractionSnapshot {
 	id: string;
 	form: UiInteraction;
+	settings?: { id: string; title: string };
 	deadline?: number;
 	scope?: { id: string; label: string };
 }
@@ -36,6 +37,7 @@ export interface SessionSnapshot {
 	leaf?: string | null;
 	model?: { id: string; provider: string; name: string; images: boolean };
 	defaultModel?: { id: string; provider: string };
+	accounts?: Record<string, string>;
 	thinking: string;
 	thinkingLevels: string[];
 	activity: "idle" | "running" | "waiting" | "error";
@@ -120,6 +122,7 @@ export interface WorkerInit {
 	leaf?: string | null; attachmentScope?: string;
 	/** Host-owned code location, carried over private IPC rather than worker environment. */
 	runtimeDirectory?: string;
+	providerAccountsDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
 	/** Reopen saved native state without autonomous work until restoration finishes. */
@@ -145,6 +148,7 @@ export type WorkerCommand =
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string; makeDefault?: boolean }
+	| { kind: "account"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
 	| { kind: "reload" };
 export type WorkerRequest =

@@ -3,7 +3,6 @@ import test from "node:test";
 import { dismissNotice, noticeIdentity, readDismissals } from "../src/client/notice-dismissals.ts";
 import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
-import { providerChoices } from "../src/host/provider-prompts.ts";
 import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
 
 test("errors stay at their point in chat, deduplicate saved notices and stay dismissed after reopening", () => {
@@ -51,14 +50,4 @@ test("model account labels expose identity, not OAuth credentials", () => {
 	assert.equal(providerIdentity({ type: "api_key", key: "SECRET" }), undefined);
 	assert.equal(providerIdentity({ type: "oauth", access: "opaque", refresh: "SECRET" }), undefined);
 	assert.equal(providerIdentity({ type: "oauth", accountId: "workspace-2" }), "Account workspace-2");
-});
-test("remote OAuth choices use human labels and return Pi's original option IDs", () => {
-	const choices = providerChoices({ message: "Sign in", options: [
-		{ id: "browser", label: "Browser sign-in" }, { id: "device-code", label: "Device code" },
-	] });
-	assert.equal(choices.form.options[0].title, "Device code");
-	assert.match(choices.form.context, /computer running Pi/);
-	assert.equal(choices.resolve("Device code"), "device-code");
-	assert.equal(choices.resolve("Browser sign-in"), "browser");
-	assert.equal(choices.resolve("unknown"), undefined);
 });

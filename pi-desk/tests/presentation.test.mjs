@@ -140,3 +140,36 @@ test("inline messages wait for controller admission and cannot report a rejected
 	presentation.publish("child", view, { send: () => {} });
 	assert.equal((await presentation.act("child", current(), "send", "next")).accepted, true);
 });
+
+test("settings dialogs stay attached to their asynchronous action, not concurrent agent questions", async () => {
+	const presentation = new DeskPresentation(() => {}, () => {}), ui = presentation.createUi({});
+	let release, finished;
+	const gate = new Promise(resolve => { release = resolve; }), end = new Promise(resolve => { finished = resolve; });
+	presentation.publish("prefs", { kind: "details", surface: "settings", title: "Preferences", data: {}, actions: [{ id: "edit", label: "Edit" }] }, {
+		edit: async () => { await gate; await ui.select("Choose an endpoint", ["Local", "Remote"]); finished(); },
+	});
+	await presentation.act("prefs", presentation.snapshot().views[0].revision, "edit");
+	const question = ui.input("Agent question");
+	release(); await new Promise(resolve => setImmediate(resolve));
+	const entries = presentation.snapshot().interactions;
+	const setting = entries.find(item => item.form.title === "Choose an endpoint"), agent = entries.find(item => item.form.title === "Agent question");
+	assert.deepEqual(setting.settings, { id: "prefs", title: "Preferences" });
+	assert.equal(agent.settings, undefined);
+	presentation.answer(setting.id, { kind: "selection", selections: ["Remote"] });
+	presentation.answer(agent.id, null); await question; await end;
+});
+
+test("an interrupted setting does not label the resumed agent turn as a settings form", async () => {
+	const presentation = new DeskPresentation(() => {}, () => {}), ui = presentation.createUi({});
+	let resumed;
+	presentation.publish("prefs", { kind: "details", surface: "settings", title: "Preferences", data: {}, actions: [{ id: "edit", label: "Edit", interrupt: "resume" }] }, {
+		edit: async () => { await ui.confirm("Apply preference?", "Confirm the change."); },
+	});
+	const operation = presentation.act("prefs", presentation.snapshot().views[0].revision, "edit", null,
+		async run => { await run(); resumed = ui.input("Next agent question"); });
+	await new Promise(resolve => setImmediate(resolve));
+	let entry = presentation.snapshot().interactions[0]; assert.equal(entry.settings.id, "prefs");
+	presentation.answer(entry.id, { kind: "confirm", confirmed: true }); await operation;
+	entry = presentation.snapshot().interactions[0]; assert.equal(entry.form.title, "Next agent question"); assert.equal(entry.settings, undefined);
+	presentation.answer(entry.id, null); await resumed;
+});

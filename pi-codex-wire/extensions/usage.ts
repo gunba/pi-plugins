@@ -4,6 +4,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { computeSessionStats, SESSION_USAGE_CHANGED, type SessionStats } from "../../pi-session-usage/index.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
+import { getModelCredentials, MODEL_ACCOUNT_CHANGED } from "../../pi-subagents/model-credentials.ts";
 import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/index.ts";
 
 type HeaderMap = Record<string, unknown>;
@@ -43,6 +44,7 @@ type UsageState = {
   directory: string;
   snapshotFile: string;
   snapshots: UsageSnapshots;
+  accountId?: string;
   events: ExtensionAPI["events"];
   context?: ExtensionContext;
   enabled: boolean;
@@ -476,6 +478,15 @@ export default function codexUsage(pi: ExtensionAPI): void {
     if (snapshot) recordSnapshot(snapshot, state);
   });
   const unsubscribeUsage = pi.events.on(SESSION_USAGE_CHANGED, () => refreshUsageStatus(state));
+  const selectAccount = () => {
+    const id = getModelCredentials(pi)?.accountId?.("openai-codex") ?? "pi";
+    if (state.accountId === id) return;
+    if (id !== "pi" && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw Error("Invalid allowance account ID.");
+    state.accountId = id;
+    state.snapshotFile = join(directory, id === "pi" ? "usage.json" : `usage-${id}.json`);
+    state.snapshots = readPersistedSnapshots(state.snapshotFile);
+  };
+  const unsubscribeAccount = pi.events.on(MODEL_ACCOUNT_CHANGED, () => { selectAccount(); refreshUsageStatus(state); });
 
   function dispose(): void {
     if (state.disposed) return;
@@ -488,11 +499,13 @@ export default function codexUsage(pi: ExtensionAPI): void {
     if (statusOwners.get(pi.events) === state) statusOwners.delete(pi.events);
     unsubscribeWire();
     unsubscribeUsage();
+    unsubscribeAccount();
     presentation?.publish("pi-usage", undefined);
   }
 
   pi.on("session_start", (_event, ctx) => {
     if (state.disposed) return;
+    selectAccount();
     state.presentation = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
     updateUsageStatus(ctx, state);
   });

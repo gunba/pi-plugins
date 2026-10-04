@@ -1,6 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, createReadStream } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { DOT_NATIVE, type NativeDotSnapshot } from "./dot-native.ts";
+import type { DotUpload, DotDownload } from "../shared/dot.ts";
+import { DOT_DOWNLOADS } from "./dot-downloads.ts";
 
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 interface CdpEvent { method: string; params: any; sessionId?: string }
@@ -19,7 +22,8 @@ export class DotBrowser {
 	onEvent(listener: (event: CdpEvent) => void): () => void {
 		this.listeners.add(listener); return () => { this.listeners.delete(listener); };
 	}
-	async open(): Promise<void> {
+	async open(path = "/"): Promise<void> {
+		if (path !== "/" && !/^\/dots\/[a-zA-Z0-9_~-]+$/.test(path)) throw Error("Invalid native Dot conversation path.");
 		let endpoint = "http://127.0.0.1:9222";
 		try { endpoint = JSON.parse(readFileSync(join(this.agentDir, "pi-chrome-devtools.json"), "utf8")).browser?.endpoint ?? endpoint; }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw Error("Chrome settings could not be read."); }
@@ -52,26 +56,18 @@ export class DotBrowser {
 		this.target = target.targetId;
 		this.session = (await this.call("Target.attachToTarget", { targetId: this.target, flatten: true }, false)).sessionId;
 		await this.call("Network.enable");
-		await this.call("Page.navigate", { url: "https://chatgpt.com/" });
+		await this.call("Page.enable");
+		await this.call("Emulation.setFocusEmulationEnabled", { enabled: true });
+		await this.call("Page.addScriptToEvaluateOnNewDocument", { source: `if (location.origin === 'https://chatgpt.com') { ${DOT_NATIVE}; ${DOT_DOWNLOADS}; }` });
+		await this.call("Page.navigate", { url: `https://chatgpt.com${path}` });
 		const deadline = Date.now() + 30_000;
 		while (Date.now() < deadline) {
-			if (await this.evaluate("Boolean(window.__reactRouterManifest?.routes?.root?.module)")) break;
+			const ready = await this.call("Runtime.evaluate", { expression: "location.origin === 'https://chatgpt.com' && document.readyState !== 'loading'", returnByValue: true });
+			if (ready.result?.value) break;
 			await new Promise(resolve => setTimeout(resolve, 300));
 		}
-		await this.evaluate(`(async () => {
-			const root = window.__reactRouterManifest?.routes?.root?.module;
-			if (!root) throw Error('Open ChatGPT in Chrome and sign in, then reconnect Dot.');
-			const source = await (await fetch(root)).text();
-			const match = /import\\{__webpack_require__[^}]*\\}from["']([^"']+)["']/.exec(source);
-			if (!match) throw Error('ChatGPT web runtime changed.');
-			const runtimeUrl = new URL(match[1], new URL(root, location.href));
-			if (runtimeUrl.origin !== location.origin) throw Error('Unexpected ChatGPT runtime.');
-			const { __webpack_require__: require } = await import(runtimeUrl.href);
-			const request = Object.values(require.c).map(module => module.exports)
-				.find(exports => typeof exports?.Request?.safeGet === 'function')?.Request;
-			if (!request) throw Error('ChatGPT request client is unavailable.');
-			window.__piDeskDot = { request };
-		})()`);
+		await this.evaluate(DOT_NATIVE);
+		await this.evaluate(DOT_DOWNLOADS);
 	}
 	async call(method: string, params: Record<string, unknown> = {}, attached = true): Promise<any> {
 		const socket = this.socket;
@@ -84,32 +80,100 @@ export class DotBrowser {
 		});
 	}
 	async evaluate<T>(expression: string): Promise<T> {
-		const result = await this.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+		const result = await this.call("Runtime.evaluate", { expression: `if (location.origin !== "https://chatgpt.com") throw Error("The native view left ChatGPT. Reconnect Dot.");\n${expression}`, awaitPromise: true, returnByValue: true });
 		if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description?.split("\n")[0] ?? "Dot browser operation failed.");
 		return result.result.value as T;
 	}
-	async read(path: string, parameters: Record<string, unknown> = {}): Promise<any> {
-		return this.evaluate(`window.__piDeskDot.request.safeGet(${JSON.stringify(path)}, { parameters: ${JSON.stringify(parameters)} })`);
+	async validateDot(dot: string): Promise<void> {
+		if (await this.evaluate("window.__piDeskDotNative.context().room.aeon_id") !== dot) throw Error("The native Dot changed. Reconnect before continuing.");
 	}
-	async select(name: string): Promise<void> {
-		const deadline = Date.now() + 15_000;
-		let selected = false;
+	async snapshot(): Promise<NativeDotSnapshot> {
+		return this.evaluate("window.__piDeskDotNative.snapshot()");
+	}
+	async select(): Promise<NativeDotSnapshot> {
+		const deadline = Date.now() + 30_000;
+		let clicked = 0;
 		while (Date.now() < deadline) {
-			if (!selected) selected = await this.evaluate(`(() => {
-				const button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === ${JSON.stringify(name)});
-				if (!button) return false;
-				button.click(); return true;
-			})()`);
-			if (selected && await this.evaluate("location.pathname.startsWith('/dots/') && Boolean(document.querySelector('[role=textbox][aria-label=\"Message\"]'))")) return;
-			await new Promise(resolve => setTimeout(resolve, 200));
+			try { await this.evaluate(DOT_NATIVE); return await this.snapshot(); } catch {}
+			if (Date.now() - clicked > 1500) {
+				clicked = Date.now();
+				await this.evaluate(`(() => {
+					const primary = window.__piDeskDotNative?.primary();
+					const link = primary && [...document.querySelectorAll('a[href]')].find(node => node.pathname === primary.path && node.origin === location.origin);
+					const button = document.querySelector('button[data-sidebar-destination="builtin:orbit"]');
+					if (link && location.pathname !== primary.path) link.click(); else if (button && !location.pathname.startsWith('/dots/')) button.click();
+				})()`);
+			}
+			await new Promise(resolve => setTimeout(resolve, 300));
 		}
-		throw Error("The Dot message editor did not open. Open your Dot in this Chrome profile, then reconnect.");
+		throw Error("Open your existing Dot in this Chrome profile, then reconnect. Native sign-in or verification may be required.");
+	}
+	async older(before: string): Promise<NativeDotSnapshot> {
+		return this.evaluate(`window.__piDeskDotNative.older(${JSON.stringify(before)})`);
+	}
+	async downloads(): Promise<DotDownload[]> {
+		return this.evaluate("window.__piDeskDotDownloads.list()");
+	}
+	async download(message: string, attachment: string): Promise<DotDownload> {
+		return this.evaluate(`(async () => {
+			const current = window.__piDeskDotNative.context();
+			const message = current.services.conversations.get(current.room.id).messages.find(item => item.id === ${JSON.stringify(message)} && !item.deliveryState);
+			const attachment = message?.attachments.find(item => item.attachmentId === ${JSON.stringify(attachment)});
+			if (!message || !attachment?.hasContent) throw Error('Open this attachment in the native conversation.');
+			const before = new Set(window.__piDeskDotDownloads.list().map(item => item.id));
+			await current.services.attachments.loadContent(message, attachment, attachment.contentType);
+			const files = window.__piDeskDotDownloads.list().filter(item => !before.has(item.id));
+			if (files.length !== 1) throw Error('Native download could not be captured. Open the attachment in the native conversation.');
+			return files[0];
+		})()`);
+	}
+	async downloadChunk(id: string, offset: number): Promise<{ data: string; next: number; size: number }> {
+		return this.evaluate(`window.__piDeskDotDownloads.chunk(${JSON.stringify(id)}, ${JSON.stringify(offset)})`);
+	}
+	async releaseDownload(id: string): Promise<void> {
+		await this.evaluate(`window.__piDeskDotDownloads.remove(${JSON.stringify(id)})`);
+	}
+	async attach(file: DotUpload, path: string): Promise<string> {
+		const native = await this.snapshot();
+		if (native.dot !== file.dot) throw Error("The native Dot changed.");
+		await this.evaluate("window.__piDeskDotFile = []");
+		try {
+			for await (const bytes of createReadStream(path, { highWaterMark: 512 * 1024 })) {
+				await this.evaluate(`window.__piDeskDotFile.push(Uint8Array.from(atob(${JSON.stringify((bytes as Buffer).toString("base64"))}), c => c.charCodeAt(0)))`);
+			}
+			const upload = await this.evaluate<string>(`(() => {
+				const current = window.__piDeskDotNative.context();
+				if (current.room.aeon_id !== ${JSON.stringify(file.dot)}) throw Error('The native Dot changed.');
+				const before = new Set(current.services.composer.state.getSnapshot().uploads.map(item => item.id));
+				const file = new File(window.__piDeskDotFile, ${JSON.stringify(file.name)}, { type: ${JSON.stringify(file.mime)} });
+				if (file.size !== ${file.size}) throw Error('Staged attachment size changed.');
+				${file.remoteId ? `current.services.composer.restoreAttachmentDraft(current.room.id, [{file, upload: {
+					id: ${JSON.stringify(file.id)}, roomId: current.room.id, name: file.name, mimeType: file.type,
+					sizeBytes: file.size, status: 'complete', fileId: ${JSON.stringify(file.remoteId)}, previewUrl: ''
+				}}]);` : "if (!current.services.composer.addFiles(current.room.id, [file])) throw Error('Native Dot rejected the attachment.');"}
+				const added = current.services.composer.state.getSnapshot().uploads.filter(item => !before.has(item.id));
+				if (added.length !== 1) throw Error('Native attachment identity is unavailable.');
+				return added[0].id;
+			})()`);
+			const deadline = Date.now() + 120_000;
+			while (Date.now() < deadline) {
+				const current = await this.snapshot();
+				if (current.dot !== file.dot) throw Error("The native Dot changed during upload.");
+				const item = current.uploads.find(item => item.id === upload);
+				if (!item) throw Error("Native attachment upload disappeared. Review the Dot draft.");
+				if (item.status === "failed") throw Error(item.error ?? "Native attachment upload failed.");
+				if (item.status === "complete" && item.fileId) return item.fileId;
+				await new Promise(resolve => setTimeout(resolve, 250));
+			}
+			throw Error("Native attachment upload is unconfirmed. Review the Dot draft before uploading again.");
+		} finally { await this.evaluate("delete window.__piDeskDotFile").catch(() => {}); }
 	}
 	async prepare(text: string): Promise<void> {
 		await this.evaluate(`(() => {
 			const editor = document.querySelector('[role=textbox][aria-label="Message"]');
 			if (!editor || editor.textContent.trim()) throw Error('Dot already has a draft; open ChatGPT to review it.');
 			editor.focus({ preventScroll: true });
+			if (!${JSON.stringify(text.trim())}) return;
 			if (!document.execCommand('insertText', false, ${JSON.stringify(text)})) throw Error('Dot editor insertion failed.');
 		})()`);
 		await new Promise(resolve => setTimeout(resolve, 100));
@@ -128,7 +192,11 @@ export class DotBrowser {
 	}
 	async close(): Promise<void> {
 		if (this.target && this.socket?.readyState === WebSocket.OPEN) {
-			await this.call("Target.closeTarget", { targetId: this.target }, false).catch(() => {});
+			// A tab repurposed outside the Dot route belongs to its new activity.
+			const info = await this.call("Target.getTargetInfo", { targetId: this.target }, false).catch(() => undefined);
+			const url = info?.targetInfo?.url ? new URL(info.targetInfo.url) : undefined;
+			if (url && (url.href === "about:blank" || url.origin === "https://chatgpt.com" && (url.pathname === "/" || url.pathname.startsWith("/dots/"))))
+				await this.call("Target.closeTarget", { targetId: this.target }, false).catch(() => {});
 		}
 		this.target = undefined; this.socket?.close(); this.socket = undefined;
 	}

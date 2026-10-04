@@ -158,3 +158,19 @@ test("expired allowance windows stop ticking and fresh passive headers restart t
   assert.equal(h.timers.size, 1);
   assert.ok(first.statuses.at(-1).includes("80%"));
 });
+
+test("switching saved accounts isolates passive allowance snapshots", async t => {
+	const h = await harness(t);
+	const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+	let selected = ids[0];
+	h.bus.on("pi:model-credentials", probe => { probe.binding = { accountId: () => selected }; });
+	const instance = await h.load(); await h.start(instance);
+	selected = ids[1]; h.bus.emit("pi:model-account-changed", {});
+	assert.equal(instance.statuses.at(-1), undefined, "old account allowance must disappear immediately");
+	h.bus.emit("pi-codex-wire:allowance", { ...headers, "x-codex-primary-used-percent": "70" });
+	assert.match(instance.statuses.at(-1), /30%/);
+	selected = ids[0]; h.bus.emit("pi:model-account-changed", {});
+	assert.match(instance.statuses.at(-1), /80%/, "returning to an account restores only its snapshot");
+	selected = "pi"; h.bus.emit("pi:model-account-changed", {});
+	assert.equal(instance.statuses.at(-1), undefined, "named accounts must not overwrite the native Pi snapshot");
+});

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { installModelCredentials } from "../model-credentials.ts";
 import {
 	createAgentSession,
 	createCodemodeExtension,
@@ -315,8 +316,9 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		// Each activation gets current credential and provider state. Sharing one
 		// ModelRuntime across durable children leaves OAuth state stale after the
 		// parent refreshes or replaces credentials.
-		const modelRuntime = await this.createModelRuntime(input.signal);
-		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime, input.signal);
+		const scoped = await this.host.modelCredentials?.create(input.sessionManager, input.signal);
+		const modelRuntime = scoped?.runtime ?? await this.createModelRuntime(input.signal);
+		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime, input.signal, scoped?.ownsProvider(input.descriptor.model.provider));
 		const provider = modelRuntime.getProvider(input.descriptor.model.provider);
 		const boundProvider = provider && bindChildProvider(provider, input.descriptor.childSessionId);
 		if (boundProvider) modelRuntime.registerNativeProvider(boundProvider);
@@ -369,6 +371,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				.map(tool => tool.sourceInfo?.path)
 				.filter((path): path is string => !!path && ["builtin:codemode", "builtin:tool-search", "builtin:mcp"].includes(path)))],
 			extensionFactories: [
+				...(scoped ? [{ name: "model-credentials", factory: (pi: ExtensionAPI) => installModelCredentials(pi, scoped.binding) }] : []),
 				{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
 				{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
 				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },

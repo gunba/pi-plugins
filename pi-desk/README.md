@@ -41,11 +41,11 @@ and `/desk open` opens it. Use `/desk` for management; see
 
 ## Dot
 
-The Workspace pane has **Dot** and **Plan** tabs. On smaller screens, open
-**Workspace** from the conversation header. Dot is independent of the selected
-Pi conversation; changing agents does not change the cloud Dot.
+Dot appears above the computer groups in the sidebar. Selecting it opens the
+main conversation area, without Pi's workspace, model or agent controls.
+Pi conversations retain their Workspace pane.
 
-Choose the connection computer and select **Connect**. That computer needs
+Open **Connection settings**, choose the connection computer and select **Connect**. That computer needs
 Pi's local Chrome DevTools connection and a Chrome profile signed into ChatGPT
 with an existing Dot. This is a separate web sign-in from Codex authentication.
 Desk opens its own background tab; no extra ChatGPT window is required.
@@ -54,12 +54,31 @@ Messages, replies and paged history come from the existing Dot. Its execution
 and memory remain in OpenAI's cloud. Closing Desk or selecting **Disconnect**
 does not pause the Dot. Drafts stay in the Desk browser; the host saves message
 receipts and never automatically resends an uncertain delivery. **Check delivery**
-reconciles the receipt. Review the Dot before deliberately sending again.
+reconciles the receipt. A missing receipt keeps the send pending;
+**Cancel unconfirmed send** records cancellation before allowing a new attempt.
+It cannot cancel a message already admitted. Drafts clear only after confirmed
+acceptance. Review the Dot before deliberately sending again.
+
+Attach up to eight files, each at most 20 MB. Files are staged on the connection
+computer and uploaded through ChatGPT's native composer. Unconfirmed uploads
+retain their bytes and receipts for review; closing a view does not silently
+delete them. File downloads are delivered to the Desk browser when ChatGPT
+provides a downloadable blob. Other attachment previews open in **Native view**.
+
+**Activity**, **Computer**, and **Manage Dot** open ChatGPT's own controls inside
+Desk. The native view carries its rendered interface and keyboard/pointer input;
+cloud tasks, profile, rules and approvals remain owned by ChatGPT. **Fit** adapts
+the view to the available space; zoom and **Pan** support detailed work on small
+screens. **Type text** supplies a local text field and keyboard buttons for touch
+keyboards. Shift+Esc moves focus out of the native controls. Page or Dot changes
+stop input, and an uncertain input stops the local queue without replay.
+Browser permission dialogs, external authorization windows, microphone capture
+and audio playback are not forwarded; complete those steps on the connection
+computer. Video can be viewed in the native interface without forwarded audio.
 
 This adapter uses ChatGPT's private web interface and English-language message
-editor. Site changes can require an adapter update. Attachments are listed;
-uploads, cloud-computer takeover and approvals still use ChatGPT. Dot usage
-remains subject to the account's subscription and Dot allowances.
+editor. Site changes can require an adapter update. Dot usage remains subject
+to the account's subscription and Dot allowances.
 
 ## Development
 
@@ -621,13 +640,28 @@ release their file references for normal unused-upload cleanup.
 
 ### Accounts and connections
 
-Model accounts lists the SDK's non-secret credential metadata and configured
-sources. It is not a live credential check. OAuth sign-in, cancellation and
-credential removal use `ModelRuntime`; device codes, authorization links and
-callback prompts appear in the app. Access/refresh tokens stay on the host.
-API keys, cloud credentials and OAuth flows requiring secret input remain host
-setup operations through Pi. Other running sessions may need Reload resources
-after changing an account.
+**Settings → Model accounts** manages sign-in on the chosen computer, without
+selecting or starting an agent. Codex uses the native device-code flow; approve
+it on the provider's page from any computer or phone. Other supported native
+providers use their SDK sign-in methods, with prompts and masked key inputs in
+Settings. Provider-specific callbacks may require manual completion or host
+setup. Providers registered only by a session extension still use that
+extension's setup.
+
+Each saved account has a separate native credential store on the host. Existing
+Pi credentials remain available as the default. A conversation chooses accounts
+per provider; changing its selection requires idle work and does not change its
+model, reasoning, defaults or messages. Branches retain their selection; SDK
+children inherit it at creation and keep their own binding on later reuse.
+OAuth refresh uses the native provider and serialized credential storage.
+Subscription allowance snapshots are isolated by saved account.
+
+Sign-in operations have durable receipts. An interrupted or unconfirmed sign-in
+is not restarted automatically. Cancelling an unconfirmed attempt fences its
+operation ID against late admission. Verification codes and pending prompt
+values are not saved in those receipts. Closing Settings leaves host-owned
+sign-in running. Account profiles are retained; adding one does not overwrite
+other credentials.
 
 MCP connections subscribes to the adapter's documented `status/v1` channel and
 uses its registered commands for connection refresh, OAuth, enable/disable and

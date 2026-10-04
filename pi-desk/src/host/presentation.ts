@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { stripVTControlCharacters } from "node:util";
 import {
 	initTheme,
@@ -74,6 +75,7 @@ export class DeskPresentation implements Presentation {
 	private readonly registerSource?: (source: UiTranscriptSource) => UiTranscriptHandle;
 	private readonly command?: (name: string, args?: string) => Promise<void>;
 	private interactions = new Map<string, PendingInteraction>();
+	private settingOrigin = new AsyncLocalStorage<{ id: string; title: string; live: () => boolean }>();
 	private statuses: Record<string, string> = {};
 	private notifications: PresentationSnapshot["notifications"] = [];
 	private recordFeedback: (feedback: Feedback) => void = () => {};
@@ -152,7 +154,8 @@ export class DeskPresentation implements Presentation {
 			const scope = { id, label: child.label };
 			views.push(...snapshot.views.map(view => ({ ...view, id: `scope:${id}/${view.id}`, scope,
 				title: `${child.label} · ${view.title}` })));
-			interactions.push(...snapshot.interactions.map(item => ({ ...item, scope: item.scope ?? scope })));
+			interactions.push(...snapshot.interactions.map(item => ({ ...item, scope: item.scope ?? scope,
+				...(item.settings ? { settings: { ...item.settings, id: `scope:${id}/${item.settings.id}` } } : {}) })));
 			for (const [key, value] of Object.entries(snapshot.statuses)) statuses[`scope:${id}/${key}`] = `${child.label}: ${value}`;
 			notifications.push(...snapshot.notifications.map(item => ({ ...item, text: `${child.label}: ${item.text}` })));
 		}
@@ -281,7 +284,10 @@ export class DeskPresentation implements Presentation {
 		const current = () => !this.retired && operation.generation === this.generation && this.actions.get(id) === operation;
 		const work = Promise.resolve().then(() => {
 			if (!current()) throw new Error("The action belongs to a previous session.");
-			return descriptor.interrupt === "resume" && interrupt ? interrupt(async () => handler(value)) : handler(value);
+			const run = () => view.snapshot.surface === "settings"
+				? this.settingOrigin.run({ id, title: view.snapshot.title, live: current }, () => handler(value))
+				: handler(value);
+			return descriptor.interrupt === "resume" && interrupt ? interrupt(async () => run()) : run();
 		}).catch(error => {
 			if (!current()) throw error;
 			const message = plain(`${operation.label}: ${error instanceof Error ? error.message : String(error)}`).slice(0, 2000);
@@ -300,6 +306,8 @@ export class DeskPresentation implements Presentation {
 
 	request(form: UiInteraction, options: { signal?: AbortSignal; timeout?: number } = {}): Promise<UiAnswer | null> {
 		if (this.retired || options.signal?.aborted) return Promise.resolve(null);
+		const origin = this.settingOrigin.getStore();
+		const settings = origin?.live() ? { id: origin.id, title: origin.title } : undefined;
 		const id = randomUUID();
 		const timeout = options.timeout && options.timeout > 0 ? Math.min(options.timeout, 2_147_483_647) : undefined;
 		return new Promise(resolve => {
@@ -313,7 +321,7 @@ export class DeskPresentation implements Presentation {
 			};
 			const abort = () => finish(null);
 			this.interactions.set(id, {
-				snapshot: { id, form: structuredClone(form), ...(timeout ? { deadline: Date.now() + timeout } : {}) },
+				snapshot: { id, form: structuredClone(form), ...(settings ? { settings } : {}), ...(timeout ? { deadline: Date.now() + timeout } : {}) },
 				finish,
 			});
 			options.signal?.addEventListener("abort", abort, { once: true });

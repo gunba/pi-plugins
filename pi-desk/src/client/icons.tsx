@@ -46,9 +46,9 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 		fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name] ?? paths.settings}</svg>;
 }
 const sections: Record<string, string> = {
-	general: "settings", conversation: "chat", computers: "computer", context: "context", tools: "tools", activity: "activity",
+	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
-	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", "desk-providers": "account", plan: "plan", "pi-party": "party",
+	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", plan: "plan", "pi-party": "party",
 };
 export function SectionIcon({ id }: { id: string }) { return <Icon name={sections[id] ?? "settings"} />; }
 

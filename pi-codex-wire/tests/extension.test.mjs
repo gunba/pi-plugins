@@ -340,7 +340,7 @@ test("real Pi serializer/parser integrates with emulated SSE and does not send s
   assert.equal(result.content[0].name, "read");
   assert.deepEqual(result.content[0].arguments, { path: "test.txt" });
   assert.equal(result.usage.cacheRead, 90);
-  assert.deepEqual(h.published, [{ name: "pi-codex-wire:allowance", data: {
+  assert.deepEqual(h.published, [{ name: "pi:model-credentials", data: {} }, { name: "pi-codex-wire:allowance", data: {
     "x-codex-primary-used-percent": 95, "x-codex-primary-window-minutes": 10080,
   } }]);
   assert.equal(catalogCalls, 1);

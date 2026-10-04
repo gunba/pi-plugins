@@ -20,7 +20,7 @@ test("Wire counters update the footer and saved 7d snapshot; shutdown unsubscrib
   usage({
     on: (name, handler) => handlers.set(name, handler),
     registerCommand() {},
-    events: { on: (name, handler) => {
+    events: { emit: (name, data) => listeners.get(name)?.(data), on: (name, handler) => {
       listeners.set(name, handler);
       return () => listeners.delete(name);
     } },

@@ -1,6 +1,8 @@
 import { realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
+import { AccountBinding, accountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
+import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
 import { join } from "node:path";
 import {
 	createAgentSessionServices,
@@ -14,8 +16,8 @@ import {
 	ProjectTrustStore,
 	SessionManager,
 	SettingsManager,
-	readStoredCredential,
 	type AgentSession,
+	type ModelRuntime,
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	type LoadExtensionsResult,
@@ -30,7 +32,6 @@ import type { ReferenceOrigin } from "../shared/references.ts";
 import { installIntegrations } from "./integrations.ts";
 import { Attachments } from "./attachments.ts";
 import { ArtifactStore } from "../../../pi-output-budget/extensions/artifacts.ts";
-import type { UiDetails } from "../../../pi-ui/index.ts";
 import type { UiTranscriptSource, UiTranscriptHandle } from "../../../pi-ui/index.ts";
 import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
@@ -39,8 +40,6 @@ import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessag
 import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
-import { providerIdentity } from "./provider-identity.ts";
-import { providerChoices } from "./provider-prompts.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { NativeContext } from "./context.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
@@ -69,8 +68,7 @@ export class DeskEngine {
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
 	private checkpointHold?: { id: string; running: boolean };
-	private authentication?: AbortController;
-	private providerFilter = "";
+	private accountBindings = new WeakMap<ModelRuntime, AccountBinding>();
 	private attachmentScope?: string;
 	private usageRevision = 0;
 	private contexts = new WeakMap<AgentSession, NativeContext>();
@@ -158,8 +156,11 @@ export class DeskEngine {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			let context: NativeContext | undefined;
+			const accounts = new AccountBinding(agentDir, options.providerAccountsDirectory ?? join(agentDir, "desk", "provider-accounts"), accountSelection(sessionManager));
+			const modelRuntime = await accounts.runtime(this.starting.signal);
+			this.accountBindings.set(modelRuntime, accounts);
 			const services = await createAgentSessionServices({
-				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
+				cwd, agentDir, modelRuntime, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
 					extensionFactories: [
 						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
@@ -168,10 +169,13 @@ export class DeskEngine {
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi);
 						installIntegrations(pi);
+						installModelCredentials(pi, accounts.capability());
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);
 						pi.on("before_agent_start", () => { context?.apply(); });
-						pi.on("session_tree", () => {
+						pi.on("session_tree", async () => {
+							accounts.select(accountSelection(sessionManager) ?? {});
+							await modelRuntime.refresh({ allowNetwork: false });
 							context?.apply();
 							this.feed?.reset();
 							this.presentation.advance();
@@ -211,7 +215,6 @@ export class DeskEngine {
 		}
 		this.runtime.setRebindSession(session => this.bind(session));
 		this.runtime.setBeforeSessionInvalidate(() => {
-			this.authentication?.abort();
 			this.replacing = true;
 			this.unsubscribe?.();
 			this.feed?.close();
@@ -355,119 +358,7 @@ export class DeskEngine {
 				reload: () => this.reload(),
 			},
 		});
-		await this.publishProviders();
 		this.scheduleSnapshot();
-	}
-
-	private async publishProviders(): Promise<void> {
-		const models = this.runtime!.services.modelRuntime;
-		const generation = this.presentation.generation;
-		const current = () => !this.closed && this.presentation.generation === generation
-			&& this.runtime?.services.modelRuntime === models;
-		const credentials = await models.listCredentials();
-		if (!current()) return;
-		const actions: Record<string, () => unknown | Promise<unknown>> = {};
-		const data: UiDetails = {
-			summary: "Accounts are saved on this computer, independently of your Desk login. Pi stores one account per provider; signing in again replaces it. For sign-in from another computer or phone, choose device code when offered. Other running sessions keep their current credentials until refreshed.",
-			controls: [{ kind: "text", label: "Find provider", value: this.providerFilter, placeholder: "Provider name",
-				help: "Press Enter to filter. Leave blank to show configured accounts and subscription sign-ins.",
-				action: { id: "search", label: "Filter providers" } }],
-			items: models.getProviders().filter(provider => `${provider.id} ${provider.name}`.toLowerCase().includes(this.providerFilter.toLowerCase()))
-				.filter(provider => this.providerFilter.trim() || provider.auth.oauth || models.getProviderAuthStatus(provider.id).configured)
-				.sort((a, b) => Number(models.getProviderAuthStatus(b.id).configured) - Number(models.getProviderAuthStatus(a.id).configured) || a.name.localeCompare(b.name))
-				.map(provider => {
-					const status = models.getProviderAuthStatus(provider.id);
-					const credential = credentials.find(item => item.providerId === provider.id);
-					const identity = credential?.type === "oauth" ? providerIdentity(readStoredCredential(provider.id)) : undefined;
-					const itemActions = [];
-					if (provider.auth.oauth) {
-						const id = `login:${provider.id}`;
-						itemActions.push({ id, label: credential ? "Change account" : provider.auth.oauth.loginLabel ?? "Sign in" });
-						actions[id] = () => { if (current()) this.login(provider.id); };
-					}
-					if (credential) {
-						const id = `logout:${provider.id}`;
-						itemActions.push({ id, label: "Remove saved credential", destructive: true });
-						actions[id] = async () => {
-							const answer = await this.presentation.request({ kind: "confirm", title: `Sign out of ${provider.name}?`,
-								message: "Remove the saved credential on this computer. This does not revoke provider access or unset environment/model configuration." });
-							if (!current() || answer?.kind !== "confirm" || !answer.confirmed) return;
-							if (this.running || this.authentication) throw new Error("Finish or stop active work before changing an account.");
-							const controller = this.authentication = new AbortController();
-							try { await models.logout(provider.id, { signal: controller.signal }); }
-							finally { if (this.authentication === controller) this.authentication = undefined; }
-							if (current()) { await this.publishProviders(); this.scheduleSnapshot(); }
-						};
-					}
-					return { id: provider.id, title: provider.name, subtitle: provider.id,
-						status: status.configured ? `Configured · ${status.source ?? "host"}` : "Not configured",
-						body: identity ?? (credential ? credential.type === "oauth" ? "Account identity was not provided by this provider." : "Saved API key" : undefined),
-						actions: itemActions };
-				}),
-		};
-		this.presentation.publish("desk-providers", { kind: "details", surface: "settings", title: "Model accounts", data,
-			actions: [{ id: "refresh", label: "Refresh accounts" }],
-		}, { ...actions, search: async value => {
-			if (current() && typeof value === "string") { this.providerFilter = value.slice(0, 200); await this.publishProviders(); }
-		}, refresh: async () => {
-			await models.refresh({ allowNetwork: false });
-			if (current()) { await this.publishProviders(); this.scheduleSnapshot(); }
-		} });
-	}
-
-	private login(providerId: string): void {
-		if (this.authentication || this.running || this.transition) throw new Error("Finish or stop active work before signing in.");
-		const models = this.runtime!.services.modelRuntime;
-		const generation = this.presentation.generation;
-		const controller = this.authentication = new AbortController();
-		const current = () => !controller.signal.aborted && generation === this.presentation.generation && !this.closed;
-		let data: UiDetails = { summary: "Starting provider sign-in…" };
-		const publish = () => {
-			if (!current()) return;
-			this.presentation.publish("desk-login", { kind: "details", surface: "settings", title: "Provider sign-in", data,
-				actions: [{ id: "cancel", label: "Cancel sign-in" }] }, { cancel: () => controller.abort() });
-		};
-		publish(); this.presentation.open("desk-login"); this.scheduleSnapshot();
-		void models.login(providerId, "oauth", {
-			signal: controller.signal,
-			notify: event => {
-				if (!current()) return;
-				if (event.type === "auth_url") data = { summary: `${event.instructions ?? "Open the provider page to continue."}\nThe callback goes to the computer running Pi. If you are using another device and the final page cannot connect, copy its full address into the completion field here.`,
-					links: [{ label: "Open sign-in page", url: event.url }] };
-				else if (event.type === "device_code") data = {
-					summary: "Open the provider page and enter this code.", fields: [{ label: "Code", value: event.userCode }],
-					links: [{ label: "Open verification page", url: event.verificationUri }],
-				};
-				else if (event.type === "info") data = { ...data, summary: event.message,
-					...(event.links ? { links: event.links.map(link => ({ label: link.label ?? "Open provider page", url: link.url })) } : {}) };
-				else data = { ...data, summary: event.message };
-				publish();
-			},
-			prompt: async prompt => {
-				if (prompt.type === "secret") throw new Error("This provider needs secret input. Complete its setup with /login in Pi on the host.");
-				const signal = prompt.signal ? AbortSignal.any([controller.signal, prompt.signal]) : controller.signal;
-				const choices = prompt.type === "select" ? providerChoices(prompt) : undefined;
-				const answer = await this.presentation.request(choices
-					? choices.form
-					: { kind: "input", title: "Complete provider sign-in", context: prompt.message, links: data.links,
-						placeholder: "placeholder" in prompt ? prompt.placeholder : undefined }, { signal });
-				signal.throwIfAborted();
-				if (!current() || !answer) { controller.abort(); throw new Error("Sign-in cancelled."); }
-				return answer.kind === "selection" ? choices?.resolve(answer.selections[0]!) ?? "" : answer.kind === "freeform" ? answer.text : "";
-			},
-		}).then(() => { if (current()) this.presentation.notify("Provider sign-in saved on this computer."); })
-			.catch(error => {
-				if (current()) this.presentation.notify(error instanceof Error ? error.message : String(error), "error");
-			}).finally(async () => {
-				if (this.authentication !== controller) return;
-				try {
-					if (this.closed || generation !== this.presentation.generation) return;
-					try { await this.publishProviders(); } catch { this.presentation.notify("Account state changed; reload resources to refresh it.", "warning"); }
-					if (this.closed || generation !== this.presentation.generation) return;
-					this.presentation.publish("desk-login", undefined);
-					this.presentation.open("desk-providers");
-				} finally { if (this.authentication === controller) this.authentication = undefined; this.scheduleSnapshot(); }
-			});
 	}
 
 	private scheduleSnapshot(): void {
@@ -503,13 +394,14 @@ export class DeskEngine {
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
-			activity: ui.interactions.length ? "waiting" : this.running || this.transition || this.authentication || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
+			activity: ui.interactions.some(item => !item.settings) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			tools: session.getAllTools().map(tool => ({ name: tool.name, description: tool.description, active: active.has(tool.name) })),
 			extensions: [
 				...loaded.extensions.map(extension => ({ path: extension.path })),
 				...loaded.errors.map(error => ({ path: error.path, error: error.error })),
 			],
 			commands: promptCommands(session, this.runtime.services.resourceLoader),
+			accounts: { ...this.accountBindings.get(this.runtime.services.modelRuntime)?.selection },
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({
 				id: model.id, provider: model.provider, name: model.name,
 			})),
@@ -585,6 +477,22 @@ export class DeskEngine {
 				this.scheduleSnapshot();
 				return;
 			}
+			case "account": return this.change(async () => {
+				if (!this.runtime!.services.modelRuntime.getProvider(command.provider)) throw Error("Account selection is unavailable for this provider.");
+				if (session.getSteeringMessages().length || session.getFollowUpMessages().length) throw Error("Finish queued messages before changing the account.");
+				if (this.presentation.snapshot().views.some(view => view.kind === "conversation" && (view.data as import("../../../pi-ui/index.ts").UiConversation).active)) throw Error("Wait for child work to finish before changing the account.");
+				const models = this.runtime!.services.modelRuntime, binding = this.accountBindings.get(models);
+				if (!binding) throw Error("Account selection is unavailable.");
+				const previous = binding.selection, next = { ...previous, [command.provider]: command.id };
+				binding.select(next);
+				try {
+					const credential = await binding.read(command.provider);
+					if (command.id !== "pi" && !credential) throw Error("Selected account has no credential.");
+					await models.refresh({ allowNetwork: false });
+					session.sessionManager.appendCustomEntry(ACCOUNT_ENTRY, { selection: next });
+				} catch (error) { binding.select(previous); await models.refresh({ allowNetwork: false }); throw error; }
+				this.usageRevision++; this.scheduleSnapshot();
+			});
 			case "thinking": {
 				const level = session.getAvailableThinkingLevels().find(level => level === command.level);
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");
@@ -592,7 +500,7 @@ export class DeskEngine {
 				return;
 			}
 			case "abort": {
-				this.authentication?.abort(); this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
+				this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
 				await session.abort();
 				if (!this.closed && !this.replacing && !this.transition && this.runtime?.session === session && session.isIdle && session.getSteeringMessages().length) {
 					// Trigger through AgentSession so native retry, settlement, queues and images remain intact.
@@ -607,7 +515,7 @@ export class DeskEngine {
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
 			case "reload": await this.reload(); return this.snapshot();
 			case "prompt": {
-				if (this.authentication) throw new Error("Finish or cancel provider sign-in before prompting.");
+				if (this.presentation.snapshot().interactions.some(item => item.settings)) throw Error("Finish or cancel the pending Settings form before sending a message.");
 				if (!command.text.trim() && !command.attachments?.length) throw new Error("Enter a message or attach a file.");
 				const slash = promptCommandName(command.text);
 				const registered = slash ? session.extensionRunner?.getCommand(slash) : undefined;
@@ -687,8 +595,8 @@ export class DeskEngine {
 			await this.transitionJob;
 			return this.checkpointSnapshot();
 		}
-		if (this.transition || this.authentication || this.runtime?.session.isCompacting)
-			throw new Error("Finish the pending setting, sign-in or compaction before updating.");
+		if (this.transition || this.runtime?.session.isCompacting)
+			throw new Error("Finish the pending setting or compaction before updating.");
 		const snapshot = this.checkpointSnapshot();
 		if (action === "inspect") return snapshot;
 		this.checkpointHold = { id, running: snapshot.running };
@@ -711,7 +619,7 @@ export class DeskEngine {
 	private async change<T>(operation: () => Promise<T>, interrupt = false): Promise<T> {
 		if (this.closed) throw new Error("This session is closing.");
 		const session = this.runtime!.session;
-		if (this.transition || this.authentication || session.isCompacting || this.presentation.snapshot().interactions.length
+		if (this.transition || session.isCompacting || this.presentation.snapshot().interactions.length
 			|| !interrupt && (this.running || !session.isIdle)) throw new Error("Finish the pending control or interaction before changing this session.");
 		const resume = interrupt && (this.running || !session.isIdle);
 		this.transition = true;
@@ -749,7 +657,6 @@ export class DeskEngine {
 				await session.reload({ beforeSessionStart: async () => {
 					session.extensionRunner!.setUIContext(this.presentation.createUi(theme), "rpc");
 				} });
-				await this.publishProviders();
 			} catch (error) { this.failed = true; throw error; }
 		});
 	}
@@ -767,7 +674,6 @@ export class DeskEngine {
 		this.closed = true;
 		this.starting.abort();
 		this.closeJob = Promise.resolve().then(async () => {
-			this.authentication?.abort();
 			clearTimeout(this.snapshotTimer);
 			this.unsubscribe?.();
 			this.feed?.close();

@@ -11,10 +11,11 @@ import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { ContextPanel } from "./context-panel.tsx";
+import { ProviderAccountsPanel } from "./provider-accounts.tsx";
 
 export const settingsSections = [
 	{ id: "general", title: "General" }, { id: "conversation", title: "Conversation" },
-	{ id: "computers", title: "Computers & access" }, { id: "context", title: "Opening context" }, { id: "tools", title: "Tools & extensions" },
+	{ id: "accounts", title: "Model accounts" }, { id: "computers", title: "Computers & access" }, { id: "context", title: "Opening context" }, { id: "tools", title: "Tools & extensions" },
 	{ id: "activity", title: "Activity" },
 ];
 export function SettingsLayout({ active, sections, choose, children, enabled = true }: {
@@ -58,6 +59,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 				<button className="quiet-action" onClick={() => location.reload()}><Icon name="refresh" />Reload app</button>
 			</section>
 		</>}
+		{section === "accounts" && <ProviderAccountsPanel host={host} computer={computer} session={session} connected={connected} busy={settingBusy} invoke={invoke} />}
 		{section === "computers" && (account ? <Computers computers={host.computers ?? []} account={account} /> : <>
 			{host.updates && <section className="panel-card"><h3>Software updates</h3>
 				<SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></section>}

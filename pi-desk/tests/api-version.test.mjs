@@ -22,7 +22,7 @@ test("missing or incompatible local API versions cannot read state, mutate a ses
 		host.sessions.set(key, { view: { key, state: "ready", cwd: directory, created: 0 },
 			worker: { command: async () => { mutations++; }, close: async () => {} } });
 		const headers = { Authorization: `Bearer ${operator}`, "Content-Type": "application/json" };
-		for (const version of [undefined, "999"]) {
+		for (const version of [undefined, String(API_VERSION - 1), "999"]) {
 			const provided = { ...headers, ...(version ? { [API_HEADER]: version } : {}) };
 			const read = await fetch(`${origin}/api/state`, { headers: provided });
 			assert.equal(read.status, 426); await read.text();

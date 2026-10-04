@@ -76,6 +76,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (data.makeDefault !== undefined && typeof data.makeDefault !== "boolean") throw Error("Invalid default model selection.");
 			return { kind: data.kind, provider: string(data.provider, 200), id: string(data.id, 300),
 				...(data.makeDefault === true ? { makeDefault: true } : {}) };
+		case "account": return { kind: data.kind, provider: string(data.provider, 200), id: string(data.id, 36) };
 		case "thinking": return { kind: data.kind, level: string(data.level, 30) };
 		case "answer": return { kind: data.kind, id: string(data.id, 100), answer: data.answer };
 		case "action":

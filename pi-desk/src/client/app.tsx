@@ -22,6 +22,7 @@ import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
 import { AttachmentList, useAttachments } from "./attachments.tsx";
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
+import { SettingsForm } from "./settings-form.tsx";
 import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
 import type { Feedback } from "../shared/feedback.ts";
 import { readFeedback, saveFeedback } from "./chat-feedback.ts";
@@ -30,6 +31,7 @@ import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
+import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
 import { PlanView } from "./plan-view.tsx";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
@@ -72,6 +74,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [selected, setSelected] = useState(
     localStorage.getItem("pi-desk:selected") ?? "",
   );
+  const dotSelected = selected === "dot";
+  const dot = useDotConversation(state.host?.computers, authorized === true && !!state.host);
   const [transportConnected, setConnected] = useState(false);
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
@@ -139,7 +143,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
-  const showWorkRail = wideWorkspace && (!panel || settings);
+  const showWorkRail = !dotSelected && wideWorkspace && (!panel || settings);
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -154,9 +158,17 @@ export function App({ account }: { account?: BrowserAccount }) {
         && matchMedia("(min-width:1181px)").matches) setPanel("agents");
     }
   }, [panel, focusedView, activeAgents, selected, session?.activation, ui, wideWorkspace]);
-  const questions = ui?.interactions ?? [];
+  const settingsForms = (ui?.interactions ?? []).filter(interaction => interaction.settings);
+  const questions = (ui?.interactions ?? []).filter(interaction => !interaction.settings);
+  const openSettingsForm = () => {
+    const origin = settingsForms[0]?.settings;
+    if (origin && ui?.views.some(view => view.id === origin.id && view.surface === "settings")) {
+      setFocusedView(origin.id); setPanel("view");
+    } else { setSettingsSection("activity"); setPanel("settings"); }
+  };
+  useEffect(() => { if (settingsForms.length) openSettingsForm(); }, [selected, settingsForms[0]?.id]);
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
-  const inlineQuestion = question?.form.kind === "question" || question?.form.kind === "confirm";
+  const inlineQuestion = !settings && (question?.form.kind === "question" || question?.form.kind === "confirm");
   useEffect(() => {
     if (!questions.some(question => question.id === activeQuestion)) setActiveQuestion(questions[0]?.id ?? "");
   }, [questions, activeQuestion]);
@@ -184,7 +196,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     const card = [...document.querySelectorAll<HTMLElement>("[data-view]")].find(element => element.dataset.view === focusedView);
     card?.scrollIntoView({ block: "start" });
   }, [panel, focusedView, selected]);
-  const settingBusy = controlBusy || sending || closing || !!question || session?.snapshot?.activity === "waiting"
+  const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
   const busy =
     controlBusy ||
@@ -437,6 +449,10 @@ export function App({ account }: { account?: BrowserAccount }) {
             <span>◷</span> Resume
           </button>
         </div>
+        <div className="nav-label">Dots</div>
+        <nav className="dot-list" aria-label="Dots">
+          <DotNavigation dot={dot} selected={dotSelected} open={() => { setSelected("dot"); setSidebar(false); setPanel(undefined); }} />
+        </nav>
         <div className="nav-label">
           Sessions <span>{state.host.sessions.length}</span>
         </div>
@@ -495,7 +511,8 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         </div>
       </Navigation>
-      <main className="main" data-primary-focus tabIndex={-1}>
+      <main className={`main${dotSelected ? " main-dot" : ""}`} data-primary-focus tabIndex={-1}>
+        {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)} /> : <>
         <header className="topbar">
           <button
             className="icon-button mobile-nav"
@@ -511,6 +528,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
           </div>
           <div className="top-actions">
+            {!!settingsForms.length && <button className="quiet-action" onClick={openSettingsForm}>Finish Settings</button>}
             {!wideWorkspace && <button type="button" className="icon-button" title="Workspace" aria-label="Workspace" aria-pressed={panel === "workspace"}
               onClick={() => setPanel(panel === "workspace" ? undefined : "workspace")}><Icon name="layers" /></button>}
             {session?.activation && <CloseConversationButton session={session} name={title(session)}
@@ -786,8 +804,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
           </div>
         )}
+        </>}
       </main>
-      {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing} computers={host.computers}
+      {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
         invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
         openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
       {panel && (
@@ -818,7 +837,10 @@ export function App({ account }: { account?: BrowserAccount }) {
               if (settingsViews.some(view => view.id === id)) { setFocusedView(id); setPanel("view"); }
               else { setSettingsSection(id); setPanel("settings"); }
             }}>
-          {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing} computers={host.computers}
+          {settings && settingsForms.map(interaction => <SettingsForm key={`${selected}/${interaction.id}`} interaction={interaction}
+            draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
+            answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
+          {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
             invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
             openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
@@ -837,17 +859,16 @@ export function App({ account }: { account?: BrowserAccount }) {
                   {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
                   {!!view.actions?.length && <div className="panel-actions">
                     {view.actions.map(action => <button key={action.id} disabled={!!view.working || !connected}
-                      className={view.id === "desk-providers" && action.id === "refresh" ? "icon-button" : undefined}
                       title={action.label} aria-label={action.label}
                       onClick={() => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })}>
-                      {view.id === "desk-providers" && action.id === "refresh" ? <Icon name="refresh" /> : action.label}
+                      {action.label}
                     </button>)}
                   </div>}
                   </div>
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
                   {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
                   {view.kind === "details" ? <>
-                    <DetailsView data={view.data as UiDetails} accounts={view.id === "desk-providers"} disabled={!!view.working || !connected} invoke={(action, value) => run({
+                    <DetailsView data={view.data as UiDetails} disabled={!!view.working || !connected} invoke={(action, value) => run({
                       kind: "action", view: view.id, revision: view.revision, action: action.id, value,
                     })} />
                     {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}

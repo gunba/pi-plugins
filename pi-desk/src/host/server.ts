@@ -24,6 +24,7 @@ import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worke
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
 import { InputLedger } from "./inputs.ts";
+import { ProviderAccounts } from "./provider-accounts.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
 import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { readState } from "../../manage/store.ts";
@@ -63,6 +64,7 @@ export class DeskHost {
 	private folders?: Folders;
 	private inputs?: InputLedger;
 	private dot?: DotConnection;
+	private providerAccounts?: ProviderAccounts;
 	private checkpoints?: UpdateCheckpoints;
 	private restoringUpdate = false;
 	private restoreUpdateJob?: Promise<void>;
@@ -125,6 +127,7 @@ export class DeskHost {
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
+			this.providerAccounts = new ProviderAccounts(directory, this.options.agentDir!);
 			this.dot = new DotConnection(directory, this.options.agentDir!);
 			this.dot.start();
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
@@ -734,6 +737,7 @@ export class DeskHost {
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
+			providerAccountsDirectory: join(this.options.dataDir ?? join(this.options.agentDir!, "desk"), "provider-accounts"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
@@ -828,6 +832,8 @@ export class DeskHost {
 						json(response, 202, { instance: this.control.record.instance }); return;
 					}
 					if (["/api/host/prepare-update", "/api/host/stop-for-update"].includes(url.pathname)) {
+						if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
+						if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
 						const target = string(data.target, 64), id = string(data.checkpoint, 128);
 						const state = this.runtimeHome ? readState(this.runtimeHome) : undefined;
 						if (this.closing || this.restoringUpdate || !this.runtime || data.runtime !== this.runtime || state?.active !== this.runtime
@@ -853,6 +859,8 @@ export class DeskHost {
 						return;
 					}
 					if (url.pathname === "/api/host/stop-if-idle") {
+						if (this.dot?.busy) throw Error("Dot has an active operation.");
+						if (this.providerAccounts?.signingIn) throw Error("Provider sign-in is active.");
 						if (this.closing || !this.runtime || data.runtime !== this.runtime) {
 							json(response, 409, { error: "The host changed or is already stopping." }); return;
 						}
@@ -951,6 +959,15 @@ export class DeskHost {
 			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
+			if (url.pathname === "/api/provider-accounts" && request.method === "GET") return reply(await this.providerAccounts!.snapshot());
+			if (url.pathname === "/api/provider-accounts/sign-ins" && request.method === "POST") return reply(this.providerAccounts!.start(
+				string(data.id, 36), string(data.provider, 200), string(data.name, 100), string(data.type, 10) as import("../shared/provider-accounts.ts").ProviderAuthType), 202);
+			const signIn = /^\/api\/provider-accounts\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);
+			if (signIn && request.method === "POST") {
+				if (signIn[2] === "cancel") await this.providerAccounts!.cancel(signIn[1]!);
+				else this.providerAccounts!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
+				return reply({});
+			}
 			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
 			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
 				void this.dot!.connect().catch(() => {}); return reply({ accepted: true }, 202);
@@ -958,9 +975,40 @@ export class DeskHost {
 			if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await this.dot!.disconnect(); return reply({}); }
 			if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await this.dot!.history(string(url.searchParams.get("before"), 1000)));
 			if (url.pathname === "/api/dot/inputs" && request.method === "POST") return reply({ input: this.dot!.send(
-				string(data.id, 36), string(data.dot, 200), string(data.text, 32_000)) }, 202);
-			const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})$/.exec(url.pathname);
-			if (dotInput && request.method === "GET") return reply({ input: this.dot!.input(dotInput[1]!) ?? null });
+				string(data.id, 36), string(data.dot, 200), string(data.text, 32_000),
+				Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : []) }, 202);
+			if (url.pathname === "/api/dot/uploads" && request.method === "POST") return reply(this.dot!.stageFile(
+				string(data.id, 36), string(data.dot, 200), string(data.name, 200), string(data.mime, 100), Number(data.size)));
+			const dotFile = /^\/api\/dot\/uploads\/([a-f0-9-]{36})(?:\/(discard))?$/.exec(url.pathname);
+			if (dotFile && !dotFile[2] && request.method === "POST") return reply(this.dot!.appendFile(dotFile[1]!, Number(data.offset), string(data.data, 400_000)));
+			if (dotFile?.[2] && request.method === "POST") { this.dot!.removeFile(dotFile[1]!); return reply({}); }
+			if (url.pathname === "/api/dot/surface" && request.method === "POST") return reply(await this.dot!.openSurface(
+				string(data.mode, 20) as import("../shared/dot.ts").DotSurfaceMode));
+			const dotSurface = /^\/api\/dot\/surface\/([a-f0-9-]{36})(?:\/(inputs|files|close))?$/.exec(url.pathname);
+			if (dotSurface) {
+				const id = dotSurface[1]!;
+				if (!dotSurface[2] && request.method === "GET") return reply(await this.dot!.surfaceView(id, Number(url.searchParams.get("after"))));
+				if (dotSurface[2] === "close" && request.method === "POST") { await this.dot!.closeSurface(id); return reply({}); }
+				if (dotSurface[2] === "inputs" && request.method === "POST") {
+					await this.dot!.surfaceInput(id, string(data.id, 36), Number(data.width), Number(data.height), data.input as import("../shared/dot.ts").DotSurfaceInput);
+					return reply({});
+				}
+				if (dotSurface[2] === "files" && request.method === "POST") {
+					if (!Array.isArray(data.files)) throw Error("Choose files for the native file picker.");
+					await this.dot!.surfaceFiles(id, data.files.map(file => string(file, 36))); return reply({});
+				}
+			}
+			if (url.pathname === "/api/dot/downloads" && request.method === "POST") return reply(await this.dot!.download(string(data.message, 500), string(data.attachment, 500)));
+			const dotDownload = /^\/api\/dot\/downloads\/([a-f0-9-]{36})(?:\/(release))?$/.exec(url.pathname);
+			if (dotDownload) {
+				const surface = url.searchParams.get("surface") ?? undefined;
+				if (!dotDownload[2] && request.method === "GET") return reply(await this.dot!.downloadChunk(dotDownload[1]!, Number(url.searchParams.get("offset")), surface));
+				if (dotDownload[2] === "release" && request.method === "POST") { await this.dot!.releaseDownload(dotDownload[1]!, surface); return reply({}); }
+			}
+			const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})(?:\/(cancel))?$/.exec(url.pathname);
+			if (dotInput && !dotInput[2] && request.method === "GET") return reply({ input: this.dot!.input(dotInput[1]!) ?? null });
+			if (dotInput?.[2] && request.method === "POST") return reply({ input: this.dot!.cancelInput(
+				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : []) });
 			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
 			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
 			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
@@ -977,6 +1025,8 @@ export class DeskHost {
 				return reply({ accepted: true }, 202);
 			}
 			if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
+				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
+				if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
 				const version = string(data.version, 40);
 				if (!this.runtimeHome || !/^\d+\.\d+\.\d+$/.test(version)) return reply({ error: "Select the published update." }, 409);
 				await launchOperation(this.runtimeHome, "update-now", version);
@@ -989,6 +1039,8 @@ export class DeskHost {
 				return reply({ accepted: true }, 202);
 			}
 			if (url.pathname === "/api/runtime/apply" && request.method === "POST") {
+				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
+				if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
 				const prepared = string(data.prepared, 64);
 				if (!this.runtimeHome || !/^[a-f0-9]{64}$/.test(prepared)) return reply({ error: "Select a prepared update." }, 409);
 				await launchOperation(this.runtimeHome, "apply-now", prepared);
@@ -1171,6 +1223,7 @@ export class DeskHost {
 		this.checkpoints?.dispose();
 		for (const cancel of this.startupWaits) cancel();
 		const errors: unknown[] = [];
+		try { await this.providerAccounts?.close(); } catch (error) { errors.push(error); }
 		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat);
