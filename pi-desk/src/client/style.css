@@ -1187,6 +1187,10 @@ details[open] > summary:before {
   padding: 25px;
   box-shadow: 0 24px 100px #0003;
 }
+.command-usage { padding:8px 10px; font-size:11px; line-height:1.4; color:var(--muted); max-height:72px; overflow:auto; overflow-wrap:anywhere; }
+.command-usage strong { color:var(--text); }
+.footer-select { display:flex; align-items:center; gap:5px; }
+.footer-select select { width:auto; max-width:110px; min-height:24px; padding:2px 5px; font-size:11px; background:transparent; border:1px solid var(--border); border-radius:5px; }
 .modal::backdrop { backdrop-filter:blur(3px); }
 .modal .panel-title {
   margin-bottom: 18px;
@@ -1199,6 +1203,27 @@ details[open] > summary:before {
 }
 .modal textarea {
   margin: 8px 0;
+}
+.question-modal { width:520px; max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); padding:16px; border-radius:14px; overflow:hidden; }
+.question-modal[open], .inline-question { display:flex; flex-direction:column; }
+.question-modal .panel-title { flex:none; margin-bottom:10px; align-items:flex-start; }
+.question-modal .panel-title h2 { min-width:0; font-size:16px; line-height:1.4; overflow-wrap:anywhere; }
+.question-form { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.question-scroll { min-height:0; overflow:auto; overscroll-behavior:contain; overflow-wrap:anywhere; }
+.question-scroll .question-owner { font-size:11px; margin:0 0 8px; }
+.question-scroll .choices { gap:6px; margin:10px 0; }
+.question-scroll .choice { padding:9px 10px; gap:9px; border-radius:7px; }
+.question-scroll .choice > span { min-width:0; }
+.question-scroll .question-context { max-height:min(24dvh,160px); line-height:1.5; }
+.question-scroll textarea { min-height:64px; max-height:min(40dvh,280px); }
+.question-form > .dialog-actions { position:static; flex:none; margin-top:10px; padding:10px 0 0; border-top:1px solid var(--border); background:var(--surface); }
+.inline-question { overflow:hidden; padding:12px; }
+.inline-question > header { flex:none; }
+@media (max-width:480px), (max-height:600px) {
+  .question-modal { padding:12px; }
+  .question-modal .panel-title h2 { font-size:14px; }
+  .question-scroll .choice { padding:7px 9px; }
+  .question-form > .dialog-actions { gap:6px; margin-top:8px; padding-top:8px; }
 }
 .modal select {
   display: block;

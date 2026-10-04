@@ -77,12 +77,12 @@ test("prewarm is off by default and command changes persist independently of man
   assert.equal(readFileSync(join(h.directory, "codex-wire", "prewarm"), "utf8").trim(), "off");
 });
 
-test("Fast opt-in selects the advertised priority tier and can be turned off after reload", async t => {
+test("Speed selection preserves Fast and explicitly selects the advertised Ultrafast tier", async t => {
   const h = harness(t);
   const bodies = [], hints = [];
   const fetcher = async (url, init) => {
     if (String(url).includes("/models?")) return Response.json({
-      models: [{ slug: model.id, service_tiers: [{ id: "priority", name: "Fast" }] }],
+      models: [{ slug: model.id, service_tiers: [{ id: "priority", name: "Fast" }, { id: "ultrafast", name: "Ultrafast" }] }],
     });
     bodies.push(decode(init));
     hints.push(new Headers(init.headers).get("x-codex-routing-hint"));
@@ -106,6 +106,15 @@ test("Fast opt-in selects the advertised priority tier and can be turned off aft
   h.events.get("session_start")({ reason: "reload" }, h.ctx);
   await request();
   assert.equal(bodies.at(-1).service_tier, "priority");
+  await h.commands.get("fast").handler("ultrafast", h.ctx);
+  await request();
+  assert.equal(bodies.at(-1).service_tier, "ultrafast");
+  assert.match(hints.at(-1), /;tier=ultrafast$/);
+  assert.equal(readFileSync(join(h.directory, "codex-wire", "fast-mode"), "utf8").trim(), "ultrafast");
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({ reason: "reload" }, h.ctx);
+  await request();
+  assert.equal(bodies.at(-1).service_tier, "ultrafast");
   await h.commands.get("fast").handler("off", h.ctx);
   await request();
   assert.equal(bodies.at(-1).service_tier, undefined);

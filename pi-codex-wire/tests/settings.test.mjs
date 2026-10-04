@@ -34,10 +34,12 @@ test('saved native user-agent survives reload and rejects multiline values', asy
 test("Fast mode defaults off and only a saved opt-in enables it", t => {
   const directory = mkdtempSync(join(tmpdir(), "wire-fast-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  assert.equal(savedFast(directory), false);
-  saveFast(directory, true);
-  assert.equal(savedFast(directory), true);
-  saveFast(directory, false);
-  assert.equal(savedFast(directory), false);
+  assert.equal(savedFast(directory), "off");
+  saveFast(directory, "on");
+  assert.equal(savedFast(directory), "on");
+  saveFast(directory, "ultrafast");
+  assert.equal(savedFast(directory), "ultrafast");
+  saveFast(directory, "off");
+  assert.equal(savedFast(directory), "off");
   assert.throws(() => readFast("priority"), /fast on/);
 });

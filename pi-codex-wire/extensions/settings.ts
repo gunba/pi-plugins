@@ -36,22 +36,22 @@ export function savePrewarm(directory: string, enabled: boolean): void {
   saveSetting(directory, "prewarm", enabled ? "on" : "off");
 }
 
-export function readFast(value: unknown): boolean {
-  if (value === "on") return true;
-  if (value === "off") return false;
-  throw new Error("Use /fast on, /fast off, or /fast status");
+export type FastMode = "off" | "on" | "ultrafast";
+export function readFast(value: unknown): FastMode {
+  if (value === "on" || value === "off" || value === "ultrafast") return value;
+  throw new Error("Use /fast on, /fast off, /fast ultrafast, or /fast status");
 }
 
-export function savedFast(directory: string): boolean {
+export function savedFast(directory: string): FastMode {
   try { return readFast(readFileSync(join(directory, "fast-mode"), "utf8").trim()); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof Error && error.message.startsWith("Use /fast")) return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof Error && error.message.startsWith("Use /fast")) return "off";
     throw error;
   }
 }
 
-export function saveFast(directory: string, enabled: boolean): void {
-  saveSetting(directory, "fast-mode", enabled ? "on" : "off");
+export function saveFast(directory: string, mode: FastMode): void {
+  saveSetting(directory, "fast-mode", readFast(mode));
 }
 
 export function readUserAgent(directory: string, client: Client = "cli"): string | undefined {

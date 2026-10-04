@@ -409,14 +409,22 @@ Closing a question with Back, Escape or its close button only hides it. Pi keeps
 waiting, and **Answer** reopens it with the draft intact. **Cancel** explicitly
 cancels the request. Questions identify their computer and conversation; input
 errors appear inside the form. Draft answers stay in memory and are scoped to
-their conversation and question.
+their conversation and question. Switching between a comment and a freeform
+answer keeps the same text. Long questions scroll while their answer actions
+stay visible within the viewport.
 
 Type `/` in the composer to discover loaded extension commands, templates and
 skills. Arrow keys select a match, Tab completes it and Escape hides the list.
 Desk also provides `/settings [section]`, `/new [directory]`, `/resume`,
-`/name [name]`, `/compact [instructions]` and `/reload`. A loaded native command
-with the same name keeps precedence. `/name` opens the inline title editor.
-Literal file paths remain messages, not commands.
+`/name [name]`, `/compact [instructions]`, `/reload`, `/fork`, `/tree` and `/help`.
+`/fork` and `/tree` open native branch history. `/fork <entry-id> [at|before]`
+forks a specified entry; `before` offers its user message for editing. Enter
+parameters after the completed name, such as `/fast ultrafast`; the composer
+shows the command description and sends the original arguments. A loaded native
+command with the same name keeps precedence. `/name` opens the inline title
+editor. `/help` lists what Desk and the loaded native resources expose. Native
+Pi retains dispatch of other slash text; terminal-only commands are not implied
+by the menu. Literal file paths remain messages, not commands.
 
 ### Opening context
 

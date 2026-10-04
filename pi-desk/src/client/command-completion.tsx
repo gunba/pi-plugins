@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { commandMatches, type PromptCommandInfo } from "../shared/prompt-commands.ts";
+import { commandMatches, promptCommandName, type PromptCommandInfo } from "../shared/prompt-commands.ts";
 import { Icon } from "./icons.tsx";
 
 export function useCommandCompletion(text: string, commands: PromptCommandInfo[], complete: (text: string) => void) {
@@ -7,6 +7,7 @@ export function useCommandCompletion(text: string, commands: PromptCommandInfo[]
 	useEffect(() => { setSelected(0); }, [text]);
 	const items = dismissed === text ? [] : commandMatches(commands, text);
 	const choice = items[Math.min(selected, items.length - 1)];
+	const usage = dismissed !== text && /\s/.test(text) ? commands.find(command => command.name === promptCommandName(text)) : undefined;
 	const accept = (command: PromptCommandInfo) => complete(`/${command.name} `);
 	return {
 		active: items.length > 0,
@@ -28,6 +29,6 @@ export function useCommandCompletion(text: string, commands: PromptCommandInfo[]
 				aria-selected={choice?.name === command.name} onMouseDown={event => event.preventDefault()} onClick={() => accept(command)}>
 				<strong>/{command.name}</strong><small>{command.kind}</small><span>{command.description}</span>
 			</button>)}
-		</div> : null,
+		</div> : usage ? <div className="command-usage"><strong>/{usage.name}</strong> {usage.description}</div> : null,
 	};
 }

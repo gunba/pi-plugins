@@ -321,6 +321,14 @@ export function App({ account }: { account?: BrowserAccount }) {
             if (local.args) await command({ kind: "name", name: local.args }); else titleControl.current?.edit(); break;
           case "compact": await command({ kind: "compact", instructions: local.args || undefined }); break;
           case "reload": if (local.args) throw Error("Use /reload without arguments."); await command({ kind: "reload" }); break;
+          case "fork": {
+            if (!local.args) { setSettingsSection("conversation"); setPanel("settings"); break; }
+            const [entry, position = "at", extra] = local.args.split(/\s+/);
+            if (extra || !["at", "before"].includes(position)) throw Error("Use /fork <entry-id> [at|before], or /fork to choose an entry.");
+            await command({ kind: "fork", entry, position: position as "at" | "before" }); break;
+          }
+          case "tree": if (local.args) throw Error("Use /tree without arguments."); setSettingsSection("conversation"); setPanel("settings"); break;
+          case "help": if (local.args) throw Error("Use /help without arguments."); setDraft("/"); break;
         }
         if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
         if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
@@ -926,7 +934,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   );
 }
 
-type QuestionDraft = { choices: string[]; text: string; comment: string; freeform: boolean };
+type QuestionDraft = { choices: string[]; text: string; freeform: boolean };
 function Question({
   inline = false,
   draftKey,
@@ -954,12 +962,11 @@ function Question({
   const [text, setText] = useState(
     saved?.text ?? (form.kind === "editor" || form.kind === "input" ? (form.value ?? "") : ""),
   );
-  const [comment, setComment] = useState(saved?.comment ?? "");
   const [freeform, setFreeform] = useState(
     saved?.freeform ?? (form.kind !== "question" || !form.options.length),
   );
-  useEffect(() => { drafts.set(draftKey, { choices, text, comment, freeform }); },
-    [drafts, draftKey, choices, text, comment, freeform]);
+  useEffect(() => { drafts.set(draftKey, { choices, text, freeform }); },
+    [drafts, draftKey, choices, text, freeform]);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submit = async (value: UiAnswer | null) => {
@@ -971,22 +978,7 @@ function Question({
       setSubmitting(false);
     }
   };
-  const content = <>
-      {context && <p className="muted question-owner">{context}</p>}
-      {questions.length > 1 && <label>
-        {questions.length} pending questions
-        <select aria-label="Pending questions" value={question.id} onChange={event => choose(event.target.value)}>
-          {questions.map(item => <option key={item.id} value={item.id}>
-            {item.form.title}{item.scope ? ` · ${item.scope.label}` : ""}
-          </option>)}
-        </select>
-      </label>}
-      {question.scope && <p className="muted">Agent: {question.scope.label}</p>}
-      {(form.kind === "input" || form.kind === "editor") && <>
-        {form.context && <p className="detail-copy">{form.context}</p>}
-        <ExternalLinks links={form.links} text={form.context} />
-      </>}
-      <form
+  const content = <form className="question-form"
         onSubmit={(event) => {
           event.preventDefault();
           void submit(
@@ -997,11 +989,26 @@ function Question({
                 : {
                     kind: "selection",
                     selections: choices,
-                    ...(comment ? { comment } : {}),
+                    ...(form.kind === "question" && form.allowComment && text ? { comment: text } : {}),
                   },
           );
         }}
       >
+        <div className="question-scroll">
+          {context && <p className="muted question-owner">{context}</p>}
+          {questions.length > 1 && <label>
+            {questions.length} pending questions
+            <select aria-label="Pending questions" value={question.id} onChange={event => choose(event.target.value)}>
+              {questions.map(item => <option key={item.id} value={item.id}>
+                {item.form.title}{item.scope ? ` · ${item.scope.label}` : ""}
+              </option>)}
+            </select>
+          </label>}
+          {question.scope && <p className="muted">Agent: {question.scope.label}</p>}
+          {(form.kind === "input" || form.kind === "editor") && <>
+            {form.context && <p className="detail-copy">{form.context}</p>}
+            <ExternalLinks links={form.links} text={form.context} />
+          </>}
         {form.kind === "confirm" ? (
           <div className="request-description" tabIndex={0} aria-label="Request details">{form.message}</div>
         ) : form.kind === "question" ? (
@@ -1064,8 +1071,8 @@ function Question({
               <label>
                 Comment <span className="muted">(optional)</span>
                 <textarea
-                  value={comment}
-                  onChange={(event) => setComment(event.target.value)}
+                  value={text}
+                  onChange={(event) => setText(event.target.value)}
                   rows={2}
                 />
               </label>
@@ -1082,6 +1089,7 @@ function Question({
           />
         )}
         {error && <p className="error-text" role="alert">{error}</p>}
+        </div>
         <div className="dialog-actions">
           <button
             type="button"
@@ -1102,12 +1110,11 @@ function Question({
               : form.kind === "question" ? "Send answer" : form.kind === "input" || form.kind === "editor" ? "Save" : "Apply"}
           </button>
         </div>
-      </form>
-    </>;
+      </form>;
   return inline ? <section className="inline-question" aria-labelledby={`question-${question.id}`}>
     <header><Icon name={form.kind === "confirm" ? "check" : "chat"} /><h3 id={`question-${question.id}`}>{form.title}</h3></header>
     {content}
-  </section> : <Modal title={form.title} close={close}>{content}</Modal>;
+  </section> : <Modal className="question-modal" title={form.title} close={close}>{content}</Modal>;
 }
 document.documentElement.dataset.theme =
   localStorage.getItem("pi-desk:theme") ?? "light";

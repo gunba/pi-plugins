@@ -28,7 +28,7 @@ terminal command to the model as a substitute.
 | Component | In Desk |
 | --- | --- |
 | `pi-desk` | Native `/desk` setup, update, restart, rollback, status and login-start dialogs; no separate browser management adapter |
-| `pi-codex-wire` | Normal Codex transport and identity; Fast, session settings, allowance and usage in Settings |
+| `pi-codex-wire` | Normal Codex transport and identity; Standard/Fast/Ultrafast speed, session settings, allowance and usage in Settings |
 | `pi-message-timestamps` | Native message timestamps and saved tool durations; terminal activity clock remains in Pi |
 | `pi-local-links` | Authenticated native file opening, folder reveal, previews and downloads, including links in older and child messages |
 | `pi-codex-compat` | Managed process, image-inspection and image-generation tools; process state, output and images in chat |

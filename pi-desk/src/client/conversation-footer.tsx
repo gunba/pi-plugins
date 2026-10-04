@@ -35,7 +35,13 @@ export function ConversationFooter({ session, computer, connected, disabled, ope
 				disabled={disabled || !connected || pending || !!badge.view.working || control.disabled}
 				onClick={async () => { if (pending) return; setPending(true); try { await invoke(badge.view, control.action, !control.value); } finally { setPending(false); } }}>
 				{badge.label} <strong>{badge.value}</strong>
-			</button> : <span className={className} key={`${badge.view.id}/${index}`} title={badge.description}>{badge.label} {badge.value}</span>;
+			</button> : control?.kind === "select" ? <label className={`${className} footer-select`} key={`${badge.view.id}/${index}`} title={control.help ?? badge.description}>
+				<span>{badge.label}</span><select aria-label={control.label} value={control.value}
+					disabled={disabled || !connected || pending || !!badge.view.working || control.disabled}
+					onChange={async event => { const value = event.target.value; if (pending) return; setPending(true); try { await invoke(badge.view, control.action, value); } finally { setPending(false); } }}>
+					{control.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+				</select>
+			</label> : <span className={className} key={`${badge.view.id}/${index}`} title={badge.description}>{badge.label} {badge.value}</span>;
 		})}
 		{usage && <span className="footer-usage" title={`Recorded totals: ${tokens(usage.input)} input · ${tokens(usage.output)} output · ${tokens(usage.cacheRead)} cache read · ${tokens(usage.cacheWrite)} cache write. Not a subscription balance.`}>
 			<span className="footer-usage-tokens">↑{tokens(usage.input)} ↓{tokens(usage.output)} · </span>${usage.cost.toFixed(2)}

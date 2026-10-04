@@ -10,7 +10,7 @@ export function SessionControls({ generation, busy, invoke }: {
 	const [working, setWorking] = useState(false);
 	const [summary, setSummary] = useState(false);
 	const [instructions, setInstructions] = useState("");
-	useEffect(() => { setTree(undefined); }, [generation]);
+	useEffect(() => { setTree(undefined); void run({ kind: "tree" }); }, [generation]);
 	const run = async (command: WorkerCommand) => {
 		setWorking(true); setError("");
 		try {

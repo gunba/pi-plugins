@@ -27,18 +27,21 @@ Use `/codex-wire status` to see the client identity, last request outcome and di
 
 ## Fast mode
 
-Use `/fast on`, `/fast off`, or `/fast status`. The preference starts **off** and
-is saved in `~/.pi/agent/codex-wire/fast-mode`; other running Pi processes pick
-up changes after `/reload`. Enabling it does not change the current model or
-reasoning level. It asks for `service_tier: "priority"` on ChatGPT-authenticated
-Codex responses and native compaction only when the live model catalog offers
-that tier. API-key and custom-endpoint requests are not switched. If the catalog
-does not offer Fast for a model, the request stays Standard and a warning appears.
+Use `/fast on`, `/fast ultrafast`, `/fast off`, or `/fast status`. Desk exposes
+Standard, Fast and Ultrafast in its Speed selector. The preference starts **off**
+and is saved in `~/.pi/agent/codex-wire/fast-mode`; other running Pi processes pick
+up changes after `/reload`. Existing `on` preferences remain Fast. Selecting a
+speed does not change the model or reasoning level. Fast requests
+`service_tier: "priority"`; Ultrafast requests `service_tier: "ultrafast"` on
+ChatGPT-authenticated Codex responses and native compaction only when the live
+model catalog offers that tier. API-key and custom-endpoint requests are not
+switched. An unavailable tier stays Standard with a warning.
 The backend can still downgrade an eligible request; the diagnostic log records
 the requested and reported service tiers separately.
 
-[Codex Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed#fast-mode)
-uses more ChatGPT credits where available. Pi's local cost estimates are not
+[Codex speed modes](https://learn.chatgpt.com/docs/agent-configuration/speed)
+use more ChatGPT credits where available. Ultrafast access depends on the account
+and model; it is not implied by Fast access. Pi's local cost estimates are not
 the final subscription-credit charge. No request is sent just by toggling the
 preference.
 

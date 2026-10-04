@@ -16,7 +16,7 @@ import codexUsage from "./usage.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
-  readFast, savedFast, saveFast } from "./settings.ts";
+  readFast, savedFast, saveFast, type FastMode } from "./settings.ts";
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
 import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
@@ -68,28 +68,29 @@ export default function codexWire(pi: ExtensionAPI): void {
   let lifetime: AbortController | undefined;
   let releaseRequiredWire: (() => void) | undefined;
   let prewarm = false;
-  let fastEnabled = false;
+  let fastMode: FastMode = "off";
   let lastFastCheck = "not checked";
 
   function showWireStatus(ctx: ExtensionContext): void {
-    ctx.ui.setStatus("codex-wire", `wire:${client}${fastEnabled ? " · fast:on" : ""}`);
+    ctx.ui.setStatus("codex-wire", `wire:${client}${fastMode !== "off" ? ` · fast:${fastMode}` : ""}`);
     const remote = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
     if (!remote) return;
-    const data: UiDetails = { summary: "Fast mode requests priority processing on eligible ChatGPT Codex models and uses more credits. The backend can downgrade a request. Prewarming adds a full-prompt request; it is normally left off.",
+    const data: UiDetails = { summary: "Fast and Ultrafast request faster processing on eligible ChatGPT Codex models at higher credit use. Availability depends on the model and account; the backend can downgrade a request. Prewarming adds a full-prompt request; it is normally left off.",
       fields: [{ label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode }],
       controls: remote.runCommand ? [
-        { kind: "toggle", label: "Fast mode", value: fastEnabled, action: { id: "fast", label: "Change Fast mode", interrupt: "resume" }, help: "Priority processing uses more credits." },
+        { kind: "select", label: "Speed", value: fastMode, options: [{ value: "off", label: "Standard" }, { value: "on", label: "Fast" }, { value: "ultrafast", label: "Ultrafast" }],
+          action: { id: "fast", label: "Change speed", interrupt: "resume" }, help: "Fast and Ultrafast use more credits. The selected model must advertise the requested tier." },
         { kind: "select", label: "Client identity", value: client, options: [{ value: "cli", label: "CLI" }, { value: "desktop", label: "Desktop" }],
           action: { id: "identity", label: "Change client identity", interrupt: "resume" } },
         { kind: "toggle", label: "Prewarm", value: prewarm, action: { id: "prewarm", label: "Change prewarming", interrupt: "resume" } },
       ] : [] };
     remote.publish("codex-wire", { kind: "details", surface: "settings", title: "Codex", data,
       badges: ctx.model?.api === "openai-codex-responses" ? [{
-        label: "Fast", value: fastEnabled ? "On" : "Off", compact: true, control: "fast",
+        label: "Speed", value: fastMode === "off" ? "Standard" : fastMode === "on" ? "Fast" : "Ultrafast", compact: true, control: "fast",
         description: "Saved preference for eligible ChatGPT Codex requests. The backend can downgrade priority processing.",
       }] : [],
       actions: remote.runCommand ? [{ id: "reconnect", label: "Reconnect transport", interrupt: "resume" }] : [] }, {
-      fast: value => { if (typeof value === "boolean") return remote.runCommand?.("fast", value ? "on" : "off"); },
+      fast: value => { if (value === "off" || value === "on" || value === "ultrafast") return remote.runCommand?.("fast", value); },
       identity: value => {
         if (value === "desktop" || value === "cli") return remote.runCommand?.("codex-wire", `client ${value}`);
       },
@@ -133,7 +134,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory, selectedClient),
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
     });
-    stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; fastEnabled = selectedFast;
+    stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; fastMode = selectedFast;
     lastFastCheck = "not checked"; lastRequest = "not tested";
     const currentLifetime = lifetime = new AbortController();
     const currentSessions = sessions = new Map<string, WireSession>();
@@ -167,12 +168,13 @@ export default function codexWire(pi: ExtensionAPI): void {
     const fastWarnings = new Set<string>();
     const primaryThreadId = ctx.sessionManager.getSessionId();
 
-    function fastAvailable(metadata: JsonObject, modelId: string): boolean {
+    function fastAvailable(metadata: JsonObject, modelId: string, tier: "priority" | "ultrafast"): boolean {
       const available = Array.isArray(metadata.service_tiers)
-        && metadata.service_tiers.some(tier => object(tier).id === "priority");
-      if (fastEnabled && !available && !fastWarnings.has(modelId)) {
-        fastWarnings.add(modelId);
-        ctx.ui.notify(`Fast mode is not offered for ${modelId} in this Codex catalog; sending Standard instead.`, "warning");
+        && metadata.service_tiers.some(item => object(item).id === tier);
+      const key = `${modelId}/${tier}`;
+      if (!available && !fastWarnings.has(key)) {
+        fastWarnings.add(key);
+        ctx.ui.notify(`${tier === "ultrafast" ? "Ultrafast" : "Fast"} is not offered for ${modelId} in this Codex catalog; sending Standard instead.`, "warning");
       }
       return available;
     }
@@ -221,9 +223,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (context.messages.some(message => Object.hasOwn(message, CHECKPOINT))) throw new Error("Codex checkpoint requires the original Codex endpoint.");
         return call(options ?? {});
       }
-      const requestFast = fastEnabled && model.api === "openai-codex-responses"
+      const requestTier = fastMode !== "off" && model.api === "openai-codex-responses"
         && ctx.modelRegistry.isUsingOAuth(model)
-        && !(options && "serviceTier" in options && options.serviceTier !== undefined);
+        && !(options && "serviceTier" in options && options.serviceTier !== undefined)
+        ? fastMode === "ultrafast" ? "ultrafast" : "priority" : undefined;
       const session = sessionFor(threadId);
       if (session) session.compactContext = undefined;
       const currentProtocol = session?.protocol;
@@ -279,13 +282,13 @@ export default function codexWire(pi: ExtensionAPI): void {
           }
           // Pi's Codex streamSimple rebuilds its options and drops serviceTier.
           // Apply the opt-in to the serialized request, before catalog validation.
-          if (requestFast && source.service_tier === undefined) source.service_tier = "priority";
+          if (requestTier && source.service_tier === undefined) source.service_tier = requestTier;
           const shaped = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId), context,
             String(url));
-          if (requestFast) {
-            const available = fastAvailable(metadata, model.id);
-            lastFastCheck = shaped.service_tier === "priority" && available
-              ? `${model.id}: priority requested`
+          if (requestTier) {
+            const available = fastAvailable(metadata, model.id, requestTier);
+            lastFastCheck = shaped.service_tier === requestTier && available
+              ? `${model.id}: ${requestTier} requested`
               : `${model.id}: Standard sent`;
           }
           const outgoing = currentProtocol.headers(headers);
@@ -371,8 +374,9 @@ export default function codexWire(pi: ExtensionAPI): void {
           session.transport.close(); session.protocol.beginTurn(operation.reason); session.compactContext = operation.context;
         }
         const source = compactInput(model, operation.context, operation.thinking);
-        if (fastEnabled && operation.ctx.modelRegistry.isUsingOAuth(selected) && fastAvailable(metadata, model.id)) {
-          source.service_tier = "priority";
+        const tier = fastMode === "ultrafast" ? "ultrafast" : "priority";
+        if (fastMode !== "off" && operation.ctx.modelRegistry.isUsingOAuth(selected) && fastAvailable(metadata, model.id, tier)) {
+          source.service_tier = tier;
         }
         if (metadata.default_reasoning_summary !== undefined) {
           source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
@@ -439,11 +443,11 @@ export default function codexWire(pi: ExtensionAPI): void {
   pi.on("session_tree", newWindow);
   pi.on("session_shutdown", () => { stop(); });
   pi.registerCommand("fast", {
-    description: "ChatGPT Codex Fast mode (higher credit use): on, off, or status",
+    description: "ChatGPT Codex speed (higher credit use): on, off, ultrafast, or status",
     handler: async (args, ctx) => {
       const action = args.trim();
       if (!action || action === "status") {
-        ctx.ui.notify(`Codex Fast mode: ${fastEnabled ? "on" : "off"} (saved)\nLast check: ${lastFastCheck}\nOnly supported ChatGPT Codex models use it; the backend can downgrade a request.`, "info");
+        ctx.ui.notify(`Codex speed: ${fastMode} (saved)\nLast check: ${lastFastCheck}\nOnly supported ChatGPT Codex models use it; the backend can downgrade a request.`, "info");
         return;
       }
       if (!ctx.isIdle() || pending.size > 0) {
@@ -451,16 +455,16 @@ export default function codexWire(pi: ExtensionAPI): void {
         return;
       }
       try {
-        const enabled = readFast(action);
-        saveFast(directory, enabled);
-        fastEnabled = enabled;
+        const selected = readFast(action);
+        saveFast(directory, selected);
+        fastMode = selected;
         lastFastCheck = "not checked";
         for (const session of sessions.values()) session.transport.close();
         transport?.close();
         showWireStatus(ctx);
-        ctx.ui.notify(enabled
-          ? "Codex Fast mode on and saved. Eligible ChatGPT requests ask for priority processing, which uses more credits."
-          : "Codex Fast mode off and saved. New requests use the normal tier.", "info");
+        ctx.ui.notify(selected !== "off"
+          ? `Codex ${selected === "ultrafast" ? "Ultrafast" : "Fast"} saved. Eligible ChatGPT requests ask for ${selected === "ultrafast" ? "ultrafast" : "priority"} processing at higher credit use.`
+          : "Codex Standard saved. New requests use the normal tier.", "info");
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : "Cannot change Fast mode", "error");
       }

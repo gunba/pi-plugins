@@ -7,6 +7,9 @@ const commands = [
 	{ name: "name", description: "Rename this conversation; optionally supply its name.", kind: "desk" },
 	{ name: "compact", description: "Compact native context; optionally supply summary instructions.", kind: "desk" },
 	{ name: "reload", description: "Reload this conversation's native resources and extensions.", kind: "desk" },
+	{ name: "fork", description: "/fork opens branch history. /fork <entry-id> [at|before] forks that entry.", kind: "desk" },
+	{ name: "tree", description: "/tree opens native branch history.", kind: "desk" },
+	{ name: "help", description: "Show the commands loaded for this conversation.", kind: "desk" },
 ] as const satisfies readonly PromptCommandInfo[];
 
 /** Loaded native extensions and templates retain ownership of their command names. */
