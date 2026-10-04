@@ -194,7 +194,8 @@ export default function codexWire(pi: ExtensionAPI): void {
         session = {
           protocol: childProtocol,
           transport: new WireTransport(currentDiagnostics, childProtocol, selectedTransport as "auto" | "sse",
-            globalThis.fetch, process.env, headers => pi.events.emit(ALLOWANCE_EVENT, headers), selectedPrewarm),
+            // Inherited children can retain a different account. Their allowance is not the parent's.
+            globalThis.fetch, process.env, undefined, selectedPrewarm),
         };
         if (!window) pi.appendEntry("codex-wire-session-window", { threadId, id: childProtocol.getWindowId() });
       }

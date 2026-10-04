@@ -5,6 +5,39 @@ import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
 
+test("account picker distinguishes unavailable and changing selection from default credentials", async () => {
+	const { build } = await import("esbuild");
+	const { mkdtempSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { fileURLToPath } = await import("node:url");
+	const { createRequire } = await import("node:module");
+	const directory = mkdtempSync(join(tmpdir(), "desk-account-picker-"));
+	try {
+		const outfile = join(directory, "fixture.cjs");
+		await build({ stdin: { resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx", contents: `
+			import React from "react";
+			import { renderToStaticMarkup } from "react-dom/server";
+			import { ProviderAccountsPanel } from "./src/client/provider-accounts.tsx";
+			export const render = session => renderToStaticMarkup(<ProviderAccountsPanel host={{name:"Fixture",sessions:[]}}
+				session={session} connected={true} busy={false} invoke={async()=>{throw Error('No account action');}}/>);
+		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic", plugins: [{ name: "offline-connection", setup(builder) {
+			builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
+			builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: "export function api() { throw Error('No network'); }", loader: "js" }));
+		} }] });
+		const { render } = createRequire(import.meta.url)(outfile);
+		const queue = { steering: { count: 0 }, followUp: { count: 0 } };
+		const absent = render({ key: "fixture", state: "closed" });
+		assert.match(absent, /value="" selected="">Account selection unavailable/);
+		assert.doesNotMatch(absent, /value="pi" selected=""/);
+		const confirmed = render({ key: "fixture", state: "ready", snapshot: { accounts: {}, queue } });
+		assert.match(confirmed, /value="pi" selected=""/);
+		const changing = render({ key: "fixture", state: "ready", snapshot: { accounts: {}, queue }, controls: [{ kind: "account", state: "running" }] });
+		assert.match(changing, /value="" selected="">Changing account…/);
+		assert.doesNotMatch(changing, /value="pi" selected=""/);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("errors stay at their point in chat, deduplicate saved notices and stay dismissed after reopening", () => {
 	const values = new Map(), storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
 	const feedback = { id: "error", text: "Failed operation", level: "error", timestamp: 200, generation: "original-worker" };

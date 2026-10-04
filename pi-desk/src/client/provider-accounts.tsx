@@ -38,7 +38,7 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 	const [error, setError] = useState("");
 	const [readError, setReadError] = useState("");
 	const [admission, setAdmission] = useState<{ id: string; name: string }>();
-	const [working, setWorking] = useState(false);
+	const [working, setWorking] = useState(false), [selecting, setSelecting] = useState(false);
 	const lock = useRef(false), alive = useRef(true);
 	const refresh = async () => {
 		try {
@@ -85,8 +85,10 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 		await api(`/provider-accounts/sign-ins/${id}/cancel`, {}, computer);
 		if (alive.current && admission?.id === id) setAdmission(undefined);
 	});
-	const selected = session?.snapshot?.accounts?.[providerId] ?? "pi";
+	const selected = session?.snapshot?.accounts ? session.snapshot.accounts[providerId] ?? "pi" : undefined;
+	const changing = selecting || session?.controls?.some(control => control.kind === "account" && control.state === "running");
 	const accounts = snapshot?.accounts.filter(account => account.provider === providerId) ?? [];
+	const lastChange = session?.controls?.find(control => control.kind === "account");
 	const idle = session?.state === "ready" && session.snapshot?.activity !== "running" && session.snapshot?.activity !== "waiting"
 		&& !session.snapshot?.queue.steering.count && !session.snapshot?.queue.followUp.count;
 	return <>
@@ -100,18 +102,23 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 			{!connected && <p className="muted">This computer is disconnected.</p>}
 			{readError && <p className="error-text" role="alert">{readError}</p>}
 			{error && <p className="error-text" role="alert">{error}</p>}
-			{!snapshot ? <p className="muted">{connected ? "Loading saved accounts…" : "Connect to view saved accounts."}</p>
+			{!snapshot ? <p className="muted">{readError ? "Saved accounts could not be loaded. Refresh accounts to check again." : connected ? "Loading saved accounts…" : "Connect to view saved accounts."}</p>
 				: accounts.length ? <ul className="provider-account-list">{accounts.map(account => <li key={account.id}>
 					<div><strong>{account.name}</strong>{account.identity && <small>{account.identity}</small>}</div>
 					{session && account.id === selected && <span className="muted">This conversation</span>}
 				</li>)}</ul> : <p className="muted">No accounts saved for {providerName}.</p>}
-			{session ? <label className="setting-control">Conversation account<select aria-label="Conversation provider account" value={selected}
-				disabled={!connected || !idle || busy || working} onChange={event => void run(() => invoke({ kind: "account", provider: providerId, id: event.target.value }))}>
+			{session ? <label className="setting-control">{connected ? "Conversation account" : "Last confirmed account"}<select aria-label="Conversation provider account" value={changing ? "" : selected ?? ""}
+				disabled={!connected || !snapshot || selected === undefined || !idle || busy || working || changing} onChange={event => {
+					const id = event.target.value; setSelecting(true);
+					void run(() => invoke({ kind: "account", provider: providerId, id })).finally(() => { if (alive.current) setSelecting(false); });
+				}}>
+				{(changing || selected === undefined) && <option value="">{changing ? "Changing account…" : "Account selection unavailable"}</option>}
 				{!accounts.some(account => account.id === "pi") && <option value="pi">Default Pi credentials</option>}
-				{selected !== "pi" && !accounts.some(account => account.id === selected) && <option value={selected}>Saved account unavailable</option>}
+				{selected && selected !== "pi" && !accounts.some(account => account.id === selected) && <option value={selected}>{snapshot ? "Saved account unavailable" : "Selected saved account · loading details"}</option>}
 				{accounts.map(account => <option key={account.id} value={account.id}>{account.name}{account.identity ? ` · ${account.identity}` : ""}</option>)}
 			</select></label> : <p className="muted">Select a conversation on this computer to choose its account.</p>}
-			{session && !idle && <p className="muted">Account changes are available when the conversation and its queued work are idle.</p>}
+			{lastChange && ["failed", "interrupted"].includes(lastChange.state) && <p className="error-text" role="alert">Last account change {lastChange.state}: {lastChange.error ?? "Check the current selection before trying again."}</p>}
+			{session && !idle && <p className="muted">{session.state === "closed" ? "Resume this conversation to view or change its account." : "Account changes are available when the conversation and its queued work are idle."}</p>}
 			<button className="quiet-action" disabled={!connected || working} onClick={() => void refresh()}><Icon name="refresh" />Refresh accounts</button>
 		</section>
 		<section className="panel-card provider-sign-in"><h3><Icon name="login" />Add account</h3>

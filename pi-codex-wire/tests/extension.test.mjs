@@ -54,6 +54,19 @@ function decode(init) {
   return JSON.parse(init.body);
 }
 
+test("inherited child allowance cannot replace the parent's account limits", async t => {
+  const h = harness(t);
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id }] });
+    return new Response('data: {"type":"response.completed","response":{"id":"fixture","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream", "x-codex-secondary-used-percent": "95", "x-codex-secondary-window-minutes": "10080" } });
+  };
+  const response = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, sessionId: "pinned-child", fetch: fetcher }).result();
+  assert.equal(response.stopReason, "stop", response.errorMessage);
+  assert.equal(h.published.filter(event => event.name === "pi-codex-wire:allowance").length, 0,
+    "a child can use a different subscription from its parent");
+});
+
 test("failed manual reactivation remains fail-closed rather than restoring stock Codex", async t => {
   const h = harness(t);
   h.ctx.sessionManager.getBranch = () => { throw new Error("fixture activation failure"); };

@@ -1,13 +1,66 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { DeskEngine } from "../src/host/engine.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 
 const initial = { provider: "fixture", id: "initial" }, writing = { provider: "fixture", id: "writing" };
+
+test("selected Codex account routes credentials and survives native reload and reopening", async () => {
+	const root = mkdtempSync(join(tmpdir(), "desk-account-route-")), agent = join(root, "agent"), id = randomUUID();
+	const profiles = join(agent, "desk", "provider-accounts"), profile = join(profiles, id);
+	mkdirSync(profile, { recursive: true });
+	const credential = identity => ({ type: "oauth", refresh: "fixture", expires: Date.now() + 3600000,
+		access: `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: identity } })).toString("base64url")}.fixture` });
+	const original = credential("original"), selected = credential("selected");
+	writeFileSync(join(agent, "auth.json"), JSON.stringify({ "openai-codex": original }));
+	writeFileSync(join(profile, "auth.json"), JSON.stringify({ "openai-codex": selected }));
+	writeFileSync(join(profile, "account.json"), JSON.stringify({ id, provider: "openai-codex", name: "Selected" }));
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultProvider: "openai-codex", defaultModel: "gpt-5.4" }));
+	const engine = new DeskEngine(() => {}), resumed = new DeskEngine(() => {}), fetch = globalThis.fetch;
+	globalThis.fetch = () => { throw Error("Account routing fixture must stay offline"); };
+	const token = async value => (await value.runtime.services.modelRuntime.getAuth("openai-codex")).auth.apiKey;
+	try {
+		await engine.start({ cwd: root, agentDir: agent, sessionDir: join(root, "sessions") });
+		assert.equal(await token(engine), original.access);
+		const models = engine.runtime.services.modelRuntime, calls = [];
+		models.registerNativeProvider({ ...models.getProvider("openai-codex"), streamSimple(model, _context, options) {
+			calls.push(options?.auth?.apiKey ?? options?.apiKey);
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "Fixture" }],
+					provider: model.provider, model: model.id, api: model.api, stopReason: "stop", timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
+				stream.end();
+			});
+			return stream;
+		} });
+		await engine.runtime.session.prompt("Initial fixture");
+		assert.deepEqual(calls, [original.access]);
+		await engine.command(engine.presentation.generation, { kind: "account", provider: "openai-codex", id });
+		assert.deepEqual(engine.snapshot().accounts, { "openai-codex": id });
+		assert.equal(await token(engine), selected.access);
+		await engine.runtime.session.prompt("Fixture");
+		assert.deepEqual(calls, [original.access, selected.access], "native requests must use the selected store, not the initial credential");
+		assert.deepEqual(engine.snapshot().accounts, { "openai-codex": id });
+		const file = engine.snapshot().file;
+		await engine.reload();
+		assert.deepEqual(engine.snapshot().accounts, { "openai-codex": id });
+		assert.equal(await token(engine), selected.access);
+		await engine.close();
+		await resumed.start({ cwd: root, agentDir: agent, sessionFile: file });
+		assert.deepEqual(resumed.snapshot().accounts, { "openai-codex": id });
+		assert.equal(await token(resumed), selected.access);
+	} finally {
+		await Promise.all([engine.close(), resumed.close()]); globalThis.fetch = fetch;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("native extension package warnings reach Desk presentation", async () => {
 	const root = mkdtempSync(join(tmpdir(), "desk-loader-warning-")), agent = join(root, "agent"), pkg = join(root, "fixture");

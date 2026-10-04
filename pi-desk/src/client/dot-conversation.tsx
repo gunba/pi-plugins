@@ -10,8 +10,11 @@ import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
 
 const empty: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
-const errorText = (error: unknown) => error instanceof ApiError && error.status === 404
-	? "Update Desk on this computer to connect Dot." : error instanceof Error ? error.message : String(error);
+const errorText = (error: unknown) => {
+	const text = error instanceof Error ? error.message : String(error);
+	if (/Session with given id not found|No session with given id/i.test(text)) return "The Dot browser connection was lost. Reconnect Dot.";
+	return error instanceof ApiError && error.status === 404 ? "Update Desk on this computer to connect Dot." : text;
+};
 const storageKey = (computer?: string) => `pi-desk:dot:${computer ?? "local"}`;
 interface Pending { id: string; dot: string; text: string; files?: string[] }
 const merge = (older: DotMessage[], newer: DotMessage[]) => [...new Map([...older, ...newer].map(message => [message.id, message])).values()]
@@ -175,7 +178,7 @@ export function DotNavigation({ dot, selected, open }: { dot: DotConversationSta
 }
 
 export function DotConversation({ dot, openNavigation }: { dot: DotConversationState; openNavigation: () => void }) {
-	const [settings, setSettings] = useState(false), [native, setNative] = useState<DotSurfaceFrame>(), [opening, setOpening] = useState(false), [nativeError, setNativeError] = useState("");
+	const [showConnection, setShowConnection] = useState(false), [native, setNative] = useState<DotSurfaceFrame>(), [opening, setOpening] = useState(false), [nativeError, setNativeError] = useState("");
 	const [discarding, setDiscarding] = useState<DotUpload>();
 	const picker = useRef<HTMLInputElement>(null), live = useRef(true), nativeLock = useRef(false), connection = useRef({ computer: dot.id, dot: dot.view.id });
 	connection.current = { computer: dot.id, dot: dot.view.id };
@@ -211,13 +214,26 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 			<button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
 			<div className="conversation-heading"><span>Dot · {dot.status}</span><strong>{name}</strong></div>
 			<div className="top-actions dot-actions">
-				{!native && <><button className="subtle-button" disabled={!ready || busy || !!pending || opening} onClick={() => void openNative("activity")}>Activity</button>
+				{ready && !native && <><button className="subtle-button" disabled={busy || !!pending || opening} onClick={() => void openNative("activity")}>Activity</button>
 					<button className="subtle-button" disabled={!ready || busy || !!pending || opening} onClick={() => void openNative("computer")}>Computer</button>
 					<button className="subtle-button" disabled={!ready || busy || !!pending || opening} onClick={() => void openNative("settings")}>Manage Dot</button></>}
-				<button className="icon-button" title="Connection settings" aria-label="Connection settings" onClick={() => setSettings(true)}><Icon name="more" /></button>
+				{ready && <button className="subtle-button" aria-expanded={showConnection} onClick={() => setShowConnection(value => !value)}>Connection</button>}
 			</div>
 		</header>
-		{(dot.error || view.error || nativeError) && <div className="connection-banner dot-error" role="alert">{dot.error || view.error || nativeError}</div>}
+		{(dot.error || view.error || nativeError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || view.error || nativeError)}</div>}
+		{(!ready || showConnection) && <section className="dot-connection" aria-label="Dot connection">
+			<h2>{ready ? "Dot connection" : view.state === "connecting" ? "Connecting Dot…" : "Connect your Dot"}</h2>
+			{dot.computers && <label>Connection computer<select aria-label="Dot connection computer" value={dot.id ?? ""} disabled={busy || !!pending || opening} onChange={event => dot.chooseComputer(event.target.value)}>
+				{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
+			</select></label>}
+			<div className="dot-connection-actions"><button className={ready ? "subtle-button" : "primary"} disabled={!dot.online || busy || opening || view.state === "connecting" || receipt?.state === "sending"}
+				onClick={() => void dot.action(ready ? "disconnect" : "connect")}>{view.state === "connecting" ? "Connecting…" : busy ? "Working…" : ready ? "Disconnect" : dot.error || view.error ? "Reconnect Dot" : "Connect Dot"}</button>
+				{ready && <small>Disconnecting Desk does not pause your hosted Dot.</small>}
+			</div>
+			{!ready && <p>Sign into ChatGPT in Chrome on {dot.computers?.find(computer => computer.id === dot.id)?.name ?? "this computer"}, then connect here.</p>}
+			<p className="muted">Dot uses Chrome’s ChatGPT sign-in, not your conversation’s Codex account. Desk opens a background tab.</p>
+			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
+		</section>}
 		{native ? <DotNativeView key={`${dot.id}:${native.id}`} initial={native} computer={dot.id} close={() => setNative(undefined)} /> : <>
 		<div className="transcript dot-transcript" ref={feed} role="log" aria-label="Dot messages" aria-live="polite" onScroll={event => {
 			const node = event.currentTarget; atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60; scrollTop.current = node.scrollTop;
@@ -246,9 +262,8 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 						</article>
 					</div>;
 				})}
-				{!messages.length && <div className="dot-empty"><span className="dot-avatar"><Icon name="chat" /></span><h1>{name}</h1>
-					<p>{ready ? "What’s on your mind?" : view.state === "connecting" ? "Opening your Dot…" : "Bring your existing Dot conversation into Desk."}</p>
-					{!ready && view.state !== "connecting" && <button className="primary" onClick={() => setSettings(true)}>Connect Dot</button>}
+				{!messages.length && ready && <div className="dot-empty"><span className="dot-avatar"><Icon name="chat" /></span><h1>{name}</h1>
+					<p>What’s on your mind?</p>
 				</div>}
 			</div>
 		</div>
@@ -283,17 +298,6 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 			<p className="muted">This does not remove an upload or draft already in ChatGPT. Review its native conversation first.</p>
 			<div className="dialog-actions"><button disabled={busy} onClick={() => setDiscarding(undefined)}>Keep file</button>
 				<button disabled={busy || !!pending} onClick={() => { void dot.discard(discarding); setDiscarding(undefined); }}>Discard local copy</button></div>
-		</Modal>}
-		{settings && <Modal title="Connection settings" close={() => setSettings(false)}>
-			<div className="dot-settings">
-				{dot.computers && <label>Connection computer<select value={dot.id ?? ""} disabled={busy || !!pending} onChange={event => dot.chooseComputer(event.target.value)}>
-					{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
-				</select></label>}
-				<p>Chrome on this computer must be signed into ChatGPT. Desk uses a background tab.</p>
-				<div className="dot-settings-status"><span>{dot.status}</span><button disabled={!dot.online || busy || view.state === "connecting" || receipt?.state === "sending"}
-					onClick={() => void dot.action(ready ? "disconnect" : "connect")}>{ready ? "Disconnect" : "Connect"}</button></div>
-				<small>Disconnecting Desk does not pause your hosted Dot.</small>
-			</div>
 		</Modal>}
 	</>;
 }
