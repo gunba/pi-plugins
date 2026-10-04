@@ -43,6 +43,7 @@ import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import { agentId, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { LEASE_MS } from "../../../pi-party/store.ts";
+import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
@@ -61,6 +62,7 @@ export class DeskHost {
 	private saved?: SavedSessionIndex;
 	private folders?: Folders;
 	private inputs?: InputLedger;
+	private dot?: DotConnection;
 	private checkpoints?: UpdateCheckpoints;
 	private restoringUpdate = false;
 	private restoreUpdateJob?: Promise<void>;
@@ -123,6 +125,8 @@ export class DeskHost {
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
+			this.dot = new DotConnection(directory, this.options.agentDir!);
+			this.dot.start();
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
 					const file = view.snapshot?.file ?? view.file;
@@ -947,6 +951,16 @@ export class DeskHost {
 			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
+			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
+			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
+				void this.dot!.connect().catch(() => {}); return reply({ accepted: true }, 202);
+			}
+			if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await this.dot!.disconnect(); return reply({}); }
+			if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await this.dot!.history(string(url.searchParams.get("before"), 1000)));
+			if (url.pathname === "/api/dot/inputs" && request.method === "POST") return reply({ input: this.dot!.send(
+				string(data.id, 36), string(data.dot, 200), string(data.text, 32_000)) }, 202);
+			const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})$/.exec(url.pathname);
+			if (dotInput && request.method === "GET") return reply({ input: this.dot!.input(dotInput[1]!) ?? null });
 			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
 			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
 			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
@@ -1157,6 +1171,7 @@ export class DeskHost {
 		this.checkpoints?.dispose();
 		for (const cancel of this.startupWaits) cancel();
 		const errors: unknown[] = [];
+		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat);
 		this.updateWatch?.close(); clearTimeout(this.updateTimer);

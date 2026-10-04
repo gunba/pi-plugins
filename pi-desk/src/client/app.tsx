@@ -77,7 +77,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [sidebar, setSidebar] = useState(false);
   const wideWorkspace = useMedia("(min-width: 1280px)");
   const [panel, setPanel] = useState<
-    "work" | "settings" | "view" | "agents" | undefined
+    "work" | "workspace" | "settings" | "view" | "agents" | undefined
   >();
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -139,7 +139,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
-  const showWorkRail = wideWorkspace && !!session && (!panel || settings);
+  const showWorkRail = wideWorkspace && (!panel || settings);
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -503,6 +503,8 @@ export function App({ account }: { account?: BrowserAccount }) {
               control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
           </div>
           <div className="top-actions">
+            {!wideWorkspace && <button type="button" className="icon-button" title="Workspace" aria-label="Workspace" aria-pressed={panel === "workspace"}
+              onClick={() => setPanel(panel === "workspace" ? undefined : "workspace")}><Icon name="layers" /></button>}
             {session?.activation && <CloseConversationButton session={session} name={title(session)}
               computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
               confirmed={() => setPanel(undefined)} />}
@@ -777,18 +779,18 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
       </main>
-      {showWorkRail && session && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
+      {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing} computers={host.computers}
         invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
         openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
       {panel && (
-        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)} back={panel === "view" && !settings ? () => setPanel("work") : undefined}>
           <div className="panel-title">
             {panel === "view" && !settings && <button className="icon-button"
               aria-label={visibleViews[0]?.surface === "settings" ? "Back to settings" : "Back to Work"}
               onClick={() => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "work"
+              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "work"
                 ? "Work"
                 : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
@@ -808,6 +810,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               if (settingsViews.some(view => view.id === id)) { setFocusedView(id); setPanel("view"); }
               else { setSettingsSection(id); setPanel("settings"); }
             }}>
+          {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing} computers={host.computers}
+            invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
+            openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}

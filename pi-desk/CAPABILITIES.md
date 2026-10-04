@@ -54,6 +54,16 @@ terminal command to the model as a substitute.
 | Skills, prompts and project resources | Native discovery, project trust and command expansion |
 | Session ownership | Desk pre-open lease; shared terminal presence and shutdown integration |
 
+## Dot
+
+**Workspace → Dot** connects an existing ChatGPT Dot through the chosen
+computer's signed-in Chrome session. Text chat, live message updates, paged
+history and durable delivery receipts are separate from native Pi sessions.
+The **Plan** tab retains the selected Pi conversation's plan and agent summary.
+Dot's cloud execution and memory remain at OpenAI. This private web adapter
+needs a background Chrome tab; attachments, approvals and cloud-computer
+controls are not reproduced in Desk.
+
 ## Boundaries
 
 - Custom terminal components are not converted to HTML. Plugins need a

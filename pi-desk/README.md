@@ -39,6 +39,28 @@ Install this repository as a personal Pi package, restart Pi, and run
 and `/desk open` opens it. Use `/desk` for management; see
 [installation and updates](UPDATING.md) for migration and platform prerequisites.
 
+## Dot
+
+The Workspace pane has **Dot** and **Plan** tabs. On smaller screens, open
+**Workspace** from the conversation header. Dot is independent of the selected
+Pi conversation; changing agents does not change the cloud Dot.
+
+Choose the connection computer and select **Connect**. That computer needs
+Pi's local Chrome DevTools connection and a Chrome profile signed into ChatGPT
+with an existing Dot. This is a separate web sign-in from Codex authentication.
+Desk opens its own background tab; no extra ChatGPT window is required.
+
+Messages, replies and paged history come from the existing Dot. Its execution
+and memory remain in OpenAI's cloud. Closing Desk or selecting **Disconnect**
+does not pause the Dot. Drafts stay in the Desk browser; the host saves message
+receipts and never automatically resends an uncertain delivery. **Check delivery**
+reconciles the receipt. Review the Dot before deliberately sending again.
+
+This adapter uses ChatGPT's private web interface and English-language message
+editor. Site changes can require an adapter update. Attachments are listed;
+uploads, cloud-computer takeover and approvals still use ChatGPT. Dot usage
+remains subject to the account's subscription and Dot allowances.
+
 ## Development
 
 Requires Node 22.19 or later. Native account storage also needs the protected-cache
