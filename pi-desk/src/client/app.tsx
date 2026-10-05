@@ -36,6 +36,9 @@ import { DotConversation, DotNavigation, useDotConversation } from "./dot-conver
 import { PlanView } from "./plan-view.tsx";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
+import { DeskStatusBar } from "./desk-status-bar.tsx";
+import { reportDeskError } from "./desk-status.ts";
+import { agentInventory } from "./agent-inventory.ts";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
@@ -92,6 +95,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [focusedView, setFocusedView] = useState("");
   const [settingsSection, setSettingsSection] = useState("general");
   const [focusedAgent, setFocusedAgent] = useState("");
+  const [agentHistoryOpen, setAgentHistoryOpen] = useState(false);
   const autoAgents = useRef("");
   const [cwd, setCwd] = useState("");
   const [newComputer, setNewComputer] = useState<string>();
@@ -100,13 +104,14 @@ export function App({ account }: { account?: BrowserAccount }) {
   const sendingRef = useRef(false);
   const [feedback, setFeedback] = useState(() => readFeedback(localStorage));
   useEffect(() => saveFeedback(localStorage, feedback), [feedback]);
-  const setError = useCallback((text: string, key = selected) => {
-    if (!text) return;
-    setFeedback(previous => ({ ...previous, [key]: [...(previous[key] ?? []),
-      { id: crypto.randomUUID(), text: text.slice(0, 12_000), level: "error" as const, timestamp: Date.now(), generation: "browser" }].slice(-80) }));
-  }, [selected]);
+  const setError = useCallback((text: string, _key?: string) => { if (text) reportDeskError(text); }, []);
+  useEffect(() => {
+    const failed = (event: ErrorEvent) => reportDeskError(event.error ?? event.message);
+    const rejected = (event: PromiseRejectionEvent) => reportDeskError(event.reason);
+    window.addEventListener("error", failed); window.addEventListener("unhandledrejection", rejected);
+    return () => { window.removeEventListener("error", failed); window.removeEventListener("unhandledrejection", rejected); };
+  }, []);
   const attachments = useAttachments(selected, setError);
-  const error = feedback[selected]?.at(-1)?.text ?? "";
   const fileInput = useRef<HTMLInputElement>(null);
   const titleControl = useRef<{ edit: () => void }>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -148,9 +153,12 @@ export function App({ account }: { account?: BrowserAccount }) {
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
+  const { historyView: agentHistory, total: totalAgents } = agentInventory(ui?.views ?? []);
   const chooseAgent = (id: string) => { setFocusedAgent(id); localStorage.setItem(`pi-desk:agent-selection:${selected}`, id); };
+  const openAgentPane = (id?: string, history = false) => { if (id) chooseAgent(id); setAgentHistoryOpen(history); setPanel("agents"); };
   useEffect(() => { setFocusedAgent(localStorage.getItem(`pi-desk:agent-selection:${selected}`) ?? ""); }, [selected]);
   useEffect(() => {
+    if (panel === "view" && focusedView === "subagents") setPanel("agents");
     if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
     const activation = `${selected}:${session?.activation}`;
     if (activeAgents && autoAgents.current !== activation) {
@@ -209,8 +217,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     const notices = (ui?.notifications ?? []).filter(item => item.level !== "info").map(item => ({
       ...item, level: item.level as "warning" | "error", timestamp: item.timestamp ?? Date.now(), generation: item.generation ?? ui!.generation,
     }));
-    if (session?.error) notices.push({ id: `failure:${session.activation ?? ui?.generation ?? ""}:${session.error}`,
-      text: session.error, level: "error", timestamp: Date.now(), generation: session.activation ?? ui?.generation ?? "browser" });
+    if (session?.error) reportDeskError(session.error);
     if (!notices.length) return;
     setFeedback(previous => {
       const old = previous[selected] ?? [], known = new Set(old.map(item => item.id));
@@ -415,16 +422,15 @@ export function App({ account }: { account?: BrowserAccount }) {
         <h1>Access unavailable</h1>
         <p>{account ? "Sign in again to open your account workspace." : "Run pi-desk open --local on this computer to authorize local recovery."}</p>
         <button onClick={() => location.reload()}>Reload app</button>
-        <p className="error-text" role="alert">
-          {error}
-        </p>
+        <DeskStatusBar />
       </main>
     );
   if (!state.host)
     return (
       <main className="pair-page">
         <div className="brand-mark">π</div>
-        <p>{error || "Connecting to your workspace…"}</p>
+        <p>Connecting to your workspace…</p>
+        <DeskStatusBar />
       </main>
     );
 
@@ -437,6 +443,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     && selectedModel.id === session.snapshot.defaultModel.id;
   return (
     <div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+      <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">
           <span className="brand-mark small">π</span>
@@ -570,9 +577,9 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
         <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (!showWorkRail || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
-        {!showWorkRail && !!agentViews.length && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+        {!showWorkRail && totalAgents > 0 && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
-          <strong>Agents</strong><span>{activeAgents} active · {agentViews.length} total</span><span>View →</span>
+          <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
@@ -809,7 +816,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </>}
       </main>
       {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
-        invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
+        invoke={run} openAgents={openAgentPane} openWork={() => setPanel("work")}
         openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
       {panel && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
@@ -843,9 +850,10 @@ export function App({ account }: { account?: BrowserAccount }) {
             draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
             answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
           {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
-            invoke={run} openAgents={id => { if (id) chooseAgent(id); setPanel("agents"); }} openWork={() => setPanel("work")}
+            invoke={run} openAgents={openAgentPane} openWork={() => setPanel("work")}
             openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
+            history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
             onLatest={storeHistory} renderMessage={(message, source, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={source} />}
@@ -870,9 +878,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
                   {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
                   {view.kind === "details" ? <>
-                    <DetailsView data={view.data as UiDetails} disabled={!!view.working || !connected} invoke={(action, value) => run({
-                      kind: "action", view: view.id, revision: view.revision, action: action.id, value,
-                    })} />
+                    <DetailsView data={view.id === "subagents" ? { ...view.data as UiDetails, items: [] } : view.data as UiDetails}
+                      disabled={!!view.working || !connected} invoke={(action, value) => run({
+                        kind: "action", view: view.id, revision: view.revision, action: action.id, value,
+                      })} />
+                    {view.id === "subagents" && <button onClick={() => openAgentPane(undefined, true)}>Browse agents and history →</button>}
                     {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
                       source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
                       connected={connected} epoch={epoch}

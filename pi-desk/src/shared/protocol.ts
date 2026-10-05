@@ -94,7 +94,8 @@ export interface SessionView {
 	cwd: string;
 	created: number;
 	state: "starting" | "ready" | "failed" | "closed";
-	snapshot?: SessionSnapshot;
+	/** Native state; presentation data is carried once in ui below. */
+	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */
 	historyReady?: boolean;
 	ui?: PresentationSnapshot;

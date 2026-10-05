@@ -139,7 +139,10 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Versions 0.5.9 and 0.5.10 use API 5 and first-party presentation version 2. Deploy matching
+Version 0.5.18 uses API 7: display sessions carry presentation data once in
+`ui`, not a second copy in `snapshot.ui`. Update hosts, the website and shared
+services together. Version 0.5.15–0.5.17 uses API 6; versions 0.5.9 and
+0.5.10 use API 5. These releases use first-party presentation version 2. Deploy matching
 website, account and broker artifacts before treating the cutover as complete.
 Older computers may temporarily show **Update required**. A version mismatch
 is not a reason to delete sessions, credentials or drafts.

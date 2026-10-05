@@ -1,23 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT, type UploadCommand } from "../shared/attachments.ts";
+import { draftTransaction } from "./draft-database.ts";
 
 export interface DraftFile {
 	id: string; name: string; blob: Blob;
 	uploaded?: { session: string; id: string };
 }
-let database: Promise<IDBDatabase> | undefined;
-function db(): Promise<IDBDatabase> {
-	return database ??= new Promise((resolve, reject) => {
-		const request = indexedDB.open("pi-desk-drafts", 1);
-		request.onupgradeneeded = () => request.result.createObjectStore("attachments");
-		request.onsuccess = () => resolve(request.result);
-		request.onerror = () => { database = undefined; reject(request.error); };
-	});
-}
 async function change(key: string, update?: (files: DraftFile[]) => DraftFile[]): Promise<DraftFile[]> {
-	const database = await db();
+	const transaction = await draftTransaction(update ? "readwrite" : "readonly");
 	return new Promise((resolve, reject) => {
-		const transaction = database.transaction("attachments", update ? "readwrite" : "readonly");
 		const store = transaction.objectStore("attachments"), request = store.get(key);
 		let value: DraftFile[] = [], failure: unknown;
 		request.onsuccess = () => {
@@ -31,9 +22,9 @@ async function change(key: string, update?: (files: DraftFile[]) => DraftFile[])
 	});
 }
 export async function draftAttachments(): Promise<Map<string, DraftFile[]>> {
-	const database = await db();
+	const transaction = await draftTransaction("readonly");
 	return new Promise((resolve, reject) => {
-		const transaction = database.transaction("attachments", "readonly"), store = transaction.objectStore("attachments");
+		const store = transaction.objectStore("attachments");
 		const result = new Map<string, DraftFile[]>(), cursor = store.openCursor();
 		cursor.onsuccess = () => {
 			const value = cursor.result;
@@ -47,9 +38,9 @@ export async function draftAttachments(): Promise<Map<string, DraftFile[]>> {
 }
 export async function copyDraftAttachments(source: string, target: string, commit: () => () => void): Promise<void> {
 	if (source === target) throw new Error("Choose another conversation.");
-	const database = await db();
+	const transaction = await draftTransaction("readwrite");
 	await new Promise<void>((resolve, reject) => {
-		const transaction = database.transaction("attachments", "readwrite"), store = transaction.objectStore("attachments");
+		const store = transaction.objectStore("attachments");
 		const read = store.get(source), destination = store.get(target);
 		let completed = 0, failure: unknown, rollback: (() => void) | undefined;
 		const ready = () => {

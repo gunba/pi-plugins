@@ -6,7 +6,7 @@ import { acceptChannelOffer, ClientHandshake, hostAdmission, ChannelVersionError
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
-import { EventWindow } from "./event-window.ts";
+import { EventDelivery, EventWindow } from "./event-window.ts";
 import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload } from "../shared/relay-protocol.ts";
 import type { HostEvent } from "../shared/protocol.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
@@ -15,7 +15,7 @@ import { MAX_NETWORK_PACKET } from "../../../pi-party/network.ts";
 
 interface Peer {
 	id: string; purpose: ChannelPurpose; initiator?: boolean; handshake?: ClientHandshake; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;
-	timer: ReturnType<typeof setTimeout>; unwatch?: () => void; pending: number; events: EventWindow;
+	timer: ReturnType<typeof setTimeout>; unwatch?: () => void; pending: number; events: EventWindow; delivery?: EventDelivery;
 	leaseUntil: number; ownExpires: number; sentCredential?: string; handshaking: boolean; renewing: boolean;
 }
 export interface RemoteAccess { id: string; authorized: () => boolean }
@@ -307,11 +307,12 @@ export class RelayConnector {
 				if (!this.valid(peer)) peer.unwatch();
 				return;
 			}
+			peer.delivery = new EventDelivery(peer.events, (sequence, event) =>
+				peer.channel!.send({ type: "event", sequence, event } satisfies RemotePayload),
+				() => this.drop(peer.id, true, 1013));
 			peer.unwatch = this.options.watch(event => {
 				if (!this.valid(peer)) { this.drop(peer.id, true, 1013); return; }
-				const sequence = peer.events.reserve(event);
-				if (sequence === undefined) { this.drop(peer.id, true, 1013); return; }
-				void peer.channel!.send({ type: "event", sequence, event } satisfies RemotePayload).catch(() => this.drop(peer.id, true, 1013));
+				peer.delivery!.push(event);
 			});
 			if (!this.valid(peer)) peer.unwatch();
 			return;
@@ -331,7 +332,7 @@ export class RelayConnector {
 			if (message.type !== "party" || Buffer.byteLength(JSON.stringify(message.payload)) > MAX_NETWORK_PACKET) throw new Error("Invalid party payload.");
 			await this.options.party!.receive(device.id, message.payload); return;
 		}
-		if (message.type === "events_ack") { peer.events.acknowledge(message.sequence); return; }
+		if (message.type === "events_ack") { peer.events.acknowledge(message.sequence); peer.delivery?.resume(); return; }
 		if (message.type !== "request" || !validId(message.id) || peer.pending >= 32) throw new Error("Invalid remote request.");
 		const request = object(message.request);
 		if ((request.method !== "GET" && request.method !== "POST") || typeof request.path !== "string" || request.path.length > 5000 ||
@@ -347,7 +348,7 @@ export class RelayConnector {
 	private drop(id: string, notify = false, code = 4001): void {
 		const peer = this.peers.get(id);
 		if (!peer) return;
-		this.peers.delete(id); clearTimeout(peer.timer); peer.handshake?.close(); peer.channel?.close(); peer.unwatch?.();
+		this.peers.delete(id); clearTimeout(peer.timer); peer.delivery?.close(); peer.handshake?.close(); peer.channel?.close(); peer.unwatch?.();
 		if (notify && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-close" : "close", peer: id, code }));
 	}
 	close(): void {

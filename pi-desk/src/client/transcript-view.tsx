@@ -3,6 +3,7 @@ import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/rea
 import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, type HistoryPosition } from "../shared/history.ts";
 import { api } from "./connection.ts";
+import { reportDeskError } from "./desk-status.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
 import { transcriptRows } from "./transcript-rows.ts";
 import { conversationFeedback } from "./chat-feedback.ts";
@@ -35,7 +36,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const [live, setLive] = useState(saved.current?.follow !== false);
 	const [atEnd, setAtEnd] = useState(saved.current?.follow !== false);
 	const [positioned, setPositioned] = useState(!page && !connected);
-	const [loading, setLoading] = useState(!page && connected), [errors, setErrors] = useState<Feedback[]>([]);
+	const [loading, setLoading] = useState(!page && connected);
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
@@ -51,8 +52,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
 	const nativeMessages = useMemo(() => {
 		const native = live ? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS) : page?.messages ?? [];
-		return conversationFeedback(native, [...feedback, ...errors], session, dismissed, live ? { before: page?.before } : page ?? {});
-	}, [page, messages, live, feedback, errors, dismissed, session]);
+		return conversationFeedback(native, feedback, session, dismissed, live ? { before: page?.before } : page ?? {});
+	}, [page, messages, live, feedback, dismissed, session]);
 	const rows = useMemo(() => transcriptRows(nativeMessages), [nativeMessages]);
 	const visible = useMemo(() => rows.map(row => row.message), [rows]);
 	const newest = messages.at(-1);
@@ -121,8 +122,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			if (position.from && /position no longer exists/.test(String(error))) {
 				saved.current = undefined; void load(); return;
 			}
-			setErrors(previous => [...previous, { id: crypto.randomUUID(), text: String(error).slice(0, 12_000),
-				level: "error" as const, timestamp: Date.now(), generation }].slice(-10));
+			reportDeskError(error);
 		} finally { if (id === request.current) { loadingRef.current = false; setLoading(false); } }
 	};
 	useEffect(() => {

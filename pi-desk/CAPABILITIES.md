@@ -18,6 +18,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | Extension commands | Composer command completion; commands execute through Pi |
 | Resource failures | Startup banner and extension inventory; failed loads block prompts |
 | Reconnect and uncertain delivery | Durable receipts and operation outcomes; no blind retries |
+| Desk errors | One temporary, dismissible status bar with optional technical details; Pi/tool notices remain in the conversation |
 
 A registered extension command is not the same as a terminal built-in command.
 Desk maps core controls through the public SDK. It does not send an unknown
@@ -44,7 +45,7 @@ terminal command to the model as a substitute.
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
 | `pi-party` | Account-wide encrypted discovery and messaging; shared membership dialogs, owning-driver resume, approved creation and confirmed close-all with per-computer outcomes |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
-| `pi-subagents` | Dedicated **Agents** pane for live transcripts, steering, follow-ups, Stop and scoped questions; `/subagents` manages launches/settings |
+| `pi-subagents` | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |
 | `pi-work-ui` | Work navigation and section targeting; browser panels show each controller once rather than repeating terminal summaries |
 | Browser skill / Chrome DevTools | Host Chrome tools and screenshots; Settings links to the installed extension's native dialogs |
@@ -74,6 +75,17 @@ A computer's account default applies when a new conversation is created. Existin
 conversations retain their saved account. New subagents inherit their parent's
 selection; existing subagents retain their own saved selection on recovery.
 Changing a default does not sign in again or replace Pi's credential file.
+
+## Display delivery
+
+Each session carries presentation data once. A slow remote display pauses at its
+acknowledgement limit and coalesces unsent replacement snapshots. Chat messages,
+control transitions, inputs and questions retain their ordering; transport and
+queue limits still apply. Display recovery does not replay agent work.
+
+Browser storage and connection errors are not inserted into conversation history.
+Repeated Desk errors share a temporary top status bar. A closed draft database is
+reopened only if transaction creation failed before any read or write was admitted.
 
 ## Boundaries
 

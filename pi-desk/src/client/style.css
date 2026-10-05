@@ -987,8 +987,18 @@ details[open] > summary:before {
 .agent-picker { flex-shrink: 0; margin-bottom: 12px; }
 .agent-filter { display: flex; gap: 10px; align-items: center; font-size: 11px; }
 .agent-filter > input { min-width: 0; flex: 1; }
-.agent-filter label { display: flex; align-items: center; white-space: nowrap; gap: 5px; }
-.agent-filter label input { width: auto; }
+.desk-status-bar { position:fixed; top:calc(env(safe-area-inset-top) + 10px); left:12px; right:12px; max-width:760px; margin:0 auto; z-index:80; display:flex; align-items:flex-start; gap:10px; padding:10px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text); box-shadow:0 8px 30px #0003; font-size:13px; }
+.desk-status-bar > .ui-icon { margin-top:2px; flex-shrink:0; }
+.desk-status-bar > div { flex:1; min-width:0; overflow-wrap:anywhere; }
+.desk-status-bar details { color:var(--muted); margin-top:4px; font-size:11px; }
+.desk-status-bar details summary { cursor:pointer; }
+.desk-status-bar details p { max-height:120px; overflow:auto; margin:6px 0 0; }
+.desk-status-bar > button { margin:-4px -6px -4px 0; }
+.agent-history { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.agent-history > summary, .agent-management > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.agent-management { margin-bottom: 10px; flex-shrink: 0; }
+.agent-management .view-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.agent-management .view-actions button { font-size: 11px; }
 .agent-list { height: min(170px, 20dvh); overflow: auto; margin-top: 8px; }
 .agent-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 8px; padding: 6px 9px; text-align: left; font-size: 12px; border: 0; background: transparent; border-radius: 6px; }
 .agent-row.selected { background: var(--accent-soft); }
@@ -1855,6 +1865,8 @@ details[open] > summary:before {
 .rail-agent { display:flex; align-items:center; gap:8px; width:100%; padding:10px 0; background:transparent; border:0; text-align:left; font-size:12px; }
 .rail-agent > span:nth-child(2) { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rail-agent small { color:var(--muted); font-size:10px; }
+.rail-agent-history { display:flex; align-items:center; gap:8px; width:100%; margin-top:8px; padding:10px 0; border:0; border-top:1px solid var(--border); background:transparent; text-align:left; font-size:12px; color:var(--muted); }
+.rail-agent-history > span:last-child { margin-left:auto; }
 .composer-dock .pending-inputs { margin-bottom:10px; border:1px solid var(--border); border-radius:10px; padding:6px; background:var(--surface); }
 .setting-control { display:grid; grid-template-columns:minmax(120px, 1fr) minmax(0, 1fr); align-items:center; gap:10px 24px; padding:14px 0; font-size:14px; }
 .setting-control > label { font-weight:500; }

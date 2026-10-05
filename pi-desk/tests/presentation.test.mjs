@@ -3,6 +3,17 @@ import test from "node:test";
 import { DeskPresentation } from "../src/host/presentation.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
 import { FEEDBACK_ENTRY } from "../src/shared/feedback.ts";
+import { sessionDisplay } from "../src/host/session-display.ts";
+
+test("display sessions carry panel data once rather than a stale duplicate in native state", () => {
+	const ui = { generation: "g", views: [{ id: "large", data: "x".repeat(300_000) }] };
+	const native = { id: "root", accounts: { codex: "selected" }, queue: { steering: { count: 0 } }, ui };
+	const display = sessionDisplay(native);
+	assert.equal(display.ui, ui);
+	assert.equal(display.snapshot.ui, undefined);
+	assert.equal(display.snapshot.accounts, native.accounts);
+	assert.ok(JSON.stringify(display).length < JSON.stringify({ snapshot: native, ui }).length * 0.6);
+});
 
 test("native UI failures are timestamped saved metadata, not new model messages", () => {
 	const entries = [], handlers = new Map();

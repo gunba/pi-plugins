@@ -4,6 +4,28 @@ import { dismissNotice, noticeIdentity, readDismissals } from "../src/client/not
 import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
+import { deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
+
+test("Desk storage errors use one transient status and do not become conversation feedback", () => {
+	const browser = { id: "browser", text: "InvalidStateError: database connection is closing", level: "error", timestamp: 100, generation: "browser" };
+	const native = { ...browser, id: "native", text: "Tool failed", generation: "worker" };
+	const storage = { getItem: () => JSON.stringify({ one: [browser, native] }) };
+	assert.deepEqual(readFeedback(storage).one, [native]);
+	assert.deepEqual(conversationFeedback([], [browser, native], "one", []).map(message => message.feedback.id), ["native"]);
+	let notifications = 0;
+	const unsubscribe = subscribeDeskStatus(() => notifications++);
+	try {
+		reportDeskError(browser.text);
+		const status = deskStatus();
+		assert.equal(status.text, "Local draft storage is temporarily unavailable.");
+		assert.ok(status.expires > Date.now());
+		reportDeskError(browser.text);
+		assert.equal(deskStatus(), status);
+		assert.equal(notifications, 1);
+		dismissDeskStatus(status.id);
+		assert.equal(deskStatus(), undefined);
+	} finally { unsubscribe(); }
+});
 
 test("account picker distinguishes unavailable and changing selection from default credentials", async () => {
 	const { build } = await import("esbuild");

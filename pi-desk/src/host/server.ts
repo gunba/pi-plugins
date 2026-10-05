@@ -11,6 +11,7 @@ import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
 import { commandFrom, workerCommandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
+import { sessionDisplay } from "./session-display.ts";
 import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
@@ -432,7 +433,7 @@ export class DeskHost {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
-				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", snapshot: message.snapshot, ui: message.snapshot.ui };
+				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", ...sessionDisplay(message.snapshot) };
 		} else if (message.type === "history_ready") {
 			if (managed.view.ui?.generation !== message.generation) return;
 			managed.view = { ...managed.view, historyReady: true };
@@ -765,7 +766,7 @@ export class DeskHost {
 		void worker.start(options).then(snapshot => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
-			managed.view = { ...managed.view, agentId: snapshot.id, snapshot, ui: snapshot.ui, state: "ready",
+			managed.view = { ...managed.view, agentId: snapshot.id, ...sessionDisplay(snapshot), state: "ready",
 				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf };
 			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
 			this.saved?.invalidate();

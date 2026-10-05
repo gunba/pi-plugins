@@ -8,6 +8,7 @@ export class SubagentPresentation {
 	private readonly signatures = new Map<string, string>();
 	private model?: string;
 	private thinking?: ThinkingLevel;
+	private opened?: string;
 	private readonly transcripts = new Map<string, UiTranscriptHandle>();
 	private readonly lifetime = new AbortController();
 	private readonly remote: Presentation;
@@ -55,6 +56,7 @@ export class SubagentPresentation {
 	open(id?: string): void {
 		this.check();
 		if (id && !this.runtime.snapshot().some(child => child.id === id)) throw new Error("Unknown subagent.");
+		this.opened = id;
 		this.refresh();
 		this.remote.open(id ? `agent:${id}` : "subagents");
 	}
@@ -104,16 +106,18 @@ export class SubagentPresentation {
 	}
 	private refreshViews(): void {
 		const children = this.runtime.snapshot();
-		for (const child of children) if (!child.diagnosticReason && !this.transcripts.has(child.id) && this.remote.registerTranscript) {
+		const live = (child: RuntimeChildSnapshot) => ["running", "waiting"].includes(child.state) || (child.queued ?? 0) > 0;
+		const shown = children.filter(child => live(child) || child.id === this.opened);
+		for (const child of shown) if (!child.diagnosticReason && !this.transcripts.has(child.id) && this.remote.registerTranscript) {
 			this.transcripts.set(child.id, this.remote.registerTranscript(this.runtime.transcript(child.id)));
 		}
-		const present = new Set(children.map(child => `agent:${child.id}`));
+		const present = new Set(shown.map(child => `agent:${child.id}`));
 		for (const id of this.signatures.keys()) if (id !== "subagents" && !present.has(id)) {
 			this.remote.publish(id, undefined); this.signatures.delete(id);
 			const child = id.slice("agent:".length);
 			this.transcripts.get(child)?.close(); this.transcripts.delete(child);
 		}
-		for (const child of children) this.child(child);
+		for (const child of shown) this.child(child);
 		const callbacks: Record<string, (value: UiValue) => Promise<void>> = {};
 		const action = (id: string, label: string, run: () => unknown | Promise<unknown>, destructive = false): UiAction => {
 			callbacks[id] = async () => {
@@ -139,7 +143,12 @@ export class SubagentPresentation {
 				{ label: "Launch model", value: this.model ?? "Inherit parent" },
 				{ label: "Launch thinking", value: this.thinking ?? "Inherit parent" },
 				{ label: "Model override permission", value: permission },
-			], items: [],
+			], items: children.filter(child => !live(child)).map(child => ({
+				id: child.id, title: child.label, status: child.state,
+				subtitle: `${child.model} · ${child.thinkingLevel} · depth ${child.depth}`,
+				actions: [action(`open:${child.id}`, "Open history", () => this.open(child.id))],
+			})),
+
 		};
 		const view = { kind: "details", title: "Subagents", data: details as UiValue, actions: controls };
 		this.publish("subagents", view, callbacks);
