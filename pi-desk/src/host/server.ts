@@ -489,7 +489,7 @@ export class DeskHost {
 					this.inputs!.settle(key, input.id, "sending");
 					this.inputEvent(managed);
 					await worker.command({ ...input.command,
-						behavior: input.command.behavior ?? (input.generation === undefined ? "followUp" : undefined) }, generation, input.id);
+						behavior: input.command.behavior ?? (input.generation === undefined ? "steer" : undefined) }, generation, input.id);
 					this.inputs!.settle(key, input.id, "accepted");
 				} catch (error) {
 					this.inputs!.settle(key, input.id, error instanceof WorkerConnectionError ? "interrupted" : "failed",

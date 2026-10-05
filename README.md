@@ -82,6 +82,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-gepa`](pi-gepa/skills/gepa-optimize/SKILL.md) — bounded GEPA optimisation
   of prompts and other text artifacts, with task evaluators, held-out checks and
   native Pi model authentication. Python experiments run in a private environment.
+- [`pi-skill-refiner`](pi-skill-refiner/README.md) — query-driven skill refinement
+  from relevant saved Pi sessions, with local outcome-aware clustering, native Pi
+  reflection and evidence-linked candidate diffs. Installed skills remain unchanged.
 - [`pi-browser`](pi-browser/README.md) — a focused browser skill for
   `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
   observations limit context, and full text uses the output archive.
@@ -195,9 +198,9 @@ The SDK child adapter inherits Wire rather than rediscovering all extensions.
 then Pi's platform shell discovery. It no longer selects Windows CMD merely
 because `ComSpec` exists.
 
-`wait_for_work` yields to registered child, process or timer completion events
-without repeated model polling. It must name existing session-owned resources;
-it does not infer waiting from prose or suspend independent useful work.
+`wait_agent` waits inside the current tool call for selected child agents, with
+a bounded timeout. It does not end the turn or require a separate wake. Running
+processes use `write_stdin`; timed reminders use `schedule`.
 
 Use `node pi-codex-wire/ledger.mjs <run.jsonl> [...]` to group provider-reported
 usage by root/child session, request purpose and origin. Request attempts,

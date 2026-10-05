@@ -5,6 +5,65 @@ import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
 import { deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
+import { clearSubmission, createSubmission, readSubmission, submissionDecision, submitWithReceipt } from "../src/client/input-submission.ts";
+import { leadingActivity, sessionActivity } from "../src/client/activity.ts";
+
+test("startup sends preserve normal steering and explicitly queued delivery", () => {
+	for (const state of ["starting", "ready"]) for (const delivery of ["steer", "followUp"]) {
+		const receipt = createSubmission({ activation: "worker", state, generation: "native" }, "draft", delivery);
+		assert.equal(receipt.behavior, delivery, "opening Pi must not turn a normal send into an end-of-task follow-up");
+		assert.equal(receipt.generation, state === "starting" ? undefined : "native");
+		assert.equal(receipt.activation, "worker");
+	}
+});
+
+test("closed conversations do not inherit old error activity and collapsed parties retain questions", () => {
+	assert.equal(sessionActivity({ state: "closed", interrupted: true, snapshot: { activity: "error" } }), "closed");
+	assert.equal(sessionActivity({ state: "ready", snapshot: { activity: "running" }, ui: { interactions: [{}] } }), "waiting");
+	assert.equal(leadingActivity(["idle", "running", "waiting"]), "waiting");
+	assert.equal(leadingActivity(["idle", "running"]), "running");
+	assert.equal(leadingActivity(["closed", "closed"]), "closed");
+});
+
+test("lost input acknowledgements are reconciled before a resend warning", async () => {
+	const receipt = { id: "receipt", activation: "old-worker", fingerprint: "earlier-draft" };
+	for (const state of ["queued", "sending", "accepted"]) {
+		const status = { id: receipt.id, state };
+		assert.equal(submissionDecision(receipt, "old-worker", "new-draft", status), "new", "confirmed earlier input must not warn on a different message");
+		assert.equal(submissionDecision(receipt, "old-worker", receipt.fingerprint, status), "confirmed", "lost reply must not cause another POST");
+		assert.equal(submissionDecision(receipt, "new-worker", receipt.fingerprint, status), "confirmed", "a durable accepted receipt survives worker replacement");
+	}
+	for (const state of ["failed", "interrupted", "cancelled"]) {
+		assert.equal(submissionDecision(receipt, "old-worker", receipt.fingerprint, { id: receipt.id, state }), "confirm");
+	}
+	assert.equal(submissionDecision(receipt, "new-worker", "new-draft"), "confirm", "missing evidence is not proof of failed delivery");
+	assert.equal(submissionDecision(receipt, "old-worker", receipt.fingerprint), "reuse", "unconfirmed identical input retains its idempotency key");
+	assert.equal(submissionDecision(receipt, "new-worker", "new-draft", { id: "other-receipt", state: "accepted" }), "confirm");
+
+	const accepted = { id: receipt.id, state: "accepted" };
+	for (const failure of [new TypeError("Failed to fetch"), Object.assign(new Error("Timed out"), { status: 504 })]) {
+		let posts = 0, reads = 0;
+		assert.equal(await submitWithReceipt(receipt, async () => { posts++; throw failure; }, async id => {
+			reads++; assert.equal(id, receipt.id); return accepted;
+		}), accepted);
+		assert.equal(posts, 1, "a missing POST reply must only trigger a receipt read, never a retransmission");
+		assert.equal(reads, 1);
+		await assert.rejects(submitWithReceipt(receipt, async () => { throw failure; }, async () => { throw Error("Offline"); }), error => error === failure);
+	}
+	const conflict = Object.assign(new Error("Different contents"), { status: 409 });
+	await assert.rejects(submitWithReceipt(receipt, async () => { throw conflict; }, async () => {
+		assert.fail("a rejected payload cannot be confirmed by somebody else's receipt");
+	}), error => error === conflict);
+	assert.equal(await readSubmission(receipt, async () => ({ id: "other", state: "accepted" })), undefined);
+
+	let marker = JSON.stringify({ id: "newer-message" });
+	const storage = { getItem: () => marker, removeItem: () => { marker = null; } };
+	assert.equal(clearSubmission(storage, "session", receipt.id), false);
+	assert.ok(marker, "an older receipt cannot clear a newer draft's delivery marker");
+	marker = JSON.stringify(receipt);
+	assert.equal(clearSubmission(storage, "session", receipt.id), true);
+	assert.equal(marker, null);
+});
 
 test("Desk storage errors use one transient status and do not become conversation feedback", () => {
 	const browser = { id: "browser", text: "InvalidStateError: database connection is closing", level: "error", timestamp: 100, generation: "browser" };

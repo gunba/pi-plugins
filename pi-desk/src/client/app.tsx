@@ -14,14 +14,14 @@ import { ResumeConversation } from "./resume.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
-import { activityLabel } from "./activity.ts";
+import { activityLabel, sessionActivity } from "./activity.ts";
 import { Inspector, Modal, Navigation, useMedia } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
-import { AttachmentList, useAttachments } from "./attachments.tsx";
+import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
 import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
@@ -32,6 +32,7 @@ import { ConversationFooter } from "./conversation-footer.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
+import { WorkspaceActions } from "./workspace-actions.tsx";
 import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
 import { PlanView } from "./plan-view.tsx";
 import { Icon, SectionIcon } from "./icons.tsx";
@@ -45,8 +46,9 @@ import { composerKey, type Delivery } from "./composer-keys.ts";
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommand, deskCommandCatalog } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
-import { PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
+import { PartyDialog, PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
+import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
 import { DetailsView } from "./details-view.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
@@ -70,6 +72,10 @@ const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const draftKey = (key: string) => `pi-desk:draft:${key}`;
 const emptyMessages: NonNullable<ClientState["messages"][string]> = [];
+function uploadedPrompt(text: string, files: DraftFile[], session: string): PromptCommand | undefined {
+  if (files.some(file => file.uploaded?.session !== session)) return;
+  return { kind: "prompt", text, ...(files.length ? { attachments: files.map(file => file.uploaded!.id) } : {}) };
+}
 export function App({ account }: { account?: BrowserAccount }) {
   const [state, setState] = useState<ClientState>({ messages: {} });
   const [authorized, setAuthorized] = useState<boolean | undefined>();
@@ -85,8 +91,10 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [sidebar, setSidebar] = useState(false);
   const wideWorkspace = useMedia("(min-width: 1280px)");
   const [panel, setPanel] = useState<
-    "work" | "workspace" | "settings" | "view" | "agents" | undefined
+    "workspace" | "settings" | "view" | "agents" | undefined
   >();
+  const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-visible") !== "false");
+  const [workspaceParty, setWorkspaceParty] = useState<{ party?: string }>();
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -149,7 +157,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
-  const showWorkRail = !dotSelected && wideWorkspace && (!panel || settings);
+  const showWorkRail = !dotSelected && wideWorkspace && (workspaceVisible || panel === "workspace") && (!panel || settings || panel === "workspace");
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -201,7 +209,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     });
   }, [selected]);
   useEffect(() => {
-    if ((panel !== "work" && panel !== "view") || !focusedView) return;
+    if ((panel !== "workspace" && panel !== "view") || !focusedView) return;
     const card = [...document.querySelectorAll<HTMLElement>("[data-view]")].find(element => element.dataset.view === focusedView);
     card?.scrollIntoView({ block: "start" });
   }, [panel, focusedView, selected]);
@@ -268,7 +276,38 @@ export function App({ account }: { account?: BrowserAccount }) {
     setState(previous => ({ ...previous, focused: [selected] }));
     localStorage.setItem("pi-desk:selected", selected);
   }, [selected]);
+  useEffect(() => {
+    if (!connected || !session?.activation || !attachments.ready || sendingRef.current) return;
+    const receipt = JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null") as SubmissionReceipt | null;
+    if (!receipt) return;
+    let cancelled = false;
+    const text = localStorage.getItem(draftKey(selected)) ?? "";
+    const files = attachments.files;
+    void (async () => {
+      const status = await readSubmission(receipt, readInput);
+      if (!admittedInput(status)) return;
+      const prompt = uploadedPrompt(text, files, selected);
+      const fingerprint = prompt ? await submissionFingerprint(prompt) : undefined;
+      if (cancelled || sendingRef.current) return;
+      if (fingerprint === receipt.fingerprint) await finishSubmission(receipt, text, files.map(file => file.id));
+      else clearSubmission(localStorage, selected, receipt.id);
+    })().catch(error => { if (!cancelled) setError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, [selected, connected, epoch, session?.activation, attachments.ready]);
 
+  async function readInput(id: string): Promise<InputStatus> {
+    return (await api<{ status: InputStatus }>(`/sessions/${selected}/inputs/${id}`)).status;
+  }
+  async function finishSubmission(receipt: SubmissionReceipt, text: string, fileIds: string[]) {
+    if (JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null")?.id !== receipt.id) return;
+    try { if (fileIds.length) await attachments.clear(fileIds); }
+    catch { throw new Error("Message queued on the computer, but its attachment draft could not be cleared. The receipt is retained to prevent a duplicate."); }
+    if (!clearSubmission(localStorage, selected, receipt.id)) return;
+    if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
+    if (selectedRef.current === selected) {
+      setDraft(current => current === text ? "" : current); setLatestRequest(value => value + 1);
+    }
+  }
   async function command(command: WorkerCommand, id: string = crypto.randomUUID()) {
     if (!session?.ui) throw new Error("Session is still starting.");
     return api(`/sessions/${selected}/command`, {
@@ -354,20 +393,28 @@ export function App({ account }: { account?: BrowserAccount }) {
         if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
         return;
       }
-      const receiptKey = `pi-desk:submission:${selected}`;
-      const previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as {
-        id: string; activation: string; generation?: string; fingerprint: string; behavior?: "steer" | "followUp"; requiresConfirmation?: boolean;
-      } | null;
+      const receiptKey = submissionKey(selected);
+      let previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as SubmissionReceipt | null;
+      const status = previous ? await readSubmission(previous, readInput) : undefined;
+      if (previous && admittedInput(status)) {
+        // Check cached upload IDs before touching files that may already have been consumed.
+        const cached = uploadedPrompt(text, attachments.files, session.key);
+        if (cached && submissionDecision(previous, session.activation, await submissionFingerprint(cached), status) === "confirmed") {
+          await finishSubmission(previous, text, fileIds); return;
+        }
+        clearSubmission(localStorage, selected, previous.id);
+        previous = null;
+      }
       const uploaded = await attachments.upload(session.key, value => api(`/sessions/${selected}/uploads`, {
         activation: session.activation, command: value,
       }));
       const prompt: PromptCommand = {
         kind: "prompt", text, ...(uploaded.length ? { attachments: uploaded } : {}),
       };
-      const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(prompt)))),
-        byte => byte.toString(16).padStart(2, "0")).join("");
-      const reusable = previous?.activation === session.activation && !previous.requiresConfirmation && previous.fingerprint === fingerprint;
-      if (previous && !reusable
+      const fingerprint = await submissionFingerprint(prompt);
+      const decision = submissionDecision(previous, session.activation, fingerprint, status);
+      const reusable = decision === "reuse";
+      if (decision === "confirm"
         && !await confirmation.request({
           title: "Send this message again?", context: confirmationContext, accept: "Send again", cancel: "Keep draft",
           body: <>
@@ -377,20 +424,18 @@ export function App({ account }: { account?: BrowserAccount }) {
             {!!fileIds.length && <p>{fileIds.length} attachment{fileIds.length === 1 ? "" : "s"}</p>}
           </>,
         })) return;
-      const receipt = reusable ? previous! : {
-        id: crypto.randomUUID(), activation: session.activation,
-        generation: session.state === "starting" ? undefined : session.ui?.generation,
-        fingerprint, behavior: session.state === "starting" ? "followUp" as const : delivery,
-      };
+      const receipt = reusable ? previous! : createSubmission({
+        activation: session.activation, state: session.state, generation: session.ui?.generation,
+      }, fingerprint, delivery);
       localStorage.setItem(receiptKey, JSON.stringify(receipt));
       try {
-        const result = await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
+        const input = await submitWithReceipt(receipt, async () => (await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
           id: receipt.id, activation: receipt.activation, generation: receipt.generation,
           command: { ...prompt, behavior: receipt.behavior },
-        });
-        if (!["queued", "sending", "accepted"].includes(result.input.state)) {
+        })).input, readInput);
+        if (!admittedInput(input)) {
           localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
-          throw new Error(result.input.error ?? "This message was cancelled. It was not sent again.");
+          throw new Error(input.error ?? "This message was cancelled. It was not sent again.");
         }
       }
       catch (error) {
@@ -399,11 +444,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         }
         throw error;
       }
-      if (JSON.parse(localStorage.getItem(receiptKey) ?? "null")?.id === receipt.id) localStorage.removeItem(receiptKey);
-      if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
-      if (selectedRef.current === selected) { setDraft(""); setLatestRequest(value => value + 1); }
-      try { await attachments.clear(fileIds); }
-      catch { setError("Message queued on the computer, but this device could not clear its attachment draft. Remove those files before sending another message."); }
+      await finishSubmission(receipt, text, fileIds);
     } catch (error) {
       setError(`${errorText(error)} Your draft has been kept.`);
     } finally {
@@ -438,6 +479,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }];
   const partyComputers = computers.map(computer => ({ id: computer.id, name: computer.name, connected: computer.connected, directory: computer.parties }));
+  const manageParty = () => setWorkspaceParty({ party: partyComputers.flatMap(computer => computer.directory?.agents ?? [])
+    .find(agent => agent.id === (session?.snapshot?.id ?? session?.agentId))?.party ?? undefined });
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
@@ -450,21 +493,22 @@ export function App({ account }: { account?: BrowserAccount }) {
           <strong>Pi Desk</strong>
         </div>
         <div className="sidebar-actions">
-          <button className="new-chat" onClick={() => openNewConversation()}>
-            <span>＋</span> New conversation
+          <button className="new-chat" aria-label="New conversation" title="New conversation" onClick={() => openNewConversation()}>
+            <Icon name="plus" /> New chat
           </button>
           <button className="resume-chat" title="Resume conversation" aria-label="Resume conversation" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
-            <span>◷</span> Resume
+            <Icon name="clock" /> Resume
           </button>
         </div>
+        <div className="sidebar-scroll">
         <div className="nav-label">Dots</div>
         <nav className="dot-list" aria-label="Dots">
           <DotNavigation dot={dot} selected={dotSelected} open={() => { setSelected("dot"); setSidebar(false); setPanel(undefined); }} />
         </nav>
         <div className="nav-label">
-          Sessions <span>{state.host.sessions.length}</span>
+          Computers <span>{computers.length}</span>
         </div>
-        <nav className="session-list">
+        <nav className="session-list" aria-label="Computers">
           {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
@@ -489,10 +533,10 @@ export function App({ account }: { account?: BrowserAccount }) {
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
-                <span className={`status-dot ${item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state}`} role="img"
-                  aria-label={activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)} title={activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)} />
+                <span className={`status-dot ${sessionActivity(item)}`} role="img"
+                  aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><PartyWakeMarker agent={agent} /></span>
-                  <small><span className="session-activity">{activityLabel(item.interrupted ? "interrupted" : item.snapshot?.activity ?? item.state)}</span> · {basename(item.cwd)}</small></span>
+                  <small><span className="session-activity">{activityLabel(sessionActivity(item))}</span> · {basename(item.cwd)}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
@@ -502,6 +546,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
         </nav>
+        </div>
         <div className="sidebar-bottom">
           <button
             onClick={() => {
@@ -538,20 +583,14 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
           <div className="top-actions">
             {!!settingsForms.length && <button className="quiet-action" onClick={openSettingsForm}>Finish Settings</button>}
-            {!wideWorkspace && <button type="button" className="icon-button" title="Workspace" aria-label="Workspace" aria-pressed={panel === "workspace"}
-              onClick={() => setPanel(panel === "workspace" ? undefined : "workspace")}><Icon name="layers" /></button>}
-            {session?.activation && <CloseConversationButton session={session} name={title(session)}
-              computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
-              confirmed={() => setPanel(undefined)} />}
-            {session?.snapshot && (
-              <button
-                className={`work-button ${question ? "attention" : ""}`}
-                onClick={() => setPanel(panel === "work" ? undefined : "work")}
-              >
-                <span className={`status-dot ${session.snapshot.activity}`} />
-                {question ? "Needs your input" : busy ? "Working" : "Work"}
-              </button>
-            )}
+            {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
+              <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
+            </span>}
+            <button type="button" className="icon-button" title="Workspace" aria-label="Workspace" aria-pressed={showWorkRail || panel === "workspace"}
+              onClick={() => {
+                if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-visible", String(visible)); setPanel(undefined); }
+                else setPanel(panel === "workspace" ? undefined : "workspace");
+              }}><Icon name="layers" /></button>
             <button type="button" className="icon-button" title="Opening context" aria-label="Opening context"
               disabled={session?.state !== "ready"} aria-pressed={panel === "settings" && settingsSection === "context"}
               onClick={() => { setSettingsSection("context"); setPanel("settings"); }}><Icon name="context" /></button>
@@ -562,8 +601,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                 setPanel(panel === "settings" ? undefined : "settings")
               }
             >
-              •••
+              <Icon name="more" />
             </button>
+            {session?.activation && <CloseConversationButton icon session={session} name={title(session)}
+              computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
+              confirmed={() => setPanel(undefined)} />}
           </div>
         </header>
         {!connected && (
@@ -816,19 +858,16 @@ export function App({ account }: { account?: BrowserAccount }) {
         </>}
       </main>
       {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
-        invoke={run} openAgents={openAgentPane} openWork={() => setPanel("work")}
-        openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
-      {panel && (
-        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "work" ? "Work" : visibleViews[0]?.title ?? "Details"}
-          close={() => setPanel(undefined)} back={panel === "view" && !settings ? () => setPanel("work") : undefined}>
+        invoke={run} openAgents={openAgentPane} manageParty={manageParty} focused={panel === "workspace" ? focusedView : undefined}
+        openView={id => { setFocusedView(id); setPanel("view"); }} />}
+      {panel && !(panel === "workspace" && wideWorkspace) && (
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
+          close={() => setPanel(undefined)} back={panel !== "workspace" && !settings ? () => setPanel("workspace") : undefined}>
           <div className="panel-title">
-            {panel === "view" && !settings && <button className="icon-button"
-              aria-label={visibleViews[0]?.surface === "settings" ? "Back to settings" : "Back to Work"}
-              onClick={() => setPanel(visibleViews[0]?.surface === "settings" ? "settings" : "work")}>‹</button>}
+            {panel !== "workspace" && !settings && <button className="icon-button"
+              aria-label="Back to workspace" onClick={() => setPanel("workspace")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "work"
-                ? "Work"
-                : panel === "view"
+              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
                 : "Settings & tools"}
             </h2>
@@ -850,8 +889,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
             answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
           {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
-            invoke={run} openAgents={openAgentPane} openWork={() => setPanel("work")}
-            openPlan={() => { setFocusedView("plan"); setPanel("view"); }} />}
+            invoke={run} openAgents={openAgentPane} manageParty={manageParty} focused={focusedView}
+            openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
@@ -859,7 +898,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             onLatest={storeHistory} renderMessage={(message, source, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={source} />}
             answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
-          {(panel === "work" || panel === "view") &&
+          {panel === "view" &&
             (visibleViews.length ? (
               visibleViews.map((view) => (
                 <section className="panel-card" key={view.id} data-view={view.id}>
@@ -867,13 +906,9 @@ export function App({ account }: { account?: BrowserAccount }) {
                     invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
                   <div className="panel-section-heading">
                   {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
-                  {!!view.actions?.length && <div className="panel-actions">
-                    {view.actions.map(action => <button key={action.id} disabled={!!view.working || !connected}
-                      title={action.label} aria-label={action.label}
-                      onClick={() => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })}>
-                      {action.label}
-                    </button>)}
-                  </div>}
+                  <WorkspaceActions view={view} disabled={!!view.working || !connected}
+                    manageParty={view.id === "party" ? manageParty : undefined}
+                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
                   </div>
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
                   {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
@@ -916,6 +951,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           </SettingsLayout>
         </Inspector>
       )}
+      {workspaceParty && <PartyDialog computers={partyComputers} party={workspaceParty.party} preferred={session?.computer} close={() => setWorkspaceParty(undefined)} />}
       {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);

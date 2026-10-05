@@ -230,26 +230,14 @@ class PiSdkChildDriver implements ChildDriver {
 				if (this.extensionErrors.length) break;
 				const messages = finalized.slice(start);
 				const lastAssistant = latestAssistant(messages);
-				const waitResult = [...messages].reverse().find((item) => item.role === "toolResult" && item.toolName === "wait_for_work" && lastAssistant?.role === "assistant" && lastAssistant.content.some((block) => block.type === "toolCall" && block.id === item.toolCallId));
-				const waitDetails = waitResult?.role === "toolResult" ? waitResult.details : undefined;
-				const yielded = lastAssistant?.role === "assistant" && lastAssistant.stopReason === "toolUse"
-					&& waitDetails !== null && typeof waitDetails === "object" && "waiting" in waitDetails && waitDetails.waiting === true;
 				if (abort.signal.aborted) break;
-				if (!yielded) {
-					// triggerTurn:false notices arriving after the final provider
-					// context are durable but were not seen by that response.
-					if (this.noticeState.received > this.noticeState.consumed && lastAssistant?.role === "assistant" && lastAssistant.stopReason === "stop") {
-						prompt = "Review the newly delivered child notices and continue the assigned task.";
-						continue;
-					}
-					break;
+				// triggerTurn:false notices arriving after the final provider context
+				// are durable but were not seen by that response.
+				if (this.noticeState.received > this.noticeState.consumed && lastAssistant?.role === "assistant" && lastAssistant.stopReason === "stop") {
+					prompt = "Review the newly delivered child notices and continue the assigned task.";
+					continue;
 				}
-				const coordinator = getWorkCoordinator(this.session.sessionId);
-				if (!coordinator) throw new Error("Explicit child wait lost its session coordinator");
-				this.currentActivity = "waiting for explicit event";
-				await coordinator?.untilReady(abort.signal);
-				if (abort.signal.aborted) break;
-				prompt = "The explicit wait has ended. Review the delivered event and continue the assigned task.";
+				break;
 			}
 			const outcome = collectOutcome();
 			if (this.extensionErrors.length) {
@@ -337,7 +325,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		const childOnlyTools = (input.intrinsicToolNames ?? (!toolInfo ? customToolNames : []))
 			.filter((name) => customToolNames.includes(name));
 		const fallbackHelpers = !toolInfo
-			? ["wait_for_work", "cancel_work_wait", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])]
+			? ["wait_agent", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])]
 			: [];
 		const enabledTools = () => [...new Set([
 			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
@@ -346,7 +334,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		const inheritedExtensions = await loadChildToolExtensions({
 			tools: toolInfo ?? [],
 			policies: this.host.getChildPolicySources?.(),
-			handledToolNames: [...customToolNames, "wait_for_work", "cancel_work_wait"],
+			handledToolNames: [...customToolNames, "wait_agent"],
 			signal: input.signal,
 			projectTrusted,
 			getFlag: this.host.getFlag ? (name) => this.host.getFlag!(name) : undefined,

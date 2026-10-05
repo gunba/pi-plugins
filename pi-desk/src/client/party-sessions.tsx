@@ -3,7 +3,7 @@ import type { PartyAgent, PartyDirectory } from "../shared/parties.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
-import { activityLabel } from "./activity.ts";
+import { activityLabel, leadingActivity, sessionActivity } from "./activity.ts";
 import { Modal } from "./surfaces.tsx";
 
 export interface PartyComputer { id?: string; name: string; connected: boolean; directory?: PartyDirectory }
@@ -38,10 +38,12 @@ export function PartySessions({ directory, sessions, computer, connected, comput
 	const grouped = new Set(groups?.flatMap(group => group.members));
 	return <>
 		{directory && <button className="sidebar-new-party" disabled={!connected} onClick={() => setDialog({})}><Icon name="party" />New party<Icon name="plus" /></button>}
-		{groups?.map(group => <section className="sidebar-party" key={group.name} aria-label={`Party ${group.name}`}>
+		{groups?.map(group => { const activity = leadingActivity(group.members.map(id => {
+			const root = roots.get(id); return root ? sessionActivity(root) : agents.get(id)?.state ?? "offline";
+		})); return <section className="sidebar-party" key={group.name} aria-label={`Party ${group.name}`}>
 			<div className="sidebar-party-heading"><button className="party-toggle" aria-expanded={!collapsed.has(group.name)}
 				onClick={() => setCollapsed(current => { const next = new Set(current); next.has(group.name) ? next.delete(group.name) : next.add(group.name); return next; })}>
-				<span className={`party-chevron${collapsed.has(group.name) ? "" : " expanded"}`}>›</span><Icon name="party" /><strong>{group.name}</strong><small>{group.members.length}</small>
+				<span className={`party-chevron${collapsed.has(group.name) ? "" : " expanded"}`}>›</span><span className={`status-dot ${activity}`} role="img" aria-label={activityLabel(activity)} title={activityLabel(activity)} /><strong>{group.name}</strong><small title={`${group.members.length} members · ${activityLabel(activity)}`}>{group.members.length}</small>
 			</button><button className="icon-button party-manage" disabled={!connected} aria-label={`Manage party ${group.name}`} title="Manage members across computers"
 				onClick={() => setDialog({ party: group.name })}><Icon name="more" /></button>
 			<button className="icon-button party-close" aria-label={`Close all agents in ${group.name}`} title="Close all party agents"
@@ -50,13 +52,13 @@ export function PartySessions({ directory, sessions, computer, connected, comput
 				const root = roots.get(id), agent = agents.get(id);
 				return root ? <Fragment key={id}>{renderSession(root, agent)}</Fragment> : agent && <div className="party-member" key={id} title={agent.description || agent.label}><AgentLabel agent={agent} /></div>;
 			})}</div>}
-		</section>)}
+		</section>; })}
 		{sessions.filter(session => !grouped.has(nativeId(session) ?? "")).map(session => <Fragment key={session.key}>{renderSession(session)}</Fragment>)}
 		{dialog && directory && <PartyDialog key={dialog.party ?? "new"} computers={computers} party={dialog.party} preferred={computer} close={() => setDialog(undefined)} />}
 		{closing && <ClosePartyDialog party={closing} computers={computers} close={() => setClosing(undefined)} />}
 	</>;
 }
-function PartyDialog({ computers, party, preferred, close }: {
+export function PartyDialog({ computers, party, preferred, close }: {
 	computers: PartyComputer[]; party?: string; preferred?: string; close: () => void;
 }) {
 	const [name, setName] = useState(party ?? ""), [selected, setSelected] = useState(new Set<string>());

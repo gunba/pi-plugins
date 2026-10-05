@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { DeskHost } from "../src/host/server.ts";
+import { DeskEngine } from "../src/host/engine.ts";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { Attachments } from "../src/host/attachments.ts";
 import { WorkerConnectionError } from "../src/host/worker-errors.ts";
 import { API_HEADER, API_VERSION } from "../src/shared/release.ts";
@@ -27,9 +29,9 @@ async function fixture(t) {
 		return { status: response.status, body: await response.json() };
 	};
 	const input = (text, extra = {}) => ({ id: randomUUID(), activation, command: { kind: "prompt", text }, ...extra });
-	const ready = async () => {
-		worker.generation = generation; managed.initialized = true; managed.initialGeneration = generation;
-		managed.view = { ...managed.view, state: "ready", ui: { generation } };
+	const ready = async (nativeGeneration = generation) => {
+		worker.generation = nativeGeneration; managed.initialized = true; managed.initialGeneration = nativeGeneration;
+		managed.view = { ...managed.view, state: "ready", ui: { generation: nativeGeneration } };
 		host.drainInputs(managed); await managed.draining;
 	};
 	return { dir, dataDir, host, key, activation, generation, worker, managed, calls, request, input, ready };
@@ -57,13 +59,69 @@ test("text and files are admitted before Pi exists, cancellable, then delivered 
 	assert.equal(f.calls.length, 1);
 	assert.equal(f.calls[0].generation, f.generation);
 	assert.equal(f.calls[0].id, first.id);
-	assert.equal(f.calls[0].command.behavior, "followUp");
+	assert.equal(f.calls[0].command.behavior, "steer");
 	assert.match(new Attachments(f.dir, f.key).prepare([id], false).text, /notes.txt/);
 	assert.equal((await upload({ kind: "upload_discard", id })).status, 400, "native input may have observed the file");
 	assert.equal((await f.request("inputs", first)).body.input.state, "accepted");
 	assert.equal(f.calls.length, 1);
 	assert.deepEqual(f.managed.view.inputs, []);
 	assert.equal((await f.request(`inputs/${first.id}`)).body.command, undefined, "no second store of accepted message bodies");
+});
+
+test("startup messages reach native Pi at the next tool boundary rather than waiting for the whole task", async t => {
+	const f = await fixture(t), engine = new DeskEngine(() => {}), requests = [], firstRequested = Promise.withResolvers();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR, previousFetch = globalThis.fetch;
+	writeFileSync(join(f.dir, "settings.json"), JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-haiku-4-5",
+		steeringMode: "all", compaction: { enabled: false }, retry: { enabled: false } }));
+	writeFileSync(join(f.dir, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "fixture" } }));
+	writeFileSync(join(f.dir, "fixture.txt"), "Fixture tool result");
+	globalThis.fetch = (url, options) => {
+		if (new URL(typeof url === "string" ? url : url.url ?? url).origin !== f.host.origin) throw Error("Startup fixture must stay offline");
+		return previousFetch(url, options);
+	};
+	let releaseFirst;
+	try {
+		for (const text of ["Start the fixture task", "Use the revised outline", "Include the key dates"]) await f.request("inputs", f.input(text));
+		await f.request("inputs", f.input("Do the later task", { command: { kind: "prompt", text: "Do the later task", behavior: "followUp" } }));
+		assert.equal(f.calls.length, 0);
+		await engine.start({ cwd: f.dir, agentDir: f.dir, ephemeral: true });
+		const session = engine.runtime.session, models = engine.runtime.services.modelRuntime;
+		models.registerNativeProvider({ ...models.getProvider("anthropic"), streamSimple(model, context, options) {
+			requests.push(context.messages.filter(message => message.role === "user").flatMap(message =>
+				typeof message.content === "string" ? [message.content] : message.content.filter(block => block.type === "text").map(block => block.text)));
+			const stream = createAssistantMessageEventStream(); let finished = false;
+			const finish = (content, reason = "stop") => {
+				if (finished) return; finished = true;
+				options?.signal?.removeEventListener("abort", abort);
+				stream.push({ type: "done", reason, message: { role: "assistant", content, provider: model.provider, model: model.id,
+					api: model.api, stopReason: reason, timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
+				stream.end();
+			};
+			const abort = () => finish([], "aborted");
+			options?.signal?.addEventListener("abort", abort, { once: true });
+			if (requests.length === 1) {
+				releaseFirst = () => finish([{ type: "toolCall", id: "fixture-read", name: "read", arguments: { path: join(f.dir, "fixture.txt") } }], "toolUse");
+				firstRequested.resolve();
+			} else queueMicrotask(() => finish([{ type: "text", text: "Fixture complete" }]));
+			return stream;
+		} });
+		f.worker.command = async (command, generation, id) => { f.calls.push({ command, generation, id }); return engine.command(generation, command); };
+		await f.ready(engine.presentation.generation);
+		assert.equal(f.calls.length, 4);
+		await Promise.race([firstRequested.promise, session.waitForIdle()]);
+		assert.equal(typeof releaseFirst, "function", JSON.stringify(session.messages.filter(message => message.role === "assistant").map(message => message.errorMessage)));
+		releaseFirst(); await session.waitForIdle();
+		assert.deepEqual(requests[1], ["Start the fixture task", "Use the revised outline", "Include the key dates"],
+			"ordinary startup input must be visible on the next native turn, not held behind continuing tool work");
+		assert.deepEqual(requests[2], [...requests[1], "Do the later task"], "explicit Queue still waits until current work finishes");
+		assert.equal(requests.length, 3, "no extra task or duplicate delivery");
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+	} finally {
+		await engine.close(); globalThis.fetch = previousFetch;
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
 });
 
 test("cancellation releases an undispatched file; startup failure preserves recoverable text and files across host restart", async t => {

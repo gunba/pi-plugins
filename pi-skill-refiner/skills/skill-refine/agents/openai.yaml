@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Refiner"
+  short_description: "Improve skills from saved Pi session evidence"
+  default_prompt: "Use $skill-refine to improve my skill from relevant past Pi sessions."

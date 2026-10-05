@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Key, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { ensureWorkCoordination, registerWorkResource, completeWorkResource, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
+import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { scheduledWorkSection } from "./presentation.ts";
 import { getPresentation, type Presentation, type UiValue } from "../../pi-ui/index.ts";
@@ -90,7 +90,6 @@ export default function (pi: ExtensionAPI): void {
       delivery,
     };
     storeFor(ctx).add(entry);
-    registerWorkResource(sessionId(ctx), { kind: "timer", id: entry.id });
     armTimer(ctx);
     return entry;
   }
@@ -124,8 +123,6 @@ export default function (pi: ExtensionAPI): void {
     store.claimDue(-Infinity, admitted);
     for (const id of admitted) attempted.delete(id);
     const result = store.cancel(normalized);
-    for (const entry of result.cancelled)
-      completeWorkResource(sessionId(ctx), { kind: "timer", id: entry.id }, `Scheduled timer #${entry.id} was cancelled.`);
     armTimer(ctx);
     refreshWidget(ctx);
     return { ...result, alreadyDelivered: admitted.has(normalized) };
@@ -194,7 +191,7 @@ export default function (pi: ExtensionAPI): void {
       for (const entry of due) {
         attempted.add(entry.id);
         try {
-          const matched = completeWorkResource(sessionId(ctx), { kind: "timer", id: entry.id }, scheduledDeliveryContent(entry), { notify: false });
+          getWorkCoordinator(sessionId(ctx))?.cancel("scheduled-message");
           pi.sendMessage({
             customType: SCHEDULED_MESSAGE_TYPE,
             content: scheduledDeliveryContent(entry),
@@ -202,7 +199,7 @@ export default function (pi: ExtensionAPI): void {
             details: scheduledDeliveryDetails(entry),
           }, {
             deliverAs: ctx.isIdle() ? entry.delivery : "steer",
-            triggerTurn: matched || !getWorkCoordinator(sessionId(ctx))?.blocked,
+            triggerTurn: true,
           });
         } catch (error) {
           storeFor(ctx).release(entry.id);
@@ -336,7 +333,6 @@ export default function (pi: ExtensionAPI): void {
       stores.delete(id);
     }
     try {
-      for (const entry of sessionMessages(ctx)) registerWorkResource(sessionId(ctx), { kind: "timer", id: entry.id });
       deliverDue(pi, ctx);
       refreshWidget(ctx);
       armTimer(ctx);
@@ -386,10 +382,10 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "schedule",
     label: "Schedule message",
-    description: "Schedule a message after a genuine time-based delay. Use work-completion notifications or wait_for_work for tracked processes and agents, not a short reminder to check whether they finished. Due messages steer an active run.",
+    description: "Schedule a message after a genuine time-based delay. For existing work, use wait_agent for children or write_stdin for processes. Due messages steer an active run.",
     promptSnippet: "schedule(delay, message): send a future message back to this same Pi session",
     promptGuidelines: [
-      "Tracked processes and agents already emit completion notifications; wait_for_work can yield until they finish. Scheduled messages are for time-based follow-ups.",
+      "Scheduled messages are for time-based follow-ups, not repeated checks of running processes or agents.",
     ],
     parameters: Type.Object({
       delay: Type.String({ description: "Delay before delivery, using m/h/d units, e.g. 15m, 5h, 5.5h, or 30d." }),

@@ -87,6 +87,9 @@ export class DotBrowser {
 	async validateDot(dot: string): Promise<void> {
 		if (await this.evaluate("window.__piDeskDotNative.context().room.aeon_id") !== dot) throw Error("The native Dot changed. Reconnect before continuing.");
 	}
+	async avatar(): Promise<string | undefined> {
+		return this.evaluate("window.__piDeskDotNative.avatar()");
+	}
 	async snapshot(): Promise<NativeDotSnapshot> {
 		return this.evaluate("window.__piDeskDotNative.snapshot()");
 	}

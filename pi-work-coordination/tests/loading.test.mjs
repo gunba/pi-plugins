@@ -22,8 +22,8 @@ async function load(t, factories, eventBus = createEventBus()) {
 
 function countTools(result) {
   const names = result.extensions.flatMap((extension) => [...extension.tools.keys()]);
-  assert.equal(names.filter((name) => name === "wait_for_work").length, 1);
-  assert.equal(names.filter((name) => name === "cancel_work_wait").length, 1);
+  assert.equal(names.filter((name) => name === "wait_agent").length, 1);
+  assert.equal(names.filter((name) => name === "cancel_work_wait").length, 0);
 }
 
 test("real loader deduplicates distinct ExtensionAPI event facades on one underlying bus", async (t) => {

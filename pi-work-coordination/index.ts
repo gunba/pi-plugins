@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { WorkCoordinator, registry } from "./core.ts";
 export { WorkCoordinator, getWorkCoordinator, registerWorkResource, completeWorkResource } from "./core.ts";
@@ -36,10 +35,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
     // abandoned branch's wait or completion into that destination.
     coordinator?.close(false);
     const sessionId = ctx.sessionManager.getSessionId();
-    coordinator = new WorkCoordinator(sessionId, (data) => pi.appendEntry(WAIT_ENTRY, data), (content, waitId) => {
-      pi.sendMessage({ customType: WAKE_MESSAGE, content, display: true, details: { waitId } },
-        { deliverAs: "steer", triggerTurn: !options.child });
-    });
+    coordinator = new WorkCoordinator(sessionId, (data) => pi.appendEntry(WAIT_ENTRY, data));
     registry.sessions.set(sessionId, coordinator);
     // Resource ownership cannot survive replacement. Do not restore phantom
     // processes or block a reloaded goal. Resource owners re-register live work.
@@ -57,11 +53,6 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   pi.on("session_start", (_event, ctx) => start(ctx));
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("input", (event) => { if (event.source !== "extension") coordinator?.cancel("user-input"); });
-  pi.on("context", () => { coordinator?.consume(); });
-  pi.on("agent_settled", (_event, ctx) => {
-    try { coordinator?.retryWake(); }
-    catch (error) { ctx.ui.notify(`Work wake remains durable for retry/reload: ${error instanceof Error ? error.message : String(error)}`, "error"); }
-  });
   pi.on("session_shutdown", () => {
     try {
       if (coordinator) {
@@ -71,19 +62,15 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
     } finally { releaseClaim(); }
   });
   pi.registerTool({
-    name: "wait_for_work", label: "Wait for work",
-    description: "Wait for existing session-owned child settlements, managed processes, or scheduled timers. Call alone: Pi terminates a tool batch only if every result terminates. A resource finishing before this call returns immediately. User input and reload cancel the wait.",
-    parameters: Type.Object({ targets: Type.Array(Type.Object({ kind: StringEnum(["child", "process", "timer"] as const), id: Type.String({ minLength: 1 }) }), { minItems: 1, maxItems: 64 }), mode: Type.Optional(StringEnum(["any", "all"] as const)) }),
+    name: "wait_agent", label: "Wait for agents",
+    description: "Wait for one of the selected child agents to finish its current task. Returns on completion, user input or timeout_ms (default 30000, maximum 3600000). The agent stays active while waiting; timeout does not cancel child work. Use write_stdin for a running process.",
+    parameters: Type.Object({ ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 64 }), timeout_ms: Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000 })) }),
     executionMode: "sequential",
     async execute(_id, params, signal, _update, ctx) {
       if (!options.child && ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Explicit waiting requires a live TUI/RPC session or a managed SDK child");
       if (!coordinator || coordinator.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("work coordinator is not initialized for this session");
-      const result = coordinator.begin(params.targets, params.mode, signal);
-      return { content: [{ type: "text", text: result.waiting ? "Explicit wait registered. Resume on the selected event; do not poll." : JSON.stringify(result.completed) }], details: result, ...(result.waiting ? { terminate: true } : {}) };
+      const result = await coordinator.wait(params.ids.map(id => ({ kind: "child" as const, id })), "any", params.timeout_ms ?? 30_000, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
-  });
-  pi.registerTool({
-    name: "cancel_work_wait", label: "Cancel work wait", description: "Cancel the current explicit wait without cancelling children, processes, or timers.", parameters: Type.Object({}),
-    async execute() { coordinator?.cancel("cancel-tool"); return { content: [{ type: "text", text: "Explicit wait cancelled; resources are unchanged." }], details: {} }; },
   });
 }

@@ -139,9 +139,10 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Version 0.5.18 uses API 7: display sessions carry presentation data once in
-`ui`, not a second copy in `snapshot.ui`. Update hosts, the website and shared
-services together. Version 0.5.15–0.5.17 uses API 6; versions 0.5.9 and
+Versions 0.5.18 and 0.5.19 use API 7: display sessions carry presentation data
+once in `ui`, not a second copy in `snapshot.ui`. Moving from an older API requires
+updating hosts, the website and shared services together. API 7 components can be
+updated independently; optional Dot avatar and writing data require a 0.5.19 host. Version 0.5.15–0.5.17 uses API 6; versions 0.5.9 and
 0.5.10 use API 5. These releases use first-party presentation version 2. Deploy matching
 website, account and broker artifacts before treating the cutover as complete.
 Older computers may temporarily show **Update required**. A version mismatch

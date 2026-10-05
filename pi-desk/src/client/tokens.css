@@ -15,6 +15,7 @@
   --focus-border: #c8c1e9;
   --user-message: #f0efeb;
   --code: #f5f5f2;
+  --input-needed: #793bbb;
   --danger: #b25353;
   --notice: #faf0ed;
 }
@@ -35,6 +36,7 @@
   --focus-border: #655a91;
   --user-message: #27282e;
   --code: #202126;
+  --input-needed: #c89aff;
   --danger: #ed9c9c;
   --notice: #38282a;
 }

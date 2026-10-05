@@ -18,7 +18,10 @@ export const DOT_NATIVE = String.raw`(() => {
     if (state.error) throw Error(state.error);
     const messages = state.messages;
     if (!Array.isArray(messages)) throw Error('ChatGPT’s native messaging interface changed.');
+    const member = room.members?.find(member => member.aeon_id === room.aeon_id);
+    const typing = current.services.typing?.state.getSnapshot();
     return { dot: room.aeon_id, room: room.id, name: room.name, path: location.pathname,
+      avatar: member?.avatarUrl, writing: !!member && !!typing?.has?.(member.id),
       messages: messages.filter(message => !message.deletedAt).map(message => ({
         id: message.id, senderAeonId: message.senderAeonId, senderName: message.senderName, self: message.self,
         text: message.text, createdAt: message.createdAt, requestId: message.requestId, deliveryState: message.deliveryState,
@@ -42,7 +45,37 @@ export const DOT_NATIVE = String.raw`(() => {
     await current.services.conversations.older(current.room.id);
     return snapshot();
   }
-  window.__piDeskDotNative = { context, snapshot, primary, older };
+  let portrait;
+  async function avatar() {
+    const current = context(), member = current.room.members?.find(member => member.aeon_id === current.room.aeon_id);
+    const source = member?.avatarUrl;
+    if (!source) return;
+    if (portrait?.source === source && Date.now() - portrait.at < 300000) return portrait.image;
+    const cached = portrait = { source, at: Date.now() };
+    try {
+      const url = new URL(source);
+      if (url.protocol !== 'https:' || !url.hostname.endsWith('.oaiusercontent.com') || url.username || url.password || url.port) return;
+      const response = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(5000) });
+      if (!response.ok || !/^image\/(png|jpeg|webp)(;|$)/i.test(response.headers.get('content-type') || '')) return;
+      const reader = response.body.getReader(), chunks = []; let size = 0;
+      for (;;) {
+        const part = await reader.read(); if (part.done) break;
+        size += part.value.byteLength;
+        if (size > 4 * 1024 * 1024) { await reader.cancel(); return; }
+        chunks.push(part.value);
+      }
+      const image = await createImageBitmap(new Blob(chunks));
+      try {
+        const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
+        const edge = Math.min(image.width, image.height);
+        canvas.getContext('2d').drawImage(image, (image.width - edge) / 2, (image.height - edge) / 2, edge, edge, 0, 0, 128, 128);
+        const data = canvas.toDataURL('image/png');
+        if (data.length <= 100000) cached.image = data;
+      } finally { image.close(); }
+      return cached.image;
+    } catch { return; }
+  }
+  window.__piDeskDotNative = { context, snapshot, primary, older, avatar };
 })()`;
 
 export interface NativeDotAttachment {
@@ -60,5 +93,5 @@ export interface NativeDotUpload {
 }
 export interface NativeDotSnapshot {
   dot: string; room: string; name: string; path: string; messages: NativeDotMessage[];
-  before?: string; uploads: NativeDotUpload[]; draft: string;
+  before?: string; uploads: NativeDotUpload[]; draft: string; avatar?: string; writing?: boolean;
 }

@@ -40,10 +40,10 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		name: "exec_command",
 		label: "exec_command",
 		description: "Run a command with plain pipes, returning output or a session ID for background work. Interactive terminal allocation is not supported.",
-		promptSnippet: "Run a command with background process control and completion notifications",
+		promptSnippet: "Run a command and retain its process handle if it is still running",
 		promptGuidelines: [
 			"Omit yield_time_ms for ordinary commands. Use short waits only for persistent services or when independent useful work can run concurrently.",
-			"A command still running after the initial wait returns a session ID. Rely on completion notifications, then call write_stdin once to collect the result rather than repeatedly polling.",
+			"A command still running after the initial wait returns a session ID. Use write_stdin to wait for it and collect its output.",
 			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
 		],
 		parameters: Type.Object({
@@ -82,7 +82,7 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 		promptSnippet: "Poll a Unified Exec session or send an exact Ctrl-C interrupt",
 		promptGuidelines: [
 			"session_id comes from exec_command. Omitted or empty chars reads output; stdin is closed except for the U+0003 interruption request.",
-			"Rely on completion notifications and collect the result once; omit yield_time_ms for ordinary collection.",
+			"Use a longer yield_time_ms when waiting for a slow command. A timeout returns the same live process handle; it does not stop the command.",
 			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it uses taskkill to terminate the command tree; it does not emit a console Ctrl-C event.",
 		],
 		parameters: Type.Object({

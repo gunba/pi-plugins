@@ -32,6 +32,7 @@ export type DotSurfaceInput =
 	| { kind: "text"; text: string };
 export interface DotSnapshot {
 	state: "disconnected" | "connecting" | "ready" | "unavailable";
-	id?: string; name?: string; paused?: boolean; error?: string;
+	busy?: boolean;
+	id?: string; name?: string; avatar?: string; writing?: boolean; paused?: boolean; error?: string;
 	messages: DotMessage[]; before?: string; inputs: DotInput[]; uploads?: DotUpload[];
 }

@@ -9,24 +9,20 @@ const key = (target: WorkTarget) => `${target.kind}:${target.id}`;
 export class WorkCoordinator {
   readonly sessionId: string;
   private readonly persist: (value: unknown) => void;
-  private readonly wake: (content: string, waitId: string) => void;
   private readonly resources = new Map<string, Resource>();
   private active?: Wait;
   private listeners = new Set<() => void>();
   private detachAbort?: () => void;
   private closed = false;
-  private pendingWake?: { content: string; id: string; sent: boolean };
 
-  constructor(sessionId: string, persist: (value: unknown) => void, wake: (content: string, waitId: string) => void) {
+  constructor(sessionId: string, persist: (value: unknown) => void) {
     this.sessionId = sessionId;
     // SessionManager can retain the passed object in its resident entries.
     this.persist = (value) => persist(structuredClone(value));
-    this.wake = wake;
   }
   get blocked(): boolean { return this.active !== undefined; }
   get waiting(): boolean { return this.active?.status === "waiting"; }
   get waitId(): string | undefined { return this.active?.id; }
-  private get suspensionPending(): boolean { return this.waiting || this.pendingWake?.sent === false; }
 
   register(target: WorkTarget, pending = true, generation?: string): string {
     if (this.closed) throw new Error("work coordinator is closed");
@@ -51,21 +47,19 @@ export class WorkCoordinator {
     if (!wait || wait.status !== "waiting") return false;
     const satisfied = (item: Resource) => !item.pending;
     if (!(wait.mode === "all" ? wait.targets.every(satisfied) : wait.targets.some(satisfied))) return false;
-    try { this.persist({ ...wait, status: "ready", content, wakeOwned: options.notify !== false }); }
+    try { this.persist({ ...wait, status: "ready", content }); }
     catch (error) { resource.pending = true; delete resource.content; throw error; }
     wait.status = "ready";
     this.detachAbort?.();
     this.detachAbort = undefined;
-    if (options.notify !== false) this.pendingWake = { content, id: wait.id, sent: false };
-    try { this.retryWake(); }
-    finally { this.changed(); }
+    this.changed();
     return true;
   }
 
   begin(targets: WorkTarget[], mode: "any" | "all" = "any", signal?: AbortSignal): { waiting: boolean; waitId?: string; completed?: string[] } {
     signal?.throwIfAborted();
     if (this.closed) throw new Error("work coordinator is closed");
-    if (!targets.length || targets.length > 64) throw new Error("wait_for_work needs 1–64 existing resource targets");
+    if (!targets.length || targets.length > 64) throw new Error("Waiting needs 1–64 existing resource targets");
     const selected = [...new Map(targets.map((target) => [key(target), target])).values()].map((target) => {
       const resource = this.resources.get(key(target));
       if (!resource) throw new Error(`No session-owned ${target.kind} resource ${target.id}; create it before waiting`);
@@ -74,7 +68,7 @@ export class WorkCoordinator {
     const done = selected.filter((item) => !item.pending);
     if (mode === "all" ? done.length === selected.length : done.length > 0)
       return { waiting: false, completed: done.map((item) => item.content ?? `${key(item)} already completed`) };
-    if (this.active) throw new Error("An explicit wait is already registered; cancel it before replacing it");
+    if (this.active) throw new Error("A wait is already in progress");
     const wait: Wait = { id: randomUUID(), targets: selected, mode, status: "waiting" };
     // No await between validation, generation capture, durable append and admission.
     this.persist(wait);
@@ -89,35 +83,39 @@ export class WorkCoordinator {
 
   cancel(reason: string): void {
     if (!this.active) return;
-    this.persist({ ...this.active, status: "cancelled", reason, ...(this.pendingWake ? { content: this.pendingWake.content, wakeOwned: true } : {}) });
+    this.persist({ ...this.active, status: "cancelled", reason });
     this.active = undefined;
-    this.pendingWake = undefined;
     this.detachAbort?.();
     this.detachAbort = undefined;
     this.changed();
   }
 
-  /** A request consumes a ready wait; a mixed tool batch did not actually yield. */
-  consume(): void {
-    this.retryWake();
-    this.cancel(this.waiting ? "continued-without-yield" : "event-consumed");
-  }
-
-  /** Only explicit lifecycle checkpoints retry a synchronously failed wake. */
-  retryWake(): void {
-    const pending = this.pendingWake;
-    if (!pending || pending.sent || this.closed) return;
-    this.wake(pending.content, pending.id);
-    pending.sent = true;
-    this.changed();
+  /** Keep the tool pending; the native agent loop consumes the returned result. */
+  async wait(targets: WorkTarget[], mode: "any" | "all", timeoutMs: number, signal?: AbortSignal) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000) throw new Error("Wait timeout must be between 1 ms and 1 hour");
+    const result = this.begin(targets, mode, signal);
+    if (!result.waiting) return { completed: result.completed ?? [], timed_out: false };
+    const active = this.active!;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reason = await Promise.race([
+        this.untilReady(signal).then(() => active.status === "ready" ? "completed" : "interrupted"),
+        new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); }),
+      ]);
+      return { completed: active.targets.filter(item => !item.pending).map(item => item.content ?? `${key(item)} completed`),
+        timed_out: reason === "timeout", ...(reason === "interrupted" ? { interrupted: true } : {}) };
+    } finally {
+      clearTimeout(timer);
+      if (this.active === active) this.cancel("wait-returned");
+    }
   }
 
   async untilReady(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    if (!this.suspensionPending) return;
+    if (!this.waiting) return;
     await new Promise<void>((resolve, reject) => {
       const finish = () => {
-        if (this.suspensionPending && !signal?.aborted) return;
+        if (this.waiting && !signal?.aborted) return;
         this.listeners.delete(finish);
         signal?.removeEventListener("abort", finish);
         if (signal?.aborted) reject(signal.reason); else resolve();
@@ -131,7 +129,7 @@ export class WorkCoordinator {
   close(persistCancellation = true): void {
     if (this.closed) return;
     try { if (persistCancellation) this.cancel("session-shutdown"); }
-    finally { this.closed = true; this.active = undefined; this.pendingWake = undefined; this.detachAbort?.(); this.changed(); this.resources.clear(); }
+    finally { this.closed = true; this.active = undefined; this.detachAbort?.(); this.changed(); this.resources.clear(); }
   }
   private changed(): void { for (const listener of this.listeners) listener(); }
 }

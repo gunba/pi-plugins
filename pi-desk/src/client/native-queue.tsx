@@ -6,7 +6,7 @@ export function NativeQueue({ queue }: { queue: SessionSnapshot["queue"] }) {
 		{([["Steering", "steer", queue.steering], ["Queued", "queue", queue.followUp]] as const)
 			.filter(([, , group]) => group.count).map(([title, icon, group]) => <div className="queue-group" key={title}>
 				<div className="queue-heading"><Icon name={icon} /><strong>{title}</strong><span>{group.count}</span>
-					<small>{title === "Steering" ? "Next opportunity" : "After the current response"}</small></div>
+					<small>{title === "Steering" ? "Next opportunity" : "After current work finishes"}</small></div>
 				<ul>{group.previews.map((text, index) => <li key={index}><span>{index + 1}</span><p>{text}</p></li>)}</ul>
 				{group.count > group.previews.length && <small>{group.count - group.previews.length} more waiting</small>}
 			</div>)}

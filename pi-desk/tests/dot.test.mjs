@@ -21,7 +21,7 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 			const dot = { id: "pc", online: true, ready: false, busy: false, status: "Not connected", error: "",
 				computers: [{id:"pc", name:"Fixture computer", connected:true}],
 				view: {state:"unavailable", name:"Dot", error:"Session with given id not found.", messages:[], inputs:[]},
-				messages:[], files:[], filesReady:true, draft:"" };
+				messages:[], optimistic:[], files:[], filesReady:true, draft:"" };
 			export const html = renderToStaticMarkup(<DotConversation dot={dot} openNavigation={() => {}}/>);
 		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic",
 			plugins: [{ name: "offline-connection", setup(builder) {
@@ -48,10 +48,11 @@ test("Dot authors use native identity when both transport roles are user", () =>
 });
 test("Dot reads native messaging state without replaying the challenged request client", () => {
 	let requests = 0;
-	const room = { id: "room", aeon_id: "dot", name: "Dot" };
+	const room = { id: "room", aeon_id: "dot", name: "Dot", members: [{ id: "person", aeon_id: "dot", avatarUrl: "https://images.oaiusercontent.com/avatar" }] };
 	const cached = { messages: [...items, { ...items[0], id: "provisional", deliveryState: "pending" }], cursors: { before: "cursor" } };
 	const props = { room, services: {
 		conversations: { get: id => { assert.equal(id, "room"); return cached; } },
+		typing: { state: { getSnapshot: () => new Map([["person", true]]) } },
 		composer: { state: { getSnapshot: () => ({ uploads: [], drafts: new Map() }) } },
 	} };
 	const node = { hasAttribute: () => true, __reactFiberTest: { memoizedProps: props } };
@@ -59,6 +60,7 @@ test("Dot reads native messaging state without replaying the challenged request 
 	runInNewContext(DOT_NATIVE, { window, document: { querySelectorAll: selector => selector === "[data-message-id]" ? [node] : [] }, location: { pathname: "/dots/thread" } });
 	const state = window.__piDeskDotNative.snapshot();
 	assert.equal(state.dot, "dot"); assert.equal(state.before, "cursor"); assert.equal(requests, 0);
+	assert.equal(state.avatar, room.members[0].avatarUrl); assert.equal(state.writing, true);
 	assert.equal(dotMessages(state.messages, state.dot).length, 2);
 });
 

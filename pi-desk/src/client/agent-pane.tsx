@@ -10,6 +10,10 @@ import { ViewPreviews } from "./view-previews.tsx";
 import { transcriptKey, type CachedMessage } from "./state.ts";
 import { agentInventory, type AgentRow } from "./agent-inventory.ts";
 import { reportDeskError } from "./desk-status.ts";
+import { WorkspaceActions } from "./workspace-actions.tsx";
+import { ActionMenu } from "./action-menu.tsx";
+import { Icon } from "./icons.tsx";
+import { activityLabel } from "./activity.ts";
 
 const data = (view: ViewSnapshot) => view.data as UiConversation;
 const empty: CachedMessage[] = [];
@@ -23,7 +27,7 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	renderMessage: (message: ChatMessage, source: string, results: Record<string, ChatMessage>, thinking?: ChatMessage[], traceContinues?: boolean) => ReactNode; answer: (id: string) => void;
 	openView: (id: string) => void;
 }) {
-	const [search, setSearch] = useState(""), [listing, setListing] = useState(true);
+	const [search, setSearch] = useState(""), [listing, setListing] = useState(historyInitiallyOpen || !focused);
 	const [historyOpen, setHistoryOpen] = useState(historyInitiallyOpen), [opening, setOpening] = useState("");
 	const requested = useRef(new Set<string>());
 	const confirmation = useConfirmation(`${session.key}:${session.activation}:${session.ui?.generation}:${connected}`);
@@ -60,13 +64,10 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	return <div className="agent-pane">
 		<p className="agent-parent">{context}</p>
 		<div className="agent-picker-heading">
-			<button type="button" aria-expanded={listing} onClick={() => setListing(!listing)}>{current.length} current · {total} agents {listing ? "⌃" : "⌄"}</button>
-			{!connected && <span className="muted">Disconnected · last known state</span>}
+			<button type="button" aria-expanded={listing} onClick={() => setListing(!listing)}><Icon name="layers" />Browse agents <span>{total}</span><span aria-hidden="true">{listing ? "⌃" : "⌄"}</span></button>
+			<span className="muted">{connected ? `${current.length} current` : "Disconnected"}</span>
 		</div>
-		{historyView && <details className="agent-management"><summary>Manage agents</summary>
-			<div className="view-actions">{historyView.actions?.map(action => <button key={action.id} type="button"
-				disabled={!connected || !!historyView.working} onClick={() => void manage(action)}>{action.label}</button>)}</div>
-		</details>}
+		{listing && historyView && <WorkspaceActions view={historyView} disabled={!connected || !!historyView.working} invoke={action => void manage(action)} />}
 		{listing && <div className="agent-picker">
 			<div className="agent-filter"><input aria-label="Find an agent" placeholder="Find an agent" value={search} onChange={event => setSearch(event.target.value)} /></div>
 			<AgentList rows={currentRows.filter(matches)} focused={focused} label="Current agents" empty="No active or queued agents." open={row => void open(row)} />
@@ -96,7 +97,7 @@ function AgentList({ rows, focused, label, empty, open }: {
 				const row = rows[item.index]!;
 				return <button type="button" className={`agent-row${row.id === focused ? " selected" : ""}`} key={item.key}
 					aria-pressed={row.id === focused} style={{ position: "absolute", top: 0, width: "100%", height: item.size, transform: `translateY(${item.start}px)` }}
-					onClick={() => open(row)}><strong>{row.title}</strong><span>{row.status}</span><small>{row.subtitle}</small></button>;
+					onClick={() => open(row)}><strong>{row.title}</strong><span className="agent-row-status"><span className={`status-dot ${row.status}`} />{activityLabel(row.status)}</span><small>{row.subtitle}</small></button>;
 			})}
 		</div>
 	</div>;
@@ -166,18 +167,19 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 		catch (error) { if (live.current) reportDeskError(error); }
 	};
 	return <div className="agent-conversation">
-		<header><div><h3>{view.title}</h3><small>{item.status} · {item.activity ?? item.subtitle}</small></div>
-			{actions.filter(action => !action.input).map(action => <button type="button" key={action.id} disabled={disabled}
-				className={action.destructive ? "danger" : undefined} onClick={() => void control(action)}>{action.label}</button>)}
-		</header>
-		<details className="agent-facts"><summary>Agent details</summary><p>{item.subtitle}</p>
-			<dl className="detail-fields">{item.fields?.map(field => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl></details>
+		<header className="agent-review-heading"><div className="agent-identity"><h3>{view.title}</h3>
+			<div className="agent-current-status"><span className={`status-dot ${questions.length ? "waiting" : item.status}`} />
+				<strong>{questions.length ? "Needs input" : activityLabel(item.status)}</strong>{item.activity && <span>{item.activity}</span>}</div>
+		</div><ActionMenu actions={actions.filter(action => !action.input)} disabled={disabled} invoke={action => void control(action)} label="Agent controls" /></header>
+		<details className="agent-facts"><summary>Details & plan</summary><p>{item.subtitle}</p>
+			<dl className="detail-fields">{item.fields?.map(field => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+			{item.scope && <ViewPreviews views={session.ui!.views.filter(view => view.scope?.id === item.scope)} open={openView} />}
+		</details>
 		{(item.error || view.actionError) && <p className="error-text" role="alert">{view.actionError || item.error}</p>}
 		{view.working && <p className="muted" role="status">{view.working}…</p>}
 		{questions.map(question => <button type="button" className="question-banner" key={question.id} onClick={() => answer(question.id)}>
 			{question.form.title}<span>Answer →</span>
 		</button>)}
-		{item.scope && <ViewPreviews views={session.ui!.views.filter(view => view.scope?.id === item.scope)} open={openView} />}
 		{source ? <TranscriptView key={source} session={session.key} source={source} generation={session.ui!.generation}
 			connected={connected && session.state === "ready"} epoch={epoch} messages={messages[transcriptKey(session.key, source)] ?? empty}
 			onLatest={onLatest} renderMessage={(message, results, thinking, traceContinues) => renderMessage(message, source, results, thinking, traceContinues)} latestRequest={latest} />
@@ -208,9 +210,9 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 					} else void send(action === "followUp" ? followup : primary);
 				}} />
 			<div className="agent-send">
-				{followup && followup !== primary && <button type="button" disabled={disabled || !draft.trim()} onClick={() => void send(followup)}>{followup.label}</button>}
+				{followup && followup !== primary && <button type="button" disabled={disabled || !draft.trim()} onClick={() => void send(followup)}><Icon name="queue" />{followup.label}</button>}
 				<button type="button" className="primary" disabled={disabled || !draft.trim() || !primary}
-					onClick={event => void send(event.shiftKey || event.altKey ? followup ?? primary : primary)}>{primary?.label ?? "Send"}</button>
+					onClick={event => void send(event.shiftKey || event.altKey ? followup ?? primary : primary)}><Icon name={primary?.delivery === "steer" ? "steer" : "send"} />{primary?.label ?? "Send"}</button>
 			</div>
 		</form>}
 		{confirmation.dialog}

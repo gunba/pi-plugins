@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.28.8",
+  "version": "0.28.9",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -40,11 +40,13 @@
       "./pi-party/index.ts",
       "./pi-plan/extensions/plan.ts",
       "./pi-subagents/extensions/subagents.ts",
-      "./pi-output-budget/extensions/index.ts"
+      "./pi-output-budget/extensions/index.ts",
+      "./pi-skill-refiner/index.ts"
     ],
     "skills": [
       "./pi-browser/skills/browse",
-      "./pi-gepa/skills/gepa-optimize"
+      "./pi-gepa/skills/gepa-optimize",
+      "./pi-skill-refiner/skills/skill-refine"
     ]
   },
   "peerDependencies": {

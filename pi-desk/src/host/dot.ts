@@ -33,6 +33,9 @@ export class DotConnection {
 	private snapshot: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
 	private directory: string;
 	private refreshing?: Promise<void>;
+	private avatarFetch?: Promise<void>;
+	private avatarKey?: string;
+	private avatarChecked = 0;
 	private connecting?: Promise<void>;
 	private sending?: Promise<void>;
 	private surface?: DotSurface;
@@ -90,6 +93,7 @@ export class DotConnection {
 		await this.closeSurface();
 		await this.browser?.close();
 		this.snapshot = { state: "connecting", messages: [], inputs: this.snapshot.inputs };
+		this.avatarKey = undefined;
 		const browser = this.browser = new DotBrowser(this.agentDir);
 		try {
 			await browser.open(this.config.path);
@@ -111,6 +115,14 @@ export class DotConnection {
 			await browser.close(); throw error;
 		}
 	}
+	private refreshAvatar(browser: DotBrowser, dot: string, key?: string): void {
+		if (!key || this.avatarFetch || this.avatarKey === key && Date.now() - this.avatarChecked < 300_000) return;
+		this.avatarKey = key; this.avatarChecked = Date.now();
+		const job = browser.avatar().then(image => {
+			if (browser === this.browser && this.snapshot.id === dot && image?.startsWith("data:image/png;base64,") && image.length <= 100_000) this.snapshot.avatar = image;
+		}).catch(() => {}).finally(() => { if (this.avatarFetch === job) this.avatarFetch = undefined; });
+		this.avatarFetch = job;
+	}
 	private async refresh(): Promise<void> {
 		if (this.refreshing) return this.refreshing;
 		const browser = this.browser, room = this.room, dot = this.snapshot.id;
@@ -121,6 +133,8 @@ export class DotConnection {
 			if (browser !== this.browser || this.stopped) return;
 			if (result.dot !== dot || result.room !== room) throw Error("The native Dot changed. Reconnect before continuing.");
 			this.snapshot.name = result.name;
+			this.snapshot.writing = result.writing;
+			this.refreshAvatar(browser, dot, result.avatar);
 			this.snapshot.messages = dotMessages(result.messages.slice(-32), dot);
 			this.snapshot.before = result.before; this.fetched = Date.now();
 			for (const input of this.snapshot.inputs.filter(input => input.dot === dot && input.state === "unknown" && input.requestId)) {
@@ -137,7 +151,7 @@ export class DotConnection {
 	}
 	async view(): Promise<DotSnapshot> {
 		if (this.dirty || Date.now() - this.fetched > 30_000) await this.refresh();
-		return structuredClone({ ...this.snapshot, uploads: this.snapshot.id ? this.files.list(this.snapshot.id) : [] });
+		return structuredClone({ ...this.snapshot, busy: this.busy, uploads: this.snapshot.id ? this.files.list(this.snapshot.id) : [] });
 	}
 	async history(before: string): Promise<{ messages: DotMessage[]; before?: string }> {
 		if (this.snapshot.state !== "ready" || !this.room) throw Error("Reconnect Dot before loading history.");

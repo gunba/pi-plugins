@@ -26,7 +26,7 @@ export function PendingInputs({ session, connected, report }: {
 		const input: InputSubmission = previous ?? {
 			id: crypto.randomUUID(), activation: session.activation,
 			generation: session.state === "starting" ? undefined : session.ui?.generation,
-			command: { ...review.command, behavior: review.command.behavior ?? "followUp" },
+			command: { ...review.command, behavior: review.command.behavior ?? "steer" },
 		};
 		localStorage.setItem(receiptKey, JSON.stringify(input));
 		try { await api(`/sessions/${session.key}/inputs`, input); }

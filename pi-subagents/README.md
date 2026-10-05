@@ -142,10 +142,10 @@ or permission to create a root goal.
   `action-required` reports bypass that delay. Retained one-shot parents also receive
   nested notices. Settlement retains status/errors but omits final output identical
   to an earlier report.
-- `wait_for_work` explicitly yields for selected existing children, managed processes
-  or timers. Merely starting children never forces a wait. Goal rounds stop during
-  an explicit wait; a matching event resumes work once. SDK children suspend their
-  prompt instead of treating terminating wait tools as failed final answers. See
+- `wait_agent({ids, timeout_ms?})` keeps a tool call pending until a selected child
+  finishes or the timeout expires. Starting children never forces a wait. Roots
+  and SDK children continue through Pi's normal tool loop, without ending the
+  turn or requesting a separate wake. Use `write_stdin` for processes. See
   [work coordination](../pi-work-coordination/README.md).
 - Use reports for actionable changes, not routine progress. The final answer is
   delivered automatically in settlement and should not be reported again.

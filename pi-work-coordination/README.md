@@ -1,31 +1,32 @@
-# Explicit work waits
+# Agent waiting
 
-Pi 0.87.1 or newer is required. The subagent, plan and scheduler extensions install this shared policy once per session event bus. Managed SDK children install it explicitly, with discovery disabled.
+`wait_agent({ids, timeout_ms?})` waits for any selected child to finish its current
+task. The tool stays pending, like Codex's targeted agent wait. Completion returns
+a normal tool result to Pi's agent loop: no turn termination or separate wake.
 
-`wait_for_work({targets:[{kind:"child"|"process"|"timer",id}],mode:"any"|"all"})` yields only for registered, session-owned resources. Use it alone, after independent useful work is complete. Pi terminates a tool batch only when every result has `terminate:true`. Merely creating a child, process or timer does not stop work or goal rounds. A resource already complete returns immediately without another wake.
+The default timeout is 30 seconds, with a maximum of one hour. A timeout returns
+`timed_out: true` without stopping child work. Already-completed work returns
+immediately. User input, interruption, shutdown and branch replacement release
+the wait. Roots and SDK children use the same tool implementation.
 
-`cancel_work_wait({})` cancels the wait, not the resources. Direct user input also cancels it. Resource cancellation must be published as a completion event. Reload, shutdown and branch replacement cancel waits: process ownership is not reconstructed from old IDs. Timer and child owners re-register actual resources. Interrupted SDK children return `aborted`, not a false `toolUse` error.
+Use `write_stdin` to wait for a running process. `schedule` is for timed reminders.
+The former `wait_for_work` and `cancel_work_wait` tools are removed.
 
-Plans do not enqueue continuation rounds while a wait is pending or while its completion message has not reached model context. With `mode:"all"`, partial results do not wake the model. Urgent child errors and explicit action requests interrupt a wait. SDK child prompt promises remain outstanding while waiting and resume on the event; there is no polling prompt.
+## Integration
 
-## Integration API
+`ensureWorkCoordination(pi)` installs once on the runtime's shared event bus.
+Starting background work does not itself force a wait or change plan continuation.
 
-Import from `pi-work-coordination/index.ts`:
+Child owners register and complete session-owned resources. Generations separate
+successive tasks on a reused child ID. Durable child notices retain their own
+delivery path; completion also releases a matching pending tool. Notice retries
+can identify that match without requesting an additional wake.
 
-```ts
-ensureWorkCoordination(pi); // during extension setup
-// Only after a real handle exists:
-const generation = registerWorkResource(sessionId, {kind:"process", id});
-// On exit, cancellation or disposal:
-completeWorkResource(sessionId, {kind:"process", id}, "Process finished", {generation});
+`getWorkCoordinator(sessionId)` exposes ownership and wait state to integrations.
+Wait transitions are immutable native custom entries. Historical unadmitted
+completion records remain recoverable as context on reload, without starting
+the old task. Resource ownership is rebuilt from actual child work, not old IDs.
+
+```sh
+node --test pi-work-coordination/tests/*.test.mjs
 ```
-
-Pass the generation to completion callbacks; a late callback cannot satisfy a wait for a reused ID. Resource owners with their own durable generation may pass it as the fourth registration argument. An existing wait retains its original generation.
-
-`getWorkCoordinator(sessionId)` exposes `waiting`, `blocked`, `begin`, `cancel`, `untilReady` and `retryWake`. `blocked` includes an event awaiting context admission. Do not use it as evidence of useful work being complete.
-
-`completeWorkResource` returns whether this event satisfies the active wait. The default emits one wake only for a matching wait. `notify:false` transfers wake delivery to the caller, which must send its own message if the return value is true. This is used for durable child notice batches and scheduled messages. Repeated external completion is retryable until context consumes the wait; ordinary internally emitted wakes are not repeated.
-
-Wait transitions use immutable session custom entries. A failed durable admission publishes no wait. A failed synchronous wake can be retried at `agent_settled` or explicitly with `retryWake`; no polling retry runs. Reload exposes any unadmitted owned completion message without automatically restarting the old goal. Pi's void `sendMessage` API does not provide an asynchronous persistence acknowledgement, so crash recovery is at-least-once, with stable wait/notice IDs, not exactly-once delivery.
-
-Tests: `node --test pi-work-coordination/tests/*.test.mjs pi-plan/tests/*.test.mjs pi-subagents/tests/explicit-wait-sdk.test.mjs`.

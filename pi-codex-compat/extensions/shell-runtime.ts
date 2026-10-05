@@ -16,7 +16,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { CODEX_TOOL_OUTPUT_TOKEN_BUDGET } from "./model-tools.ts";
-import { registerWorkResource, completeWorkResource } from "../../pi-work-coordination/index.ts";
 import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
 import { OUTPUT_CHARS } from "../../pi-output-budget/extensions/text.ts";
 import { terminateWindowsProcessTree } from "./windows-exec.ts";
@@ -100,10 +99,6 @@ type ExecSession = {
 	shutdownRequested: boolean;
 	activeCalls: number;
 	lastUsed: number;
-	workSessionId?: string;
-	workGeneration?: string;
-	workCompleted?: boolean;
-	workNotifyError?: (message: string) => void;
 	outputArtifact?: string;
 	outputArtifactDirectory?: string;
 	artifactError?: string;
@@ -866,26 +861,6 @@ function closeSessionLog(session: ExecSession): Promise<void> {
 	return session.logClose;
 }
 
-function completeExecWork(session: ExecSession): void {
-	if (!session.workSessionId || !session.workGeneration || session.workCompleted || !isSessionDone(session)) return;
-	const status = session.error ? "failed to launch"
-		: session.terminationError ? `failed to terminate: ${session.terminationError}`
-		: session.terminationReason ? `ended (${session.terminationReason})`
-		: `exited with code ${session.exitCode ?? "unknown"}${session.exitSignal ? ` (${session.exitSignal})` : ""}`;
-	const preview = formatUnifiedExecOutput(session.pendingOutput.snapshot(), 1000);
-	const content = `Managed process ${session.id} ${status}.\n${preview.output}\n`
-		+ (session.released ? "Its handle has been released; see the previous tool result."
-			: `Use write_stdin session_id=${session.id} once to collect the final output and release the handle.`);
-	try {
-		completeWorkResource(session.workSessionId, { kind: "process", id: String(session.id) }, content,
-			{ generation: session.workGeneration });
-		session.workCompleted = true;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		session.workNotifyError?.(`Could not persist completion of process ${session.id}: ${message}`);
-	}
-}
-
 async function cleanupSessionLog(session: ExecSession): Promise<void> {
 	if (!isSessionDone(session) || !session.released || session.activeCalls > 0)
 		return;
@@ -1329,7 +1304,6 @@ async function createExecSession(
 		child.stdin.on("error", () => {});
 		child.once("error", (error) => {
 			session.error = error instanceof Error ? error.message : String(error);
-			completeExecWork(session);
 			void cleanupSessionLog(session);
 		});
 		child.once("exit", () => {
@@ -1344,7 +1318,6 @@ async function createExecSession(
 			if (session.stdioDrainTimeout) clearTimeout(session.stdioDrainTimeout);
 			void closeSessionLog(session).then(async () => {
 				await waitForProcessTreeTermination(session);
-				completeExecWork(session);
 				return cleanupSessionLog(session);
 			});
 		});
@@ -1437,16 +1410,6 @@ export async function executeManagedExecCommand(
 					call,
 					session.pendingOutput.drain(),
 				);
-				if (result.details?.running && ctx.sessionManager) {
-					session.workSessionId = ctx.sessionManager.getSessionId();
-					session.workGeneration = registerWorkResource(session.workSessionId,
-						{ kind: "process", id: String(session.id) });
-					session.workNotifyError = message => {
-						try { ctx.ui?.notify(message, "error"); } catch { /* A retired UI cannot receive notifications. */ }
-					};
-					// Close may have happened while sessionResult was awaiting log I/O.
-					completeExecWork(session);
-				}
 				if (!result.details?.running) await releaseSession(session);
 				return result;
 			} finally {

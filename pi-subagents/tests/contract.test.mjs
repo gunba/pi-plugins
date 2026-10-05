@@ -55,16 +55,15 @@ function extensionHarness() {
 	return { root, manager, tools, handlers, commands, ctx };
 }
 
-test("root exposes only the DSH-standard subagent contract", async () => {
+test("root exposes subagent primitives and Codex-style waiting", async () => {
 	const harness = extensionHarness();
 	try {
-		assert.equal(harness.tools.length, 8, "subagent and explicit-wait tools register during discovery");
+		assert.equal(harness.tools.length, 7, "subagent and wait tools register during discovery");
 		for (const handler of harness.handlers.get("session_start")) await handler({}, harness.ctx);
 		assert.deepEqual(
 			harness.tools.map((tool) => tool.name),
 			[
-				"wait_for_work",
-				"cancel_work_wait",
+				"wait_agent",
 				"subagent",
 				"subagent_fork",
 				"send_message",
@@ -76,7 +75,8 @@ test("root exposes only the DSH-standard subagent contract", async () => {
 		for (const removed of [
 			"spawn_agent",
 			"restart_agent",
-			"wait_agent",
+			"wait_for_work",
+			"cancel_work_wait",
 			"kill_agent",
 		])
 			assert.equal(harness.tools.some((tool) => tool.name === removed), false);

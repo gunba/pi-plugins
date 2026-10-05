@@ -15,13 +15,12 @@ Schedule a message to be sent back to the current Pi session later, from either 
 
 Delays use minutes, hours, or days: `15m`, `5h`, `5.5h`, `30d`.
 
-Use reminders for time-based follow-up. Tracked local processes and agents
-already have completion notifications and `wait_for_work`; they do not need
-short reminders to check whether they finished.
+Use reminders for time-based follow-up. Use `write_stdin` to wait for a running
+process or `wait_agent` for child work, rather than scheduling repeated checks.
 
 Scheduled messages are persisted for the current session. A one-shot timer runs at the next due time in a live TUI or RPC session; there is no recurring delivery poll. Print and JSON runs reject scheduling because they exit after their prompts. If Pi is restarted or the session is resumed later, overdue messages for that same session are sent after startup.
 
-Due messages are delivered as labelled Pi custom messages, not as newly typed user messages. All reminders steer an active run. When idle, a reminder starts a turn unless an explicit wait is awaiting other work. Use `wait_for_work` with a `timer` target and the schedule ID to yield until delivery; partial events in an `all` wait do not start extra turns. Cancelling an awaited timer releases the wait with a cancellation event.
+Due messages are delivered as labelled Pi custom messages, not as newly typed user messages. Reminders steer an active run or start a turn when idle. A pending agent wait returns so the reminder can be handled; the child work is not cancelled.
 
 Queued messages appear in the shared [Work view](../pi-work-ui/README.md) above
 the editor, with their count and the next message's due time. `/schedule list`,

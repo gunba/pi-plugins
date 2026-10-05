@@ -1,0 +1,12 @@
+# Numeric configuration of record: OpenHands/SkillRefiner d9dfdb8e7e73e2449a7af1e04bd78ecb366db1db.
+# Python 3.13. No OpenHands, LiteLLM, GEPA or provider client is needed.
+hdbscan==0.8.44
+numba==0.66.0
+numpy==2.4.6
+scikit-learn==1.9.0
+umap-learn==0.5.12
+joblib==1.5.3
+llvmlite==0.48.0
+pynndescent==0.5.13
+scipy==1.18.0
+tqdm==4.67.3

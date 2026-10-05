@@ -3,7 +3,6 @@ import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { WorkCoordinator, registry } from "../../pi-work-coordination/core.ts";
 import { ArtifactStore } from "../../pi-output-budget/extensions/artifacts.ts";
 
 import {
@@ -73,15 +72,11 @@ test("exec_command uses configured shellPath before the operating-system shell",
 	assert.equal(explicit.details.exit_code, 0);
 });
 
-test("managed process completion satisfies a registered wait without polling", async t => {
+test("write_stdin waits for a managed process and returns its final output", async t => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-process-wait-"));
 	const owner = createExecRuntimeOwner();
 	await startExecSessionRuntime(owner);
-	const wakeups = [];
-	const coordinator = new WorkCoordinator("exec-wait-test", () => {}, content => wakeups.push(content));
-	registry.sessions.set("exec-wait-test", coordinator);
 	t.after(async () => {
-		coordinator.close(); registry.sessions.delete("exec-wait-test");
 		await shutdownExecSessions(owner);
 		await rm(directory, { recursive: true, force: true });
 	});
@@ -90,15 +85,9 @@ test("managed process completion satisfies a registered wait without polling", a
 	const result = await executeManagedExecCommand({ cmd: script, shell: process.execPath, yield_time_ms: 2000 }, undefined,
 		{ cwd: directory, sessionManager: { getSessionId: () => "exec-wait-test" } }, undefined, owner);
 	assert.equal(result.details.running, true);
-	const target = { kind: "process", id: String(result.details.session_id) };
-	assert.equal(coordinator.begin([target]).waiting, true);
-	await coordinator.untilReady(AbortSignal.timeout(10000));
-	assert.equal(wakeups.length, 1);
-	assert.match(wakeups[0], /exited with code 0/);
-	const final = await executeWriteStdin({ session_id: result.details.session_id }, undefined, undefined, owner);
+	const final = await executeWriteStdin({ session_id: result.details.session_id, yield_time_ms: 10_000 }, undefined, undefined, owner);
 	assert.equal(final.details.exit_code, 0);
 	assert.match(final.content[0].text, /finished-event/);
-	assert.equal(wakeups.length, 1);
 });
 
 test("an exited process drains active output without waiting for a quiet inherited pipe", async t => {

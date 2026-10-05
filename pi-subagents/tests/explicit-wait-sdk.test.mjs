@@ -14,7 +14,7 @@ import { waitUntil } from "./helpers.mjs";
 
 const model = { id: "offline", name: "offline", api: "openai-completions", provider: "wait-test", baseUrl: "http://127.0.0.1:1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16384, maxTokens: 2048 };
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const target = { kind: "process", id: "existing-job" };
+const target = { kind: "child", id: "existing-child" };
 async function fixture(t, mixed = false, afterFirstContext) {
   const dir = mkdtempSync(join(tmpdir(), "pi-explicit-wait-"));
   const id = randomUUID(); const manager = SessionManager.create(dir, join(dir, "sessions"), { id });
@@ -23,7 +23,7 @@ async function fixture(t, mixed = false, afterFirstContext) {
     async prepareModelRuntime(_ref, runtime) {
       runtime.registerProvider(model.provider, { name: "offline", baseUrl: model.baseUrl, apiKey: "offline", api: model.api, models: [model], streamSimple(_model, context) {
         contexts.push(context); calls++;
-        const content = calls === 1 && !afterFirstContext ? [{ type: "toolCall", id: "wait", name: "wait_for_work", arguments: { targets: [target] } }, ...(mixed ? [{ type: "toolCall", id: "noop", name: "noop", arguments: {} }] : [])] : [{ type: "text", text: "finished after event" }];
+        const content = calls === 1 && !afterFirstContext ? [{ type: "toolCall", id: "wait", name: "wait_agent", arguments: { ids: [target.id] } }, ...(mixed ? [{ type: "toolCall", id: "noop", name: "noop", arguments: {} }] : [])] : [{ type: "text", text: "finished after event" }];
         const message = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now(), stopReason: calls === 1 && !afterFirstContext ? "toolUse" : "stop" };
         const stream = new AssistantMessageEventStream(); queueMicrotask(() => { if (calls === 1) afterFirstContext?.(); stream.push({ type: "done", reason: message.stopReason, message }); }); return stream;
       } });
@@ -39,7 +39,7 @@ async function fixture(t, mixed = false, afterFirstContext) {
   return { driver, coordinator, manager, contexts, calls: () => calls };
 }
 
-test("real SDK child parks a terminating wait without settlement, then resumes exactly once", async (t) => {
+test("real SDK child keeps its wait tool pending and continues normally on completion", async (t) => {
   const f = await fixture(t); let settled = false;
   const running = f.driver.prompt("work").then((value) => { settled = true; return value; });
   await waitUntil(() => f.coordinator.waiting, "explicit wait"); await delay(30);
@@ -47,9 +47,9 @@ test("real SDK child parks a terminating wait without settlement, then resumes e
   const unrelated = { messageId: "one-report", kind: "report", childId: "other-child", content: "unrelated routine result" };
   f.driver.receiveNotices([unrelated]); f.driver.receiveNotices([unrelated]); await delay(10);
   assert.equal(f.calls(), 1, "unrelated routine report does not wake an explicit process wait");
-  assert.equal(f.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "pi-subagents/notice").length, 1, "driver replay and runtime batch cannot duplicate the same receipt");
   assert.equal(f.coordinator.complete(target, "job exited successfully"), true);
   const outcome = await running;
+  assert.equal(f.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "pi-subagents/notice").length, 1, "driver replay and runtime batch cannot duplicate the same receipt");
   assert.equal(outcome.stopReason, "completed"); assert.equal(outcome.output, "finished after event");
   assert.equal(f.calls(), 2); assert.match(JSON.stringify(f.contexts.at(-1)), /job exited successfully/);
   assert.equal(f.coordinator.complete(target, "duplicate"), false); assert.equal(f.calls(), 2);
@@ -59,8 +59,10 @@ test("real SDK child cancellation during explicit wait is aborted, not a toolUse
   await waitUntil(() => f.coordinator.waiting); f.driver.interrupt();
   const outcome = await running; assert.equal(outcome.stopReason, "aborted"); assert.equal(outcome.errorMessage, undefined); assert.equal(f.calls(), 1);
 });
-test("real SDK mixed tool batch does not pretend to yield", async (t) => {
-  const f = await fixture(t, true); const outcome = await f.driver.prompt("work");
+test("real SDK mixed tool batch waits without special termination rules", async (t) => {
+  const f = await fixture(t, true); const running = f.driver.prompt("work");
+  await waitUntil(() => f.coordinator.waiting); assert.equal(f.calls(), 1);
+  f.coordinator.complete(target, "finished"); const outcome = await running;
   assert.equal(outcome.stopReason, "completed"); assert.equal(f.calls(), 2); assert.equal(f.coordinator.blocked, false);
   f.coordinator.complete(target, "later"); assert.equal(f.calls(), 2);
 });

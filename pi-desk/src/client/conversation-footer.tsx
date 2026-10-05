@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { UiAction, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot } from "../shared/protocol.ts";
 import { ContextMeter } from "./settings-controls.tsx";
+import { sessionActivity } from "./activity.ts";
 
 const tokenFormat = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 const tokens = (value: number) => tokenFormat.format(value);
@@ -47,7 +48,7 @@ export function ConversationFooter({ session, computer, connected, disabled, ope
 			<span className="footer-usage-tokens">↑{tokens(usage.input)} ↓{tokens(usage.output)} · </span>${usage.cost.toFixed(2)}
 		</span>}
 		<span className="footer-state" title={`${computer} · ${session.cwd}${!connected ? " · last known state" : ""}`}>
-			<span className={`status-dot ${connected ? snapshot?.activity ?? "idle" : "interrupted"}`} />{connected ? state : "Disconnected"}
+			<span className={`status-dot ${connected ? sessionActivity(session) : "offline"}`} />{connected ? state : "Disconnected"}
 		</span>
 	</div>;
 }
