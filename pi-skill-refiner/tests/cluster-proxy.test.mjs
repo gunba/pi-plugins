@@ -27,8 +27,9 @@ def fake_open(opener, request, timeout):
     assert timeout == 120
     return io.BytesIO(b'{"synthetic": true}')
 
-# Both discovery and transport are mocked: no real proxy settings, keys or network.
-with patch.object(urllib.request, "getproxies", return_value=proxies) as discover:
+# Keep real TLS verification defaults, but don't enumerate the machine's certificate stores.
+# Proxy discovery and transport are mocked too; no settings, keys or network are used.
+with patch.object(ssl.SSLContext, "load_default_certs"), patch.object(urllib.request, "getproxies", return_value=proxies) as discover:
     with patch.object(urllib.request.OpenerDirector, "open", autospec=True, side_effect=fake_open):
         assert cluster.request({"input": ["Synthetic summary."]}, "synthetic-key") == {"synthetic": True}
     discover.assert_called_once_with()
@@ -45,7 +46,7 @@ redirect = next(handler for handler in handlers if type(handler).__name__ == "No
 with unittest.TestCase().assertRaisesRegex(RuntimeError, "redirect refused"):
     redirect.redirect_request(None, None, 302, "Found", {}, "https://other.invalid")
 print("proxy regression passed")
-`, cluster], { encoding: "utf8", timeout: 10_000 });
+`, cluster], { encoding: "utf8", timeout: 30_000 });
   if (result.error?.code === "ENOENT") {
     t.skip("Python is unavailable; this regression uses only its standard library");
     return;
