@@ -31,6 +31,21 @@ test('lifecycle gates summary injection and clears on failure, cancellation and 
   assert.equal(hooks.before_provider_request({payload}, ctx), undefined);
  }
 });
+test('summary requests that already carry active instructions do not repeat them', () => {
+ const { hooks, ctx } = harness();
+ hooks.session_before_compact({ signal: new AbortController().signal }, ctx);
+ const native = { instructions: 'Full system prompt\nProject rule', input: [{ content: 'History' }] };
+ assert.equal(hooks.before_provider_request({ payload: native }, ctx), native);
+ const standalone = { instructions: 'Summarize', input: [{ content: 'Project rule' }] };
+ assert.match(hooks.before_provider_request({ payload: standalone }, ctx).instructions, /pi_compaction_context/,
+  'quoted conversation rules do not replace summary instructions');
+ const injection = buildInjection({ customPrompt: 'Custom rule', appendSystemPrompt: 'Extra rule' });
+ const context = { customPrompt: 'Custom rule', appendSystemPrompt: 'Extra rule' };
+ const incomplete = { system: 'Custom rule' };
+ assert.match(patchSummaryPayload(incomplete, injection, context).system, /Extra rule/);
+ const complete = { system: [{ type: 'text', text: 'Custom rule\nExtra rule' }] };
+ assert.equal(patchSummaryPayload(complete, injection, context), complete);
+});
 test('branch summaries, toggles and provider system fields', async () => {
  const {hooks, commands, ctx} = harness();
  const signal = new AbortController().signal;

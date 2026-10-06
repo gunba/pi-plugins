@@ -1755,7 +1755,11 @@ details[open] > summary:before {
 .dot-navigation small .status-dot { width:6px; height:6px; margin:0 6px 0 3px; }
 .dot-navigation { width:100%; }
 .dot-navigation .dot-avatar { width:30px; height:30px; }
-.dot-navigation > span:last-child { min-width:0; }
+.dot-navigation .dot-navigation-label { flex:1; min-width:0; }
+.dot-navigation.has-unread strong { color:var(--text); font-weight:700; }
+.session-item.dot-navigation .dot-unread-count { flex:none; min-width:23px; padding:3px 6px; border-radius:6px; background:var(--accent); color:var(--bg); font-size:11px; font-weight:700; text-align:center; }
+.dot-new-messages { flex:none; display:flex; align-items:center; justify-content:center; gap:12px; padding:9px 16px; border:0; border-bottom:1px solid var(--border); background:var(--accent-soft); color:var(--text); font-size:12px; font-weight:600; }
+.dot-new-messages:hover { background:var(--hover); }
 .dot-navigation strong { display:block; overflow:hidden; text-overflow:ellipsis; }
 .dot-navigation small { display:block; color:var(--muted); }
 .dot-messages { width:100%; max-width:900px; padding:28px 32px 40px; margin:0 auto; }

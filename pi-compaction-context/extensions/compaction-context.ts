@@ -27,7 +27,7 @@ export function buildInjection(snapshot: Snapshot): string | undefined {
   if (snapshot.customPrompt?.trim()) sections.push(`<custom_system_prompt>\n${truncate(snapshot.customPrompt.trim(), 8_000)}\n</custom_system_prompt>`);
   if (snapshot.appendSystemPrompt?.trim()) sections.push(`<appended_system_prompt>\n${truncate(snapshot.appendSystemPrompt.trim(), 8_000)}\n</appended_system_prompt>`);
   if (!sections.length) return undefined;
-  return `\n\n${MARKER}\nThese are active Pi context instructions for the checkpoint writer. Apply them while producing the summary. Preserve task-specific preferences and constraints; reference standing project rules by path when useful.\n\n${truncate(sections.join("\n\n"), 32_000)}\n</pi_compaction_context>`;
+  return `\n\n${MARKER}\nProject instructions for this summary:\n\n${truncate(sections.join("\n\n"), 32_000)}\n</pi_compaction_context>`;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -37,31 +37,40 @@ function record(value: unknown): value is Record<string, unknown> {
 // Only visit documented provider system-instruction fields, never conversation,
 // tool arguments/results, or arbitrary nested strings. Lifecycle events identify
 // summary requests; quoted prompt phrases are not a request classification API.
-export function patchSummaryPayload(payload: unknown, injection: string): unknown {
+export function patchSummaryPayload(payload: unknown, injection: string, snapshot?: Snapshot): unknown {
   if (!record(payload)) return undefined;
-  const append = (text: string) => text.includes(MARKER) ? text : text + injection;
+  const active = [...(snapshot?.contextFiles ?? []).map(file => file.content), snapshot?.customPrompt, snapshot?.appendSystemPrompt]
+    .flatMap(text => text?.trim() ? [text.trim()] : []);
+  const append = (text: string) => text.includes(MARKER) || active.length > 0 && active.every(rule => text.includes(rule)) ? text : text + injection;
   const content = (value: unknown): unknown => {
     if (typeof value === "string") return append(value);
     if (!Array.isArray(value)) return value;
     const index = value.findIndex((part) => record(part) && typeof part.text === "string");
     if (index < 0) return value;
-    return value.map((part, i) => i === index ? { ...part, text: append(part.text) } : part);
+    const part = value[index] as Record<string, unknown>, text = append(part.text as string);
+    return text === part.text ? value : value.map((part, i) => i === index ? { ...part, text } : part);
   };
   for (const key of ["instructions", "system"]) {
     if (typeof payload[key] === "string" || Array.isArray(payload[key])) {
-      return { ...payload, [key]: content(payload[key]) };
+      const next = content(payload[key]);
+      return next === payload[key] ? payload : { ...payload, [key]: next };
     }
   }
   // Pi's Google adapter passes SDK config, before wire serialization.
   if (record(payload.config) && typeof payload.config.systemInstruction === "string") {
-    return { ...payload, config: { ...payload.config, systemInstruction: append(payload.config.systemInstruction) } };
+    const next = append(payload.config.systemInstruction);
+    return next === payload.config.systemInstruction ? payload : { ...payload, config: { ...payload.config, systemInstruction: next } };
   }
   if (record(payload.systemInstruction) && Array.isArray(payload.systemInstruction.parts)) {
-    return { ...payload, systemInstruction: { ...payload.systemInstruction, parts: content(payload.systemInstruction.parts) } };
+    const next = content(payload.systemInstruction.parts);
+    return next === payload.systemInstruction.parts ? payload : { ...payload, systemInstruction: { ...payload.systemInstruction, parts: next } };
   }
   if (Array.isArray(payload.messages)) {
     const index = payload.messages.findIndex((item) => record(item) && (item.role === "system" || item.role === "developer"));
-    if (index >= 0) return { ...payload, messages: payload.messages.map((item, i) => i === index ? { ...item, content: content(item.content) } : item) };
+    if (index >= 0) {
+      const item = payload.messages[index] as Record<string, unknown>, next = content(item.content);
+      return next === item.content ? payload : { ...payload, messages: payload.messages.map((item, i) => i === index ? { ...item, content: next } : item) };
+    }
   }
   return undefined;
 }
@@ -69,11 +78,12 @@ export function patchSummaryPayload(payload: unknown, injection: string): unknow
 export default function compactionContext(pi: ExtensionAPI): void {
   let enabled = true;
   let snapshot: Snapshot | undefined;
-  let summary: { signal: AbortSignal; injection?: string } | undefined;
+  let summary: { signal: AbortSignal; injection?: string; snapshot: Snapshot } | undefined;
   let requestsPatched = 0;
   let lastContextBytes = 0;
   const prepare = (signal: AbortSignal, ctx: ExtensionContext) => {
-    summary = { signal, injection: enabled ? buildInjection(snapshot ?? fallbackSnapshot(ctx)) : undefined };
+    const context = snapshot ?? fallbackSnapshot(ctx);
+    summary = { signal, injection: enabled ? buildInjection(context) : undefined, snapshot: context };
   };
   const clear = () => { summary = undefined; };
 
@@ -94,8 +104,8 @@ export default function compactionContext(pi: ExtensionAPI): void {
   pi.on("session_shutdown", clear);
   pi.on("before_provider_request", (event) => {
     if (!enabled || !summary?.injection || summary.signal.aborted) return;
-    const patched = patchSummaryPayload(event.payload, summary.injection);
-    if (patched !== undefined) {
+    const patched = patchSummaryPayload(event.payload, summary.injection, summary.snapshot);
+    if (patched !== undefined && patched !== event.payload) {
       requestsPatched++;
       lastContextBytes = Buffer.byteLength(summary.injection);
     }

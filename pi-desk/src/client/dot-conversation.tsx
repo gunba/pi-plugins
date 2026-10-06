@@ -11,6 +11,7 @@ import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
 import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
+import { dotReadKey, markDotRead, mergeDotReadStates, readDotReadState, unreadDotMessages, type DotReadState } from "./dot-unread.ts";
 
 const empty: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
 const errorText = (error: unknown) => {
@@ -28,6 +29,17 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const id = computer?.id, online = enabled && (!computers || !!computer?.connected);
 	useEffect(() => { if (id && !chosen) { setChosen(id); localStorage.setItem("pi-desk:dot-computer", id); } }, [id, chosen]);
 	const [view, setView] = useState<DotSnapshot>(empty);
+	const [read, setRead] = useState<{ key: string; state: DotReadState }>();
+	const readRef = useRef(read); readRef.current = read;
+	const saveRead = (key: string, state: DotReadState) => {
+		try {
+			state = mergeDotReadStates(state, readDotReadState(localStorage.getItem(key), []));
+			localStorage.setItem(key, JSON.stringify(state));
+		} catch { /* Reading still works without durable UI preferences. */ }
+		if (readRef.current?.key !== key || readRef.current.state !== state) {
+			readRef.current = { key, state }; setRead(readRef.current);
+		}
+	};
 	const [loaded, setLoaded] = useState(false);
 	const supported = view.transport === "direct";
 	const [older, setOlder] = useState<DotMessage[]>([]);
@@ -47,6 +59,14 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const receive = (next: DotSnapshot) => {
 		if (next.id !== loadedDot.current || next.connection !== loadedConnection.current) {
 			loadedDot.current = next.id; loadedConnection.current = next.connection; setOlder([]); setBefore(undefined);
+		}
+		if (next.transport === "direct" && next.connection) {
+			const key = dotReadKey(id, next.connection);
+			if (readRef.current?.key !== key) {
+				let saved: string | null = null;
+				try { saved = localStorage.getItem(key); } catch {}
+				saveRead(key, readDotReadState(saved, next.messages));
+			}
 		}
 		setView(next); setLoaded(true);
 	};
@@ -83,7 +103,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const refresh = async () => {
 			try {
-				if (online && (!document.hidden || outboxRef.current.inputs.some(input => !input.ignored && ["queued", "sending", "unknown"].includes(input.state)))) {
+				if (online) {
 					const choice = selection.current, sequence = ++readSequence.current;
 					const next = await api<DotSnapshot>("/dot", undefined, id);
 					if (generation.current !== epoch) return;
@@ -97,12 +117,35 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 					if (JSON.stringify(updated) !== JSON.stringify(outboxRef.current)) commit(updated);
 				}
 			} catch (error) { if (generation.current === epoch) setPollError(errorText(error)); }
-			if (generation.current === epoch) timer = setTimeout(refresh, 2_000);
+			if (generation.current === epoch) timer = setTimeout(refresh, document.hidden && !outboxRef.current.inputs.some(input => !input.ignored && ["queued", "sending", "unknown"].includes(input.state)) ? 15_000 : 2_000);
 		};
 		void refresh();
 		return () => { generation.current++; clearTimeout(timer); };
 	}, [id, online]);
 	const messages = supported ? merge(older, view.messages) : [];
+	const readKey = supported && view.connection ? dotReadKey(id, view.connection) : undefined;
+	const unread = read && read.key === readKey ? unreadDotMessages(read.state, view.messages).length : 0;
+	const markRead = () => {
+		const current = readRef.current;
+		if (!readKey || current?.key !== readKey) return;
+		const next = markDotRead(current.state, view.messages);
+		if (next !== current.state) saveRead(readKey, next);
+	};
+	useEffect(() => {
+		if (!readKey) return;
+		const sync = (event: StorageEvent) => {
+			if (event.key === readKey && event.newValue && readRef.current?.key === readKey)
+				saveRead(readKey, mergeDotReadStates(readRef.current.state, readDotReadState(event.newValue, [])));
+		};
+		window.addEventListener("storage", sync);
+		return () => window.removeEventListener("storage", sync);
+	}, [readKey, view.messages]);
+	useEffect(() => {
+		if (!unread) return;
+		const previous = document.title;
+		document.title = `(${unread}) ${view.name ?? "Dot"} · Pi Desk`;
+		return () => { document.title = previous; };
+	}, [unread, view.name]);
 	const reserved = dotReservedFiles(outbox, view.inputs);
 	const files = (view.uploads ?? []).filter(file => file.state !== "handed-off" && !reserved.has(file.id));
 	const filesReady = !!view.connection && files.every(file => file.connection === view.connection && ["ready", "uploaded"].includes(file.state));
@@ -207,7 +250,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const ready = online && supported && !!view.connection && view.state === "ready";
 	const status = !online ? computer?.connection === "paused" ? "App paused" : "Offline"
 		: loaded && !supported ? "Update Desk" : view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
-	return { computers, id, online, view, loaded, supported, messages, optimistic: pendingDotMessages(outbox, view.id, messages), before: supported ? before ?? view.before : undefined, draft, pending, busy, error: error || pollError,
+	return { computers, id, online, view, loaded, supported, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: supported ? before ?? view.before : undefined, draft, pending, busy, error: error || pollError,
 		loadingHistory, receipt, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
 		skip(input: DotOutboxInput) { amend(input.id, { ignored: true, ...(input.state === "queued" ? { state: "not-sent", error: "Cancelled before sending." } : {}) }); },
 		chooseComputer(value: string) { setChosen(value); localStorage.setItem("pi-desk:dot-computer", value); },
@@ -220,9 +263,11 @@ export function DotAvatar({ image }: { image?: string }) {
 	return <span className="dot-avatar">{image ? <img src={image} alt="" /> : <Icon name="chat" />}</span>;
 }
 export function DotNavigation({ dot, selected, open }: { dot: DotConversationState; selected: boolean; open: () => void }) {
-	return <button className={`session-item dot-navigation${selected ? " selected" : ""}`} aria-current={selected ? "page" : undefined} onClick={open}>
+	return <button className={`session-item dot-navigation${selected ? " selected" : ""}${dot.unread ? " has-unread" : ""}`} aria-current={selected ? "page" : undefined}
+		aria-label={`${dot.view.name ?? "Dot"}, ${dot.status}${dot.unread ? `, ${dot.unread} unread ${dot.unread === 1 ? "message" : "messages"}` : ""}`} onClick={open}>
 		<DotAvatar image={dot.view.avatar} />
-		<span><strong>{dot.view.name ?? "Dot"}</strong><small>{dot.view.writing && <span className="status-dot running" />} {dot.status}</small></span>
+		<span className="dot-navigation-label"><strong>{dot.view.name ?? "Dot"}</strong><small>{dot.view.writing && <span className="status-dot running" />} {dot.status}</small></span>
+		{dot.unread > 0 && <span className="dot-unread-count" aria-hidden="true">{dot.unread > 99 ? "99+" : dot.unread}</span>}
 	</button>;
 }
 
@@ -259,6 +304,12 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 	useEffect(() => {
 		if (feed.current) feed.current.scrollTop = atBottom.current ? feed.current.scrollHeight : scrollTop.current;
 	}, [last?.id, last?.text, native?.id, messages.length, dot.optimistic.length, dot.optimistic.at(-1)?.state, scrollKey]);
+	const readVisible = () => { if (!native && atBottom.current && !document.hidden && document.hasFocus()) dot.markRead(); };
+	useEffect(() => {
+		readVisible();
+		window.addEventListener("focus", readVisible); document.addEventListener("visibilitychange", readVisible);
+		return () => { window.removeEventListener("focus", readVisible); document.removeEventListener("visibilitychange", readVisible); };
+	}, [dot.markRead, native?.id, scrollKey]);
 	return <>
 		<header className="topbar dot-topbar">
 			<button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
@@ -287,9 +338,15 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
 		</section>}
 		{native ? <DotNativeView key={`${dot.id}:${view.connection}:${native.id}`} initial={native} connection={view.connection!} computer={dot.id} close={() => setNative(undefined)} /> : <>
+		{dot.unread > 0 && <button type="button" className="dot-new-messages" onClick={() => {
+			atBottom.current = true;
+			if (feed.current) feed.current.scrollTop = feed.current.scrollHeight;
+			readVisible();
+		}}>{dot.unread} new {dot.unread === 1 ? "message" : "messages"} <span aria-hidden="true">↓</span></button>}
 		<div className="transcript dot-transcript" ref={feed} role="log" aria-label="Dot messages" aria-live="polite" onScroll={event => {
 			const node = event.currentTarget; atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60; scrollTop.current = node.scrollTop;
 			localStorage.setItem(scrollKey, JSON.stringify({ top: node.scrollTop, bottom: atBottom.current }));
+			readVisible();
 		}}>
 			<div className="dot-messages">
 				{dot.before && <button className="older" disabled={dot.loadingHistory} onClick={() => void dot.history()}>{dot.loadingHistory ? "Loading…" : "Earlier messages"}</button>}

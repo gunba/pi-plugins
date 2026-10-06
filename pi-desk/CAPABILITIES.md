@@ -64,6 +64,13 @@ supported attachments use a direct, account-pinned connection without Chrome.
 An optimistic local outbox preserves drafts and sends in order. Changed accounts
 hold earlier queued messages/files for review; uncertain sends are not replayed.
 
+New Dot messages have a sidebar count, a tab-title alert and an in-conversation
+jump button. Read markers are local to this browser and connection; messages are
+acknowledged when the Dot conversation is visible at its latest messages. Initial
+history is not treated as a new alert. The remote display pauses while the app is
+hidden and catches up on return; these are not push notifications when Desk is
+closed.
+
 Dot's cloud execution and memory remain at OpenAI. Pi's Workspace is hidden
 when viewing Dot. Native views expose ChatGPT's activity, profile, approvals and
 cloud-computer controls through an owned Chrome tab opened only on request. Those

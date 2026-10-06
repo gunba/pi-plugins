@@ -1,6 +1,8 @@
 # pi-system-context
 
-Pi extension that appends a compact local environment summary to the system prompt.
+Pi extension that appends a compact local environment summary through Pi's native
+structured prompt options. Pi records it with the other prompt sections; it does
+not replace the complete system prompt or inject reminder messages.
 
 ## Context added
 

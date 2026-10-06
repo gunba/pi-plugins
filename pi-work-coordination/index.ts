@@ -46,7 +46,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
     }
     if (data && (data.status === "waiting" || data.status === "ready")) {
       pi.appendEntry(WAIT_ENTRY, { ...data, status: "cancelled", reason: "runtime-replaced" });
-      ctx.ui.notify("The previous explicit wait was cancelled on reload or branch change. Register a new wait if needed.", "info");
+      ctx.ui.notify("The previous wait was cancelled on reload or branch change.", "info");
     }
   };
   pi.on("session_start", (_event, ctx) => start(ctx));

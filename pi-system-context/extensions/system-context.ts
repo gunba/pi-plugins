@@ -217,8 +217,7 @@ export default function (pi: ExtensionAPI) {
       `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${context}`,
-    };
+    const appended = event.systemPromptOptions.appendSystemPrompt;
+    event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${context}` : context;
   });
 }

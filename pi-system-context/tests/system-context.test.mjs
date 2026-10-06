@@ -8,15 +8,19 @@ test('version probes are asynchronous, bounded and tolerate unavailable commands
  assert.equal(await versionLine(process.execPath, ['-e', 'console.log("x".repeat(100000))']), undefined);
  assert.equal(await versionLine('/nonexistent-pi-probe'), undefined);
 });
-test('registered hook preserves prompt and uses current sanitized cwd', async () => {
+test('environment uses native prompt sections instead of overriding the full prompt', async () => {
  let hook;
  extension({on: (_name, fn) => hook = fn});
  const ctx = {isProjectTrusted: () => false};
- const first = await hook({systemPrompt: 'Original', systemPromptOptions: {cwd: '/tmp/one\ncontrol\u0007'}}, ctx);
- assert.ok(first.systemPrompt.startsWith('Original\n\n### Local env'));
- assert.match(first.systemPrompt, /cwd: \/tmp\/one control/);
- assert.equal(first.systemPrompt.includes('\u0007'), false);
- const second = await hook({systemPrompt: 'New', systemPromptOptions: {cwd: '/tmp/two'}}, ctx);
- assert.match(second.systemPrompt, /cwd: \/tmp\/two/);
- assert.equal(second.systemPrompt.includes('Original'), false);
+ const first = {systemPrompt: 'Original', systemPromptOptions: {cwd: '/tmp/one\ncontrol\u0007', appendSystemPrompt: 'Existing rule'}};
+ assert.equal(await hook(first, ctx), undefined, 'no forced full-prompt override');
+ assert.equal(first.systemPrompt, 'Original');
+ assert.ok(first.systemPromptOptions.appendSystemPrompt.startsWith('Existing rule\n\n### Local env'));
+ assert.match(first.systemPromptOptions.appendSystemPrompt, /cwd: \/tmp\/one control/);
+ assert.equal(first.systemPromptOptions.appendSystemPrompt.includes('\u0007'), false);
+ const second = {systemPrompt: 'New', systemPromptOptions: {cwd: '/tmp/two'}};
+ await hook(second, ctx);
+ assert.match(second.systemPromptOptions.appendSystemPrompt, /cwd: \/tmp\/two/);
+ assert.doesNotMatch(second.systemPromptOptions.appendSystemPrompt, /Original|Existing rule/);
+ assert.equal(second.systemPromptOptions.appendSystemPrompt.match(/### Local env/g).length, 1);
 });
