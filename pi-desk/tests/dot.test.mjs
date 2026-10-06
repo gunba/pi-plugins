@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { dotMessages } from "../src/host/dot.ts";
+import { dotEntry } from "../src/host/dot-wire.ts";
 import { DOT_NATIVE } from "../src/host/dot-native.ts";
 
 test("disconnected Dot offers its connection controls in the conversation", async () => {
@@ -18,11 +18,12 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 			import React from "react";
 			import { renderToStaticMarkup } from "react-dom/server";
 			import { DotConversation } from "./src/client/dot-conversation.tsx";
-			const dot = { id: "pc", online: true, ready: false, busy: false, status: "Not connected", error: "",
+			const dot = { id: "pc", online: true, loaded: true, supported: true, ready: false, busy: false, status: "Not connected", error: "",
 				computers: [{id:"pc", name:"Fixture computer", connected:true}],
 				view: {state:"unavailable", name:"Dot", error:"Session with given id not found.", messages:[], inputs:[]},
 				messages:[], optimistic:[], files:[], filesReady:true, draft:"" };
 			export const html = renderToStaticMarkup(<DotConversation dot={dot} openNavigation={() => {}}/>);
+			export const unsupported = renderToStaticMarkup(<DotConversation dot={{...dot, supported:false}} openNavigation={() => {}}/>);
 		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic",
 			plugins: [{ name: "offline-connection", setup(builder) {
 				builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
@@ -31,10 +32,14 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 					? "export function Modal({children}) { return children; }"
 					: "export class ApiError extends Error {} export function api() { throw Error('No network'); }", loader: "js" }));
 			} }] });
-		const { html } = createRequire(import.meta.url)(outfile);
+		const { html, unsupported } = createRequire(import.meta.url)(outfile);
 		assert.match(html, /aria-label="Dot connection computer"/);
-		assert.match(html, /Reconnect Dot/);
-		assert.match(html, /Sign into ChatGPT in Chrome on/);
+		assert.match(html, /aria-label="Dot ChatGPT account"/);
+		assert.match(html, /No ChatGPT window is needed/);
+		assert.match(html, /Add a ChatGPT account/);
+		assert.doesNotMatch(html, /Chrome’s ChatGPT sign-in|opens a background tab/);
+		assert.match(unsupported, /Update Desk on this computer/);
+		assert.doesNotMatch(unsupported, /Dot ChatGPT account/);
 		assert.doesNotMatch(html, /Session with given id not found/);
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -44,7 +49,10 @@ const items = [
 	{ id: "two", role: "user", senderAeonId: "dot", senderName: "Dot", createdAt: "2026-10-03T00:00:01Z", text: "Ready." },
 ];
 test("Dot authors use native identity when both transport roles are user", () => {
-	assert.deepEqual(dotMessages(items, "dot").map(message => [message.author, message.text]), [["owner", "Hello"], ["dot", "Ready."]]);
+	const room = { id: "room", dot: "dot", name: "Dot", members: [{ id: "owner" }, { id: "bot", dot: "dot" }] };
+	const messages = items.map(item => dotEntry({ id: item.id, role: item.role, account_user_id: item.self ? "owner" : "bot",
+		created_at: item.createdAt, content: { text: item.text } }, room, { accountUserId: "owner" }).message);
+	assert.deepEqual(messages.map(message => [message.author, message.text]), [["owner", "Hello"], ["dot", "Ready."]]);
 });
 test("Dot reads native messaging state without replaying the challenged request client", () => {
 	let requests = 0;
@@ -61,7 +69,7 @@ test("Dot reads native messaging state without replaying the challenged request 
 	const state = window.__piDeskDotNative.snapshot();
 	assert.equal(state.dot, "dot"); assert.equal(state.before, "cursor"); assert.equal(requests, 0);
 	assert.equal(state.avatar, room.members[0].avatarUrl); assert.equal(state.writing, true);
-	assert.equal(dotMessages(state.messages, state.dot).length, 2);
+	assert.equal(state.messages.filter(message => !message.deliveryState).length, 2);
 });
 
 test("native picker paths preserve the attachment basename and lost handoffs remain durable", async () => {
@@ -100,7 +108,7 @@ test("cancelling an unconfirmed Dot send fences late admission across restart", 
 	const directory = mkdtempSync(join(tmpdir(), "pi-dot-admission-")), id = randomUUID();
 	const dot = new DotConnection(directory, directory);
 	try {
-		assert.equal(dot.input(id), undefined);
+		assert.equal(await dot.input(id), undefined);
 		const cancelled = dot.cancelInput(id, "fixture-dot", "fixture message", []);
 		assert.equal(cancelled.state, "not-sent");
 		assert.deepEqual(dot.send(id, "fixture-dot", "fixture message", []), cancelled);

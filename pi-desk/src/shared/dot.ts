@@ -9,12 +9,12 @@ export interface DotMessage {
 	attachments: DotAttachment[];
 }
 export interface DotInput {
-	id: string; dot: string; text: string; files?: string[]; remoteFiles?: string[]; created: string;
+	id: string; dot: string; connection?: string; text: string; files?: string[]; remoteFiles?: string[]; created: string;
 	state: "sending" | "accepted" | "not-sent" | "unknown";
 	requestId?: string; messageId?: string; error?: string;
 }
 export interface DotUpload {
-	id: string; dot: string; name: string; mime: string; size: number; received: number;
+	id: string; dot: string; connection?: string; name: string; mime: string; size: number; received: number;
 	state: "staging" | "ready" | "uploading" | "uploaded" | "unknown" | "failed" | "handed-off";
 	remoteId?: string; error?: string;
 }
@@ -31,6 +31,7 @@ export type DotSurfaceInput =
 	| { kind: "key"; key: string; code: string; modifiers: number }
 	| { kind: "text"; text: string };
 export interface DotSnapshot {
+	transport?: "direct"; account?: string; accountName?: string; identity?: string; connection?: string; live?: boolean; avatarError?: string;
 	state: "disconnected" | "connecting" | "ready" | "unavailable";
 	busy?: boolean;
 	id?: string; name?: string; avatar?: string; writing?: boolean; paused?: boolean; error?: string;

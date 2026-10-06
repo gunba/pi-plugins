@@ -31,7 +31,7 @@ export class DotFiles {
 			.filter(file => !dot || file.dot === dot);
 	}
 	save(file: DotUpload): void { atomicJson(this.metadata(file.id), file); }
-	create(id: string, dot: string, name: string, mime: string, size: number): DotUpload {
+	create(id: string, dot: string, name: string, mime: string, size: number, connection?: string): DotUpload {
 		this.metadata(id);
 		if (!dot || !Number.isSafeInteger(size) || size < 1 || size > DOT_FILE_BYTES) throw Error("Dot attachments must be 20 MB or smaller.");
 		name = basename(name.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "_").trim().slice(0, 200).replace(/[. ]+$/, "");
@@ -39,13 +39,13 @@ export class DotFiles {
 		if (!name || !/^[\w.+-]+\/[\w.+-]+$/.test(mime)) throw Error("Invalid attachment name or type.");
 		const previous = this.get(id);
 		if (previous) {
-			if (previous.dot !== dot || previous.name !== name || previous.mime !== mime || previous.size !== size) throw Error("Dot file ID was reused for another attachment.");
+			if (previous.dot !== dot || previous.connection !== connection || previous.name !== name || previous.mime !== mime || previous.size !== size) throw Error("Dot file ID was reused for another attachment.");
 			return previous;
 		}
 		if (this.list(dot).length >= DOT_FILE_COUNT) throw Error("Dot accepts up to eight attachments. Remove an existing draft attachment first.");
 		mkdirSync(join(this.directory, id), { mode: 0o700 });
 		writeFileSync(join(this.directory, id, name), Buffer.alloc(0), { flag: "wx", mode: 0o600 });
-		const file: DotUpload = { id, dot, name, mime, size, received: 0, state: "staging" };
+		const file: DotUpload = { id, dot, connection, name, mime, size, received: 0, state: "staging" };
 		this.save(file); return file;
 	}
 	append(id: string, offset: number, data: string): DotUpload {
@@ -71,11 +71,11 @@ export class DotFiles {
 		if (file?.state === "uploading") throw Error("Wait for the current attachment upload.");
 		rmSync(this.metadata(id), { force: true }); rmSync(join(this.directory, id), { recursive: true, force: true });
 	}
-	forInput(dot: string, ids: string[]): DotUpload[] {
+	forInput(dot: string, ids: string[], connection?: string): DotUpload[] {
 		if (ids.length > DOT_FILE_COUNT || new Set(ids).size !== ids.length) throw Error("Choose up to eight different attachments.");
 		return ids.map(id => {
 			const file = this.get(id);
-			if (!file || file.dot !== dot || !["ready", "uploaded"].includes(file.state)) throw Error("Attachment is incomplete or needs review.");
+			if (!file || file.dot !== dot || file.connection !== connection || !["ready", "uploaded"].includes(file.state)) throw Error("Attachment is incomplete or needs review.");
 			return file;
 		});
 	}

@@ -21,24 +21,34 @@ export function readDotOutbox(storage: Pick<Storage, "getItem">, computer?: stri
 	return { draft, inputs: pending ? [{ ...pending, created: new Date().toISOString(), attachments: [], state: "unknown" }] : [] };
 }
 
-export function enqueueDot(outbox: DotOutbox, dot: string, files: DotUpload[], id = crypto.randomUUID(), created = new Date().toISOString()): DotOutbox {
+export function enqueueDot(outbox: DotOutbox, dot: string, connection: string, files: DotUpload[], id = crypto.randomUUID(), created = new Date().toISOString()): DotOutbox {
 	const text = outbox.draft.trim();
 	if (!text && !files.length) return outbox;
-	return { draft: "", inputs: [...outbox.inputs, { id, dot, text, files: files.map(file => file.id), created, state: "queued",
+	if (!/^[a-f0-9]{64}$/.test(connection) || files.some(file => file.dot !== dot || file.connection !== connection)) throw Error("Review the Dot account and attachments before sending.");
+	return { draft: "", inputs: [...outbox.inputs, { id, dot, connection, text, files: files.map(file => file.id), created, state: "queued",
 		attachments: files.map(file => ({ id: file.id, name: file.name, mime: file.mime, size: file.size, kind: "file", downloadable: false })) }] };
+}
+
+export function sameDotInput(input: Pick<DotInput, "id" | "dot" | "connection" | "text" | "files">, receipt: DotInput): boolean {
+	return input.id === receipt.id && input.dot === receipt.dot && input.connection === receipt.connection && input.text === receipt.text
+		&& JSON.stringify(input.files ?? []) === JSON.stringify(receipt.files ?? []);
 }
 
 export function reconcileDotInput(outbox: DotOutbox, receipt: DotInput): DotOutbox {
 	return { ...outbox, inputs: outbox.inputs.map(input => {
-		if (input.id !== receipt.id || input.dot !== receipt.dot || input.text !== receipt.text
-			|| JSON.stringify(input.files ?? []) !== JSON.stringify(receipt.files ?? []) || input.state === "accepted") return input;
+		if (!sameDotInput(input, receipt) || input.state === "accepted") return input;
 		return { ...input, ...receipt, created: input.created };
 	}) };
 }
 
-export function nextDotInput(outbox: DotOutbox, dot: string): DotOutboxInput | undefined {
+export function reviewDotQueue(outbox: DotOutbox, dot: string, connection: string): DotOutbox {
+	return { ...outbox, inputs: outbox.inputs.map(input => input.dot === dot && input.state === "queued" && input.connection !== connection
+		? { ...input, state: "not-sent", error: "This message was queued before this Dot account was selected. Review it before retrying." } : input) };
+}
+
+export function nextDotInput(outbox: DotOutbox, dot: string, connection: string): DotOutboxInput | undefined {
 	const first = outbox.inputs.find(input => input.dot === dot && input.state !== "accepted" && !input.ignored);
-	return first?.state === "queued" ? first : undefined;
+	return first?.state === "queued" && first.connection === connection ? first : undefined;
 }
 
 export function dotReservedFiles(outbox: DotOutbox, receipts: DotInput[]): Set<string> {

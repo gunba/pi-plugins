@@ -6,7 +6,7 @@ import type { DotSurfaceFrame, DotSurfaceInput, DotDownload } from "../shared/do
 const modifiers = (event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) =>
 	(event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
 
-export function DotNativeView({ initial, computer, close }: { initial: DotSurfaceFrame; computer?: string; close: () => void }) {
+export function DotNativeView({ initial, connection, computer, close }: { initial: DotSurfaceFrame; connection: string; computer?: string; close: () => void }) {
 	const [frame, setFrame] = useState(initial), [error, setError] = useState(""), [busy, setBusy] = useState(false), [halted, setHalted] = useState(false), [zoom, setZoom] = useState(1);
 	const [pan, setPan] = useState(false), [textEntry, setTextEntry] = useState(() => matchMedia("(pointer: coarse)").matches);
 	const [text, setText] = useState(""), [typing, setTyping] = useState(false);
@@ -98,7 +98,7 @@ export function DotNativeView({ initial, computer, close }: { initial: DotSurfac
 	}, [pan, blocked, !!frame.image]);
 	const choose = async (files: File[]) => {
 		setBusy(true); setError("");
-		try { const staged = await stageDotFiles(files, frame.dot, computer); await api(`/dot/surface/${frame.id}/files`, { files: staged.map(file => file.id) }, computer); }
+		try { const staged = await stageDotFiles(files, frame.dot, connection, computer); await api(`/dot/surface/${frame.id}/files`, { files: staged.map(file => file.id) }, computer); }
 		catch (error) { setError(error instanceof Error ? error.message : String(error)); }
 		finally { setBusy(false); }
 	};

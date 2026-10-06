@@ -1,303 +1,315 @@
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicJson } from "../../manage/store.ts";
-import type { DotInput, DotMessage, DotSnapshot, DotSurfaceMode, DotSurfaceInput, DotSurfaceFrame, DotUpload } from "../shared/dot.ts";
 import { DotBrowser } from "./dot-browser.ts";
+import { DotAuth, DotAuthError, type DotAuthorize, type DotIdentity } from "./dot-auth.ts";
+import { DotApi, type DotApiEvent, type DotRead } from "./dot-api.ts";
+import { DotHttpError } from "./dot-http.ts";
 import { DotFiles, dotUuid } from "./dot-files.ts";
-import type { NativeDotMessage } from "./dot-native.ts";
+import { DotDownloadStore } from "./dot-download-store.ts";
 import { DotSurface } from "./dot-surface.ts";
+import type { DotEntry } from "./dot-wire.ts";
+import type { DotSnapshot, DotInput, DotUpload, DotSurfaceFrame, DotSurfaceInput, DotSurfaceMode, DotDownload } from "../shared/dot.ts";
 
-export function dotMessages(items: NativeDotMessage[], dot: string): DotMessage[] {
-	return items.filter(message => !message.deletedAt && !message.deliveryState).map(message => ({
-		id: message.id, author: message.senderAeonId === dot ? "dot" : message.self ? "owner" : "other",
-		name: message.senderName, text: message.text ?? "", created: new Date(message.createdAt).toISOString(),
-		attachments: (message.attachments ?? []).map(file => ({ id: file.attachmentId,
-			name: file.name ?? file.title ?? "Attachment", kind: file.type, mime: file.mime, size: file.sizeBytes,
-			downloadable: !!file.hasContent && file.contentType !== "video" })),
-	}));
+interface Config {
+	enabled: boolean; dot?: string; name?: string; path?: string; room?: string;
+	account?: string; accountName?: string; identity?: DotIdentity; connection?: string;
 }
-interface Config { enabled: boolean; dot?: string; name?: string; path?: string }
-const uuid = dotUuid;
-const validateIntent = (id: string, dot: string, text: string, files: string[]) => {
-	if (!uuid(id) || typeof dot !== "string" || !dot || dot.length > 200 || typeof text !== "string" || !Array.isArray(files)
-		|| files.length > 8 || new Set(files).size !== files.length || !files.every(file => typeof file === "string" && uuid(file))
-		|| (!text.trim() && !files.length) || text.length > 32_000) throw Error("Enter a message or choose up to eight attachments. Dot messages can contain at most 32,000 characters.");
-};
-const sameIntent = (input: DotInput, dot: string, text: string, files: string[]) => {
-	if (input.dot !== dot || input.text !== text || JSON.stringify(input.files ?? []) !== JSON.stringify(files)) throw Error("Dot message receipt was reused for different input.");
-};
+type Client = Pick<DotApi, "open" | "read" | "history" | "send" | "attach" | "download" | "close" | "identity" | "connected" | "writing" | "avatarView">;
+interface Options {
+	account: (id: string) => { path: string; name: string };
+	proxy?: string;
+	client?: (authorize: DotAuthorize, changed: (event: DotApiEvent) => void) => Client;
+}
+const rejected = (error: unknown) => error instanceof DotHttpError && [400, 401, 403, 404, 413, 415, 422, 429].includes(error.status);
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+/** Explicitly account-bound chat. Chrome is used only for a user-opened native surface. */
 export class DotConnection {
-	private browser?: DotBrowser;
-	private config: Config;
-	private snapshot: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
 	private directory: string;
-	private refreshing?: Promise<void>;
-	private avatarFetch?: Promise<void>;
-	private avatarKey?: string;
-	private avatarChecked = 0;
+	private agentDir: string;
+	private options: Options;
+	private config: Config = { enabled: false };
+	private loadFailed = false;
+	private snapshot: DotSnapshot = { transport: "direct", state: "disconnected", messages: [], inputs: [] };
+	private client?: Client;
+	private candidate?: Client;
 	private connecting?: Promise<void>;
-	private sending?: Promise<void>;
+	private work?: Promise<void>;
+	private refreshing?: Promise<void>;
+	private revision = 1;
+	private seen = 0;
+	private metadataRevision = 1;
+	private fetched = 0;
+	private retryAt = 0;
+	private failures = 0;
+	private fatal = false;
+	private stopped = false;
+	private inputs = new Map<string, DotInput>();
+	private files: DotFiles;
+	private downloads: DotDownloadStore;
 	private surface?: DotSurface;
 	private handoffs = new Set<string>();
+	private browsing?: Promise<DotSurfaceFrame>;
 	private handingOff?: Promise<void>;
 	private clearingSurface?: Promise<void>;
-	get busy(): boolean { return !!(this.connecting || this.sending || this.browsing || this.handingOff || this.clearingSurface || this.surface?.busy); }
-	private browsing?: Promise<DotSurfaceFrame>;
-	private room?: string;
-	private dirty = true;
-	private fetched = 0;
-	private stopped = false;
-	readonly files: DotFiles;
-
-	private agentDir: string;
-	constructor(dataDir: string, agentDir: string) {
-		this.agentDir = agentDir;
-		this.directory = join(dataDir, "dot");
+	get busy(): boolean { return !!this.work || !!this.connecting || !!this.browsing || !!this.handingOff || !!this.clearingSurface || !!this.surface; }
+	constructor(dataDir: string, agentDir: string, options: Options) {
+		this.directory = join(dataDir, "dot"); this.agentDir = agentDir; this.options = options;
 		mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-		this.files = new DotFiles(this.directory);
-		this.config = { enabled: false };
+		this.files = new DotFiles(this.directory); this.downloads = new DotDownloadStore(this.directory);
 		try {
-			try { this.config = JSON.parse(readFileSync(join(this.directory, "connection.json"), "utf8")); }
-			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-			if (typeof this.config?.enabled !== "boolean") throw Error("Invalid Dot connection settings.");
-			const inputs = readdirSync(this.directory).filter(name => /^[a-f0-9-]{36}\.json$/.test(name)).map(name => {
-				const input: DotInput = JSON.parse(readFileSync(join(this.directory, name), "utf8"));
-				if (input.state === "sending") { input.state = "unknown"; input.error = "Desk stopped before delivery was confirmed. Check Dot before sending again."; this.save(input); }
-				return input;
-			}).sort((a, b) => b.created.localeCompare(a.created)).slice(0, 15);
-			this.snapshot.inputs = inputs;
-		} catch (error) {
-			this.config = { enabled: false };
-			this.snapshot = { ...this.snapshot, state: "unavailable", error: error instanceof Error ? error.message : String(error) };
+			this.config = this.read<Config>(join(this.directory, "connection.json")) ?? { enabled: false };
+			if (typeof this.config.enabled !== "boolean") throw Error("Invalid Dot connection settings.");
+			for (const file of readdirSync(this.directory).filter(name => /^[a-f0-9-]{36}\.json$/.test(name))) {
+				const input = this.read<DotInput>(join(this.directory, file));
+				if (input) {
+					if (!dotUuid(input.id) || file !== `${input.id}.json`) throw Error("Invalid Dot receipt.");
+					if (input.state === "sending") this.save({ ...input, state: "unknown", error: "Desk stopped before delivery was confirmed. Check Dot before trying again." });
+					else this.inputs.set(input.id, input);
+				}
+			}
+		} catch {
+			this.loadFailed = true; this.snapshot = { ...this.snapshot, state: "unavailable", error: "Dot’s saved connection or delivery receipts could not be read. Restore them before reconnecting; no messages have been retried." };
 		}
 	}
-	start(): void { if (this.config.enabled) void this.connect(false).catch(() => {}); }
-	private save(input: DotInput): void { atomicJson(join(this.directory, `${input.id}.json`), input); }
-	input(id: string): DotInput | undefined {
-		if (!uuid(id)) throw Error("Invalid Dot message receipt.");
-		try { return JSON.parse(readFileSync(join(this.directory, `${id}.json`), "utf8")); }
+	private read<T>(path: string): T | undefined {
+		try { return JSON.parse(readFileSync(path, "utf8")); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	}
-	private publish(input: DotInput): void {
-		this.save(input); this.snapshot.inputs = [input, ...this.snapshot.inputs.filter(item => item.id !== input.id)].slice(0, 15);
-	}
-	async connect(explicit = true): Promise<void> {
-		if (this.connecting) return this.connecting;
-		if (this.busy) throw Error("Wait for the current Dot operation before reconnecting.");
-		this.stopped = false;
-		const job = this.open(explicit).finally(() => { if (this.connecting === job) this.connecting = undefined; });
-		this.connecting = job; return job;
-	}
-	private async open(explicit: boolean): Promise<void> {
-		await this.closeSurface();
-		await this.browser?.close();
-		this.snapshot = { state: "connecting", messages: [], inputs: this.snapshot.inputs };
-		this.avatarKey = undefined;
-		const browser = this.browser = new DotBrowser(this.agentDir);
-		try {
-			await browser.open(this.config.path);
-			const native = await browser.select();
-			if (!explicit && this.config.dot !== native.dot) throw Error("The signed-in Dot changed. Reconnect to choose it.");
-			this.room = native.room;
-			this.snapshot = { ...this.snapshot, state: "ready", id: native.dot, name: native.name };
-			this.config = { enabled: true, dot: native.dot, name: native.name, path: native.path };
-			atomicJson(join(this.directory, "connection.json"), this.config);
-			browser.onEvent(event => {
-				if (browser !== this.browser) return;
-				if (event.method === "closed") this.snapshot = { ...this.snapshot, state: "unavailable", error: "Chrome disconnected. Reconnect Dot when Chrome is available." };
-				if (event.method === "Network.webSocketFrameReceived" && typeof event.params.response?.payloadData === "string"
-					&& event.params.response.payloadData.includes(this.room!)) this.dirty = true;
-			});
-			this.dirty = true; await this.refresh();
-		} catch (error) {
-			this.snapshot = { state: "unavailable", error: error instanceof Error ? error.message : String(error), messages: [], inputs: this.snapshot.inputs };
-			await browser.close(); throw error;
+	private save(input: DotInput): void {
+		if (this.loadFailed) throw Error("Dot’s saved delivery state could not be read.");
+		atomicJson(join(this.directory, `${input.id}.json`), input); this.inputs.set(input.id, structuredClone(input));
+		if (input.state === "accepted") for (const id of input.files ?? []) {
+			// A failed cache cleanup must not invalidate a durable delivery receipt.
+			try { this.files.remove(id); } catch {}
 		}
 	}
-	private refreshAvatar(browser: DotBrowser, dot: string, key?: string): void {
-		if (!key || this.avatarFetch || this.avatarKey === key && Date.now() - this.avatarChecked < 300_000) return;
-		this.avatarKey = key; this.avatarChecked = Date.now();
-		const job = browser.avatar().then(image => {
-			if (browser === this.browser && this.snapshot.id === dot && image?.startsWith("data:image/png;base64,") && image.length <= 100_000) this.snapshot.avatar = image;
-		}).catch(() => {}).finally(() => { if (this.avatarFetch === job) this.avatarFetch = undefined; });
-		this.avatarFetch = job;
+	private receipts(): DotInput[] { return [...this.inputs.values()].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 15); }
+	start(): void { if (this.config.enabled) void this.connect(this.config.account).catch(() => {}); }
+	connect(account?: string): Promise<void> {
+		if (this.loadFailed) return Promise.reject(Error("Dot’s saved connection or delivery receipts could not be read."));
+		if (this.connecting) return Promise.reject(Error("Wait for Dot's current connection attempt."));
+		if (this.busy) return Promise.reject(Error("Finish the Dot message or close its native view before reconnecting."));
+		this.stopped = false;
+		this.connecting = this.open(account).finally(() => { this.connecting = undefined; });
+		return this.connecting;
+	}
+	private async open(account?: string): Promise<void> {
+		const previous = this.client;
+		this.snapshot = { ...this.snapshot, state: "connecting", error: undefined };
+		let candidate: Client | undefined;
+		try {
+			if (!account || !dotUuid(account)) throw Error("Choose a saved ChatGPT sign-in for Dot. Its account is separate from your agents.");
+			const saved = this.options.account(account), same = !this.config.account || this.config.account === account;
+			const auth = new DotAuth(saved.path, same ? this.config.identity : undefined);
+			const changed = (event: DotApiEvent) => { if (this.client === candidate && !this.stopped) this.changed(event); };
+			candidate = this.options.client?.(auth.authorize, changed) ?? new DotApi(auth.authorize, changed, this.options.proxy);
+			this.candidate = candidate;
+			const initial = await candidate.open(same ? { dot: this.config.dot, path: this.config.path, room: this.config.room } : {});
+			if (this.stopped) return;
+			const identity = candidate.identity;
+			if (!identity) throw Error("Dot did not confirm its account.");
+			const connection = createHash("sha256").update(JSON.stringify([identity.accountId, identity.userId, initial.dot, initial.room])).digest("hex");
+			const config: Config = { enabled: true, account, accountName: saved.name, identity, connection,
+				dot: initial.dot, name: initial.name, path: initial.path, room: initial.room };
+			await this.downloads.clear();
+			if (this.stopped) return;
+			atomicJson(join(this.directory, "connection.json"), config);
+			this.config = config; this.client = candidate; previous?.close();
+			this.fatal = false; this.retryAt = 0; this.failures = 0;
+			this.apply(initial); this.metadataRevision = ++this.revision;
+		} catch (error) {
+			if (!this.stopped) {
+				if (candidate && this.client === candidate) {
+					this.snapshot = { transport: "direct", state: "unavailable", id: this.config.dot, name: this.config.name, messages: [], inputs: this.receipts() }; this.storageFailure();
+				} else this.snapshot = { ...this.snapshot, state: previous && !this.fatal ? "ready" : "unavailable", error: message(error) };
+			}
+			throw error;
+		} finally {
+			if (candidate !== this.client) candidate?.close();
+			this.candidate = undefined;
+		}
+	}
+	private changed(event: DotApiEvent): void {
+		try {
+			if (event.type === "receipt") {
+				const input = [...this.inputs.values()].find(item => item.requestId === event.request && item.dot === this.config.dot
+					&& item.connection === this.config.connection && ["sending", "unknown"].includes(item.state));
+				if (input) this.save({ ...input, state: "accepted", messageId: event.message, error: undefined });
+			}
+			if (event.type === "avatar") return;
+			this.revision++;
+			if (event.type === "refresh" && event.metadata) this.metadataRevision = this.revision;
+		} catch { this.storageFailure(); }
+	}
+	private storageFailure(): void {
+		this.fatal = true; this.snapshot = { ...this.snapshot, state: "unavailable", error: "Dot's delivery receipt could not be saved. Check disk space and reconnect before sending again." };
+	}
+	private reconcile(entries: DotEntry[]): void {
+		for (const input of this.inputs.values()) {
+			if (input.dot !== this.config.dot || input.connection && input.connection !== this.config.connection || !["unknown", "sending"].includes(input.state) || !input.requestId) continue;
+			const found = entries.find(entry => entry.requestId === input.requestId && entry.message.author === "owner" && entry.message.text === input.text
+				&& JSON.stringify(entry.files.map(file => file.file).sort()) === JSON.stringify([...(input.remoteFiles ?? [])].sort()));
+			if (found) this.save({ ...input, state: "accepted", messageId: found.message.id, error: undefined });
+		}
+	}
+	private apply(read: DotRead): void {
+		if (read.dot !== this.config.dot || read.room !== this.config.room) throw Error("The connected Dot changed. Reconnect before continuing.");
+		this.reconcile(read.entries);
+		this.snapshot = { transport: "direct", state: "ready", id: read.dot, name: read.name, paused: read.paused,
+			messages: read.entries.map(entry => entry.message), before: read.before, inputs: this.receipts(), ...this.client?.avatarView };
+		if (this.config.path !== read.path || this.config.name !== read.name) {
+			const config = { ...this.config, path: read.path, name: read.name };
+			atomicJson(join(this.directory, "connection.json"), config); this.config = config;
+		}
 	}
 	private async refresh(): Promise<void> {
 		if (this.refreshing) return this.refreshing;
-		const browser = this.browser, room = this.room, dot = this.snapshot.id;
-		if (!browser || !room || !dot || this.snapshot.state !== "ready") return;
-		const job = (async () => {
-			this.dirty = false;
-			const result = await browser.snapshot();
-			if (browser !== this.browser || this.stopped) return;
-			if (result.dot !== dot || result.room !== room) throw Error("The native Dot changed. Reconnect before continuing.");
-			this.snapshot.name = result.name;
-			this.snapshot.writing = result.writing;
-			this.refreshAvatar(browser, dot, result.avatar);
-			this.snapshot.messages = dotMessages(result.messages.slice(-32), dot);
-			this.snapshot.before = result.before; this.fetched = Date.now();
-			for (const input of this.snapshot.inputs.filter(input => input.dot === dot && input.state === "unknown" && input.requestId)) {
-				const found = result.messages.find(item => item.requestId === input.requestId && !item.deliveryState);
-				if (found) {
-					this.publish({ ...input, state: "accepted", messageId: found.id, error: undefined });
-					for (const file of input.files ?? []) this.files.remove(file);
-				}
+		const client = this.client; if (!client || this.stopped || this.fatal || this.connecting) return;
+		const revision = this.revision;
+		this.refreshing = (async () => {
+			try {
+				const read = await client.read(this.metadataRevision > this.seen);
+				if (client !== this.client || this.stopped || this.connecting) return;
+				this.apply(read); this.seen = revision; this.failures = 0; this.retryAt = 0; this.fetched = Date.now();
+			} catch (error) {
+				if (client !== this.client || this.stopped) return;
+				this.fatal = error instanceof DotAuthError || error instanceof DotHttpError && [401, 403, 404].includes(error.status);
+				this.retryAt = Date.now() + Math.min(30_000, 2000 * 2 ** Math.min(this.failures++, 4));
+				this.snapshot = { ...this.snapshot, state: "unavailable", error: message(error) };
 			}
-		})().catch(error => {
-			this.snapshot = { ...this.snapshot, state: "unavailable", error: error instanceof Error ? error.message : String(error) };
-		}).finally(() => { if (this.refreshing === job) this.refreshing = undefined; });
-		this.refreshing = job; return job;
+		})().finally(() => { this.refreshing = undefined; });
+		return this.refreshing;
 	}
 	async view(): Promise<DotSnapshot> {
-		if (this.dirty || Date.now() - this.fetched > 30_000) await this.refresh();
-		return structuredClone({ ...this.snapshot, busy: this.busy, uploads: this.snapshot.id ? this.files.list(this.snapshot.id) : [] });
+		if (!this.stopped && this.client && !this.fatal && Date.now() >= this.retryAt
+			&& (this.revision !== this.seen || Date.now() - this.fetched > (this.client.connected ? 30_000 : 5000))) await this.refresh();
+		return structuredClone({ ...this.snapshot, transport: "direct", busy: this.busy,
+			id: this.snapshot.id ?? this.config.dot, name: this.snapshot.name ?? this.config.name,
+			account: this.config.account, accountName: this.config.accountName, identity: this.config.identity?.email, connection: this.config.connection,
+			live: this.client?.connected ?? false, writing: this.client?.writing ?? false, ...this.client?.avatarView,
+			inputs: this.receipts(), uploads: this.files.list(this.snapshot.id ?? this.config.dot) });
 	}
-	async history(before: string): Promise<{ messages: DotMessage[]; before?: string }> {
-		if (this.snapshot.state !== "ready" || !this.room) throw Error("Reconnect Dot before loading history.");
-		const result = await this.browser!.older(before);
-		if (result.dot !== this.snapshot.id || result.room !== this.room) throw Error("The native Dot changed.");
-		return { messages: dotMessages(result.messages, result.dot), before: result.before };
+	async history(before: string): Promise<{ messages: DotSnapshot["messages"]; before?: string }> {
+		const client = this.ready(), page = await client.history(before);
+		if (client !== this.client) throw Error("Dot connection changed.");
+		this.reconcile(page.entries); return { messages: page.entries.map(entry => entry.message), before: page.before };
 	}
-	cancelInput(id: string, dot: string, text: string, files: string[] = []): DotInput {
-		validateIntent(id, dot, text, files);
-		const previous = this.input(id);
-		if (previous) { sameIntent(previous, dot, text, files); return previous; }
-		const input: DotInput = { id, dot, text, files, created: new Date().toISOString(), state: "not-sent", error: "Cancelled before admission. Your draft is retained." };
-		this.publish(input); return input;
+	private ready(): Client {
+		if (!this.client || this.stopped || this.connecting || this.snapshot.state !== "ready") throw Error("Reconnect Dot before continuing.");
+		return this.client;
 	}
-	send(id: string, dot: string, text: string, files: string[] = []): DotInput {
-		validateIntent(id, dot, text, files);
-		const previous = this.input(id);
-		if (previous) { sameIntent(previous, dot, text, files); return previous; }
-		if (this.snapshot.state !== "ready" || this.snapshot.id !== dot) throw Error("Dot changed or disconnected. Reconnect before sending.");
-		if (this.busy) throw Error("Wait for the current Dot operation.");
-		if (this.surface || this.browsing) throw Error("Return from the native view before sending here.");
-		this.files.forInput(dot, files);
-		const input: DotInput = { id, dot, text, files, created: new Date().toISOString(), state: "sending" };
-		this.publish(input);
-		const job = this.deliver(input).catch(error => {
-			this.snapshot = { ...this.snapshot, state: "unavailable", error: error instanceof Error ? error.message : String(error) };
-		}).finally(() => { if (this.sending === job) this.sending = undefined; });
-		this.sending = job; return input;
+	private binding(connection: string): void {
+		if (!/^[a-f0-9]{64}$/.test(connection) || connection !== this.config.connection) throw Error("Dot's account or conversation changed. Review this message before sending it.");
+	}
+	send(id: string, dot: string, text: string, files: string[], connection: string): DotInput {
+		this.validateIntent(id, dot, text, files);
+		const previous = this.inputs.get(id);
+		if (previous) { this.sameIntent(previous, dot, text, files, connection); return structuredClone(previous); }
+		this.binding(connection); this.ready();
+		if (this.busy) throw Error("Wait for the current Dot action or close its native view.");
+		if (dot !== this.snapshot.id) throw Error("The selected Dot changed. Review it before sending.");
+		this.files.forInput(dot, files, connection);
+		if (files.some(file => [...this.inputs.values()].some(input => ["sending", "accepted", "unknown"].includes(input.state) && input.files?.includes(file)))) throw Error("An attachment is already reserved by an earlier message. Check that message before reusing it.");
+		if (!text.trim() && !files.length) throw Error("Add a message or attachment.");
+		const input: DotInput = { id, dot, text, files, connection, created: new Date().toISOString(), state: "sending" };
+		this.save(input); this.work = this.deliver(input).finally(() => { this.work = undefined; });
+		return structuredClone(input);
+	}
+	private validateIntent(id: string, dot: string, text: string, files: string[]): void {
+		if (!dotUuid(id) || typeof dot !== "string" || !dot || dot.length > 200 || typeof text !== "string" || text.length > 32_000
+			|| !Array.isArray(files) || files.length > 8 || new Set(files).size !== files.length || files.some(file => !dotUuid(file))
+			|| !text.trim() && !files.length) throw Error("Invalid Dot input or attachments.");
+	}
+	private sameIntent(previous: DotInput, dot: string, text: string, files: string[], connection?: string): void {
+		if (previous.dot !== dot || previous.text !== text || previous.connection !== connection || JSON.stringify(previous.files ?? []) !== JSON.stringify(files))
+			throw Error("Dot input ID was reused with different input or account.");
+	}
+	cancelInput(id: string, dot: string, text: string, files: string[] = [], connection?: string): DotInput {
+		this.validateIntent(id, dot, text, files);
+		const previous = this.inputs.get(id);
+		if (previous) { this.sameIntent(previous, dot, text, files, connection); return structuredClone(previous); }
+		const cancelled: DotInput = { id, dot, text, files, ...(connection ? { connection } : {}), created: new Date().toISOString(), state: "not-sent", error: "Cancelled before Desk accepted this message." };
+		this.save(cancelled); return structuredClone(cancelled);
+	}
+	async input(id: string): Promise<DotInput | undefined> {
+		if (this.inputs.get(id)?.state === "unknown") { this.revision++; await this.refresh(); }
+		return structuredClone(this.inputs.get(id));
 	}
 	private async deliver(input: DotInput): Promise<void> {
-		const browser = this.browser!, room = this.room!;
-		let clicked = false, networkId: string | undefined, timeout: ReturnType<typeof setTimeout> | undefined;
-		let finish!: () => void;
-		const accepted = new Promise<void>(resolve => { finish = resolve; });
-		const unlisten = browser.onEvent(event => {
-			if (event.method === "Fetch.requestPaused") {
-				void (async () => {
-					const request = event.params.request, body = JSON.parse(request.postData ?? "{}");
-					const attachments = body.content?.attachments ?? [], expected = input.remoteFiles ?? [];
-					if (new URL(request.url).origin !== "https://chatgpt.com" || new URL(request.url).pathname !== `/backend-api/messaging/rooms/${room}/messages` || body.content?.text !== input.text
-						|| !Array.isArray(attachments) || attachments.length !== expected.length
-						|| !attachments.every((file: any) => file.type === "file" && expected.includes(file.file_id))
-						|| new Set(attachments.map((file: any) => file.file_id)).size !== expected.length
-						|| typeof body.request_id !== "string" || !uuid(body.request_id) || body.idempotency_token !== body.request_id) {
-						await browser.call("Fetch.failRequest", { requestId: event.params.requestId, errorReason: "Aborted" });
-						input.state = "not-sent"; input.error = "The browser selected a different Dot or message. Nothing was sent.";
-						this.publish(input); finish(); return;
-					}
-					input.requestId = body.request_id; this.publish(input);
-					await browser.call("Fetch.continueRequest", { requestId: event.params.requestId });
-				})().catch(async () => {
-					await browser.call("Fetch.failRequest", { requestId: event.params.requestId, errorReason: "Aborted" }).catch(() => {});
-					finish();
-				});
-			} else if (event.method === "Network.requestWillBeSent") {
-				const request = event.params.request;
-				if (request.method !== "POST" || new URL(request.url).pathname !== `/backend-api/messaging/rooms/${room}/messages`) return;
-				const body = JSON.parse(request.postData ?? "{}");
-				if (body.content?.text !== input.text) return;
-				networkId = event.params.requestId; input.requestId = body.request_id; this.publish(input);
-			} else if (event.method === "Network.loadingFinished" && event.params.requestId === networkId) {
-				void browser.call("Network.getResponseBody", { requestId: networkId }).then(result => {
-					const response = JSON.parse(result.base64Encoded ? Buffer.from(result.body, "base64").toString() : result.body);
-					if (typeof response.id === "string") { input.state = "accepted"; input.messageId = response.id; this.dirty = true; }
-					else { input.state = "unknown"; input.error = "ChatGPT did not confirm delivery. Review its Dot page before trying again."; }
-					this.publish(input); finish();
-				}).catch(() => finish());
-			} else if (event.method === "closed") finish();
-		});
+		let dispatched = false;
 		try {
-			const native = await browser.snapshot();
-			if (native.dot !== input.dot || native.room !== room) throw Error("The signed-in Dot changed. Reconnect before sending.");
-			if (native.draft.trim() || native.uploads.length) throw Error("The native Dot already has a draft. Open the native conversation to review it before sending.");
-			const remoteFiles: string[] = [];
-			for (const file of this.files.forInput(input.dot, input.files ?? [])) {
-				this.files.save({ ...file, state: "uploading" });
+			const client = this.ready(), remoteFiles: string[] = [];
+			for (const file of this.files.forInput(input.dot, input.files ?? [], input.connection)) {
+				if (file.state === "uploaded" && file.remoteId) { remoteFiles.push(file.remoteId); continue; }
+				let uploading = false;
 				try {
-					const remoteId = await browser.attach(file, this.files.path(file.id));
-					this.files.save({ ...file, state: "uploaded", remoteId }); remoteFiles.push(remoteId);
+					const remoteId = await client.attach(file, this.files.path(file.id), () => {
+						this.files.save({ ...file, state: "uploading", error: undefined }); uploading = true;
+					});
+					this.files.save({ ...file, state: "uploaded", remoteId, error: undefined }); remoteFiles.push(remoteId);
 				} catch (error) {
-					this.files.save({ ...file, state: "unknown", error: String(error) }); throw error;
+					this.files.save({ ...file, state: uploading && !rejected(error) ? "unknown" : "ready", error: message(error) }); throw error;
 				}
 			}
-			input.remoteFiles = remoteFiles; this.publish(input);
-			await browser.call("Fetch.enable", { patterns: [{ urlPattern: "https://chatgpt.com/backend-api/messaging/rooms/*/messages", requestStage: "Request" }] });
-			await browser.prepare(input.text);
-			// Once the click is attempted, a lost CDP result is an uncertain outcome.
-			clicked = true;
-			if (!await browser.submit(input.text)) { clicked = false; throw Error("Dot's send control is unavailable. Review its draft in ChatGPT."); }
-			timeout = setTimeout(finish, 25_000); await accepted;
-			if (input.state === "sending") { input.state = "unknown"; input.error = "Delivery is unconfirmed. Check Dot before sending again."; this.publish(input); }
+			input.remoteFiles = remoteFiles;
+			const sent = await client.send(input.id, input.text, remoteFiles, () => {
+				input.requestId = input.id; this.save(input); dispatched = true;
+			});
+			this.save({ ...input, state: "accepted", messageId: sent.message.id, error: undefined });
 		} catch (error) {
-			input.state = clicked || input.requestId ? "unknown" : "not-sent";
-			input.error = error instanceof Error ? error.message : String(error); this.publish(input);
-		} finally {
-			clearTimeout(timeout); unlisten(); await browser.call("Fetch.disable").catch(() => {});
-			if (input.state === "accepted") for (const file of input.files ?? []) this.files.remove(file);
-		}
+			if (this.inputs.get(input.id)?.state !== "accepted") {
+				try { this.save({ ...input, state: !dispatched || rejected(error) ? "not-sent" : "unknown", error: message(error) }); }
+				catch { this.storageFailure(); }
+			}
+		} finally { this.revision++; }
 	}
-	private ready(dot?: string): DotBrowser {
-		if (this.connecting || !this.browser || this.snapshot.state !== "ready" || dot && dot !== this.snapshot.id) throw Error("Dot changed or disconnected. Reconnect before continuing.");
-		return this.browser;
-	}
-	stageFile(id: string, dot: string, name: string, mime: string, size: number): DotUpload {
-		this.ready(dot); return this.files.create(id, dot, name, mime, size);
+	stageFile(id: string, dot: string, name: string, mime: string, size: number, connection: string): DotUpload {
+		this.ready(); this.binding(connection); if (dot !== this.snapshot.id) throw Error("The selected Dot changed.");
+		return this.files.create(id, dot, name, mime, size, connection);
 	}
 	appendFile(id: string, offset: number, data: string): DotUpload {
-		const file = this.files.get(id); this.ready(file?.dot);
-		return this.files.append(id, offset, data);
+		this.ready(); const file = this.files.get(id); if (!file || file.dot !== this.snapshot.id) throw Error("The selected Dot changed.");
+		this.binding(file.connection ?? ""); return this.files.append(id, offset, data);
 	}
 	removeFile(id: string): void {
-		if (this.sending) throw Error("Wait for the current message receipt.");
-		const file = this.files.get(id); this.ready(file?.dot); this.files.remove(id);
+		if (this.work || this.browsing || this.surface?.busy) throw Error("Wait for the current Dot action.");
+		this.files.remove(id);
 	}
-	openSurface(mode: DotSurfaceMode): Promise<DotSurfaceFrame> {
-		if (this.busy) throw Error("Wait for the current Dot operation.");
-		const job = this.createSurface(mode).finally(() => { if (this.browsing === job) this.browsing = undefined; });
-		this.browsing = job; return job;
-	}
-	private async createSurface(mode: DotSurfaceMode): Promise<DotSurfaceFrame> {
-		if (!["conversation", "activity", "settings", "computer"].includes(mode)) throw Error("Unsupported native view.");
-		if (this.sending) throw Error("Wait for the current message receipt.");
-		const main = this.ready(); await this.clearSurface();
-		const owned = mode !== "conversation", browser = owned ? new DotBrowser(this.agentDir) : main;
-		try {
-			if (owned) {
-				await browser.open(this.config.path);
-				const native = await browser.select();
-				if (native.dot !== this.snapshot.id) throw Error("The native Dot changed.");
+	async openSurface(mode: DotSurfaceMode): Promise<DotSurfaceFrame> {
+		this.ready();
+		if (!["conversation", "activity", "settings", "computer"].includes(mode)) throw Error("Unsupported Dot view.");
+		if (this.busy) throw Error("Finish the current Dot action before opening its native view.");
+		const operation = (async () => {
+			const browser = new DotBrowser(this.agentDir);
+			try {
+				await browser.open(this.config.path); const native = await browser.select();
+				if (native.dot !== this.snapshot.id || native.room !== this.config.room) throw Error("Chrome is signed into a different Dot. Sign into this Dot's account to use the native view.");
+				if (this.stopped) throw Error("Dot connection closed.");
+				const surface = new DotSurface(browser, true, this.snapshot.id!, mode);
+				this.surface = surface; await surface.open(); return await surface.view();
+			} catch (error) {
+				await this.surface?.close().catch(() => {}); this.surface = undefined;
+				await browser.close().catch(() => {}); throw error;
 			}
-			const surface = this.surface = new DotSurface(browser, owned, this.snapshot.id!, mode);
-			await surface.open(); return surface.view();
-		} catch (error) { await this.clearSurface(); if (owned) await browser.close(); throw error; }
-	}
-	surfaceView(id: string, after?: number) { return this.currentSurface(id).view(after); }
-	surfaceInput(id: string, event: string, width: number, height: number, input: DotSurfaceInput) {
-		if (this.sending || this.connecting || this.browsing || this.handingOff) throw Error("Wait for the current Dot operation.");
-		return this.currentSurface(id).input(event, width, height, input);
+		})();
+		this.browsing = operation;
+		try { return await operation; } finally { if (this.browsing === operation) this.browsing = undefined; }
 	}
 	private currentSurface(id: string): DotSurface {
-		if (!this.surface || this.surface.id !== id) throw Error("The native view changed. Open it again.");
-		return this.surface;
+		if (!this.surface || this.surface.id !== id) throw Error("Native Dot view is no longer open."); return this.surface;
+	}
+	surfaceView(id: string, after?: number): Promise<DotSurfaceFrame> { return this.currentSurface(id).view(after); }
+	async surfaceInput(id: string, inputId: string, width: number, height: number, input: DotSurfaceInput): Promise<void> {
+		if (this.work || this.connecting || this.browsing || this.handingOff) throw Error("Wait for the current Dot operation.");
+		if (!dotUuid(inputId)) throw Error("Invalid native input ID.");
+		await this.currentSurface(id).input(inputId, width, height, input); this.revision++;
 	}
 	async surfaceFiles(id: string, files: string[]): Promise<void> {
-		if (this.busy) throw Error("Wait for the current Dot operation.");
-		const surface = this.currentSurface(id), selected = this.files.forInput(this.snapshot.id!, files);
+		if (this.work || this.connecting || this.browsing || this.handingOff || this.surface?.busy) throw Error("Wait for the current Dot operation.");
+		const surface = this.currentSurface(id), selected = this.files.forInput(this.snapshot.id!, files, this.config.connection);
 		const job = (async () => {
 			for (const file of selected) { this.files.save({ ...file, state: "uploading" }); this.handoffs.add(file.id); }
 			try {
@@ -311,10 +323,7 @@ export class DotConnection {
 		this.handingOff = job; return job;
 	}
 	async closeSurface(id?: string): Promise<void> {
-		await this.browsing?.catch(() => {}); await this.handingOff?.catch(() => {}); await this.clearSurface(id);
-	}
-	private async clearSurface(id?: string): Promise<void> {
-		await this.clearingSurface;
+		await this.browsing?.catch(() => {}); await this.handingOff?.catch(() => {}); await this.clearingSurface;
 		if (id && id !== this.surface?.id) return;
 		const surface = this.surface; this.surface = undefined;
 		const job = (async () => {
@@ -323,30 +332,28 @@ export class DotConnection {
 				const file = this.files.get(id);
 				if (file) this.files.save({ ...file, state: "unknown", error: "The native view closed without an upload receipt. Review Dot before uploading again." });
 			}
-			this.handoffs.clear(); this.dirty = true;
+			this.handoffs.clear(); this.revision++;
 		})().finally(() => { if (this.clearingSurface === job) this.clearingSurface = undefined; });
 		this.clearingSurface = job; await job;
 	}
-	async download(message: string, attachment: string) {
-		if (this.sending) throw Error("Wait for the current message receipt.");
-		return this.ready().download(message, attachment);
+	download(message: string, attachment: string): Promise<DotDownload> {
+		const client = this.ready();
+		return this.downloads.create((path, maximum, signal) => client.download(message, attachment, path, maximum, signal));
 	}
-	downloadChunk(id: string, offset: number, surface?: string) {
-		if (!uuid(id) || !Number.isSafeInteger(offset) || offset < 0) throw Error("Invalid native download.");
-		return surface ? this.currentSurface(surface).downloadChunk(id, offset) : this.ready().downloadChunk(id, offset);
+	downloadChunk(id: string, offset: number, surface?: string): Promise<{ data: string; next: number; size: number }> {
+		return surface ? this.currentSurface(surface).downloadChunk(id, offset) : this.downloads.chunk(id, offset);
 	}
-	async releaseDownload(id: string, surface?: string): Promise<void> {
-		if (!uuid(id)) throw Error("Invalid native download.");
-		if (surface) await this.currentSurface(surface).releaseDownload(id); else await this.ready().releaseDownload(id);
+	releaseDownload(id: string, surface?: string): Promise<void> {
+		return surface ? this.currentSurface(surface).releaseDownload(id) : this.downloads.release(id);
 	}
 	async disconnect(): Promise<void> {
-		if (this.busy) throw Error("Wait for the current Dot operation before disconnecting.");
-		this.config = { enabled: false }; atomicJson(join(this.directory, "connection.json"), this.config);
-		await this.close(); this.snapshot = { state: "disconnected", messages: [], inputs: this.snapshot.inputs };
+		if (this.busy) throw Error("Finish the current Dot action or close its native view before disconnecting.");
+		await this.close(); this.config = { ...this.config, enabled: false }; atomicJson(join(this.directory, "connection.json"), this.config);
+		this.snapshot = { transport: "direct", state: "disconnected", id: this.config.dot, name: this.config.name, messages: [], inputs: this.receipts() };
 	}
 	async close(): Promise<void> {
-		this.stopped = true; await this.connecting?.catch(() => {}); await this.sending; await this.refreshing;
-		await this.closeSurface();
-		await this.browser?.close(); this.browser = undefined;
+		this.stopped = true; this.candidate?.close();
+		await this.work; await this.connecting?.catch(() => {}); await this.closeSurface().catch(() => {});
+		const client = this.client; this.client = undefined; client?.close(); await this.downloads.clear();
 	}
 }

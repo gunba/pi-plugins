@@ -129,7 +129,11 @@ export class DeskHost {
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
 			this.providerAccounts = new ProviderAccounts(directory, this.options.agentDir!);
-			this.dot = new DotConnection(directory, this.options.agentDir!);
+			this.dot = new DotConnection(directory, this.options.agentDir!, { proxy: this.options.proxy, account: id => {
+				const account = this.providerAccounts!.view().accounts.find(account => account.id === id && account.provider === "openai-codex" && !account.native);
+				if (!account) throw Error("Choose a saved ChatGPT sign-in for Dot.");
+				return { path: this.providerAccounts!.authPath("openai-codex", id), name: account.name };
+			} });
 			this.dot.start();
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
@@ -972,15 +976,15 @@ export class DeskHost {
 			}
 			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
 			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
-				void this.dot!.connect().catch(() => {}); return reply({ accepted: true }, 202);
+				void this.dot!.connect(string(data.account, 36)).catch(() => {}); return reply({ accepted: true }, 202);
 			}
 			if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await this.dot!.disconnect(); return reply({}); }
 			if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await this.dot!.history(string(url.searchParams.get("before"), 1000)));
 			if (url.pathname === "/api/dot/inputs" && request.method === "POST") return reply({ input: this.dot!.send(
 				string(data.id, 36), string(data.dot, 200), string(data.text, 32_000),
-				Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : []) }, 202);
+				Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], string(data.connection, 64)) }, 202);
 			if (url.pathname === "/api/dot/uploads" && request.method === "POST") return reply(this.dot!.stageFile(
-				string(data.id, 36), string(data.dot, 200), string(data.name, 200), string(data.mime, 100), Number(data.size)));
+				string(data.id, 36), string(data.dot, 200), string(data.name, 200), string(data.mime, 100), Number(data.size), string(data.connection, 64)));
 			const dotFile = /^\/api\/dot\/uploads\/([a-f0-9-]{36})(?:\/(discard))?$/.exec(url.pathname);
 			if (dotFile && !dotFile[2] && request.method === "POST") return reply(this.dot!.appendFile(dotFile[1]!, Number(data.offset), string(data.data, 400_000)));
 			if (dotFile?.[2] && request.method === "POST") { this.dot!.removeFile(dotFile[1]!); return reply({}); }
@@ -1008,9 +1012,9 @@ export class DeskHost {
 				if (dotDownload[2] === "release" && request.method === "POST") { await this.dot!.releaseDownload(dotDownload[1]!, surface); return reply({}); }
 			}
 			const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})(?:\/(cancel))?$/.exec(url.pathname);
-			if (dotInput && !dotInput[2] && request.method === "GET") return reply({ input: this.dot!.input(dotInput[1]!) ?? null });
+			if (dotInput && !dotInput[2] && request.method === "GET") return reply({ input: await this.dot!.input(dotInput[1]!) ?? null });
 			if (dotInput?.[2] && request.method === "POST") return reply({ input: this.dot!.cancelInput(
-				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : []) });
+				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], data.connection === undefined ? undefined : string(data.connection, 64)) });
 			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
 			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
 			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {

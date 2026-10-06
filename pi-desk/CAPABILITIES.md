@@ -57,17 +57,20 @@ terminal command to the model as a substitute.
 
 ## Dot
 
-The Dot sidebar entry opens an existing ChatGPT Dot in the main
-conversation area. **Connection settings** chooses its signed-in Chrome connection.
-Text chat, live message updates, paged history and durable delivery receipts
-are separate from native Pi sessions. Pi's Workspace retains its plan and
-agent summary; it is hidden when viewing Dot.
-Dot's cloud execution and memory remain at OpenAI. This private web adapter
-needs a background Chrome tab. Desk stages attachments and captures native blob
-downloads. Native views expose ChatGPT's activity, profile, approvals and
-cloud-computer controls without implementing another task engine. External
-sign-in windows, browser permission dialogs, microphone capture and audio are
-not forwarded. Unconfirmed sends/uploads are retained for review, not replayed.
+The Dot sidebar entry opens an existing ChatGPT Dot in the main conversation
+area. **Connection** chooses a computer and a saved ChatGPT login independently
+of agent accounts/defaults. Text chat, live updates, paged history, avatars and
+supported attachments use a direct, account-pinned connection without Chrome.
+An optimistic local outbox preserves drafts and sends in order. Changed accounts
+hold earlier queued messages/files for review; uncertain sends are not replayed.
+
+Dot's cloud execution and memory remain at OpenAI. Pi's Workspace is hidden
+when viewing Dot. Native views expose ChatGPT's activity, profile, approvals and
+cloud-computer controls through an owned Chrome tab opened only on request. Those
+views require a separate browser sign-in to the same account. External sign-in
+windows, browser permission dialogs, microphone capture and audio are not
+forwarded. The private backend/web protocols can change; see the [Dot setup and
+verification limits](README.md#dot).
 
 ## Account selection
 

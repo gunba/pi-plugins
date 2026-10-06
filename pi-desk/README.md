@@ -45,28 +45,43 @@ Dot appears above the computer groups in the sidebar. Selecting it opens the
 main conversation area, without Pi's workspace, model or agent controls.
 Pi conversations retain their Workspace pane.
 
-Open **Connection settings**, choose the connection computer and select **Connect**. That computer needs
-Pi's local Chrome DevTools connection and a Chrome profile signed into ChatGPT
-with an existing Dot. This is a separate web sign-in from Codex authentication.
-Desk opens its own background tab; no extra ChatGPT window is required.
+Open **Connection**, choose the connection computer, then select the saved
+ChatGPT account that owns your existing Dot. **Add a ChatGPT account** offers
+provider verification inside this panel. Saving a login does not connect it or
+change an agent's account or account default; select **Connect Dot** to use it.
+Dot does not use the computer's default Pi credentials.
 
-Messages, replies and paged history come from the existing Dot. Its execution
-and memory remain in OpenAI's cloud. Closing Desk or selecting **Disconnect**
-does not pause the Dot. Drafts stay in the Desk browser; the host saves message
-receipts and never automatically resends an uncertain delivery. **Check delivery**
-reconciles the receipt. A missing receipt keeps the send pending;
-**Cancel unconfirmed send** records cancellation before allowing a new attempt.
-It cannot cancel a message already admitted. Drafts clear only after confirmed
-acceptance. Review the Dot before deliberately sending again.
+Messages, live updates, paged history, avatars and supported file transfers use
+a direct host connection. Chrome and an open ChatGPT window are not needed for
+these features. The connection computer must remain online. Account identity,
+Dot and room are pinned; native Pi authentication handles token renewal. If
+provider verification is required again, add a renewed saved login and select it.
+
+Dot's execution and memory remain in OpenAI's cloud. Closing Desk or selecting
+**Disconnect** does not pause it. Sending first saves a local outbox entry and
+clears the input, so you can compose the next message immediately. Messages
+leave the queue in order; an unconfirmed send holds later messages. A paused
+Dot also holds its queue until resumed from **Manage Dot**.
+
+The host saves delivery receipts and never automatically resends an uncertain
+delivery. **Check delivery** reconciles a receipt. **Cancel unconfirmed attempt**
+fences an attempt not yet admitted; it cannot retract an admitted message.
+Changing accounts holds earlier queued messages for review rather than sending
+them through the new account. An explicit text retry creates a new attempt.
 
 Attach up to eight files, each at most 20 MB. Files are staged on the connection
-computer and uploaded through ChatGPT's native composer. Unconfirmed uploads
-retain their bytes and receipts for review; closing a view does not silently
-delete them. File downloads are delivered to the Desk browser when ChatGPT
-provides a downloadable blob. Other attachment previews open in **Native view**.
+computer and uploaded directly to the selected Dot's room. Staged files are
+account-bound; after an account change, reconnect the original account or select
+the files again. Unconfirmed uploads retain their bytes and receipts for review.
+A confirmed message releases its staged file copies. Supported downloads stream
+through the host's bounded, short-lived cache (128 MiB per file, 256 MiB total).
+Other attachment previews and unsupported download origins use **Native view**.
 
-**Activity**, **Computer**, and **Manage Dot** open ChatGPT's own controls inside
-Desk. The native view carries its rendered interface and keyboard/pointer input;
+**Activity**, **Computer**, **Manage Dot**, and **Native view** open an owned Chrome
+tab only on request. These views require Pi's Chrome DevTools connection and a
+browser profile signed into the same Dot account; its browser sign-in is separate
+from the saved login used for chat. Closing the view closes its owned Dot tab.
+The native view carries ChatGPT's rendered interface and keyboard/pointer input;
 cloud tasks, profile, rules and approvals remain owned by ChatGPT. **Fit** adapts
 the view to the available space; zoom and **Pan** support detailed work on small
 screens. **Type text** supplies a local text field and keyboard buttons for touch
@@ -76,9 +91,17 @@ Browser permission dialogs, external authorization windows, microphone capture
 and audio playback are not forwarded; complete those steps on the connection
 computer. Video can be viewed in the native interface without forwarded audio.
 
-This adapter uses ChatGPT's private web interface and English-language message
-editor. Site changes can require an adapter update. Dot usage remains subject
-to the account's subscription and Dot allowances.
+The direct adapter uses ChatGPT's private backend protocol, not a supported
+public Dot API. Native views also depend on ChatGPT's web interface. Provider
+changes can require an adapter update; unsupported authorization and permission
+steps stay with the provider. Dot usage remains subject to the selected account's
+subscription and Dot allowances. Hosts without direct-connection support show an
+update notice rather than using a different browser account.
+
+Direct authenticated reads, live updates and text delivery have been verified.
+Authentication delegation, attachments, recovery and UI behavior are checked
+with isolated fixtures; live uploads and forced token renewal are not yet
+verified.
 
 ## Development
 

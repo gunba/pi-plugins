@@ -158,7 +158,7 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 		</section>
 	</>;
 }
-function SignIn({ operation, disabled, cancel, answer }: { operation: ProviderSignIn; disabled: boolean;
+export function SignIn({ operation, disabled, cancel, answer }: { operation: ProviderSignIn; disabled: boolean;
 	cancel: () => Promise<unknown>; answer: (prompt: string, value: string) => Promise<unknown>;
 }) {
 	const [copyError, setCopyError] = useState("");

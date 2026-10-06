@@ -139,6 +139,13 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.21 uses API 8: Dot connection commands select a saved account, and
+message/upload commands carry a connection binding. Coordinate hosts, shared
+services and the website when moving from API 7; an older client must not send
+queued Dot work without that binding. Existing histories and delivery receipts
+remain in place. Select the Dot's saved ChatGPT login after the update; this does
+not change agent accounts or defaults.
+
 Versions 0.5.18–0.5.20 use API 7: display sessions carry presentation data
 once in `ui`, not a second copy in `snapshot.ui`. Moving from an older API requires
 updating hosts, the website and shared services together. API 7 components can be

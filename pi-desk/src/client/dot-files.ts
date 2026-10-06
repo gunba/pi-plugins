@@ -1,11 +1,11 @@
 import { api } from "./connection.ts";
 import { DOT_FILE_BYTES, DOT_FILE_COUNT, type DotUpload, type DotDownload } from "../shared/dot.ts";
 
-export async function stageDotFiles(files: File[], dot: string, computer: string | undefined, progress?: (file: DotUpload) => void): Promise<DotUpload[]> {
+export async function stageDotFiles(files: File[], dot: string, connection: string, computer: string | undefined, progress?: (file: DotUpload) => void): Promise<DotUpload[]> {
 	if (!files.length || files.length > DOT_FILE_COUNT) throw Error("Choose up to eight files.");
 	if (files.some(file => !file.size || file.size > DOT_FILE_BYTES)) throw Error("Dot attachments must be 20 MB or smaller.");
 	const results = await Promise.allSettled(files.map(async file => {
-		let staged = await api<DotUpload>("/dot/uploads", { id: crypto.randomUUID(), dot, name: file.name, mime: file.type || "application/octet-stream", size: file.size }, computer);
+		let staged = await api<DotUpload>("/dot/uploads", { id: crypto.randomUUID(), dot, connection, name: file.name, mime: file.type || "application/octet-stream", size: file.size }, computer);
 		progress?.(staged);
 		for (let offset = staged.received; offset < file.size;) {
 			const bytes = new Uint8Array(await file.slice(offset, offset + 256 * 1024).arrayBuffer());

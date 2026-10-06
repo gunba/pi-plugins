@@ -666,12 +666,11 @@ details[open] > summary:before {
 .message-user .message-body {
   background: var(--user-message);
   padding: 10px 14px;
-  border-radius: 16px 4px 16px 16px;
+  border-radius: 8px;
   border: 1px solid var(--focus-border);
 }
-.message-user { margin-left:auto; width:fit-content; min-width:160px; max-width:88%; }
-.message-user .message-heading { justify-content:flex-end; margin-bottom:7px; color:var(--muted); }
-.message-user .message-heading > span:first-child { display:none; }
+.message-user { margin-left:0; margin-right:auto; width:fit-content; min-width:min(160px, 100%); max-width:100%; }
+.message-user .message-heading { justify-content:flex-start; margin-bottom:7px; color:var(--muted); }
 .message-assistant > .message-body { padding-left:34px; display:grid; gap:8px; }
 .message-assistant > .message-body > .tool-card { margin:0; }
 .message-trace-tail { margin-bottom:8px; }
@@ -1521,6 +1520,9 @@ details[open] > summary:before {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+  .status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before {
+    animation: activity-orbit 3s linear infinite !important;
+  }
 }
 .tree-list { max-height: 52vh; overflow: auto; }
 .tree-list strong, .tree-list small { overflow-wrap: anywhere; }
@@ -1774,7 +1776,7 @@ details[open] > summary:before {
 .dot-compose-row > button { margin-bottom:8px; }
 .dot-compose-row .send-button { width:36px; height:36px; }
 .dot-composer-hint { color:var(--muted); font-size:11px; padding:8px 0 0 44px; }
-.dot-delivery { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px 12px; margin-top:8px; color:var(--muted); font-size:11px; }
+.dot-delivery { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; gap:8px 12px; margin-top:8px; color:var(--muted); font-size:11px; }
 .dot-delivery .status-dot { width:7px; height:7px; }
 .dot-delivery.unknown { color:var(--input-needed); }
 .dot-delivery.not-sent { color:var(--danger); }
@@ -1782,7 +1784,7 @@ details[open] > summary:before {
 .dot-delivery .text-button:hover { text-decoration:underline; }
 .dot-delivery .action-menu > summary { width:24px; height:24px; }
 .dot-delivery .action-menu-items { text-align:left; }
-.dot-delivery-note { display:block; text-align:right; color:var(--muted); overflow-wrap:anywhere; margin-top:6px; }
+.dot-delivery-note { display:block; text-align:left; color:var(--muted); overflow-wrap:anywhere; margin-top:6px; }
 .dot-local-message .dot-attachment { display:inline-block; }
 .dot-error { color:var(--danger); }
 .dot-connection { flex-shrink:0; width:min(640px,calc(100% - 32px)); max-height:min(340px,calc(100dvh - 180px)); overflow:auto; box-sizing:border-box; margin:16px auto; padding:20px; border:1px solid var(--border); border-radius:12px; }
@@ -1792,6 +1794,13 @@ details[open] > summary:before {
 .dot-connection p, .dot-connection small { line-height:1.6; }
 .dot-connection-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16px; margin-top:16px; }
 .dot-connection-actions small { color:var(--muted); }
+.dot-account-settings > p { margin:10px 0; }
+.dot-account-settings > details { margin-top:18px; }
+.dot-account-settings .provider-account-add { align-items:end; }
+.dot-account-settings .provider-account-add label { flex:1; min-width:150px; }
+.dot-account-settings .provider-account-add input { display:block; width:100%; margin-top:8px; }
+.dot-account-settings .provider-sign-in-status { margin-top:18px; }
+.dot-account-settings .provider-sign-in-status a { overflow-wrap:anywhere; }
 .dot-actions { gap:8px; flex-wrap:wrap; }
 .dot-draft-files { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
 .dot-draft-file { display:flex; align-items:center; gap:8px; max-width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:12px; }
@@ -1972,7 +1981,6 @@ details[open] > summary:before {
   .setting-control input, .setting-control select { font-size:16px; }
   .budget-entry { flex-wrap:wrap; }
   .setting-control .budget-entry > input[type="number"] { width:125px; flex-basis:125px; }
-  .message-user { max-width:95%; }
   .message-assistant > .message-body { padding-left:0; }
   .message-activity { margin-left:0; }
   .conversation-footer .footer-context { font-size:10px; }
