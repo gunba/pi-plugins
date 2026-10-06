@@ -100,9 +100,9 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 	runtime.registerNativeProvider(provider((context) => {
 		const isChild = context.messages.some((message) => message.role === "user" &&
 			(typeof message.content === "string" ? message.content === "child work" : message.content.some((block) => block.type === "text" && block.text === "child work")));
-		if (isChild) return ++childCalls === 1 ? toolCall("report", { output: "EARLY FINDING" }) : assistant(sameFinal ? "EARLY FINDING" : "FINAL RESULT");
+		if (isChild) return ++childCalls === 1 ? toolCall("send_message", { target: "/root", message: "EARLY FINDING" }) : assistant(sameFinal ? "EARLY FINDING" : "FINAL RESULT");
 		contexts.push(context.messages);
-		if (++rootCalls === 1) return toolCall("subagent", { description: "offline child", prompt: "child work" });
+		if (++rootCalls === 1) return toolCall("spawn_agent", { task_name: "offline_child", message: "child work", fork_turns: "none" });
 		if (rootCalls === 2) return toolCall("hold", {});
 		return assistant("parent done");
 	}));
@@ -123,17 +123,16 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 			}
 		});`);
 	const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
-		additionalExtensionPaths: [holdSource], noSkills: true, noThemes: true, extensionFactories: [subagents, (pi) => {
-			pi.on("message_end", (event, ctx) => {
-				if (event.message.role !== "custom" || event.message.customType !== "pi-subagents/notice") return;
-				for (const id of event.message.details.messageIds) durableAdmissions.push(SessionManager.open(ctx.sessionManager.getSessionFile()).getEntries().some((entry) =>
-					entry.type === "custom" && entry.customType === NOTICE_ENTRY && entry.data.messageId === id));
-			});
-		}] });
+		additionalExtensionPaths: [holdSource], noSkills: true, noThemes: true, extensionFactories: [subagents] });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
-		sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["hold", "subagent"] }));
+		sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["hold", "spawn_agent", "send_message"] }));
+	session.subscribe(event => {
+		if (event.type !== "message_end" || event.message.role !== "custom" || event.message.customType !== "pi-subagents/notice") return;
+		for (const id of event.message.details.messageIds) durableAdmissions.push(SessionManager.open(manager.getSessionFile()).getEntries().some(entry =>
+			entry.type === "custom" && entry.customType === NOTICE_ENTRY && entry.data.messageId === id));
+	});
 	await session.bindExtensions({ mode: "rpc" });
 	await session.prompt("parent work");
 	assert.equal(rootCalls, 3, "one coalesced message under either Pi steering mode");
@@ -150,7 +149,7 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 	} else assert.ok(last.indexOf("FINAL RESULT") > last.indexOf("EARLY FINDING"));
 	assert.deepEqual(undispatchedNotices(SessionManager.open(manager.getSessionFile()).getBranch()), []);
 	assert.equal(session.getFollowUpMessages().length, 0);
-	assert.deepEqual(durableAdmissions, [true, true], "receipts are on disk before Pi's pre-append message_end hooks");
+	assert.deepEqual(durableAdmissions, [true, true], "receipts are on disk before native custom-message events");
 	const charge = manager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "pi-subagents/usage-v1");
 	assert.equal(charge.data.usage.output, childCalls);
 	manager.appendCustomEntry(charge.customType, charge.data);
@@ -183,6 +182,44 @@ for (const [steeringMode, sameFinal] of [["all", false], ["one-at-a-time", false
 	}
 });
 
+test("real SDK root retains a late child result without starting another turn", async t => {
+	const root = mkdtempSync(join(tmpdir(), "pi-idle-parent-"));
+	const previousDir = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = root;
+	let session, releaseChild; let rootCalls = 0; const contexts = [];
+	t.after(async () => {
+		releaseChild?.(); await session?.extensionRunner?.emit({ type: "session_shutdown" }); session?.dispose();
+		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousDir;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const manager = SessionManager.create(root, join(root, "sessions"));
+	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null,
+		modelsStorePath: join(root, "models-store.json"), allowModelNetwork: false, refreshOnCreate: false });
+	const offline = provider();
+	offline.streamSimple = (_model, context) => {
+		const events = new AssistantMessageEventStream();
+		const isChild = context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("deferred child"));
+		const finish = message => { events.push({ type: "done", reason: message.stopReason, message }); events.end(); };
+		if (isChild) releaseChild = () => { releaseChild = undefined; finish(assistant("LATE CHILD FINAL")); };
+		else { contexts.push(context.messages); rootCalls++;
+			queueMicrotask(() => finish(rootCalls === 1 ? toolCall("spawn_agent", { task_name: "offline_child", message: "deferred child", fork_turns: "none" }) : assistant("parent done"))); }
+		return events;
+	};
+	runtime.registerNativeProvider(offline); await runtime.setRuntimeApiKey(model.provider, "test");
+	const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true,
+		noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true, extensionFactories: [subagents] });
+	await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
+	({ session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
+		sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["spawn_agent", "wait_agent"] }));
+	await session.bindExtensions({ mode: "rpc" }); await session.prompt("parent work");
+	await waitUntil(() => !!releaseChild); assert.equal(rootCalls, 2); releaseChild();
+	await waitUntil(() => manager.getBranch().some(entry => entry.type === "custom_message" && String(entry.content).includes("LATE CHILD FINAL")));
+	await new Promise(setImmediate);
+	assert.equal(rootCalls, 2); assert.equal(session.isStreaming, false);
+	await session.prompt("Read the pending result");
+	assert.equal(rootCalls, 3); assert.match(JSON.stringify(contexts.at(-1)), /LATE CHILD FINAL/);
+});
+
 test("busy nested parents receive steering without another queued child prompt", async (t) => {
 	const factory = new FakeDriverFactory(blockingPrompt);
 	const h = createHarness({ factory });
@@ -192,7 +229,7 @@ test("busy nested parents receive steering without another queued child prompt",
 	await h.runtime.start({ description: "child", prompt: "hold", context: "fresh", runInBackground: true,
 		parent: childParent(h, parent.subagentId, factory.opens[0].input.authority) });
 	await waitUntil(() => factory.opens[1]?.isRunning);
-	h.runtime.report(factory.opens[1].input.authority, "EARLY");
+	h.runtime.sendMessage(factory.opens[1].input.authority, parent.subagentId, "EARLY");
 	factory.opens[1].pending.resolve(completedOutcome("FINAL"));
 	await waitUntil(() => factory.opens[0].notices?.length === 2);
 	assert.deepEqual(factory.opens[0].notices.map((notice) => notice.kind), ["report", "settlement"]);
@@ -239,6 +276,7 @@ test("compaction and reload retain delivery IDs without retaining notice payload
 		sm.appendCustomEntry(NOTICE_ENTRY, delivered);
 		sm.appendCustomMessageEntry("pi-subagents/notice", delivered.content, true, delivered);
 		sm.appendCustomEntry(NOTICE_ENTRY, pending);
+		sm.appendCustomMessageEntry("pi-subagents/followup", "task ".repeat(20_000), true, { messageIds: ["task-1"], payload: "private body" });
 		const kept = sm.appendMessage(assistant("keep"));
 		sm.appendCompaction("summary", kept, 100);
 		const file = sm.getSessionFile();
@@ -250,6 +288,9 @@ test("compaction and reload retain delivery IDs without retaining notice payload
 			const message = manager.getBranch().find(entry => entry.type === "custom_message");
 			assert.deepEqual(message.details, { messageId: delivered.messageId });
 			assert.deepEqual(message.content, []);
+			const followup = manager.getBranch().find(entry => entry.type === "custom_message" && entry.customType === "pi-subagents/followup");
+			assert.deepEqual(followup.details, { messageIds: ["task-1"] });
+			assert.deepEqual(followup.content, []);
 			assert.deepEqual(undispatchedNotices(manager.getBranch()), [pending]);
 			assert.equal(pruneCompactedSession(manager).estimatedBytesReleased, 0);
 			assert.deepEqual(undispatchedNotices(manager.getBranch()), [pending]);
@@ -270,7 +311,7 @@ test("failed admission retains ordered sender outbox until a successful retry", 
 	await waitUntil(() => h.factory.opens[0]?.isRunning);
 	const driver = h.factory.opens[0];
 	h.host.deliverRootNotice = () => { throw new Error("disk write failed"); };
-	const id = h.runtime.report(driver.input.authority, "EARLY");
+	const id = h.runtime.sendMessage(driver.input.authority, "/root", "EARLY");
 	assert.equal(driver.input.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === SETTLEMENT_ENTRY && entry.data.action === "delivered" && entry.data.messageId === id), false);
 	const delivered = [];
 	h.host.deliverRootNotice = (notice) => { delivered.push(notice); return true; };
@@ -378,26 +419,24 @@ test("send_message steers current work while followup_task owns new turns", asyn
 	assert.deepEqual(h.factory.opens[0].prompts, ["current"]);
 	h.factory.opens[0].pending.resolve(completedOutcome("done"));
 	await waitUntil(() => h.runtime.listAgents(h.runtime.rootAuthority)[0].status === "ready");
-	assert.throws(() => h.runtime.sendMessage(h.runtime.rootAuthority, child.subagentId, "another task"), /followup_task/);
+	const messageId = h.runtime.sendMessage(h.runtime.rootAuthority, child.subagentId, "saved update");
+	assert.equal(h.factory.opens.length, 1, "a cold recipient is not opened by a message");
+	assert.ok(SessionManager.open(h.runtime.getSessionFile(child.subagentId)).getBranch().some(entry => entry.customType === NOTICE_ENTRY && entry.data.messageId === messageId));
 });
 
-for (const stopReason of ["completed", "error"]) test(`foreground ${stopReason} billing is recorded exactly once`, async (t) => {
+for (const stopReason of ["completed", "error"]) test(`spawned ${stopReason} billing is recorded exactly once`, async (t) => {
 	const billed = [];
 	const cost = usageFor(3, 2, 5, 0.3);
 	const h = createHarness({ factory: new FakeDriverFactory(async () => ({ output: "result", stopReason, usage: cost })) });
 	t.after(h.cleanup);
 	h.host.recordBackgroundUsage = (...charge) => billed.push(charge);
 	const tool = createSubagentToolDefinitions(h.runtime, { getAuthority: () => h.runtime.rootAuthority }, "root")[0];
-	const result = tool.execute("call", { description: "child", prompt: "work", run_in_background: false }, undefined, undefined,
+	const result = await tool.execute("call", { task_name: "child", message: "work", fork_turns: "none" }, undefined, undefined,
 		{ ...h.parent(), isProjectTrusted: () => true });
-	if (stopReason === "completed") {
-		assert.deepEqual((await result).usage, cost);
-		assert.equal(billed.length, 0, "native tool result carries successful foreground usage");
-	} else {
-		await assert.rejects(result, /ended error/);
-		assert.deepEqual(billed[0][2], cost, "failed wrapper cannot return usage, so the durable charge carries it");
-		assert.equal(billed.length, 1);
-	}
+	await waitUntil(() => h.runtime.listAgents(h.runtime.rootAuthority)[0]?.status === "ready");
+	assert.equal(result.usage, undefined, "admission is not a model usage charge");
+	assert.deepEqual(billed[0][2], cost, "the durable child charge carries its model usage");
+	assert.equal(billed.length, 1);
 });
 
 test("shutdown cancels a stuck opening and disposes a late driver", async (t) => {

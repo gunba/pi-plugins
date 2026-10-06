@@ -71,7 +71,7 @@ export interface ChatMessage {
 	isError?: boolean;
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };
-	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number }[] };
+	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number; skills?: string[] }[] };
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule"; title: string; queuedAt?: number; dueAt?: number };

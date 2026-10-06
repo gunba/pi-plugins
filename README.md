@@ -1,6 +1,6 @@
 # pi-plugins
 
-Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 0.99.2+.
+Custom Pi extensions packaged as one auto-updatable Pi package. Requires Node.js 22.19+ and Pi 1.0+.
 
 ## Pi Desk
 
@@ -92,12 +92,13 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   with optional bounded automatic continuation. `/plan`, `get_plan`,
   `create_plan` and `update_plan` share the same revision-fenced native state.
   Manual plans never start extra model rounds.
-- `pi-subagents` — provides DSH-style fresh and forked Pi SDK children through
-  `subagent` and `subagent_fork`, steering `send_message`, FIFO `followup_task`,
-  current-turn interruption, durable discovery, cold resumption, and a live TUI
-  dashboard. Reports and settlements steer at every depth; late results may wake
-  an idle parent. Children inherit effective project trust and authentication,
-  with bounded depth, root-wide admission, and cancellable initialization.
+- [`pi-subagents`](pi-subagents/README.md) — native Pi SDK children with Codex
+  V2-style `spawn_agent`, same-tree `send_message` and `followup_task`, mailbox
+  `wait_agent`, current-turn interruption and task-path discovery. Creation supports
+  fresh or inherited context. Messages and results do not start idle parents;
+  explicit follow-ups can start work. Completed turns release idle runtimes without
+  waiting for descendants. Histories, tool permissions, trust and account choices
+  remain native, with bounded depth and root-wide admission.
   Optional model and thinking overrides require one user approval for the root
   conversation; descendants share that approval. `/subagents permissions`
   shows its status, and `/subagents permissions revoke` revokes future overrides.
@@ -162,11 +163,11 @@ Full integration/release validation is `npm run check`,
 
 The Pi packages remain optional runtime peers; their pinned development copies
 make extension API changes visible to TypeScript before release. Main pushes run
-Linux/Node 22 and Windows/Node 24 CI using pinned Pi 0.99.2 dependencies.
+Linux/Node 22 and Windows/Node 24 CI using pinned Pi 1.0 dependencies.
 Manual `workflow_dispatch` runs all four OS/Node combinations; feature pushes and
 pull requests do not trigger CI. Native Desk packaging remains release-tag-only.
-Codex Wire carries its own serializer dependency; this does not upgrade
-the installed Pi application.
+Codex Wire resolves serializers from the host's Pi SDK; installing this package
+does not upgrade the installed Pi application.
 
 The detailed Codex usage report includes native assistant, tool, and summary
 usage, plus durable background-child charges deduplicated by invocation ID.
@@ -198,8 +199,9 @@ The SDK child adapter inherits Wire rather than rediscovering all extensions.
 then Pi's platform shell discovery. It no longer selects Windows CMD merely
 because `ComSpec` exists.
 
-`wait_agent` waits inside the current tool call for selected child agents, with
-a bounded timeout. It does not end the turn or require a separate wake. Running
+`wait_agent({timeout_ms?})` waits inside the current tool call for agent messages,
+final-status notifications or user input, with a bounded timeout. It takes no
+agent-ID list and does not end the turn or require a separate wake. Running
 processes use `write_stdin`; timed reminders use `schedule`.
 
 Use `node pi-codex-wire/ledger.mjs <run.jsonl> [...]` to group provider-reported

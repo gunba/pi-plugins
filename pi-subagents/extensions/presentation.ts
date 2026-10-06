@@ -67,7 +67,7 @@ export class SubagentPresentation {
 		this.remote.publish(id, view, callbacks);
 	}
 	private child(child: RuntimeChildSnapshot): void {
-		const active = ["running", "waiting"].includes(child.state), direct = child.parentId === this.runtime.host.rootSessionId;
+		const active = ["running", "waiting"].includes(child.state);
 		const callbacks: Record<string, (value: UiValue) => unknown> = {};
 		const actions: UiAction[] = [];
 		const add = (descriptor: UiAction, run: (value: UiValue) => unknown) => {
@@ -79,9 +79,9 @@ export class SubagentPresentation {
 			return followup ? this.runtime.followupTask(this.runtime.rootAuthority, child.id, value)
 				: this.runtime.sendMessage(this.runtime.rootAuthority, child.id, value);
 		};
-		if (direct && !child.diagnosticReason) {
+		if (!child.diagnosticReason) {
 			if (child.canSteer) add({ id: "steer", label: "Steer", input: "message", delivery: "steer" }, value => message(value, false));
-			if (child.mode === "continuable") add({ id: "followup", label: active ? "Queue" : "Send", input: "message", delivery: "followUp" }, value => message(value, true));
+			if (child.mode === "continuable") add({ id: "followup", label: active ? "Follow up" : "Send", input: "message", delivery: "followUp" }, value => message(value, true));
 		}
 		if (child.canStop) add({ id: "stop", label: "Stop agent", destructive: true }, () => this.runtime.interrupt(this.runtime.rootAuthority, child.id));
 		const data: UiConversation = {
@@ -95,7 +95,6 @@ export class SubagentPresentation {
 				{ label: "Thinking", value: child.thinkingLevel },
 				{ label: "Queued tasks", value: String(child.queued ?? 0) },
 				...(!active ? [{ label: "Active time", value: `${Math.floor((child.activeDurationMs ?? 0) / 1000)}s` }] : []),
-				...(!direct ? [{ label: "Messaging", value: "Only the direct parent can send messages to this agent." }] : []),
 			],
 		};
 		this.publish(`agent:${child.id}`, { kind: "conversation", title: child.label, data, actions }, callbacks);

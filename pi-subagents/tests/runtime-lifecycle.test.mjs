@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { undispatchedNotices } from "../extensions/subagent-runtime.ts";
 import {
 	blockingPrompt,
 	childParent,
@@ -15,6 +17,7 @@ test("background continuable start returns at acceptance and does not block pare
 	const harness = createHarness({ factory });
 	try {
 		const started = await harness.runtime.start({
+			taskName: "runtime_check",
 			description: "inspect runtime state",
 			prompt: "work independently",
 			context: "fresh",
@@ -24,6 +27,13 @@ test("background continuable start returns at acceptance and does not block pare
 		assert.equal(started.kind, "continuable");
 		assert.equal(typeof started.subagentId, "string");
 		assert.equal(typeof started.messageId, "string");
+		assert.equal(harness.runtime.agentPath(started.subagentId), "/root/runtime_check");
+		for (const target of ["runtime_check", "/root/runtime_check", started.subagentId])
+			assert.equal(harness.runtime.resolveTarget(harness.runtime.rootAuthority, target), started.subagentId);
+		assert.equal(harness.runtime.resolveTarget(harness.runtime.rootAuthority, "/root"), harness.rootManager.getSessionId());
+		assert.throws(() => harness.runtime.resolveTarget(harness.runtime.rootAuthority, "../outside"), /task_name/);
+		assert.throws(() => harness.runtime.resolveTarget(harness.runtime.rootAuthority, "unknown"), /Unknown/);
+		await assert.rejects(harness.runtime.start({ taskName: "runtime_check", description: "duplicate", prompt: "unused", context: "fresh", runInBackground: true, parent: harness.parent() }), /already exists/);
 		const visible = harness.runtime.listAgents(harness.runtime.rootAuthority);
 		assert.equal(visible[0].id, started.subagentId);
 		assert.equal(visible[0].label, "inspect runtime state");
@@ -42,7 +52,7 @@ test("background continuable start returns at acceptance and does not block pare
 	}
 });
 
-test("follow-up accepted during async policy shutdown waits for disposal and does not settle early", async () => {
+test("follow-up during shutdown waits for disposal without replacing the previous turn result", async () => {
 	const gate = deferred(); let disposing = false;
 	const factory = new FakeDriverFactory();
 	const open = factory.open.bind(factory);
@@ -58,16 +68,18 @@ test("follow-up accepted during async policy shutdown waits for disposal and doe
 		h.runtime.followupTask(h.runtime.rootAuthority, child.subagentId, "second");
 		assert.equal(factory.opens.length, 1); assert.equal(h.notices.length, 0);
 		gate.resolve();
-		await waitUntil(() => factory.promptLog.length === 2 && h.notices.length > 0);
+		await waitUntil(() => factory.promptLog.length === 2 && h.notices.length === 2);
 		assert.equal(factory.opens[0].disposed, true);
 		assert.deepEqual(factory.opens[0].prompts, ["first"]);
 		assert.deepEqual(factory.opens[1].prompts, ["second"]);
-		assert.equal(h.notices.filter((notice) => notice.kind === "settlement").length, 1);
-		assert.match(h.notices[0].content, /done: second/);
+		assert.equal(h.notices.filter((notice) => notice.kind === "settlement").length, 2);
+		assert.match(h.notices[0].content, /done: first/);
+		assert.match(h.notices[1].content, /done: second/);
+		assert.notEqual(h.notices[0].workId, h.notices[1].workId);
 	} finally { gate.resolve(); await h.cleanup(); }
 });
 
-test("send_message queues strict FIFO later turns and returns no child answer", async () => {
+test("follow-ups not consumed at a driver boundary remain FIFO and return no child answer", async () => {
 	let first = true;
 	const factory = new FakeDriverFactory((driver, message) => {
 		if (first) {
@@ -192,7 +204,7 @@ test("foreground delegation returns the selected result and is not continuable",
 	}
 });
 
-test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scoped report are enforced", async () => {
+test("tree follow-up, messaging and interruption use exact live handles", async () => {
 	const factory = new FakeDriverFactory(blockingPrompt);
 	const harness = createHarness({ factory });
 	try {
@@ -227,10 +239,8 @@ test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scop
 			],
 		);
 
-		assert.throws(
-			() => harness.runtime.followupTask(harness.runtime.rootAuthority, grandchild.subagentId, "wrong owner"),
-			/direct parent/,
-		);
+		assert.equal(typeof harness.runtime.followupTask(harness.runtime.rootAuthority, grandchild.subagentId, "tree follow-up"), "string");
+		assert.throws(() => harness.runtime.followupTask(childAuthority, "/root", "unsupported root turn"), /cannot target the root/);
 		assert.equal(
 			typeof harness.runtime.followupTask(childAuthority, grandchild.subagentId, "right owner"),
 			"string",
@@ -249,14 +259,21 @@ test("direct-parent follow-up, ancestor interrupt, exact handles, and child-scop
 			/exact live agent authority/,
 		);
 
-		const reportId = harness.runtime.report(childAuthority, "use the shared result");
+		const reportId = harness.runtime.sendMessage(childAuthority, "/root", "use the shared result");
 		assert.equal(typeof reportId, "string");
 		assert.match(harness.notices.at(-1).content, /use the shared result/);
-		assert.equal(factory.opens[0].isRunning, true, "report does not end the child turn");
-		assert.throws(
-			() => harness.runtime.report(harness.runtime.rootAuthority, "not a child"),
-			/live continuable child/,
-		);
+		assert.equal(factory.opens[0].isRunning, true, "a message does not end the child turn");
+		assert.throws(() => harness.runtime.interrupt(childAuthority, harness.rootManager.getSessionId()), /cannot interrupt the root/);
+		assert.throws(() => harness.runtime.interrupt(childAuthority, "missing-agent"), /Unknown/);
+		assert.deepEqual(harness.runtime.listNamedAgents(childAuthority).map(agent => agent.agent_id),
+			[harness.rootManager.getSessionId(), child.subagentId, grandchild.subagentId]);
+		assert.deepEqual(harness.runtime.listNamedAgents(childAuthority, harness.runtime.agentPath(grandchild.subagentId)).map(agent => agent.agent_id), [grandchild.subagentId]);
+		const sibling = await harness.runtime.start({ taskName: "sibling", description: "sibling", prompt: "hold", context: "fresh", runInBackground: true, parent: harness.parent() });
+		await waitUntil(() => factory.opens[2]?.isRunning, "sibling activation");
+		harness.runtime.sendMessage(childAuthority, "/root/sibling", "lateral update");
+		assert.match(factory.opens[2].notices[0].content, /lateral update/);
+		assert.equal(factory.opens[2].prompts.length, 1);
+		assert.equal(harness.runtime.interrupt(childAuthority, sibling.subagentId), true, "registered siblings can interrupt one another");
 	} finally {
 		await harness.cleanup();
 	}
@@ -396,7 +413,7 @@ test("one activation failure terminates every already-accepted message without s
 	}
 });
 
-test("a one-shot parent activation is released after its background child settles", async () => {
+for (const background of [true, false]) test(`${background ? "continuable" : "one-shot"} parent finishes independently of its background child`, async () => {
 	let harness;
 	const factory = new FakeDriverFactory(async (driver, message) => {
 		if (driver.input.descriptor.depth === 1 && message === "parent") {
@@ -420,26 +437,26 @@ test("a one-shot parent activation is released after its background child settle
 	harness = createHarness({ factory });
 	try {
 		const result = await harness.runtime.start({
-			description: "foreground parent",
+			description: "parent",
 			prompt: "parent",
 			context: "fresh",
-			runInBackground: false,
+			runInBackground: background,
 			parent: harness.parent(),
 		});
-		assert.equal(result.kind, "foreground");
+		assert.equal(result.kind, background ? "continuable" : "foreground");
 		await waitUntil(() => factory.opens.length === 2, "nested child activation");
-		assert.equal(factory.opens[0].disposed, undefined, "parent waits for its descendant");
-		harness.runtime.report(factory.opens[1].input.authority, "nested accepted report");
-		await waitUntil(
-			() => factory.opens[0].notices?.some((notice) => /nested accepted report/.test(notice.content)) && factory.opens[0].prompts.length >= 2,
-			"nested report delivery to one-shot parent",
-		);
+		await waitUntil(() => factory.opens[0].disposed === true, "parent release before descendant completion");
+		assert.equal(factory.opens[1].isRunning, true);
+		assert.equal(harness.runtime.hasLiveDescendants(harness.runtime.rootAuthority), true);
+		if (background) assert.match(harness.notices[0].content, /parent: parent/);
+		const parentId = factory.opens[0].input.descriptor.childSessionId;
+		const inbox = () => undispatchedNotices(SessionManager.open(harness.runtime.getSessionFile(parentId)).getBranch());
+		harness.runtime.sendMessage(factory.opens[1].input.authority, parentId, "nested accepted report");
+		assert.ok(inbox().some(notice => /nested accepted report/.test(notice.content)));
 		factory.opens[1].pending.resolve(completedOutcome("nested done"));
-		await waitUntil(
-			() => factory.opens[0].notices?.some((notice) => /nested done/.test(notice.content)) && factory.opens[0].prompts.length >= 3,
-			"nested settlement delivery to one-shot parent",
-		);
-		await waitUntil(() => factory.opens[0].disposed === true, "one-shot parent release");
+		await waitUntil(() => inbox().some(notice => /nested done/.test(notice.content)), "cold parent result receipt");
+		assert.equal(factory.opens.length, 2, "child results do not reopen the parent");
+		assert.deepEqual(factory.opens[0].prompts, ["parent"], "notices must not manufacture parent tasks");
 	} finally {
 		await harness.cleanup();
 	}

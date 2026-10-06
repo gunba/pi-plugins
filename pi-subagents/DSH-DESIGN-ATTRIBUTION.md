@@ -1,10 +1,11 @@
 # DeepSeek Harness design attribution
 
-This package's subagent tool contract and lifecycle design are adapted from the
-DeepSeek Harness subagent packages, including the fresh/fork distinction,
-continuable background default, FIFO later-turn messaging, current-turn
-interruption, direct-parent reporting, durable descriptors, cold resumption,
-bounded depth, settlement notices, and agent discovery vocabulary.
+This package's original subagent design was adapted from the DeepSeek Harness
+subagent packages, including fresh/fork contexts, continuable background work,
+FIFO later-turn messaging, current-turn interruption, direct-parent reporting,
+durable descriptors, cold resumption, bounded depth and settlement notices.
+The current [tool contract](README.md) follows Codex V2; this attribution records
+the earlier design's contribution.
 
 Source reviewed:
 
@@ -13,8 +14,9 @@ Source reviewed:
 - Copyright (c) 2026 DeepSeek
 - License: MIT
 
-No DeepSeek Harness runtime code is included. The implementation maps the design
-to Pi 0.84.3 `AgentSession`, `SessionManager`, extension tools, and TUI APIs.
+No DeepSeek Harness runtime code is included. The original implementation mapped
+the design to Pi 0.84.3's `AgentSession`, `SessionManager`, extension and TUI APIs;
+the current implementation uses Pi 1.0.
 
 ## MIT License
 

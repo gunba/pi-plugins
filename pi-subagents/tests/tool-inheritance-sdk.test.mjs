@@ -338,18 +338,18 @@ test("a root SDK exclusion cannot be mistaken for a child-only control capabilit
 	let deniedCalls = 0;
 	const tool = (name, execute) => ({ name, label: name, description: "Offline control fixture",
 		parameters: Type.Object({}), execute });
-	const result = () => ({ content: [{ type: "text", text: "intrinsic report" }], details: {} });
+	const result = () => ({ content: [{ type: "text", text: "intrinsic feedback" }], details: {} });
 	const child = await h.open("excluded-control-child", {
-		customTools: [tool("send_message", async () => { deniedCalls++; return result(); }), tool("report", async () => result())],
-		intrinsicToolNames: ["report"],
+		customTools: [tool("send_message", async () => { deniedCalls++; return result(); }), tool("child_feedback", async () => result())],
+		intrinsicToolNames: ["child_feedback"],
 	});
 	const available = JSON.parse((await child.driver.prompt("fixture-availability")).output);
-	assert.ok(available.includes("report"));
+	assert.ok(available.includes("child_feedback"));
 	assert.ok(!available.includes("send_message"));
 	await call(child, "send_message");
 	assert.equal(toolResults(child.manager).at(-1).isError, true);
 	assert.equal(deniedCalls, 0);
-	assert.match((await call(child, "report")).output, /intrinsic report/);
+	assert.match((await call(child, "child_feedback")).output, /intrinsic feedback/);
 });
 
 test("descriptor names remain a fallback only when the live parent selection accessor is absent", { timeout: 25000 }, async (t) => {

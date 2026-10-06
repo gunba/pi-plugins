@@ -104,7 +104,7 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
 		case "custom_message": {
 			// Delivery IDs are durable recovery state, not transcript payload.
 			// Keep individual/batch IDs, never the report bodies.
-			const details = entry.customType === "pi-subagents/notice" || entry.customType === "pi-party/message" ? record(mutableEntry.details) : undefined;
+			const details = ["pi-subagents/notice", "pi-subagents/followup", "pi-party/message"].includes(entry.customType) ? record(mutableEntry.details) : undefined;
 			const receipt = {
 				...(typeof details?.messageId === "string" ? { messageId: details.messageId } : {}),
 				...(Array.isArray(details?.messageIds) ? { messageIds: details.messageIds.filter((id): id is string => typeof id === "string") } : {}),

@@ -15,6 +15,34 @@ const assistant = text => ({
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 });
 
+test("fork preserves current context edits without restoring removed or replaced content", () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-edited-fork-"));
+	try {
+		const parent = SessionManager.create(directory, directory);
+		parent.appendMessage(user("EARLIER_REQUEST")); parent.appendMessage(assistant("earlier answer"));
+		const removed = parent.appendMessage(user("REMOVED_REQUEST"));
+		const removedReply = parent.appendMessage(assistant("REMOVED_REPLY"));
+		const request = parent.appendMessage(user("REPLACED_REQUEST"));
+		const reply = parent.appendMessage(assistant("REPLACED_REPLY"));
+		parent.appendContextEdit(removed, null); parent.appendContextEdit(removedReply, null);
+		parent.appendContextEdit(request, { content: "current request" });
+		parent.appendContextEdit(reply, { content: [{ type: "text", text: "current answer" }] });
+		parent.appendMessage(user("IN_FLIGHT_REQUEST"));
+		parent.appendMessage({ ...assistant(""), stopReason: "toolUse", content: [{ type: "toolCall", name: "spawn_agent", id: "spawn", arguments: {} }] });
+		const original = readFileSync(parent.getSessionFile());
+		for (const turns of [undefined, 1]) {
+			const child = SessionManager.create(directory, directory);
+			copyCompletedParentTurns(parent, child, "spawn", turns);
+			const context = JSON.stringify(child.buildSessionContext().messages);
+			assert.match(context, /current request/); assert.match(context, /current answer/);
+			assert.doesNotMatch(context, /REMOVED_|REPLACED_|IN_FLIGHT_/);
+			if (turns === 1) assert.doesNotMatch(context, /EARLIER_REQUEST/);
+			else assert.match(context, /EARLIER_REQUEST/);
+		}
+		assert.deepEqual(readFileSync(parent.getSessionFile()), original);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("fork checkpoints survive reopen and nested forks without sharing resident payloads", () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-checkpoint-fork-"));
 	try {

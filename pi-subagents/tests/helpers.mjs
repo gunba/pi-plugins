@@ -50,6 +50,11 @@ export class FakeDriver {
 		}
 	}
 
+	enqueueFollowup(input) {
+		this.followups ??= new Map();
+		this.followups.set(input.messageId, input);
+	}
+
 	receiveNotice(notice) {
 		(this.notices ??= []).push(notice);
 	}

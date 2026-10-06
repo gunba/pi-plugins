@@ -1,31 +1,34 @@
 # Agent waiting
 
-`wait_agent({ids, timeout_ms?})` waits for any selected child to finish its current
-task. The tool stays pending, like Codex's targeted agent wait. Completion returns
-a normal tool result to Pi's agent loop: no turn termination or separate wake.
+`wait_agent({timeout_ms?})` waits for an agent message or final-status
+notification. Already queued notifications return immediately; new input also
+ends the wait, including scheduled reminders. The tool stays pending and returns through Pi's normal agent
+loop. It never ends the turn or starts a separate wake.
 
-The default timeout is 30 seconds, with a maximum of one hour. A timeout returns
-`timed_out: true` without stopping child work. Already-completed work returns
-immediately. User input, interruption, shutdown and branch replacement release
-the wait. Roots and SDK children use the same tool implementation.
+The default timeout is 30 seconds. Shorter requests are clamped to 10 seconds;
+the maximum is one hour, matching Codex V2's default limits. A timeout returns
+`{message, timed_out: true}` without stopping child work. Interruption, shutdown
+and branch replacement release the wait. Native SDK, RPC and terminal sessions
+share the same implementation.
 
-Use `write_stdin` to wait for a running process. `schedule` is for timed reminders.
-The former `wait_for_work` and `cancel_work_wait` tools are removed.
+Use `write_stdin` for a running process and `schedule` for timed reminders.
 
 ## Integration
 
-`ensureWorkCoordination(pi)` installs once on the runtime's shared event bus.
-Starting background work does not itself force a wait or change plan continuation.
+`ensureWorkCoordination(pi)` installs once per runtime event bus.
+Message owners retain their durable inbox/outbox and notify the coordinator
+after durable admission. Explicit follow-ups can notify a pending wait before
+entering context at a native boundary. The coordinator tracks unread notification
+IDs, not task, process or timer ownership. Context consumption acknowledges only the IDs
+included in that context, preserving messages arriving during another request.
 
-Child owners register and complete session-owned resources. Generations separate
-successive tasks on a reused child ID. Durable child notices retain their own
-delivery path; completion also releases a matching pending tool. Notice retries
-can identify that match without requesting an additional wake.
+Ordinary messages and results do not start an idle agent. Waiting agents receive
+them through the pending tool; idle agents retain them for their next task.
+`followup_task` separately requests a turn; the mailbox itself never starts one.
 
-`getWorkCoordinator(sessionId)` exposes ownership and wait state to integrations.
-Wait transitions are immutable native custom entries. Historical unadmitted
-completion records remain recoverable as context on reload, without starting
-the old task. Resource ownership is rebuilt from actual child work, not old IDs.
+`getWorkCoordinator(sessionId)` exposes the pending-wait state to plan controls.
+No wait scheduler or resource journal is created. Historical unadmitted
+completion records remain recoverable as context without replaying old work.
 
 ```sh
 node --test pi-work-coordination/tests/*.test.mjs

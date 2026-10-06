@@ -10,6 +10,7 @@ import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { planRoundNotice } from "./plan-round.ts";
+import { readSkills } from "../shared/skill-activity.ts";
 import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
 import type { Feedback } from "../shared/feedback.ts";
@@ -35,15 +36,17 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	owner: ChatMessage; call?: Extract<ChatBlock, { type: "toolCall" }>; result?: ChatMessage; sessionKey: string; source?: string;
 }) {
 	const name = call?.name ?? result?.toolName ?? "Tool";
+	const skills = readSkills(name, call?.arguments);
+	const nestedSkills = [...new Set(result?.nested?.calls.flatMap(call => call.skills ?? []) ?? [])];
 	const resultFile = ["read", "edit", "write", "view_image"].includes(name)
 		? result?.blocks.find(block => block?.type === "file") : undefined;
 	const file = resultFile?.type === "file" ? resultFile.file : call?.file;
 	const fileMessage = resultFile ? result!.id : owner.id;
 	return <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
-		summary={<><span className="tool-icon">⌘</span><strong>{name}</strong>
-			<span className="tool-argument-preview">{file
+		summary={<><span className="tool-icon">{skills.length || nestedSkills.length ? <Icon name="context" /> : "⌘"}</span><strong>{skills.length ? skills.length === 1 ? "Read skill" : "Read skills" : name}</strong>
+			<span className="tool-argument-preview">{skills.length ? `${skills.join(", ")} · ` : ""}{file
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
-				: toolArgumentPreview(call?.arguments)}</span>
+				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(call?.arguments)}</span>
 			<ToolStatus message={result} />
 			{!result?.tool && <time>{timeLabel(owner.timestamp)}</time>}
 		</>}>
@@ -103,7 +106,7 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 	return <div className="message-body">
 		{message.nested && <Disclosure id={`nested:${message.id}`} className="tool-card nested-tools"
 			summary={<><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</>}>
-			<ul>{message.nested.calls.map((call, index) => <li key={index}><span>{call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small></li>)}</ul>
+			<ul>{message.nested.calls.map((call, index) => <li key={index}><span>{call.skills?.length ? `Read skill: ${call.skills.join(", ")}` : call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small></li>)}</ul>
 		</Disclosure>}
 		{message.blocks.map((block, index) => {
 			if (!block || isEmptyText(block)) return null;

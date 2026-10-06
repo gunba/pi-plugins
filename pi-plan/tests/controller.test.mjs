@@ -32,10 +32,9 @@ test("human queues, explicit waits and in-flight reservations gate automatic con
 	await read(h); await read(h); assert.equal(h.sentMessages.length, 1);
 	await h.admitLastRound();
 	const coordinator = getWorkCoordinator(h.ctx.sessionManager.getSessionId());
-	coordinator.register({ kind: "process", id: "test" });
-	coordinator.begin([{ kind: "process", id: "test" }], "all");
+	const waiting = coordinator.wait(1000);
 	await settled(h); assert.equal(h.sentMessages.length, 1);
-	coordinator.cancel("test"); await settled(h); assert.equal(h.sentMessages.length, 2);
+	coordinator.cancel("test"); await waiting; await settled(h); assert.equal(h.sentMessages.length, 2);
 	await h.admitLastRound(); await settled(h);
 	const current = await read(h);
 	assert.equal(current.phase, "blocked"); assert.equal(current.blockedReason.code, "round-limit");

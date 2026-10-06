@@ -258,6 +258,7 @@ test("descriptor, model, thinking, tool scope, identity, and cold resume survive
 	const rootPath = first.root;
 	try {
 		const started = await first.runtime.start({
+			taskName: "review",
 			description: "persist child identity",
 			prompt: "initial",
 			context: "fresh",
@@ -281,6 +282,8 @@ test("descriptor, model, thinking, tool scope, identity, and cold resume survive
 		});
 		try {
 			assert.equal(secondFactory.opens.length, 0, "catalog discovery does not activate cold children");
+			assert.equal(second.runtime.agentPath(started.subagentId), "/root/review");
+			assert.equal(second.runtime.resolveTarget(second.runtime.rootAuthority, "review"), started.subagentId);
 			assert.deepEqual(second.runtime.listAgents(second.runtime.rootAuthority), [
 				{
 					kind: "child",
@@ -299,7 +302,8 @@ test("descriptor, model, thinking, tool scope, identity, and cold resume survive
 			assert.deepEqual(restored.model, { provider: "test", id: "model" });
 			assert.equal(restored.thinkingLevel, "high");
 			assert.deepEqual(restored.toolNames, ["ask_user", "bash", "read", "spawn_agent"]);
-			assert.equal(secondFactory.opens[0].input.customTools.at(-1).name, "report");
+			assert.equal(secondFactory.opens[0].input.customTools.some(tool => tool.name === "report"), false);
+			assert.deepEqual(secondFactory.opens[0].input.intrinsicToolNames, []);
 		} finally {
 			await second.runtime.shutdown();
 		}

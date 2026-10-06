@@ -88,8 +88,8 @@ test("SDK terminal folding fails closed and child report guidance matches tool s
 		assert.equal(result.stopReason, "error");
 		assert.match(result.errorMessage, /non-final reason/);
 	}
-	assert.match(childSystemContext("continuable"), /Use report/);
-	assert.doesNotMatch(childSystemContext("one-shot"), /Use report/);
+	assert.match(childSystemContext("continuable"), /Use send_message/);
+	assert.doesNotMatch(childSystemContext("continuable"), /Use report/);
 });
 
 test("parent request auth is inherited when a long-lived resolver has no current key", async () => {
@@ -284,7 +284,7 @@ test("explicitly interrupted queued work remains parked across runtime replaceme
 	}
 });
 
-test("recovery synthesizes a missing settlement after a terminal delivery", async () => {
+for (const queued of [false, true]) test(`recovery publishes a missing terminal result without unparking ${queued ? "queued" : "idle"} work`, async () => {
 	const first = createHarness();
 	const rootPath = first.root;
 	try {
@@ -299,8 +299,9 @@ test("recovery synthesizes a missing settlement after a terminal delivery", asyn
 			action: "started", messageId: "accepted", startedAt: 3,
 		});
 		manager.appendCustomEntry(CONTROL_ENTRY, { action: "parked", at: 4 });
+		if (queued) manager.appendCustomEntry(INBOX_ENTRY, { action: "accepted", messageId: "later", content: "not yet", source: "followup", delivery: "boundary", acceptedAt: 5 });
 		manager.appendCustomEntry(DELIVERY_ENTRY, {
-			action: "finished", messageId: "accepted", finishedAt: 13,
+			action: "finished", messageId: "accepted", workId: "accepted", finishedAt: 13,
 			stopReason: "completed", output: "accepted result",
 			usage: usageFor(2, 3, 5, 0.2),
 		});
@@ -308,14 +309,17 @@ test("recovery synthesizes a missing settlement after a terminal delivery", asyn
 		try {
 			await waitUntil(() => second.notices.some((notice) => notice.kind === "settlement"), "synthesized settlement");
 			assert.match(second.notices.at(-1).content, /accepted result/);
+			assert.equal(second.notices.at(-1).workId, "accepted");
 			assert.equal(second.runtime.snapshot()[0].activeDurationMs, 10);
+			assert.equal(second.runtime.snapshot()[0].queued, queued ? 1 : 0);
+			assert.equal(second.factory.opens.length, 0);
 			const restored = SessionManager.open(
 				second.runtime.getSessionFile(childId),
 				second.childSessions,
 			).getBranch();
 			const controls = restored.filter((entry) =>
 				entry.type === "custom" && entry.customType === CONTROL_ENTRY);
-			assert.equal(controls.at(-1).data.action, "unparked");
+			assert.equal(controls.at(-1).data.action, "parked");
 		} finally {
 			await second.runtime.shutdown();
 		}
@@ -334,7 +338,7 @@ test("reports are durable until root delivery accepts them", async () => {
 			description: "durable report", prompt: "hold", context: "fresh", runInBackground: true, parent: first.parent(),
 		});
 		await waitUntil(() => factory.opens[0]?.isRunning, "activation");
-		const reportId = first.runtime.report(factory.opens[0].input.authority, "persist this report");
+		const reportId = first.runtime.sendMessage(factory.opens[0].input.authority, "/root", "persist this report");
 		const branch = SessionManager.open(first.runtime.getSessionFile(started.subagentId), first.childSessions).getBranch();
 		assert.ok(branch.some((entry) => entry.type === "custom" && entry.customType === SETTLEMENT_ENTRY && entry.data?.action === "pending" && entry.data.notice?.messageId === reportId));
 		await first.runtime.shutdown();
@@ -432,7 +436,7 @@ test("the first descriptor is authoritative during cold resume", async () => {
 	}
 });
 
-test("settlement preserves earlier non-empty output and aggregates usage across FIFO turns", async () => {
+test("each FIFO invocation settles separately while total usage remains cumulative", async () => {
 	let firstPrompt = true;
 	const factory = new FakeDriverFactory((driver) => {
 		if (firstPrompt) { firstPrompt = false; return blockingPrompt(driver); }
@@ -452,8 +456,10 @@ test("settlement preserves earlier non-empty output and aggregates usage across 
 			output: "useful accepted result", stopReason: "completed",
 			usage: usageFor(3, 4, 6, 0.3),
 		});
-		await waitUntil(() => harness.notices.some((notice) => notice.kind === "settlement"), "settlement");
-		assert.match(harness.notices.at(-1).content, /useful accepted result/);
+		await waitUntil(() => harness.notices.filter(notice => notice.kind === "settlement").length === 2, "separate settlements");
+		assert.match(harness.notices[0].content, /useful accepted result/);
+		assert.doesNotMatch(harness.notices[1].content, /useful accepted result/);
+		assert.notEqual(harness.notices[0].workId, harness.notices[1].workId);
 		assert.deepEqual(harness.runtime.snapshot()[0].usage, usageFor(10, 5, 9, 1));
 	} finally {
 		await harness.cleanup();

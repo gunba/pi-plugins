@@ -80,15 +80,15 @@ test("registered tools, durable acknowledgement, and shared summary widths 1–4
     h.ctx.mode = "rpc";
     await h.events.get("session_start")({}, h.ctx);
     assert.equal(h.sent.length, 0);
-    getWorkCoordinator("session").register({ kind: "child", id: "child" });
-    const wait = h.tools.get("wait_agent").execute("wait", { ids: ["child"], timeout_ms: 120_000 });
+    const wait = h.tools.get("wait_agent").execute("wait", { timeout_ms: 120_000 });
+    assert.equal(getWorkCoordinator("session").waiting, true);
     const db = new DatabaseSync(join(dir, readdirSync(dir).find((name) => name.endsWith(".sqlite"))));
     db.exec("UPDATE messages SET payload=json_set(payload, '$.dueAt', 0)");
     db.close();
     t.mock.timers.tick(60_000);
     assert.equal(h.sent.length, 2, "RPC timer delivers without a TUI");
     assert.ok(h.sent.every(({ options }) => options.deliverAs === "steer"));
-    assert.equal((await wait).details.interrupted, true, "scheduled input releases the pending tool without cancelling child work");
+    assert.deepEqual((await wait).details, { message: "Wait interrupted by new input.", timed_out: false }, "scheduled input releases the pending tool without cancelling child work");
     assert.equal(h.sent.filter(({ options }) => options.triggerTurn).length, 2, "reminders use the normal native delivery path");
     assert.equal(store.list().length, 2, "void sendMessage is not a durable acknowledgement");
     const second = harness(dir, "rpc");

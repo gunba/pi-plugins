@@ -50,6 +50,7 @@ function extensionHarness() {
 		ui,
 		mode: "tui",
 		isProjectTrusted: () => true,
+		isIdle: () => true,
 	};
 	subagents(pi);
 	return { root, manager, tools, handlers, commands, ctx };
@@ -58,14 +59,13 @@ function extensionHarness() {
 test("root exposes subagent primitives and Codex-style waiting", async () => {
 	const harness = extensionHarness();
 	try {
-		assert.equal(harness.tools.length, 7, "subagent and wait tools register during discovery");
+		assert.equal(harness.tools.length, 6, "agent and wait tools register during discovery");
 		for (const handler of harness.handlers.get("session_start")) await handler({}, harness.ctx);
 		assert.deepEqual(
 			harness.tools.map((tool) => tool.name),
 			[
 				"wait_agent",
-				"subagent",
-				"subagent_fork",
+				"spawn_agent",
 				"send_message",
 				"followup_task",
 				"interrupt_agent",
@@ -73,7 +73,8 @@ test("root exposes subagent primitives and Codex-style waiting", async () => {
 			],
 		);
 		for (const removed of [
-			"spawn_agent",
+			"subagent",
+			"subagent_fork",
 			"restart_agent",
 			"wait_for_work",
 			"cancel_work_wait",
@@ -90,34 +91,20 @@ test("root exposes subagent primitives and Codex-style waiting", async () => {
 	}
 });
 
-test("delegation schemas require description and prompt and default to background in execution", async () => {
+test("spawn schema requires task_name and message without foreground controls", async () => {
 	const harness = extensionHarness();
 	try {
 		await harness.handlers.get("session_start")[0]({}, harness.ctx);
 		const byName = new Map(harness.tools.map((tool) => [tool.name, tool]));
-		for (const name of ["subagent", "subagent_fork"]) {
-			const schema = byName.get(name).parameters;
-			assert.deepEqual(Object.keys(schema.properties), [
-				"description",
-				"prompt",
-				"run_in_background",
-				"model",
-				"thinking_level",
-			]);
-			assert.deepEqual(schema.required, ["description", "prompt"]);
-			assert.equal(schema.additionalProperties, false);
-			assert.match(byName.get(name).description, /background by default/i);
-			assert.match(byName.get(name).promptGuidelines.join(" "), /continue useful work/i);
-			assert.doesNotMatch(byName.get(name).promptGuidelines.join(" "), /wait_agent|blocked/i);
-		}
-		assert.match(
-			byName.get("subagent").parameters.properties.prompt.description,
-			/cannot see this conversation/i,
-		);
-		assert.match(
-			byName.get("subagent_fork").parameters.properties.prompt.description,
-			/completed parent turns/i,
-		);
+		const tool = byName.get("spawn_agent");
+		const schema = tool.parameters;
+		assert.deepEqual(Object.keys(schema.properties), ["task_name", "message", "fork_turns", "model", "reasoning_effort"]);
+		assert.deepEqual(schema.required, ["task_name", "message"]);
+		assert.equal(schema.additionalProperties, false);
+		assert.match(tool.description, /asynchronous/i);
+		assert.match(tool.promptGuidelines.join(" "), /continue useful work/i);
+		assert.doesNotMatch(tool.promptGuidelines.join(" "), /wait_agent|blocked/i);
+		assert.match(schema.properties.fork_turns.description, /all \(default\).*none.*positive integer/);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
 			await handler({}, harness.ctx);
@@ -125,27 +112,25 @@ test("delegation schemas require description and prompt and default to backgroun
 	}
 });
 
-test("control schemas pin FIFO, current-turn interrupt, and discovery semantics", async () => {
+test("control schemas pin boundary delivery, current-turn interrupt, and discovery semantics", async () => {
 	const harness = extensionHarness();
 	try {
 		await harness.handlers.get("session_start")[0]({}, harness.ctx);
 		const byName = new Map(harness.tools.map((tool) => [tool.name, tool]));
 		assert.deepEqual(
 			Object.keys(byName.get("send_message").parameters.properties),
-			["subagent_id", "message"],
+			["target", "message"],
 		);
-		assert.match(byName.get("send_message").description, /Steer a running direct child/i);
-		assert.match(byName.get("followup_task").description, /Queued FIFO/i);
+		assert.match(byName.get("send_message").description, /parent, sibling or child/i);
+		assert.match(byName.get("send_message").description, /does not start an idle agent/i);
+		assert.match(byName.get("followup_task").description, /next safe boundary/i);
 		assert.deepEqual(
 			Object.keys(byName.get("interrupt_agent").parameters.properties),
-			["agent_id"],
+			["target"],
 		);
 		assert.match(byName.get("interrupt_agent").description, /current turn/i);
-		assert.match(byName.get("list_agents").description, /not polling/i);
-		assert.deepEqual(
-			byName.get("list_agents").parameters.properties.scope.enum,
-			["children", "descendants"],
-		);
+		assert.match(byName.get("list_agents").description, /registered agent tree/i);
+		assert.deepEqual(Object.keys(byName.get("list_agents").parameters.properties), ["path_prefix"]);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
 			await handler({}, harness.ctx);
@@ -166,7 +151,7 @@ test("registered root tools resolve the replacement runtime after branch navigat
 			() => {},
 			harness.ctx,
 		);
-		assert.equal(result.content[0].text, "(no subagents)");
+		assert.deepEqual(result.structuredContent.agents, [{ agent_name: "/root", agent_id: harness.manager.getSessionId(), agent_status: "idle" }]);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
 			await handler({}, harness.ctx);
@@ -174,19 +159,18 @@ test("registered root tools resolve the replacement runtime after branch navigat
 	}
 });
 
-test("report is child-scoped and appears only for continuable children", () => {
+test("root and child modes use the same messaging primitives without report", () => {
 	const runtime = {};
 	const binding = { getAuthority: () => ({}) };
 	assert.deepEqual(
 		createSubagentToolDefinitions(runtime, binding, "root").map((tool) => tool.name),
-		["subagent", "subagent_fork", "send_message", "followup_task", "interrupt_agent", "list_agents"],
+		["spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents"],
 	);
 	assert.deepEqual(
 		createSubagentToolDefinitions(runtime, binding, "one-shot").map((tool) => tool.name),
-		["subagent", "subagent_fork", "send_message", "followup_task", "interrupt_agent", "list_agents"],
+		["spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents"],
 	);
 	const continuable = createSubagentToolDefinitions(runtime, binding, "continuable");
-	assert.equal(continuable.at(-1).name, "report");
-	assert.match(continuable.at(-1).description, /does not end this turn/i);
-	assert.match(continuable.at(-1).description, /direct parent/i);
+	assert.deepEqual(continuable.map(tool => tool.name), ["spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents"]);
+	assert.equal(continuable.some(tool => tool.name === "report"), false);
 });

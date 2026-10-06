@@ -199,6 +199,8 @@ export class DeskEngine {
 				...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
 				...(sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
 			});
+			// Batch Desk steering at the native boundary without rewriting terminal preferences.
+			result.session.agent.steeringMode = "all";
 			context.attach(result.session); this.contexts.set(result.session, context);
 			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
 			const loaded = services.resourceLoader.getExtensions();
@@ -657,6 +659,7 @@ export class DeskEngine {
 			this.failed = false;
 			try {
 				await session.reload({ beforeSessionStart: async () => {
+					session.agent.steeringMode = "all";
 					session.extensionRunner!.setUIContext(this.presentation.createUi(theme), "rpc");
 				} });
 			} catch (error) { this.failed = true; throw error; }

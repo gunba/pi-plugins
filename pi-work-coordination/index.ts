@@ -1,8 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { WorkCoordinator, registry } from "./core.ts";
-export { WorkCoordinator, getWorkCoordinator, registerWorkResource, completeWorkResource } from "./core.ts";
-export type { WorkTarget } from "./core.ts";
+export { WorkCoordinator, getWorkCoordinator } from "./core.ts";
 export const WAIT_ENTRY = "pi-work/wait-v1";
 export const WAKE_MESSAGE = "pi-work/wake-v1";
 const DISCOVER_COORDINATION = "pi-work/discover-coordination-v1";
@@ -31,14 +30,14 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   });
   let coordinator: WorkCoordinator | undefined;
   const start = (ctx: ExtensionContext) => {
-    // A tree event already selected the destination branch. Never append the
-    // abandoned branch's wait or completion into that destination.
-    coordinator?.close(false);
+    if (coordinator) {
+      coordinator.close();
+      if (registry.sessions.get(coordinator.sessionId) === coordinator) registry.sessions.delete(coordinator.sessionId);
+    }
     const sessionId = ctx.sessionManager.getSessionId();
-    coordinator = new WorkCoordinator(sessionId, (data) => pi.appendEntry(WAIT_ENTRY, data));
+    coordinator = new WorkCoordinator(sessionId);
     registry.sessions.set(sessionId, coordinator);
-    // Resource ownership cannot survive replacement. Do not restore phantom
-    // processes or block a reloaded goal. Resource owners re-register live work.
+    // Preserve unadmitted historical completion content without restoring the old wait.
     const entry = [...ctx.sessionManager.getBranch()].reverse().find((entry) => entry.type === "custom" && entry.customType === WAIT_ENTRY);
     const data = entry?.type === "custom" ? entry.data as { status?: string; id?: string; content?: string; wakeOwned?: boolean; reason?: string } : undefined;
     if (data?.wakeOwned && data.content && data.id && data.reason !== "event-consumed") {
@@ -53,6 +52,14 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   pi.on("session_start", (_event, ctx) => start(ctx));
   pi.on("session_tree", (_event, ctx) => start(ctx));
   pi.on("input", (event) => { if (event.source !== "extension") coordinator?.cancel("user-input"); });
+  pi.on("context", (event) => {
+    if (!coordinator?.hasUnread) return;
+    for (const message of event.messages) {
+      if (message.role !== "custom" || !["pi-subagents/notice", "pi-subagents/followup"].includes(message.customType)) continue;
+      const ids = (message.details as { messageIds?: unknown })?.messageIds;
+      if (Array.isArray(ids)) coordinator.consume(ids.filter((id): id is string => typeof id === "string"));
+    }
+  });
   pi.on("session_shutdown", () => {
     try {
       if (coordinator) {
@@ -63,14 +70,17 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   });
   pi.registerTool({
     name: "wait_agent", label: "Wait for agents",
-    description: "Wait for one of the selected child agents to finish its current task. Returns on completion, user input or timeout_ms (default 30000, maximum 3600000). The agent stays active while waiting; timeout does not cancel child work. Use write_stdin for a running process.",
-    parameters: Type.Object({ ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 64 }), timeout_ms: Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000 })) }),
+    description: "Wait for an agent message or final-status notification, including already queued messages. New user input also ends the wait. The tool stays pending; it does not end this turn or cancel child work. timeout_ms defaults to 30000, with a minimum of 10000 and maximum of 3600000. Use write_stdin for a running process.",
+    parameters: Type.Object({ timeout_ms: Type.Optional(Type.Integer({ maximum: 3_600_000 })) }, { additionalProperties: false }),
+    outputSchema: Type.Object({ message: Type.String(), timed_out: Type.Boolean() }),
     executionMode: "sequential",
     async execute(_id, params, signal, _update, ctx) {
-      if (!options.child && ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Explicit waiting requires a live TUI/RPC session or a managed SDK child");
-      if (!coordinator || coordinator.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("work coordinator is not initialized for this session");
-      const result = await coordinator.wait(params.ids.map(id => ({ kind: "child" as const, id })), "any", params.timeout_ms ?? 30_000, signal);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      if (!coordinator || coordinator.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("agent mailbox is not initialized for this session");
+      const timeout = Math.max(10_000, params.timeout_ms ?? 30_000);
+      const result = await coordinator.wait(timeout, signal);
+      if (params.timeout_ms !== undefined && params.timeout_ms < timeout)
+        result.message += `\n\nRequested timeout of ${params.timeout_ms}ms was clamped to the minimum of ${timeout}ms.`;
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, structuredContent: result };
     },
   });
 }

@@ -38,7 +38,7 @@ import { createSubagentToolDefinitions } from "./subagent-tools.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
 import { ConversationModelPermissions } from "./model-permissions.ts";
 import { requireCodexWire } from "../../pi-codex-wire/extensions/required.ts";
-import { ensureWorkCoordination, getWorkCoordinator, completeWorkResource } from "../../pi-work-coordination/index.ts";
+import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
@@ -330,20 +330,15 @@ export default function subagents(pi: ExtensionAPI): void {
 				? [`${entry.data.childId}:${entry.data.messageId}`] : []));
 		const recoveredNotices = undispatchedNotices(ctx.sessionManager.getBranch());
 		const remote = getPresentation(pi);
-		let maintenanceDelivery = false;
 		notices = new NoticeBatcher((batch) => {
 			const coordinator = getWorkCoordinator(ctx.sessionManager.getSessionId());
-			let matched = false;
-			for (const notice of batch) if (notice.kind === "settlement")
-				matched = completeWorkResource(ctx.sessionManager.getSessionId(), { kind: "child", id: notice.childId }, notice.content, { notify: false, generation: notice.workId }) || matched;
-			const urgent = batch.some((notice) => notice.priority === "urgent" || notice.priority === "action-required");
-			if (urgent) coordinator?.cancel("urgent-notice");
 			pi.sendMessage({
 				customType: "pi-subagents/notice",
 				content: noticeBatchContent(batch),
 				display: true,
 				details: noticeBatch(batch),
-			}, { deliverAs: "steer", triggerTurn: !maintenanceDelivery && (urgent || matched || !coordinator?.blocked) });
+			}, { deliverAs: "steer", triggerTurn: false });
+			coordinator?.notify(batch.map(notice => notice.messageId));
 		}, (error) => ctx.ui.notify(`Subagent notice delivery failed; receipts remain recoverable: ${error instanceof Error ? error.message : String(error)}`, "error"));
 		notices.setPaused(!!remote?.suspended);
 		const host: RuntimeHost = {
@@ -354,6 +349,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			activeRootLaunchIds: launches,
 			modelCredentials: getModelCredentials(pi),
 			isProjectTrusted: () => ctx.isProjectTrusted(),
+			getRootStatus: () => ctx.isIdle() ? "idle" : "running",
 			isSuspended: () => !!remote?.suspended,
 			readMaintenance: id => {
 				const entry = [...ctx.sessionManager.getBranch()].reverse().find(entry =>
@@ -440,11 +436,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			scopes: () => created.maintenanceScopes(), inspect: () => created.checkpointReady(),
 			hold: async id => { notices!.setPaused(true); await created.holdMaintenance(id); },
 			restore: async id => { created.restoreMaintenance(id); },
-			release: async id => {
-				maintenanceDelivery = true;
-				try { await created.releaseMaintenance(id); notices!.setPaused(false); }
-				finally { maintenanceDelivery = false; }
-			},
+			release: async id => { await created.releaseMaintenance(id); notices!.setPaused(false); },
 		});
 		partyDriver = new PartyDriver(join(getAgentDir(), "party"), ctx.sessionManager.getSessionId(), () => ctx.sessionManager.getSessionFile() ?? "",
 			() => created.snapshot().filter(child => !child.diagnosticReason).map(child => child.id),

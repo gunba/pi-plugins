@@ -5,43 +5,29 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type {
-	AgentListEntry,
 	Authority,
-	ChildContextMode,
 	ChildMode,
 	ParentInvocation,
 	SubagentRuntime,
 } from "./subagent-runtime.ts";
-import {
-	MAX_PARENT_NOTICE_BYTES,
-	truncateForParent,
-} from "./subagent-runtime.ts";
+import { parseForkTurns } from "./task-names.ts";
 
-function delegationParameters(context: ChildContextMode) {
+function spawnParameters() {
 	return Type.Object(
 		{
-			description: Type.String({
-				minLength: 1,
-				description: "A short 3–5 word description of the delegated task, for display.",
+			task_name: Type.String({
+				minLength: 1, pattern: "^[a-z0-9_]+$",
+				description: "Unique name under this agent, using lowercase letters, digits and underscores; root is reserved.",
 			}),
-			prompt: Type.String({
-				minLength: 1,
-				description:
-					context === "fresh"
-						? "The complete standalone task. The child cannot see this conversation."
-						: "The task-specific information that is new. The child already sees all completed parent turns.",
-			}),
-			run_in_background: Type.Optional(
-				Type.Boolean({
-					description:
-						"Run independently and return a durable subagent id. Defaults to true. Set false only when the next action needs the result.",
-				}),
-			),
+			message: Type.String({ minLength: 1, description: "The task for the new agent." }),
+			fork_turns: Type.Optional(Type.String({
+				description: "all (default) inherits completed parent context; none starts fresh; a positive integer string keeps that many recent retained instruction turns. The in-flight turn is excluded.",
+			})),
 			model: Type.Optional(Type.String({
 				minLength: 1,
 				description: "Exact provider/model id. Omit to inherit the parent model. Requires user approval once for this conversation.",
 			})),
-			thinking_level: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, {
+			reasoning_effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, {
 				description: "Thinking effort supported by the selected model. Omit to inherit parent effort, adjusted to model capabilities. Requires user approval once for this conversation.",
 			})),
 		},
@@ -49,52 +35,18 @@ function delegationParameters(context: ChildContextMode) {
 	);
 }
 
-const sendParameters = Type.Object(
-	{
-		subagent_id: Type.String({
-			description: "The durable id returned by subagent or subagent_fork.",
-		}),
-		message: Type.String({
-			minLength: 1,
-			description: "The message for the direct child.",
-		}),
-	},
-	{ additionalProperties: false },
-);
+const sendParameters = Type.Object({
+	target: Type.String({ minLength: 1, description: "Canonical task path, descendant-relative path or native agent ID." }),
+	message: Type.String({ minLength: 1, description: "Message to the target agent." }),
+}, { additionalProperties: false });
 
-const interruptParameters = Type.Object(
-	{
-		agent_id: Type.String({
-			description: "The durable id of the running descendant to interrupt.",
-		}),
-	},
-	{ additionalProperties: false },
-);
+const interruptParameters = Type.Object({
+	target: Type.String({ minLength: 1, description: "Task path or native agent ID. Cannot target the root or yourself." }),
+}, { additionalProperties: false });
 
-const listParameters = Type.Object(
-	{
-		scope: Type.Optional(
-			StringEnum(["children", "descendants"] as const, {
-				description:
-					"children (default) lists direct children; descendants walks the complete tree.",
-			}),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const reportParameters = Type.Object(
-	{
-		priority: Type.Optional(StringEnum(["routine", "urgent", "action-required"] as const, { description: "Routine reports are briefly coalesced. Urgent errors and requests requiring immediate parent action bypass batching." })),
-		output: Type.String({
-			minLength: 1,
-			maxLength: MAX_PARENT_NOTICE_BYTES,
-			description:
-				"Self-contained, actionable content for the direct parent, including relevant shared paths.",
-		}),
-	},
-	{ additionalProperties: false },
-);
+const listParameters = Type.Object({
+	path_prefix: Type.Optional(Type.String({ description: "Limit discovery to this task path and its descendants. Omit for the registered tree." })),
+}, { additionalProperties: false });
 
 export type ToolBinding = {
 	getAuthority(): Authority;
@@ -124,201 +76,95 @@ function parentInvocation(
 	};
 }
 
-function delegationTool(
-	runtime: RuntimeAccess,
-	binding: ToolBinding,
-	context: ChildContextMode,
-): ToolDefinition {
-	const name = context === "fresh" ? "subagent" : "subagent_fork";
-	const contextWording =
-		context === "fresh"
-			? "It has a separate context and cannot see this conversation, so give it a complete standalone prompt."
-			: "It inherits all completed turns in this conversation, but not the current in-flight turn; state only the new task-specific information.";
+function spawnTool(runtime: RuntimeAccess, binding: ToolBinding): ToolDefinition {
 	return defineTool({
-		name,
-		label: context === "fresh" ? "Subagent" : "Subagent Fork",
-		description:
-			`Delegate work to a Pi SDK child session. ${contextWording} ` +
-			"The child runs in the background by default and remains available by durable id; run_in_background false waits for its result.",
-		promptSnippet:
-			context === "fresh"
-				? "Delegate a self-contained task to a fresh child session"
-				: "Delegate a task to a child seeded with completed parent turns",
+		name: "spawn_agent",
+		label: "Spawn Agent",
+		description: "Start an asynchronous native Pi agent. Inherits completed parent context by default; fork_turns selects fresh or bounded context. Returns its task path and native ID, not its result.",
+		promptSnippet: "Start an agent with inherited or fresh context",
 		promptGuidelines: [
 			"Background children send settlement notices automatically, so the parent can continue useful work without polling.",
 			"Model and thinking overrides require the user's conversation-level approval. The first override opens an approval dialog; after approval you may choose without asking again. If approval is denied, inherit the parent settings.",
 		],
-		parameters: delegationParameters(context),
+		parameters: spawnParameters(),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
-			const result = await resolveRuntime(runtime).start({
-				description: params.description,
-				prompt: params.prompt,
-				context,
-				runInBackground: params.run_in_background ?? true,
+			const turns = parseForkTurns(params.fork_turns);
+			const owner = resolveRuntime(runtime);
+			const result = await owner.start({
+				taskName: params.task_name,
+				description: params.task_name,
+				prompt: params.message,
+				context: turns === "none" ? "fresh" : "fork",
+				...(typeof turns === "number" ? { forkTurns: turns } : {}),
+				runInBackground: true,
 				parent: parentInvocation(binding, toolCallId, ctx),
 				model: params.model,
-				thinkingLevel: params.thinking_level,
+				thinkingLevel: params.reasoning_effort,
 				signal,
 			});
-			if (result.kind === "continuable") {
-				return {
-					content: [
-						{ type: "text", text: `started subagent ${result.subagentId}` },
-					],
-					details: result,
-				};
-			}
-			if (result.outcome.stopReason !== "completed") {
-				const partial = result.outcome.output
-					? `\nPartial output before the run ended:\n${truncateForParent(result.outcome.output)}`
-					: "";
-				throw new Error(
-					`subagent run ended ${result.outcome.stopReason}${result.outcome.errorMessage ? `: ${result.outcome.errorMessage}` : ""}${partial}`,
-				);
-			}
-			return {
-				content: [{ type: "text", text: truncateForParent(result.outcome.output) }],
-				details: result,
-				usage: result.outcome.usage,
-			};
+			if (result.kind !== "continuable") throw Error("Agent creation did not return a durable identity");
+			const value = { task_name: owner.agentPath(result.subagentId), agent_id: result.subagentId };
+			return { content: [{ type: "text", text: JSON.stringify(value) }], details: result, structuredContent: value };
 		},
 	});
 }
 
-function formatList(
-	entries: AgentListEntry[],
-	scope: "children" | "descendants",
-): string {
-	if (entries.length === 0) return "(no subagents)";
-	return entries
-		.map((entry) => {
-			const at =
-				scope === "descendants"
-					? ` parent=${String(entry.parent)} depth=${String(entry.depth)}`
-					: "";
-			const lastFailure = entry.kind === "child" && entry.lastOutcome
-				? ` · last=${entry.lastOutcome}${entry.errorMessage ? `: ${entry.errorMessage.replace(/\s+/g, " ").slice(0, 240)}` : ""}`
-				: "";
-			return entry.kind === "child"
-				? `${entry.id} [${entry.status}]${at} — ${entry.label}${lastFailure}`
-				: `${entry.id} [diagnostic: ${entry.reason}]${at}`;
-		})
-		.join("\n");
+type ToolJson = NonNullable<Awaited<ReturnType<ToolDefinition["execute"]>>["structuredContent"]>;
+
+function response<T extends ToolJson>(value: T) {
+	return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value, structuredContent: value };
 }
 
-/** Build the DSH-standard model-facing tools for a root or child authority. */
+/** Model-facing tools share the owning root's registered native tree. */
 export function createSubagentToolDefinitions(
 	runtime: RuntimeAccess,
 	binding: ToolBinding,
-	mode: "root" | ChildMode,
+	_mode: "root" | ChildMode,
 ): ToolDefinition[] {
-	const tools: ToolDefinition[] = [
-		delegationTool(runtime, binding, "fresh"),
-		delegationTool(runtime, binding, "fork"),
+	return [
+		spawnTool(runtime, binding),
 		defineTool({
 			name: "send_message",
 			label: "Send Message",
-			description:
-				"Steer a running direct child with an update to its current work. Delivered at the next tool-batch boundary. This does not request another task; use followup_task for new work or an idle child.",
+			description: "Send a message to a parent, sibling or child in this agent tree. Delivered at a safe boundary; does not start an idle agent. Use followup_task to request a new turn.",
 			parameters: sendParameters,
-			execute: async (_toolCallId, params) => {
-				const messageId = resolveRuntime(runtime).sendMessage(
-					binding.getAuthority(),
-					params.subagent_id,
-					params.message,
-				);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `update steered to subagent ${params.subagent_id}`,
-						},
-					],
-					details: { messageId },
-				};
-			},
+			execute: async (_id, params) => response({
+				message_id: resolveRuntime(runtime).sendMessage(binding.getAuthority(), params.target, params.message),
+			}),
 		}),
 		defineTool({
 			name: "followup_task",
 			label: "Follow-up Task",
-			description: "Request another task from a direct background child. Queued FIFO after its current work, or starts an idle child. Returns acceptance, not the child's answer.",
+			description: "Request a follow-up from an agent in this tree, except the root. An active agent receives it at the next safe boundary; an idle agent starts a turn. Returns acceptance, not the answer.",
 			parameters: sendParameters,
-			execute: async (_toolCallId, params) => {
-				const messageId = resolveRuntime(runtime).followupTask(binding.getAuthority(), params.subagent_id, params.message);
-				return {
-					content: [{ type: "text", text: `task queued for subagent ${params.subagent_id}` }],
-					details: { messageId },
-				};
+			execute: async (_id, params) => {
+				const owner = resolveRuntime(runtime);
+				const caller = binding.getAuthority();
+				return response({ message_id: owner.followupTask(caller, params.target, params.message) });
 			},
 		}),
 		defineTool({
 			name: "interrupt_agent",
 			label: "Interrupt Agent",
-			description:
-				"Request cancellation of a descendant's current turn or initialization. The agent identity, queued messages, and descendants remain; an idle or absent target is an accepted no-op.",
+			description: "Interrupt an agent's current turn or initialization. Preserves its identity, queued work and descendants. A known idle agent is not started; an unknown target is an error.",
 			parameters: interruptParameters,
-			execute: async (_toolCallId, params) => ({
-				content: [
-					{
-						type: "text",
-						text: `interrupt requested for agent ${params.agent_id}`,
-					},
-				],
-				details: {
-					accepted: resolveRuntime(runtime).interrupt(
-						binding.getAuthority(),
-						params.agent_id,
-					),
-				},
-			}),
+			execute: async (_id, params) => {
+				const owner = resolveRuntime(runtime);
+				const caller = binding.getAuthority();
+				const target = owner.resolveTarget(caller, params.target);
+				const previous_status = owner.agentStatus(target);
+				owner.interrupt(caller, target);
+				return response({ previous_status });
+			},
 		}),
 		defineTool({
 			name: "list_agents",
 			label: "List Agents",
-			description:
-				"List durable continuable children by id and label. Use this for discovery, not polling: settlement notices arrive automatically. running means active now, idle means resident between turns, and ready means cold but resumable. descendants includes parent and depth; only depth-1 entries accept send_message and followup_task.",
+			description: "Discover the registered agent tree, including parents, siblings and saved children. running means active, idle means resident, and ready means cold but resumable. Completion messages arrive automatically.",
 			parameters: listParameters,
-			execute: async (_toolCallId, params) => {
-				const scope = params.scope ?? "children";
-				const entries = resolveRuntime(runtime).listAgents(binding.getAuthority(), scope);
-				return {
-					content: [{ type: "text", text: formatList(entries, scope) }],
-					details: { scope, entries },
-				};
-			},
+			execute: async (_id, params) => response({
+				agents: resolveRuntime(runtime).listNamedAgents(binding.getAuthority(), params.path_prefix),
+			}),
 		}),
 	];
-	if (mode === "continuable") {
-		tools.push(
-			defineTool({
-				name: "report",
-				label: "Report",
-				description:
-					"Report selected self-contained content to the direct parent. Reporting does not end this turn, and only the direct parent receives it.",
-				promptSnippet:
-					"Report a self-contained result to the direct parent without ending the turn",
-				promptGuidelines: [
-					"report sends an interim finding. The final answer is delivered automatically.",
-				],
-				parameters: reportParameters,
-				execute: async (_toolCallId, params) => {
-					const messageId = resolveRuntime(runtime).report(
-						binding.getAuthority(),
-						params.output,
-						params.priority,
-					);
-					return {
-						content: [
-							{
-								type: "text",
-								text: `report accepted by the agent that started you as message ${messageId}`,
-							},
-						],
-						details: { messageId },
-					};
-				},
-			}),
-		);
-	}
-	return tools;
 }

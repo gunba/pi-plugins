@@ -39,6 +39,25 @@ test("closed tool output and thinking do not build their hidden Markdown bodies"
 	assert.match(render({ message: thought }, new Map([["thinking:thought:0", true]])), /HIDDEN_THINKING_BODY/);
 });
 
+test("skill reads are visible without expanding tools, including nested calls", () => {
+	const call = { type: "toolCall", id: "read-skill", name: "read", arguments: JSON.stringify({ path: "/skills/browse/SKILL.md" }) };
+	const owner = message("assistant", "assistant", [call]);
+	const result = message("result", "tool", [{ type: "text", text: "PRIVATE_SKILL_BODY" }]);
+	Object.assign(result, { toolName: "read", toolCallId: call.id, tool: { state: "done" } });
+	const html = render({ message: owner, results: { [call.id]: result } });
+	assert.match(html, /Read skill/);
+	assert.match(html, /browse/);
+	assert.doesNotMatch(html, /PRIVATE_SKILL_BODY/);
+	result.isError = true; result.tool.state = "error";
+	assert.match(render({ message: owner, results: { [call.id]: result } }), /Failed/);
+	assert.doesNotMatch(render({ message: owner, results: { [call.id]: result } }), /Loaded/);
+
+	const nested = message("nested-result", "tool", []);
+	Object.assign(nested, { toolName: "codemode", toolCallId: "batch", nested: { complete: true,
+		calls: [{ name: "read", status: "ok", skills: ["imagegen"] }] } });
+	assert.match(render({ message: nested }), /Skills: imagegen/);
+});
+
 test("empty text does not give activity rows a chat header or an invisible gap", () => {
 	for (const block of [{ type: "thinking", text: "reasoning" }, { type: "toolCall", id: "call", name: "read", arguments: "{}" }]) {
 		const html = render({ message: message("activity", "assistant", [block, { type: "text", text: " \n" }]) });

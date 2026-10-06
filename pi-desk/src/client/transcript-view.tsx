@@ -40,7 +40,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
-	const userScroll = useRef(false), restoring = useRef(true);
+	const userScroll = useRef(false), restoring = useRef(true), following = useRef(live);
+	const navigation = useRef(0), lastScrollTop = useRef(0), scrollPointer = useRef(false);
 	const touchY = useRef<number | undefined>(undefined);
 	const target = useRef<ReadingPosition | "start" | "end" | undefined>(saved.current?.follow === false ? saved.current : "end");
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -65,7 +66,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		count: visible.length + 1, getScrollElement: () => scroller.current,
 		getItemKey: useCallback((index: number) => visible[index]?.id ?? "end", [visible]),
 		estimateSize: index => saved.current?.sizes?.[visible[index]?.id ?? ""] ?? (index === visible.length ? 60 : 220),
-		overscan: 3, paddingStart: source ? 8 : 28, anchorTo: "end", followOnAppend: live,
+		overscan: 3, paddingStart: source ? 8 : 28, anchorTo: live ? "end" : "start", followOnAppend: live,
 		scrollEndThreshold: 80,
 		rangeExtractor: useCallback((range: Range) => {
 			const indices = defaultRangeExtractor(range);
@@ -84,14 +85,15 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		const index = Math.min(row?.index ?? 0, visible.length - 1);
 		return {
 			from: visible.slice(Math.max(0, index - 10)).find(message => message.entryId)?.entryId,
-			anchor: visible[index]?.entryId, offset: Math.max(0, top - (row?.start ?? 0)), follow: live && !moreRecent,
+			anchor: visible[index]?.entryId, offset: Math.max(0, top - (row?.start ?? 0)), follow: following.current && !moreRecent,
 			sizes: Object.fromEntries(virtualizer.takeSnapshot().slice(-HISTORY_COUNT - 1).map(item => [String(item.key), item.size])),
 		};
 	};
 	const load = async (position: HistoryPosition = {}, restore: ReadingPosition | "start" | "end" = "end") => {
-		const id = ++request.current;
+		const id = ++request.current, startedNavigation = navigation.current;
 		if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
-		restoring.current = true; userScroll.current = false;
+		target.current = undefined;
+		restoring.current = !positioned; userScroll.current = false;
 		loadingRef.current = true;
 		if (!visible.length) setPositioned(false);
 		setLoading(true);
@@ -100,24 +102,30 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		try {
 			const data = await api<HistoryPage>(`/sessions/${session}/history?${query}`);
 			if (id !== request.current || data.generation !== generation) return;
-			target.current = restore;
+			const moved = navigation.current !== startedNavigation;
+			// A reconnect refresh must not undo navigation performed while it was in flight.
+			if (moved && page?.generation === generation && !position.before && !position.after) return;
+			if (moved) restore = capture.current() ?? restore;
 			if ((position.before || position.after) && typeof restore === "object") {
 				const combined = mergeMessages(nativeMessages, data.messages);
 				const window = position.before
 					? recentMessages([...combined].reverse(), HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2).reverse()
 					: recentMessages(combined, HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2);
+				const anchor = restore.anchor;
+				if (moved && !window.some(message => message.entryId === anchor)) return;
 				const hasBefore = position.before ? !!data.before : !!older || window.length < combined.length;
 				const hasAfter = position.after ? !!data.after : !!moreRecent || window.length < combined.length;
 				setPage({ ...data, messages: window,
 					before: hasBefore ? window.find(message => message.entryId)?.entryId : undefined,
 					after: hasAfter ? window.slice().reverse().find(message => message.entryId)?.entryId : undefined });
 			} else setPage(data);
+			target.current = restore; restoring.current = true;
 			const latest = !position.before && !position.after && !position.from;
-			setLive(latest); setAtEnd(latest);
+			following.current = latest; setLive(latest); setAtEnd(latest);
 			setPinned("");
 			if (!position.before && !position.after && !position.from) onLatest(source, data);
 		} catch (error) {
-			if (id !== request.current) return;
+			if (id !== request.current || navigation.current !== startedNavigation && page?.generation === generation) return;
 			restoring.current = false;
 			if (position.from && /position no longer exists/.test(String(error))) {
 				saved.current = undefined; void load(); return;
@@ -151,6 +159,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		}
 		let lastOffset: number | undefined;
 		const reveal = () => {
+			if (target.current !== position) return;
 			const viewport = scroller.current;
 			if (!viewport) return;
 			const maximum = Math.max(0, virtualizer.getTotalSize() - viewport.clientHeight);
@@ -174,7 +183,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	useLayoutEffect(() => {
 		if (!live || restoring.current) return;
 		const frame = requestAnimationFrame(() => {
-			if (!restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
+			if (following.current && !restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [visible, live]);
@@ -187,7 +196,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		const observer = new ResizeObserver(() => {
 			if (frame !== undefined) cancelAnimationFrame(frame);
 			frame = requestAnimationFrame(() => {
-				if (!restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
+				if (following.current && !restoring.current) { virtualizer.scrollToEnd(); setAtEnd(true); }
 			});
 		});
 		observer.observe(viewport);
@@ -227,22 +236,31 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		};
 	}, [storageKey]);
 	const hold = () => {
-		if (!live) return;
+		if (!following.current) return;
+		following.current = false;
 		setPage(previous => ({ generation, revision: previous?.revision ?? 0, before: older, messages: nativeMessages }));
 		setLive(false);
 	};
-	// Collapsed activity can fill a native page without filling the viewport.
-	// There is then no scroll event: page on an explicit navigation gesture.
-	const navigateShortPage = (earlier: boolean, target: EventTarget | null) => {
+	const navigate = (earlier: boolean | undefined, eventTarget: EventTarget | null) => {
 		const viewport = scroller.current;
-		if (!viewport || restoring.current || loadingRef.current || !connected || viewport.scrollHeight > viewport.clientHeight + 1) return;
-		for (let node = target instanceof HTMLElement ? target : null; node && node !== viewport; node = node.parentElement) {
+		if (!viewport || !positioned) return;
+		for (let node = eventTarget instanceof HTMLElement ? eventTarget : null; node && node !== viewport; node = node.parentElement) {
 			if (node.scrollHeight > node.clientHeight + 1 && /^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) return;
 		}
+		navigation.current++; userScroll.current = true;
+		if (restoring.current) {
+			if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
+			target.current = undefined; restoring.current = false;
+			virtualizer.scrollToOffset(viewport.scrollTop);
+		}
+		if (earlier) hold();
+		if (loadingRef.current || !connected) return;
 		const anchor = capture.current();
 		if (!anchor) return;
-		if (earlier && older) void load({ before: older }, anchor);
-		else if (!earlier && !live && moreRecent) void load({ after: moreRecent }, anchor);
+		// At an edge (including a short page), another gesture need not emit a scroll event.
+		if (earlier && viewport.scrollTop <= 1 && older) void load({ before: older }, anchor);
+		else if (earlier === false && !following.current && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1)
+			void load(moreRecent ? { after: moreRecent } : {}, moreRecent ? anchor : "end");
 	};
 	return <DisclosureStates.Provider value={disclosures.current}><div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
 		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
@@ -250,32 +268,34 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
 			tabIndex={0} aria-label={source ? "Child conversation" : "Conversation"}
-			onWheel={event => { userScroll.current = true; if (event.deltaY) navigateShortPage(event.deltaY < 0, event.target); }}
+			onWheel={event => { if (event.deltaY) navigate(event.deltaY < 0, event.target); }}
 			onTouchStart={event => { touchY.current = event.touches[0]?.clientY; }}
 			onTouchMove={event => {
-				userScroll.current = true;
 				const y = event.touches[0]?.clientY, previous = touchY.current;
 				touchY.current = y;
-				if (y !== undefined && previous !== undefined && Math.abs(y - previous) > 4) navigateShortPage(y > previous, event.target);
+				if (y !== undefined && previous !== undefined && y !== previous) navigate(y > previous, event.target);
 			}}
-			onPointerDown={event => { if (event.target === event.currentTarget) userScroll.current = true; }}
+			onPointerDown={event => { scrollPointer.current = event.target === event.currentTarget; if (scrollPointer.current) navigate(undefined, event.target); }}
+			onPointerMove={event => { if (!(event.buttons & 1)) scrollPointer.current = false; if (scrollPointer.current) navigate(undefined, event.target); }}
+			onPointerUp={() => { scrollPointer.current = false; }} onPointerCancel={() => { scrollPointer.current = false; }}
 			onKeyDown={event => {
+				if (event.target !== event.currentTarget) return;
 				if (event.key === "End" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); if (connected) void load(); }
-				else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key)) {
-					userScroll.current = true;
-					if (event.target === event.currentTarget) navigateShortPage(["PageUp", "Home", "ArrowUp"].includes(event.key) || event.key === " " && event.shiftKey, event.target);
-				}
+				else if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(event.key))
+					navigate(["PageUp", "Home", "ArrowUp"].includes(event.key) || event.key === " " && event.shiftKey, event.target);
 			}}
 			onScroll={() => {
+				const viewport = scroller.current!, previous = lastScrollTop.current;
+				lastScrollTop.current = viewport.scrollTop;
+				const manual = userScroll.current; userScroll.current = false;
 				if (restoring.current) return;
-				const viewport = scroller.current!;
 				const end = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 80; setAtEnd(end);
-				if (userScroll.current) {
-					if (!end) hold();
+				if (manual) {
+					if (!end || viewport.scrollTop < previous) hold();
 					if (!loadingRef.current && connected) {
 						const anchor = capture.current();
-						if (scroller.current!.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
-						else if (end && !live) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
+						if (viewport.scrollTop < previous && viewport.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
+						else if (viewport.scrollTop > previous && end && !following.current) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
 					}
 				}
 				clearTimeout(timer.current); timer.current = setTimeout(persist, 200);

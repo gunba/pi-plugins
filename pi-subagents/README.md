@@ -1,80 +1,87 @@
 # pi-subagents
 
-DSH-style delegated agents for Pi 0.87.1+. Children use in-process Pi SDK
-`AgentSession` instances with isolated context, durable Pi sessions, direct-parent
-control, bounded delegation depth, and root-wide admission limits.
+Durable native Pi agents with a Codex V2-style control surface. Requires Pi 1.0.
+Each child uses an in-process SDK `AgentSession`, with its own context, model
+runtime and native history. Children share the working directory, not a sandbox.
 
 ## Tools
 
-- `subagent(description, prompt, run_in_background?, model?, thinking_level?)` starts a fresh child. The
-  child does not receive the parent conversation.
-- `subagent_fork(description, prompt, run_in_background?, model?, thinking_level?)` starts a child seeded
-  with completed parent turns. The current in-flight turn is excluded.
-- `send_message(subagent_id, message)` steers a running direct child with an
-  update at its next tool-batch boundary.
-- `followup_task(subagent_id, message)` requests a new FIFO task from a direct
-  child. It waits behind current work or starts an idle child.
-- `interrupt_agent(agent_id)` requests cancellation of a descendant's current
-  turn or initialization. Queued messages, descendants, identity, and durable session remain.
-- `list_agents(scope?)` lists continuable direct children or all descendants.
-- `report(output, priority?)` is available only inside a live continuable child. It sends
-  selected self-contained content to the direct parent without ending the turn.
+| Tool | Behavior |
+|---|---|
+| `spawn_agent(task_name, message, fork_turns?, model?, reasoning_effort?)` | Starts asynchronously. Returns `{task_name, agent_id}` after durable admission, not completion. |
+| `send_message(target, message)` | Sends information within the registered tree without starting an idle recipient. Returns `{message_id}`. |
+| `followup_task(target, message)` | Requests work from any non-root agent in the tree. An active recipient receives it at a safe boundary; an idle recipient starts a turn. Returns `{message_id}`. |
+| `wait_agent(timeout_ms?)` | Waits for mailbox activity or user input. Returns `{message, timed_out}`; does not end the turn. |
+| `interrupt_agent(target)` | Interrupts the current turn or initialization. Returns `{previous_status}`. Root/self targets are rejected. |
+| `list_agents(path_prefix?)` | Lists the registered tree, optionally limited to a subtree. Returns `{agents}` with task paths, native IDs and statuses. |
 
-`description` and `prompt` are required. Continuable delegation defaults to
-`run_in_background: true` and returns a durable child ID after inbox acceptance.
-Set it to `false` only when the next parent action requires the result; that
-route is a foreground one-shot run.
+`task_name` is unique under the creating agent and uses lowercase ASCII letters,
+digits and underscores; `root` is reserved. Paths look like
+`/root/parser_review/tests`. Targets accept canonical paths, descendant-relative
+paths or native agent IDs. Relative paths do not support `.` or `..`. Messages
+cannot cross owning root trees; [party messaging](../pi-party/README.md) handles
+independent agents and computers.
 
-## Model and thinking permission
-
-Children inherit the parent model and thinking level by default. To choose a
-different configuration, pass an exact `provider/model` ID in `model`, a
-supported `thinking_level`, or both. For example:
+`fork_turns` defaults to `"all"`: copy completed effective parent context. Use
+`"none"` for a fresh context or a positive integer string such as `"2"` for recent
+retained instruction turns. The unfinished delegation turn is excluded. Bounded
+copies begin at an instruction boundary, not midway through a tool batch.
 
 ```json
-{"description":"Review the parser","prompt":"Check the parser for edge cases.","model":"openai-codex/gpt-5.6-sol","thinking_level":"high"}
+{"task_name":"parser_review","message":"Review the parser for edge cases.","fork_turns":"none"}
 ```
 
-The first override opens a user approval dialog. Approving permits agents and
-their descendants to choose available models and thinking levels for new
-subagents throughout the current root conversation. Further calls do not ask
-again. A denial blocks overrides without repeated prompts; ordinary inheritance
-continues to work. Headless runs cannot grant approval.
+Final results go to the original parent automatically, without starting a parent
+turn. `send_message` handles interim communication in either direction; there is
+no separate `report` tool. `subagent`, `subagent_fork`, foreground creation flags
+and ID-targeted waits are not model-facing aliases.
 
-- `/subagents permissions` shows the current decision.
-- `/subagents permissions allow` opens the user approval dialog, including after a denial.
-- `/subagents permissions revoke` blocks future overrides. Existing children
-  retain their selected settings, including when they resume for a follow-up.
+Discovery distinguishes `running` (active), `idle` (resident or queued) and
+`ready` (cold but resumable). Missing or invalid histories appear as diagnostics.
+A known cold target is not opened by messaging, discovery or interruption;
+unknown targets are errors. Interruption preserves queued work, descendants and
+history. An explicit follow-up or owning-driver resume can unpark retained work.
 
-Permission survives resume, compaction and branch navigation in the same
-conversation. New conversations and forks have different IDs and need their own
-approval. The decision is stored separately from the transcript under
-`~/.pi/agent/subagents/permissions/<root-session-id>.json`, so copied or compacted
-conversation text cannot grant or restore permission.
+`wait_agent` defaults to 30 seconds, clamps shorter requests to 10 seconds and
+allows up to one hour. Already unread notifications return immediately. Timeout
+does not cancel work. SDK, RPC and terminal sessions use the same pending tool.
+Use `write_stdin` for processes; see [agent waiting](../pi-work-coordination/README.md).
 
-The runtime enforces permission before creating a child. Tool parameters cannot
-claim approval. Invalid model IDs and unsupported explicit thinking levels fail
-before prompting or creating a session. When only `model` is provided, inherited
-thinking is adjusted to that model's supported levels. The selected model and
-effective thinking level are saved in the child's durable descriptor.
+## Model, account and tool choices
 
-## Tool availability
+Children inherit model and thinking by default. Overrides use an exact
+`provider/model` ID and/or `reasoning_effort`. The first override requires human
+approval for the root conversation; descendants share that decision. Invalid
+models or unsupported explicit effort fail before approval or session creation.
+A model-only override adjusts inherited effort to the model's supported levels.
 
-Children follow the root session's current enabled tools, without a coding-tool
-whitelist. This includes tools such as `web_search`, MCP tools and custom file-based
-providers. Parent revocations are checked again at execution; source-provider
-restrictions remain effective.
-Party tools are inherited with child-local registration and membership.
-Children can discover and contact peers without inheriting the parent's party.
-Idle children are not awakened outside their driver; incoming peer messages
-wait for managed work.
+- `/subagents permissions` shows the decision.
+- `/subagents permissions allow` requests approval, including after a denial.
+- `/subagents permissions revoke` blocks future overrides; existing choices remain.
+
+Headless runs cannot grant approval. The decision is stored outside copied
+conversation text at `~/.pi/agent/subagents/permissions/<root-session-id>.json`.
+Resume, compaction and branch navigation retain it; a new root or fork requires
+its own decision.
+
+Each activation gets fresh model-runtime state. The owning host supplies account
+bindings, including Desk's saved account selections. Scoped child credentials
+take precedence over inherited fallback authentication for their provider.
+Otherwise the adapter inherits the parent's provider configuration and credential
+resolver, including native OAuth refresh. Messaging and cold resumption do not
+replace saved account choices or the descriptor's model/thinking selection.
+
+Children follow the root's current enabled tools rather than a coding-tool
+whitelist. Revocations are checked again at execution, and provider restrictions
+remain effective. The saved tool list records launch selection; it is not a
+permanent activation whitelist. Renaming a tool does not create an alias or grant
+an explicitly revoked capability.
 
 Provider factories are recreated against the child's API, cwd, session and model.
-Their lifecycle and permission hooks are retained, and flag values come from the
-parent configuration. Parent execution closures are never copied. Descendants use
-the original root source catalog, not synthetic child-tool metadata.
-Each provider has its own API object. Wrapping `registerTool` affects only that
-provider; it cannot replace the registration callback used by other providers.
+Hooks are retained; flags come from the parent configuration. Parent execution
+closures are not copied. Descendants use the original root source catalog.
+Each provider has its own API object, so a registration decorator cannot replace
+another provider's callback.
 
 Hook-only policies opt into child loading through the synchronous session bus:
 
@@ -85,201 +92,160 @@ const unsubscribe = pi.events.on("pi-subagents:child-policies:v1", (request) => 
 pi.on("session_shutdown", unsubscribe);
 ```
 
-Use the source's actual `user`, `project`, or `temporary` scope. Project policies
-require project trust. These factories run even without tool registrations and
-are deduplicated with tool providers by canonical path. SDK hosts can supply the
-same metadata through `RuntimeHost.getChildPolicySources()`.
+Scopes are `user`, `project` or `temporary`. Project policies require trust;
+policies are deduplicated with tool providers by canonical path. SDK hosts can
+supply the same metadata through `RuntimeHost.getChildPolicySources()`.
 
-Each activation uses a private JavaScript module graph, shared across its provider
-entrypoints but not other activations. An audited, pinned Jiti adapter also isolates
-CommonJS, ESM and JSON dependencies; see [loader details](loader/README.md).
-This is module-state isolation, not an OS sandbox. Native framework APIs and native
-addons remain shared.
+Each activation has a private JavaScript module graph shared across its provider
+entrypoints, using the pinned [Jiti adapter](loader/README.md). This isolates
+module state, not operating-system access. Native framework APIs and addons remain
+shared. Missing provider sources fail activation; SDK hosts can supply child-bound
+definitions for tools without source files.
 
-Missing or synthetic provider sources fail explicitly rather than silently hiding
-tools. SDK hosts can supply child-bound definitions for tools without source files.
-Pi Desk gives each active child its own structured human-interaction scope.
-Questions identify the child and can be answered from an authorized browser; native
-select/confirm/input dialogs use the same scope. Interruption cancels that child's
-pending questions, not a sibling's. Without that presentation, human questions
-must be escalated to the parent. Tool availability does not confer human approval
-or permission to create a root goal.
+Party tools have child-local registration and membership. Children do not inherit
+the parent's party. Incoming peer work remains under the owning driver.
 
-## Lifecycle and authority
+Desk gives each active child a human-interaction scope. Questions identify that
+child and survive browser disconnects; interruption cancels its pending questions,
+not a sibling's. Hosts without this presentation require questions to be escalated
+to the parent. Project trust and direct-human approval requirements still apply.
 
-- A fresh child receives no parent transcript.
-- A fork copies the parent's effective compaction-aware context through the last
-  completed assistant turn before the delegation call. Its seed is captured once.
-  Checkpoint details survive nested forks and reopening. Copied message and
-  detail objects are independent, so child pruning cannot clear parent history.
-- Background work does not block the parent from using ordinary tools.
-- Each child has a versioned model-hidden descriptor in its Pi session.
-- Accepted new tasks are persisted and processed in append-order FIFO.
-  A started message without a terminal delivery record is replayed after a crash,
-  which provides at-least-once rather than exactly-once execution. Maintenance
-  continuations are an exception: unconfirmed started turns require fresh work,
-  not automatic replay.
-- A settled child releases its SDK activation but retains its session and ID.
-  The next direct-parent `followup_task` cold-resumes it from the descriptor.
-- Only an exact live direct parent handle can send a follow-up.
-- An exact live ancestor can interrupt a resident descendant.
-- Only the exact resident continuable child can call `report`.
-- The defaults are depth 3, eight live child activations per root, and a
-  30-second activation-opening deadline. Opening children count toward the cap.
-  A cancelled opening keeps its admission slot until late cleanup finishes;
-  accepted follow-ups wait rather than opening that child's session concurrently.
-- Child model and thinking level inherit from the parent unless the user has
-  approved creation-time overrides. Effective provider configuration and resolved
-  authentication come from the parent's registry for the selected provider.
-  Durable model identity and thinking level are restored from the descriptor.
-- Project settings, context, skills and shell prefixes follow the parent's effective
-  trust decision. The descriptor preserves the project-trust ceiling; cold
-  activations also respect the current root's trust. The saved tool list records the
-  launch selection, not a permanent restriction on future activations.
-- Reports and settlements use steering at every depth, in per-child order. Routine
-  notices received within 50 ms are coalesced into one message; a root tool boundary
-  flushes admitted notices before its next model request. `urgent` errors and
-  `action-required` reports bypass that delay. Retained one-shot parents also receive
-  nested notices. Settlement retains status/errors but omits final output identical
-  to an earlier report.
-- `wait_agent({ids, timeout_ms?})` keeps a tool call pending until a selected child
-  finishes or the timeout expires. Starting children never forces a wait. Roots
-  and SDK children continue through Pi's normal tool loop, without ending the
-  turn or requesting a separate wake. Use `write_stdin` for processes. See
-  [work coordination](../pi-work-coordination/README.md).
-- Use reports for actionable changes, not routine progress. The final answer is
-  delivered automatically in settlement and should not be reported again.
-- The sender keeps a durable outbox until the receiver durably accepts the notice.
-  A receipt is written before steering; recovery replays receipts missing their
-  matching Pi custom message. Root `message_end` is not an acknowledgement boundary.
-  Crash recovery is at-least-once, with message IDs preventing duplicate admission.
-  Compacted notice messages keep every batched delivery ID (`messageIds`) so reload does not replay
-  completed reports and settlements. Recovery still delivers receipts whose
-  custom message was never appended.
-- Each activation receives fresh model-runtime state. Provider authentication is
-  inherited from the parent resolver, with the parent request's in-memory auth
-  header as a non-persisted fallback for long-lived OAuth sessions. Effective
-  parent API keys override stored child keys. Native OAuth refresh is retained;
-  parent and child must resolve the same OAuth credential store.
-- Successful foreground work returns full native tool usage. Background and failed
-  foreground invocations write deduplicated root billing records for `/pi-usage`,
-  including tool and compaction usage. Native Pi footer totals do not include these
-  custom background records.
-- Session shutdown aborts active turns child-first and disposes SDK activations.
-  It retains descriptors, inbox history, transcripts, and session files.
+## Delivery and lifetime
 
-## Dashboard
+Acceptance is durable before execution. New explicit follow-ups can join the
+active invocation through native start/turn-boundary hooks; inputs arriving after
+its final boundary remain queued for another invocation. Existing historical FIFO
+inputs keep their order and form a barrier to early delivery of newer inputs.
+No opaque Pi queue is cleared or rewritten.
 
-Subagent counts, activity and attention states appear in the shared Work panel
-above the editor while children exist. `/work subagents` opens the detail
-modal; Enter opens the management dashboard. `/subagents` opens that same
-dashboard directly, in an overlay, with:
+Each invocation publishes its own terminal result. Queued invocations can reuse a
+driver, but their results remain separate. A finished or parked agent releases its
+SDK activation without waiting for descendants; its history, identity and inbox
+remain. Descendants continue independently, and later results stay in the cold
+parent's inbox. Reading that inbox's history does not start the parent.
 
-- a stable nested child tree;
-- running, waiting, settled, aborted, and error states;
-- fresh/fork and continuable/one-shot metadata;
-- model, thinking, usage, duration, transcript tail, and recent notices;
-- search and narrow/wide layouts;
-- the exact last activation error when a child fails before producing messages;
-- `m` to request a new direct-child task and `x` to interrupt the current turn.
+Ordinary crash recovery is at-least-once: a started input without a terminal
+receipt may run again. A terminal receipt atomically identifies follow-ups
+consumed by the same invocation, preventing their separate replay. Unconfirmed
+started maintenance continuations instead require fresh work. Recovery of a
+missing result does not unpark queued work or start a model turn.
 
-Pi branch navigation is blocked while the current session owns live children.
+Messages and final results use durable inbox/outbox receipts. A sender's outbox
+is acknowledged only after destination admission. Native custom-message IDs
+prevent repeated context admission; compaction retains these IDs while releasing
+old payloads. Explicit messages retain their full content; automatic final-result
+summaries are bounded. Final output already delivered to the same parent in the
+same invocation is not repeated.
+
+Routine final notices within 50 ms can share one context message; a root tool
+boundary flushes them before the next model request. Errors and explicit messages
+bypass that delay. A pending `wait_agent` responds to mailbox activity. Neither
+routine messages nor final notices manufacture a new prompt for an idle agent.
+
+Forks copy effective compaction-aware context, including content edits and
+removals. The seed is captured once. Checkpoint details survive reopening and
+nested forks; copied objects are independent of the parent's resident history.
+Skills remain native Pi resources: advertisements describe available skills, and
+content is read on demand. Desk labels observed `SKILL.md` reads, including nested
+codemode calls; that label is not proof that the model followed the skill.
+
+Defaults are depth 3, eight live child activations per root and a 30-second opening
+deadline. Opening and disposal consume capacity. Cancellation cannot forcibly
+stop arbitrary synchronous provider code; late drivers are disposed before their
+opening slot is released. These limits do not establish acceptable cold-start
+performance on every computer.
+
+Background usage is billed once per invocation to the root's `/pi-usage` records,
+including tool and compaction usage. Grouped follow-ups do not add another charge.
+Historical foreground runs retain their native tool-usage handling. Native footer
+totals do not themselves include these custom background records.
+
+## Human controls
+
+`/subagents` opens the terminal dashboard; `/work subagents` opens its shared Work
+summary. The dashboard includes a nested tree, search, transcript preview, model,
+thinking, usage, duration and activation errors. `m` requests a follow-up from a
+continuable agent anywhere in the owning tree; `x` interrupts its current turn.
+
+In Desk, the workspace's Agents section provides fresh/fork creation, launch
+settings and permission controls. Agent panes show native transcript pages and
+scoped questions. Active agents offer information-only steering and explicit
+follow-up; an idle agent's Send starts a turn. Inactive agents stay in compact
+history until opened. Transcript paging does not activate them.
+
+Branch navigation is blocked while the current session owns live descendant work.
 Session replacement drains live SDK activations and reconstructs the durable
-catalog for the replacement root.
+catalog. Shutdown aborts active turns child-first without deleting sessions.
 
-Desk maintenance uses this same owning runtime. It checks native admission and
-accepted work before parking and stopping children, then saves their final native
-branch positions in parent metadata. Restored children stay held until release;
-only interrupted work receives a durable `Continue`. Idle children stay idle,
-and resumed foreground work reports its result to the parent as a notice.
-Pending opaque native context, queued tasks, opening/closing activations and
-failed saves require attention before an update; changed child history is never
-rewound.
-
-### Pi Desk
-
-The Work view and `/subagents` expose new/fork, transcript preview, follow-up,
-steering, interrupt, and model-permission controls. Launch settings inherit the
-parent by default; explicit overrides still use the conversation approval flow.
-Child questions survive browser disconnects. Desk pages the native active branch
-and streams assistant text/thinking into readable message and tool cards. Images
-load when visible, and long text/arguments have complete-output links. History
-uses bounded pages with Older, Newer and Latest controls; reading it does not
-activate a cold child. Hosts without the transcript capability receive the text
-preview.
+Desk maintenance uses the owning runtime's checkpoint route. It parks active
+work, records final native branch positions and releases only the work confirmed
+interrupted by that checkpoint. Idle children remain idle. Undelivered inputs,
+opaque native context, opening/closing activations and failed saves block the
+update; child history changed after a checkpoint is not rewound. Follow-ups
+already delivered into the current native context belong to that invocation,
+not an undispatched queue.
 
 ## Storage
 
-Child sessions use Pi's JSONL session format under:
+Native JSONL histories live under:
 
 ```text
 ~/.pi/agent/subagents/sessions/<root-session-id>/*.jsonl
 ```
 
-The runtime acquires the shared session-ownership lease before creating or opening
-each child file and keeps it while the root owns that durable child, including
-between activations. It releases after shutdown and any late opening cleanup.
-Another ownership-aware Pi process cannot resume the same file concurrently.
+The root retains a cooperative session-ownership lease for each child file between
+activations, releasing it after shutdown and any late opening cleanup. Another
+ownership-aware Pi process cannot resume the same file concurrently.
 
-The child session contains model-hidden custom entries for:
+Model-hidden native entries include:
 
-- `pi-subagents/descriptor-v1` — immutable first-authoritative identity, lineage,
-  depth, model, thinking, context mode, launch tool snapshot, and project-trust ceiling
-  (descriptor payload version 2);
-- `pi-subagents/inbox-v1` — accepted FIFO work;
-- `pi-subagents/delivery-v1` — started and finished delivery records;
-- `pi-subagents/control-v1` — durable explicit-interrupt parking and waking;
-- `pi-subagents/maintenance-v1` in the root — owning-driver holds, final child
-  cursor proofs and release state;
-- `pi-subagents/launch-v1` — branch-aware child ownership;
-- `pi-subagents/settlement-v1` — pending and acknowledged report and settlement
-  outbox records;
-- `pi-subagents/notice-received-v1` — durable notice admission before Pi appends
-  the corresponding custom message;
-- `pi-subagents/usage-v1` in the root — background invocation charges, replayable
-  from completed child delivery records.
+- `pi-subagents/descriptor-v1`: first-authoritative identity, lineage, depth,
+  model/thinking, context mode, launch tools and trust ceiling; payload version 2.
+- `pi-subagents/task-name-v1`: immutable routing name. Older histories derive a
+  stable name from the native ID without rewriting the descriptor.
+- `pi-subagents/inbox-v1`: accepted inputs; new boundary delivery is distinguished
+  from historical FIFO inputs.
+- `pi-subagents/delivery-v1`: start/terminal receipts, invocation `workId`, usage and
+  any atomically `consumedFollowups` IDs.
+- `pi-subagents/control-v1`: explicit parking/resume state.
+- `pi-subagents/maintenance-v1` in the root: hold, final cursor proofs and release.
+- `pi-subagents/launch-v1`: branch-aware ownership.
+- `pi-subagents/settlement-v1`: pending/acknowledged message and result outbox.
+- `pi-subagents/notice-received-v1`: destination admission before context append.
+- `pi-subagents/usage-v1` in the root: deduplicated background charges.
 
-Transcript previews parse appended entries incrementally, cache bounded rendered
-tails, and strip terminal controls. Pi's pure session parser handles initial loads,
-rotation, truncation, and branch ancestors outside the cache, without altering files.
+Native custom messages `pi-subagents/notice` and `pi-subagents/followup` carry
+context and delivery IDs. Multiple follow-ups delivered before the first request
+share one instruction-boundary message. Pruning preserves their IDs, not obsolete
+payloads; the append-only session archive remains complete.
 
-Reading the catalog or a transcript does not activate a cold child. Missing,
-corrupt, unsupported, and unavailable launched children appear as diagnostic rows
-in both discovery and the dashboard. Dashboard usage aggregates requests and its
-duration measures active prompt time rather than wall lifetime.
+Transcript previews use Pi's parser, incremental appended-entry reads and bounded
+render caches. They handle rotation, truncation and branch ancestors without
+altering files. Missing, corrupt or unsupported children remain visible as
+diagnostics rather than disappearing.
 
-## SDK boundaries
+## Codex and Pi boundaries
 
-The implementation keeps these boundaries explicit:
+The public surface follows the [Codex V2 specification](https://github.com/openai/codex/blob/80e0b51c9e44853471fae105032fa000c77d3e4a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs).
+Codex also has a separate V1 interface; this does not claim that every Codex
+configuration selects V2.
 
-1. Pi has no process-global agent registry, continuation inbox, or generic job
-   service. This extension owns the live registry and durable FIFO.
-2. Pi cannot attach DSH message-source metadata to a real user message.
-   Notices carry provenance in custom-message details and durable receipt records.
-3. Pi has no public per-activation `maxTokens` override. Cold activations use the
-   restored model's normal token limit.
-4. Core RPC does not transport custom dashboards. Pi Desk uses the shared
-   `pi-ui` presentation capability for its child catalog, actions and scoped forms;
-   other RPC clients still receive notices without that custom dashboard.
-5. Pi tears down the extension runtime for reload, new, resume, and fork. Active
-   turns are therefore aborted cleanly and durable sessions are reconstructed
-   instead of preserving in-memory activations across replacement.
-6. `getAllTools()` exposes source metadata, not executable definitions. Children
-   therefore load source factories with their own API and retain those providers'
-   hooks. Unrelated non-tool extensions are not automatically copied. Synthetic
-   providers need explicit child-bound definitions; source, trust and initialization
-   failures stop activation.
-7. Pi does not persist an exact `turn/end` marker. Fork boundaries use the last
-   completed assistant before delegation, or a summary verified against durable
-   turn boundaries. Forks reconstruct completed history when a summary includes
-   current work.
-8. SDK operations that expose cancellation receive the opening signal. Opening
-   is deadline-bounded even when an operation ignores cancellation; any late
-   driver is disposed. This does not make arbitrary uncooperative tools cancellable.
+Pi-specific behavior remains:
 
-## Design attribution
+- Native session IDs accompany task paths, and `ready` identifies unloaded agents.
+- Forks exclude the unfinished delegation turn. Positive `fork_turns` counts
+  retained instruction boundaries, including native follow-up batches.
+- Model overrides use provider-qualified IDs, Pi effort levels and human approval;
+  there is no unsupported `agent_type` or special `/morpheus` role.
+- The extension owns the durable tree, delivery receipts, resource limits and cold
+  activation. It does not add a separate inference scheduler.
+- Pi's public boundary hooks deliver active follow-ups. Existing FIFO journal
+  inputs and native checkpoint rules remain authoritative.
+- Source factories, scoped credentials and native trust/permission hooks are
+  retained; module isolation is not process isolation.
+- Custom dashboards use `pi-ui`; RPC hosts without it still receive ordinary
+  tool results and notices. Pi lifecycle replacement recreates SDK activations
+  rather than carrying live objects between sessions.
 
-The lifecycle, tool semantics, descriptor model, authority rules, continuation
-states, reporting contract, and discovery vocabulary are adapted from the MIT
-licensed DeepSeek Harness design. See
-[`DSH-DESIGN-ATTRIBUTION.md`](./DSH-DESIGN-ATTRIBUTION.md).
+The original design drew on DeepSeek Harness. Its historical attribution and
+license remain in [DSH-DESIGN-ATTRIBUTION.md](DSH-DESIGN-ATTRIBUTION.md).

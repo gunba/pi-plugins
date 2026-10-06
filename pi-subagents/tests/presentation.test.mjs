@@ -62,8 +62,11 @@ test("agent panes use owned transcripts and native parent admission, without a s
 			parent: childParent(harness, first.subagentId, factory.opens[0].input.authority) });
 		await waitUntil(() => factory.opens.length === 3 && factory.opens.every(driver => driver.isRunning));
 		controller.refresh();
-		assert.equal(view(grandchild.subagentId).actions.some(action => action.input === "message"), false);
-		await assert.rejects(invoke(grandchild.subagentId, "followup", "not authorized"), /Unknown action/);
+		assert.equal(view(grandchild.subagentId).actions.some(action => action.input === "message"), true);
+		assert.equal(view(grandchild.subagentId).actions.find(action => action.id === "followup").label, "Follow up");
+		await invoke(grandchild.subagentId, "steer", "nested update");
+		assert.match(factory.opens.find(driver => driver.input.descriptor.childSessionId === grandchild.subagentId).notices[0].content, /nested update/);
+		await invoke(grandchild.subagentId, "followup", "nested task");
 		await invoke(first.subagentId, "stop");
 		assert.equal(factory.opens[0].interruptions, 1);
 		assert.equal(factory.opens.find(driver => driver.input.descriptor.childSessionId === second.subagentId).interruptions, 0);

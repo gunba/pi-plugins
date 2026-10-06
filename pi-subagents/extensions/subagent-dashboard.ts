@@ -200,8 +200,7 @@ export class SubagentDashboard implements Component {
 		if (
 			data === "m" &&
 			selected?.mode === "continuable" &&
-			!selected.diagnosticReason &&
-			selected.parentId === this.snapshot.rootSessionId
+			!selected.diagnosticReason
 		)
 			this.done({ action: "message", id: selected.id });
 		if (data === "x" && this.selectedId && !selected?.diagnosticReason)

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
+import { readSkills } from "../shared/skill-activity.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ChatBlock, ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { LEDGER_ENTRY, readLedger } from "../../../pi-context-ledger/model.ts";
@@ -156,8 +157,10 @@ export class Transcript {
 		const nested = record(message.nestedCalls);
 		const nestedCalls = Array.isArray(nested.calls) ? nested.calls.slice(0, 256).flatMap(value => {
 			const call = record(value);
+			const skills = typeof call.name === "string" ? readSkills(call.name, call.arguments) : [];
 			return typeof call.name === "string" && ["ok", "error", "unfinished"].includes(String(call.status))
 				? [{ name: call.name.slice(0, 200), status: call.status as "ok" | "error" | "unfinished",
+					...(skills.length ? { skills } : {}),
 					...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) }] : [];
 		}) : [];
 		const received = receivedNotice(message);

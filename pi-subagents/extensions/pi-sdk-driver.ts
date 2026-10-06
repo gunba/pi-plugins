@@ -17,6 +17,7 @@ import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordi
 import { releaseWorkCoordinator } from "../../pi-work-coordination/core.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
+import { FollowupDelivery, type FollowupInput } from "./followup-delivery.ts";
 import outputBudget from "../../pi-output-budget/extensions/index.ts";
 import requestTracing from "../../pi-codex-wire/extensions/request-trace.ts";
 import nativeCompaction, { inheritCompactor, guardCheckpointContext } from "../../pi-codex-wire/extensions/native-compaction.ts";
@@ -58,11 +59,11 @@ export function bindChildProvider(provider: Provider, sessionId: string): Provid
 }
 
 const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Background children continue after you start them.`;
-const REPORT_CONTEXT = `Use report for actionable findings that change what your parent should do next. Ordinary progress belongs in the dashboard. Your final answer is delivered automatically; do not report it again.`;
+const MESSAGE_CONTEXT = `Use send_message for interim findings. Your final answer is delivered automatically without starting a new parent turn.`;
 
 export function childSystemContext(mode: "continuable" | "one-shot", humanUi = false): string {
-	const human = humanUi ? "Use ask_user for questions that need a human answer." : "Report questions requiring human input to your direct parent.";
-	return `${CHILD_CONTEXT} ${human}${mode === "continuable" ? ` ${REPORT_CONTEXT}` : ""}`;
+	const human = humanUi ? "Use ask_user for questions that need a human answer." : "Send questions requiring human input to your direct parent.";
+	return `${CHILD_CONTEXT} ${human}${mode === "continuable" ? ` ${MESSAGE_CONTEXT}` : ""}`;
 }
 
 function assistantText(message: AgentMessage): string {
@@ -130,7 +131,6 @@ class PiSdkChildDriver implements ChildDriver {
 		return this.session.subscribe(listener);
 	}
 	private readonly session: AgentSession;
-	private readonly noticeState: { received: number; consumed: number };
 	private readonly extensionErrors: string[];
 	private currentActivity = "idle";
 	private runAbort?: AbortController;
@@ -138,10 +138,11 @@ class PiSdkChildDriver implements ChildDriver {
 	private readonly noticeIds = new Set<string>();
 	private readonly presentation?: PresentationScope;
 	private readonly queueGuard: NativeQueueGuard;
+	private readonly followups: FollowupDelivery;
 
-	constructor(session: AgentSession, noticeState: { received: number; consumed: number }, extensionErrors: string[], presentation?: PresentationScope) {
+	constructor(session: AgentSession, extensionErrors: string[], followups: FollowupDelivery, presentation?: PresentationScope) {
 		this.session = session;
-		this.noticeState = noticeState;
+		this.followups = followups;
 		this.extensionErrors = extensionErrors;
 		this.presentation = presentation;
 		// Install before bindExtensions emits session_start, including deferred custom context.
@@ -182,6 +183,8 @@ class PiSdkChildDriver implements ChildDriver {
 		});
 	}
 
+	enqueueFollowup(input: FollowupInput): void { this.followups.enqueue(input); }
+
 	receiveNotice(notice: ParentNotice): void {
 		this.receiveNotices([notice]);
 	}
@@ -190,14 +193,14 @@ class PiSdkChildDriver implements ChildDriver {
 		notices = notices.filter((notice) => !this.noticeIds.has(notice.messageId));
 		if (!notices.length) return;
 		for (const notice of notices) this.noticeIds.add(notice.messageId);
-		this.noticeState.received++;
-		if (notices.some((notice) => notice.priority === "urgent" || notice.priority === "action-required")) getWorkCoordinator(this.session.sessionId)?.cancel("urgent-notice");
 		void this.session.sendCustomMessage({
 			customType: "pi-subagents/notice",
 			content: noticeBatchContent(notices),
 			display: true,
 			details: noticeBatch(notices),
-		}, { deliverAs: "steer", triggerTurn: false }).catch(() => {
+		}, { deliverAs: "steer", triggerTurn: false }).then(() => {
+			getWorkCoordinator(this.session.sessionId)?.notify(notices.map(notice => notice.messageId));
+		}).catch(() => {
 			for (const notice of notices) this.noticeIds.delete(notice.messageId);
 			// The individual durable receipts remain replayable; never emit an
 			// unhandled rejection from the SDK's asynchronous append API.
@@ -222,24 +225,10 @@ class PiSdkChildDriver implements ChildDriver {
 			)
 				streamed += event.assistantMessageEvent.delta;
 		});
+		let outcome: RunOutcome | undefined;
 		try {
-			let prompt = message;
-			while (true) {
-				const start = finalized.length;
-				await this.session.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
-				if (this.extensionErrors.length) break;
-				const messages = finalized.slice(start);
-				const lastAssistant = latestAssistant(messages);
-				if (abort.signal.aborted) break;
-				// triggerTurn:false notices arriving after the final provider context
-				// are durable but were not seen by that response.
-				if (this.noticeState.received > this.noticeState.consumed && lastAssistant?.role === "assistant" && lastAssistant.stopReason === "stop") {
-					prompt = "Review the newly delivered child notices and continue the assigned task.";
-					continue;
-				}
-				break;
-			}
-			const outcome = collectOutcome();
+			await this.session.prompt(message, { expandPromptTemplates: false, source: "extension" });
+			outcome = collectOutcome();
 			if (this.extensionErrors.length) {
 				outcome.stopReason = "error";
 				outcome.errorMessage = `Child extension lifecycle failed: ${this.extensionErrors.join("; ")}`;
@@ -247,9 +236,12 @@ class PiSdkChildDriver implements ChildDriver {
 			if (abort.signal.aborted) { outcome.stopReason = "aborted"; delete outcome.errorMessage; }
 			return outcome;
 		} catch (error) {
-			if (!abort.signal.aborted) throw error;
-			return { ...collectOutcome(), stopReason: "aborted", errorMessage: undefined };
+			outcome = { ...collectOutcome(), stopReason: abort.signal.aborted ? "aborted" : "error",
+				errorMessage: abort.signal.aborted ? undefined : error instanceof Error ? error.message : String(error) };
+			return outcome;
 		} finally {
+			const consumed = this.followups.finish();
+			if (outcome && consumed.length) outcome.consumedFollowups = consumed;
 			this.runAbort = undefined;
 			unsubscribe();
 		}
@@ -348,8 +340,8 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				throw new Error("A child tool extension replaced the required Codex Wire provider.");
 			}
 		};
-		const noticeState = { received: 0, consumed: 0 };
 		const presentation = this.host.createPresentation?.(input.descriptor);
+		const followups = new FollowupDelivery(input.sessionManager, input.onFollowupDelivered);
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,
 			agentDir: this.host.agentDir,
@@ -364,10 +356,8 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
 				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
 				...(presentation ? [{ name: "child-presentation", factory: (pi: ExtensionAPI) => presentation.install(pi) }] : []),
-				{ name: "work-coordination", factory: (pi) => {
-					ensureWorkCoordination(pi, { child: true });
-					pi.on("context", () => { noticeState.consumed = noticeState.received; });
-				} },
+				{ name: "work-coordination", factory: (pi) => ensureWorkCoordination(pi, { child: true }) },
+				{ name: "followup-delivery", factory: (pi) => followups.install(pi) },
 				...inheritedExtensions.map((extension) => ({ name: extension.name, factory: async (pi: ExtensionAPI) => {
 					const factory = typeof extension === "function" ? extension : extension.factory;
 					const setActiveTools: ExtensionAPI["setActiveTools"] = (names) => {
@@ -417,6 +407,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			appendSystemPromptOverride: (base) => [
 				...base,
 				childSystemContext(input.descriptor.mode, !!presentation),
+				`Your agent: ${input.taskPath ?? input.descriptor.childSessionId}. Parent: ${input.parentTaskPath ?? input.descriptor.parentSessionId}.`,
 			],
 		});
 		const cleanupUnbound = async () => {
@@ -453,7 +444,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			try { await cleanupUnbound(); } finally { presentation?.close(); }
 			throw error;
 		}
-		const driver = new PiSdkChildDriver(session, noticeState, extensionErrors, presentation);
+		const driver = new PiSdkChildDriver(session, extensionErrors, followups, presentation);
 		try {
 			session.setActiveToolsByName(enabledTools());
 			await session.bindExtensions({ mode: presentation ? "rpc" : "json",

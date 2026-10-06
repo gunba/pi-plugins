@@ -108,7 +108,8 @@ test("dashboard keyboard actions use durable ids and interrupt rather than kill"
 	dashboard.handleInput("j");
 	assert.equal(dashboard.getSelectedId(), "grandchild");
 	dashboard.handleInput("m");
-	assert.equal(actions.length, 2, "nested descendants do not offer invalid direct-parent messages");
+	assert.deepEqual(actions.at(-1), { action: "message", id: "grandchild" });
+	assert.equal(actions.length, 3, "nested descendants use the same owning-tree controls");
 	assert.deepEqual(selections, ["grandchild"]);
 	assert.ok(renders > 0);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,6 +10,56 @@ import { DeskEngine } from "../src/host/engine.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 
 const initial = { provider: "fixture", id: "initial" }, writing = { provider: "fixture", id: "writing" };
+
+test("queued Desk steering reaches one native model turn without rewriting terminal preferences", async () => {
+	const root = mkdtempSync(join(tmpdir(), "desk-steering-batch-")), agent = join(root, "agent");
+	mkdirSync(agent);
+	const settingsFile = join(agent, "settings.json"), oldDir = process.env.PI_CODING_AGENT_DIR, fetch = globalThis.fetch;
+	writeFileSync(settingsFile, JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-haiku-4-5", steeringMode: "one-at-a-time" }));
+	writeFileSync(join(agent, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "fixture" } }));
+	process.env.PI_CODING_AGENT_DIR = agent;
+	globalThis.fetch = () => { throw Error("Steering fixture must stay offline"); };
+	const engine = new DeskEngine(() => {}), requests = [];
+	const text = message => typeof message.content === "string" ? message.content : message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+	let entered, finish, running;
+	const firstRequest = new Promise(resolve => { entered = resolve; });
+	try {
+		await engine.start({ cwd: root, agentDir: agent, sessionDir: join(root, "sessions") });
+		const baseline = readFileSync(settingsFile, "utf8"), session = engine.runtime.session, models = engine.runtime.services.modelRuntime;
+		models.registerNativeProvider({ ...models.getProvider("anthropic"), streamSimple(model, context) {
+			requests.push(context.messages.filter(message => message.role === "user").map(text));
+			const stream = createAssistantMessageEventStream();
+			const done = () => {
+				stream.push({ type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "Fixture" }],
+					provider: model.provider, model: model.id, api: model.api, stopReason: "stop", timestamp: Date.now(),
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
+				stream.end();
+			};
+			if (requests.length === 1) { finish = done; entered(); } else queueMicrotask(done);
+			return stream;
+		} });
+		running = session.prompt("Original task");
+		await firstRequest;
+		for (const message of ["First steering", "Second steering"]) {
+			assert.deepEqual(await engine.command(engine.presentation.generation, { kind: "prompt", text: message, behavior: "steer" }), { accepted: true });
+		}
+		assert.deepEqual(session.getSteeringMessages(), ["First steering", "Second steering"]);
+		finish(); finish = undefined;
+		await running;
+		assert.deepEqual(requests, [["Original task"], ["Original task", "First steering", "Second steering"]],
+			"both queued instructions must be in the next request, not separated by another assistant turn");
+		const inputs = session.sessionManager.getBranch().filter(entry => entry.type === "message" && entry.message.role === "user");
+		assert.deepEqual(inputs.map(entry => text(entry.message)), ["Original task", "First steering", "Second steering"]);
+		assert.equal(new Set(inputs.map(entry => entry.id)).size, 3, "batching must not merge or replace native message identities");
+		await engine.reload();
+		assert.equal(session.steeringMode, "all", "resource reload must retain Desk's batching policy");
+		assert.equal(readFileSync(settingsFile, "utf8"), baseline, "Desk's runtime policy must not change terminal preferences");
+	} finally {
+		finish?.(); await running?.catch(() => {}); await engine.close(); globalThis.fetch = fetch;
+		if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldDir;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("selected Codex account routes credentials and survives native reload and reopening", async () => {
 	const root = mkdtempSync(join(tmpdir(), "desk-account-route-")), agent = join(root, "agent"), id = randomUUID();

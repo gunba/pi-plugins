@@ -139,6 +139,23 @@ test("saved and live party notices retain their type and sender without duplicat
 	assert.equal(process.blocks[0].text, "*literal stdout*\nUse write_stdin session_id=123 once.");
 });
 
+test("nested skill reads retain bounded labels without projecting their arguments", () => {
+	const transcript = new Transcript();
+	const projected = transcript.message({ role: "toolResult", toolName: "codemode", toolCallId: "skills", content: [],
+		nestedCalls: { complete: false, calls: [
+			{ name: "read", status: "ok", arguments: { path: "/private/skills/browse/SKILL.md", token: "SECRET" } },
+			{ name: "read", status: "error", arguments: { path: "C:\\Users\\Example\\skills\\imagegen\\SKILL.md" } },
+			{ name: "inspect_files", status: "ok", arguments: { requests: [{ path: "skills/review/SKILL.md" }, { path: "other.md" }] } },
+			{ name: "read", status: "unfinished", argumentsBytes: 9999 },
+			{ name: "write", status: "ok", arguments: { path: "skills/new/SKILL.md" } },
+			{ name: "read", status: "ok", arguments: { path: "skills/new/NOT_SKILL.md" } },
+		] } });
+	assert.deepEqual(projected.nested.calls.map(call => call.skills), [["browse"], ["imagegen"], ["review"], undefined, undefined, undefined]);
+	assert.equal(projected.nested.complete, false);
+	assert.equal(projected.nested.calls[1].status, "error");
+	assert.doesNotMatch(JSON.stringify(projected), /SECRET|private|Users/);
+});
+
 test("nested tool calls stay on their calling result instead of orphaning transcript rows", () => {
 	const transcript = new Transcript();
 	const feed = new TranscriptFeed(transcript, () => [], () => "generation", () => {}, () => "/tmp");

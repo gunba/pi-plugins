@@ -166,13 +166,20 @@ test("cancellation during approval leaves no durable child", async t => {
 test("tool definitions pass model and effort to the same runtime gate for root and child callers", async () => {
 	for (const mode of ["root", "continuable", "one-shot"]) {
 		const received = [];
-		const runtime = { start: async request => { received.push(request); return { kind: "continuable", subagentId: "child" }; } };
+		const runtime = { start: async request => { received.push(request); return { kind: "continuable", subagentId: "child" }; }, agentPath: () => "/root/test" };
 		const tools = createSubagentToolDefinitions(runtime, { getAuthority: () => ({}) }, mode);
-		for (const tool of tools.filter(t => ["subagent", "subagent_fork"].includes(t.name))) {
-			await tool.execute("call", { description: "test", prompt: "task", model: "test/small", thinking_level: "low" }, undefined, () => {},
+		const tool = tools.find(t => t.name === "spawn_agent");
+		assert.ok(tool);
+		for (const fork_turns of [undefined, "none", "2"]) {
+			const result = await tool.execute("call", { task_name: "test", message: "task", fork_turns, model: "test/small", reasoning_effort: "low" }, undefined, () => {},
 				{ sessionManager: {}, model: capable, thinkingLevel: "high", cwd: "/", isProjectTrusted: () => true });
 			assert.equal(received.at(-1).model, "test/small");
 			assert.equal(received.at(-1).thinkingLevel, "low");
+			assert.equal(received.at(-1).taskName, "test");
+			assert.equal(received.at(-1).runInBackground, true);
+			assert.equal(received.at(-1).context, fork_turns === "none" ? "fresh" : "fork");
+			assert.equal(received.at(-1).forkTurns, fork_turns === "2" ? 2 : undefined);
+			assert.deepEqual(result.structuredContent, { task_name: "/root/test", agent_id: "child" });
 		}
 	}
 });
