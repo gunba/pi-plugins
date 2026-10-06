@@ -72,6 +72,48 @@ test("steps and continuation use one exact revision; ordinary edits never silent
 	assert.equal(h.store.complete(ref(finished)).phase, "complete");
 });
 
+test("a native branch with missing ancestry restores its leading plan snapshot without rearming work", () => {
+	const h = harness(), created = h.store.create({ objective: "Ship", steps, autoContinue: true, maxRounds: 4 });
+	h.store.admitRound({ planId: created.id, revision: 1, round: 1 }, renderPlanRoundPrompt(created, 1));
+	const edited = h.store.edit(ref(created), { objective: "Ship safely" });
+	h.store.admitRound({ planId: edited.id, revision: 2, round: 2 }, renderPlanRoundPrompt(edited, 2));
+	const expected = { ...h.store.get(), activation: "disarmed" };
+	const partial = structuredClone(h.branch().slice(2)), original = structuredClone(partial);
+	assert.equal(partial[0].data.operation, "edit");
+	assert.ok(partial[0].parentId && !partial.some(entry => entry.id === partial[0].parentId));
+
+	// Even equal projected state must disarm when its ancestry first goes missing.
+	h.store.reconcile(partial);
+	assert.deepEqual(h.store.get(), expected);
+	let nextId = 0;
+	const restored = new PlanStore({ appendEntry(customType, data) {
+		partial.push({ type: "custom", id: `new-${++nextId}`, parentId: partial.at(-1).id,
+			timestamp: new Date(1000 + nextId).toISOString(), customType, data: structuredClone(data) });
+	} }, { now: () => 1000 });
+	restored.restore(partial);
+	assert.deepEqual(restored.get(), expected);
+	assert.deepEqual(partial, original, "recovery does not append or rewrite history");
+	assert.throws(() => restored.admitRound({ planId: edited.id, revision: 2, round: 3 }, renderPlanRoundPrompt(edited, 3)), /disarmed/);
+	const resumed = restored.resume(ref(restored.get()));
+	restored.reconcile(partial);
+	assert.equal(restored.get().activation, "armed", "explicit resume survives subsequent reads");
+	restored.admitRound({ planId: resumed.id, revision: resumed.revision, round: 3 }, renderPlanRoundPrompt(resumed, 3));
+	restored.restore(partial);
+	assert.equal(restored.get().roundsStarted, 3);
+	assert.equal(restored.get().activation, "disarmed");
+	assert.deepEqual(partial.slice(0, original.length), original);
+
+	const rooted = structuredClone(original); rooted[0].parentId = null;
+	assert.throws(() => replayPlanBranch(rooted), /edit requires a current plan/, "a root with invalid plan history is not a missing prefix");
+	assert.throws(() => replayPlanBranch(original.map(({ id, parentId, ...entry }) => entry)), /edit requires a current plan/);
+	const malformed = structuredClone(original); malformed[0].data.operation = "pause";
+	assert.throws(() => replayPlanBranch(malformed), /checkpoint/, "the checkpoint must match its operation");
+	const invalidLater = structuredClone(partial); invalidLater.at(-2).data.plan.revision++;
+	assert.throws(() => replayPlanBranch(invalidLater), /advance one revision/, "later corruption is not skipped");
+	const forgedRound = structuredClone(original); forgedRound[1].data.content += " changed";
+	assert.throws(() => replayPlanBranch(forgedRound), /durable snapshot/, "round validation still uses the recovered snapshot");
+});
+
 test("legacy goal identity, admitted rounds and current task list import once into the selected native branch", () => {
 	const h = harness(); legacyCreate(h); legacyAdmission(h);
 	h.pi.appendEntry("pi-todo-write", { todos: steps });

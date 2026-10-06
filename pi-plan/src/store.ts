@@ -18,6 +18,7 @@ export class PlanStore {
 	private state = emptyPlanFoldState();
 	private activation: PlanActivation = "disarmed";
 	private corruption?: string;
+	private recoveryParent?: string;
 	private readonly defaultMaxRounds: number;
 	private readonly now: () => number;
 	private readonly newId: () => string;
@@ -35,10 +36,11 @@ export class PlanStore {
 	disarm(): void { this.activation = "disarmed"; }
 	private load(entries: readonly unknown[], preserveActivation: boolean): void {
 		try {
-			const { state, needsImport } = replayPlanBranch(entries);
-			const preserve = preserveActivation && this.corruption === undefined && !needsImport && isDeepStrictEqual(this.state, state);
+			const { state, needsImport, recoveryParent } = replayPlanBranch(entries);
+			const preserve = preserveActivation && this.corruption === undefined && !needsImport
+				&& this.recoveryParent === recoveryParent && isDeepStrictEqual(this.state, state);
 			if (needsImport) this.pi.appendEntry(PLAN_IMPORT_ENTRY, planImport(state));
-			this.state = state; this.corruption = undefined;
+			this.state = state; this.corruption = undefined; this.recoveryParent = recoveryParent;
 			if (!preserve) this.disarm();
 		} catch (error) {
 			this.state = emptyPlanFoldState(); this.disarm();

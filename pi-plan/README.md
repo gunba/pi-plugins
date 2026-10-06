@@ -50,7 +50,12 @@ continuation; this extension does not start a second child driver.
 
 Plan snapshots, tombstones and round admissions use hidden native custom entries.
 Replay checks revisions, identities, transitions, timestamps, counters and exact
-round content. Corrupt selected-branch history fails closed.
+round content. If the native branch begins at a missing parent and its leading
+plan record is a change, that record supplies a checkpoint. Recovery retains the saved revision,
+steps, phase and round count, leaves continuation disarmed, and validates every
+later change and admission normally. It does not rewrite history or reconstruct
+missing messages. A branch without a usable checkpoint, or with invalid retained
+plan records, still fails closed.
 
 Existing goal state and the current todo list import once per selected branch.
 The importer preserves goal identity and counters and respects prior task clears.

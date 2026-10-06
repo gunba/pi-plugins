@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { applyPlanChange, applyPlanRound, decodePlanChange, decodePlanSnapshot, exactKeys, integer, record,
+import { applyPlanChange, applyPlanRound, decodePlanChange, decodePlanSnapshot, exactKeys, integer, record, restorePlanCheckpoint,
 	type PlanFoldState, type PlanRoundIdentity } from "./domain.ts";
 import { PLAN_CHANGE_ENTRY, PLAN_IMPORT_ENTRY, PLAN_ROUND_ADMISSION_ENTRY } from "./constants.ts";
 import { LEGACY_ENTRIES, legacyPlan } from "./legacy.ts";
@@ -47,16 +47,37 @@ function custom(entry: unknown): Record<string, unknown> | undefined {
 }
 const PLAN_ENTRIES = new Set([PLAN_CHANGE_ENTRY, PLAN_IMPORT_ENTRY, PLAN_ROUND_ADMISSION_ENTRY]);
 
-export function replayPlanBranch(entries: readonly unknown[]): { state: PlanFoldState; needsImport: boolean } {
+function missingBranchParent(entries: readonly unknown[]): string | undefined {
+	const head = entries[0] as Record<string, unknown> | undefined;
+	if (!head || typeof head.parentId !== "string" || !head.parentId) return undefined;
+	const missing = head.parentId, seen = new Set<string>();
+	let parent = missing;
+	for (const value of entries) {
+		if (!value || typeof value !== "object") return undefined;
+		const entry = value as Record<string, unknown>;
+		if (typeof entry.id !== "string" || !entry.id || entry.id === missing || seen.has(entry.id) || entry.parentId !== parent)
+			return undefined;
+		seen.add(entry.id); parent = entry.id;
+	}
+	return missing;
+}
+
+export function replayPlanBranch(entries: readonly unknown[]): { state: PlanFoldState; needsImport: boolean; recoveryParent?: string } {
 	const boundary = entries.findIndex(entry => PLAN_ENTRIES.has(custom(entry)?.customType as string));
-	const { state, found } = legacyPlan(boundary < 0 ? entries : entries.slice(0, boundary));
+	let { state, found } = legacyPlan(boundary < 0 ? entries : entries.slice(0, boundary));
 	if (boundary < 0) return { state, needsImport: found };
 	const first = custom(entries[boundary])!;
-	if (found) {
+	const recoveryParent = !found && first.customType === PLAN_CHANGE_ENTRY ? missingBranchParent(entries) : undefined;
+	let start = boundary;
+	if (recoveryParent) {
+		state = restorePlanCheckpoint(decodePlanChange(first.data));
+		start++;
+	} else if (found) {
 		if (first.customType !== PLAN_IMPORT_ENTRY) throw new Error("legacy state requires a plan import before new changes");
 		checkImport(first.data, state);
+		start++;
 	} else if (first.customType === PLAN_IMPORT_ENTRY) throw new Error("plan import has no legacy source");
-	for (let index = boundary + (found ? 1 : 0); index < entries.length; index++) {
+	for (let index = start; index < entries.length; index++) {
 		const entry = custom(entries[index]);
 		if (!entry) continue;
 		if (entry.customType === PLAN_IMPORT_ENTRY) throw new Error("plan branch already imported");
@@ -64,7 +85,7 @@ export function replayPlanBranch(entries: readonly unknown[]): { state: PlanFold
 		if (entry.customType === PLAN_CHANGE_ENTRY) applyPlanChange(state, decodePlanChange(entry.data));
 		if (entry.customType === PLAN_ROUND_ADMISSION_ENTRY) applyPlanRoundAdmission(state, decodePlanRoundAdmission(entry.data));
 	}
-	return { state, needsImport: false };
+	return { state, needsImport: false, recoveryParent };
 }
 
 export function branchContainsRound(entries: readonly unknown[], identity: PlanRoundIdentity): boolean {

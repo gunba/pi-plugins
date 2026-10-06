@@ -157,6 +157,26 @@ export function applyPlanChange(state: PlanFoldState, change: PlanChange): void 
 	state.plan = structuredClone(next); state.roundsStarted = change.roundsStarted;
 	state.createdAt = change.createdAt; state.updatedAt = change.updatedAt; state.lastRef = { id: next.id, revision: next.revision };
 }
+/** A complete retained change can anchor a branch whose native ancestors are missing. */
+export function restorePlanCheckpoint(change: PlanChange): PlanFoldState {
+	const state = emptyPlanFoldState();
+	if (change.operation === "create") { applyPlanChange(state, change); return state; }
+	const ref = change.operation === "clear" ? change.cleared : change.plan;
+	if (ref.revision < 2) throw new Error("plan checkpoint must follow an earlier revision");
+	state.seenPlanIds.add(ref.id);
+	state.lastRef = { id: ref.id, revision: ref.revision };
+	if (change.operation === "clear") return state;
+	const next = change.plan;
+	const valid = change.operation === "edit"
+		|| change.operation === "pause" && next.phase === "paused"
+		|| change.operation === "resume" && next.phase === "active" && (!next.autoContinue || change.roundsStarted < next.maxRounds)
+		|| change.operation === "complete" && next.phase === "complete" && next.steps.every(step => step.status === "completed")
+		|| change.operation === "block" && next.phase === "blocked";
+	if (!valid) throw new Error("plan checkpoint does not match its operation");
+	state.plan = structuredClone(next); state.roundsStarted = change.roundsStarted;
+	state.createdAt = change.createdAt; state.updatedAt = change.updatedAt;
+	return state;
+}
 export function applyPlanRound(state: PlanFoldState, source: PlanRoundIdentity): void {
 	const current = state.plan;
 	if (!current || !current.autoContinue || current.phase !== "active" || source.planId !== current.id
