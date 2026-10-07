@@ -7,6 +7,8 @@ while (!existsSync(command.admission)) {
 	if (Date.now() >= deadline) throw Error("Job assignment was not admitted.");
 	await delay(10);
 }
-const child = spawn(process.execPath, command.tests, { cwd: command.cwd, stdio: "inherit", windowsHide: true });
+const env = { ...process.env };
+delete env.NODE_TEST_CONTEXT;
+const child = spawn(process.execPath, command.tests, { cwd: command.cwd, env, stdio: "inherit", windowsHide: true });
 child.once("error", error => { console.error(error); process.exitCode = 1; });
 child.once("exit", code => { process.exitCode = code ?? 1; });

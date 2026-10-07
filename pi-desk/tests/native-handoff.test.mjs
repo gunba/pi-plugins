@@ -50,7 +50,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	const key = randomUUID(), activation = randomUUID(); let next;
 	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionDir: join(root, "sessions"), attachmentScope: key }, message => first.workerEvent(key, message),
 		{ directory: data, key, module }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
-	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
 	const managed = { worker, initialized: true, initialGeneration: snapshot.ui.generation,
@@ -122,7 +122,7 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	const key = randomUUID(), activation = randomUUID(); let next;
 	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionDir: join(root, "sessions"), attachmentScope: key }, message => first.workerEvent(key, message),
 		{ directory: data, key, module: childModule }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
-	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
 	assert.deepEqual(snapshot.accounts, { anthropic: "pi" });

@@ -210,6 +210,9 @@ test("Windows kill-on-close Job preserves managed and native SDK handoffs", {
 	const code = await new Promise((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
 	const logs = ["stdout.txt", "stderr.txt"].filter(name => existsSync(join(directory, name))).map(name => readFileSync(join(directory, name), "utf8")).join("\n");
 	assert.equal(code, 0, (stderr + "\n" + logs).slice(-30000));
+	assert.match(logs, /ok \d+ - a real managed wrapper/);
+	assert.match(logs, /ok \d+ - native SDK queues/);
+	assert.match(logs, /ok \d+ - registered SDK subagent/);
 	assert.deepEqual(JSON.parse(stdout), { killOnClose: true, admission: "assigned-before-tests", activeAfter: 0, exitCode: 0 });
 	for (const phase of ["managed-before", "managed-after", "native-before", "native-after", "subagent-before", "subagent-after"]) {
 		const receipt = JSON.parse(readFileSync(join(proof, phase + ".json"), "utf8"));

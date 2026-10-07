@@ -40,7 +40,7 @@ test("host adoption preserves activation and recovers sent input without replay 
 	await worker.detach();
 	assert.ok(await command instanceof WorkerConnectionError);
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 	await host.start();
 	const managed = await host.waitForSession(key);
 	assert.equal(managed.view.activation, activation);
