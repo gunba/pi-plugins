@@ -25,16 +25,21 @@ export class AccountCredentials implements CredentialStore {
 	private agentDir: string;
 	private profiles: string;
 	private resolvers = new Map<string, Promise<ModelRuntime>>();
+	private names = new Map<string, string>();
 	constructor(agentDir: string, profiles: string, selection: AccountSelection = {}) {
 		this.agentDir = agentDir; this.profiles = profiles; this.selection = Object.freeze({ ...selection });
 		for (const [provider, id] of Object.entries(selection)) this.path(provider, id);
 	}
 	fork(selection = this.selection): AccountCredentials { return new AccountCredentials(this.agentDir, this.profiles, selection); }
+	name(provider: string): string {
+		return this.selection[provider] && this.selection[provider] !== "pi" ? this.names.get(provider) ?? "Saved account" : "Pi credentials";
+	}
 	private path(provider: string, id = this.selection[provider]): string {
 		if (!id || id === "pi") return join(this.agentDir, "auth.json");
 		if (!uuid(id)) throw Error("Invalid account selection.");
 		const account = readJson<ProviderAccount>(join(this.profiles, id, "account.json"));
 		if (!account || account.provider !== provider) throw Error("Selected account is unavailable. Choose another account before continuing.");
+		this.names.set(provider, account.name);
 		return join(this.profiles, id, "auth.json");
 	}
 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {

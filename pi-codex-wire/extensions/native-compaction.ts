@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
 import { SettingsManager, convertToLlm, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT, CHECKPOINT_CAPTION, assertCheckpointContext, checkpointMessages, checkpointUsage, compactionPrefix, entryCheckpoint, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
+import { CHECKPOINT_CAPTION, assertCheckpointContext, checkpointMessages, checkpointUsage, compactionPrefix, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
+import { CHECKPOINT, entryCheckpoint, registerPortableSummary } from "./checkpoint-state.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 
 type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySettings" | "getHttpIdleTimeoutMs">;
@@ -49,10 +50,32 @@ export async function retryCompaction<T>(produce: () => Promise<T>, settings: Re
 	}
 }
 
+async function checkpointSummary(ctx: ExtensionContext, settings: Settings, signal: AbortSignal, instruction: string,
+	thinking: CompactOperation["thinking"], maxTokens?: number): Promise<{ summary: string; usage: AssistantMessage["usage"] }> {
+	const providerSettings = settings.getProviderRetrySettings(), timeout = providerSettings.timeoutMs ?? settings.getHttpIdleTimeoutMs();
+	const context: Context = { systemPrompt: ctx.getSystemPrompt(),
+		messages: [...convertToLlm(checkpointMessages(ctx.sessionManager.buildSessionProjection().entries)),
+			{ role: "user", content: instruction, timestamp: Date.now() }] };
+	const sessionId = randomUUID();
+	const response = await retryCompaction(async () => {
+		const result = await ctx.modelRegistry.complete(ctx.model!, context, {
+			signal, sessionId, cacheRetention: "none", timeoutMs: timeout === 0 ? 2_147_483_647 : timeout,
+			...providerSettings, ...(thinking !== "off" ? { reasoningEffort: thinking } : {}), ...(maxTokens ? { maxTokens } : {}),
+		});
+		signal.throwIfAborted();
+		if (result.stopReason !== "stop" || result.content.some(part => part.type === "toolCall")) throw new Error(result.errorMessage ?? "Context summary did not complete.");
+		return result;
+	}, settings.getRetrySettings(), signal,
+		(attempt, maximum, ms) => ctx.ui.notify(`Retrying context summary ${attempt}/${maximum} in ${ms}ms.`, "warning"));
+	const summary = response.content.filter(part => part.type === "text").map(part => part.text).join("");
+	if (!summary.trim()) throw new Error("Codex returned an empty context summary.");
+	return { summary, usage: response.usage };
+}
+
 /** Shared by the top-level extension and SDK children; it never edits the Pi runtime. */
 export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Settings): void {
 	const guards = new Map<string, { original: Provider; installed: Provider }>();
-	let registeredSession: string | undefined;
+	let registeredSession: string | undefined, unregisterPortable: (() => void) | undefined;
 	const guardSelected = (ctx: ExtensionContext) => {
 		if (!ctx.model || ctx.model.provider === "openai-codex" || guards.has(ctx.model.provider)) return;
 		if (!ctx.sessionManager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)) return;
@@ -73,6 +96,13 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 	};
 	pi.on("session_start", (_event, ctx) => {
 		registeredSession = ctx.sessionManager.getSessionId();
+		unregisterPortable?.(); unregisterPortable = registerPortableSummary(registeredSession, async (signal, maxTokens) => {
+			if (ctx.model?.provider !== "openai-codex") throw Error("Select a Codex model to summarize its encrypted context.");
+			restorePrunedSession(ctx.sessionManager);
+			return checkpointSummary(ctx, settingsFor(ctx), signal,
+				"Create a portable context summary for continuing this conversation with a different model. Preserve the objective, decisions, completed work, unresolved questions, necessary file references and next steps.",
+				ctx.thinkingLevel ?? pi.getThinkingLevel(), maxTokens);
+		});
 		sources.set(registeredSession, () => ctx.sessionManager.buildSessionProjection().entries);
 		guardSelected(ctx);
 	});
@@ -80,6 +110,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 	pi.on("context", (event, ctx) => ({ messages: projectCheckpoints(event.messages, ctx.sessionManager.getBranch()) }));
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (registeredSession) sources.delete(registeredSession);
+		unregisterPortable?.(); unregisterPortable = undefined;
 		for (const { original, installed } of guards.values()) {
 			if (ctx.modelRegistry.getProvider(original.id) === installed) pi.registerProvider(original);
 		}
@@ -135,32 +166,11 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 			if (!event.preparation.entriesToSummarize.some(entry => entryCheckpoint(entry) !== undefined)) return;
 			if (ctx.model?.provider !== "openai-codex") throw new Error("Select a Codex model to summarize a branch containing a Codex checkpoint.");
 			const settings = settingsFor(ctx);
-			const providerSettings = settings.getProviderRetrySettings();
-			const timeout = providerSettings.timeoutMs ?? settings.getHttpIdleTimeoutMs();
 			const instruction = event.preparation.replaceInstructions && event.preparation.customInstructions
 				? event.preparation.customInstructions
 				: "Summarize the conversation branch being left for a return to another branch. Preserve the user's objective, constraints, completed work, open questions and concrete next steps."
 					+ (event.preparation.customInstructions ? `\n\nAdditional focus:\n${event.preparation.customInstructions}` : "");
-			const context: Context = { systemPrompt: ctx.getSystemPrompt(),
-				messages: [...convertToLlm(checkpointMessages(ctx.sessionManager.buildSessionProjection().entries)),
-					{ role: "user", content: instruction, timestamp: Date.now() }] };
-			const sessionId = randomUUID();
-			const level = ctx.thinkingLevel ?? pi.getThinkingLevel();
-			const response = await retryCompaction(async () => {
-				const result = await ctx.modelRegistry.complete(ctx.model!, context, {
-					signal: event.signal, sessionId, cacheRetention: "none",
-					timeoutMs: timeout === 0 ? 2_147_483_647 : timeout, ...providerSettings,
-					...(level !== "off" ? { reasoningEffort: level } : {}),
-				});
-				event.signal.throwIfAborted();
-				if (result.stopReason !== "stop") throw new Error(result.errorMessage ?? "Branch summary did not complete.");
-				return result;
-			}, settings.getRetrySettings(), event.signal,
-				(attempt, maximum, ms) => ctx.ui.notify(`Retrying branch summary ${attempt}/${maximum} in ${ms}ms.`, "warning"));
-			const summary = response.content.filter(part => part.type === "text").map(part => part.text).join("");
-			if (!summary.trim()) throw new Error("Codex returned an empty branch summary.");
-			event.signal.throwIfAborted();
-			return { summary: { summary, usage: response.usage } };
+			return { summary: await checkpointSummary(ctx, settings, event.signal, instruction, ctx.thinkingLevel ?? pi.getThinkingLevel()) };
 		} catch (error) {
 			if (!event.signal.aborted) ctx.ui.notify(error instanceof Error ? error.message : "Branch summary failed.", "error");
 			return { cancel: true };

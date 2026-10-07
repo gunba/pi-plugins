@@ -47,6 +47,24 @@ import { NativeContext } from "./context.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
+import { entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
+
+const modelContextCache = new WeakMap<SessionManager, { leaf: string | null; constraint: SessionSnapshot["modelSwitchConstraint"] }>();
+function modelSwitchConstraint(session: AgentSession, fresh = false): SessionSnapshot["modelSwitchConstraint"] {
+	const manager = session.sessionManager, leaf = manager.getLeafId(), cached = modelContextCache.get(manager);
+	if (!fresh && cached?.leaf === leaf) return cached.constraint;
+	const constraint = manager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)
+		? { provider: "openai-codex", reason: "This branch contains an encrypted Codex checkpoint. Use a Codex model, or open History to branch before the checkpoint." } : undefined;
+	modelContextCache.set(manager, { leaf, constraint });
+	return constraint;
+}
+
+async function checkModelChange(runtime: AgentSessionRuntime, model: { provider: string; id: string }): Promise<void> {
+	const constraint = modelSwitchConstraint(runtime.session, true);
+	if (constraint && constraint.provider !== model.provider) throw new Error(constraint.reason);
+	// Resolve credentials before interrupting healthy work.
+	if (!(await runtime.services.modelRuntime.checkAuth(model.provider))) throw new Error(`No usable credential for ${model.provider}/${model.id}. Sign in or choose an account in Model accounts.`);
+}
 
 /** The only app module that owns Pi engine/session lifecycle. */
 export class DeskEngine {
@@ -69,6 +87,7 @@ export class DeskEngine {
 	private starting = new AbortController();
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
+	private handoffAbort?: AbortController;
 	private checkpointHold?: { id: string; running: boolean };
 	private accountBindings = new WeakMap<ModelRuntime, AccountBinding>();
 	private attachmentScope?: string;
@@ -399,9 +418,11 @@ export class DeskEngine {
 			id: session.sessionId, file: session.sessionFile, cwd: this.runtime.cwd, name: session.sessionName,
 			title: sessionTitle(session.sessionName, this.opening.text),
 			leaf: session.sessionManager.getLeafId(),
-			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
+			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image"),
+				accountName: this.accountBindings.get(this.runtime.services.modelRuntime)?.name(session.model.provider) } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
+			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: portableSummaryAvailable(session.sessionId) } : null,
 			activity: ui.interactions.some(item => !item.settings) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			tools: session.getAllTools().map(tool => ({ name: tool.name, description: tool.description, active: active.has(tool.name) })),
 			extensions: [
@@ -412,6 +433,7 @@ export class DeskEngine {
 			accounts: { ...this.accountBindings.get(this.runtime.services.modelRuntime)?.selection },
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({
 				id: model.id, provider: model.provider, name: model.name,
+				accountName: this.accountBindings.get(this.runtime!.services.modelRuntime)?.name(model.provider),
 			})),
 			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent } : undefined,
@@ -451,7 +473,7 @@ export class DeskEngine {
 				const execute = () => runNativeCommand(session, this.runtime!, command.name, command.args);
 				if (command.name === "model") {
 					const target = nativeModel(session, command.args).model!;
-					if (!(await this.runtime.services.modelRuntime.checkAuth(target.provider))) throw Error(`No API key for ${target.provider}/${target.id}`);
+					await checkModelChange(this.runtime, target);
 				}
 				return command.name === "export" ? execute() : this.change(execute, command.name === "model");
 			}
@@ -484,12 +506,42 @@ export class DeskEngine {
 			case "model": {
 				const model = this.runtime.services.modelRuntime.getModel(command.provider, command.id);
 				if (!model) throw new Error("Model is unavailable.");
+				if (command.context) {
+					return this.change(async () => {
+						const manager = session.sessionManager, constraint = modelSwitchConstraint(session, true);
+						if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed. Review the model switch again.");
+						if (!constraint || constraint.provider === model.provider || session.model?.provider !== constraint.provider)
+							throw Error("This model switch does not need a Codex context handoff.");
+						if (!portableSummaryAvailable(session.sessionId)) throw Error("Portable Codex context is unavailable in this worker.");
+						if (this.runtime!.services.resourceLoader.getExtensions().errors.length) throw Error("Fix extension loading before summarizing context.");
+						const guard = () => {
+							if (!session.isIdle || session.agent.hasQueuedMessages() || session.pendingMessageCount || this.queueGuards.get(session)?.pending)
+								throw Error("Finish current work and queued messages before summarizing context.");
+						};
+						guard();
+						if (!(await this.runtime!.services.modelRuntime.checkAuth(model.provider))) throw Error("Sign in or choose an account for the destination model first.");
+						guard();
+						if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed. Review the model switch again.");
+						const abort = this.handoffAbort = new AbortController();
+						try {
+							const result = await summarizePortableContext(session.sessionId, abort.signal,
+								Math.min(8192, Math.max(512, Math.floor(model.contextWindow / 8))));
+							abort.signal.throwIfAborted(); guard();
+							if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed while summarizing. The selected model has not changed.");
+							manager.appendCompaction(result.summary, null, session.getContextUsage()?.tokens ?? 0,
+								{ modelHandoff: { from: command.context!.leaf, provider: model.provider, model: model.id } }, true, result.usage);
+							session.refreshContext(); this.usageRevision++; this.presentation.advance();
+							if (modelSwitchConstraint(session, true)) throw Error("Context is still tied to Codex. The selected model has not changed.");
+							await session.setModel(model, { persist: false });
+							this.scheduleSnapshot();
+						} finally { this.handoffAbort = undefined; }
+					});
+				}
 				if (command.makeDefault) {
 					session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 					await session.settingsManager.flush();
 				} else {
-					// Resolve credentials before interrupting healthy work.
-					if (!(await this.runtime.services.modelRuntime.checkAuth(model.provider))) throw new Error(`No API key for ${model.provider}/${model.id}`);
+					await checkModelChange(this.runtime, model);
 					await this.change(() => session.setModel(model, { persist: false }), true);
 				}
 				this.scheduleSnapshot();
@@ -518,6 +570,7 @@ export class DeskEngine {
 				return;
 			}
 			case "abort": {
+				this.handoffAbort?.abort();
 				this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
 				await session.abort();
 				if (!this.closed && !this.replacing && !this.transition && this.runtime?.session === session && session.isIdle && session.getSteeringMessages().length) {
@@ -699,7 +752,7 @@ export class DeskEngine {
 	close(): Promise<void> {
 		if (this.closeJob) return this.closeJob;
 		this.closed = true;
-		this.starting.abort();
+		this.handoffAbort?.abort(); this.starting.abort();
 		this.closeJob = Promise.resolve().then(async () => {
 			clearTimeout(this.snapshotTimer);
 			this.unsubscribe?.();

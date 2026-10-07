@@ -3,7 +3,7 @@ import { calculateCost, type Api, type Context, type Model, type Usage } from "@
 import { buildSessionProjection, type AgentSession, type ProjectedSessionEntry, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { object, type JsonObject } from "./diagnostics.ts";
 
-export const CHECKPOINT = "codexWireCheckpoint";
+import { CHECKPOINT, entryCheckpoint } from "./checkpoint-state.ts";
 type AgentMessage = AgentSession["messages"][number];
 export const CHECKPOINT_CAPTION = "Codex checkpoint. Conversation state is stored in this entry and requires Codex Wire to continue.";
 export interface Checkpoint { version: 1; output: JsonObject[]; reportedUsage?: JsonObject; }
@@ -55,14 +55,6 @@ export function checkpointUsage(checkpoint: Checkpoint, model: Model<Api>): Usag
 	if (typeof reasoning === "number" && Number.isSafeInteger(reasoning) && reasoning >= 0 && reasoning <= usage.output) usage.reasoning = reasoning;
 	calculateCost(model, usage);
 	return usage;
-}
-
-export function entryCheckpoint(entry: SessionEntry): unknown {
-	if (entry.type === "compaction" || entry.type === "branch_summary") return object(entry.details)[CHECKPOINT];
-	if (entry.type === "custom_message" && entry.customType === "pi-subagents/fork-summary-v1") {
-		return object(object(entry.details).sourceDetails)[CHECKPOINT];
-	}
-	return undefined;
 }
 
 function carrier(value: unknown, timestamp: number): Carrier {

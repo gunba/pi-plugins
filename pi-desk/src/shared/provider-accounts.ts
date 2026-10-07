@@ -1,5 +1,5 @@
 export type ProviderAuthType = "oauth" | "api_key";
-export interface AccountProvider { id: string; name: string; types: ProviderAuthType[] }
+export interface AccountProvider { id: string; name: string; types: ProviderAuthType[]; subscription?: boolean }
 export interface ProviderAccount {
 	id: string; provider: string; name: string; identity?: string; native?: boolean;
 }

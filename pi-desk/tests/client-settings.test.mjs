@@ -100,13 +100,29 @@ test("account picker distinguishes unavailable and changing selection from defau
 			import React from "react";
 			import { renderToStaticMarkup } from "react-dom/server";
 			import { ProviderAccountsPanel } from "./src/client/provider-accounts.tsx";
+			import { ModelPicker } from "./src/client/model-picker.tsx";
+			export const renderModel = snapshot => renderToStaticMarkup(<ModelPicker snapshot={snapshot} disabled={false}
+				select={()=>{throw Error('No model action');}} accounts={()=>{}} history={()=>{}}/>);
 			export const render = session => renderToStaticMarkup(<ProviderAccountsPanel host={{name:"Fixture",sessions:[]}}
 				session={session} connected={true} busy={false} invoke={async()=>{throw Error('No account action');}}/>);
 		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic", plugins: [{ name: "offline-connection", setup(builder) {
+			builder.onResolve({ filter: /surfaces\.tsx$/ }, () => ({ path: "surfaces", namespace: "fixture-modal" }));
+			builder.onLoad({ filter: /.*/, namespace: "fixture-modal" }, () => ({ contents: "export function Modal() { throw Error('Unexpected modal'); }", loader: "js" }));
 			builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
 			builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({ contents: "export function api() { throw Error('No network'); }", loader: "js" }));
 		} }] });
-		const { render } = createRequire(import.meta.url)(outfile);
+		const { render, renderModel } = createRequire(import.meta.url)(outfile);
+		const model = { provider: "openai-codex", id: "codex", name: "Codex" };
+		const snapshot = { id: "fixture", activity: "idle", model, accounts: { "openai-codex": "named-account" },
+			models: [model, { provider: "anthropic", id: "claude", name: "Claude" }] };
+		const olderWorker = renderModel(snapshot);
+		assert.match(olderWorker, /<option value="anthropic:claude" disabled=""/);
+		assert.match(olderWorker, /Saved account/);
+		assert.doesNotMatch(olderWorker, /Pi credentials/);
+		assert.match(olderWorker, /Restart this conversation when idle/);
+		const currentWorker = renderModel({ ...snapshot, modelSwitchConstraint: null });
+		assert.doesNotMatch(currentWorker, /<option value="anthropic:claude" disabled=""/);
+		assert.doesNotMatch(currentWorker, /Restart this conversation when idle/);
 		const queue = { steering: { count: 0 }, followUp: { count: 0 } };
 		const absent = render({ key: "fixture", state: "closed" });
 		assert.match(absent, /value="" selected="">Account selection unavailable/);

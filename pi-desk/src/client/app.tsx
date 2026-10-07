@@ -29,6 +29,7 @@ import type { Feedback } from "../shared/feedback.ts";
 import { readFeedback, saveFeedback } from "./chat-feedback.ts";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
+import { ModelPicker } from "./model-picker.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
@@ -188,7 +189,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   };
   useEffect(() => { if (settingsForms.length) openSettingsForm(); }, [selected, settingsForms[0]?.id]);
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
-  const inlineQuestion = !settings && (question?.form.kind === "question" || question?.form.kind === "confirm");
+  const compactQuestion = useMedia("(max-width:760px), (max-height:600px)");
+  const inlineQuestion = !settings && !compactQuestion && (question?.form.kind === "question" || question?.form.kind === "confirm");
   useEffect(() => {
     if (!questions.some(question => question.id === activeQuestion)) setActiveQuestion(questions[0]?.id ?? "");
   }, [questions, activeQuestion]);
@@ -734,9 +736,6 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
           }
           footer={<>
-            {question && inlineQuestion && <Question inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`} context=""
-              question={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
-              close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
@@ -744,6 +743,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
             )}</>}
         />
+        {question && inlineQuestion && <Question inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`} context=""
+          question={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
+          close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
         {session && canCompose && (
           <div className="composer-dock">
             <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />
@@ -811,38 +813,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               <div className="composer-controls">
                 <div className="model-controls">
                   {session.snapshot && <>
-                  <select
-                    aria-label="Model"
-                    title="Change model; active work stops and continues with the new setting"
-                    disabled={settingBusy || !connected || session.state !== "ready"}
-                    value={
-                      session.snapshot?.model
-                        ? `${session.snapshot.model.provider}:${session.snapshot.model.id}`
-                        : ""
-                    }
-                    onChange={(event) => {
-                      const model = session.snapshot?.models.find(
-                        (model) =>
-                          `${model.provider}:${model.id}` ===
-                          event.target.value,
-                      );
-                      if (model)
-                        run({
-                          kind: "model",
-                          provider: model.provider,
-                          id: model.id,
-                        });
-                    }}
-                  >
-                    {session.snapshot?.models.map((model) => (
-                      <option
-                        key={`${model.provider}:${model.id}`}
-                        value={`${model.provider}:${model.id}`}
-                      >
-                        {model.name}
-                      </option>
-                    ))}
-                  </select>
+                  <ModelPicker snapshot={session.snapshot} disabled={settingBusy || !connected || session.state !== "ready"}
+                    select={(model, context) => run({ kind: "model", provider: model.provider, id: model.id, ...(context ? { context } : {}) })}
+                    accounts={accountPanel} history={() => { setSettingsSection("conversation"); setPanel("settings"); }} />
                   <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
                     aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
                     title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}

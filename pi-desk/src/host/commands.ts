@@ -72,10 +72,14 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			return { kind: data.kind, id: string(data.id, 80), offset: Number(data.offset), origin: origin(),
 				query: data.query === undefined ? undefined : string(data.query, 1000) };
 		case "name": return { kind: data.kind, name: string(data.name, 300) };
-		case "model":
+		case "model": {
 			if (data.makeDefault !== undefined && typeof data.makeDefault !== "boolean") throw Error("Invalid default model selection.");
+			const context = data.context as { mode?: unknown; leaf?: unknown } | undefined;
+			if (context !== undefined && (!context || context.mode !== "portable" || data.makeDefault)) throw Error("Invalid model context choice.");
 			return { kind: data.kind, provider: string(data.provider, 200), id: string(data.id, 300),
-				...(data.makeDefault === true ? { makeDefault: true } : {}) };
+				...(data.makeDefault === true ? { makeDefault: true } : {}),
+				...(context ? { context: { mode: "portable", leaf: string(context.leaf, 100) } as const } : {}) };
+		}
 		case "account": return { kind: data.kind, provider: string(data.provider, 200), id: string(data.id, 36) };
 		case "thinking": return { kind: data.kind, level: string(data.level, 30) };
 		case "answer": return { kind: data.kind, id: string(data.id, 100), answer: data.answer };

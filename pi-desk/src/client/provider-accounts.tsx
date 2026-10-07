@@ -136,9 +136,9 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 		<section className="panel-card provider-sign-in"><h3><Icon name="login" />Add account</h3>
 			<p className="muted">Adding an account does not switch or start any conversation.</p>
 			{provider?.types.length && provider.types.length > 1 ? <label className="setting-control">Sign-in method<select aria-label="Provider sign-in method" value={type} disabled={working || !!current || !!admission} onChange={event => setMethod(event.target.value as ProviderAuthType)}>
-				{provider.types.map(type => <option key={type} value={type}>{type === "oauth" ? "Account sign-in" : "API key"}</option>)}
+				{provider.types.map(type => <option key={type} value={type}>{type === "oauth" ? provider.subscription ? "Subscription sign-in" : "Account sign-in" : "API key"}</option>)}
 			</select></label> : null}
-			{type === "oauth" && <p className="muted">Approve sign-in on the provider's page. Codex uses a device code that works from any computer or phone.</p>}
+			{type === "oauth" && <p className="muted">Sign in on {providerName}’s page from any computer. Use the verification code or paste the returned authorization code here when prompted.</p>}
 			{!provider && snapshot && <p className="muted">This provider has no supported sign-in method in the host account manager.</p>}
 			<form className="provider-account-add" onSubmit={start}>
 				<label>Account name<input aria-label="Provider account name" maxLength={100} value={name} placeholder="Account name" disabled={working || !!current || !!admission} onChange={event => setName(event.target.value)} /></label>

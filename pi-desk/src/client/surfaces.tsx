@@ -36,6 +36,16 @@ export function SurfaceFrame({ label, className, close, back, modal = true, port
 	const callbacks = useRef({ close, back }); callbacks.current = { close, back };
 	const hasBack = !!back;
 	useLayoutEffect(() => {
+		const viewport = window.visualViewport, element = ref.current!;
+		if (!viewport) return;
+		const update = () => {
+			element.style.setProperty("--surface-height", `${viewport.height}px`);
+			element.style.setProperty("--surface-top", `${viewport.offsetTop}px`);
+		};
+		update(); viewport.addEventListener("resize", update); viewport.addEventListener("scroll", update);
+		return () => { viewport.removeEventListener("resize", update); viewport.removeEventListener("scroll", update); };
+	}, []);
+	useLayoutEffect(() => {
 		const element = ref.current!, origin = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
 		const item: DialogSurface = {
 			element, modal, close: () => { element.close(); callbacks.current.close(); },

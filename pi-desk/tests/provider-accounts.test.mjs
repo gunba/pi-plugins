@@ -187,6 +187,38 @@ test("native provider secrets use host Settings prompts and isolated stores", as
 	} finally { await accounts.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Anthropic sign-in uses the native headless flow without a localhost callback", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-anthropic-account-")), id = randomUUID();
+	const descriptor = { id: "anthropic", name: "Anthropic", auth: { oauth: { isSubscription: true } } };
+	const factory = async options => ({
+		getProviders: () => [descriptor], getProvider: () => descriptor,
+		login: async (provider, type, interaction) => {
+			assert.equal(provider, "anthropic"); assert.equal(type, "oauth");
+			assert.equal(await interaction.prompt({ type: "select", message: "Select Anthropic login method:", options: [
+				{ id: "browser", label: "Browser login (default)" }, { id: "copy_code", label: "Copy code login (headless)" },
+			] }), "copy_code");
+			interaction.notify({ type: "auth_url", url: "https://provider.example.test/authorize?state=fixture", instructions: "Copy the returned code." });
+			assert.equal(await interaction.prompt({ type: "manual_code", message: "Paste the returned code", placeholder: "code#state" }), "fixture-code#fixture");
+			writeFileSync(options.authPath, JSON.stringify({ anthropic: { type: "oauth", access: "fixture-access", refresh: "fixture-refresh", expires: Date.now() + 3600000 } }));
+		},
+	});
+	writeFileSync(join(directory, "auth.json"), "{}\n");
+	const accounts = new ProviderAccounts(directory, directory, factory);
+	try {
+		assert.deepEqual((await accounts.snapshot()).providers, [{ id: "anthropic", name: "Anthropic", types: ["oauth"], subscription: true }]);
+		accounts.start(id, "anthropic", "Claude account"); await settled(accounts);
+		const operation = accounts.view().signIns.find(item => item.id === id);
+		assert.equal(operation.prompt.kind, "manual_code");
+		assert.equal(operation.links[0].url, "https://provider.example.test/authorize?state=fixture");
+		assert.ok(!readFileSync(join(directory, "provider-accounts", id, "sign-in.json"), "utf8").includes("state=fixture"));
+		accounts.answer(id, operation.prompt.id, "fixture-code#fixture"); await setImmediate(); await setImmediate();
+		assert.equal(accounts.view().signIns.find(item => item.id === id).state, "completed");
+		assert.equal(accounts.view().accounts[0].name, "Claude account");
+		assert.ok(!JSON.stringify(accounts.view()).includes("fixture-access"));
+		assert.equal(readFileSync(join(directory, "auth.json"), "utf8"), "{}\n");
+	} finally { await accounts.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("reading native account providers neither creates credentials nor accesses the network", async () => {
 	const { existsSync } = await import("node:fs");
 	const directory = mkdtempSync(join(tmpdir(), "pi-account-catalog-")), oldFetch = globalThis.fetch;

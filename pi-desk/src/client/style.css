@@ -359,7 +359,7 @@ details[open] > summary:before {
 .computer-create { flex:none; width:28px; height:28px; padding:5px; border:0; border-radius:6px; background:transparent; }
 .computer-create:hover:not(:disabled) { background:var(--hover); }
 .transcript-scroll { container-type:size; }
-.inline-question { margin:12px 0; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--surface); max-height:max(120px,calc(100cqh - 60px)); overflow:auto; overscroll-behavior:contain; }
+.inline-question { flex:none; margin:12px 28px; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--surface); max-height:min(42dvh,440px); overflow:hidden; overscroll-behavior:contain; }
 .inline-question > header { display:flex; align-items:flex-start; gap:9px; margin-bottom:14px; position:sticky; top:0; z-index:2; background:var(--surface); padding:6px 0; }
 .inline-question .dialog-actions { position:sticky; bottom:0; z-index:2; background:var(--surface); padding-top:8px; }
 .inline-question > header .ui-icon { flex:none; margin-top:2px; }
@@ -887,7 +887,26 @@ details[open] > summary:before {
   align-items: center;
   min-width: 0;
   gap: 3px;
+  flex-wrap: wrap;
 }
+.model-picker-group { flex:1 1 190px; min-width:0; }
+.model-picker { display:flex; align-items:center; min-width:0; gap:7px; border:1px solid var(--border); border-radius:8px; background:var(--bg); padding:3px 6px 3px 3px; }
+.model-account-button { flex:none; padding:0; border:0; background:none; box-shadow:none; }
+.model-picker .provider-icon { width:32px; height:32px; border-radius:6px; }
+.model-picker .provider-icon svg { width:22px; height:22px; }
+.model-picker .provider-anthropic { color:#a15433; background:#d58b691c; }
+.model-picker .provider-openai { color:#15745f; background:#68d5bf16; }
+:root[data-theme="dark"] .model-picker .provider-anthropic { color:#e39d7f; }
+:root[data-theme="dark"] .model-picker .provider-openai { color:#68d5bf; }
+.model-picker .provider-other { color:var(--accent); }
+.model-picker-label { min-width:0; flex:1; display:grid; }
+.model-picker-identity { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:10px; font-weight:600; padding-left:3px; }
+.model-picker-identity > span { color:var(--muted); font-weight:400; }
+.model-controls .model-picker select { max-width:none; width:100%; padding:2px 24px 2px 3px; color:var(--text); font-size:12px; font-weight:600; }
+.model-switch-note { margin-top:5px; color:var(--muted); font-size:11px; line-height:1.4; }
+.model-switch-note > summary { cursor:pointer; }
+.model-switch-note > p { margin:5px 0 0; overflow-wrap:anywhere; }
+.model-switch-note button { border:0; background:none; color:var(--accent); padding:0; font-size:inherit; }
 .model-controls select {
   min-width: 0;
   flex: 1 1 auto;
@@ -1223,11 +1242,12 @@ details[open] > summary:before {
 .modal textarea {
   margin: 8px 0;
 }
-.question-modal { width:520px; max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); padding:16px; border-radius:14px; overflow:hidden; }
+.question-modal { position:fixed; top:calc(var(--surface-top,0px) + var(--surface-height,100dvh) / 2); bottom:auto; transform:translateY(-50%); margin:0 auto; width:520px; max-width:calc(100vw - 16px); max-height:calc(var(--surface-height,100dvh) - 16px); padding:16px; border-radius:14px; overflow:hidden; }
 .question-modal[open], .inline-question { display:flex; flex-direction:column; }
 .question-modal .panel-title { flex:none; margin-bottom:10px; align-items:flex-start; }
 .question-modal .panel-title h2 { min-width:0; font-size:16px; line-height:1.4; overflow-wrap:anywhere; }
 .question-form { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+@media(max-width:760px) { .question-modal textarea, .question-modal input, .question-modal select { font-size:16px; } }
 .question-scroll { min-height:0; overflow:auto; overscroll-behavior:contain; overflow-wrap:anywhere; }
 .question-scroll .question-owner { font-size:11px; margin:0 0 8px; }
 .question-scroll .choices { gap:6px; margin:10px 0; }

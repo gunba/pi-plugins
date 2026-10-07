@@ -35,8 +35,10 @@ export interface SessionSnapshot {
 	name?: string;
 	title?: string;
 	leaf?: string | null;
-	model?: { id: string; provider: string; name: string; images: boolean };
+	model?: { id: string; provider: string; name: string; images: boolean; accountName?: string };
 	defaultModel?: { id: string; provider: string };
+	/** Null means context-aware switching is supported without a current constraint. */
+	modelSwitchConstraint?: { provider: string; reason: string; portable?: boolean } | null;
 	accounts?: Record<string, string>;
 	thinking: string;
 	thinkingLevels: string[];
@@ -44,7 +46,7 @@ export interface SessionSnapshot {
 	tools: { name: string; description: string; active: boolean }[];
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
-	models: { id: string; provider: string; name: string }[];
+	models: { id: string; provider: string; name: string; accountName?: string }[];
 	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	context?: { tokens: number | null; contextWindow: number; percent: number | null };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
@@ -152,7 +154,7 @@ export type WorkerCommand =
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }
-	| { kind: "model"; provider: string; id: string; makeDefault?: boolean }
+	| { kind: "model"; provider: string; id: string; makeDefault?: boolean; context?: { mode: "portable"; leaf: string } }
 	| { kind: "account"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
 	| { kind: "reload" };

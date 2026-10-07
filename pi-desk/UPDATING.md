@@ -149,6 +149,12 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.26 retains API 8. Updated hosts and the website can attach to older
+workers without restarting them. The model picker identifies older workers and
+keeps cross-provider switching unavailable until an individual idle restart;
+new conversations use the new Claude and context-handoff behavior. Host sign-in,
+party close-all and browser layout fixes do not require restarting conversations.
+
 Version 0.5.24 retains API 8; optional worker capabilities are advertised, so
 older connected computers can continue working with the updated website. Send
 now, availability and the full native command inventory require a supporting

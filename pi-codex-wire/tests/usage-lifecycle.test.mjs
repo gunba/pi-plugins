@@ -41,7 +41,8 @@ async function harness(t) {
     const result = loader.getExtensions();
     assert.deepEqual(result.errors, []);
     const runner = new ExtensionRunner(result.extensions, result.runtime, directory, SessionManager.inMemory(directory), {});
-    runner.bindCore({ getThinkingLevel: () => "off" }, { getContextUsage: () => undefined, getModel: () => ({ id: "offline", api: "openai-codex-responses", provider: "openai-codex" }) });
+    let model = { id: "offline", api: "openai-codex-responses", provider: "openai-codex" };
+    runner.bindCore({ getThinkingLevel: () => "off" }, { getContextUsage: () => undefined, getModel: () => model });
     const statuses = [], errors = [];
     runner.onError(error => errors.push(error));
     runner.setUIContext({ theme: { fg: (_color, text) => text }, notify() {}, setStatus(_key, value) {
@@ -49,7 +50,8 @@ async function harness(t) {
       statuses.push(value);
     } }, mode);
     runners.push(runner);
-    return { runner, statuses, errors, command: args => result.extensions[0].commands.get("pi-usage").handler(args, runner.createCommandContext()) };
+    return { runner, statuses, errors, select: async next => { model = next; await runner.emit({ type: "model_select", model }); },
+      command: args => result.extensions[0].commands.get("pi-usage").handler(args, runner.createCommandContext()) };
   }
   async function start(instance) {
     await instance.runner.emit({ type: "session_start", reason: "reload" });
@@ -75,6 +77,20 @@ test("allowance badges distinguish weekly quota from the actual reset countdown"
 	assert.equal(publications.at(-1).badges[0].value, "40% left · resets in 1d1h");
 	now += 26 * 60 * 60_000; for (const tick of h.timers.values()) tick();
 	assert.deepEqual(publications.at(-1).badges, [], "expired percentages are not a fresh allowance");
+});
+
+test("switching to Claude does not show cached Codex allowance as its capacity", async t => {
+  const h = await harness(t), publications = [];
+  h.bus.on("pi-ui/discover-v2", probe => { probe.presentation = { publish: (_id, value) => publications.push(value) }; });
+  const instance = await h.load({ mode: "rpc" }); await h.start(instance);
+  await instance.select({ id: "claude-fixture", provider: "anthropic", api: "anthropic-messages" });
+  const view = publications.at(-1);
+  assert.deepEqual(view.badges, []);
+  assert.ok(view.data.items.every(item => !item.meter));
+  assert.match(view.data.items[0].body, /not provided/i);
+  assert.equal(h.timers.size, 0);
+  await instance.select({ id: "codex-fixture", provider: "openai-codex", api: "openai-codex-responses" });
+  assert.match(publications.at(-1).badges[0].value, /80%/);
 });
 
 test("late old-runner request cannot poison the replacement usage timer", async t => {

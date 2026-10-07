@@ -10,7 +10,8 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createAgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { identity } from "./fixtures.mjs";
-import { CHECKPOINT, CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
+import { CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
+import { CHECKPOINT, entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../extensions/checkpoint-state.ts";
 import { compactInput } from "../extensions/compact-input.ts";
 import nativeCompaction, { retryCompaction } from "../extensions/native-compaction.ts";
 import { copyCompletedParentTurns } from "../../pi-subagents/extensions/subagent-runtime.ts";
@@ -127,6 +128,40 @@ test("a live session can continue immediately after native compaction without re
 	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
 	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"),
 		compacted.details[CHECKPOINT].output.filter(item => item.type === "compaction"));
+});
+
+test("a portable handoff replaces encrypted model context without replaying tools or deleting native history", async t => {
+	const h = await harness(t);
+	const checkpoint = await h.session.compact();
+	const binding = h.manager.appendCustomEntry("pi-desk/provider-accounts", { selection: { anthropic: "fixture-account" } });
+	const before = readFileSync(h.manager.getSessionFile());
+	assert.equal(portableSummaryAvailable(h.session.sessionId), true);
+	const signal = new AbortController().signal;
+	const complete = h.runtime.complete.bind(h.runtime);
+	h.runtime.complete = async () => { throw Error("fixture summary unavailable"); };
+	await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), /fixture summary unavailable/);
+	assert.deepEqual(readFileSync(h.manager.getSessionFile()), before);
+	assert.ok(h.manager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)));
+	assert.equal(h.session.model.provider, "openai-codex");
+	h.runtime.complete = complete;
+	const callsBefore = h.calls.length;
+	const result = await summarizePortableContext(h.session.sessionId, signal, 2048);
+	assert.equal(result.summary, "Fixture response.");
+	const id = h.manager.appendCompaction(result.summary, null, h.session.getContextUsage()?.tokens ?? 0,
+		{ modelHandoff: { from: binding, provider: "anthropic", model: "claude-fixture" } }, true, result.usage);
+	h.session.refreshContext();
+	assert.equal(h.manager.getEntry(id).firstKeptEntryId, id);
+	assert.equal(h.calls.length, callsBefore + 1);
+	const summaryRequest = h.calls.at(-1).body;
+	assert.ok(summaryRequest.input.some(item => item.type === "compaction"), "summary writer receives the original checkpoint");
+	assert.ok(!summaryRequest.tools?.length, "summary writer cannot run tools");
+	const projection = h.manager.buildSessionProjection();
+	assert.equal(projection.entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);
+	assert.ok(projection.messages.some(message => message.role === "compactionSummary" && message.summary === "Fixture response."));
+	assert.ok(h.manager.getBranch().some(entry => entry.id === binding), "branch-local account state remains in ancestry");
+	assert.ok(h.manager.getBranch().some(entry => entry.details?.[CHECKPOINT] === checkpoint.details[CHECKPOINT]));
+	assert.deepEqual(readFileSync(h.manager.getSessionFile()).subarray(0, before.length), before);
+	assertCheckpointContext({ messages: convertToLlm(projection.messages) }, "anthropic", projection.entries);
 });
 
 test("retaining an older compaction entry does not require or replay its superseded checkpoint", async t => {

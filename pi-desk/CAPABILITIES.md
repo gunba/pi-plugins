@@ -9,12 +9,12 @@ and controls; it does not run a second agent or copy plugin stores.
 | Capability | In Desk |
 | --- | --- |
 | New, saved and running conversations | Sidebar and **Resume conversation**: choose computer and project, then search a virtualized native catalogue |
-| Model and reasoning | Composer selectors use the worker's native runtime; the star saves a default on that computer |
-| Provider accounts | **Settings → Model accounts**; host-owned native sign-in, Codex device codes, a default for new conversations on each computer, conversation account choices and cancellation |
+| Model and reasoning | Provider icon, model and account identity; native reasoning levels and a per-computer default star. Cross-provider switches confirm context handling; encrypted Codex context requires an explicit summary handoff. |
+| Provider accounts | **Settings → Model accounts**; native sign-in including Codex device codes and Claude subscription copy-code OAuth, per-computer defaults, conversation account choices and cancellation |
 | Prompt, steer, follow-up and stop | Composer and visible queue bars; **Send now** / Ctrl+Enter interrupts the current turn and admits the new message once, preserving accepted native queues. Stop dispatches pending steering into the next native turn. Older pinned workers show Send now as unavailable. |
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
-| Questions | Native forms with a question chooser, drafts, deadlines and child attribution |
+| Questions | Native forms with a question chooser, drafts, deadlines and child attribution; mobile dialogs stay above the composer and within the keyboard viewport |
 | Operator availability | **Settings → General → Availability**: Present or Away on the selected computer |
 | Slash commands | The installed worker’s full Pi catalog plus registered extension/template/skill commands and browser handlers; parameters and qualified aliases retained, unbridged capabilities labelled |
 | Resource failures | Startup banner and extension inventory; failed loads block prompts |
@@ -66,7 +66,7 @@ restart; Settings identifies them.
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
 | `pi-context-ledger` | Expandable initial-context card and Settings controls; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
-| `pi-party` | Account-wide encrypted discovery and messaging; shared membership dialogs, owning-driver resume, approved creation and confirmed close-all with per-computer outcomes |
+| `pi-party` | Account-wide encrypted discovery and messaging; shared membership dialogs, owning-driver resume, approved creation and confirmed close-all with per-computer outcomes. Already-closed agents are skipped without waking their owner. |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
 | `pi-subagents` | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |

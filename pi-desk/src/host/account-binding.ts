@@ -32,6 +32,7 @@ export class AccountBinding implements CredentialStore {
 		this.agentDir = agentDir; this.profiles = profiles; this.current = new AccountCredentials(agentDir, profiles, selection);
 	}
 	get selection(): AccountSelection { return this.current.selection; }
+	name(provider: string): string { return this.current.name(provider); }
 	select(selection: AccountSelection): void {
 		const next = new AccountCredentials(this.agentDir, this.profiles, selection);
 		const changed = new Set([...Object.keys(this.selection), ...Object.keys(next.selection)]);

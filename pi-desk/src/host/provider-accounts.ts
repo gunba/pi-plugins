@@ -76,7 +76,9 @@ export class ProviderAccounts {
 			const runtime = await this.catalog;
 			this.providers = runtime.getProviders().flatMap(provider => {
 				const types: ProviderAuthType[] = [...provider.auth.oauth ? ["oauth" as const] : [], ...provider.auth.apiKey?.login ? ["api_key" as const] : []];
-				return types.length ? [{ id: provider.id, name: provider.name, types }] : [];
+				return types.length ? [{ id: provider.id, name: provider.name, types,
+					...(provider.auth.oauth?.isSubscription ? { subscription: true } : {}),
+				}] : [];
 			});
 			return this.view();
 		} catch (error) { this.catalog = undefined; throw error; }
@@ -125,9 +127,11 @@ export class ProviderAccounts {
 				signal, notify: event => this.notify(operation, event),
 				prompt: prompt => {
 					// The native provider keeps ownership of device issuance, polling and token exchange.
-					if (operation.provider === "openai-codex" && prompt.type === "select") {
-						if (prompt.options.some(option => option.id === "device_code")) return Promise.resolve("device_code");
-						if (prompt.options.some(option => /browser/i.test(option.id))) throw Error("This provider does not offer device-code sign-in. Its browser callback cannot be used remotely here.");
+					if (type === "oauth" && prompt.type === "select") {
+						const headless = ["device_code", "copy_code"].find(id => prompt.options.some(option => option.id === id));
+						if (headless) return Promise.resolve(headless);
+						if (operation.provider === "openai-codex" && prompt.options.some(option => /browser/i.test(option.id)))
+							throw Error("This provider does not offer device-code sign-in. Its browser callback cannot be used remotely here.");
 					}
 					return this.prompt(operation, active, prompt);
 				},

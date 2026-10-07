@@ -370,18 +370,18 @@ function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   if (state.disposed) return;
   state.context = ctx;
   publishUsage(ctx, state);
-  if (status || state.presentation && snapshotForSource(state, "codex")) ensureTickTimer(state);
+  if (status || state.presentation && snapshotForSource(state, currentUsageSource(model))) ensureTickTimer(state);
   else disposeTickTimer(state);
 }
 
 function publishUsage(ctx: ExtensionContext, state: UsageState): void {
   const remote = state.presentation;
   if (!remote || state.disposed) return;
-  const stats = cachedSessionStats(ctx, state), allowance = snapshotForSource(state, "codex");
+  const stats = cachedSessionStats(ctx, state), source = currentUsageSource(ctx.model), allowance = snapshotForSource(state, source);
   const fresh = stats.totalInput + stats.totalCacheWrite, input = fresh + stats.totalCacheRead;
   const context = ctx.getContextUsage(), model = ctx.model;
   const data: UiDetails = {
-    summary: "Cumulative recorded usage includes child charges once. Prices are estimates; Codex subscription costs are not a bill.",
+    summary: "Cumulative recorded usage includes child charges once. Prices are estimates, not a subscription bill or remaining allowance.",
     fields: [
       { label: "Model", value: model ? `${model.provider}/${model.id}` : "Not selected" },
       { label: "Reasoning", value: ctx.thinkingLevel ?? "off" },
@@ -403,8 +403,9 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
         ...(remaining === undefined ? {} : { meter: { value: remaining, max: 100, label: `${window.label} allowance remaining` } }) }];
     }),
   };
-  if (!allowance) data.items = [{ id: "no-snapshot", title: "No current Codex allowance snapshot",
-    body: "Allowance arrives passively with Codex responses. No polling or extra provider request is made." }];
+  if (!allowance) data.items = [{ id: "no-snapshot", title: source ? "No current Codex allowance snapshot" : "Subscription allowance unavailable",
+    body: source ? "Allowance arrives passively with Codex responses. No polling or extra provider request is made."
+      : "Remaining subscription allowance is not provided by this integration for the selected model. Token and cost totals above are recorded usage, not a balance." }];
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
     badges: state.enabled && currentUsageSource(model) === "codex" ? [allowance?.primary, allowance?.secondary].flatMap(window => {
       if (!window || window.usedPercent === undefined) return [];

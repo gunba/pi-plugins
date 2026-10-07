@@ -7,7 +7,7 @@ import { AssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import planExtension from "../extensions/plan.ts";
 import nativeCompaction from "../../pi-codex-wire/extensions/native-compaction.ts";
-import { CHECKPOINT } from "../../pi-codex-wire/extensions/checkpoint.ts";
+import { CHECKPOINT } from "../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { PLAN_CHANGE_ENTRY } from "../src/constants.ts";
 import { emptyPlanFoldState, planCreate } from "../src/domain.ts";
 

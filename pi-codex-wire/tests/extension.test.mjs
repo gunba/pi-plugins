@@ -40,11 +40,11 @@ function harness(t, mode = "codex", savedDefault) {
   const bus = createEventBus();
   const api = { events: { ...bus, emit(name, data) { published.push({ name, data }); bus.emit(name, data); } }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
-  const ctx = { ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildSessionProjection: () => buildSessionProjection(entries) }, isIdle: () => true };
+  const ctx = { model, ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildSessionProjection: () => buildSessionProjection(entries) }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));
-  return { directory, events, commands, ctx, original, flags, notices, published, provider: () => provider };
+  return { directory, events, commands, ctx, original, flags, notices, published, bus, provider: () => provider };
 }
 
 function decode(init) {
@@ -53,6 +53,21 @@ function decode(init) {
   if (encoding === "gzip") return JSON.parse(gunzipSync(init.body).toString());
   return JSON.parse(init.body);
 }
+
+test("Codex controls and wire status disappear on a Claude model", async t => {
+  const h = harness(t), views = [], statuses = [];
+  h.ctx.mode = "rpc";
+  h.ctx.ui.setStatus = (_id, value) => statuses.push(value);
+  h.bus.on("pi-ui/discover-v2", probe => { probe.presentation = { publish: (_id, value) => views.push(value), runCommand() {} }; });
+  const originalEmit = h.events.get("model_select");
+  h.ctx.model = model;
+  await originalEmit({}, h.ctx);
+  assert.match(statuses.at(-1), /wire:/);
+  h.ctx.model = { provider: "anthropic", api: "anthropic-messages", id: "claude-fixture" };
+  await originalEmit({}, h.ctx);
+  assert.equal(statuses.at(-1), undefined);
+  assert.equal(views.at(-1), undefined);
+});
 
 test("inherited child allowance cannot replace the parent's account limits", async t => {
   const h = harness(t);
@@ -371,6 +386,26 @@ test("Wire wraps the provider without flags and restores it only on shutdown", a
   assert.notStrictEqual(h.provider(), h.original);
   h.events.get("session_shutdown")({}, h.ctx);
   assert.strictEqual(h.provider(), h.original);
+});
+
+test("Claude startup defers Codex settings until a Codex request or child needs them", async t => {
+  const h = harness(t);
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.ctx.model = { provider: "anthropic", api: "anthropic-messages", id: "claude-fixture" };
+  h.flags.set("codex-wire-user-agent", "invalid");
+  assert.doesNotThrow(() => h.events.get("session_start")({}, h.ctx));
+  assert.throws(() => requireCodexWire("pi-thread"), /single-line/);
+  assert.throws(() => h.provider().streamSimple(model, { messages: [] }, {}), /activation failed/);
+  h.flags.set("codex-wire-user-agent", identity.userAgent);
+  h.events.get("session_start")({}, h.ctx);
+  assert.doesNotThrow(() => requireCodexWire("pi-thread"), "a Codex child can activate its parent provider from Claude");
+  h.events.get("session_shutdown")({}, h.ctx);
+  h.events.get("session_start")({}, h.ctx);
+  h.ctx.model = model;
+  assert.doesNotThrow(() => h.events.get("model_select")({}, h.ctx));
+  assert.doesNotThrow(() => requireCodexWire("pi-thread"));
+  const f = concurrentFetch(t, 1); f.release();
+  assert.equal((await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: f.fetcher }).result()).stopReason, "stop");
 });
 
 test("startup failure blocks Codex requests instead of silently using the original provider", async t => {

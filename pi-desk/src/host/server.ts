@@ -711,10 +711,12 @@ export class DeskHost {
 			for (const { view } of this.sessions.values()) this.rememberPartyDriver(view);
 			reference = this.partyOperations!.driver(control.target);
 		}
+		if (control.kind === "close" && (!reference || reference.seen <= Date.now() - LEASE_MS)) {
+			const child = this.parties!.store.member(control.target);
+			if (!child || child.heartbeat <= Date.now() - LEASE_MS) return { session: control.target, state: "already_closed" };
+		}
 		if (!reference) throw Error("The child's owning parent driver is unavailable; resume its parent conversation first.");
 		if (reference.seen <= Date.now() - LEASE_MS) {
-			const child = this.parties!.store.member(control.target);
-			if (control.kind === "close" && (!child || child.heartbeat <= Date.now() - LEASE_MS)) return { session: control.target, state: "already_closed" };
 			const root = reference.root;
 			const managed = [...this.sessions.values()].find(({ view }) => (view.snapshot?.id ?? view.agentId) === root);
 			if (!reference.file || readSessionHeader(reference.file).id !== root) throw Error("The owning parent's saved native session is unavailable.");

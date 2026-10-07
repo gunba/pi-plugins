@@ -39,6 +39,57 @@ Install this repository as a personal Pi package, restart Pi, and run
 and `/desk open` opens it. Use `/desk` for management; see
 [installation and updates](UPDATING.md) for migration and platform prerequisites.
 
+## Models and accounts
+
+Desk uses Pi's native providers, including Anthropic API keys and Claude Pro/Max
+OAuth. In **Settings → Model accounts**, choose Anthropic and add a saved account.
+Subscription sign-in opens the provider's page in your browser; paste its returned
+authorization code into Settings. The computer running the agent does not need to
+receive a localhost callback. Pi owns token exchange and refresh. Sign-in and
+account selection do not send a message to the agent.
+
+The model picker shows the provider icon, model and current account. Select its
+icon to manage accounts. Accounts and new-conversation defaults are per computer;
+changing a model does not change those defaults. Each provider uses that
+conversation's saved selection, or Pi credentials when no named account is pinned.
+Existing subagents keep their model and account. New children inherit the parent's
+account selections unless their native branch already has a saved selection.
+A child cannot use an encrypted Codex checkpoint with Claude; use a fresh child
+or complete a context handoff before forking.
+
+### Switching providers
+
+A normal switch keeps the native history and lets Pi convert text, tool calls,
+results and supported attachments. Provider-specific reasoning signatures,
+encrypted reasoning and caches are not portable. Cross-provider switches ask for
+confirmation and show the destination account. Changing a model during active
+work stops that turn and continues with the new model; it does not replay tools.
+
+A branch with an encrypted Codex checkpoint needs a separate choice. Once the
+conversation and its queues are idle, choose the new model and confirm
+**Summarize and switch**. Codex makes a plain-text summary using the current
+account. This request uses allowance and may omit details. Only a completed
+summary is saved as the new context; the original native history, account pins
+and branch-local records remain intact. The destination stays idle until given
+new input. Cancelling or failing summary generation does not change the model or
+replace its context. If model selection fails after saving a summary, that summary
+remains available with the current model. **History** offers the alternative of
+branching before the checkpoint. `/model` never silently generates a paid handoff.
+
+Claude uses Pi's native thinking levels, tools, model request handling and prose
+compaction. Codex Fast/Ultrafast, Wire transport and encrypted compaction remain
+Codex-specific. Claude startup does not activate Codex Wire; Wire activates when
+a Codex model or child needs it. Recorded token, cache and cost totals work across models, but are
+not a subscription balance; Claude's remaining subscription allowance is not
+provided by this integration. Provider subscription eligibility and billing remain
+subject to the provider's current rules.
+
+Remote sign-in, model switching and handoff failure/cancellation have offline
+regression checks. An isolated native Claude session with mocked responses also
+verified tool execution, prose compaction and named-account inheritance.
+Live Claude authorization, refresh and inference still need
+account-owner acceptance before claiming end-to-end support.
+
 ## Dot
 
 Dot appears above the computer groups in the sidebar. Selecting it opens the

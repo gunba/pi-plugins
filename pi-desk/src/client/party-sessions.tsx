@@ -118,9 +118,11 @@ function ClosePartyDialog({ party, computers, close }: { party: string; computer
 					party, agents: group.peers.map(peer => ({ id: peer.id, epoch: peer.epoch })),
 				}, group.id);
 				const failures = result.results.filter(item => item.error);
-				return { name, failed: !!failures.length, text: failures.length
-					? `${result.results.length - failures.length} closed; ${failures.map(item => `${group.peers.find(peer => peer.id === item.id)?.label ?? "Agent"}: ${item.error}`).join("; ")}`
-					: `${agentCount(result.results.length)} closed.` };
+				const closed = result.results.filter(item => item.state === "closed").length;
+				const alreadyClosed = result.results.filter(item => item.state === "already_closed").length;
+				const summary = [closed ? `${agentCount(closed)} closed` : "", alreadyClosed ? `${alreadyClosed} already closed` : "",
+					...failures.map(item => `${group.peers.find(peer => peer.id === item.id)?.label ?? "Agent"}: ${item.error}`)].filter(Boolean).join("; ");
+				return { name, failed: !!failures.length, text: summary };
 			} catch (error) { return { name, text: `${error instanceof Error ? error.message : String(error)} Check current sessions before retrying.`, failed: true }; }
 		}));
 		setReports(reports); setPending(false);

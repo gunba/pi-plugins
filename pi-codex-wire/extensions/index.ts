@@ -20,7 +20,8 @@ import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, read
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
 import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
-import { CHECKPOINT, replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
+import { replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
+import { CHECKPOINT } from "./checkpoint-state.ts";
 import { compactBody, requestCompact } from "./compact.ts";
 import { codexRequestAuth, compactInput } from "./compact-input.ts";
 import { getPresentation, type UiDetails } from "../../pi-ui/index.ts";
@@ -72,8 +73,11 @@ export default function codexWire(pi: ExtensionAPI): void {
   let lastFastCheck = "not checked";
 
   function showWireStatus(ctx: ExtensionContext): void {
-    ctx.ui.setStatus("codex-wire", `wire:${client}${fastMode !== "off" ? ` · fast:${fastMode}` : ""}`);
     const remote = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
+    if (ctx.model?.api !== "openai-codex-responses") {
+      ctx.ui.setStatus("codex-wire", undefined); remote?.publish("codex-wire", undefined); return;
+    }
+    ctx.ui.setStatus("codex-wire", `wire:${client}${fastMode !== "off" ? ` · fast:${fastMode}` : ""}`);
     if (!remote) return;
     const data: UiDetails = { summary: "Fast and Ultrafast request faster processing on eligible ChatGPT Codex models at higher credit use. Availability depends on the model and account; the backend can downgrade a request. Prewarming adds a full-prompt request; it is normally left off.",
       fields: [{ label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode }],
@@ -400,7 +404,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       !currentLifetime.signal.aborted && !!primaryProtocol && !!primarySession
       && ctx.modelRegistry.getProvider("openai-codex") === registeredProvider);
     showWireStatus(ctx);
-    ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
+    if (ctx.model?.provider === "openai-codex") ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
   }
 
   function activate(ctx: ExtensionContext, selectedClient?: Client, selectedPrewarm?: boolean): void {
@@ -421,11 +425,31 @@ export default function codexWire(pi: ExtensionAPI): void {
         const fail = (): never => { throw new Error("Codex Wire activation failed. Correct the startup error and reload before sending requests."); };
         pi.registerProvider({ ...base, stream: fail, streamSimple: fail });
       }
-      ctx.ui.setStatus("codex-wire", "wire:error");
+      ctx.ui.setStatus("codex-wire", ctx.model?.provider === "openai-codex" ? "wire:error" : undefined);
       throw error;
     }
   }
-  pi.on("session_start", (_event, ctx) => { activate(ctx); });
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.model?.provider === "openai-codex") { activate(ctx); return; }
+    stop(); showWireStatus(ctx);
+    const provider = ctx.modelRegistry.getProvider("openai-codex");
+    if (!provider) return;
+    original = provider;
+    let live = true;
+    const ensure = () => {
+      if (!live) throw Error("This deferred Codex provider has retired.");
+      activate(ctx);
+      return ctx.modelRegistry.getProvider("openai-codex")!;
+    };
+    pi.registerProvider({ ...provider,
+      stream: (model, context, options) => ensure().stream(model, context, options),
+      streamSimple: (model, context, options) => ensure().streamSimple(model, context, options),
+    });
+    const release = registerRequiredWire(ctx.sessionManager.getSessionId(), () => {
+      ensure(); requireCodexWire(ctx.sessionManager.getSessionId()); return true;
+    });
+    releaseRequiredWire = () => { live = false; release(); };
+  });
   pi.on("before_provider_headers", (_event, ctx) => {
     if (ctx.model?.provider === "openai-codex") requireCodexWire(ctx.sessionManager.getSessionId());
   });
@@ -433,7 +457,10 @@ export default function codexWire(pi: ExtensionAPI): void {
     protocol?.beginTurn(); beganTurn = true;
   });
   pi.on("agent_settled", (_event, ctx) => { beganTurn = false; showWireStatus(ctx); });
-  pi.on("model_select", (_event, ctx) => { abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; showWireStatus(ctx); });
+  pi.on("model_select", (_event, ctx) => {
+    if (ctx.model?.provider === "openai-codex" && mode === "off") requireCodexWire(ctx.sessionManager.getSessionId());
+    abortPending(ctx.sessionManager.getSessionId()); transport?.close(); beganTurn = false; showWireStatus(ctx);
+  });
   const newWindow = () => {
     if (!protocol) return;
     abortPending(protocol.threadId); transport?.close(); protocol.rotateWindow(); beganTurn = false;
