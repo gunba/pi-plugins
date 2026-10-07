@@ -149,7 +149,7 @@ export class PartyPresentation {
 			details.items = page.messages.map(message => ({
 				id: message.id, title: `${message.sender_label} → ${message.recipient_label}`,
 				subtitle: new Date(message.created).toLocaleString(), body: message.text.slice(0, 8_000),
-				status: message.admitted ? "Delivered to Pi" : "Not yet delivered to Pi",
+				status: `${message.admitted ? "Delivered to Pi" : "Queued"} · ${message.wake ? "Reply requested" : "No wake requested"}`,
 				actions: [
 					...(message.kind === "invite" && message.recipient === state.self.id ? [action(`join:${message.id}`, `Join ${message.invite_room}`, () => this.ops.join(message.invite_room))] : []),
 					...(message.text.length > 8_000 ? [action(`read:${message.id}`, "Read complete message", () => {

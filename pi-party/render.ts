@@ -35,7 +35,10 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 	if (kind === "send" && Array.isArray(value?.queued)) {
 		const wake = (context.args as { wake?: boolean })?.wake !== false ? "reply requested" : "FYI · no wake";
 		lines = [`Queued for ${value.queued.length} ${value.queued.length === 1 ? "recipient" : "recipients"} · ${wake}`];
-		if (options.expanded) for (const receipt of value.queued) lines.push(`→ ${label(String(receipt.to))}`);
+		for (const receipt of value.queued) {
+			const held = receipt.recipient?.deliveryReason && (receipt.recipient.delivery !== "limited" || receipt.wakeRequested);
+			if (held || options.expanded) lines.push(`→ ${label(String(receipt.to))}${held ? ` · ${receipt.recipient.deliveryReason}` : ""}`);
+		}
 	} else if (kind === "members" && Array.isArray(value)) {
 		lines = value.map(peer => `${peer.label}${peer.self ? " (you)" : ""} · ${peer.state}`);
 		if (!lines.length) lines.push("No party members.");

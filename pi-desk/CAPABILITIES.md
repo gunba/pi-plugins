@@ -11,18 +11,41 @@ and controls; it does not run a second agent or copy plugin stores.
 | New, saved and running conversations | Sidebar and **Resume conversation**: choose computer and project, then search a virtualized native catalogue |
 | Model and reasoning | Composer selectors use the worker's native runtime; the star saves a default on that computer |
 | Provider accounts | **Settings → Model accounts**; host-owned native sign-in, Codex device codes, a default for new conversations on each computer, conversation account choices and cancellation |
-| Prompt, steer, follow-up and stop | Composer and visible queue bars; Stop dispatches pending steering into the next native turn |
+| Prompt, steer, follow-up and stop | Composer and visible queue bars; **Send now** / Ctrl+Enter interrupts the current turn and admits the new message once, preserving accepted native queues. Stop dispatches pending steering into the next native turn. Older pinned workers show Send now as unavailable. |
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
 | Questions | Native forms with a question chooser, drafts, deadlines and child attribution |
-| Extension commands | Composer command completion; commands execute through Pi |
+| Operator availability | **Settings → General → Availability**: Present or Away on the selected computer |
+| Slash commands | The installed worker’s full Pi catalog plus registered extension/template/skill commands and browser handlers; parameters and qualified aliases retained, unbridged capabilities labelled |
 | Resource failures | Startup banner and extension inventory; failed loads block prompts |
 | Reconnect and uncertain delivery | Durable receipts and operation outcomes; no blind retries |
 | Desk errors | One temporary, dismissible status bar with optional technical details; Pi/tool notices remain in the conversation |
 
-A registered extension command is not the same as a terminal built-in command.
-Desk maps core controls through the public SDK. It does not send an unknown
-terminal command to the model as a substitute.
+The installed SDK supplies the built-in inventory; Desk does not maintain a
+supported-command catalog. Browser handlers provide selectors and Settings,
+while native adapters use public session/runtime interfaces. Native names keep
+precedence over conflicting extensions; qualified extension aliases remain usable.
+`/name` and `/rename` rename, `/clone` forks the current leaf, `/export` writes
+HTML or JSONL, `/import` opens a JSONL import, and `/session`, `/copy` and
+`/changelog` expose native reads. Export paths remain in durable control results.
+
+Project-trust and scoped-model terminal selectors, GitHub sharing and native bug
+reporting are not bridged. Their menu entries explain the gap rather than send
+the command to a model. A newly discovered built-in with no adapter receives the
+same explicit treatment. The inventory is read beside the pinned SDK’s immutable
+entry because Pi 1.0.4 does not export its command catalog at the package root.
+
+## Unattended work
+
+Availability defaults to **Present** and is saved per computer. **Away** makes
+new optional agent questions return an unanswered result immediately, including
+questions from subagents. It does not supply answers or grant permission.
+Required confirmations stay pending. Existing questions are retained; forms
+opened explicitly from Settings remain usable.
+
+Availability is read by the worker, independently of browser visibility or host
+attachment. Older workers without this capability need an individual idle
+restart; Settings identifies them.
 
 ## Plugin paths
 

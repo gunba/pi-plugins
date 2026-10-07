@@ -44,7 +44,7 @@ import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { composerKey, type Delivery } from "./composer-keys.ts";
 import { useCommandCompletion } from "./command-completion.tsx";
-import { deskCommand, deskCommandCatalog } from "./desk-commands.ts";
+import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
 import { PartyDialog, PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
@@ -123,6 +123,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const titleControl = useRef<{ edit: () => void }>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
+  const [commandOutput, setCommandOutput] = useState<{ title: string; text: string }>();
+  const [providerHint, setProviderHint] = useState<string>();
   const [latestRequest, setLatestRequest] = useState(0);
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
@@ -150,6 +152,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     : transportConnected;
   const epoch = currentComputer?.epoch ?? localEpoch;
   const ui = session?.ui;
+  const extensionErrors = session?.snapshot?.extensions.filter(extension => extension.error) ?? [];
   const controls = session?.controls ?? [];
   const controlBusy = controls.some(control => control.state === "running");
   const closing = controls.some(control => control.kind === "close" && control.state === "running");
@@ -194,7 +197,73 @@ export function App({ account }: { account?: BrowserAccount }) {
       session.ui?.interactions.map(question => `${session.key}/${question.id}`) ?? []));
     for (const id of questionDrafts.current.keys()) if (!pending.has(id)) questionDrafts.current.delete(id);
   }, [state.host?.sessions]);
-  const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? []), text => {
+  const noArguments = (name: string, args: string) => { if (args) throw Error(`Use /${name} without arguments.`); };
+  const openPicker = (label: string) => {
+    const picker = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+    if (!picker || picker.disabled) throw Error("This choice is unavailable while the current operation is pending.");
+    picker.focus(); picker.showPicker?.();
+  };
+  const rename = async (args: string) => {
+    if (session?.state !== "ready") throw Error("Wait for Pi to finish opening this conversation before renaming it.");
+    if (args) await command({ kind: "name", name: args }); else titleControl.current?.edit();
+  };
+  const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };
+  const commandHandlers: DeskCommandHandlers = {
+    settings: { description: "Open Settings; optionally choose a section.", execute: args => {
+      const section = args || "general";
+      if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
+      setSettingsSection(section); setPanel("settings");
+    } },
+    new: { description: "Open a new conversation.", execute: args => { openNewConversation(); if (args) setCwd(args); } },
+    resume: { description: "Choose a saved native session.", execute: args => { noArguments("resume", args); setResumeOpen(true); } },
+    name: { description: "Rename this conversation.", execute: rename },
+    rename: { description: "Alias for /name.", execute: rename },
+    compact: { description: "Compact native context.", execute: args => command({ kind: "compact", instructions: args || undefined }) },
+    reload: { description: "Reload native resources.", execute: args => { noArguments("reload", args); return command({ kind: "reload" }); } },
+    fork: { description: "Choose a branch entry, or /fork <entry-id> [at|before].", execute: args => {
+      if (!args) { setSettingsSection("conversation"); setPanel("settings"); return; }
+      const [entry, position = "at", extra] = args.split(/\s+/);
+      if (extra || !["at", "before"].includes(position)) throw Error("Use /fork <entry-id> [at|before].");
+      return command({ kind: "fork", entry, position: position as "at" | "before" });
+    } },
+    tree: { description: "Open native branch history.", execute: args => { noArguments("tree", args); setSettingsSection("conversation"); setPanel("settings"); } },
+    model: { description: "Choose a model.", argumentHint: "<provider/model>", execute: args => {
+      if (!args) { openPicker("Model"); return; }
+      if (session?.snapshot?.commands.some(item => item.name === "model" && item.execution === "control"))
+        return command({ kind: "native", name: "model", args });
+      const matches = session?.snapshot?.models.filter(model => `${model.provider}/${model.id}` === args || model.id === args) ?? [];
+      if (matches.length !== 1) throw Error("Choose an exact provider/model from this worker's model picker.");
+      return command({ kind: "model", provider: matches[0].provider, id: matches[0].id });
+    } },
+    thinking: { description: "Choose a reasoning level.", argumentHint: "<level>", execute: args => {
+      if (!args) { openPicker("Reasoning level"); return; }
+      return command({ kind: "thinking", level: args.toLowerCase() });
+    } },
+    login: { description: "Manage provider sign-in in Settings.", argumentHint: "<provider>", execute: accountPanel },
+    logout: { description: "Manage saved accounts and sign-out in Settings.", execute: args => { noArguments("logout", args); accountPanel(""); } },
+    copy: { description: "Copy the latest assistant text.", execute: async args => {
+      noArguments("copy", args);
+      if (!session?.snapshot?.commands.some(item => item.name === "copy" && item.execution === "read")) throw Error("This worker has no native clipboard-text adapter.");
+      const value = await command<{ result: string }>({ kind: "native_read", name: "copy", args: "" });
+      if (!value.result) throw Error("There is no assistant text to copy.");
+      await navigator.clipboard.writeText(value.result);
+    } },
+    quit: { description: "Close this conversation, preserving its history.", execute: async args => {
+      noArguments("quit", args);
+      if (!session?.activation) throw Error("This conversation is not open.");
+      await api(`/sessions/${selected}/close`, { id: crypto.randomUUID(), activation: session.activation });
+    } },
+    hotkeys: { description: "Show Desk keyboard shortcuts.", execute: args => {
+      noArguments("hotkeys", args);
+      setCommandOutput({ title: "Keyboard shortcuts", text: "Enter — send or steer\nCtrl+Enter — interrupt and send\nAlt+Enter / Ctrl+Q — queue a follow-up\nShift+Enter / Ctrl+J — new line\nTab — complete a slash command\nUp / Down — choose a completion\nEsc — dismiss completion or dialog" });
+    } },
+    help: { description: "Show commands for this conversation.", execute: args => {
+      noArguments("help", args);
+      const catalog = deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers);
+      setCommandOutput({ title: "Commands", text: catalog.map(item => `/${item.name}${item.argumentHint ? ` ${item.argumentHint}` : ""} — ${item.unavailable ?? item.description}`).join("\n") });
+    } },
+  };
+  const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {
     setDraft(text); localStorage.setItem(draftKey(selected), text);
   });
   const messages = state.messages[selected] ?? emptyMessages;
@@ -272,6 +341,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     );
   }, [authorized, upgrade]);
   useEffect(() => {
+    setCommandOutput(undefined);
     setDraft(localStorage.getItem(draftKey(selected)) ?? "");
     setState(previous => ({ ...previous, focused: [selected] }));
     localStorage.setItem("pi-desk:selected", selected);
@@ -308,9 +378,9 @@ export function App({ account }: { account?: BrowserAccount }) {
       setDraft(current => current === text ? "" : current); setLatestRequest(value => value + 1);
     }
   }
-  async function command(command: WorkerCommand, id: string = crypto.randomUUID()) {
+  async function command<T = unknown>(command: WorkerCommand, id: string = crypto.randomUUID()) {
     if (!session?.ui) throw new Error("Session is still starting.");
-    return api(`/sessions/${selected}/command`, {
+    return api<T>(`/sessions/${selected}/command`, {
       id,
       generation: session.ui.generation,
       command,
@@ -359,35 +429,25 @@ export function App({ account }: { account?: BrowserAccount }) {
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
   async function send(delivery: Delivery = "steer") {
     if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
-      || !session?.activation || !["starting", "ready"].includes(session.state)) return;
+      || extensionErrors.length || !session?.activation || !["starting", "ready"].includes(session.state)) return;
+    if (delivery === "now" && !session.workerRuntime?.sendNow) {
+      setError("This worker does not support Send now. Restart this conversation when idle to enable it."); return;
+    }
     const text = draft;
     const fileIds = attachments.files.map(file => file.id);
     sendingRef.current = true; setSending(true);
     try {
-      const local = deskCommand(text, session.snapshot?.commands ?? []);
+      const local = deskCommand(text, session.snapshot?.commands ?? [], commandHandlers);
       if (local) {
         if (fileIds.length) throw Error("Commands cannot include file attachments.");
-        switch (local.name) {
-          case "settings": {
-            const section = local.args || "general";
-            if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
-            setSettingsSection(section); setPanel("settings"); break;
-          }
-          case "new": openNewConversation(); if (local.args) setCwd(local.args); break;
-          case "resume": if (local.args) throw Error("Use /resume to choose a saved session."); setResumeOpen(true); break;
-          case "name":
-            if (session.state !== "ready") throw Error("Wait for Pi to finish opening this conversation before renaming it.");
-            if (local.args) await command({ kind: "name", name: local.args }); else titleControl.current?.edit(); break;
-          case "compact": await command({ kind: "compact", instructions: local.args || undefined }); break;
-          case "reload": if (local.args) throw Error("Use /reload without arguments."); await command({ kind: "reload" }); break;
-          case "fork": {
-            if (!local.args) { setSettingsSection("conversation"); setPanel("settings"); break; }
-            const [entry, position = "at", extra] = local.args.split(/\s+/);
-            if (extra || !["at", "before"].includes(position)) throw Error("Use /fork <entry-id> [at|before], or /fork to choose an entry.");
-            await command({ kind: "fork", entry, position: position as "at" | "before" }); break;
-          }
-          case "tree": if (local.args) throw Error("Use /tree without arguments."); setSettingsSection("conversation"); setPanel("settings"); break;
-          case "help": if (local.args) throw Error("Use /help without arguments."); setDraft("/"); break;
+        if (Object.hasOwn(commandHandlers, local.name)) await commandHandlers[local.name].execute(local.args);
+        else {
+          const info = session.snapshot?.commands.find(item => item.name === local.name);
+          if (info?.execution === "read") {
+            const value = await command<{ result: unknown }>({ kind: "native_read", name: local.name, args: local.args });
+            if (selectedRef.current === selected) setCommandOutput({ title: `/${local.name}`, text: typeof value.result === "string" ? value.result : JSON.stringify(value.result, null, 2) ?? "" });
+          } else if (info?.execution === "control") await command({ kind: "native", name: local.name, args: local.args });
+          else throw Error(`/${local.name} has no Desk adapter.`);
         }
         if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
         if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
@@ -624,6 +684,11 @@ export function App({ account }: { account?: BrowserAccount }) {
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
+        {session?.state === "ready" && extensionErrors.length > 0 && <div className="connection-banner" role="alert">
+          <span>Pi could not load {extensionErrors.length === 1 ? "an extension" : "some extensions"}. Retry loading before sending messages. Your conversation is retained; this does not resend your last message.</span>
+          <button disabled={!connected || controlBusy || !["idle", "error"].includes(session.snapshot?.activity ?? "")}
+            onClick={() => run({ kind: "reload" })}>{controlBusy ? "Loading…" : "Retry loading"}</button>
+        </div>}
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && !canCompose && (
           <div className="connection-banner">
@@ -810,9 +875,16 @@ export function App({ account }: { account?: BrowserAccount }) {
                   {busy && !controlBusy && (
                     <button type="button" className="queue-button" aria-label="Queue follow-up"
                       title="After current work · Alt+Enter or Ctrl+Q"
-                      disabled={sending || !connected || !attachments.ready || !session.activation || !["starting", "ready"].includes(session.state)
+                      disabled={sending || !connected || !!extensionErrors.length || !attachments.ready || !session.activation || !["starting", "ready"].includes(session.state)
                         || (!draft.trim() && !attachments.files.length)}
                       onClick={() => void send("followUp")}>Queue</button>
+                  )}
+                  {busy && !controlBusy && session.state === "ready" && (
+                    <button type="button" className="queue-button" aria-label="Interrupt and send now"
+                      title={session.workerRuntime?.sendNow ? "Interrupt current work and send · Ctrl+Enter" : "Restart this conversation when idle to enable Send now"}
+                      disabled={sending || !connected || !!extensionErrors.length || !attachments.ready || !session.workerRuntime?.sendNow
+                        || (!draft.trim() && !attachments.files.length)}
+                      onClick={() => void send("now")}>Send now</button>
                   )}
                   {busy && controls.every(control => control.state !== "running" || ["compact", "navigate"].includes(control.kind)) && (
                     <button
@@ -834,6 +906,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     disabled={
                       (!draft.trim() && !attachments.files.length) ||
                       !attachments.ready ||
+                      !!extensionErrors.length ||
                       sending ||
                       controlBusy ||
                       !connected ||
@@ -849,7 +922,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
               )}
             </form>
-            <div className="composer-help">Enter to send or steer · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
+            <div className="composer-help">Enter to send or steer · Ctrl+Enter to interrupt and send · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
             <ConversationFooter key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
               open={view => { setPanel("view"); setFocusedView(view.id); }}
               invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
@@ -945,7 +1018,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               </p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
-            session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy}
+            session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy} providerHint={providerHint}
             invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}
           </SettingsLayout>
@@ -956,6 +1029,9 @@ export function App({ account }: { account?: BrowserAccount }) {
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
         }} />}
+      {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
+        <pre className="command-output">{commandOutput.text}</pre>
+      </Modal>}
       {create && (
         <Modal title="New conversation" close={closeNewConversation}>
           <form onSubmit={(event) => void newSession(event)}>

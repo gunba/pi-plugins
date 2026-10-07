@@ -11,11 +11,12 @@ export function ControlActivity({ session, controls }: { session: string; contro
 	const [dismissed, setDismissed] = useState<string[]>(() => {
 		try { return JSON.parse(localStorage.getItem(key) ?? "[]"); } catch { return []; }
 	});
-	const visible = controls.filter(control => control.state !== "completed" && !dismissed.includes(control.id))
+	const visible = controls.filter(control => (control.state !== "completed" || control.output) && !dismissed.includes(control.id))
 		.sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.started - a.started);
 	return <div className="control-activity">{visible.map(control => <div className="control-notice" key={control.id}
 		role={control.state === "running" ? "status" : "alert"}>
-		<div><strong>{CONTROL_LABELS[control.kind]}</strong> · {status(control)}
+		<div><strong>{control.command ? `/${control.command}` : CONTROL_LABELS[control.kind]}</strong> · {status(control)}
+			{control.output && <p>Saved to <code>{control.output.path}</code></p>}
 			{control.state === "failed" && control.error && <p>{control.error}</p>}
 			{control.state === "interrupted" && <p>Check saved history and recent operations before repeating this action.</p>}
 		</div>
@@ -31,8 +32,9 @@ export function ControlHistory({ controls }: { controls: ControlStatus[] }) {
 	return <section className="panel-card"><details><summary>Recent operations</summary>
 		<p className="muted">Admission is not completion. Interrupted operations are not replayed automatically.</p>
 		{[...controls].sort((a, b) => b.started - a.started).map(control => <article className="history-item" key={control.id}>
-			<strong>{CONTROL_LABELS[control.kind]} · {status(control)}</strong>
+			<strong>{control.command ? `/${control.command}` : CONTROL_LABELS[control.kind]} · {status(control)}</strong>
 			<small>{new Date(control.started).toLocaleString()}</small>
+			{control.output && <p>Saved to <code>{control.output.path}</code></p>}
 			{control.error && <p className="error-text">{control.error}</p>}
 		</article>)}
 	</details></section>;

@@ -16,7 +16,7 @@ import { SessionCatalog } from "../src/host/session-files.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 
 for (const stop of [false, true]) test(stop
-	? "confirmed update checkpoints workers and retains native conversation references"
+	? "confirmed update detaches workers and retains native conversation references"
 	: "automatic selection retains idle workers and preserves rollback after explicit close", async () => {
 	const root = fs.mkdtempSync(join(tmpdir(), "desk-idle-update-")), home = join(root, "runtime"), directory = join(root, "data");
 	fs.mkdirSync(home); fs.mkdirSync(directory);
@@ -33,13 +33,13 @@ for (const stop of [false, true]) test(stop
 	atomicJson(join(home, "state.json"), { format: 1, source: root, active, pending, autoApply: pending });
 	atomicJson(join(home, "installation.json"), { format: 1, directory, agentDir: root, cwd: root, port: 0 });
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: directory, port: 0 });
-	let stopped = 0;
+	let stopped = 0, detached = 0;
 	try {
 		await host.start(); host.runtime = active; host.runtimeHome = home;
 		const snapshot = { session: "native-fixture", file: join(root, "session.jsonl"), cwd: root, leaf: "held-leaf", running: false };
-		const worker = { checkpoint: async () => snapshot, close: async () => {
-			stopped++; worker.closedCheckpoint = { ...snapshot, checkpoint: "fixture-checkpoint", leaf: "shutdown-leaf" };
-		} };
+		const instance = "11111111-1111-4111-8111-111111111111";
+		const worker = { handoffIdentity: async () => ({ instance }), detach: async () => { detached++; },
+			checkpoint: async () => { assert.fail("Host updates must not hold native execution."); }, close: async () => { stopped++; } };
 		host.sessions.set("fixture", { initialized: true, view: { key: "fixture", cwd: root, state: "ready", created: 1,
 			file: snapshot.file, name: "Session", snapshot: { activity: "idle" } }, worker });
 		assert.deepEqual(await activatePreparedRuntime(home), { deferred: 1 });
@@ -49,7 +49,8 @@ for (const stop of [false, true]) test(stop
 		assert.equal(host.closing, false);
 		if (!stop) host.sessions.delete("fixture");
 		assert.deepEqual(await activatePreparedRuntime(home, stop ? pending : undefined, stop ? "fixture-checkpoint" : undefined), { release: "0.5.0", restart: true });
-		assert.equal(stopped, Number(stop));
+		assert.equal(stopped, 0);
+		assert.equal(detached, Number(stop));
 		const saved = new SessionCatalog(directory).read();
 		assert.equal(saved.length, Number(stop));
 		if (stop) {
@@ -61,7 +62,8 @@ for (const stop of [false, true]) test(stop
 			try {
 				const ticket = ledger.checkpoint();
 				assert.equal(ticket.state, "committed");
-				assert.equal(ticket.sessions[0].leaf, "shutdown-leaf");
+				assert.deepEqual(ticket.workers, [{ key: "fixture", instance }]);
+				assert.deepEqual(ticket.sessions, []);
 			} finally { ledger.close(); }
 		}
 		const selected = readState(home);

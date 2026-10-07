@@ -8,8 +8,8 @@ import { Icon } from "./icons.tsx";
 const pending = (operation: ProviderSignIn) => ["starting", "waiting", "saving"].includes(operation.state);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function ProviderAccountsPanel({ host, computer, session, connected, busy, invoke }: {
-	host: WorkspaceState; computer?: Computer; session?: SessionView; connected: boolean; busy: boolean;
+export function ProviderAccountsPanel({ host, computer, session, connected, busy, invoke, providerHint }: {
+	host: WorkspaceState; computer?: Computer; session?: SessionView; connected: boolean; busy: boolean; providerHint?: string;
 	invoke: (command: WorkerCommand) => Promise<unknown>;
 }) {
 	const [chosen, setChosen] = useState("");
@@ -23,17 +23,18 @@ export function ProviderAccountsPanel({ host, computer, session, connected, busy
 		</select></label>}
 		{(!computers || id) && <AccountStore key={id ?? "local"} computer={id} name={target?.name ?? host.name}
 			connected={computers ? !!target?.connected : connected} session={!computers || computer?.id === id ? session : undefined}
-			busy={busy} invoke={invoke} />}
+			busy={busy} invoke={invoke} providerHint={providerHint} />}
 	</>;
 }
 
-function AccountStore({ computer, name: computerName, connected, session, busy, invoke }: {
-	computer?: string; name: string; connected: boolean; session?: SessionView; busy: boolean;
+function AccountStore({ computer, name: computerName, connected, session, busy, invoke, providerHint }: {
+	computer?: string; name: string; connected: boolean; session?: SessionView; busy: boolean; providerHint?: string;
 	invoke: (command: WorkerCommand) => Promise<unknown>;
 }) {
 	const [snapshot, setSnapshot] = useState<ProviderAccountsSnapshot>();
 	const [name, setName] = useState("");
-	const [providerChoice, setProvider] = useState("");
+	const [providerChoice, setProvider] = useState(providerHint ?? "");
+	useEffect(() => { setProvider(providerHint ?? ""); }, [providerHint]);
 	const [method, setMethod] = useState<ProviderAuthType>("oauth");
 	const [error, setError] = useState("");
 	const [readError, setReadError] = useState("");

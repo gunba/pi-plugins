@@ -5,11 +5,11 @@ export interface SubmissionReceipt {
 	activation: string;
 	generation?: string;
 	fingerprint: string;
-	behavior?: "steer" | "followUp";
+	behavior?: PromptCommand["behavior"];
 	requiresConfirmation?: boolean;
 }
 export function createSubmission(session: { activation: string; state: string; generation?: string },
-	fingerprint: string, delivery: "steer" | "followUp"): SubmissionReceipt {
+	fingerprint: string, delivery: NonNullable<PromptCommand["behavior"]>): SubmissionReceipt {
 	return { id: crypto.randomUUID(), activation: session.activation,
 		generation: session.state === "starting" ? undefined : session.generation,
 		fingerprint, behavior: delivery };

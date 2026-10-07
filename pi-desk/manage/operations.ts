@@ -204,6 +204,7 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 					try {
 						const ticket = ledger.checkpoint();
 						committed = ticket?.id === value.id && ticket.state === "committed" && ticket.source === previous && ticket.target === options.prepared;
+						if (committed && ticket!.workers) { ticket!.resumeSource = true; ledger.writeCheckpoint(ticket!); }
 					} finally { ledger.close(); }
 					if (committed) {
 						publish("The update could not be selected; restoring the previous runtime");

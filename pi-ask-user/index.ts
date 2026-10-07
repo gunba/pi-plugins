@@ -123,6 +123,7 @@ interface AskToolDetails {
    options: QuestionOption[];
    response: AskResponse | null;
    cancelled: boolean;
+   unavailable?: boolean;
 }
 
 type AskUIResult = AskResponse;
@@ -1593,6 +1594,11 @@ export default function(pi: ExtensionAPI) {
          const options = normalizeOptions(rawOptions);
          const normalizedContext = context ? displayText(context).trim() || undefined : undefined;
 
+         const presentation = getPresentation(pi);
+         if (presentation?.operatorAvailable === false) {
+            return { content: [{ type: "text", text: "User is away. No answer was requested or provided." }], isError: true,
+               details: { question, context: normalizedContext, options, response: null, unavailable: true } };
+         }
          if (!ctx.hasUI || !ctx.ui) {
             const optionText = options.length > 0 ? `\n\nOptions:\n${formatOptionsForMessage(options)}` : "";
             const freeformHint = allowFreeform ? "\n\nYou can also answer freely." : "";
@@ -1610,7 +1616,6 @@ export default function(pi: ExtensionAPI) {
             };
          }
 
-         const presentation = getPresentation(pi);
          if (options.length === 0 && !presentation) {
             const prompt = normalizedContext ? `${question}\n\nContext:\n${normalizedContext}` : question;
             const answer = await ctx.ui.input(prompt, "Type your answer...", { signal, ...(timeout ? { timeout } : {}) });
@@ -1723,6 +1728,10 @@ export default function(pi: ExtensionAPI) {
                   : customResult;
             }
          } catch (error) {
+            if ((error as { code?: string })?.code === "operator_unavailable") {
+               return { content: [{ type: "text", text: "User is away. No answer was requested or provided." }], isError: true,
+                  details: { question, context: normalizedContext, options, response: null, unavailable: true } };
+            }
             const message =
                error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
             return {
@@ -1797,6 +1806,7 @@ export default function(pi: ExtensionAPI) {
             return new Text(theme.fg("muted", waitingText), 0, 0);
          }
 
+         if (details?.unavailable) return new Text(theme.fg("muted", "User is away · unanswered"), 0, 0);
          if (!details || details.cancelled || !details.response) {
             return new Text(theme.fg("warning", "Cancelled"), 0, 0);
          }

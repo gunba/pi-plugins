@@ -5,6 +5,7 @@ import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
 import { managerStatus } from "../src/host/login-manager.ts";
+import { liveSupervisor } from "../src/host/login-supervisor.ts";
 import { canonicalPath, launcherPath, readInstallation, saveInstallation, type RuntimeInstallation } from "./installation.ts";
 import { atomicJson, readRelease, readState } from "./store.ts";
 
@@ -68,9 +69,9 @@ export async function activateRuntime(home: string, requested?: string) {
 	} finally { lock.close(); }
 }
 
-/** Hold startup admission; interrupt workers only with consent for this exact prepared release. */
+/** Hold startup admission and select the verified host; independent actors stay pinned. */
 export async function activatePreparedRuntime(home: string, stopFor?: string, checkpoint?: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
-	if (stopFor && !checkpoint) throw new Error("Forced activation requires a native checkpoint.");
+	if (stopFor && !checkpoint) throw new Error("Explicit activation requires a host handoff.");
 	const manage = new SessionLease(join(home, "manage"));
 	let edit: SessionLease | undefined, launch: SessionLease | undefined, host: SessionLease | undefined;
 	try {
@@ -88,6 +89,14 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 		if (login) {
 			if (canonicalPath(login.entry) !== canonicalPath(launcherPath(home)) || canonicalPath(login.node) !== canonicalPath(process.execPath))
 				throw new Error("The configured launcher or Node has changed. Repair login-start before updating.");
+		}
+		const supervisorId = login && stopFor ? before.host?.supervisor : undefined;
+		const supervisor = supervisorId ? liveSupervisor(installation.directory) : undefined;
+		if (supervisorId && (!supervisor || supervisor.instance !== supervisorId || supervisor.owner !== login!.owner
+			|| canonicalPath(supervisor.entry) !== canonicalPath(login!.entry) || canonicalPath(supervisor.node) !== canonicalPath(login!.node)))
+			throw new Error("The login supervisor changed before application.");
+		// A verified live wrapper owns this handoff; OS manager state concerns its next login launch.
+		if (login && !supervisor) {
 			const status = await managerStatus(login);
 			if (status.error || before.state === "running" && !status.enabled)
 				throw new Error(status.error ?? "Login-start is disabled. Enable it before updating a running host.");
@@ -98,7 +107,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 				...(stopFor ? { checkpoint: { id: checkpoint!, target: stopFor } } : {}) });
 			if (result.deferred !== undefined) return { deferred: result.deferred };
 		}
-		if (login) {
+		if (login && !supervisor) {
 			const until = Date.now() + 30_000;
 			for (;;) {
 				const status = await managerStatus(login);

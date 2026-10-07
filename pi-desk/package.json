@@ -1,6 +1,6 @@
 {
   "name": "@gunba/pi-desk",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "A desktop and mobile client for Pi.",
   "type": "module",
   "license": "MIT",
@@ -29,8 +29,8 @@
     "@azure/msal-browser": "5.23.0",
     "@azure/msal-node": "7.0.0",
     "@azure/msal-node-extensions": "5.5.1",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-tui": "1.0.4",
     "jose": "6.2.12",
     "mdast-util-from-markdown": "2.0.2",
     "proper-lockfile": "4.1.2",

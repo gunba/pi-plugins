@@ -87,6 +87,7 @@ export interface TreePage {
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -108,9 +109,10 @@ export interface SessionView {
 	leaf?: string | null;
 	controls?: ControlStatus[];
 	activation?: string;
+	workerRuntime?: WorkerRuntimeInfo;
 	inputs?: InputStatus[];
 }
-export interface HostState { release: ReleaseInfo; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
+export interface HostState { release: ReleaseInfo; operatorAvailability?: import("./operator.ts").OperatorAvailability; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
@@ -121,7 +123,7 @@ export type HostEvent =
 export interface WorkerInit {
 	cwd: string; agentDir?: string; sessionFile?: string; sessionDir?: string; ephemeral?: boolean;
 	leaf?: string | null; attachmentScope?: string;
-	/** Host-owned code location, carried over private IPC rather than worker environment. */
+	/** Code location pinned in the private worker bootstrap, not its environment. */
 	runtimeDirectory?: string;
 	providerAccountsDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
@@ -143,7 +145,9 @@ export type WorkerCommand =
 	| { kind: "compact"; instructions?: string }
 	| { kind: "asset"; id: string; origin: ReferenceOrigin }
 	| { kind: "artifact"; id: string; offset: number; query?: string; origin: ReferenceOrigin }
-	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" }
+	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" | "now" }
+	| { kind: "native_read"; name: string; args: string }
+	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
@@ -152,9 +156,20 @@ export type WorkerCommand =
 	| { kind: "account"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
 	| { kind: "reload" };
+export interface WorkerState {
+	runtime?: WorkerRuntimeInfo;
+	snapshot?: SessionSnapshot;
+	controls: ControlStatus[];
+	historyReady?: string;
+	initialGeneration?: string;
+}
+export type WorkerReceipt = { state: "missing" | "running" | "retired" } | { state: "finished"; result: Extract<WorkerMessage, { type: "result" }> };
 export type WorkerRequest =
 	| { type: "init"; id: string; options: WorkerInit }
-	| { type: "shutdown"; id: string }
+	| { type: "shutdown"; id: string; force?: boolean }
+	| { type: "describe"; id: string }
+	| { type: "receipt"; id: string; target: string; wait?: boolean }
+	| { type: "control"; id: string; generation: string; command: import("./controls.ts").ControlCommand | { kind: "close" } }
 	| { type: "checkpoint"; id: string; action: import("./checkpoint.ts").CheckpointAction; checkpoint: string }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
@@ -171,4 +186,5 @@ export type WorkerMessage =
 	| { type: "transcript"; source: string; event: TranscriptEvent }
 	| { type: "open_view"; view: string; section?: string }
 	| { type: "ui"; snapshot: PresentationSnapshot }
+	| { type: "detached"; error: string }
 	| { type: "fatal"; error: string };

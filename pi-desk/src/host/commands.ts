@@ -83,8 +83,10 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (!Number.isSafeInteger(data.revision) || Number(data.revision) < 0) throw new Error("Invalid view revision.");
 			return { kind: data.kind, view: string(data.view, 200), revision: Number(data.revision),
 				action: string(data.action, 200), value: data.value as UiValue | undefined };
+		case "native": case "native_read":
+			return { kind: data.kind, name: string(data.name, 100), args: string(data.args, 10_000) };
 		case "prompt":
-			if (data.behavior !== undefined && data.behavior !== "steer" && data.behavior !== "followUp") throw new Error("Invalid queue behavior.");
+			if (data.behavior !== undefined && data.behavior !== "steer" && data.behavior !== "followUp" && data.behavior !== "now") throw new Error("Invalid queue behavior.");
 			if (data.attachments !== undefined && (!Array.isArray(data.attachments) || data.attachments.length > FILE_COUNT)) throw new Error("Invalid attachments.");
 			return { kind: data.kind, text: string(data.text), behavior: data.behavior,
 				attachments: data.attachments?.map((id: unknown) => string(id, 64)) };

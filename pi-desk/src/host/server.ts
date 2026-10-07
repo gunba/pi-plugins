@@ -11,6 +11,7 @@ import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
 import { commandFrom, workerCommandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
+import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
 import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
@@ -27,6 +28,8 @@ import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/relea
 import { InputLedger } from "./inputs.ts";
 import { ProviderAccounts } from "./provider-accounts.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
+import { liveSupervisor } from "./login-supervisor.ts";
+import { operatorAvailability, setOperatorAvailability } from "./operator.ts";
 import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { readState } from "../../manage/store.ts";
 import { Attachments } from "./attachments.ts";
@@ -48,7 +51,7 @@ import { LEASE_MS } from "../../../pi-party/store.ts";
 import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
-interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void> }
+interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -91,6 +94,7 @@ export class DeskHost {
 	private attemptWindow = new Map<string, { count: number; until: number }>();
 	private closing = false;
 	private closeJob?: Promise<void>;
+	private preserveWorkers = false;
 	private control?: HostControl;
 	private directory = "";
 	private runtime?: string;
@@ -140,14 +144,20 @@ export class DeskHost {
 					const file = view.snapshot?.file ?? view.file;
 					return file ? [dirname(file)] : [];
 				}));
-			for (const view of this.catalog.read()) this.sessions.set(view.key, {
-				view: { ...view, activation: randomUUID(), inputs: this.inputs.pending(view.key) },
-			});
+			const adoption = new Map<string, string>();
+			for (const view of this.catalog.read()) {
+				const location = workerDirectory(directory, view.key);
+				const record = view.interrupted ? readWorkerRecord(location) : undefined;
+				const live = !!record && workerOccupied(location);
+				if (live) adoption.set(view.key, record.instance);
+				else this.inputs.interrupt(view.key, "No live worker was attached");
+				this.sessions.set(view.key, { view: { ...view, activation: live ? view.activation ?? randomUUID() : randomUUID(),
+					inputs: this.inputs.pending(view.key) } });
+			}
 			const restoreTicket = this.recoverUpdateReferences();
-			this.restoringUpdate = !!restoreTicket;
+			this.restoringUpdate = !!restoreTicket || adoption.size > 0;
 			this.checkpoints = new UpdateCheckpoints(this.inputs, () => [...this.sessions.values()].flatMap(managed => managed.worker ? [{
-				key: managed.view.key, worker: managed.worker, ready: !!managed.initialized && managed.view.state === "ready",
-				controlBusy: !!managed.view.controls?.some(control => control.state === "running"), draining: managed.draining,
+				key: managed.view.key, worker: managed.worker,
 			}] : []), () => {
 				this.refreshUpdates();
 				for (const managed of this.sessions.values()) this.drainInputs(managed);
@@ -196,6 +206,14 @@ export class DeskHost {
 				this.refreshUpdates();
 				this.scheduleUpdateCheck();
 			}
+			if (!restoreTicket) {
+				for (const [key, instance] of adoption) {
+					const managed = this.sessions.get(key)!;
+					this.createSession(managed.view.cwd, managed.view.file, managed, false, undefined, instance);
+				}
+				this.restoringUpdate = false;
+				this.refreshUpdates();
+			}
 			if (restoreTicket) this.restoreUpdateJob = this.restoreUpdatedConversations(restoreTicket).catch(error => {
 				console.error("Conversation restoration failed:", error instanceof Error ? error.message : String(error));
 			}).finally(() => {
@@ -240,6 +258,22 @@ export class DeskHost {
 	}
 
 	private async restoreUpdatedConversations(ticket: UpdateCheckpoint): Promise<void> {
+		if (ticket.workers) {
+			await Promise.all(ticket.workers.map(async actor => {
+				try {
+					const existing = this.sessions.get(actor.key);
+					if (!existing || !isOpenSession(existing.view) || existing.worker)
+						throw new Error("The saved actor reference was closed or changed; no replacement was started.");
+					this.createSession(existing.view.cwd, existing.view.file, existing, false, undefined, actor.instance);
+					await this.waitForSession(actor.key);
+					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key);
+				} catch (error) {
+					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key, error instanceof Error ? error.message : String(error));
+				}
+			}));
+			if (!this.closing) this.inputs!.completeCheckpoint(ticket.id);
+			return;
+		}
 		const workers: { key: string; worker: SessionWorker }[] = [];
 		try {
 			await Promise.all(ticket.sessions.map(async actor => {
@@ -280,7 +314,7 @@ export class DeskHost {
 	}
 
 	state(): HostState {
-		return { release: RELEASE, name: hostname(), platform: process.platform, cwd: this.options.cwd,
+		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
 			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError };
 	}
@@ -340,10 +374,12 @@ export class DeskHost {
 		return {
 			release: RELEASE, instance: this.control!.record.instance, pid: process.pid, started: this.control!.record.started,
 			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir!,
-			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime, checkpoint: this.checkpoints?.status(),
+			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime,
+			supervisor: liveSupervisor(this.directory)?.instance === process.env.PI_DESK_SUPERVISOR ? process.env.PI_DESK_SUPERVISOR : undefined,
+			checkpoint: this.checkpoints?.status(),
 			restore: ticket && this.runtime && [ticket.source, ticket.target].includes(this.runtime)
 				&& ["committed", "complete"].includes(ticket.state)
-				? { id: ticket.id, pending: this.restoringUpdate, failures: ticket.sessions.filter(actor => actor.error).length } : undefined,
+				? { id: ticket.id, pending: this.restoringUpdate, failures: (ticket.workers ?? ticket.sessions).filter(actor => actor.error).length } : undefined,
 			sessions: { active: active.length,
 				working: active.filter(({ view }) => view.state === "starting" || view.snapshot?.activity !== "idle"
 					|| view.controls?.some(control => control.state === "running")).length,
@@ -444,7 +480,11 @@ export class DeskHost {
 		} else if (message.type === "ui") managed.view = { ...managed.view, ui: message.snapshot,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
-		else if (message.type === "fatal") {
+		else if (message.type === "detached") {
+			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true,
+				snapshot: undefined, ui: undefined, historyReady: false };
+			managed.worker = undefined;
+		} else if (message.type === "fatal") {
 			this.inputs?.interrupt(key, "The session worker stopped");
 			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined, historyReady: false,
 				inputs: this.inputs?.pending(key) };
@@ -470,11 +510,29 @@ export class DeskHost {
 		return new Attachments(this.options.agentDir!, key, id => (referenced ??= this.inputs!.files(key)).has(id));
 	}
 
+	private async reconcileInputs(managed: ManagedSession): Promise<void> {
+		const worker = managed.worker!, key = managed.view.key;
+		try {
+			for (const input of this.inputs!.pending(key).filter(input => input.state === "sending")) {
+				const receipt = await worker.receipt(input.id, true);
+				if (this.closing || managed.worker !== worker) return;
+				if (receipt.state === "finished") this.inputs!.settle(key, input.id, receipt.result.error ? "failed" : "accepted", receipt.result.error);
+				else this.inputs!.settle(key, input.id, "interrupted", "The worker could not confirm this message receipt. It was not resent.");
+				this.inputEvent(managed);
+			}
+		} catch (error) {
+			if (!this.closing && managed.worker === worker) console.error("Worker input receipts could not be reconciled:", error instanceof Error ? error.message : String(error));
+		} finally {
+			managed.reconciling = false;
+			if (!this.closing) this.drainInputs(managed);
+		}
+	}
+
 	private drainInputs(managed: ManagedSession): void {
-		if (managed.draining || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
+		if (managed.draining || managed.reconciling || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
 			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
 		const worker = managed.worker, key = managed.view.key;
-		// Admission returns before IPC dispatch, leaving queued input cancellable.
+		// Admission returns before worker dispatch, leaving queued input cancellable.
 		managed.draining = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
 			while (!this.closing && !this.checkpoints?.held && !this.restoringUpdate && managed.worker === worker && managed.view.state === "ready"
 				&& !managed.view.controls?.some(control => control.state === "running")) {
@@ -488,7 +546,7 @@ export class DeskHost {
 					continue;
 				}
 				try {
-					// Pin files before IPC: an input handler can observe them before native admission.
+					// Pin files before dispatch: an input handler can observe them before native admission.
 					this.attachments(key).retain(input.command.attachments ?? []);
 					this.inputs!.settle(key, input.id, "sending");
 					this.inputEvent(managed);
@@ -496,6 +554,7 @@ export class DeskHost {
 						behavior: input.command.behavior ?? (input.generation === undefined ? "steer" : undefined) }, generation, input.id);
 					this.inputs!.settle(key, input.id, "accepted");
 				} catch (error) {
+					if (this.closing && this.preserveWorkers) return;
 					this.inputs!.settle(key, input.id, error instanceof WorkerConnectionError ? "interrupted" : "failed",
 						error instanceof Error ? error.message : String(error));
 					this.inputs!.interrupt(key, "An earlier message failed");
@@ -631,7 +690,7 @@ export class DeskHost {
 				const managed = [...this.sessions.values()].find(({ view }) => (view.snapshot?.id ?? view.agentId) === member.session);
 				const wasOpen = !!managed?.worker || member.heartbeat > Date.now() - LEASE_MS;
 				if (managed?.worker) {
-					const id = randomUUID(); managed.worker.submitControl({ kind: "close" }, managed.worker.generation, id);
+					const id = randomUUID(); await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, id);
 					this.inputs!.interrupt(managed.view.key, "The party was closed"); this.inputEvent(managed);
 					await this.waitForControl(managed.view.key, id);
 				} else if (member.heartbeat > Date.now() - LEASE_MS) {
@@ -731,7 +790,7 @@ export class DeskHost {
 		}
 	}
 
-	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, checkpoint?: string): string {
+	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, checkpoint?: string, adopt?: string): string {
 		if (this.closing || this.checkpoints?.held) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
@@ -746,7 +805,7 @@ export class DeskHost {
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
-			snapshot: undefined, ui: undefined, historyReady: false, activation: randomUUID(), inputs: this.inputs!.pending(key) } };
+			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
 		this.emit({ type: "session", session: managed.view });
 		try { this.persist(true); }
@@ -759,7 +818,7 @@ export class DeskHost {
 		try {
 			worker = new SessionWorker(options, message => {
 				if (this.sessions.get(key)?.worker === worker) this.workerEvent(key, message);
-			});
+			}, { directory: this.directory, key, adopt });
 		} catch (error) {
 			if (existing) this.sessions.set(key, existing); else this.sessions.delete(key);
 			this.persistEvent(true); this.emit({ type: "state", state: this.state() });
@@ -767,16 +826,19 @@ export class DeskHost {
 		}
 		managed.worker = worker;
 		this.refreshUpdates();
-		void worker.start(options).then(snapshot => {
+		void worker.start().then(snapshot => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			managed.view = { ...managed.view, agentId: snapshot.id, ...sessionDisplay(snapshot), state: "ready",
-				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf };
-			managed.initialized = true; managed.initialGeneration = snapshot.ui.generation;
+				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf,
+				workerRuntime: worker.runtime };
+			managed.initialized = true; managed.initialGeneration = worker.initialGeneration ?? snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
-			this.refreshParties(); this.drainInputs(managed);
+			this.refreshParties();
+			managed.reconciling = true;
+			void this.reconcileInputs(managed);
 		}).catch(error => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
@@ -785,7 +847,7 @@ export class DeskHost {
 				inputs: this.inputs!.pending(key) };
 			this.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
-			void worker.close().catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.refreshUpdates(); });
+			void (adopt ? worker.detach() : worker.close()).catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.refreshUpdates(); });
 		});
 		return key;
 	}
@@ -850,7 +912,7 @@ export class DeskHost {
 							json(response, 202, { instance: this.control.record.instance, checkpoint }); return;
 						}
 						await this.checkpoints.commit(id, target);
-						this.closing = true;
+						this.closing = true; this.preserveWorkers = true;
 						json(response, 202, { instance: this.control.record.instance });
 						setImmediate(() => { void this.close().catch(() => {}); }); return;
 					}
@@ -1112,6 +1174,7 @@ export class DeskHost {
 						: managed.initialized && managed.initialGeneration !== managed.view.ui?.generation) throw new StaleGeneration();
 					if (!input!.command.text.trim() && !input!.command.attachments?.length) throw new Error("Enter a message or attach a file.");
 					this.attachments(key).check(input!.command.attachments ?? []);
+					if (input!.command.behavior === "now" && !managed.worker.runtime?.sendNow) throw new Error("This worker does not support Send now. Restart this conversation when idle to enable it.");
 					const accepted = this.inputs!.admit(key, input!);
 					this.inputEvent(managed);
 					this.drainInputs(managed);
@@ -1133,7 +1196,7 @@ export class DeskHost {
 						this.emit({ type: "session", session: managed.view });
 						return reply({ accepted: true });
 					}
-					const result = managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
+					const result = await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
 					if (result.control.state === "running") {
 						this.inputs!.interrupt(managed.view.key, "The conversation is closing");
 						this.inputEvent(managed);
@@ -1159,7 +1222,7 @@ export class DeskHost {
 					if (isControl(command)) {
 						if (command.kind !== "abort" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
 							throw new Error("Cancel or finish pending messages before changing this session.");
-						return reply({ result: managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
+						return reply({ result: await managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
 					}
 					const result = await managed.worker.command(command, string(data.generation, 100), string(data.id, 100));
 					return reply({ result: result ?? null });
@@ -1189,6 +1252,12 @@ export class DeskHost {
 						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
 						line: url.searchParams.has("line") ? Number(url.searchParams.get("line")) : undefined })));
 				}
+			}
+			if (url.pathname === "/api/operator-availability" && request.method === "POST") {
+				if (data.mode !== "present" && data.mode !== "away") throw Error("Choose Present or Away.");
+				const value = setOperatorAvailability(this.directory, data.mode);
+				this.emit({ type: "state", state: this.state() });
+				return reply(value);
 			}
 			if (url.pathname === "/api/history" && request.method === "GET") {
 				return reply(await this.saved!.page({
@@ -1220,6 +1289,11 @@ export class DeskHost {
 			error instanceof WorkerConnectionError ? 503 : error instanceof CatalogChanged || error instanceof StaleGeneration || error instanceof ReceiptConflict ? 409 : 400); }
 	}
 
+	closeForUpdate(): Promise<void> {
+		this.preserveWorkers = true;
+		return this.close();
+	}
+
 	close(): Promise<void> {
 		return this.closeJob ??= this.stop().then(this.resolveClosed, error => { this.rejectClosed(error); throw error; });
 	}
@@ -1241,11 +1315,11 @@ export class DeskHost {
 		try { this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
-		const workers = await Promise.allSettled([...this.sessions.values()].map(item => item.worker?.close()));
+		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));
 		for (const result of workers) if (result.status === "rejected") errors.push(result.reason);
 		try {
 			const ticket = this.inputs?.checkpoint();
-			if (ticket?.state === "committed") {
+			if (!this.preserveWorkers && ticket?.state === "committed" && !ticket.workers) {
 				for (const actor of ticket.sessions) {
 					const final = this.sessions.get(actor.key)?.worker?.closedCheckpoint;
 					if (final?.checkpoint === ticket.id && final.session === actor.session && final.file === actor.file) actor.leaf = final.leaf;
@@ -1256,7 +1330,10 @@ export class DeskHost {
 		} catch (error) { errors.push(error); }
 		await Promise.all([...this.sessions.values()].map(item => item.draining));
 		await this.checkpoints?.settled(); await this.restoreUpdateJob;
-		try { this.inputs?.interrupt(undefined, "The host stopped"); this.inputs?.close(); } catch (error) { errors.push(error); }
+		try {
+			if (!this.preserveWorkers) this.inputs?.interrupt(undefined, "The host stopped");
+			this.inputs?.close();
+		} catch (error) { errors.push(error); }
 		const closed = new Promise<void>(resolve => this.server.close(() => resolve()));
 		this.server.closeAllConnections();
 		await closed;

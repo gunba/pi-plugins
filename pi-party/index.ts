@@ -127,11 +127,15 @@ export default function party(pi: ExtensionAPI): void {
 		pumping = true;
 		try {
 			syncFlight();
-			const pending = store.pending(session, owner).filter(message => !inFlight.has(message.id)).slice(0, 8);
-			const wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
-			// Working steering and silent delivery do not start an autonomous run.
+			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id));
+			let pending = queued.slice(0, 8);
+			let wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
+			// Hold autonomous starts, not silent context behind the held batch.
 			// Managed child starts are accounted by their owning driver.
-			if (wake && !store.reserveWake(session, owner)) { publish(); return; }
+			if (wake && !store.reserveWake(session, owner)) {
+				pending = queued.filter(message => message.wake === 0).slice(0, 8);
+				wake = false;
+			}
 			for (let index = 0; index < pending.length; index++) {
 				const message = pending[index];
 				inFlight.add(message.id);
@@ -442,7 +446,7 @@ export default function party(pi: ExtensionAPI): void {
 			const self = member();
 			if (!self?.room) throw Error("Join a party before inviting agents.");
 			const sent = sendPartyMessage(params.agent, params.message?.trim() || `Invitation to party ${self.room}.`, params.wake !== false, true);
-			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, recipient: publicAgent(database().member(message.recipient)!) })), party: self.room });
+			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, wakeRequested: message.wake === 1, recipient: publicAgent(database().member(message.recipient)!) })), party: self.room });
 		},
 	});
 	pi.registerTool({
@@ -471,7 +475,7 @@ export default function party(pi: ExtensionAPI): void {
 		renderResult: (result, options, theme, context) => renderPartyResult("send", result, options, theme, context, peerLabel),
 		async execute(_id, params) {
 			const sent = sendPartyMessage(params.to, params.message, params.wake !== false);
-			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, recipient: publicAgent(database().member(message.recipient)!) })) });
+			return result({ queued: sent.map(message => ({ id: message.id, to: message.recipient, wakeRequested: message.wake === 1, recipient: publicAgent(database().member(message.recipient)!) })) });
 		},
 	});
 	pi.registerTool({

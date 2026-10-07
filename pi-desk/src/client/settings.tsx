@@ -35,8 +35,8 @@ export function SettingsLayout({ active, sections, choose, children, enabled = t
 		<div className="settings-content">{children}</div>
 	</div>;
 }
-export function SettingsContent({ section, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore }: {
-	section: string; host: WorkspaceState; account?: BrowserAccount; session?: SessionView; computer?: Computer;
+export function SettingsContent({ section, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore, providerHint }: {
+	section: string; host: WorkspaceState; account?: BrowserAccount; session?: SessionView; computer?: Computer; providerHint?: string;
 	connected: boolean; busy: boolean; settingBusy: boolean; invoke: (command: WorkerCommand) => Promise<unknown>;
 	compose: (text: string) => void; restore: (target: string, text: string) => void;
 }) {
@@ -44,9 +44,21 @@ export function SettingsContent({ section, host, account, session, computer, con
 	const [error, setError] = useState("");
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(error => setError(String(error))); };
 	const snapshot = session?.snapshot, ui = session?.ui, controls = session?.controls ?? [];
+	const availability = computer ? computer.operatorAvailability : host.operatorAvailability;
 	return <>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{section === "general" && <>
+			<section className="panel-card"><h3><Icon name="settings" />Availability · {computer?.name ?? host.name}</h3>
+				<label className="setting-control">Operator<select disabled={!connected || !availability} value={availability?.mode ?? "present"}
+					onChange={event => run(api("/operator-availability", { mode: event.target.value }, computer?.id))}>
+					<option value="present">Present</option><option value="away">Away</option>
+				</select></label>
+				<p className="muted">Away keeps optional questions from pausing work. Required approvals still wait for you. Existing questions are kept.</p>
+				{!availability && <p className="muted">Availability requires a newer Desk host on this computer.</p>}
+				{host.sessions.some(item => item.state !== "closed" && item.workerRuntime?.unattended !== true
+					&& (!computer || (item as { computer?: string }).computer === computer.id))
+					&& <p className="muted">Some conversations use older workers. Restart them when idle to apply availability.</p>}
+			</section>
 			<section className="panel-card"><h3><Icon name="settings" />Appearance</h3>
 				<label className="setting-control">Theme<select value={theme} onChange={event => {
 					setTheme(event.target.value); document.documentElement.dataset.theme = event.target.value;
@@ -59,7 +71,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 				<button className="quiet-action" onClick={() => location.reload()}><Icon name="refresh" />Reload app</button>
 			</section>
 		</>}
-		{section === "accounts" && <ProviderAccountsPanel host={host} computer={computer} session={session} connected={connected} busy={settingBusy} invoke={invoke} />}
+		{section === "accounts" && <ProviderAccountsPanel host={host} computer={computer} session={session} connected={connected} busy={settingBusy} invoke={invoke} providerHint={providerHint} />}
 		{section === "computers" && (account ? <Computers computers={host.computers ?? []} account={account} /> : <>
 			{host.updates && <section className="panel-card"><h3>Software updates</h3>
 				<SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></section>}
@@ -67,6 +79,9 @@ export function SettingsContent({ section, host, account, session, computer, con
 		</>)}
 		{section === "conversation" && <>
 			{session ? <section className="panel-card"><h3><Icon name="chat" />Conversation</h3>
+				{session.workerRuntime && <p className="muted">Worker {session.workerRuntime.version} · Plugins {session.workerRuntime.plugins} · Pi {session.workerRuntime.engine}
+					{computer?.release && computer.release.version !== session.workerRuntime.version && <>. Host {computer.release.version}; this conversation keeps its loaded code until restarted.</>}
+				</p>}
 				<label className="setting-control">Pin conversation<input type="checkbox" role="switch" checked={!!session.pinned}
 					disabled={busy || !connected} onChange={event => run(api(`/sessions/${session.key}/metadata`,
 						{ generation: ui?.generation, pinned: event.target.checked }))} /></label>

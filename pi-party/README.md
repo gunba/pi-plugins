@@ -100,14 +100,17 @@ No model calls are made for discovery, membership changes or reading history.
 
 `wake=false` supplies information without starting an idle recipient.
 The default `wake=true` requests a reply when the recipient can receive it;
-the send result reports the recipient's state, delivery status and whether
-it can be awakened. Queued does not mean received or answered. Cross-computer receipts report whether
+the send result records the wake request and reports the recipient's state,
+delivery status and whether it can be awakened. Held delivery reasons are shown
+with the send result; history distinguishes reply requests from silent messages.
+Queued does not mean received, started or answered. Cross-computer receipts report whether
 the receiving inbox accepted the message, or why delivery failed. Sending to a
 disconnected computer fails explicitly rather than silently queueing it.
 
 Automatic idle starts are limited to eight per recipient between resets.
 Coordination delivered to working agents, silent messages and context attached
-to a human prompt do not spend that budget. Managed child starts are counted by
+to a human prompt do not spend that budget. Held wake requests do not block later
+silent messages; explicit delivery pauses still hold both. Managed child starts are counted by
 their owning driver. Party controls and the Desk sidebar show when a wake is held.
 Agents can read held messages with `party_read` or reset the budget with
 `party_delivery({enabled:true})`.

@@ -97,6 +97,15 @@ test("party tool and incoming previews retain useful text and names without expo
 	assert.match(plain(call), /Direct → Studio Bridge/);
 	assert.match(plain(call), /Cleanup ready/);
 	assert.match(plain(status), /FYI · no wake/);
+	const held = { content: [{ type: "text", text: JSON.stringify({ queued: [{
+		id: "receipt-private", to: recipient, wakeRequested: true,
+		recipient: { delivery: "paused", deliveryReason: "Automatic delivery is paused." },
+	}] }) }], details: {} };
+	const heldStatus = plain(renderPartyResult("send", held, { expanded: false, isPartial: false }, theme,
+		{ ...ctx, args: { ...args, wake: true } }, label));
+	assert.match(heldStatus, /reply requested/);
+	assert.match(heldStatus, /Studio Bridge.*Automatic delivery is paused/);
+	assert.doesNotMatch(heldStatus, /receipt-private|22222222/);
 	assert.doesNotMatch(plain(status), /receipt-private|22222222/);
 	assert.match(plain(renderPartyCall("send", args, theme, { ...ctx, expanded: true }, label)), /Second paragraph/);
 	assert.match(plain(renderPartyCall("send", { ...args, to: "all" }, theme, ctx, label)), /everyone/);

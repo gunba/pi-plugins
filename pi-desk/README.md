@@ -455,18 +455,24 @@ their conversation and question. Switching between a comment and a freeform
 answer keeps the same text. Long questions scroll while their answer actions
 stay visible within the viewport.
 
-Type `/` in the composer to discover loaded extension commands, templates and
-skills. Arrow keys select a match, Tab completes it and Escape hides the list.
-Desk also provides `/settings [section]`, `/new [directory]`, `/resume`,
-`/name [name]`, `/compact [instructions]`, `/reload`, `/fork`, `/tree` and `/help`.
-`/fork` and `/tree` open native branch history. `/fork <entry-id> [at|before]`
-forks a specified entry; `before` offers its user message for editing. Enter
-parameters after the completed name, such as `/fast ultrafast`; the composer
-shows the command description and sends the original arguments. A loaded native
-command with the same name keeps precedence. `/name` opens the inline title
-editor. `/help` lists what Desk and the loaded native resources expose. Native
-Pi retains dispatch of other slash text; terminal-only commands are not implied
-by the menu. Literal file paths remain messages, not commands.
+Type `/` to browse the worker’s installed Pi commands, loaded extension commands,
+templates and skills. Arrow keys select a match, Tab completes it and Escape
+hides the list. Arguments remain intact, for example `/fast ultrafast`.
+
+Browser handlers open the relevant native controls or Settings. `/name [name]`
+and its `/rename` alias rename the conversation; `/fork <entry-id> [at|before]`
+chooses a branch, and `/clone` forks the current leaf. `/model [provider/model]`
+and `/thinking [level]` select the current conversation’s model and reasoning.
+`/export [path]` writes HTML, or JSONL when the path ends in `.jsonl`; its saved
+path appears in control history. `/import <path>` opens a native JSONL import.
+`/copy`, `/session` and `/changelog` use native session reads. `/help` shows the
+complete inventory and capability gaps. `/quit` closes only this conversation.
+
+There is no separate supported-command catalog. Native built-in names take
+precedence; qualified extension aliases remain available. Terminal selectors
+and upload/report consent flows without a Desk bridge remain listed with an
+explanation. Recognized built-ins cannot silently become model prompts. Literal
+file paths remain messages, not commands.
 
 ### Opening context
 

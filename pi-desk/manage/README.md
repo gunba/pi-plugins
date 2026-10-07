@@ -26,16 +26,24 @@ normal management/startup locks while the authenticated local control endpoint
 atomically checks the worker count and closes admission. A new worker arriving
 before that check defers activation.
 
-The login-start wrapper exits with the host. Selection waits for it, reuses the
-saved launcher/Node and restarts without reinstalling the service/task. Idle
-sessions still count as workers; interrupted references do not. Browser update
-requests authorize only this fixed release operation, not shell commands or
-client-supplied download URLs.
+Idle sessions still count as workers for automatic activation; interrupted
+references do not. Browser update requests authorize only this fixed release
+operation, not shell commands or client-supplied download URLs.
 
-An explicit browser confirmation can instead request `apply-now`. It is bound
-to the prepared runtime identity and rejected if that identity changes before
-selection. This uses the same launcher path but allows graceful worker shutdown;
-the workspace retains interrupted references for explicit Resume.
+Explicit `apply-now` and `update-now` replace the host while independent actors
+keep running. Application is bound to the verified prepared identity. A brief
+admission hold commits actor identities and input receipts; the replacement
+host adopts those same actors rather than restarting their native sessions.
+Accepted messages, questions, tools and child processes remain with the actor.
+An uncertain input is reconciled from its original receipt, never resent.
+
+The lease-backed login supervisor stays alive across this host handoff and
+starts the replacement through the saved stable launcher. Its owner, instance,
+Node and entry must match the authenticated host and login configuration. A
+verified live wrapper owns the transition; the OS manager's enabled state
+controls future login launches, not this running wrapper. Without that verified
+supervisor, selection still waits for the login-start process to stop. No
+service or scheduled task is reinstalled during application.
 
 Release detection runs at startup and every six hours, cached against the active
 runtime identity in `release-check.json`. It checks public release metadata only,
@@ -50,22 +58,27 @@ Selection does not start a host, resume conversations or restore older data.
 `launch.mjs` is a small, stable Node entry point. It selects versioned
 `dist/host/managed.js`, which supplies the saved host defaults and invokes the
 normal CLI. Login-start points to this launcher, not to a version directory.
-The launcher sets the host's code identity; workers receive it over private IPC
-without inheriting the host's Desk environment.
+The launcher sets the host's code identity. Each independent worker keeps its
+own runtime pin and is attached through an authenticated loopback channel and
+private registry, without inheriting the host's Desk process markers.
 
 ## Selection and lifecycle
 
 Staging and activation share the installation's `manage` lease. Configuration
 and activation then acquire `login-edit`, `launch` and `host`, in that order.
-Both the host and its login-start process must be stopped before selection.
-An unresponsive process is not treated as permission to stop or replace it.
+Configuration and direct selection require a stopped host and login-start
+process. Explicit host handoff permits the verified supervisor to remain alive;
+automatic idle application still waits for the manager to stop. An unresponsive
+process is not treated as permission to stop or replace it.
 
 The server checks the selected identity **after acquiring the host lease**.
 A launcher that loaded the old version just before activation therefore cannot
-start that old host afterward. Active conversations are not an update boundary:
-idle Pi sessions may still own questions, children, timers or automatic plans.
+start that old host afterward. Host replacement does not upgrade loaded actor
+code: each actor retains its original Desk, plugin and Pi versions until its
+individual restart. Conversation Settings reports these separately from the
+host. Explicit conversation close still shuts down its native work.
 
-Native resource discovery sees the selected first-party snapshot. Actual
+Native resource discovery sees each actor's pinned first-party snapshot. Actual
 settings persistence, resource filters and project trust remain native.
 Parent tool-source metadata points to the snapshot, so late child-provider
 loading does not depend on files surviving the next Pi package update.

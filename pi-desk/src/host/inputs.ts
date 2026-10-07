@@ -33,7 +33,6 @@ export class InputLedger {
 				files INTEGER NOT NULL, error TEXT, PRIMARY KEY(session, id));
 			CREATE INDEX IF NOT EXISTS inputs_pending ON inputs(session, state, created);
 			CREATE TABLE IF NOT EXISTS update_checkpoint (singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL);`);
-		this.interrupt(undefined, "The host stopped");
 	}
 	checkpoint(): UpdateCheckpoint | undefined {
 		const row = this.db.prepare("SELECT payload FROM update_checkpoint WHERE singleton=1").get() as { payload: string } | undefined;
@@ -46,7 +45,7 @@ export class InputLedger {
 			.run(JSON.stringify(ticket));
 	}
 	finishCheckpointActor(id: string, key: string, error?: string): void {
-		const ticket = this.checkpoint(), actor = ticket?.sessions.find(actor => actor.key === key);
+		const ticket = this.checkpoint(), actor = (ticket?.workers ?? ticket?.sessions)?.find(actor => actor.key === key);
 		if (!ticket || ticket.id !== id || !["committed", "complete"].includes(ticket.state) || !actor) throw new Error("The restore checkpoint changed.");
 		actor.restored = true;
 		if (error) actor.error = error.slice(0, 2000);
@@ -54,7 +53,7 @@ export class InputLedger {
 	}
 	completeCheckpoint(id: string): void {
 		const ticket = this.checkpoint();
-		if (!ticket || ticket.id !== id || ticket.state !== "committed" || ticket.sessions.some(actor => !actor.restored))
+		if (!ticket || ticket.id !== id || ticket.state !== "committed" || (ticket.workers ?? ticket.sessions).some(actor => !actor.restored))
 			throw new Error("Conversation restoration is not complete.");
 		ticket.state = "complete"; this.writeCheckpoint(ticket);
 	}

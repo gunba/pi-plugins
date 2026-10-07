@@ -48,8 +48,8 @@ does not delete native history or sign out of the workspace.
 
 Open **Settings & tools → Computers**, expand a connected computer and choose
 **Update now**. Confirmation selects that computer and captures the published
-version or prepared runtime. Desk prepares verified code before interrupting any
-work; a changed published version needs a new selection. No maintenance
+version or prepared runtime. Desk prepares verified code before replacing the
+host; a changed published version needs a new selection. No maintenance
 conversation, service reinstall or administrator access is needed.
 
 Desk checks for updates at startup and every six hours, using a local cache.
@@ -57,17 +57,27 @@ Desk checks for updates at startup and every six hours, using a local cache.
 `/desk update` retains the quieter path: download while conversations continue,
 then apply automatically when no Pi workers remain, including idle workers.
 
-The confirmed website update holds input, saves native files and final branch
-positions, stops that computer's workers and starts the prepared runtime through
-the stable launcher. Its conversations reopen after reconnection. Previously
-running work receives one `Continue`; idle conversations stay idle. Managed
-children use their owning runtime and native task receipts. Model, thinking and
-context choices are retained. Original prompts, controls and tools are not
-resent. Other computers keep running.
+From 0.5.24, the confirmed website update holds new host admissions briefly,
+saves the catalog and input ledger, and replaces only the HTTP/relay host through
+the stable launcher. Independent workers keep their SDK sessions, tools, managed
+processes, native queues, children and unanswered questions. The new host attaches
+to those same authenticated actors. Accepted input outcomes are recovered by
+receipt, not by resending text. No additional `Continue` is sent; idle work stays
+idle. Other computers keep running.
 
-Queued opaque Pi context, pending host input, child task queues, opening workers
-and scopes without an owning checkpoint refuse the interruption rather than
-lose data. Failed or unconfirmed saves need manual attention, not replay.
+Workers retain the immutable SDK/plugin runtime in which they started. New
+conversations use the selected release. Conversation Settings distinguishes host
+and worker versions; restart an individual conversation when its work is safely
+checkpointed to load the newer worker. Reloading resources alone does not replace
+its SDK. Runtime selection keeps older slots for live actors and rollback.
+
+Hosts through 0.5.23 still own non-reconnectable workers. Their first move to
+0.5.24 requires one coordinated native checkpoint and restoration through the
+old controller. Queued opaque context, pending input or unsafe child scopes can
+refuse that migration rather than lose data. After migration, native work does
+not need to become idle for a host-only update. Host-owned sign-in/Dot operations
+and failed catalog saves still need to finish before cutover. Failed or
+unconfirmed outcomes need attention, not replay.
 Ordinary **Close** still removes a conversation from the workspace while keeping
 its native history. Native `/desk restart` and rollback remain explicit lifecycle
 operations; they do not opt into the website's continuation checkpoint.
@@ -138,6 +148,11 @@ for rollback.
 5. Run `/desk open`, check status/resource diagnostics, then explicitly resume
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
+
+Version 0.5.24 retains API 8; optional worker capabilities are advertised, so
+older connected computers can continue working with the updated website. Send
+now, availability and the full native command inventory require a supporting
+worker; their absence is not a claim that its loaded runtime was upgraded.
 
 Version 0.5.21 uses API 8: Dot connection commands select a saved account, and
 message/upload commands carry a connection binding. Coordinate hosts, shared

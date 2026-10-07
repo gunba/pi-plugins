@@ -6,7 +6,8 @@ import { loginEnvironment, loginFile, loginPathsValid, makeLoginConfig, readLogi
 import { disableManager, installManager, managerStatus, removeManager, startManager, stopManager, type LoginStatus } from "./login-manager.ts";
 import { probeHost, startHost, stopHost, type StartedHost } from "./lifecycle.ts";
 import { atomicJson } from "../../manage/store.ts";
-import { canonicalPath } from "../../manage/installation.ts";
+import { canonicalPath, selectedRuntime } from "../../manage/installation.ts";
+import { LoginSupervisor, liveSupervisor, handoffTicket, waitHandoffSelection } from "./login-supervisor.ts";
 
 export async function loginStatus(directory: string): Promise<LoginStatus> {
 	const config = readLoginConfig(directory);
@@ -108,7 +109,7 @@ export async function startLogin(config: LoginConfig): Promise<StartedHost> {
 	const current = await probeHost(config.directory);
 	if (current.state === "running") return { host: current.host!, reused: true };
 	if (current.state !== "stopped") throw new Error(`Host is ${current.state}. ${current.error ?? "Wait for shutdown."}`);
-	await startManager(config);
+	if (!liveSupervisor(config.directory)) await startManager(config);
 	const until = Date.now() + 30_000;
 	while (Date.now() < until) {
 		const status = await probeHost(config.directory);
@@ -119,14 +120,18 @@ export async function startLogin(config: LoginConfig): Promise<StartedHost> {
 	}
 	throw new Error(`Login-start is unconfirmed. Check login status and ${join(config.directory, "host.log")}. No process was killed.`);
 }
-export async function runLogin(directory: string): Promise<void> {
+export async function runLogin(directory: string,
+	services: { runtime: typeof selectedRuntime; start: typeof startHost } = { runtime: selectedRuntime, start: startHost }): Promise<void> {
 	const config = readLoginConfig(directory);
 	if (!config) throw new Error("Login-start is not configured.");
 	if (config.platform !== process.platform) throw new Error("Login-start was configured for another operating system. Reinstall it on this computer.");
 	if (!loginPathsValid(config)) throw new Error("Login-start paths have changed. Remove/reinstall it with the current Node/app paths.");
+	const runtime = services.runtime();
+	const supervisor = new LoginSupervisor(directory, config.owner, config.node, config.entry);
+	const abort = new AbortController();
 	let ready = false, stopping = false;
 	const stop = () => {
-		stopping = true;
+		stopping = true; abort.abort();
 		if (ready) void stopHost(directory).catch(error => console.error(error instanceof Error ? error.message : String(error)));
 	};
 	process.on("SIGTERM", stop); process.on("SIGINT", stop);
@@ -134,13 +139,25 @@ export async function runLogin(directory: string): Promise<void> {
 		const environment = loginEnvironment(config);
 		// The launcher supplies this non-secret code identity; never save it in login.json.
 		if (process.env.PI_DESK_RUNTIME) environment.PI_DESK_RUNTIME = process.env.PI_DESK_RUNTIME;
-		const started = await startHost(directory, config.cwd, config.arguments, { managed: true, environment });
-		rmSync(join(directory, "login-error.txt"), { force: true });
-		ready = true; if (stopping) stop();
-		const code = await started.exited;
-		if (code !== 0) throw new Error(`The login-start host exited (${code ?? "signal"}). Check host.log; saved workers were not restarted.`);
+		environment.PI_DESK_SUPERVISOR = supervisor.record.instance;
+		while (!stopping) {
+			ready = false;
+			const started = await services.start(directory, config.cwd, config.arguments,
+				{ managed: true, environment, entry: config.entry, waitForLaunch: 30_000, signal: abort.signal });
+			rmSync(join(directory, "login-error.txt"), { force: true });
+			ready = true; if (stopping) stop();
+			const code = await started.exited;
+			ready = false;
+			if (code !== 0) throw new Error(`The login-start host exited (${code ?? "signal"}). Check host.log; saved actors were left untouched.`);
+			if (stopping || !runtime) break;
+			const ticket = handoffTicket(directory, started.host.runtime);
+			if (!ticket) break;
+			await waitHandoffSelection(runtime.home, directory, ticket, abort.signal);
+			// The stable entry selects the new host, while this wrapper and its OS job stay alive.
+		}
 	} catch (error) {
+		if (stopping) return;
 		writeFileSync(join(directory, "login-error.txt"), `${error instanceof Error ? error.message : String(error)}\n`, { mode: 0o600 });
 		throw error;
-	} finally { process.off("SIGTERM", stop); process.off("SIGINT", stop); }
+	} finally { process.off("SIGTERM", stop); process.off("SIGINT", stop); supervisor.close(); }
 }

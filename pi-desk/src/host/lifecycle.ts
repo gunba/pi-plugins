@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSyn
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { SessionLease } from "../../../pi-session-ownership/lease.ts";
+import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
 import { readHostRecord, removeHostRecord, type HostRecord, type HostStatus } from "./host-control.ts";
 
 export interface HostProbe { state: "running" | "stopping" | "stopped" | "unresponsive"; host?: HostStatus; stale?: boolean; error?: string }
@@ -46,11 +46,19 @@ export interface StartedHost {
 	host: HostStatus; reused: boolean; exited?: Promise<number | null>;
 }
 export async function startHost(directory: string, cwd: string, arguments_: string[],
-	options: { managed?: boolean; environment?: NodeJS.ProcessEnv } = {}): Promise<StartedHost> {
+	options: { managed?: boolean; environment?: NodeJS.ProcessEnv; entry?: string; waitForLaunch?: number; signal?: AbortSignal } = {}): Promise<StartedHost> {
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	let launch: SessionLease;
-	try { launch = new SessionLease(join(directory, "launch")); }
-	catch { throw new Error("Another start command is in progress. Check status before trying again."); }
+	const until = Date.now() + (options.waitForLaunch ?? 0);
+	for (;;) {
+		options.signal?.throwIfAborted();
+		try { launch = new SessionLease(join(directory, "launch")); break; }
+		catch (error) {
+			if (!(error instanceof SessionOwnedError)) throw error;
+			if (Date.now() >= until) throw new Error("Another start command is in progress. Check status before trying again.");
+			await delay(100, undefined, { signal: options.signal }); // Only lease admission repeats; no process has been launched.
+		}
+	}
 	try {
 		const current = await probeHost(directory);
 		if (current.state === "running") {
@@ -58,13 +66,14 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 			return { host: current.host!, reused: true };
 		}
 		if (current.state !== "stopped") throw new Error(`Host is ${current.state}. ${current.error ?? "Wait for it to finish stopping."}`);
+		options.signal?.throwIfAborted();
 		const log = join(directory, "host.log");
 		if (existsSync(log) && statSync(log).size > 8 * 1024 * 1024) {
 			rmSync(`${log}.1`, { force: true }); renameSync(log, `${log}.1`);
 		}
 		const fd = openSync(log, "a", 0o600);
 		try {
-			const child = spawn(process.execPath, [fileURLToPath(new URL("./cli.js", import.meta.url)), "serve", ...arguments_, "--background"], {
+			const child = spawn(process.execPath, [options.entry ?? fileURLToPath(new URL("./cli.js", import.meta.url)), "serve", ...arguments_, "--background"], {
 				cwd, detached: !options.managed, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"], env: options.environment ?? process.env,
 			});
 			const exited = new Promise<number | null>(resolve => child.once("exit", resolve));
@@ -114,7 +123,7 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 			while (preparation.checkpoint.state === "preparing" && Date.now() < until)
 				preparation = await controlRequest(record, `update-checkpoint?id=${encodeURIComponent(id)}`);
 			if (preparation.checkpoint.state !== "ready" || preparation.checkpoint.id !== id || preparation.checkpoint.target !== target)
-				throw new Error(preparation.checkpoint.error ?? "Native checkpoints are not ready. The host was not stopped.");
+				throw new Error(preparation.checkpoint.error ?? "The host handoff is not ready. The host was not stopped.");
 		}
 		result = await controlRequest<{ instance: string; deferred?: number }>(record,
 			options?.checkpoint ? "stop-for-update" : options?.idleOnly ? "stop-if-idle" : "stop",

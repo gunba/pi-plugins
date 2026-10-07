@@ -69,7 +69,7 @@ test("text and files are admitted before Pi exists, cancellable, then delivered 
 });
 
 test("startup messages reach native Pi at the next tool boundary rather than waiting for the whole task", async t => {
-	const f = await fixture(t), engine = new DeskEngine(() => {}), requests = [], firstRequested = Promise.withResolvers();
+	const f = await fixture(t), engine = new DeskEngine(() => {}), requests = [], firstRequested = Promise.withResolvers(), forcedRequested = Promise.withResolvers();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR, previousFetch = globalThis.fetch;
 	writeFileSync(join(f.dir, "settings.json"), JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-haiku-4-5",
 		steeringMode: "all", compaction: { enabled: false }, retry: { enabled: false } }));
@@ -103,7 +103,8 @@ test("startup messages reach native Pi at the next tool boundary rather than wai
 			if (requests.length === 1) {
 				releaseFirst = () => finish([{ type: "toolCall", id: "fixture-read", name: "read", arguments: { path: join(f.dir, "fixture.txt") } }], "toolUse");
 				firstRequested.resolve();
-			} else queueMicrotask(() => finish([{ type: "text", text: "Fixture complete" }]));
+			} else if (requests.length === 4) forcedRequested.resolve();
+			else queueMicrotask(() => finish([{ type: "text", text: "Fixture complete" }]));
 			return stream;
 		} });
 		f.worker.command = async (command, generation, id) => { f.calls.push({ command, generation, id }); return engine.command(generation, command); };
@@ -116,6 +117,34 @@ test("startup messages reach native Pi at the next tool boundary rather than wai
 			"ordinary startup input must be visible on the next native turn, not held behind continuing tool work");
 		assert.deepEqual(requests[2], [...requests[1], "Do the later task"], "explicit Queue still waits until current work finishes");
 		assert.equal(requests.length, 3, "no extra task or duplicate delivery");
+		assert.deepEqual(session.getSteeringMessages(), []);
+		assert.deepEqual(session.getFollowUpMessages(), []);
+		await f.request("inputs", f.input("Second task"));
+		await f.managed.draining;
+		await forcedRequested.promise;
+		for (const text of ["Earlier accepted steer", "Another accepted steer"]) {
+			await f.request("inputs", f.input(text)); await f.managed.draining;
+		}
+		await f.request("inputs", f.input("Retained follow-up", { command: { kind: "prompt", text: "Retained follow-up", behavior: "followUp" } }));
+		await f.managed.draining;
+		const force = f.input("New direction", { command: { kind: "prompt", text: "New direction", behavior: "now" } });
+		assert.equal((await f.request("inputs", force)).status, 400, "older workers cannot silently interpret Send now as steering");
+		assert.equal(requests.length, 4);
+		f.worker.runtime = { sendNow: true };
+		assert.equal((await f.request("inputs", force)).status, 202);
+		await f.managed.draining; await session.waitForIdle();
+		assert.equal((await f.request(`inputs/${force.id}`)).body.status.state, "accepted");
+		assert.equal((await f.request("inputs", force)).body.input.state, "accepted");
+		assert.equal(f.calls.filter(call => call.id === force.id).length, 1, "duplicate delivery receipts cannot interrupt twice");
+		assert.equal(requests.length, 6, "the interrupted stream is replaced without an extra queue-resume turn");
+		for (const text of ["Earlier accepted steer", "Another accepted steer", "New direction"]) assert.ok(requests[4].includes(text));
+		assert.ok(!requests[4].includes("Retained follow-up"));
+		assert.ok(requests[5].includes("Retained follow-up"));
+		const userTexts = session.messages.filter(message => message.role === "user").flatMap(message =>
+			typeof message.content === "string" ? [message.content] : message.content.filter(block => block.type === "text").map(block => block.text));
+		for (const text of ["Earlier accepted steer", "Another accepted steer", "New direction", "Retained follow-up"]) {
+			assert.equal(userTexts.filter(value => value === text).length, 1, "accepted native input is not rebuilt or replayed");
+		}
 		assert.deepEqual(session.getSteeringMessages(), []);
 		assert.deepEqual(session.getFollowUpMessages(), []);
 	} finally {

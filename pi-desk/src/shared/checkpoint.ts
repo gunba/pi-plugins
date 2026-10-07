@@ -13,5 +13,9 @@ export interface UpdateCheckpoint {
 	target: string;
 	state: "held" | "committed" | "complete" | "cancelled";
 	created: number;
+	/** Present on host-only handoffs; sessions below are retained native-checkpoint migration data. */
+	workers?: { key: string; instance: string; restored?: boolean; error?: string }[];
+	/** Controller-confirmed selection failure permits the supervisor to reattach the source host. */
+	resumeSource?: boolean;
 	sessions: (CheckpointSnapshot & { key: string; dispatched?: boolean; restored?: boolean; error?: string })[];
 }

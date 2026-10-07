@@ -152,6 +152,49 @@ test("inline messages wait for controller admission and cannot report a rejected
 	assert.equal((await presentation.act("child", current(), "send", "next")).accepted, true);
 });
 
+test("Away declines new optional questions across scopes, preserves existing questions and never approves confirmation", async () => {
+	const presentation = new DeskPresentation(() => {}, () => {}), ui = presentation.createUi({});
+	let available = true;
+	presentation.setOperatorAvailability(() => available);
+	const child = presentation.createScope("child", "Child");
+	const waiting = ui.input("Existing question");
+	const existing = presentation.snapshot().interactions[0];
+	available = false;
+	assert.equal(child.operatorAvailable, false);
+	await assert.rejects(ui.input("New question"), error => error.code === "operator_unavailable");
+	await assert.rejects(child.ui.select("Child question", ["A"]), error => error.code === "operator_unavailable");
+	assert.equal(presentation.snapshot().interactions.length, 1);
+	assert.equal(presentation.snapshot().interactions[0].id, existing.id);
+	const approval = child.ui.confirm("Model override", "Allow?");
+	await new Promise(setImmediate);
+	const pending = presentation.snapshot().interactions.find(item => item.form.kind === "confirm");
+	assert.ok(pending);
+	let approved = false;
+	void approval.then(value => { approved = value; });
+	assert.equal(approved, false);
+	presentation.answer(pending.id, { kind: "confirm", confirmed: false });
+	assert.equal(await approval, false);
+	presentation.answer(existing.id, { kind: "freeform", text: "Previously requested answer" });
+	assert.equal(await waiting, "Previously requested answer");
+	available = true;
+	assert.equal(child.operatorAvailable, true);
+	child.close();
+});
+
+test("Away keeps explicitly opened Settings forms usable", async () => {
+	const presentation = new DeskPresentation(() => {}, () => {}), ui = presentation.createUi({});
+	presentation.setOperatorAvailability(() => false);
+	presentation.publish("prefs", { kind: "details", surface: "settings", title: "Preferences", data: {},
+		actions: [{ id: "edit", label: "Edit" }] }, { edit: async () => { await ui.input("Endpoint"); } });
+	await presentation.act("prefs", presentation.snapshot().views[0].revision, "edit");
+	await new Promise(setImmediate);
+	const request = presentation.snapshot().interactions[0];
+	assert.equal(request.settings.id, "prefs");
+	presentation.answer(request.id, null);
+	await new Promise(setImmediate);
+	assert.equal(presentation.snapshot().views[0].working, undefined);
+});
+
 test("settings dialogs stay attached to their asynchronous action, not concurrent agent questions", async () => {
 	const presentation = new DeskPresentation(() => {}, () => {}), ui = presentation.createUi({});
 	let release, finished;

@@ -1,9 +1,10 @@
 import { realpathSync } from "node:fs";
+import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
 import { AccountBinding, accountSelection, initializeAccountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
 import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	createAgentSessionServices,
 	createAgentSessionFromServices,
@@ -41,6 +42,7 @@ import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-u
 import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
+import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
 import { NativeContext } from "./context.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
@@ -125,6 +127,8 @@ export class DeskEngine {
 		this.attachmentScope = options.attachmentScope;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
+		const operatorDirectory = options.providerAccountsDirectory ? dirname(options.providerAccountsDirectory) : join(agentDir, "desk");
+		this.presentation.setOperatorAvailability(() => operatorAvailability(operatorDirectory).mode === "present");
 		const pin = runtimePin(options.runtimeDirectory);
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
 		const cwd = realpathSync(options.cwd);
@@ -434,13 +438,23 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "native_read", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
+			case "native_read": return readNativeCommand(session, command.name, command.args);
+			case "native": {
+				if (nativeExecution(command.name) !== "control") throw Error(`/${command.name} has no native action adapter.`);
+				const execute = () => runNativeCommand(session, this.runtime!, command.name, command.args);
+				if (command.name === "model") {
+					const target = nativeModel(session, command.args).model!;
+					if (!(await this.runtime.services.modelRuntime.checkAuth(target.provider))) throw Error(`No API key for ${target.provider}/${target.id}`);
+				}
+				return command.name === "export" ? execute() : this.change(execute, command.name === "model");
+			}
 			case "context_inspect": return this.contexts.get(session)!.inspect();
 			case "context_read": return this.contexts.get(session)!.read(command.path);
 			case "context_update": case "context_save": return this.change(async () => {
@@ -522,17 +536,25 @@ export class DeskEngine {
 				if (this.presentation.snapshot().interactions.some(item => item.settings)) throw Error("Finish or cancel the pending Settings form before sending a message.");
 				if (!command.text.trim() && !command.attachments?.length) throw new Error("Enter a message or attach a file.");
 				const slash = promptCommandName(command.text);
+				if (slash && nativeBuiltins.some(command => command.name === slash)) throw Error(`/${slash} is a Pi command, not a message. Use its Desk command action.`);
 				const registered = slash ? session.extensionRunner?.getCommand(slash) : undefined;
 				const resourceCommand = slash && (session.promptTemplates.some(template => template.name === slash) || slash.startsWith("skill:"));
 				if ((registered || resourceCommand) && command.attachments?.length) throw new Error("Send attachments in a message, not a slash command.");
 				const attached = new Attachments(getAgentDir(), this.attachmentScope ?? session.sessionId).prepare(command.attachments ?? [], session.model?.input.includes("image") ?? false);
+				if (command.behavior === "now") {
+					this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
+					await session.abort();
+					if (this.closed || this.replacing || this.runtime?.session !== session) throw new Error("Session is unavailable.");
+					if (generation !== this.presentation.generation) throw new StaleGeneration();
+					if (this.transition) throw new Error("A session transition is in progress.");
+				}
 				// Preflight reports admission without holding an HTTP request through inference.
 				return new Promise<{ accepted: true }>((resolve, reject) => {
 					let admitted = false;
 					const accept = () => { admitted = true; resolve({ accepted: true }); };
 					void session.prompt(command.text + attached.text, {
 						images: attached.images.length ? attached.images : undefined,
-						source: "interactive", streamingBehavior: command.behavior,
+						source: "interactive", streamingBehavior: command.behavior === "now" ? undefined : command.behavior,
 						preflightResult: success => { if (success) accept(); },
 					}).then(() => { if (!admitted) accept(); }).catch(error => {
 						if (!admitted) reject(error);

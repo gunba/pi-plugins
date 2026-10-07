@@ -47,6 +47,9 @@ export class DeskPresentation implements Presentation {
 	private nextRevision: () => number;
 	private scopes = new Map<string, { label: string; presentation: DeskPresentation; close: () => void }>();
 	suspended = false;
+	private availability: () => boolean = () => true;
+	get operatorAvailable(): boolean { return !!this.settingOrigin.getStore()?.live() || this.availability(); }
+	setOperatorAvailability(available: () => boolean): void { this.availability = available; }
 	private maintenanceOwners = new Map<string, UiMaintenance>();
 	registerMaintenance(owner: UiMaintenance): UiTranscriptHandle {
 		if (this.retired) throw new Error("The presentation has closed.");
@@ -114,6 +117,7 @@ export class DeskPresentation implements Presentation {
 		const lease: Presentation = {
 			version: 2,
 			get suspended() { return !current() || host.suspended; },
+			get operatorAvailable() { return host.operatorAvailable; },
 			capabilities: this.capabilities,
 			batch: update => { if (current()) this.batch(update); },
 			...(this.command ? { runCommand: async (name: string, args?: string) => {
@@ -232,6 +236,7 @@ export class DeskPresentation implements Presentation {
 		const child = new DeskPresentation(() => { if (!child.retired) this.update(); },
 			(view, section) => this.open(`scope:${id}/${view}`, section), this.nextRevision, this.registerSource);
 		child.setSuspended(this.suspended);
+		child.setOperatorAvailability(() => this.availability());
 		const ui = child.createUi(this.theme);
 		const close = () => {
 			if (child.retired) return;
@@ -243,6 +248,7 @@ export class DeskPresentation implements Presentation {
 		return {
 			version: 2, capabilities: child.capabilities, ui,
 			get suspended() { return child.retired || child.suspended; },
+			get operatorAvailable() { return child.operatorAvailable; },
 			batch: child.batch.bind(child),
 			publish: child.publish.bind(child), open: child.open.bind(child), request: child.request.bind(child),
 			createScope: child.createScope.bind(child), install: child.install.bind(child),
@@ -308,6 +314,8 @@ export class DeskPresentation implements Presentation {
 		if (this.retired || options.signal?.aborted) return Promise.resolve(null);
 		const origin = this.settingOrigin.getStore();
 		const settings = origin?.live() ? { id: origin.id, title: origin.title } : undefined;
+		if (!settings && form.kind !== "confirm" && !this.operatorAvailable)
+			return Promise.reject(Object.assign(new Error("User is away. No answer was requested or provided."), { code: "operator_unavailable" }));
 		const id = randomUUID();
 		const timeout = options.timeout && options.timeout > 0 ? Math.min(options.timeout, 2_147_483_647) : undefined;
 		return new Promise(resolve => {

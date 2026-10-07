@@ -81,6 +81,8 @@ export interface Presentation {
 	version: 2;
 	/** The host is holding this session for maintenance. Autonomous producers keep their pending work. */
 	readonly suspended?: boolean;
+	/** False means optional model questions are unavailable, not answered or approved. */
+	readonly operatorAvailable?: boolean;
 	capabilities: readonly ("questions" | "details" | "work" | "scopes" | "transcripts" | "commands" | "conversations")[];
 	batch(update: () => void): void;
 	publish(id: string, view: UiView | undefined, actions?: Record<string, (value: UiValue) => unknown | Promise<unknown>>): void;

@@ -9,6 +9,21 @@ function tool() {
  extension({registerTool: value => tool = value, events: {emit() {}}});
  return tool;
 }
+test('Away reports an unanswered question without waiting or claiming user cancellation', async () => {
+ let ask, requests = 0, updates = 0;
+ extension({registerTool: value => ask = value, events: {emit(_name, probe) {
+  probe.presentation = {operatorAvailable: false, request() {requests++; throw Error('Must not prompt');}};
+ }}});
+ const result = await ask.execute('id', {question: 'Choose?', options: ['A']}, undefined, () => updates++, {hasUI: true, ui: {}});
+ assert.equal(result.isError, true);
+ assert.equal(result.details.unavailable, true);
+ assert.equal(result.details.response, null);
+ assert.notEqual(result.details.cancelled, true);
+ assert.equal(requests, 0); assert.equal(updates, 0);
+ assert.match(result.content[0].text, /No answer/);
+ assert.ok(ask.renderResult(result, {}, theme));
+});
+
 test('aborted calls do not prompt', async () => {
  const signal = AbortSignal.abort();
  const result = await tool().execute('id', {question: 'Proceed?'}, signal, undefined, {});

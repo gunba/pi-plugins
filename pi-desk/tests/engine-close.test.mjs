@@ -72,6 +72,28 @@ test("explicit Stop starts a native turn for stranded steering, but never during
 	} finally { engine.closed = false; await engine.close(); }
 });
 
+test("Send now interrupts once and admits the new input without rebuilding accepted queues", async () => {
+	const engine = new DeskEngine(() => {}), calls = [], steering = ["Earlier steer"], followUp = ["Later follow-up"];
+	engine.snapshot = () => ({});
+	const session = {
+		sessionId: "send-now-fixture", isIdle: false, abortCompaction() {}, abortBranchSummary() {},
+		abort: async () => { calls.push("abort"); session.isIdle = true; },
+		getSteeringMessages: () => steering, getFollowUpMessages: () => followUp,
+		prompt: async (text, options) => { calls.push({ text, options }); options.preflightResult("started"); },
+		sendCustomMessage: async () => assert.fail("An extra queue-resume turn would race the new prompt"),
+	};
+	engine.runtime = { session, services: { resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => {} };
+	try {
+		assert.deepEqual(await engine.command(engine.presentation.generation, { kind: "prompt", text: "New direction", behavior: "now" }), { accepted: true });
+		assert.equal(calls[0], "abort");
+		assert.equal(calls.length, 2);
+		assert.equal(calls[1].text, "New direction");
+		assert.equal(calls[1].options.streamingBehavior, undefined);
+		assert.deepEqual(steering, ["Earlier steer"]);
+		assert.deepEqual(followUp, ["Later follow-up"]);
+	} finally { await engine.close(); }
+});
+
 test("native shutdown hooks can settle a tool that is still aborting", async () => {
 	const engine = new DeskEngine(() => {});
 	let release, disposed = false;

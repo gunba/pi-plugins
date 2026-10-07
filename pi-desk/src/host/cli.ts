@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 			}
 		});
 		try {
-			const snapshot = await worker.start(options);
+			const snapshot = await worker.start();
 			console.log(JSON.stringify({ model: snapshot.model, activity: snapshot.activity, extensions: snapshot.extensions,
 				tools: snapshot.tools.map(tool => tool.name), commands: snapshot.commands.map(command => command.name),
 				notifications: snapshot.ui.notifications }, null, 2));
