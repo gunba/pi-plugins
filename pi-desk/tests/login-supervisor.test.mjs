@@ -200,7 +200,7 @@ test("Windows kill-on-close Job preserves managed and native SDK handoffs", {
 	const pattern = "^(a real managed wrapper.*|native SDK queues.*|registered SDK subagent.*)$";
 	atomicJson(config, { node: process.execPath, arguments: [runner, config].map(windowsQuote).join(" "),
 		cwd, proof, admission: join(directory, "assigned"), stdout: join(directory, "stdout.txt"), stderr: join(directory, "stderr.txt"),
-		tests: ["--test", "--test-concurrency=1", `--test-name-pattern=${pattern}`,
+		tests: ["--test", "--test-reporter=tap", "--test-concurrency=1", `--test-name-pattern=${pattern}`,
 			"pi-desk/tests/login-supervisor.test.mjs", "pi-desk/tests/native-handoff.test.mjs"] });
 	const child = spawn(win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 		["-NoProfile", "-NonInteractive", "-File", script, "-Mode", "Run", "-JobName", `pi-desk-fixture-${randomUUID()}`, "-CommandFile", config],
