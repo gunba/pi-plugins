@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { windowsQuote } from "../src/host/login-manager.ts";
+import { SessionLease, SessionOwnedError } from "../../pi-session-ownership/lease.ts";
 import { assertFixtureJobMembers } from "./fixtures/windows-job-members.mjs";
 import test from "node:test";
 import { atomicJson, readState, runtimeIdentity, versionDirectory } from "../manage/store.ts";
@@ -140,7 +141,11 @@ test("a real managed wrapper survives public host replacement with the same busy
 		while (Date.now() < until) {
 			assert.equal(wrapper.exitCode, null, output);
 			const state = await probeHost(data);
-			if (state.state === "running" && state.host.runtime === runtime && state.host.restore?.pending !== true && state.host.sessions.working === 1) return state.host;
+			if (state.state === "running" && state.host.runtime === runtime && state.host.restore?.pending !== true && state.host.sessions.working === 1) {
+				// HTTP readiness can precede the wrapper acknowledgement that releases startup admission.
+				try { const launch = new SessionLease(join(data, "launch")); launch.close(); return state.host; }
+				catch (error) { if (!(error instanceof SessionOwnedError)) throw error; }
+			}
 			await delay(25);
 		}
 		assert.fail(`Fixture host did not become ready: ${output}`);

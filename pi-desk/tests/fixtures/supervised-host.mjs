@@ -17,6 +17,7 @@ if (process.argv[2] === "wrapper") {
 	const host = new DeskHost({ dataDir: config.directory, agentDir: config.agentDir, cwd: config.cwd, port: 0 });
 	host.scheduleUpdateCheck = () => {};
 	await host.start();
+	await new Promise(resolve => setTimeout(resolve, 250));
 	process.send?.({ type: "ready", runtime: basename(process.env.PI_DESK_RUNTIME) });
 	process.on("SIGTERM", () => { void host.close(); });
 	process.on("SIGINT", () => { void host.close(); });
