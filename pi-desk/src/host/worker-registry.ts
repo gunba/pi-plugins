@@ -101,7 +101,9 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 			options: { ...options, runtimeDirectory: settings.runtimeDirectory } };
 		writeWorkerFile(directory, "bootstrap.json", bootstrap);
 		const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("PI_DESK_")));
-		const child = spawn(process.execPath, [settings.module ?? fileURLToPath(new URL("./worker.js", import.meta.url)), directory], {
+		const child = spawn(process.execPath, ["--report-on-fatalerror", "--report-uncaught-exception",
+			"--report-exclude-env", "--report-exclude-network", `--report-filename=${join(directory, "failure.json")}`,
+			settings.module ?? fileURLToPath(new URL("./worker.js", import.meta.url)), directory], {
 			cwd: options.cwd, detached: true, windowsHide: true, stdio: "ignore",
 			env: { ...environment, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
 		});

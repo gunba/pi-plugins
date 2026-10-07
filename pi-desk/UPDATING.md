@@ -221,6 +221,14 @@ can read current native sessions; it is not a session-file downgrade. Keep
 compatible service/browser artifacts for API rollbacks. Preserve the authority
 directory/signing key rather than restoring revoked enrolments.
 
+From 0.5.28, newly launched workers retain their latest initialization, uncaught
+exception or native fatal-error diagnostic in `workers/<conversation>/failure.json`
+under the Desk data directory. Node reports exclude environment variables and
+network interfaces, but can include error text and local paths. They do not
+contain a heap dump. Existing workers keep their original launch settings;
+missing diagnostics do not establish why an older worker stopped. Forced OS
+termination may leave no report.
+
 `operation.json`, `operation.log` and `stage.log` live under the private runtime
 directory. Host logs remain in the data directory. Do not publish these files:
 installation paths and dependency diagnostics can contain private details.

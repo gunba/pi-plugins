@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import plugins from "../../../package.json" with { type: "json" };
 import { RELEASE } from "../shared/release.ts";
 import type { DeskEngine } from "./engine.ts";
@@ -16,6 +17,14 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 	const bootstrap = readWorkerBootstrap(directory);
 	if (!bootstrap) throw new Error("Worker bootstrap is unavailable.");
 	const lease = workerLease(directory);
+	let reported = false;
+	const reportFailure = (error: unknown): void => {
+		if (reported || !process.report.excludeEnv || !process.execArgv.includes("--report-exclude-network")) return;
+		try {
+			process.report.writeReport(join(directory, "failure.json"), error instanceof Error ? error : new Error(String(error)));
+			reported = true;
+		} catch { /* Diagnostics must not replace the original failure. */ }
+	};
 	let endpoint: WorkerEndpoint | undefined;
 	let initialized = false, nativeClosed = false;
 	let engine: Engine | undefined;
@@ -33,7 +42,7 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 				if (message.type === "history_ready") historyReady = message.generation;
 				endpoint?.publish(message);
 			})).then(current => { engine = current; return current; });
-			void engineJob.catch(() => { void stop().catch(() => {}); });
+			void engineJob.catch(error => { reportFailure(error); void stop().catch(() => {}); });
 		}
 		return engineJob;
 	};
@@ -68,7 +77,8 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 		if (request.type === "init") {
 			if (initialized) throw new Error("Worker already initialized.");
 			initialized = true;
-			snapshot = await current.start(bootstrap.options);
+			try { snapshot = await current.start(bootstrap.options); }
+			catch (error) { reportFailure(error); throw error; }
 			initialGeneration = snapshot.ui.generation;
 			return snapshot;
 		}
@@ -84,7 +94,7 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 		try { removeWorkerRecord(directory, bootstrap.instance); } catch (error) { errors.push(error); }
 		finally { lease.close(); }
 		if (errors.length) throw new AggregateError(errors, "Worker shutdown encountered errors.");
-	})().then(resolveClosed, error => { rejectClosed(error); throw error; });
+	})().then(resolveClosed, error => { reportFailure(error); rejectClosed(error); throw error; });
 	try {
 		endpoint = await WorkerEndpoint.listen(bootstrap, async request => {
 			const result = await requests.run(request);

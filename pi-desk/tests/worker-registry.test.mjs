@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -170,6 +170,46 @@ test("an unopened worker can shut down without loading the engine", async t => {
 	assert.equal(loads, 0);
 	assert.equal(readWorkerRecord(root), undefined);
 	await channel.detach();
+});
+
+test("worker failures retain a diagnostic without environment variables or network details", { timeout: 20000 }, async t => {
+	const root = await mkdtemp(join(tmpdir(), "desk-worker-diagnostic-"));
+	const fixture = join(root, "worker.mjs");
+	await writeFile(fixture, `
+import { serveWorker } from ${JSON.stringify(source("worker-runtime"))};
+const runtime = await serveWorker(process.argv[2], async () => {
+ const snapshot = () => ({ id: 'diagnostic-native-id', ui: { generation: 'diagnostic-generation' } });
+ return { async start(options) { if (options.sessionFile === 'startup-failure') throw new Error('fixture initialization failed'); return snapshot(); }, snapshot,
+  async command() { setImmediate(() => { throw new Error('fixture uncaught failure'); }); },
+  async checkpoint() {}, async shutdownCheckpoint() {}, async close() {} };
+});
+runtime.closed.then(() => process.exit(0), () => process.exit(1));
+`);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	for (const startup of [false, true]) await t.test(startup ? "initialization failure" : "uncaught failure", async t => {
+		const directory = join(root, startup ? "startup" : "uncaught"), messages = inbox();
+		let disconnected; const closed = new Promise(resolve => { disconnected = resolve; });
+		const connection = await attachWorker(directory, { cwd: root, ...(startup ? { sessionFile: "startup-failure" } : {}) },
+			messages.receive, disconnected, { module: fixture });
+		t.after(() => connection.channel.detach());
+		connection.channel.send({ type: "init", id: "init", options: connection.bootstrap.options });
+		const initialized = await messages.wait("init");
+		if (startup) {
+			assert.match(initialized.error, /fixture initialization failed/);
+			connection.channel.send({ type: "shutdown", id: "shutdown", force: true });
+			await closed;
+		} else {
+			assert.equal(initialized.value.id, "diagnostic-native-id");
+			connection.channel.send({ type: "command", id: "crash", generation: "diagnostic-generation", command: { kind: "name", name: "fixture" } });
+			await closed;
+		}
+		const report = JSON.parse(await readFile(join(directory, "failure.json"), "utf8"));
+		assert.equal(report.header.processId, connection.record.pid);
+		assert.match(report.javascriptStack.message, startup ? /fixture initialization failed/ : /fixture uncaught failure/);
+		assert.equal(report.environmentVariables, undefined);
+		assert.equal(report.header.networkInterfaces, undefined);
+		assert(report.javascriptHeap.memoryLimit > 0);
+	});
 });
 
 test("an occupied actor lease or unresolved launch cannot create a second worker", async () => {
