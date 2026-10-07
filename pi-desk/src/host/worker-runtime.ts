@@ -11,7 +11,7 @@ import { readWorkerBootstrap, removeWorkerRecord, workerLease, writeWorkerFile }
 type Engine = Pick<DeskEngine, "start" | "command" | "snapshot" | "checkpoint" | "shutdownCheckpoint" | "close">;
 export interface WorkerRuntime { endpoint: WorkerEndpoint; closed: Promise<void>; stop(): Promise<void> }
 
-/** The registry and endpoint start before potentially expensive SDK imports. */
+/** Native loading begins after the host authenticates and requests initialization. */
 export async function serveWorker(directory: string, factory: (send: (message: WorkerMessage) => void) => Promise<Engine>): Promise<WorkerRuntime> {
 	const bootstrap = readWorkerBootstrap(directory);
 	if (!bootstrap) throw new Error("Worker bootstrap is unavailable.");
@@ -24,21 +24,34 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 	let resolveClosed!: () => void, rejectClosed!: (error: unknown) => void;
 	const closed = new Promise<void>((resolve, reject) => { resolveClosed = resolve; rejectClosed = reject; });
 	void closed.catch(() => {});
-	let engineJob!: Promise<Engine>;
+	let engineJob: Promise<Engine> | undefined;
+	const loadEngine = (): Promise<Engine> => {
+		if (!engineJob) {
+			engineJob = Promise.resolve().then(() => factory(message => {
+				if (message.type === "snapshot") { snapshot = message.snapshot; ui = message.snapshot.ui; }
+				if (message.type === "ui") ui = message.snapshot;
+				if (message.type === "history_ready") historyReady = message.generation;
+				endpoint?.publish(message);
+			})).then(current => { engine = current; return current; });
+			void engineJob.catch(() => { void stop().catch(() => {}); });
+		}
+		return engineJob;
+	};
 	const describe = (): WorkerState => {
 		if (engine && initialized && !nativeClosed) { try { snapshot = engine.snapshot(); } catch { /* Keep the last valid snapshot during a transition. */ } }
 		return { ...(snapshot ? { snapshot } : {}), runtime: { version: RELEASE.version, plugins: plugins.version, engine: RELEASE.engine, runtime: bootstrap.options.runtimeDirectory, unattended: true, sendNow: true }, controls: controls.snapshot(), ...(historyReady ? { historyReady } : {}), ...(initialGeneration ? { initialGeneration } : {}) };
 	};
 	const closeNative = async () => {
+		if (!engineJob) { nativeClosed = true; return; }
 		const current = await engineJob;
-		const cursor = await current.shutdownCheckpoint();
+		const cursor = initialized ? await current.shutdownCheckpoint() : undefined;
 		await current.close();
 		nativeClosed = true;
 		return cursor;
 	};
 	const controls = new WorkerControls(() => ui?.generation ?? snapshot?.ui.generation ?? "", async (command, _id, generation) => {
 		if (command.kind === "close") return closeNative();
-		const current = await engineJob;
+		const current = await loadEngine();
 		const result = await current.command(generation, command);
 		endpoint?.publish({ type: "snapshot", snapshot: current.snapshot() });
 		return result;
@@ -50,7 +63,8 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 		if (request.type === "describe") return describe();
 		if (request.type === "receipt") return requests.receipt(request.target, request.wait);
 		if (request.type === "control") return controls.submit(request.command, request.generation, request.id);
-		const current = await engineJob;
+		if (request.type === "shutdown") return closeNative();
+		const current = await loadEngine();
 		if (request.type === "init") {
 			if (initialized) throw new Error("Worker already initialized.");
 			initialized = true;
@@ -58,7 +72,6 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 			initialGeneration = snapshot.ui.generation;
 			return snapshot;
 		}
-		if (request.type === "shutdown") return closeNative();
 		if (request.type === "checkpoint") return current.checkpoint(request.checkpoint, request.action);
 		const result = await current.command(request.generation, request.command);
 		if (isControl(request.command)) endpoint?.publish({ type: "snapshot", snapshot: current.snapshot() });
@@ -66,7 +79,7 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 	});
 	const stop = (): Promise<void> => stopJob ??= (async () => {
 		const errors: unknown[] = [];
-		try { if (!nativeClosed) await (await engineJob).close(); } catch (error) { errors.push(error); }
+		try { if (engineJob && !nativeClosed) await (await engineJob).close(); } catch (error) { errors.push(error); }
 		try { await endpoint?.close(true); } catch (error) { errors.push(error); }
 		try { removeWorkerRecord(directory, bootstrap.instance); } catch (error) { errors.push(error); }
 		finally { lease.close(); }
@@ -88,13 +101,6 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 		writeWorkerFile(directory, "worker.json", { ...endpoint.address, version: 1, pid: process.pid,
 			runtimeDirectory: bootstrap.options.runtimeDirectory });
 		if (bootstrap.options.runtimeDirectory) process.env.PI_DESK_RUNTIME = bootstrap.options.runtimeDirectory;
-		engineJob = Promise.resolve().then(() => factory(message => {
-			if (message.type === "snapshot") { snapshot = message.snapshot; ui = message.snapshot.ui; }
-			if (message.type === "ui") ui = message.snapshot;
-			if (message.type === "history_ready") historyReady = message.generation;
-			endpoint?.publish(message);
-		})).then(current => { engine = current; return current; });
-		void engineJob.catch(() => { void stop().catch(() => {}); });
 		return { endpoint, closed, stop };
 	} catch (error) {
 		await endpoint?.close();
