@@ -34,6 +34,7 @@ const paths: Record<string, ReactNode> = {
 	more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
 	plus: <path d="M12 5v14M5 12h14" />,
 	send: <path d="M12 18V6m-5 5 5-5 5 5" />,
+	"send-now": <path d="m13 2-9 12h7l-1 8 10-13h-7l1-7Z" />,
 	expand: <path d="M14 3h7v7m0-7-8 8M10 21H3v-7m0 7 8-8" />,
 	plan: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m7 8 1 1 2-2m3 1h4m-10 7 1 1 2-2m3 1h4" /></>,
 	pause: <path d="M8 5v14m8-14v14" />,

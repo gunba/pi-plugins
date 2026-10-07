@@ -30,6 +30,7 @@ import { readFeedback, saveFeedback } from "./chat-feedback.ts";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { ModelPicker } from "./model-picker.tsx";
+import { DeliveryControl, deliveryModes } from "./delivery-control.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
 import { WorkRail } from "./work-rail.tsx";
@@ -43,7 +44,7 @@ import { reportDeskError } from "./desk-status.ts";
 import { agentInventory } from "./agent-inventory.ts";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
-import { composerKey, type Delivery } from "./composer-keys.ts";
+import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from "./composer-keys.ts";
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
@@ -109,6 +110,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [cwd, setCwd] = useState("");
   const [newComputer, setNewComputer] = useState<string>();
   const [draft, setDraft] = useState("");
+  const [deliveryMode, setDeliveryMode] = useState(() => readDelivery(localStorage));
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [feedback, setFeedback] = useState(() => readFeedback(localStorage));
@@ -201,9 +204,11 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [state.host?.sessions]);
   const noArguments = (name: string, args: string) => { if (args) throw Error(`Use /${name} without arguments.`); };
   const openPicker = (label: string) => {
-    const picker = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+    const picker = label === "Model" ? document.querySelector<HTMLButtonElement>("button.model-picker")
+      : document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
     if (!picker || picker.disabled) throw Error("This choice is unavailable while the current operation is pending.");
-    picker.focus(); picker.showPicker?.();
+    picker.focus();
+    if (picker instanceof HTMLSelectElement) picker.showPicker?.(); else picker.click();
   };
   const rename = async (args: string) => {
     if (session?.state !== "ready") throw Error("Wait for Pi to finish opening this conversation before renaming it.");
@@ -257,7 +262,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     } },
     hotkeys: { description: "Show Desk keyboard shortcuts.", execute: args => {
       noArguments("hotkeys", args);
-      setCommandOutput({ title: "Keyboard shortcuts", text: "Enter — send or steer\nCtrl+Enter — interrupt and send\nAlt+Enter / Ctrl+Q — queue a follow-up\nShift+Enter / Ctrl+J — new line\nTab — complete a slash command\nUp / Down — choose a completion\nEsc — dismiss completion or dialog" });
+      setCommandOutput({ title: "Keyboard shortcuts", text: `Enter — ${deliveryModes.find(mode => mode.value === deliveryMode)!.label} (choose with the arrow beside Send)\nCtrl+Enter — interrupt and send\nAlt+Enter / Ctrl+Q — queue a follow-up\nShift+Enter / Ctrl+J — new line\nTab — complete a slash command\nUp / Down — choose a completion\nEsc — dismiss completion or dialog` });
     } },
     help: { description: "Show commands for this conversation.", execute: args => {
       noArguments("help", args);
@@ -429,7 +434,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     setCreate(true);
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
-  async function send(delivery: Delivery = "steer") {
+  async function send(delivery: Delivery = deliveryMode) {
     if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
       || extensionErrors.length || !session?.activation || !["starting", "ready"].includes(session.state)) return;
     if (delivery === "now" && !session.workerRuntime?.sendNow) {
@@ -774,7 +779,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
               {completion.menu}
               <textarea
-                aria-label="Message Pi"
+                ref={composerInput} aria-label="Message Pi"
                 aria-autocomplete="list"
                 aria-controls={completion.active ? "command-completion" : undefined}
                 aria-activedescendant={completion.selected}
@@ -797,7 +802,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   if (completion.keyDown(event)) return;
                   const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
                     metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
-                    matchMedia("(pointer:fine)").matches);
+                    matchMedia("(pointer:fine)").matches, deliveryMode);
                   if (!action) return;
                   event.preventDefault();
                   if (action === "newline") {
@@ -845,20 +850,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <div className="send-controls">
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
                     disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>
-                  {busy && !controlBusy && (
-                    <button type="button" className="queue-button" aria-label="Queue follow-up"
-                      title="After current work · Alt+Enter or Ctrl+Q"
-                      disabled={sending || !connected || !!extensionErrors.length || !attachments.ready || !session.activation || !["starting", "ready"].includes(session.state)
-                        || (!draft.trim() && !attachments.files.length)}
-                      onClick={() => void send("followUp")}>Queue</button>
-                  )}
-                  {busy && !controlBusy && session.state === "ready" && (
-                    <button type="button" className="queue-button" aria-label="Interrupt and send now"
-                      title={session.workerRuntime?.sendNow ? "Interrupt current work and send · Ctrl+Enter" : "Restart this conversation when idle to enable Send now"}
-                      disabled={sending || !connected || !!extensionErrors.length || !attachments.ready || !session.workerRuntime?.sendNow
-                        || (!draft.trim() && !attachments.files.length)}
-                      onClick={() => void send("now")}>Send now</button>
-                  )}
                   {busy && controls.every(control => control.state !== "running" || ["compact", "navigate"].includes(control.kind)) && (
                     <button
                       className="stop-button"
@@ -870,24 +861,11 @@ export function App({ account }: { account?: BrowserAccount }) {
                       ■
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className={`send-button${busy && !controlBusy ? " steer-button" : ""}`}
-                    aria-label={busy && !controlBusy ? "Steer Pi" : "Send message"}
-                    title="Enter sends or steers · Shift/Alt-click queues a follow-up"
-                    onClick={event => void send(event.altKey || event.shiftKey ? "followUp" : "steer")}
-                    disabled={
-                      (!draft.trim() && !attachments.files.length) ||
-                      !attachments.ready ||
-                      !!extensionErrors.length ||
-                      sending ||
-                      controlBusy ||
-                      !connected ||
-                       !session.activation || !["starting", "ready"].includes(session.state)
-                    }
-                  >
-                    {busy && !controlBusy ? <><Icon name="steer" /><span>Steer</span></> : <Icon name="send" />}
-                  </button>
+                  <DeliveryControl value={deliveryMode} scope={selected} busy={busy && !controlBusy}
+                    canSendNow={!!session.workerRuntime?.sendNow} send={value => void send(value)}
+                    choose={value => { setDeliveryMode(value); localStorage.setItem(deliveryPreferenceKey, value); composerInput.current?.focus({ preventScroll: true }); }}
+                    disabled={(!draft.trim() && !attachments.files.length) || !attachments.ready || !!extensionErrors.length
+                      || sending || controlBusy || !connected || !session.activation || !["starting", "ready"].includes(session.state)} />
                 </div>
               </div>
               {attachments.progress && <p className="upload-progress" role="status">Uploading {attachments.progress}</p>}
@@ -895,7 +873,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
               )}
             </form>
-            <div className="composer-help">Enter to send or steer · Ctrl+Enter to interrupt and send · Alt+Enter / Ctrl+Q to queue · Shift+Enter / Ctrl+J for a new line</div>
+            <div className="composer-help">Enter: {deliveryModes.find(mode => mode.value === deliveryMode)!.label} · Shift+Enter: new line · Ctrl+Enter: send now · Alt+Enter: queue</div>
             <ConversationFooter key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
               open={view => { setPanel("view"); setFocusedView(view.id); }}
               invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />

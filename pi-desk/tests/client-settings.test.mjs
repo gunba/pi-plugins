@@ -116,12 +116,14 @@ test("account picker distinguishes unavailable and changing selection from defau
 		const snapshot = { id: "fixture", activity: "idle", model, accounts: { "openai-codex": "named-account" },
 			models: [model, { provider: "anthropic", id: "claude", name: "Claude" }] };
 		const olderWorker = renderModel(snapshot);
-		assert.match(olderWorker, /<option value="anthropic:claude" disabled=""/);
+		assert.match(olderWorker, /role="option"[^>]*aria-disabled="true"[^>]*>.*Claude/);
+		assert.doesNotMatch(olderWorker, /<select|<details/);
+		assert.match(olderWorker, /popover="auto"[^>]*class="model-menu"/);
 		assert.match(olderWorker, /Saved account/);
 		assert.doesNotMatch(olderWorker, /Pi credentials/);
 		assert.match(olderWorker, /Restart this conversation when idle/);
 		const currentWorker = renderModel({ ...snapshot, modelSwitchConstraint: null });
-		assert.doesNotMatch(currentWorker, /<option value="anthropic:claude" disabled=""/);
+		assert.doesNotMatch(currentWorker, /aria-disabled="true"/);
 		assert.doesNotMatch(currentWorker, /Restart this conversation when idle/);
 		const queue = { steering: { count: 0 }, followUp: { count: 0 } };
 		const absent = render({ key: "fixture", state: "closed" });

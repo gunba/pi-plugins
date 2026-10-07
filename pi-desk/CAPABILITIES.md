@@ -9,9 +9,9 @@ and controls; it does not run a second agent or copy plugin stores.
 | Capability | In Desk |
 | --- | --- |
 | New, saved and running conversations | Sidebar and **Resume conversation**: choose computer and project, then search a virtualized native catalogue |
-| Model and reasoning | Provider icon, model and account identity; native reasoning levels and a per-computer default star. Cross-provider switches confirm context handling; encrypted Codex context requires an explicit summary handoff. |
+| Model and reasoning | Compact searchable model picker with provider icons and account details; native reasoning levels and a per-computer default star. Cross-provider switches confirm context handling; encrypted Codex context requires an explicit summary handoff. |
 | Provider accounts | **Settings → Model accounts**; native sign-in including Codex device codes and Claude subscription copy-code OAuth, per-computer defaults, conversation account choices and cancellation |
-| Prompt, steer, follow-up and stop | Composer and visible queue bars; **Send now** / Ctrl+Enter interrupts the current turn and admits the new message once, preserving accepted native queues. Stop dispatches pending steering into the next native turn. Older pinned workers show Send now as unavailable. |
+| Prompt, steer, follow-up and stop | Icon send control with a browser-saved Enter default and visible queue bars; **Send now** / Ctrl+Enter interrupts the current turn and admits the new message once, preserving accepted native queues. Stop dispatches pending steering into the next native turn. Older pinned workers show Send now as unavailable. |
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
 | Questions | Native forms with a question chooser, drafts, deadlines and child attribution; mobile dialogs stay above the composer and within the keyboard viewport |

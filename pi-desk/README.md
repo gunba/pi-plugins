@@ -48,8 +48,9 @@ authorization code into Settings. The computer running the agent does not need t
 receive a localhost callback. Pi owns token exchange and refresh. Sign-in and
 account selection do not send a message to the agent.
 
-The model picker shows the provider icon, model and current account. Select its
-icon to manage accounts. Accounts and new-conversation defaults are per computer;
+The compact model picker opens a searchable list grouped by provider. Its footer
+shows the current account and opens account management. Accounts and
+new-conversation defaults are per computer;
 changing a model does not change those defaults. Each provider uses that
 conversation's saved selection, or Pi credentials when no named account is pinned.
 Existing subagents keep their model and account. New children inherit the parent's
@@ -697,9 +698,11 @@ for Pi, Confirming admission, or a failure. Cancel works before dispatch; once
 dispatch begins, check the conversation rather than treating a disconnect as
 cancellation. Up to 16 unresolved messages can be retained per conversation.
 
-On a keyboard, Enter sends or steers current work. Alt+Enter or Ctrl+Q queues a
-follow-up; Shift+Enter or Ctrl+J inserts a new line. Shift/Alt-clicking Send also
-queues a follow-up. While busy, separate **Steer** and **Queue** buttons work on
+The arrow beside the main composer's send icon selects **Steer**, **Queue** or
+**Send now** as the default for Enter and the send button, saved in this browser.
+Changing the mode does not send the draft. Ctrl+Enter always interrupts and sends;
+Alt+Enter or Ctrl+Q queues a follow-up; Shift+Enter or Ctrl+J inserts a new line.
+Shift/Alt-clicking Send also queues a follow-up. The same icon controls work on
 touchscreens; the phone keyboard keeps ordinary Enter for new lines. IME
 composition does not submit. **In Pi** shows native steering/follow-up counts
 and up to twelve bounded previews per queue, distinct from host admissions.
