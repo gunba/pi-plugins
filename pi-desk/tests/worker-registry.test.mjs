@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { serveWorker } from "../src/host/worker-runtime.ts";
 import { WorkerChannel } from "../src/host/worker-channel.ts";
@@ -188,10 +189,22 @@ runtime.closed.then(() => process.exit(0), () => process.exit(1));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	for (const startup of [false, true]) await t.test(startup ? "initialization failure" : "uncaught failure", async t => {
 		const directory = join(root, startup ? "startup" : "uncaught"), messages = inbox();
-		let disconnected; const closed = new Promise(resolve => { disconnected = resolve; });
+		let disconnected, detached = false; const closed = new Promise(resolve => { disconnected = resolve; });
 		const connection = await attachWorker(directory, { cwd: root, ...(startup ? { sessionFile: "startup-failure" } : {}) },
-			messages.receive, disconnected, { module: fixture });
-		t.after(() => connection.channel.detach());
+			messages.receive, () => { detached = true; disconnected(); }, { module: fixture });
+		t.after(async () => {
+			if (!detached) connection.channel.send({ type: "shutdown", id: "cleanup", force: true });
+			await closed;
+			await connection.channel.detach();
+			// Channel closure precedes process exit, which releases its Windows cwd handle.
+			const deadline = Date.now() + 10000;
+			while (Date.now() < deadline) {
+				try { process.kill(connection.record.pid, 0); }
+				catch (error) { if (error.code === "ESRCH") return; throw error; }
+				await delay(10);
+			}
+			assert.fail("The diagnostic fixture did not exit.");
+		});
 		connection.channel.send({ type: "init", id: "init", options: connection.bootstrap.options });
 		const initialized = await messages.wait("init");
 		if (startup) {
