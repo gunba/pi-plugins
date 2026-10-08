@@ -96,11 +96,22 @@ test("account picker distinguishes unavailable and changing selection from defau
 			import { renderToStaticMarkup } from "react-dom/server";
 			import { ProviderAccountsPanel } from "./src/client/provider-accounts.tsx";
 			import { ModelPicker } from "./src/client/model-picker.tsx";
-			export const renderModel = snapshot => renderToStaticMarkup(<ModelPicker snapshot={snapshot} disabled={false}
-				select={()=>{throw Error('No model action');}} accounts={()=>{}} history={()=>{}}/>);
+			import { setOpen } from "./src/client/anchored-popover.ts";
+			export const renderModel = (snapshot, open) => {
+				setOpen(open);
+				return renderToStaticMarkup(<ModelPicker snapshot={snapshot} disabled={false}
+					select={()=>{throw Error('No model action');}} accounts={()=>{}} history={()=>{}}/>);
+			};
 			export const render = session => renderToStaticMarkup(<ProviderAccountsPanel host={{name:"Fixture",sessions:[]}}
 				session={session} connected={true} busy={false} invoke={async()=>{throw Error('No account action');}}/>);
 		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic", plugins: [{ name: "offline-connection", setup(builder) {
+			builder.onResolve({ filter: /anchored-popover\.ts$/ }, () => ({ path: "popover", namespace: "fixture-popover" }));
+			builder.onLoad({ filter: /.*/, namespace: "fixture-popover" }, () => ({ contents: `
+				let open = false;
+				export const setOpen = value => { open = value; };
+				export const useAnchoredPopover = () => ({ id: 'fixture-menu', open,
+					trigger: { current: null }, panel: { current: null }, close() {} });
+			`, loader: "js" }));
 			builder.onResolve({ filter: /surfaces\.tsx$/ }, () => ({ path: "surfaces", namespace: "fixture-modal" }));
 			builder.onLoad({ filter: /.*/, namespace: "fixture-modal" }, () => ({ contents: "export function Modal() { throw Error('Unexpected modal'); }", loader: "js" }));
 			builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
@@ -110,14 +121,18 @@ test("account picker distinguishes unavailable and changing selection from defau
 		const model = { provider: "openai-codex", id: "codex", name: "Codex" };
 		const snapshot = { id: "fixture", activity: "idle", model, accounts: { "openai-codex": "named-account" },
 			models: [model, { provider: "anthropic", id: "claude", name: "Claude" }] };
-		const olderWorker = renderModel(snapshot);
+		const closed = renderModel(snapshot, false);
+		assert.match(closed, /aria-expanded="false"/);
+		assert.doesNotMatch(closed, /role="option"|model-menu-list/);
+		const olderWorker = renderModel(snapshot, true);
+		assert.match(olderWorker, /aria-expanded="true"/);
 		assert.match(olderWorker, /role="option"[^>]*aria-disabled="true"[^>]*>.*Claude/);
 		assert.doesNotMatch(olderWorker, /<select|<details/);
 		assert.match(olderWorker, /popover="auto"[^>]*class="model-menu"/);
 		assert.match(olderWorker, /Saved account/);
 		assert.doesNotMatch(olderWorker, /Pi credentials/);
 		assert.match(olderWorker, /Restart this conversation when idle/);
-		const currentWorker = renderModel({ ...snapshot, modelSwitchConstraint: null });
+		const currentWorker = renderModel({ ...snapshot, modelSwitchConstraint: null }, true);
 		assert.doesNotMatch(currentWorker, /aria-disabled="true"/);
 		assert.doesNotMatch(currentWorker, /Restart this conversation when idle/);
 		const queue = { steering: { count: 0 }, followUp: { count: 0 } };
