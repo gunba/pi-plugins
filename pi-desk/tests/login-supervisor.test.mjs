@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { windowsQuote } from "../src/host/login-manager.ts";
-import { SessionLease, SessionOwnedError } from "../../pi-session-ownership/lease.ts";
+import { SessionLease, SessionOwnedError, sessionLockPath } from "../../pi-session-ownership/lease.ts";
 import { assertFixtureJobMembers } from "./fixtures/windows-job-members.mjs";
 import test from "node:test";
 import { atomicJson, readState, runtimeIdentity, versionDirectory } from "../manage/store.ts";
@@ -76,6 +76,18 @@ test("supervisor identity is lease-backed and concurrent wrappers cannot replace
 		assert.throws(() => new LoginSupervisor(directory, randomUUID(), process.execPath, join(directory, "launch.mjs")), /already open/);
 		assert.equal(liveSupervisor(directory).instance, supervisor.record.instance);
 	} finally { supervisor.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("status probes do not contend for the host writer during launch admission", async () => {
+	const directory = root(), launch = new SessionLease(join(directory, "launch"));
+	const hostLock = sessionLockPath(join(directory, "host"));
+	try {
+		assert.equal(existsSync(hostLock), false);
+		const status = await probeHost(directory);
+		assert.equal(existsSync(hostLock), false, "a status reader must not open the host writer lock while launch owns admission");
+		assert.equal(status.state, "unresponsive");
+		assert.match(status.error, /launch|management/i);
+	} finally { launch.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("a real managed wrapper survives public host replacement with the same busy actor and OS child", { timeout: 120000 }, async t => {

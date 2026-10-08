@@ -4,7 +4,7 @@ import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { LiveNotices, deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
 import { clearSubmission, createSubmission, readSubmission, submissionDecision, submitWithReceipt } from "../src/client/input-submission.ts";
-import { leadingActivity, sessionActivity } from "../src/client/activity.ts";
+import { activityLabel, leadingActivity, sessionActivity } from "../src/client/activity.ts";
 
 test("startup sends preserve normal steering and explicitly queued delivery", () => {
 	for (const state of ["starting", "ready"]) for (const delivery of ["steer", "followUp"]) {
@@ -17,6 +17,7 @@ test("startup sends preserve normal steering and explicitly queued delivery", ()
 
 test("closed conversations do not inherit old error activity and collapsed parties retain questions", () => {
 	assert.equal(sessionActivity({ state: "closed", interrupted: true, snapshot: { activity: "error" } }), "closed");
+	assert.equal(activityLabel(sessionActivity({ state: "failed", interrupted: true })), "Unavailable", "a lost worker connection does not prove the actor stopped");
 	assert.equal(sessionActivity({ state: "ready", snapshot: { activity: "running" }, ui: { interactions: [{}] } }), "waiting");
 	assert.equal(leadingActivity(["idle", "running", "waiting"]), "waiting");
 	assert.equal(leadingActivity(["idle", "running"]), "running");

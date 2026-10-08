@@ -29,7 +29,7 @@ export async function migrateLogin(directory: string, entry: string): Promise<vo
 	let launch: SessionLease | undefined;
 	try {
 		launch = new SessionLease(join(directory, "launch"));
-		if ((await probeHost(directory)).state !== "stopped") throw new Error("Stop login-start before migrating its entry.");
+		if ((await probeHost(directory, launch)).state !== "stopped") throw new Error("Stop login-start before migrating its entry.");
 		const status = await managerStatus(original);
 		if (status.error) throw new Error(status.error);
 		if (!["inactive", "failed", "missing", "not-found", "Ready", "Disabled"].includes(status.state ?? ""))
@@ -83,7 +83,7 @@ export async function installLogin(directory: string, cwd: string, arguments_: s
 	try {
 		lock = new SessionLease(join(directory, "launch"));
 		if (readLoginConfig(directory)) throw new Error("Login-start is already configured. Remove it before changing its paths, environment or startup options.");
-		if ((await probeHost(directory)).state !== "stopped") throw new Error("Stop this host before installing login-start.");
+		if ((await probeHost(directory, lock)).state !== "stopped") throw new Error("Stop this host before installing login-start.");
 		const config = makeLoginConfig(directory, cwd, arguments_, environment);
 		saveLoginConfig(config);
 		try { await installManager(config); }

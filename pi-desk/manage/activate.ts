@@ -15,7 +15,7 @@ async function stopped<T>(directory: string, action: () => Promise<T>): Promise<
 	let launch: SessionLease | undefined, host: SessionLease | undefined;
 	try {
 		launch = new SessionLease(join(directory, "launch"));
-		const current = await probeHost(directory);
+		const current = await probeHost(directory, launch);
 		if (current.state !== "stopped") throw new Error(`Stop the host before changing its runtime (currently ${current.state}). No process was stopped or killed.`);
 		const login = readLoginConfig(directory);
 		if (login) {
@@ -84,7 +84,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 		edit = new SessionLease(join(installation.directory, "login-edit"));
 		launch = new SessionLease(join(installation.directory, "launch"));
 		const login = readLoginConfig(installation.directory);
-		const before = await probeHost(installation.directory);
+		const before = await probeHost(installation.directory, launch);
 		if (!["running", "stopped"].includes(before.state)) throw new Error(`Host is ${before.state}; no update was applied.`);
 		if (login) {
 			if (canonicalPath(login.entry) !== canonicalPath(launcherPath(home)) || canonicalPath(login.node) !== canonicalPath(process.execPath))
@@ -104,7 +104,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 		if (before.state === "running") {
 			if (!state.active || before.host?.runtime !== state.active) throw new Error("The running host does not match the selected runtime.");
 			const result = await stopHost(installation.directory, { idleOnly: !stopFor, runtime: state.active,
-				...(stopFor ? { checkpoint: { id: checkpoint!, target: stopFor } } : {}) });
+				...(stopFor ? { checkpoint: { id: checkpoint!, target: stopFor } } : {}) }, launch);
 			if (result.deferred !== undefined) return { deferred: result.deferred };
 		}
 		if (login && !supervisor) {

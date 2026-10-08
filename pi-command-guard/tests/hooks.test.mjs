@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const { default: install } = await jiti.import('../index.ts');
@@ -60,5 +62,5 @@ test('only native bash prefixes are included; file edits use the same approval b
   const h = harness(async () => false); h.settings.shellCommandPrefix = 'rm -rf /';
   assert.equal((await h.call({ toolName: 'bash', input: { command: 'echo hi' } })).block, true);
   assert.equal(await h.call({ toolName: 'exec_command', input: { cmd: 'echo hi' } }), undefined);
-  assert.equal((await h.call({ toolName: 'write', input: { path: '/etc/profile', content: 'example' } })).block, true);
+  assert.equal((await h.call({ toolName: 'write', input: { path: join(homedir(), '.ssh', 'config'), content: 'example' } })).block, true);
 });

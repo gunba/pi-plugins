@@ -27,6 +27,16 @@ const waitSnapshot = async (worker, predicate) => {
 	assert.fail(`Native fixture did not reach its boundary: ${JSON.stringify({ id: last?.id, activity: last?.activity, queue: last?.queue, ui: last?.ui })}`);
 };
 
+async function waitProcessExit(pid) {
+	const until = Date.now() + 30_000;
+	while (Date.now() < until) {
+		try { process.kill(pid, 0); }
+		catch (error) { if (error.code === "ESRCH") return; throw error; }
+		await delay(25);
+	}
+	assert.fail(`Fixture actor ${pid} released its registry but did not exit`);
+}
+
 test("native SDK queues and a pending tool question survive a public host handoff without restarting the tool", { timeout: 120000 }, async t => {
 	const root = mkdtempSync(join(tmpdir(), "desk-native-handoff-")), data = join(root, "desk"), home = join(root, "runtime");
 	mkdirSync(data); mkdirSync(home);
@@ -120,9 +130,19 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	const first = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	await first.start(); first.runtime = active; first.runtimeHome = home;
 	const key = randomUUID(), activation = randomUUID(); let next;
+	let actorPid;
 	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionDir: join(root, "sessions"), attachmentScope: key }, message => first.workerEvent(key, message),
-		{ directory: data, key, module: childModule }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
-	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
+		{ directory: data, key, module: childModule }, { attach: async (...args) => {
+			const connection = await attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin });
+			actorPid = connection.record.pid;
+			return connection;
+		}, waitStopped: waitWorkerStopped });
+	t.after(async () => {
+		await next?.close(); await first.close(); await worker.close();
+		// Registry release precedes process exit; Windows retains the actor's working directory until exit.
+		if (actorPid) await waitProcessExit(actorPid);
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+	});
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
 	assert.deepEqual(snapshot.accounts, { anthropic: "pi" });

@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSyn
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
+import { SessionLease, SessionOwnedError, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import { readHostRecord, removeHostRecord, type HostRecord, type HostStatus } from "./host-control.ts";
 
 export interface HostProbe { state: "running" | "stopping" | "stopped" | "unresponsive"; host?: HostStatus; stale?: boolean; error?: string }
@@ -24,7 +24,29 @@ function freeLease(directory: string): SessionLease | undefined {
 	try { return new SessionLease(join(directory, "host")); } catch { return; }
 }
 
-export async function probeHost(directory: string): Promise<HostProbe> {
+function stoppedProbe(directory: string, error: string, launchHeld: boolean, stale = false): HostProbe {
+	let admission: SessionLease | undefined;
+	try {
+		if (!launchHeld) {
+			try { admission = new SessionLease(join(directory, "launch")); }
+			catch (cause) { return { state: "unresponsive", error: cause instanceof SessionOwnedError
+				? "A host launch or management operation is in progress."
+				: `Host launch admission is unavailable: ${cause instanceof Error ? cause.message : String(cause)}` }; }
+		}
+		const lease = freeLease(directory);
+		if (!lease) return { state: "unresponsive", error };
+		lease.close();
+		return { state: "stopped", ...(stale ? { stale: true } : {}) };
+	} finally { admission?.close(); }
+}
+
+/** A caller holding launch admission passes its lease; other probes cannot contend with startup. */
+export function probeHost(directory: string, launch?: SessionLease): Promise<HostProbe> {
+	if (launch && launch.file !== sessionPath(join(directory, "launch"))) throw new Error("Host probe received another directory's launch lease.");
+	return inspectHost(directory, !!launch);
+}
+
+async function inspectHost(directory: string, launchHeld: boolean): Promise<HostProbe> {
 	if (!existsSync(directory)) return { state: "stopped" };
 	const record = readHostRecord(directory);
 	if (record) {
@@ -32,14 +54,10 @@ export async function probeHost(directory: string): Promise<HostProbe> {
 			const host = await controlRequest<HostStatus>(record, "status");
 			return { state: host.stopping ? "stopping" : "running", host };
 		} catch (error) {
-			const lease = freeLease(directory);
-			if (lease) { lease.close(); return { state: "stopped", stale: true }; }
-			return { state: "unresponsive", error: error instanceof Error ? error.message : String(error) };
+			return stoppedProbe(directory, error instanceof Error ? error.message : String(error), launchHeld, true);
 		}
 	}
-	const lease = freeLease(directory);
-	if (lease) { lease.close(); return { state: "stopped" }; }
-	return { state: "unresponsive", error: "The host lock is occupied or unavailable, but no runtime record exists. It may be starting or running an older release." };
+	return stoppedProbe(directory, "The host lock is occupied or unavailable, but no runtime record exists. It may be starting or running an older release.", launchHeld);
 }
 
 export interface StartedHost {
@@ -60,7 +78,7 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 		}
 	}
 	try {
-		const current = await probeHost(directory);
+		const current = await probeHost(directory, launch);
 		if (current.state === "running") {
 			if (options.managed) throw new Error("A host is already running outside this login-start process. Stop it before starting the integration.");
 			return { host: current.host!, reused: true };
@@ -88,7 +106,7 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 						if ((message as { type?: string }).type === "ready") finish();
 					});
 				});
-				const ready = await probeHost(directory);
+				const ready = await probeHost(directory, launch);
 				if (ready.state !== "running") throw new Error(`Host startup was not confirmed. See ${log}.`);
 				handedOff = true;
 				return { host: ready.host!, reused: false, ...(options.managed ? { exited } : {}) };
@@ -100,8 +118,8 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 	} finally { launch.close(); }
 }
 
-export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string; checkpoint?: { id: string; target: string } }): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
-	const current = await probeHost(directory);
+export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string; checkpoint?: { id: string; target: string } }, launch?: SessionLease): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
+	const current = await probeHost(directory, launch);
 	if (current.state === "stopped") {
 		const record = readHostRecord(directory);
 		if (record) {

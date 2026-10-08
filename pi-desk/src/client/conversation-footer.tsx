@@ -19,7 +19,7 @@ export function ConversationFooter({ session, computer, connected, disabled, ope
 	const capacity = contextView?.context?.capacity ?? context?.contextWindow;
 	const limit = contextView?.context?.limit ?? context?.contextWindow;
 	const state = session.controls?.some(control => control.kind === "close" && control.state === "running") ? "Closing"
-		: session.state === "starting" ? "Starting" : session.state === "closed" ? "Closed" : session.state === "failed" ? "Stopped"
+		: session.state === "starting" ? "Starting" : session.state === "closed" ? "Closed" : session.state === "failed" ? "Unavailable"
 			: snapshot?.activity === "waiting" ? "Waiting for input" : snapshot?.activity === "running" ? "Working" : snapshot?.activity === "error" ? "Needs attention" : "Idle";
 	const contextTitle = `Context budget${capacity ? ` · ${tokens(capacity)} model capacity` : ""}`;
 	return <div className="conversation-footer">
