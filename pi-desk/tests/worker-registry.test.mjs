@@ -14,6 +14,15 @@ import { WorkerChannel } from "../src/host/worker-channel.ts";
 import { attachWorker, readWorkerRecord, waitWorkerStopped, workerLease, writeWorkerFile } from "../src/host/worker-registry.ts";
 
 const source = name => new URL(`../src/host/${name}.ts`, import.meta.url).href;
+async function waitFixtureExit(pid) {
+	const deadline = Date.now() + 10000;
+	while (Date.now() < deadline) {
+		try { process.kill(pid, 0); }
+		catch (error) { if (error.code === "ESRCH") return; throw error; }
+		await delay(10);
+	}
+	assert.fail("The owned worker fixture did not exit.");
+}
 function inbox() {
 	const waiting = new Map(), values = new Map();
 	return {
@@ -78,7 +87,8 @@ connection.channel.send({ type: 'command', id: 'accepted-work', generation: 'fix
 			await rescueInbox.wait("fixture-cleanup");
 			await waitWorkerStopped(directory, rescue.record.instance);
 		}
-		await rm(root, { recursive: true, force: true });
+		await waitFixtureExit(first.record.pid);
+		await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
 	});
 	assert.equal(first.bootstrap.options.runtimeDirectory, "/fixture/immutable-runtime");
 	first.channel.send({ type: "init", id: `init:${first.record.instance}`, options: first.bootstrap.options });
@@ -130,19 +140,22 @@ const runtime = await serveWorker(process.argv[2], async () => {
 });
 runtime.closed.then(() => process.exit(0), () => process.exit(1));
 `);
-	let stopped = false;
+	let stopped = false, pid;
 	t.after(async () => {
 		if (!stopped && readWorkerRecord(directory)) {
 			const rescueInbox = inbox();
 			const rescue = await attachWorker(directory, { cwd: root }, rescueInbox.receive, () => {}, { adoptOnly: true });
+			pid = rescue.record.pid;
 			rescue.channel.send({ type: "shutdown", id: "cold-cleanup", force: true });
 			await rescueInbox.wait("cold-cleanup");
 			await waitWorkerStopped(directory, rescue.record.instance);
 		}
-		await rm(root, { recursive: true, force: true });
+		if (pid) await waitFixtureExit(pid);
+		await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
 	});
 	const messages = inbox();
 	const connection = await attachWorker(directory, { cwd: root }, messages.receive, () => {}, { module: fixture });
+	pid = connection.record.pid;
 	assert.equal(existsSync(started), false);
 	connection.channel.send({ type: "describe", id: "before-init" });
 	assert.equal((await messages.wait("before-init")).value.snapshot, undefined);
@@ -197,13 +210,7 @@ runtime.closed.then(() => process.exit(0), () => process.exit(1));
 			await closed;
 			await connection.channel.detach();
 			// Channel closure precedes process exit, which releases its Windows cwd handle.
-			const deadline = Date.now() + 10000;
-			while (Date.now() < deadline) {
-				try { process.kill(connection.record.pid, 0); }
-				catch (error) { if (error.code === "ESRCH") return; throw error; }
-				await delay(10);
-			}
-			assert.fail("The diagnostic fixture did not exit.");
+			await waitFixtureExit(connection.record.pid);
 		});
 		connection.channel.send({ type: "init", id: "init", options: connection.bootstrap.options });
 		const initialized = await messages.wait("init");

@@ -16,6 +16,15 @@ import { activatePreparedRuntime } from "../manage/activate.ts";
 import { attachWorker, waitWorkerStopped, workerDirectory } from "../src/host/worker-registry.ts";
 
 const module = fileURLToPath(new URL("./fixtures/persistent-worker.mjs", import.meta.url));
+async function waitFixtureExit(pid) {
+	const until = Date.now() + 15_000;
+	while (pid) {
+		try { process.kill(pid, 0); }
+		catch (error) { if (error.code === "ESRCH") return; throw error; }
+		assert.ok(Date.now() < until, `Fixture actor ${pid} did not exit`);
+		await delay(25);
+	}
+}
 
 test("host adoption preserves activation and recovers sent input without replay while queued input reaches the same actor", { timeout: 20000 }, async t => {
 	const root = mkdtempSync(join(tmpdir(), "desk-host-adoption-")), data = join(root, "desk");
@@ -40,7 +49,10 @@ test("host adoption preserves activation and recovers sent input without replay 
 	await worker.detach();
 	assert.ok(await command instanceof WorkerConnectionError);
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
+	t.after(async () => {
+		await host.close(); await waitFixtureExit(snapshot.pid);
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+	});
 	await host.start();
 	const managed = await host.waitForSession(key);
 	assert.equal(managed.view.activation, activation);
@@ -104,14 +116,8 @@ test("public runtime activation replaces the host while a busy actor and its pro
 	t.after(async () => {
 		await next?.close(); await first.close(); await worker.close();
 		// Releasing the registry is not process exit; Windows can still hold the actor's cwd.
-		const until = Date.now() + 15_000;
-		while (actorPid) {
-			try { process.kill(actorPid, 0); }
-			catch (error) { if (error.code === "ESRCH") break; throw error; }
-			assert.ok(Date.now() < until, `Fixture actor ${actorPid} did not exit`);
-			await delay(25);
-		}
-		rmSync(root, { recursive: true, force: true });
+		await waitFixtureExit(actorPid);
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start();
 	const managed = { worker, initialized: true, initialGeneration: snapshot.ui.generation,
@@ -170,13 +176,7 @@ test("a lost host connection reattaches the same long-lived actor and reconciles
 		// A detached view no longer owns the fixture's live actor. Adopt it only to clean up.
 		const cleanup = new SessionWorker({ cwd: root }, () => {}, { directory: data, key, adopt: worker.instance });
 		await cleanup.close();
-		const until = Date.now() + 10000;
-		while (actorPid) {
-			try { process.kill(actorPid, 0); }
-			catch (error) { if (error.code === "ESRCH") break; throw error; }
-			assert.ok(Date.now() < until, "Fixture actor did not exit");
-			await delay(25);
-		}
+		await waitFixtureExit(actorPid);
 		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start(); actorPid = snapshot.pid;

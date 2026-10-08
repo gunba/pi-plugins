@@ -57,10 +57,18 @@ test("native SDK queues and a pending tool question survive a public host handof
 	atomicJson(join(home, "installation.json"), { format: 1, directory: data, agentDir: root, cwd: root, port: 0 });
 	const first = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	await first.start(); first.runtime = active; first.runtimeHome = home;
-	const key = randomUUID(), activation = randomUUID(); let next;
+	const key = randomUUID(), activation = randomUUID(); let next, actorPid;
 	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionDir: join(root, "sessions"), attachmentScope: key }, message => first.workerEvent(key, message),
-		{ directory: data, key, module }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
-	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
+		{ directory: data, key, module }, { attach: async (...args) => {
+			const connection = await attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin });
+			actorPid = connection.record.pid;
+			return connection;
+		}, waitStopped: waitWorkerStopped });
+	t.after(async () => {
+		await next?.close(); await first.close(); await worker.close();
+		if (actorPid) await waitProcessExit(actorPid);
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+	});
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
 	const managed = { worker, initialized: true, initialGeneration: snapshot.ui.generation,

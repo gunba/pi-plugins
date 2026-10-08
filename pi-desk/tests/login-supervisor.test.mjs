@@ -115,11 +115,15 @@ test("a real managed wrapper survives public host replacement with the same busy
 	const key = randomUUID(), activation = randomUUID(), file = join(directory, "native.jsonl"), input = randomUUID();
 	writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", cwd: directory, timestamp: new Date().toISOString() }) + "\n");
 	const prefix = readFileSync(file);
-	let entered;
+	let entered, actorPid;
 	const accepted = new Promise(resolve => { entered = resolve; });
 	const worker = new SessionWorker({ cwd: directory, agentDir: directory, sessionFile: file }, event => {
 		if (event.type === "event") entered();
-	}, { directory: data, key, module }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
+	}, { directory: data, key, module }, { attach: async (...args) => {
+		const connection = await attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin });
+		actorPid = connection.record.pid;
+		return connection;
+	}, waitStopped: waitWorkerStopped });
 	let wrapper, exit;
 	t.after(async () => {
 		try {
@@ -133,7 +137,15 @@ test("a real managed wrapper survives public host replacement with the same busy
 					{ directory: data, key, adopt: record.instance });
 				await cleanup.close();
 			}
-			await worker.detach(); rmSync(directory, { recursive: true, force: true });
+			await worker.detach();
+			const until = Date.now() + 15_000;
+			while (actorPid) {
+				try { process.kill(actorPid, 0); }
+				catch (error) { if (error.code === "ESRCH") break; throw error; }
+				assert.ok(Date.now() < until, `Fixture actor ${actorPid} did not exit`);
+				await delay(25);
+			}
+			rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 		}
 	});
 	const snapshot = await worker.start();
