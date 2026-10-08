@@ -25,8 +25,8 @@ const shared = globalThis as typeof globalThis & { [stateKey]?: State };
 const { compactors, sources } = shared[stateKey] ??= { compactors: new WeakMap(), sources: new Map() };
 
 export function registerCompactor(provider: object, compactor: Compactor): void { compactors.set(provider, compactor); }
-export function inheritCompactor(source: object, target: object): void {
-	const compactor = compactors.get(source);
+export function inheritCompactor(source: object | undefined, target: object): void {
+	const compactor = source && compactors.get(source);
 	if (compactor) compactors.set(target, compactor);
 }
 export function guardCheckpointContext(context: Context, provider: string, sessionId: string): void {
@@ -134,7 +134,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 				}
 				return;
 			}
-			const provider = ctx.modelRegistry.getProvider(model.provider);
+			const provider = ctx.modelRegistry.getRegisteredNativeProvider(model.provider);
 			const compact = provider && compactors.get(provider);
 			if (!compact) throw new Error("Native Codex compaction is unavailable in this session.");
 			const settings = settingsFor(ctx);

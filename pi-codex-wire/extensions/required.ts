@@ -15,6 +15,6 @@ export function registerRequiredWire(rootSessionId: string, check: () => boolean
 
 export function requireCodexWire(rootSessionId: string): void {
   if (!registrations.get(rootSessionId)?.check()) {
-    throw new Error("Cannot launch a Codex child without the active Codex Wire provider. Reload or repair Codex Wire first.");
+    throw new Error("The Codex Wire provider is unavailable in this session. Reload Codex Wire before continuing.");
   }
 }

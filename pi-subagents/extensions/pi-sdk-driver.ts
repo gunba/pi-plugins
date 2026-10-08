@@ -301,7 +301,10 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		await this.host.prepareModelRuntime?.(input.descriptor.model, modelRuntime, input.signal, scoped?.ownsProvider(input.descriptor.model.provider));
 		const provider = modelRuntime.getProvider(input.descriptor.model.provider);
 		const boundProvider = provider && bindChildProvider(provider, input.descriptor.childSessionId);
-		if (boundProvider) modelRuntime.registerNativeProvider(boundProvider);
+		if (boundProvider) {
+			inheritCompactor(modelRuntime.getRegisteredNativeProvider(input.descriptor.model.provider), boundProvider);
+			modelRuntime.registerNativeProvider(boundProvider);
+		}
 		input.signal.throwIfAborted();
 		const projectTrusted = input.descriptor.projectTrusted && this.host.isProjectTrusted();
 		const settingsManager = SettingsManager.create(
@@ -336,7 +339,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		let factoryFailure: unknown;
 		const checkProvider = () => {
 			if (input.descriptor.model.provider === "openai-codex"
-				&& modelRuntime.getProvider(input.descriptor.model.provider) !== boundProvider) {
+				&& modelRuntime.getRegisteredNativeProvider(input.descriptor.model.provider) !== boundProvider) {
 				throw new Error("A child tool extension replaced the required Codex Wire provider.");
 			}
 		};

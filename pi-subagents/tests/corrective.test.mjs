@@ -122,6 +122,7 @@ test("parent request auth is inherited when a long-lived resolver has no current
 	const registry = {
 		find: () => ({ provider: "openai-codex", id: "gpt-test" }),
 		getProvider: () => provider,
+		getRegisteredNativeProvider: () => provider,
 		getApiKeyAndHeaders: async () => ({ ok: false, error: "stored OAuth is stale" }),
 		getProviderAuth: async () => undefined,
 	};
@@ -232,6 +233,7 @@ test("missing parent auth fails at activation with the resolver error", async ()
 				modelRegistry: {
 					find: () => ({ provider: "openai-codex", id: "gpt-test" }),
 					getProvider: () => provider,
+					getRegisteredNativeProvider: () => provider,
 					getApiKeyAndHeaders: async () => ({ ok: false, error: "No OAuth credential" }),
 					getProviderAuth: async () => undefined,
 				},

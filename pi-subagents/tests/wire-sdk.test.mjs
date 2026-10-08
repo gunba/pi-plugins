@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
@@ -22,6 +22,9 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
     baseUrl: "https://chatgpt.com/backend-api", reasoning: true, input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 1000,
   };
+  writeFileSync(join(root, "models.json"), JSON.stringify({ providers: { "openai-codex": {
+    modelOverrides: { [model.id]: { contextWindow: 900000 } },
+  } } }));
   const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "offline" } })).toString("base64url")}.x`;
   globalThis.fetch = async (url, init) => {
     assert.ok(String(url).startsWith("https://chatgpt.com/"), "no unexpected endpoint");
@@ -52,7 +55,7 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
     ui: { notify() {}, setStatus() {} },
     sessionManager: { getSessionId: () => "wire-root", getBranch: () => entries, buildContextEntries: () => [] },
     modelRegistry: {
-      find: () => model, getProvider: () => provider,
+      find: () => model, getProvider: () => provider, getRegisteredNativeProvider: () => provider,
       async getApiKeyAndHeaders() { return { ok: true, apiKey: jwt }; },
       async getProviderAuth() { return { auth: { apiKey: jwt }, source: "stored API key" }; },
     },
@@ -79,7 +82,7 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
     else process.env.PI_CODING_AGENT_DIR = oldDir;
     rmSync(root, { recursive: true, force: true });
   });
-  assert.throws(() => requireCodexWire("wire-root"), /without.*Codex Wire/);
+  assert.throws(() => requireCodexWire("wire-root"), /Codex Wire provider is unavailable/);
   events.get("session_start")({}, ctx);
   requireCodexWire("wire-root");
   const childRuntimes = [];
@@ -119,14 +122,15 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   // The SDK summarizer uses the session stream function without sessionId.
   // Child binding must supply it rather than selecting Wire's parent fallback.
   for (const runtime of childRuntimes) {
+    assert.equal(runtime.getModel(model.provider, model.id).contextWindow, 900000);
     const result = await runtime.streamSimple(model, { messages: [{ role: "user", content: "offline summary fixture", timestamp: 2 }] }).result();
     assert.equal(result.stopReason, "stop", result.errorMessage);
   }
   assert.deepEqual(requests.slice(2).map(request => request.headers.get("session-id")), ["child-a", "child-b"]);
   const active = provider;
   provider = { ...provider }; // Unverified provider replacement fails closed.
-  assert.throws(() => requireCodexWire("wire-root"), /without.*Codex Wire/);
+  assert.throws(() => requireCodexWire("wire-root"), /Codex Wire provider is unavailable/);
   provider = active;
   events.get("session_shutdown")({}, ctx);
-  assert.throws(() => requireCodexWire("wire-root"), /without.*Codex Wire/);
+  assert.throws(() => requireCodexWire("wire-root"), /Codex Wire provider is unavailable/);
 });

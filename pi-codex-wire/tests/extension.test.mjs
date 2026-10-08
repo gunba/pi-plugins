@@ -40,7 +40,7 @@ function harness(t, mode = "codex", savedDefault) {
   const bus = createEventBus();
   const api = { events: { ...bus, emit(name, data) { published.push({ name, data }); bus.emit(name, data); } }, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), registerFlag() {}, getFlag: name => flags.get(name), on, registerCommand: (name, command) => commands.set(name, command), registerProvider: next => { provider = next; } };
   const notices = [];
-  const ctx = { model, ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildSessionProjection: () => buildSessionProjection(entries) }, isIdle: () => true };
+  const ctx = { model, ui: { notify: text => notices.push(text), setStatus() {} }, modelRegistry: { getProvider: () => provider, getRegisteredNativeProvider: () => provider, isUsingOAuth: () => true }, sessionManager: { getSessionId: () => "pi-thread", getBranch: () => entries, buildSessionProjection: () => buildSessionProjection(entries) }, isIdle: () => true };
   extension(api);
   events.get("session_start")({}, ctx);
   t.after(() => events.get("session_shutdown")({}, ctx));
@@ -88,7 +88,7 @@ test("failed manual reactivation remains fail-closed rather than restoring stock
   await h.commands.get("codex-wire").handler("reconnect", h.ctx);
   assert.notEqual(h.provider(), h.original);
   assert.throws(() => h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt }), /Wire activation failed/);
-  assert.throws(() => requireCodexWire("pi-thread"), /without.*Codex Wire/);
+  assert.throws(() => requireCodexWire("pi-thread"), /Codex Wire provider is unavailable/);
 });
 
 test("prewarm is off by default and command changes persist independently of mandatory Wire", async t => {

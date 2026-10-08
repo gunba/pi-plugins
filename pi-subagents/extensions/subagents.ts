@@ -38,6 +38,7 @@ import { createSubagentToolDefinitions } from "./subagent-tools.ts";
 import { readSessionTranscript } from "./session-transcript.ts";
 import { ConversationModelPermissions } from "./model-permissions.ts";
 import { requireCodexWire } from "../../pi-codex-wire/extensions/required.ts";
+import { inheritCompactor } from "../../pi-codex-wire/extensions/native-compaction.ts";
 import { ensureWorkCoordination, getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { NoticeBatcher, noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
@@ -174,6 +175,7 @@ export async function inheritProviderRuntime(
 
 	// Preserve native OAuth refresh. API-key inheritance below must instead
 	// use the parent's effective credential, even when the child store resolves.
+	inheritCompactor(ctx.modelRegistry.getRegisteredNativeProvider(ref.provider), provider);
 	modelRuntime.registerNativeProvider(provider);
 	const childModel = modelRuntime.getModel(ref.provider, ref.id);
 	if (!childModel)
@@ -231,9 +233,9 @@ export async function inheritProviderRuntime(
 
 	// Runtime API keys and effective request configuration take precedence over
 	// shared stored keys. This override is in memory and rebuilt on activation.
-	modelRuntime.registerNativeProvider(
-		providerWithRequestAuth(provider, requestAuth, env),
-	);
+	const authenticated = providerWithRequestAuth(provider, requestAuth, env);
+	inheritCompactor(provider, authenticated);
+	modelRuntime.registerNativeProvider(authenticated);
 	await modelRuntime.setRuntimeApiKey(ref.provider, apiKey, { signal });
 	const inheritedModel = modelRuntime.getModel(ref.provider, ref.id);
 	if (!inheritedModel || !(await modelRuntime.getAuth(inheritedModel, { signal })))

@@ -8,14 +8,16 @@ import test from "node:test";
 import { Type } from "typebox";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createAgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSession, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { identity } from "./fixtures.mjs";
+import { requireCodexWire } from "../extensions/required.ts";
 import { CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
 import { CHECKPOINT, entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../extensions/checkpoint-state.ts";
 import { compactInput } from "../extensions/compact-input.ts";
-import nativeCompaction, { retryCompaction } from "../extensions/native-compaction.ts";
+import nativeCompaction, { inheritCompactor, retryCompaction } from "../extensions/native-compaction.ts";
 import { copyCompletedParentTurns } from "../../pi-subagents/extensions/subagent-runtime.ts";
 import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
+import { inheritProviderRuntime } from "../../pi-subagents/extensions/subagents.ts";
 
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url")}.x`;
 const responsesUrl = "https://chatgpt.com/backend-api/codex/responses";
@@ -43,7 +45,7 @@ function compactStream(items = [output[1]], usage) {
 	return sseResponse(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-async function harness(t, checkpoint) {
+async function harness(t, checkpoint, contextWindow) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-native-compact-"));
 	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE };
 	process.env.PI_CODING_AGENT_DIR = directory; process.env.PI_OFFLINE = "1";
@@ -65,7 +67,11 @@ async function harness(t, checkpoint) {
 	writeFileSync(join(directory, "settings.json"), JSON.stringify({ compaction: { enabled: false, reserveTokens: 40000, keepRecentTokens: 300 },
 		retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 }, httpIdleTimeoutMs: 900000 }));
 	const settings = SettingsManager.create(directory, directory, { projectTrusted: false });
-	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+	const modelsPath = join(directory, "models.json");
+	if (contextWindow) writeFileSync(modelsPath, JSON.stringify({ providers: { "openai-codex": {
+		modelOverrides: { [modelData.id]: { contextWindow } },
+	} } }));
+	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: contextWindow ? modelsPath : null, refreshOnCreate: false });
 	runtime.registerProvider("openai-codex", { name: "Fixture", apiKey: jwt, baseUrl: "https://chatgpt.com/backend-api", api: modelData.api,
 		streamSimple, models: [modelData] });
 	let token = jwt;
@@ -120,6 +126,21 @@ async function harness(t, checkpoint) {
 	return { session, manager, model, runtime, calls, errors, directory,
 		setToken: value => { token = value; }, setResponse: fn => { compactResponse = fn; } };
 }
+
+test("model context overrides preserve Wire registration across native refresh", async t => {
+	const h = await harness(t, undefined, 900000);
+	const native = h.runtime.getRegisteredNativeProvider("openai-codex");
+	const effective = h.runtime.getProvider("openai-codex");
+	await h.runtime.refresh({ providers: ["openai-codex"], allowNetwork: false });
+	assert.equal(h.runtime.getRegisteredNativeProvider("openai-codex"), native);
+	assert.notEqual(h.runtime.getProvider("openai-codex"), effective);
+	assert.equal(h.runtime.getModel("openai-codex", modelData.id).contextWindow, 900000);
+	assert.doesNotThrow(() => requireCodexWire(h.session.sessionId));
+	await h.session.prompt("Continue with the saved context budget.", { expandPromptTemplates: false });
+	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
+	const compacted = await h.session.compact();
+	assert.ok(compacted.details[CHECKPOINT]);
+});
 
 test("a live session can continue immediately after native compaction without reloading", async t => {
 	const h = await harness(t);
@@ -337,14 +358,18 @@ test("an existing stock-Pi prose summary becomes part of the native checkpoint i
 	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, before.length).equals(before));
 });
 
-test("SDK child inherits the compactor while using its own session and routing state", async t => {
-	const h = await harness(t);
+for (const contextWindow of [undefined, 900000]) test(`SDK child inherits compaction with its own routing state (window=${contextWindow ?? "catalog"})`, async t => {
+	const h = await harness(t, undefined, contextWindow);
 	await h.session.compact();
 	const manager = SessionManager.create(h.directory, h.directory);
 	copyCompletedParentTurns(h.manager, manager, "absent");
-	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
-	const bound = bindChildProvider(h.runtime.getProvider("openai-codex"), manager.getSessionId());
+	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(),
+		modelsPath: contextWindow ? join(h.directory, "models.json") : null, refreshOnCreate: false });
+	await inheritProviderRuntime({ modelRegistry: new ModelRegistry(h.runtime) }, { provider: "openai-codex", id: modelData.id }, runtime);
+	const bound = bindChildProvider(runtime.getProvider("openai-codex"), manager.getSessionId());
+	inheritCompactor(runtime.getRegisteredNativeProvider("openai-codex"), bound);
 	runtime.registerNativeProvider(bound);
+	await runtime.refresh({ providers: ["openai-codex"], allowNetwork: false });
 	const settings = SettingsManager.create(h.directory, h.directory, { projectTrusted: false });
 	const loader = new DefaultResourceLoader({ cwd: h.directory, agentDir: h.directory, settingsManager: settings,
 		noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true,

@@ -149,6 +149,11 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.30 retains API 8. Model overrides no longer invalidate Codex Wire
+ownership or child compaction when Pi refreshes provider metadata. Affected
+conversations need an individual worker restart after the host update; their
+saved context limits, accounts and histories remain in place.
+
 Version 0.5.29 retains API 8. The browser shows new operational notices in a
 single temporary status bar rather than replaying saved warning cards. Existing
 native records remain unchanged. The binary-export correction in child extension

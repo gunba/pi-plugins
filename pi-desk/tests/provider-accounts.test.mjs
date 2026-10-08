@@ -133,7 +133,7 @@ test("scoped child account stays pinned when the parent selects another account"
 		assert.equal((await fresh.runtime.getAuth("openai-codex")).auth.apiKey, access(ids[1]));
 		const model = { id: "fixture", name: "Fixture", provider: "openai-codex", api: "openai-codex-responses", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 };
 		const provider = { ...child.runtime.getProvider("openai-codex"), getModels: () => [model] };
-		const ctx = { modelRegistry: { find: () => model, getProvider: () => provider,
+		const ctx = { modelRegistry: { find: () => model, getProvider: () => provider, getRegisteredNativeProvider: () => provider,
 			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: access(ids[1]) }),
 			getProviderAuth: async () => ({ source: "OAuth", auth: { apiKey: access(ids[1]) } }),
 		} };

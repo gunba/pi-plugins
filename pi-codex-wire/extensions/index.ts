@@ -351,12 +351,12 @@ export default function codexWire(pi: ExtensionAPI): void {
       return result;
     }
 
-    pi.registerProvider({ ...provider,
+    const registeredProvider: Provider = { ...provider,
       stream: (model, context, options) => wrapped(model, context, options, false),
       streamSimple: (model, context, options) => wrapped(model, context, options, true),
-    });
-    const registeredProvider = ctx.modelRegistry.getProvider("openai-codex");
-    if (registeredProvider) registerCompactor(registeredProvider, async operation => {
+    };
+    pi.registerProvider(registeredProvider);
+    registerCompactor(registeredProvider, async operation => {
       const owner = operation.ctx.sessionManager.getSessionId();
       if ([...pending.values()].includes(owner)) throw new Error("Wait for this session's active request before compacting.");
       const session = sessionFor(owner);
@@ -400,9 +400,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         return createCheckpoint(result.output, result.usage);
       } finally { pending.delete(controller); trimIdleSessions(); }
     });
+    // models.json recomposes effective providers without replacing their native registration.
     releaseRequiredWire = registerRequiredWire(primaryThreadId, () =>
       !currentLifetime.signal.aborted && !!primaryProtocol && !!primarySession
-      && ctx.modelRegistry.getProvider("openai-codex") === registeredProvider);
+      && ctx.modelRegistry.getRegisteredNativeProvider("openai-codex") === registeredProvider);
     showWireStatus(ctx);
     if (ctx.model?.provider === "openai-codex") ctx.ui.notify(`Codex wire ${mode}; diagnostics: ${currentDiagnostics.path}`, "info");
   }

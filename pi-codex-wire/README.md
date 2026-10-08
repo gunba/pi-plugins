@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **0.99.2+** and Node **22.19+**.
+Protocol reference: **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -103,7 +103,10 @@ Compaction uses Pi's public message serializers and active tool schemas. These
 schemas describe functions for compaction; ordinary response requests retain
 their existing grammar and deferred-tool behavior. Tool arguments and results
 keep their pairing. SDK children inherit the compactor with their own session,
-routing state and settings.
+routing state and settings. Provider ownership and compaction follow Pi’s native
+registration, not the temporary provider wrappers created by model overrides.
+Refreshing context limits retains Wire and child compaction while applying the
+configured model metadata and authentication.
 
 Compaction shares Wire's WebSocket/SSE transport, compression, idle deadlines,
 allowance observations and cancellation. Prewarming is skipped for compaction.
