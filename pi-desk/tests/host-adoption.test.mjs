@@ -91,12 +91,28 @@ test("public runtime activation replaces the host while a busy actor and its pro
 	await first.start(); first.runtime = active; first.runtimeHome = home;
 	let entered;
 	const sending = new Promise(resolve => { entered = resolve; });
+	let actorPid;
 	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionFile: file }, message => {
 		first.workerEvent(key, message);
 		if (message.type === "event") entered();
-	}, { directory: data, key, module }, { attach: (...args) => attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin }), waitStopped: waitWorkerStopped });
+	}, { directory: data, key, module }, { attach: async (...args) => {
+		const connection = await attachWorker(...args.slice(0, 4), { ...args[4], runtimeDirectory: pin });
+		actorPid = connection.record.pid;
+		return connection;
+	}, waitStopped: waitWorkerStopped });
 	let next;
-	t.after(async () => { await next?.close(); await first.close(); await worker.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		await next?.close(); await first.close(); await worker.close();
+		// Releasing the registry is not process exit; Windows can still hold the actor's cwd.
+		const until = Date.now() + 15_000;
+		while (actorPid) {
+			try { process.kill(actorPid, 0); }
+			catch (error) { if (error.code === "ESRCH") break; throw error; }
+			assert.ok(Date.now() < until, `Fixture actor ${actorPid} did not exit`);
+			await delay(25);
+		}
+		rmSync(root, { recursive: true, force: true });
+	});
 	const snapshot = await worker.start();
 	const managed = { worker, initialized: true, initialGeneration: snapshot.ui.generation,
 		view: { key, activation, cwd: root, created: Date.now(), state: "ready", file, snapshot, ui: snapshot.ui } };
