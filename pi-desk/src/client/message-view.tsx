@@ -90,7 +90,7 @@ function ThinkingGroup({ parts, sessionKey, source }: {
 	return <Disclosure id={`thinking:${parts[0]?.message.id}:${parts[0]?.index}`} className="tool-card thinking-pill"
 		summary={<><Icon name="thinking" /><strong>Thinking</strong>
 		{parts.length > 1 && <span className="thinking-count" title="Reasoning sections in this reply">{parts.length} sections</span>}
-		{active && <span className="tool-status"><Elapsed started={active.timestamp} /></span>}</>}>
+		{active && <span className="tool-status" title="Elapsed response time, including network waiting—not measured reasoning time."><span>Elapsed</span><Elapsed started={active.timestamp} /></span>}</>}>
 		<div className="thinking-output">{parts.map(({ message, block, index }) => <ReferenceContext key={`${message.id}:${index}`} value={{ message: message.id, source }}>
 			<RenderedText message={message} block={block} sessionKey={sessionKey} />
 		</ReferenceContext>)}</div>

@@ -3,7 +3,7 @@ import { NoticeBatcher } from "./notice-batcher.ts";
 import { historicalTaskName, resolveTaskPath, validateTaskName } from "./task-names.ts";
 import { FOLLOWUP_MESSAGE, type FollowupInput } from "./followup-delivery.ts";
 import type { PresentationScope, UiTranscriptSource } from "../../pi-ui/index.ts";
-import { SessionLease, attachOwnership, releaseOwnership } from "../../pi-session-ownership/lease.ts";
+import { SessionLease, attachOwnership, releaseOwnership, sessionPath } from "../../pi-session-ownership/lease.ts";
 import type { ChildPolicySource } from "./child-policies.ts";
 import type { ModelCredentials } from "../model-credentials.ts";
 import { getWorkCoordinator } from "../../pi-work-coordination/core.ts";
@@ -558,6 +558,13 @@ function launchIds(manager: Pick<SessionManager, "getBranch" | "getSessionId">):
 	return ids;
 }
 
+function sameSessionFile(left: string | undefined, right: string | undefined): boolean {
+	if (left === right) return true;
+	if (!left || !right) return false;
+	try { return sessionPath(left) === sessionPath(right); }
+	catch { return false; }
+}
+
 function readHeaderFallback(file: string): { id?: string; parentSession?: string } {
 	try {
 		const first = readFileSync(file, "utf8").split(/\r?\n/, 1)[0];
@@ -1037,6 +1044,8 @@ export class SubagentRuntime {
 	resolveTarget(caller: Authority, target: string): string {
 		this.assertLive(caller);
 		if (target === this.host.rootSessionId || this.records.has(target)) return target;
+		const diagnostic = this.diagnostics.get(target);
+		if (diagnostic) throw Error(`Agent ${target} could not be restored (${diagnostic.reason}). No work was submitted.`);
 		const path = resolveTaskPath(this.agentPath(caller.sessionId), target);
 		if (path === "/root") return this.host.rootSessionId;
 		const matches = [...this.records.keys()].filter(id => this.agentPath(id) === path);
@@ -1123,7 +1132,7 @@ export class SubagentRuntime {
 				this.leases.set(file, lease);
 			} catch {
 				const header = readHeaderFallback(file);
-				if (header.id && header.parentSession === this.host.rootSessionFile) {
+				if (header.id && sameSessionFile(header.parentSession, this.host.rootSessionFile)) {
 					this.diagnostics.set(header.id, {
 						id: header.id,
 						parentSessionId: this.host.rootSessionId,
@@ -1145,7 +1154,7 @@ export class SubagentRuntime {
 				if (descriptor.parentSessionId === this.host.rootSessionId) {
 					if (
 						descriptor.depth === 1 &&
-						(!this.host.rootSessionFile || descriptor.parentSessionFile === this.host.rootSessionFile)
+						(!this.host.rootSessionFile || sameSessionFile(descriptor.parentSessionFile, this.host.rootSessionFile))
 					) {
 						valid.add(descriptor.childSessionId);
 						lineageChanged = true;
@@ -1157,7 +1166,7 @@ export class SubagentRuntime {
 					parent &&
 					valid.has(parent.descriptor.childSessionId) &&
 					descriptor.depth === parent.descriptor.depth + 1 &&
-					descriptor.parentSessionFile === parent.manager.getSessionFile()
+					sameSessionFile(descriptor.parentSessionFile, parent.manager.getSessionFile())
 				) {
 					valid.add(descriptor.childSessionId);
 					lineageChanged = true;
@@ -2025,7 +2034,7 @@ export class SubagentRuntime {
 			? "running" : record.activation || (!record.parked && record.queue.length) ? "idle" : "ready";
 	}
 
-	listNamedAgents(caller: Authority, pathPrefix?: string): { agent_name: string; agent_id: string; agent_status: string }[] {
+	listNamedAgents(caller: Authority, pathPrefix?: string): { agent_name: string; agent_id: string; agent_status: string; restoration_error?: DiagnosticRecord["reason"] }[] {
 		this.assertLive(caller);
 		const prefix = pathPrefix === undefined ? "/root" : resolveTaskPath(this.agentPath(caller.sessionId), pathPrefix);
 		const agents = [{ agent_name: "/root", agent_id: this.host.rootSessionId, agent_status: this.agentStatus(this.host.rootSessionId) },
@@ -2033,6 +2042,7 @@ export class SubagentRuntime {
 				agent_name: entry.kind === "child" ? this.agentPath(entry.id) : entry.id,
 				agent_id: entry.id,
 				agent_status: entry.kind === "child" ? entry.status : "error",
+				...(entry.kind === "diagnostic" ? { restoration_error: entry.reason } : {}),
 			}))];
 		return agents.filter(agent => pathPrefix === undefined || agent.agent_name === prefix || agent.agent_name.startsWith(`${prefix}/`));
 	}

@@ -5,33 +5,76 @@ import { WorkerConnectionError } from "./worker-errors.ts";
 
 const PROTOCOL = 1;
 const MAX_FRAME = 8 * 1024 * 1024;
+const failures = new WeakMap<Socket, WorkerConnectionError>();
+function disconnect(socket: Socket, message: string): void {
+	failures.set(socket, new WorkerConnectionError(message)); socket.destroy();
+}
 export interface WorkerEndpointIdentity { instance: string; secret: string }
 export interface WorkerEndpointAddress extends WorkerEndpointIdentity { port: number }
 
-function write(socket: Socket, value: unknown): void {
-	const frame = JSON.stringify(value) + "\n";
-	if (Buffer.byteLength(frame) > MAX_FRAME || socket.writableLength > MAX_FRAME) {
-		socket.destroy();
-		return;
+interface PendingFrame { frame: string; bytes: number; replacement?: string }
+class FrameWriter {
+	private pending: PendingFrame[] = [];
+	private bytes = 0;
+	private blocked = false;
+	private socket: Socket;
+	constructor(socket: Socket) {
+		this.socket = socket;
+		socket.on("drain", () => { this.blocked = false; this.flush(); });
+		socket.once("close", () => { this.pending = []; this.bytes = 0; });
 	}
-	if (!socket.destroyed && !socket.writableEnded) socket.write(frame);
+	send(value: unknown): void {
+		if (this.socket.destroyed || this.socket.writableEnded) return;
+		const frame = JSON.stringify(value) + "\n", bytes = Buffer.byteLength(frame);
+		if (bytes > MAX_FRAME) { disconnect(this.socket, "A worker message exceeded the 8 MiB channel limit."); return; }
+		const snapshot = object(value) && object(value.snapshot) ? value.snapshot : undefined;
+		const generation = object(value) && value.type === "snapshot" && object(snapshot?.ui)
+			? snapshot.ui.generation : snapshot?.generation;
+		const replacement = object(value) && ["snapshot", "ui"].includes(String(value.type)) && typeof generation === "string"
+			? `${value.type}:${generation}` : undefined;
+		// Only adjacent, complete views of the same generation replace each other.
+		// Commands, receipts, transcript events and generation boundaries stay ordered.
+		const last = this.pending.at(-1);
+		if (replacement && last?.replacement === replacement) {
+			this.bytes -= last.bytes; this.pending.pop();
+		}
+		if (this.bytes + bytes > MAX_FRAME) { disconnect(this.socket, "The worker connection could not drain its pending messages."); return; }
+		this.pending.push({ frame, bytes, replacement }); this.bytes += bytes;
+		this.flush();
+	}
+	private flush(): void {
+		while (!this.blocked && this.pending.length && !this.socket.destroyed && !this.socket.writableEnded) {
+			const next = this.pending.shift()!; this.bytes -= next.bytes;
+			this.blocked = !this.socket.write(next.frame);
+		}
+	}
+}
+const writers = new WeakMap<Socket, FrameWriter>();
+function write(socket: Socket, value: unknown): void {
+	let writer = writers.get(socket);
+	if (!writer) { writer = new FrameWriter(socket); writers.set(socket, writer); }
+	writer.send(value);
 }
 
 function frames(socket: Socket, limit: () => number, receive: (value: unknown) => void): void {
 	let pending = Buffer.alloc(0);
 	socket.on("data", chunk => {
+		let handling = false;
 		try {
 			pending = Buffer.concat([pending, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
 			for (;;) {
 				const end = pending.indexOf(10);
-				if ((end < 0 ? pending.length : end) > limit()) throw new Error("Worker frame exceeds its limit.");
+				if ((end < 0 ? pending.length : end) > limit()) { disconnect(socket, "An incoming worker message exceeded the channel limit."); return; }
 				if (end < 0) break;
 				const value: unknown = JSON.parse(pending.subarray(0, end).toString("utf8"));
 				pending = pending.subarray(end + 1);
-				receive(value);
+				handling = true; receive(value); handling = false;
 				if (socket.destroyed) break;
 			}
-		} catch { socket.destroy(); }
+		} catch (error) {
+			if (handling) console.error("Worker message handling failed:", error);
+			disconnect(socket, handling ? "The host could not handle a worker update. Details are in the host log." : "The worker connection received invalid JSON.");
+		}
 	});
 }
 
@@ -113,17 +156,21 @@ export class WorkerChannel {
 	private constructor(socket: Socket) { this.socket = socket; }
 
 	static connect(address: WorkerEndpointAddress, receive: (message: WorkerMessage) => void,
-		disconnected: () => void): Promise<WorkerChannel> {
+		disconnected: (error?: WorkerConnectionError) => void): Promise<WorkerChannel> {
 		if (!Number.isInteger(address.port) || address.port < 1 || address.port > 65535) return Promise.reject(new Error("Invalid worker endpoint port."));
 		return new Promise((resolve, reject) => {
 			const socket = createConnection({ host: "127.0.0.1", port: address.port });
 			let authenticated = false;
 			const timer = setTimeout(() => socket.destroy(), 5000);
 			socket.setNoDelay(true);
-			socket.on("error", () => {});
+			socket.on("error", error => {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (!failures.has(socket) && code && /^[A-Z_]{1,64}$/.test(code))
+					failures.set(socket, new WorkerConnectionError(`The worker connection closed (${code}).`));
+			});
 			socket.on("close", () => {
 				clearTimeout(timer);
-				if (authenticated) disconnected();
+				if (authenticated) disconnected(failures.get(socket));
 				else reject(new WorkerConnectionError("Worker attachment could not be authenticated."));
 			});
 			socket.once("connect", () => write(socket, { protocol: PROTOCOL, instance: address.instance, secret: address.secret }));

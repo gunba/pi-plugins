@@ -21,7 +21,7 @@ import { registerRequiredWire, requireCodexWire } from "./required.ts";
 import requestTracing, { requestTrace } from "./request-trace.ts";
 import nativeCompaction, { guardCheckpointContext, registerCompactor } from "./native-compaction.ts";
 import { replayCheckpoints, createCheckpoint } from "./checkpoint.ts";
-import { CHECKPOINT } from "./checkpoint-state.ts";
+import { CHECKPOINT, SESSION_WINDOW_ENTRY } from "./checkpoint-state.ts";
 import { compactBody, requestCompact } from "./compact.ts";
 import { codexRequestAuth, compactInput } from "./compact-input.ts";
 import { getPresentation, type UiDetails } from "../../pi-ui/index.ts";
@@ -190,7 +190,7 @@ export default function codexWire(pi: ExtensionAPI): void {
       let session = currentSessions.get(threadId);
       if (!session) {
         const saved = ctx.sessionManager.getBranch().filter(entry =>
-          entry.type === "custom" && entry.customType === "codex-wire-session-window"
+          entry.type === "custom" && entry.customType === SESSION_WINDOW_ENTRY
           && object(entry.data).threadId === threadId).at(-1);
         const window = object(saved?.type === "custom" ? saved.data : undefined).id;
         const childProtocol = new Protocol(next as Profile, threadId, installationId(directory), identity,
@@ -201,7 +201,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             // Inherited children can retain a different account. Their allowance is not the parent's.
             globalThis.fetch, process.env, undefined, selectedPrewarm),
         };
-        if (!window) pi.appendEntry("codex-wire-session-window", { threadId, id: childProtocol.getWindowId() });
+        if (!window) pi.appendEntry(SESSION_WINDOW_ENTRY, { threadId, id: childProtocol.getWindowId() });
       }
       currentSessions.delete(threadId);
       currentSessions.set(threadId, session);
@@ -311,7 +311,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             requestId, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
             trace,
             onFallback: () => ctx.ui.notify(
-              "Codex Wire is falling back to HTTPS. Use /codex-wire reconnect when idle to try WebSocket again.", "warning"),
+              "Codex Wire is using HTTPS temporarily. WebSocket will be retried automatically on a later request.", "info"),
           });
         };
       } else {

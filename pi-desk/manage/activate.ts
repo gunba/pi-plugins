@@ -70,7 +70,7 @@ export async function activateRuntime(home: string, requested?: string) {
 }
 
 /** Hold startup admission and select the verified host; independent actors stay pinned. */
-export async function activatePreparedRuntime(home: string, stopFor?: string, checkpoint?: string): Promise<{ release?: string; restart?: boolean; deferred?: number }> {
+export async function activatePreparedRuntime(home: string, stopFor?: string, checkpoint?: string): Promise<{ release?: string; startup?: "supervisor" | "launcher"; deferred?: number }> {
 	if (stopFor && !checkpoint) throw new Error("Explicit activation requires a host handoff.");
 	const manage = new SessionLease(join(home, "manage"));
 	let edit: SessionLease | undefined, launch: SessionLease | undefined, host: SessionLease | undefined;
@@ -119,6 +119,6 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 		}
 		host = new SessionLease(join(installation.directory, "host"));
 		atomicJson(join(home, "state.json"), { ...state, active: release.id, previous: state.active, pending: undefined, autoApply: undefined });
-		return { release: release.desk, restart: before.state === "running" };
+		return { release: release.desk, ...(before.state === "running" ? { startup: supervisor ? "supervisor" : "launcher" } : {}) };
 	} finally { host?.close(); launch?.close(); edit?.close(); manage.close(); }
 }

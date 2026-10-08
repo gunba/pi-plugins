@@ -17,9 +17,11 @@ read scripts, or execute a command to decide whether to admit it.
   or database deletion commands.
 - Require confirmation before direct file tools change system files, credentials
   or Git internals. Ordinary workspace file edits remain available.
-- Inspect supported shell wrappers and inline programs for recognized destructive
-  calls. Recognized encoded/evaluation forms and unresolved quoting or execution
-  layers require review. This does not implement every shell or language grammar.
+- Inspect supported shell wrappers, literal evaluation/encoded commands and inline
+  programs for recognized destructive calls. Unknown syntax, input, executable names
+  or program behavior do not trigger approval on their own. Parsing is bounded to
+  16 KiB and four nested layers; reaching those limits does not establish a threat.
+  This does not implement every shell or language grammar.
 - Approval applies to the exact current call and working directory, not later
   commands. Cancellation, timeout, context replacement and unavailable UI do not
   grant approval. Desk's Away setting does not grant required confirmations.

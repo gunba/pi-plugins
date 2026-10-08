@@ -12,6 +12,7 @@ import { stageRuntime } from "./stage.ts";
 import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { migrateLogin, removeLogin, stopLogin } from "../src/host/login.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
+import { liveSupervisor } from "../src/host/login-supervisor.ts";
 import type { RuntimeUpdateState } from "../src/shared/updates.ts";
 import { personalPackageSource, releaseSourceSupported } from "./release-source.ts";
 import { readUpdateCheck } from "./update-check.ts";
@@ -208,7 +209,10 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 					} finally { ledger.close(); }
 					if (committed) {
 						publish("The update could not be selected; restoring the previous runtime");
-						try { await runLauncher(home, ["start"]); await waitForRestoration(installation.directory, value.id); }
+						try {
+							if (!liveSupervisor(installation.directory)) await runLauncher(home, ["start"]);
+							await waitForRestoration(installation.directory, value.id);
+						}
 						catch { throw new Error("The update was not selected and restoration is unconfirmed. Saved checkpoints remain; check Desk status before retrying."); }
 					}
 				}
@@ -217,11 +221,11 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 			if (result.deferred !== undefined) {
 				publish("Update ready. It will apply after all open Pi sessions close.", "waiting");
 			} else {
-				if (result.restart) {
+				if (result.startup) {
 					publish(`Starting Desk ${result.release}`);
-					await runLauncher(home, ["start"]);
+					if (result.startup === "launcher") await runLauncher(home, ["start"]);
 				}
-				const failures = result.restart && forced
+				const failures = result.startup && forced
 					? await waitForRestoration(installation.directory, value.id, options.signal) : 0;
 				publish(failures ? `Desk ${result.release} is installed; ${failures} conversations need manual attention.`
 					: result.release ? `Desk ${result.release} is installed. Native history and account access are retained.` : "Desk is up to date.", "complete");

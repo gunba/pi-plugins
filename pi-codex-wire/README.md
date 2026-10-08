@@ -62,13 +62,33 @@ Wire neither replays the interrupted stream nor adds or resets retries. This
 applies to ordinary responses and summaries, including failures after partial
 output. Model, effort, prompt and tool content stay unchanged.
 
-Fallback is reported in the UI and remains local to the affected routing session
-until transport state is recreated. Cancellation, deliberate shutdown, completed
-responses, model error responses and invalid payloads do not activate stream fallback.
+Fallback is local to the affected routing session. In `auto` mode, the next
+request after a 30-second cooldown tries WebSocket again. Repeated failures double
+the cooldown up to five minutes; a completed WebSocket inference resets it. There
+are no idle probes or mid-response switches. The first recovered request sends
+full context; subsequent compatible requests use WebSocket continuation again.
+Thread, cache and context-window identities are retained. Explicit `sse` mode
+never tries WebSocket.
+
+The UI reports each fallback episode once, not each recovery attempt. Diagnostics
+record the cooldown and recovery attempts/completion. Cancellation, deliberate
+shutdown, completed responses, model error responses and invalid payloads do not
+activate stream fallback.
 `websocket-failure` diagnostics record the close code, elapsed/idle milliseconds,
 event count and whether output began—not close-reason text, error text or content.
+SSE diagnostics likewise record first-event time, latest reasoning-update time,
+event counts, idle time and maximum event gaps without recording output text.
+A socket termination before completion is reported as an interrupted response
+stream, not simply `terminated`. These timings describe received traffic, not
+the model's compute time or the location of a network fault.
 
 ## Native compaction
+
+A portable model handoff keeps its source branch anchored while summarizing.
+Wire's transport-window bookkeeping may be appended without invalidating the
+result; messages, other entry changes and navigation away from that anchor still
+prevent the switch. The handoff uses the source model's selected reasoning level,
+so a high-effort summary can take several minutes.
 
 Codex sessions use native compaction through Responses, with the
 `compaction_trigger` input used by Codex CLI 0.155.0. Pi still chooses the cut

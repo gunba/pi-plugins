@@ -80,7 +80,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "native-before");
 	assert.equal(first.state().operatorAvailability.mode, "away");
 	first.persist(true);
-	assert.deepEqual(await activatePreparedRuntime(home, target, "native-handoff"), { release: "0.5.24", restart: true });
+	assert.deepEqual(await activatePreparedRuntime(home, target, "native-handoff"), { release: "0.5.24", startup: "launcher" });
 	process.kill(child.pid, 0); process.kill(child.owner, 0);
 	next = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	const recover = next.recoverUpdateReferences.bind(next);
@@ -165,7 +165,7 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "subagent-before");
 	assert.equal((await first.api("operator", { method: "POST", path: "/api/operator-availability", body: { mode: "away" } })).status, 200);
 	first.persist(true);
-	assert.deepEqual(await activatePreparedRuntime(home, target, "subagent-handoff"), { release: "0.5.24", restart: true });
+	assert.deepEqual(await activatePreparedRuntime(home, target, "subagent-handoff"), { release: "0.5.24", startup: "launcher" });
 	process.kill(child.pid, 0); process.kill(child.owner, 0);
 	next = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	const recover = next.recoverUpdateReferences.bind(next);

@@ -2,6 +2,13 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { object } from "./diagnostics.ts";
 
 export const CHECKPOINT = "codexWireCheckpoint";
+export const SESSION_WINDOW_ENTRY = "codex-wire-session-window";
+
+export function portableContextUnchanged(branch: readonly SessionEntry[], leaf: string | null): boolean {
+	const anchor = branch.findIndex(entry => entry.id === leaf);
+	return anchor >= 0 && branch.slice(anchor + 1).every(entry =>
+		entry.type === "custom" && entry.customType === SESSION_WINDOW_ENTRY);
+}
 
 type PortableSummary = (signal: AbortSignal, maxTokens: number) => Promise<{ summary: string; usage: import("@earendil-works/pi-ai").Usage }>;
 const portableKey = Symbol.for("pi.codex-wire.portable-summary.v1");

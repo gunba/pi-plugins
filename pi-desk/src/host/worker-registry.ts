@@ -72,7 +72,7 @@ function pidAbsent(pid: number): boolean {
 
 /** One launch or authenticated adoption under an OS-backed launch lease. */
 export async function attachWorker(directory: string, options: WorkerInit, receive: (message: WorkerMessage) => void,
-	disconnected: () => void, settings: { module?: string; runtimeDirectory?: string; timeout?: number; adoptOnly?: boolean; expectedInstance?: string } = {}): Promise<WorkerAttachment> {
+	disconnected: (error?: WorkerConnectionError) => void, settings: { module?: string; runtimeDirectory?: string; timeout?: number; adoptOnly?: boolean; expectedInstance?: string } = {}): Promise<WorkerAttachment> {
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	let launch: SessionLease;
 	try { launch = new SessionLease(join(directory, "launch")); }

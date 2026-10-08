@@ -51,7 +51,7 @@ import { LEASE_MS } from "../../../pi-party/store.ts";
 import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
-interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean }
+interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -481,9 +481,17 @@ export class DeskHost {
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
 		else if (message.type === "detached") {
-			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true,
-				snapshot: undefined, ui: undefined, historyReady: false };
+			const instance = managed.worker?.instance;
+			const reconnect = instance && managed.initialized && !this.checkpoints?.held && !this.restoringUpdate
+				&& !managed.view.controls?.some(control => control.kind === "close" && control.state === "running")
+				&& (!managed.reconnectAt || Date.now() - managed.reconnectAt >= 60_000);
+			managed.view = { ...managed.view, state: reconnect ? "starting" : "failed", error: reconnect ? undefined : message.error,
+				reconnecting: reconnect ? true : undefined, interrupted: !reconnect, snapshot: undefined, ui: undefined, historyReady: false };
 			managed.worker = undefined;
+			if (reconnect) {
+				managed.reconnectAt = Date.now();
+				queueMicrotask(() => this.reconnectWorker(managed, instance));
+			}
 		} else if (message.type === "fatal") {
 			this.inputs?.interrupt(key, "The session worker stopped");
 			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined, historyReady: false,
@@ -498,6 +506,19 @@ export class DeskHost {
 		this.emit({ type: "session", session: managed.view });
 		this.persist();
 		if (message.type === "snapshot") { this.refreshParties(); this.drainInputs(managed); }
+	}
+
+	private reconnectWorker(managed: ManagedSession, instance: string): void {
+		const key = managed.view.key;
+		if (this.closing || this.sessions.get(key) !== managed || managed.worker || !managed.view.reconnecting) return;
+		try {
+			// Adoption is bound to this actor. A missing or changed actor must never cold-start here.
+			this.createSession(managed.view.cwd, managed.view.file, managed, false, undefined, instance);
+		} catch (error) {
+			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, interrupted: true,
+				error: error instanceof Error ? error.message : String(error) };
+			this.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+		}
 	}
 
 	private inputEvent(managed: ManagedSession): void {
@@ -554,9 +575,8 @@ export class DeskHost {
 						behavior: input.command.behavior ?? (input.generation === undefined ? "steer" : undefined) }, generation, input.id);
 					this.inputs!.settle(key, input.id, "accepted");
 				} catch (error) {
-					if (this.closing && this.preserveWorkers) return;
-					this.inputs!.settle(key, input.id, error instanceof WorkerConnectionError ? "interrupted" : "failed",
-						error instanceof Error ? error.message : String(error));
+					if (this.closing && this.preserveWorkers || error instanceof WorkerConnectionError) return;
+					this.inputs!.settle(key, input.id, "failed", error instanceof Error ? error.message : String(error));
 					this.inputs!.interrupt(key, "An earlier message failed");
 				}
 				this.inputEvent(managed);
@@ -798,15 +818,19 @@ export class DeskHost {
 			sessionFile = realpathSync(sessionFile);
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
 				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
-			if (active) return active.view.key;
+			if (active) {
+				if (adopt && active !== existing) throw new WorkerConnectionError("This native conversation is already attached elsewhere.");
+				return active.view.key;
+			}
 			cwd = readSessionHeader(sessionFile).cwd;
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
 			providerAccountsDirectory: join(this.options.dataDir ?? join(this.options.agentDir!, "desk"), "provider-accounts"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
-		const managed: ManagedSession = { view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
+		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
+			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
 		this.emit({ type: "session", session: managed.view });
@@ -833,7 +857,7 @@ export class DeskHost {
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			managed.view = { ...managed.view, agentId: snapshot.id, ...sessionDisplay(snapshot), state: "ready",
 				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf,
-				workerRuntime: worker.runtime };
+				workerRuntime: worker.runtime, reconnecting: undefined };
 			managed.initialized = true; managed.initialGeneration = worker.initialGeneration ?? snapshot.ui.generation;
 			this.saved?.invalidate();
 			this.emit({ type: "session", session: managed.view });
@@ -844,8 +868,8 @@ export class DeskHost {
 		}).catch(error => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
-			this.inputs!.interrupt(key, "Session startup failed");
-			managed.view = { ...managed.view, state: "failed", historyReady: false, error: error instanceof Error ? error.message : String(error),
+			if (!adopt) this.inputs!.interrupt(key, "Session startup failed");
+			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, historyReady: false, error: error instanceof Error ? error.message : String(error),
 				inputs: this.inputs!.pending(key) };
 			this.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);

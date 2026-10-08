@@ -16,6 +16,20 @@ function substitution(source: string, start: number, delimiter: "paren" | "tick"
 	return undefined;
 }
 
+/** Unquoted heredoc input expands substitutions even inside quote characters. */
+export function inputSubstitutions(source: string, dialect: Dialect): string[] {
+	const result: string[] = [];
+	for (let i = 0; i < source.length; i++) {
+		if (source[i] === (dialect === "powershell" ? "`" : "\\") && i + 1 < source.length) { i++; continue; }
+		if (source[i] !== "$" || source[i + 1] !== "(") {
+			if (dialect !== "posix" || source[i] !== "`") continue;
+		}
+		const tick = source[i] === "`", nested = substitution(source, i + (tick ? 1 : 2), tick ? "tick" : "paren", dialect);
+		if (nested) { result.push(nested.body); i = nested.end; }
+	}
+	return result;
+}
+
 /** A command-word lexer, not a shell interpreter. Expansions remain unresolved. */
 export function lex(source: string, dialect: Dialect): Syntax {
 	const words: Word[] = [], substitutions: string[] = [];

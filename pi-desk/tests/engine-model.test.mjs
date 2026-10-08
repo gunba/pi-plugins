@@ -194,13 +194,14 @@ test("an explicit portable model switch commits only a completed summary and lea
 	manager.appendCompaction("Codex context", null, 100, { codexWireCheckpoint: { opaque: "fixture" } });
 	const selected = manager.appendCustomEntry("fixture-account", { anthropic: "named" }), entries = manager.getEntries();
 	const target = { provider: "anthropic", id: "claude-fixture", contextWindow: 200000 };
-	let calls = 0, refreshed = 0, stopped = 0, failed = true, cancelled = false, stale = false, resumed = 0, auth = false;
+	let calls = 0, refreshed = 0, stopped = 0, failed = true, cancelled = false, mutate, resumed = 0, auth = false;
 	const usage = { input: 10, output: 20, totalTokens: 30, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	const release = registerPortableSummary(manager.getSessionId(), async signal => {
 		calls++;
 		if (failed) throw Error("Summary unavailable");
 		if (cancelled) { await engine.command(engine.presentation.generation, { kind: "abort" }); signal.throwIfAborted(); }
-		if (stale) manager.appendCustomEntry("unrelated-update", {});
+		if (mutate) mutate();
+		else manager.appendCustomEntry("codex-wire-session-window", { threadId: "summary", id: "window" });
 		return { summary: "Portable context", usage };
 	});
 	engine.snapshot = () => ({});
@@ -215,9 +216,19 @@ test("an explicit portable model switch commits only a completed summary and lea
 		await assert.rejects(invoke(), /Sign in/); assert.equal(calls, 0);
 		auth = true; await assert.rejects(invoke(), /Summary unavailable/); assert.deepEqual(manager.getEntries(), entries);
 		failed = false; cancelled = true; await assert.rejects(invoke(), /aborted/); assert.deepEqual(manager.getEntries(), entries);
-		cancelled = false; stale = true; await assert.rejects(invoke(), /conversation changed/);
-		assert.equal(session.model.provider, "openai-codex"); assert.equal(refreshed, 0);
-		stale = false; await invoke();
+		cancelled = false;
+		for (const mutation of [
+			() => manager.appendCustomEntry("unrelated-update", {}),
+			() => manager.appendMessage({ role: "user", content: "New request", timestamp: 2 }),
+			() => manager.branch(entries[0].id),
+		]) {
+			const leaf = manager.getLeafId(); mutate = mutation;
+			await assert.rejects(invoke(), /conversation changed/);
+			assert.equal(session.model.provider, "openai-codex"); assert.equal(refreshed, 0);
+			manager.branch(leaf);
+		}
+		mutate = undefined; await invoke();
+		assert.ok(manager.getBranch().some(entry => entry.type === "custom" && entry.customType === "codex-wire-session-window"), "transport bookkeeping remains on the selected branch");
 		assert.equal(session.model, target); assert.equal(refreshed, 1); assert.equal(stopped, 1, "only the explicit cancel aborts");
 		assert.equal(resumed, 0); assert.ok(manager.getBranch().some(entry => entry.id === selected));
 		assert.equal(manager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);

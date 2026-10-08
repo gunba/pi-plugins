@@ -11,7 +11,7 @@ import { SessionLease, SessionOwnedError, sessionLockPath } from "../../pi-sessi
 import { assertFixtureJobMembers } from "./fixtures/windows-job-members.mjs";
 import test from "node:test";
 import { atomicJson, readState, runtimeIdentity, versionDirectory } from "../manage/store.ts";
-import { activatePreparedRuntime } from "../manage/activate.ts";
+import { runOperation, operationStatus } from "../manage/operations.ts";
 import { saveInstallation } from "../manage/installation.ts";
 import { probeHost, stopHost } from "../src/host/lifecycle.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
@@ -166,8 +166,16 @@ test("a real managed wrapper survives public host replacement with the same busy
 	assert.equal(supervisor.pid, wrapper.pid); assert.equal(first.supervisor, supervisor.instance);
 	await assertFixtureJobMembers([wrapper.pid, first.pid, snapshot.pid, snapshot.child], "managed-before");
 	process.kill(snapshot.pid, 0); process.kill(snapshot.child, 0);
-	assert.deepEqual(await activatePreparedRuntime(home, target, "supervised-handoff"), { release: "0.5.24", restart: true });
+	let operation, operationError;
+	try {
+		operation = await runOperation({ home, source: directory, agentDir: directory, cwd: directory,
+			directory: data, action: "apply-now", prepared: target });
+	} catch (error) { operationError = error; }
 	const next = await waitHost(target);
+	assert.ifError(operationError);
+	assert.equal(operation.phase, "complete");
+	assert.equal(operationStatus(home).phase, "complete");
+	assert.equal(existsSync(join(data, "competing-launch")), false, "the controller must not compete with the verified supervisor");
 	assert.notEqual(next.instance, first.instance); assert.notEqual(next.pid, first.pid);
 	assert.equal(next.supervisor, supervisor.instance); assert.equal(liveSupervisor(data).pid, wrapper.pid);
 	assert.equal(wrapper.exitCode, null);

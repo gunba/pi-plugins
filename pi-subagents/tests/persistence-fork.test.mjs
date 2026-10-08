@@ -1,7 +1,8 @@
 import { usageFor } from "./helpers.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { join, relative } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -517,6 +518,38 @@ test("restart restores terminal outcomes and retries an unacknowledged settlemen
 	}
 });
 
+test("restoring through a filesystem alias preserves child identity without accepting a different parent file", async () => {
+	const first = createHarness({ factory: new FakeDriverFactory(async () => completedOutcome("done")) });
+	const alias = first.root + "-alias";
+	let restored, different;
+	try {
+		first.rootManager.appendMessage(user("Fixture"));
+		first.rootManager.appendMessage(assistant([{ type: "text", text: "Fixture" }], "stop"));
+		const started = await first.runtime.start({ description: "alias fixture", prompt: "fixture", context: "fresh", parent: first.parent(), runInBackground: true });
+		await waitUntil(() => first.factory.opens.length === 1 && first.runtime.listAgents(first.runtime.rootAuthority).some(entry => entry.kind === "child" && entry.id === started.subagentId && entry.status === "ready"));
+		const child = first.runtime.listAgents(first.runtime.rootAuthority).find(entry => entry.id === started.subagentId);
+		const childFile = first.runtime.getSessionFile(child.id);
+		await first.runtime.shutdown();
+		const bytes = readFileSync(childFile), parentFile = first.rootManager.getSessionFile();
+		symlinkSync(first.root, alias, "junction");
+		const manager = SessionManager.open(join(alias, relative(first.root, parentFile)));
+		restored = createHarness({ root: first.root, rootManager: manager });
+		assert.equal(restored.runtime.listAgents(restored.runtime.rootAuthority).find(entry => entry.id === child.id)?.kind, "child");
+		assert.equal(restored.runtime.resolveTarget(restored.runtime.rootAuthority, child.id), child.id);
+		assert.equal(restored.factory.opens.length, 0, "catalog restoration does not start or replay work");
+		assert.deepEqual(readFileSync(childFile), bytes);
+		await restored.runtime.shutdown();
+		const otherFile = join(first.root, "different-parent.jsonl");
+		copyFileSync(parentFile, otherFile);
+		different = createHarness({ root: first.root, rootManager: SessionManager.open(otherFile) });
+		assert.deepEqual(different.runtime.listAgents(different.runtime.rootAuthority), [{ kind: "diagnostic", id: child.id, reason: "corrupt" }]);
+		assert.deepEqual(readFileSync(childFile), bytes);
+	} finally {
+		await different?.runtime.shutdown(); await restored?.runtime.shutdown();
+		rmSync(alias, { recursive: true, force: true }); await first.cleanup();
+	}
+});
+
 test("unsupported durable descriptors become contained diagnostics", async () => {
 	const first = createHarness();
 	const rootPath = first.root;
@@ -545,6 +578,10 @@ test("unsupported durable descriptors become contained diagnostics", async () =>
 			assert.deepEqual(second.runtime.listAgents(second.runtime.rootAuthority), [
 				{ kind: "diagnostic", id: childId, reason: "unsupported" },
 			]);
+			assert.throws(() => second.runtime.resolveTarget(second.runtime.rootAuthority, childId), /could not be restored.*unsupported/);
+			assert.deepEqual(second.runtime.listNamedAgents(second.runtime.rootAuthority).find(agent => agent.agent_id === childId), {
+				agent_name: childId, agent_id: childId, agent_status: "error", restoration_error: "unsupported",
+			});
 			assert.equal(second.factory.opens.length, 0);
 		} finally {
 			await second.runtime.shutdown();

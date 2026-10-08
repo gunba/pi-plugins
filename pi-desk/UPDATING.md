@@ -65,6 +65,12 @@ to those same authenticated actors. Accepted input outcomes are recovered by
 receipt, not by resending text. No additional `Continue` is sent; idle work stays
 idle. Other computers keep running.
 
+When the verified login supervisor owns the handoff, the update controller waits
+for that supervisor to start the selected host; it does not launch a competing
+start command. Completion requires the matching restoration receipt. Older
+controllers can report a launcher failure even after the replacement host is
+running; check the selected runtime and restoration status before retrying.
+
 Workers retain the immutable SDK/plugin runtime in which they started. New
 conversations use the selected release. Conversation Settings distinguishes host
 and worker versions; restart an individual conversation when its work is safely
@@ -149,6 +155,13 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.32 retains API 8 and Pi 1.1.0. The website combines composer and
+status controls. Updated hosts can reconnect to the same live worker after a
+channel loss. New workers are required for reduced command-guard prompting,
+automatic WebSocket recovery, the portable-handoff bookkeeping correction and
+canonical parent-file matching when restoring managed agents. Existing worker
+histories, selections and accepted work are not rewritten or replayed.
+
 Version 0.5.31 retains API 8 and pins Pi 1.1.0. New workers load the maintained
 Claude subscription extension and first-party command guard. Settings separates
 tool declarations from callable tools and shows computer/project defaults and
@@ -220,6 +233,17 @@ older workers, finish or cancel pending reminders through their existing control
 Saved messages and scheduler database files are not deleted.
 
 ## Recovery and rollback
+
+A lost connection to an initialized worker triggers one authenticated attachment
+attempt to that same worker instance. It does not launch a replacement, resend
+accepted work or send `Continue`. Sending receipts are reconciled before queued
+messages proceed. A repeat loss within a minute stops automatic recovery; the
+pane reports an unavailable connection rather than assuming native work stopped.
+Missing or changed worker identities require explicit recovery.
+
+Complete UI snapshots respect channel backpressure; adjacent superseded views can
+be combined without discarding commands, control outcomes or transcript events.
+Host-side message-handler failures are recorded in the private host log.
 
 On Windows, metadata replacement and verified runtime publication retry bounded
 access/busy failures without deleting the destination or changing permissions.

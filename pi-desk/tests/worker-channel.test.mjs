@@ -86,6 +86,29 @@ test("an unauthenticated peer cannot execute commands or evict the attached host
 	assert.equal(calls, 1);
 });
 
+test("a burst of replaceable UI snapshots respects backpressure without dropping the attachment or receipts", { timeout: 5000 }, async t => {
+	const endpoint = await WorkerEndpoint.listen(identity(), async request => ({ type: "result", id: request.id, value: "accepted" }));
+	t.after(() => endpoint.close());
+	const received = [];
+	let finish;
+	const outcome = new Promise(resolve => { finish = resolve; });
+	const channel = await WorkerChannel.connect(endpoint.address, message => {
+		received.push(message);
+		if (message.type === "result" && message.id === "after-burst") finish("delivered");
+	}, () => finish("disconnected"));
+	t.after(() => channel.detach());
+	const text = "x".repeat(320 * 1024);
+	for (let index = 0; index < 64; index++) {
+		endpoint.publish({ type: "ui", snapshot: { generation: "stable", title: `update-${index}`, editorText: text } });
+		if (index === 30) endpoint.publish({ type: "control", control: { id: "retained", kind: "thinking", state: "completed" } });
+	}
+	channel.send({ type: "describe", id: "after-burst" });
+	assert.equal(await outcome, "delivered");
+	assert.equal(received.filter(message => message.type === "control").length, 1);
+	assert.equal(received.filter(message => message.type === "ui").at(-1).snapshot.title, "update-63");
+	assert.equal(received.at(-1).value, "accepted");
+});
+
 test("worker receipts retain failures, retire old writes and refresh reads", async () => {
 	let reads = 0, writes = 0;
 	const receipts = new WorkerRequests(async request => {

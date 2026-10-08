@@ -48,7 +48,7 @@ for (const stop of [false, true]) test(stop
 		assert.equal(readState(home).active, active);
 		assert.equal(host.closing, false);
 		if (!stop) host.sessions.delete("fixture");
-		assert.deepEqual(await activatePreparedRuntime(home, stop ? pending : undefined, stop ? "fixture-checkpoint" : undefined), { release: "0.5.0", restart: true });
+		assert.deepEqual(await activatePreparedRuntime(home, stop ? pending : undefined, stop ? "fixture-checkpoint" : undefined), { release: "0.5.0", startup: "launcher" });
 		assert.equal(stopped, 0);
 		assert.equal(detached, Number(stop));
 		const saved = new SessionCatalog(directory).read();

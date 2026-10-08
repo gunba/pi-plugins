@@ -454,6 +454,76 @@ test("failed WebSocket upgrade falls back to SSE without an inference WS frame",
   assert.match(readFileSync(f.log, "utf8"), /"kind":"fallback"/);
 });
 
+test("SSE fallback automatically recovers WebSocket with bounded backoff and no stream replay", async t => {
+  let now = 1_700_000_000_000;
+  t.mock.method(Date, "now", () => now);
+  let posts = 0, upgrades = 0, available = false, breakStream = false;
+  const f = await fixture(t, "auto", (req, res) => {
+    posts++; req.resume(); res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify(completed(`sse-${posts}`))}\n\n`);
+  }, false);
+  const wss = new WebSocketServer({ noServer: true }); t.after(() => wss.close());
+  const frames = [], headers = [], notifications = [], initialHeaders = exchange(f).headers;
+  f.server.on("upgrade", (req, socket, head) => {
+    upgrades++;
+    if (!available) { socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return; }
+    headers.push(req.headers);
+    wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws));
+  });
+  wss.on("connection", socket => socket.on("message", data => {
+    frames.push(JSON.parse(data.toString()));
+    if (breakStream) {
+      breakStream = false;
+      socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "PRIVATE PARTIAL" }));
+      socket.close(1011); return;
+    }
+    socket.send(JSON.stringify(completed(`ws-${frames.length}`)));
+  }));
+  const request = () => f.transport.request(exchange(f, { onFallback: phase => notifications.push(phase) }));
+  for (const delay of [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]) {
+    const before = upgrades;
+    await (await request()).text();
+    assert.equal(upgrades, before + 1);
+    now += delay - 1;
+    await (await request()).text();
+    assert.equal(upgrades, before + 1, "no upgrade before its backoff expires");
+    now++;
+  }
+  assert.deepEqual(notifications, ["connect"], "one notification for the fallback episode");
+  assert.equal(frames.length, 0);
+  const postsBeforeRecovery = posts;
+  available = true;
+  await (await request()).text();
+  assert.equal(frames.length, 1);
+  assert.equal(posts, postsBeforeRecovery);
+  assert.deepEqual(frames[0].input, body.input);
+  assert.equal(frames[0].previous_response_id, undefined);
+  assert.equal(frames[0].prompt_cache_key, f.protocol.shapeBody(body).prompt_cache_key);
+  await (await request()).text();
+  assert.equal(frames[1].previous_response_id, "ws-1");
+  assert.deepEqual(frames[1].input, []);
+  breakStream = true;
+  await assert.rejects(async () => (await request()).text(), /closed before completion/);
+  assert.equal(posts, postsBeforeRecovery, "an interrupted WS inference is never replayed over SSE");
+  assert.deepEqual(notifications, ["connect", "stream"]);
+  now += 29_999;
+  await (await request()).text();
+  assert.equal(frames.length, 3);
+  now++;
+  await (await request()).text();
+  assert.equal(frames.length, 4, "successful WS completion resets the backoff");
+  assert.equal(headers.length, 2);
+  for (const header of ["session-id", "thread-id", "x-codex-window-id", "authorization", "chatgpt-account-id"]) {
+    assert.ok(initialHeaders.get(header));
+    assert.deepEqual(headers.map(value => value[header]), [initialHeaders.get(header), initialHeaders.get(header)]);
+  }
+  assert.deepEqual(frames[3].input, body.input);
+  assert.equal(frames[3].previous_response_id, undefined);
+  const log = readFileSync(f.log, "utf8");
+  assert.match(log, /"kind":"websocket-recovery"/);
+  assert.doesNotMatch(log, /PRIVATE|SECRET/);
+});
+
 test("missing previous response retries full input once", async t => {
   const f = await fixture(t);
   const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
@@ -535,6 +605,32 @@ test("account changes cannot reuse sockets, routing state or continuation", asyn
   assert.equal(connections.length, 2);
   assert.equal(connections[1].frames[0].previous_response_id, undefined);
   assert.equal(connections[1].frames[0].client_metadata["x-codex-turn-state"], undefined);
+});
+
+test("a terminated SSE body explains the socket failure and records progress without output text", async t => {
+  let requests = 0;
+  const f = await fixture(t, "sse", (req, res) => {
+    requests++; req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "PRIVATE REASONING" })}\n\n`);
+    const timer = setTimeout(() => res.destroy(), 40);
+    t.after(() => clearTimeout(timer));
+  });
+  await assert.rejects(async () => (await f.transport.request(exchange(f))).text(), error => {
+    assert.match(error.message, /response stream terminated before completion.*connection closed/i);
+    assert.equal(error.cause?.message, "terminated");
+    return true;
+  });
+  const rows = readFileSync(f.log, "utf8").trim().split("\n").map(JSON.parse);
+  const failure = rows.find(row => row.kind === "sse-failure");
+  assert.equal(failure.phase, "body"); assert.equal(failure.abortSource, "none");
+  assert.deepEqual(failure.errorCodes, ["UND_ERR_SOCKET"]);
+  assert.equal(failure.terminalSeen, false); assert.equal(failure.events, 1);
+  assert.equal(failure.eventCounts["response.reasoning_summary_text.delta"], 1);
+  assert.ok(failure.firstEventMs >= 0); assert.ok(failure.lastReasoningMs >= failure.firstEventMs);
+  assert.ok(failure.idleMs >= 0); assert.ok(failure.maxGapMs >= 0);
+  assert.equal(requests, 1, "a partial response must not be replayed by transport recovery");
+  assert.doesNotMatch(JSON.stringify(rows), /PRIVATE|SECRET/);
 });
 
 test("SSE header timeout aborts a stalled request", async t => {

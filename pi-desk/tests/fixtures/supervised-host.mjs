@@ -1,4 +1,5 @@
 import { basename, dirname } from "node:path";
+import { writeFileSync } from "node:fs";
 import { DeskHost } from "../../src/host/server.ts";
 import { readInstallation } from "../../manage/installation.ts";
 import { runLogin } from "../../src/host/login.ts";
@@ -11,6 +12,10 @@ if (process.argv[2] === "wrapper") {
 } else {
 	const home = dirname(dirname(process.env.PI_DESK_RUNTIME));
 	const config = readInstallation(home);
+	if (process.argv[2] === "start") {
+		writeFileSync(`${config.directory}/competing-launch`, "A second launcher tried to own the supervisor's handoff.");
+		process.exit(71);
+	}
 	globalThis.fetch = async url => {
 		throw new Error(`Unexpected host network request: ${new URL(url).hostname}`);
 	};

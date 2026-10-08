@@ -192,8 +192,8 @@ test("uncertain native admission is retained and never replayed by a duplicate r
 	f.worker.command = async () => { calls++; throw new WorkerConnectionError("Worker connection lost."); };
 	await f.ready();
 	assert.equal(calls, 1);
-	assert.equal((await f.request("inputs", input)).body.input.state, "interrupted");
-	assert.equal((await f.request("inputs", following)).body.input.state, "failed");
+	assert.equal((await f.request("inputs", input)).body.input.state, "sending");
+	assert.equal((await f.request("inputs", following)).body.input.state, "queued");
 	assert.equal((await f.request(`inputs/${input.id}/cancel`, {})).status, 409);
 	f.host.drainInputs(f.managed); await f.managed.draining;
 	assert.equal(calls, 1);

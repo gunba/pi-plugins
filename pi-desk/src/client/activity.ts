@@ -1,7 +1,8 @@
 import type { SessionView } from "../shared/protocol.ts";
 
-export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted">): string {
+export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting">): string {
 	if (session.state === "closed" || session.state === "failed") return session.state;
+	if (session.reconnecting) return "connecting";
 	if (session.ui?.interactions.some(item => !item.settings)) return "waiting";
 	return session.interrupted ? "interrupted" : session.snapshot?.activity ?? session.state;
 }

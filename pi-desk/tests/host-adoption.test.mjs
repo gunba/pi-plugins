@@ -124,7 +124,7 @@ test("public runtime activation replaces the host while a busy actor and its pro
 	assert.equal(managed.view.snapshot.activity, "running");
 	const sourceHost = first.control.record.instance;
 	const checkpoint = "busy-handoff";
-	assert.deepEqual(await activatePreparedRuntime(home, target, checkpoint), { release: "0.5.24", restart: true });
+	assert.deepEqual(await activatePreparedRuntime(home, target, checkpoint), { release: "0.5.24", startup: "launcher" });
 	assert.equal(readState(home).active, target);
 	assert.equal(readState(home).previous, active);
 	process.kill(snapshot.pid, 0); process.kill(snapshot.child, 0);
@@ -151,4 +151,78 @@ test("public runtime activation replaces the host while a busy actor and its pro
 	assert.equal(next.inputs.checkpoint().state, "complete");
 	assert.deepEqual(readFileSync(file), original);
 	assert.equal(readFileSync(join(pin, "runtime.json"), "utf8").includes(active), true);
+});
+
+test("a lost host connection reattaches the same long-lived actor and reconciles input receipts without replay", { timeout: 20000 }, async t => {
+	const root = mkdtempSync(join(tmpdir(), "desk-connection-recovery-")), data = join(root, "desk");
+	mkdirSync(data);
+	const key = randomUUID(), activation = randomUUID(), file = join(root, "native.jsonl");
+	writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "11111111-1111-4111-8111-111111111111", cwd: root, timestamp: new Date().toISOString() }) + "\n");
+	const original = readFileSync(file), host = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
+	await host.start();
+	let entered, actorPid;
+	const worker = new SessionWorker({ cwd: root, agentDir: root, sessionFile: file }, message => {
+		host.workerEvent(key, message);
+		if (message.type === "event") entered?.();
+	}, { directory: data, key, module });
+	t.after(async () => {
+		await host.close();
+		// A detached view no longer owns the fixture's live actor. Adopt it only to clean up.
+		const cleanup = new SessionWorker({ cwd: root }, () => {}, { directory: data, key, adopt: worker.instance });
+		await cleanup.close();
+		const until = Date.now() + 10000;
+		while (actorPid) {
+			try { process.kill(actorPid, 0); }
+			catch (error) { if (error.code === "ESRCH") break; throw error; }
+			assert.ok(Date.now() < until, "Fixture actor did not exit");
+			await delay(25);
+		}
+		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+	});
+	const snapshot = await worker.start(); actorPid = snapshot.pid;
+	const managed = { worker, initialized: true, initialGeneration: worker.initialGeneration,
+		view: { key, activation, cwd: root, file, created: Date.now(), state: "ready", snapshot, ui: snapshot.ui } };
+	host.sessions.set(key, managed);
+	// Long-lived actors can retire their initial command receipt. Adoption must not initialize again.
+	await Promise.all(Array.from({ length: 257 }, (_, index) => worker.command({ kind: "name", name: `fixture-${index}` })));
+	assert.equal((await worker.receipt(`init:${worker.instance}`)).state, "retired");
+	const sending = new Promise(resolve => { entered = resolve; });
+	const sent = randomUUID(), queued = randomUUID();
+	for (const [id, text] of [[sent, "Held during update"], [queued, "Previously queued"]])
+		host.inputs.admit(key, { id, activation, generation: worker.generation, command: { kind: "prompt", text } });
+	host.drainInputs(managed);
+	await sending;
+	await (await worker.connection).channel.detach();
+	const until = Date.now() + 4000;
+	let recovered;
+	for (;;) {
+		recovered = host.sessions.get(key);
+		if (recovered !== managed && recovered.initialized && recovered.view.state === "ready") break;
+		assert.ok(Date.now() < until, `No automatic recovery: ${recovered.view.state}`);
+		await delay(5);
+	}
+	assert.equal(recovered.worker.instance, worker.instance);
+	assert.equal(recovered.view.activation, activation);
+	assert.equal(recovered.worker.generation, snapshot.ui.generation);
+	assert.deepEqual(recovered.view.snapshot.accounts, snapshot.accounts);
+	assert.equal(host.inputs.read(key, sent).status.state, "sending");
+	assert.equal(host.inputs.read(key, queued).status.state, "queued");
+	process.kill(snapshot.pid, 0); process.kill(snapshot.child, 0);
+	writeFileSync(join(root, "allow-finish"), "");
+	while (host.inputs.read(key, queued).status.state !== "accepted") {
+		assert.ok(Date.now() < until, "Input receipts did not settle");
+		await delay(5);
+	}
+	assert.equal(host.inputs.read(key, sent).status.state, "accepted");
+	const current = await recovered.worker.command({ kind: "snapshot" });
+	assert.equal(current.pid, snapshot.pid); assert.equal(current.child, snapshot.child);
+	assert.equal(current.writes, 259, "257 earlier commands, one recovered receipt, one queued message");
+	assert.deepEqual(readFileSync(file), original);
+	// An immediately recurring failure stops instead of entering an attachment loop.
+	await (await recovered.worker.connection).channel.detach();
+	await delay(25);
+	assert.equal(host.sessions.get(key), recovered);
+	assert.equal(recovered.view.state, "failed");
+	assert.equal(recovered.worker, undefined);
+	process.kill(snapshot.pid, 0);
 });

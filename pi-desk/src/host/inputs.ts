@@ -107,8 +107,8 @@ export class InputLedger {
 		return new Set(rows.flatMap(row => (JSON.parse(row.payload) as PromptCommand).attachments ?? []));
 	}
 	next(session: string): { input: InputSubmission; status: InputStatus } | undefined {
-		const row = this.db.prepare("SELECT * FROM inputs WHERE session=? AND state='queued' ORDER BY created, rowid LIMIT 1")
-			.get(session) as unknown as Row | undefined;
+		const row = this.db.prepare("SELECT * FROM inputs WHERE session=? AND state='queued' AND NOT EXISTS (SELECT 1 FROM inputs WHERE session=? AND state='sending') ORDER BY created, rowid LIMIT 1")
+			.get(session, session) as unknown as Row | undefined;
 		return row ? { status: status(row), input: {
 			id: row.id, activation: row.activation, ...(row.generation ? { generation: row.generation } : {}),
 			command: JSON.parse(row.payload!) as PromptCommand,

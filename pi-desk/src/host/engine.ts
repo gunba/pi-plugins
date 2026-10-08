@@ -49,7 +49,7 @@ import { resourceInventory } from "../../../pi-ui/resources.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
-import { entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
+import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 
 const modelContextCache = new WeakMap<SessionManager, { leaf: string | null; constraint: SessionSnapshot["modelSwitchConstraint"] }>();
 function modelSwitchConstraint(session: AgentSession, fresh = false): SessionSnapshot["modelSwitchConstraint"] {
@@ -529,7 +529,7 @@ export class DeskEngine {
 							const result = await summarizePortableContext(session.sessionId, abort.signal,
 								Math.min(8192, Math.max(512, Math.floor(model.contextWindow / 8))));
 							abort.signal.throwIfAborted(); guard();
-							if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed while summarizing. The selected model has not changed.");
+							if (!portableContextUnchanged(manager.getBranch(), command.context!.leaf)) throw Error("The conversation changed while summarizing. The selected model has not changed.");
 							manager.appendCompaction(result.summary, null, session.getContextUsage()?.tokens ?? 0,
 								{ modelHandoff: { from: command.context!.leaf, provider: model.provider, model: model.id } }, true, result.usage);
 							session.refreshContext(); this.usageRevision++; this.presentation.advance();

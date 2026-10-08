@@ -25,7 +25,7 @@ import { AttachmentList, useAttachments, type DraftFile } from "./attachments.ts
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
 import { sessionTitle } from "../shared/session-title.ts";
-import { ConversationFooter } from "./conversation-footer.tsx";
+import { ComposerStatus } from "./composer-status.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { DeliveryControl, deliveryModes } from "./delivery-control.tsx";
 import { NativeQueue } from "./native-queue.tsx";
@@ -539,6 +539,32 @@ export function App({ account }: { account?: BrowserAccount }) {
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
+  const modelPreferences = session?.snapshot && <>
+    <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
+      aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
+      title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}
+      disabled={isDefaultModel || settingBusy || !connected || session.state !== "ready" || !selectedModel}
+      onClick={() => selectedModel && run({ kind: "model", provider: selectedModel.provider, id: selectedModel.id, makeDefault: true })}>
+      <Icon name="star" />
+    </button>
+    <select
+      aria-label="Reasoning level"
+      title="Change reasoning; active work stops and continues with the new setting"
+      value={session.snapshot?.thinking ?? ""}
+      disabled={settingBusy || !connected || session.state !== "ready"}
+      onChange={(event) =>
+        run({ kind: "thinking", level: event.target.value })
+      }
+    >
+      {session.snapshot?.thinkingLevels.map((level) => (
+        <option key={level} value={level}>
+          {level === "off"
+            ? "No reasoning"
+            : `${level} reasoning`}
+        </option>
+      ))}
+    </select>
+  </>;
   return (
     <div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
@@ -709,6 +735,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 </div>
                 <h1>
                   {session && !canCompose ? "Pi is not running"
+                    : session?.reconnecting ? "Reconnecting to Pi…"
                     : session?.state === "starting" ? closing ? "Closing this conversation…" : controlBusy ? "Updating this conversation…" : "Opening this conversation…"
                     : session ? "What shall we work on?" : "Make something good."}
                 </h1>
@@ -724,7 +751,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                 )}
                 {session && !canCompose && !!draft.trim() && <p className="muted">Your unsent draft is kept on this device.</p>}
                 {session?.state === "starting" && !controlBusy && (
-                  <p className="muted">Loading your Pi setup. You can send now; messages will wait on this computer.</p>
+                  <p className="muted">{session.reconnecting ? "Reconnecting to the existing worker. Queued messages stay on this computer."
+                    : "Loading your Pi setup. You can send now; messages will wait on this computer."}</p>
                 )}
               </div>
           }
@@ -732,7 +760,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
-                {question ? "Waiting for your answer" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
+                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
               </div>
             )}</>}
         />
@@ -809,32 +837,13 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <ModelPicker snapshot={session.snapshot} disabled={settingBusy || !connected || session.state !== "ready"}
                     select={(model, context) => run({ kind: "model", provider: model.provider, id: model.id, ...(context ? { context } : {}) })}
                     accounts={accountPanel} history={() => { setSettingsSection("conversation"); setPanel("settings"); }} />
-                  <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
-                    aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
-                    title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}
-                    disabled={isDefaultModel || settingBusy || !connected || session.state !== "ready" || !selectedModel}
-                    onClick={() => selectedModel && run({ kind: "model", provider: selectedModel.provider, id: selectedModel.id, makeDefault: true })}>
-                    <Icon name="star" />
-                  </button>
-                  <select
-                    aria-label="Reasoning level"
-                    title="Change reasoning; active work stops and continues with the new setting"
-                    value={session.snapshot?.thinking ?? ""}
-                    disabled={settingBusy || !connected || session.state !== "ready"}
-                    onChange={(event) =>
-                      run({ kind: "thinking", level: event.target.value })
-                    }
-                  >
-                    {session.snapshot?.thinkingLevels.map((level) => (
-                      <option key={level} value={level}>
-                        {level === "off"
-                          ? "No reasoning"
-                          : `${level} reasoning`}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="composer-preferences">{modelPreferences}</div>
                   </>}
                 </div>
+                <ComposerStatus key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
+                  preferences={modelPreferences} shortcutHint={`Enter: ${deliveryModes.find(mode => mode.value === deliveryMode)!.label} · Shift+Enter: new line · Ctrl+Enter: send now · Alt+Enter: queue`}
+                  open={view => { setPanel("view"); setFocusedView(view.id); }}
+                  invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
                 <div className="send-controls">
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
                     disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>
@@ -861,10 +870,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
               )}
             </form>
-            <div className="composer-help">Enter: {deliveryModes.find(mode => mode.value === deliveryMode)!.label} · Shift+Enter: new line · Ctrl+Enter: send now · Alt+Enter: queue</div>
-            <ConversationFooter key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
-              open={view => { setPanel("view"); setFocusedView(view.id); }}
-              invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
+
           </div>
         )}
         </>}

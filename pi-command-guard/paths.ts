@@ -30,10 +30,10 @@ export function pathFinding(path: string, env: Environment, options: { deletion?
 	if (device(path)) return block("raw-device", "A raw storage device is a target.");
 	if (env.platform === "win32") path = windowsPath(path);
 	if (options.deletion && /^(?:~|\$(?:home|pwd)|\$\{(?:home|pwd)\}|\$env:(?:userprofile|systemroot|windir|systemdrive)|%(?:userprofile|systemroot|windir|systemdrive)%)[/\\]*$/i.test(path)) return block("root-delete", "Deletion targets an entire home, working or system directory.");
-	if (options.dynamic) return confirm("unresolved-path", "A mutation target contains an unresolved expansion.");
-	if (env.platform === "win32" && /^[a-z]:(?![/\\])/i.test(path)) return path.length === 2 ? block("root-delete", "A drive root is a target.") : confirm("drive-relative", "The drive-relative target depends on another working directory.");
+	if (options.dynamic) return options.deletion ? confirm("unresolved-path", "A deletion target contains an unresolved expansion.") : undefined;
+	if (env.platform === "win32" && /^[a-z]:(?![/\\])/i.test(path)) return path.length === 2 ? block("root-delete", "A drive root is a target.") : options.deletion ? confirm("drive-relative", "The deletion target depends on another working directory.") : undefined;
 	const wild = /[*?\[\]{}]/.test(path), base = path.split(/[*?\[\]{}]/)[0];
-	if (options.cwdChanged && !(env.platform === "win32" ? win32 : posix).isAbsolute(path)) return confirm("changed-cwd", "A mutation uses a relative target after changing directories.");
+	if (options.cwdChanged && !(env.platform === "win32" ? win32 : posix).isAbsolute(path)) return options.deletion ? confirm("changed-cwd", "Deletion uses a relative target after changing directories.") : undefined;
 	const resolved = normalizePath(base || ".", env), roots = systemRoots(env).map(root => normalizePath(root, env));
 	const windowsSystem = env.platform === "win32" && resolved.match(/^[a-z]:\/(?:windows|program files(?: \(x86\))?|programdata|users)(?=\/|$)/);
 	if (windowsSystem) roots.push(windowsSystem[0]);

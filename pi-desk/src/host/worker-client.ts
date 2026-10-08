@@ -41,8 +41,8 @@ export class SessionWorker {
 			location = { directory: this.ephemeral, key: "inspect" };
 		}
 		this.directory = workerDirectory(location.directory, location.key);
-		this.connection = connections.attach(this.directory, options, message => this.receive(message), () => {
-			this.fail(new WorkerConnectionError("The host connection to the worker closed."), true);
+		this.connection = connections.attach(this.directory, options, message => this.receive(message), error => {
+			this.fail(error ?? new WorkerConnectionError("The host connection to the worker closed. Native work may still be running."), true);
 		}, { module: location.module, runtimeDirectory: process.env.PI_DESK_RUNTIME || undefined,
 			adoptOnly: !!location.adopt, expectedInstance: location.adopt }).then(connection => {
 			this.instance = connection.record.instance;
@@ -106,6 +106,10 @@ export class SessionWorker {
 	start(): Promise<SessionSnapshot> { return this.startJob ??= this.initialize(); }
 	private async initialize(): Promise<SessionSnapshot> {
 		const connection = await this.connection;
+		if (!connection.created) {
+			const state = await this.describe();
+			if (state.snapshot && state.initialGeneration) return state.snapshot;
+		}
 		await this.request({ type: "init", id: `init:${connection.record.instance}`, options: connection.bootstrap.options });
 		const state = await this.describe();
 		if (!state.snapshot) throw new Error("The worker did not confirm its native session.");

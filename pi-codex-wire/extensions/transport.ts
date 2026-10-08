@@ -133,6 +133,8 @@ export class WireTransport {
   private socketNetwork?: () => JsonObject;
   private continuation?: Continuation;
   private fallback = false;
+  private websocketFailures = 0;
+  private websocketRetryAt = 0;
   private busy = false;
   private prewarmed = false;
   private activeCancel?: () => void;
@@ -194,11 +196,21 @@ export class WireTransport {
   }
 
   private useSse(exchange: Exchange, phase: "connect" | "prewarm" | "stream"): void {
-    if (this.fallback) return;
+    const notify = !this.fallback;
     this.fallback = true;
-    this.diagnostics.write({ kind: "fallback", ...exchange.trace, requestId: exchange.requestId, phase, to: "sse" });
+    this.websocketFailures = Math.min(this.websocketFailures + 1, 5);
+    const retryAfterMs = Math.min(30_000 * 2 ** (this.websocketFailures - 1), 300_000);
+    this.websocketRetryAt = Date.now() + retryAfterMs;
+    this.diagnostics.write({ kind: "fallback", ...exchange.trace, requestId: exchange.requestId, phase, to: "sse", retryAfterMs });
     // UI observers must not replace the transport failure or prevent cleanup.
-    try { exchange.onFallback?.(phase); } catch { /* The diagnostic remains available. */ }
+    if (notify) try { exchange.onFallback?.(phase); } catch { /* The diagnostic remains available. */ }
+  }
+
+  private recovered(exchange: Exchange): void {
+    if (this.fallback) this.diagnostics.write({ kind: "websocket-recovery", requestId: exchange.requestId, phase: "completed" });
+    this.fallback = false;
+    this.websocketFailures = 0;
+    this.websocketRetryAt = 0;
   }
 
   private async connect(exchange: Exchange): Promise<WebSocket> {
@@ -376,6 +388,7 @@ export class WireTransport {
           try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent?.(event) ?? event)}\n\n`)); }
           catch { fail(new Error("Unsupported Codex response tool namespace")); return; }
           if (terminal.has(String(event.type)) || event.type === "error") {
+            if (!prewarm && ["response.completed", "response.done"].includes(String(event.type))) this.recovered(exchange);
             const response = object(event.response);
             const output = completedOutput.resolve(response.output);
             if (["response.completed", "response.done"].includes(String(event.type)) && typeof response.id === "string" && output !== undefined) {
@@ -429,7 +442,7 @@ export class WireTransport {
     const binding = createHash("sha256").update(JSON.stringify([exchange.url,
       exchange.headers.get("authorization"), exchange.headers.get("chatgpt-account-id")])).digest("hex");
     if (this.binding !== undefined && this.binding !== binding) {
-      this.close(); this.fallback = false; this.prewarmed = false; this.hooks.beginTurn();
+      this.close(); this.fallback = false; this.websocketFailures = 0; this.websocketRetryAt = 0; this.hooks.beginTurn();
       // Never replay routing state supplied for another credential or endpoint.
       exchange.headers.delete("x-codex-turn-state");
       exchange.headers = this.hooks.headers(exchange.headers);
@@ -437,7 +450,10 @@ export class WireTransport {
     }
     this.binding = binding;
     this.busy = true;
-    if (this.mode === "auto" && !this.fallback) {
+    if (this.mode === "auto" && (!this.fallback || Date.now() >= this.websocketRetryAt)) {
+      // Probe only as part of the next caller-owned request, never during an SSE
+      // response or on an idle background timer. Inference streams are not replayed.
+      if (this.fallback) this.diagnostics.write({ kind: "websocket-recovery", requestId: exchange.requestId, phase: "attempt" });
       let socket: WebSocket;
       try {
         socket = await this.connect(exchange);
@@ -476,7 +492,10 @@ export class WireTransport {
     this.busy = true;
     const startedAt = Date.now();
     let receivedBytes = 0, events = 0, terminalSeen = false;
+    let lastEventAt = startedAt, maxGapMs = 0;
+    let firstEventMs: number | undefined, lastReasoningMs: number | undefined;
     let lastEventType: string | undefined;
+    const eventCounts: Record<string, number> = {};
     const headers = new Headers(exchange.headers);
     headers.set("content-type", "application/json"); headers.set("accept", "text/event-stream");
     headers.delete("content-encoding");
@@ -513,6 +532,7 @@ export class WireTransport {
       this.diagnostics.write({ kind: "sse-failure", ...exchange.trace, requestId: exchange.requestId, attemptId,
         phase, timeoutMs: exchange.timeoutMs, errorCodes: networkErrorCodes(error),
         elapsedMs: Date.now() - startedAt, receivedBytes, events, lastEventType, terminalSeen,
+        firstEventMs, lastReasoningMs, idleMs: Date.now() - lastEventAt, maxGapMs, eventCounts,
         abortSource: exchange.signal?.aborted ? "request-signal" : timedOut ? "timeout"
           : controller.signal.aborted ? "transport-close" : "none" });
     };
@@ -531,7 +551,14 @@ export class WireTransport {
     let released = false;
     let output: ReadableStreamDefaultController<Uint8Array>;
     const recordEvent = (event: JsonObject) => {
+      const now = Date.now();
+      maxGapMs = Math.max(maxGapMs, now - lastEventAt); lastEventAt = now;
+      firstEventMs ??= now - startedAt;
       events++; lastEventType = diagnosticEventType(event);
+      eventCounts[lastEventType] = (eventCounts[lastEventType] ?? 0) + 1;
+      if (lastEventType.startsWith("response.reasoning_") ||
+        ["response.output_item.added", "response.output_item.done"].includes(lastEventType) && object(event.item).type === "reasoning")
+        lastReasoningMs = now - startedAt;
       terminalSeen ||= terminal.has(String(event.type)) || event.type === "error";
       this.observeEvent(event);
       const diagnostic = eventDiagnostics(event);
@@ -544,7 +571,10 @@ export class WireTransport {
     };
     const fail = (error: unknown) => {
       if (released) return;
-      failure("body", error); output.error(error);
+      failure("body", error);
+      const reported = !signal.aborted && error instanceof Error && error.message === "terminated" && networkErrorCodes(error).includes("UND_ERR_SOCKET")
+        ? new Error("Codex response stream terminated before completion (connection closed).", { cause: error }) : error;
+      output.error(reported);
       void reader.cancel(error).catch(() => {});
       release(); controller.abort(error);
     };
@@ -583,7 +613,8 @@ export class WireTransport {
               // Pi treats EOF as terminating the residual SSE frame.
               if (pending.trim()) block(pending);
               this.diagnostics.write({ kind: "sse-end", requestId: exchange.requestId, attemptId,
-                receivedBytes, events, lastEventType, terminalSeen, pendingCharacters: pending.length });
+                receivedBytes, events, lastEventType, terminalSeen, pendingCharacters: pending.length,
+                elapsedMs: Date.now() - startedAt, firstEventMs, lastReasoningMs, idleMs: Date.now() - lastEventAt, maxGapMs, eventCounts });
               release(); stream.close(); return;
             }
             if (receivedBytes === 0) this.diagnostics.write({ kind: "sse-progress",
