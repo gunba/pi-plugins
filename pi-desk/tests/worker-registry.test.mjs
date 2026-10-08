@@ -186,7 +186,7 @@ const runtime = await serveWorker(process.argv[2], async () => {
 });
 runtime.closed.then(() => process.exit(0), () => process.exit(1));
 `);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	t.after(() => rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 }));
 	for (const startup of [false, true]) await t.test(startup ? "initialization failure" : "uncaught failure", async t => {
 		const directory = join(root, startup ? "startup" : "uncaught"), messages = inbox();
 		let disconnected, detached = false; const closed = new Promise(resolve => { disconnected = resolve; });
