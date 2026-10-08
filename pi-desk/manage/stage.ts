@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, realpathSync, statSync, writeSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, symlink, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink } from "node:fs/promises";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { captureSource, within, writeSource } from "./source.ts";
+import { unpackDependencies, type VerifiedDependencies } from "./artifact.ts";
 import { atomicJson, readRelease, readState, runtimeId, versionDirectory, type RuntimeRelease } from "./store.ts";
 
 /** Invoke npm's JS entry with this Node, including on Windows without a cmd shim. */
@@ -25,6 +26,38 @@ export function npmEntry(): string {
 }
 export interface StageOptions {
 	source: string; home: string; signal?: AbortSignal; progress?: (phase: string) => void;
+	dependencies?: VerifiedDependencies;
+}
+
+/** Borrow only declared build tools; never link or modify the checkout's node_modules directory. */
+async function withBuildDependencies(source: string, app: string, temporary: string, build: () => Promise<void>): Promise<void> {
+	const pkg = JSON.parse(await readFile(join(app, "package.json"), "utf8"));
+	const backupRoot = join(temporary, ".build-dependencies");
+	const borrowed: { path: string; backup?: string; linked: boolean }[] = [];
+	try {
+		for (const name of Object.keys(pkg.devDependencies ?? {})) {
+			if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)) throw new Error("Invalid build dependency name.");
+			const target = await realpath(join(source, "pi-desk", "node_modules", name));
+			const path = join(app, "node_modules", name), item: typeof borrowed[number] = { path, linked: false };
+			borrowed.push(item);
+			try {
+				await lstat(path);
+				const backup = join(backupRoot, name); await mkdir(dirname(backup), { recursive: true });
+				await rename(path, backup); item.backup = backup;
+			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+			await mkdir(dirname(path), { recursive: true });
+			await symlink(target, path, process.platform === "win32" ? "junction" : "dir"); item.linked = true;
+		}
+		await build();
+	} finally {
+		const settled = await Promise.allSettled(borrowed.map(async item => {
+			if (item.linked) await unlink(item.path);
+			if (item.backup) await rename(item.backup, item.path);
+		}));
+		const failed = settled.find(result => result.status === "rejected");
+		if (failed?.status === "rejected") throw failed.reason;
+		await rm(backupRoot, { recursive: true, force: true });
+	}
 }
 /** npm uses absolute junctions for Windows workspaces; moving the snapshot must retarget them. */
 async function relocateJunctions(root: string, destination: string): Promise<void> {
@@ -90,16 +123,23 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 		await writeSource(snapshot, copy);
 		if ((await captureSource(source)).digest !== snapshot.digest) throw new Error("The installed package changed during its snapshot. Stage again after the Pi update finishes.");
 		const npm = npmEntry(), app = join(copy, "pi-desk");
-		progress("Installing locked first-party dependencies");
-		await run(copy, [npm, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
-		progress("Installing locked Desk build dependencies");
-		await run(app, [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
-		progress("Building Desk");
-		await run(app, [npm, "run", "build"]);
-		progress("Removing build-only dependencies");
-		await run(app, [npm, "prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
-		progress("Preparing protected credential storage");
-		await run(app, [npm, "rebuild", "keytar", "--ignore-scripts=false"]);
+		if (options.dependencies) {
+			progress("Restoring verified production dependencies");
+			await unpackDependencies(temporary, options.dependencies);
+			progress("Building Desk with locked checkout build tools");
+			await withBuildDependencies(source, app, temporary, () => run(app, [npm, "run", "build"]));
+		} else {
+			progress("Installing locked first-party dependencies");
+			await run(copy, [npm, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
+			progress("Installing locked Desk build dependencies");
+			await run(app, [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
+			progress("Building Desk");
+			await run(app, [npm, "run", "build"]);
+			progress("Removing build-only dependencies");
+			await run(app, [npm, "prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
+			progress("Preparing protected credential storage");
+			await run(app, [npm, "rebuild", "keytar", "--ignore-scripts=false"]);
+		}
 		progress("Checking staged runtime");
 		await run(app, [join(app, "dist", "host", "cli.js"), "--help"]);
 		await run(app, ["--input-type=module", "-e", 'import {createRequire} from "node:module"; createRequire(process.cwd()+"/package.json")("keytar");']);

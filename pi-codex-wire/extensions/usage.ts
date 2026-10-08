@@ -16,7 +16,7 @@ type UsageWindow = {
   resetAtMs?: number;
   resetAfterSeconds?: number;
 };
-type UsageSource = "codex";
+type UsageSource = "codex" | "claude";
 type UsageSnapshot = {
   source: UsageSource;
   updatedAtMs: number;
@@ -35,16 +35,18 @@ type SessionStatsCache = {
 
 const STATUS_KEY = "codex-usage";
 const DISABLE_STATUS_ENV = "PI_CODEX_USAGE_STATUS";
-const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex" };
-const USAGE_SOURCES: readonly UsageSource[] = ["codex"];
+const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude" };
+const SOURCE_PROVIDERS: Record<UsageSource, string> = { codex: "openai-codex", claude: "anthropic" };
+const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
 
 // Factories can share this module across reloads. Never share captured contexts,
 // timers or per-session preferences between extension instances.
 type UsageState = {
   directory: string;
-  snapshotFile: string;
+  snapshotFiles: Partial<Record<UsageSource, string>>;
   snapshots: UsageSnapshots;
-  accountId?: string;
+  accountIds: Partial<Record<UsageSource, string>>;
+  claudeRequestAccount?: string;
   events: ExtensionAPI["events"];
   context?: ExtensionContext;
   enabled: boolean;
@@ -147,8 +149,21 @@ function parseCodexUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot |
   };
 }
 
-export function parseUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
-  return parseCodexUsageHeaders(headers);
+function parseClaudeUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot | undefined {
+  const h = toHeaderRecord(headers);
+  const window = (label: "5h" | "7d"): UsageWindow | undefined => {
+    const utilization = numberHeader(h, `anthropic-ratelimit-unified-${label}-utilization`);
+    const usedPercent = utilization !== undefined && utilization >= 0 ? clampPercent(utilization * 100) : undefined;
+    const resetAtMs = resetAtHeader(h, `anthropic-ratelimit-unified-${label}-reset`);
+    if (usedPercent === undefined && resetAtMs === undefined) return;
+    return { label, windowMinutes: label === "5h" ? 300 : 10_080, usedPercent, resetAtMs };
+  };
+  const primary = window("5h"), secondary = window("7d");
+  return primary || secondary ? { source: "claude", updatedAtMs: Date.now(), primary, secondary } : undefined;
+}
+
+export function parseUsageHeaders(headers: HeaderMap | undefined, source: UsageSource = "codex"): UsageSnapshot | undefined {
+  return source === "claude" ? parseClaudeUsageHeaders(headers) : parseCodexUsageHeaders(headers);
 }
 
 function clampPercent(value: number | undefined): number | undefined {
@@ -157,7 +172,7 @@ function clampPercent(value: number | undefined): number | undefined {
 }
 
 function isUsageSource(value: unknown): value is UsageSource {
-  return value === "codex";
+  return USAGE_SOURCES.includes(value as UsageSource);
 }
 
 function freshWindow(window: UsageWindow | undefined, nowMs: number): UsageWindow | undefined {
@@ -173,7 +188,7 @@ function freshSnapshot(snapshot: UsageSnapshot, nowMs: number): UsageSnapshot | 
 }
 
 function pruneExpiredSnapshots(state: UsageState, nowMs = Date.now(), persist = false): void {
-  let changed = false;
+  const changed: UsageSource[] = [];
   for (const source of USAGE_SOURCES) {
     const snapshot = state.snapshots[source];
     if (!snapshot) continue;
@@ -181,14 +196,14 @@ function pruneExpiredSnapshots(state: UsageState, nowMs = Date.now(), persist = 
     if (fresh) {
       if (fresh !== snapshot) {
         state.snapshots[source] = fresh;
-        changed = true;
+        changed.push(source);
       }
     } else {
       delete state.snapshots[source];
-      changed = true;
+      changed.push(source);
     }
   }
-  if (changed && persist) persistSnapshots(state);
+  if (changed.length && persist) persistSnapshots(state, changed);
 }
 
 function readPersistedSnapshots(snapshotFile: string): UsageSnapshots {
@@ -198,7 +213,7 @@ function readPersistedSnapshots(snapshotFile: string): UsageSnapshots {
     const result: UsageSnapshots = {};
     for (const source of USAGE_SOURCES) {
       const candidate = parsed[source] as UsageSnapshot | undefined;
-      if (candidate && isUsageSource(candidate.source) && typeof candidate.updatedAtMs === "number") {
+      if (candidate && isUsageSource(candidate.source) && candidate.source === source && typeof candidate.updatedAtMs === "number") {
         const fresh = freshSnapshot(candidate, Date.now());
         if (fresh) result[source] = fresh;
       }
@@ -209,10 +224,13 @@ function readPersistedSnapshots(snapshotFile: string): UsageSnapshots {
   }
 }
 
-function persistSnapshots(state: UsageState): void {
+function persistSnapshots(state: UsageState, sources: readonly UsageSource[]): void {
   try {
     mkdirSync(state.directory, { recursive: true });
-    writeFileSync(state.snapshotFile, `${JSON.stringify(state.snapshots, null, 2)}\n`, { mode: 0o600 });
+    for (const source of sources) {
+      const file = state.snapshotFiles[source];
+      if (file) writeFileSync(file, `${JSON.stringify({ [source]: state.snapshots[source] }, null, 2)}\n`, { mode: 0o600 });
+    }
   } catch {
     // The footer should keep working even when the state directory is unwritable.
   }
@@ -223,10 +241,16 @@ function snapshotForSource(state: UsageState, source: UsageSource | undefined, n
   return source ? state.snapshots[source] : undefined;
 }
 
-// Codex usage is available only from the subscription transport. API-key
-// models have token/cost statistics but do not expose the 5h/7d plan windows.
-export function currentUsageSource(model: ExtensionContext["model"] | undefined): UsageSource | undefined {
-  return model?.api === "openai-codex-responses" ? "codex" : undefined;
+// API-key and gateway limits are not subscription allowance windows.
+export function currentUsageSource(model: ExtensionContext["model"] | undefined, oauth = false): UsageSource | undefined {
+  if (model?.api === "openai-codex-responses") return "codex";
+  if (oauth && model?.provider === "anthropic" && model.api === "anthropic-messages") {
+    try { if (new URL(model.baseUrl).origin === "https://api.anthropic.com") return "claude"; } catch { /* No known subscription endpoint. */ }
+  }
+}
+
+function contextUsageSource(ctx: ExtensionContext): UsageSource | undefined {
+  return currentUsageSource(ctx.model, ctx.model?.provider === "anthropic" && ctx.modelRegistry.isUsingOAuth(ctx.model));
 }
 
 function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): string | undefined {
@@ -272,8 +296,8 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
 
   if (entries.length === 0) {
     return [
-      "No Codex usage snapshot yet.",
-      "The plugin updates passively from x-codex-* response headers and codex.rate_limits WebSocket events. It does not poll usage endpoints.",
+      "No subscription allowance snapshot yet.",
+      "Allowance updates passively from Codex and Claude responses. No usage endpoint is polled.",
     ].join("\n");
   }
 
@@ -292,7 +316,7 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
     }
     lines.push("");
   }
-  lines.push(`State: ${state.snapshotFile}`);
+  for (const source of USAGE_SOURCES) if (state.snapshotFiles[source]) lines.push(`${SOURCE_LABELS[source]} state: ${state.snapshotFiles[source]}`);
   lines.push("Network policy: passive only; no usage polling or extra provider requests.");
   return lines.join("\n").trimEnd();
 }
@@ -337,7 +361,7 @@ function formatSessionCostDetails(ctx: ExtensionContext, state: UsageState): str
 
   const hitPercent = allInput > 0 ? Math.round((cachedInput / allInput) * 100) : 0;
   const model = ctx.model;
-  const isSubscription = model?.api === "openai-codex-responses";
+  const isSubscription = !!contextUsageSource(ctx);
   let modelLabel = "Model: unknown";
   if (model) {
     const provider = model.provider ? ` (${model.provider})` : "";
@@ -362,7 +386,7 @@ function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   if (state.disposed) return;
   const model = ctx.model, ui = ctx.ui;
   const status = state.enabled
-    ? formatUsageStatus(state, ui.theme, currentUsageSource(model))
+    ? formatUsageStatus(state, ui.theme, contextUsageSource(ctx))
     : undefined;
   ui.setStatus(STATUS_KEY, status);
   statusOwners.set(state.events, state);
@@ -370,14 +394,14 @@ function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   if (state.disposed) return;
   state.context = ctx;
   publishUsage(ctx, state);
-  if (status || state.presentation && snapshotForSource(state, currentUsageSource(model))) ensureTickTimer(state);
+  if (status || state.presentation && snapshotForSource(state, contextUsageSource(ctx))) ensureTickTimer(state);
   else disposeTickTimer(state);
 }
 
 function publishUsage(ctx: ExtensionContext, state: UsageState): void {
   const remote = state.presentation;
   if (!remote || state.disposed) return;
-  const stats = cachedSessionStats(ctx, state), source = currentUsageSource(ctx.model), allowance = snapshotForSource(state, source);
+  const stats = cachedSessionStats(ctx, state), source = contextUsageSource(ctx), allowance = snapshotForSource(state, source);
   const fresh = stats.totalInput + stats.totalCacheWrite, input = fresh + stats.totalCacheRead;
   const context = ctx.getContextUsage(), model = ctx.model;
   const data: UiDetails = {
@@ -397,23 +421,23 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
     items: [allowance?.primary, allowance?.secondary].flatMap((window, index) => {
       if (!window) return [];
       const remaining = window.usedPercent === undefined ? undefined : 100 - window.usedPercent;
-      return [{ id: `window-${index}`, title: `${window.label} Codex allowance`,
+      return [{ id: `window-${index}`, title: `${window.label} ${SOURCE_LABELS[allowance!.source]} allowance`,
         subtitle: remaining === undefined ? "Remaining amount unknown" : `${remaining}% remaining`,
         body: window.resetAtMs ? `Resets ${new Date(window.resetAtMs).toISOString()} (in ${formatDurationUntil(window.resetAtMs)})` : "Reset time unknown",
         ...(remaining === undefined ? {} : { meter: { value: remaining, max: 100, label: `${window.label} allowance remaining` } }) }];
     }),
   };
-  if (!allowance) data.items = [{ id: "no-snapshot", title: source ? "No current Codex allowance snapshot" : "Subscription allowance unavailable",
-    body: source ? "Allowance arrives passively with Codex responses. No polling or extra provider request is made."
+  if (!allowance) data.items = [{ id: "no-snapshot", title: source ? `No current ${SOURCE_LABELS[source]} allowance snapshot` : "Subscription allowance unavailable",
+    body: source ? `Allowance arrives with normal ${SOURCE_LABELS[source]} responses. No polling or extra provider request is made.`
       : "Remaining subscription allowance is not provided by this integration for the selected model. Token and cost totals above are recorded usage, not a balance." }];
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
-    badges: state.enabled && currentUsageSource(model) === "codex" ? [allowance?.primary, allowance?.secondary].flatMap(window => {
+    badges: state.enabled && source ? [allowance?.primary, allowance?.secondary].flatMap(window => {
       if (!window || window.usedPercent === undefined) return [];
       const reset = formatDurationUntil(window.resetAtMs);
       return [{
         label: window.label === "7d" ? "Weekly" : window.label,
         value: `${100 - window.usedPercent}% left${reset ? ` · resets in ${reset}` : ""}`,
-        description: `Reported Codex allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}${window.resetAtMs ? ` · resets ${new Date(window.resetAtMs).toLocaleString()}` : " · reset time unknown"}`,
+        description: `Reported ${SOURCE_LABELS[source]} allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}${window.resetAtMs ? ` · resets ${new Date(window.resetAtMs).toLocaleString()}` : " · reset time unknown"}`,
       }];
     }) : [],
     actions: [{ id: "refresh", label: "Refresh view" }, { id: "status", label: state.enabled ? "Hide status" : "Show status" }] }, {
@@ -457,17 +481,17 @@ function recordSnapshot(snapshot: UsageSnapshot, state: UsageState): void {
     activeLimit: snapshot.activeLimit ?? previous?.activeLimit,
   };
   pruneExpiredSnapshots(state, Date.now());
-  persistSnapshots(state);
+  persistSnapshots(state, [snapshot.source]);
   refreshUsageStatus(state);
 }
 
 export default function codexUsage(pi: ExtensionAPI): void {
   const directory = process.env.PI_CODEX_USAGE_DIR || join(getAgentDir(), "codex-wire");
-  const snapshotFile = join(directory, "usage.json");
   const state: UsageState = {
     directory,
-    snapshotFile,
-    snapshots: readPersistedSnapshots(snapshotFile),
+    snapshotFiles: {},
+    snapshots: {},
+    accountIds: {},
     events: pi.events,
     enabled: !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_STATUS_ENV] || ""),
     disposed: false,
@@ -480,12 +504,20 @@ export default function codexUsage(pi: ExtensionAPI): void {
   });
   const unsubscribeUsage = pi.events.on(SESSION_USAGE_CHANGED, () => refreshUsageStatus(state));
   const selectAccount = () => {
-    const id = getModelCredentials(pi)?.accountId?.("openai-codex") ?? "pi";
-    if (state.accountId === id) return;
-    if (id !== "pi" && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw Error("Invalid allowance account ID.");
-    state.accountId = id;
-    state.snapshotFile = join(directory, id === "pi" ? "usage.json" : `usage-${id}.json`);
-    state.snapshots = readPersistedSnapshots(state.snapshotFile);
+    const credentials = getModelCredentials(pi);
+    for (const source of USAGE_SOURCES) {
+      const id = credentials?.accountId?.(SOURCE_PROVIDERS[source]) ?? "pi";
+      if (state.accountIds[source] === id) continue;
+      if (id !== "pi" && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw Error("Invalid allowance account ID.");
+      state.accountIds[source] = id;
+      if (source === "claude") state.claudeRequestAccount = undefined;
+      const prefix = source === "codex" ? "usage" : "usage-claude";
+      const file = join(directory, `${prefix}${id === "pi" ? "" : `-${id}`}.json`);
+      state.snapshotFiles[source] = file;
+      const snapshot = readPersistedSnapshots(file)[source];
+      if (snapshot) state.snapshots[source] = snapshot;
+      else delete state.snapshots[source];
+    }
   };
   const unsubscribeAccount = pi.events.on(MODEL_ACCOUNT_CHANGED, () => { selectAccount(); refreshUsageStatus(state); });
 
@@ -513,7 +545,15 @@ export default function codexUsage(pi: ExtensionAPI): void {
 
   pi.on("before_provider_request", (_event, ctx) => {
     if (state.disposed) return;
+    state.claudeRequestAccount = contextUsageSource(ctx) === "claude" ? state.accountIds.claude : undefined;
     updateUsageStatus(ctx, state);
+  });
+
+  pi.on("after_provider_response", (event, ctx) => {
+    if (state.disposed || contextUsageSource(ctx) !== "claude" || !state.claudeRequestAccount
+      || state.claudeRequestAccount !== state.accountIds.claude) return;
+    const snapshot = parseUsageHeaders(event.headers, "claude");
+    if (snapshot) recordSnapshot(snapshot, state);
   });
 
   pi.on("model_select", (_event, ctx) => {
@@ -533,20 +573,20 @@ export default function codexUsage(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("pi-usage", {
-    description: "Show passive Codex usage and control its footer status",
+    description: "Show recorded usage, subscription allowance and reset times",
     handler: async (args, ctx) => {
       if (state.disposed) return;
       const command = args.trim().toLowerCase();
       if (command === "off") {
         state.enabled = false;
         updateUsageStatus(ctx, state);
-        ctx.ui.notify("Codex usage status disabled for this session", "info");
+        ctx.ui.notify("Usage status disabled for this session", "info");
         return;
       }
       if (command === "on") {
         state.enabled = true;
         updateUsageStatus(ctx, state);
-        ctx.ui.notify("Codex usage status enabled", "info");
+        ctx.ui.notify("Usage status enabled", "info");
         return;
       }
 

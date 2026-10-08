@@ -39,6 +39,29 @@ test("closed tool output and thinking do not build their hidden Markdown bodies"
 	assert.match(render({ message: thought }, new Map([["thinking:thought:0", true]])), /HIDDEN_THINKING_BODY/);
 });
 
+test("thinking formatting does not leak terminal codes or change the saved content", () => {
+	const text = "\u001b[38;2;167;152;215mThinking:\u001b[39m A readable summary.\u009b39m";
+	const thought = message("styled", "assistant", [{ type: "thinking", text }]);
+	const html = render({ message: thought }, new Map([["thinking:styled:0", true]]));
+	assert.match(html, /A readable summary/);
+	assert.doesNotMatch(html, /38;2;167|39m|\u001b|\u009b/);
+	assert.equal(thought.blocks[0].text, text);
+	thought.blocks[0].text = "Partial summary\u001b[38;2;";
+	assert.doesNotMatch(render({ message: thought }, new Map([["thinking:styled:0", true]])), /38;2;/);
+});
+
+test("thinking without readable content explains the empty panel", () => {
+	const thought = message("empty", "assistant", [{ type: "thinking", text: "\n\n" }]);
+	const states = new Map([["thinking:empty:0", true]]);
+	assert.match(render({ message: thought }, states), /No readable reasoning summary was included/);
+	thought.complete = false;
+	assert.match(render({ message: thought }, states), /Waiting for a reasoning summary/);
+	thought.blocks[0].text = "An actual summary";
+	const html = render({ message: thought }, states);
+	assert.match(html, /An actual summary/);
+	assert.doesNotMatch(html, /No readable|Waiting for/);
+});
+
 test("skill reads are visible without expanding tools, including nested calls", () => {
 	const call = { type: "toolCall", id: "read-skill", name: "read", arguments: JSON.stringify({ path: "/skills/browse/SKILL.md" }) };
 	const owner = message("assistant", "assistant", [call]);

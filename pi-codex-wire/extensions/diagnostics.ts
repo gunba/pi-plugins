@@ -118,6 +118,7 @@ export class Diagnostics {
       kind: "request", ...details,
       model: typeof body.model === "string" && /^[a-zA-Z0-9._-]+$/.test(body.model) ? body.model : undefined,
       effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "disabled"].includes(String(reasoning.effort)) ? reasoning.effort : undefined,
+      reasoningSummary: ["auto", "concise", "detailed"].includes(String(reasoning.summary)) ? reasoning.summary : "omitted",
       serviceTier: ["auto", "default", "flex", "priority", "fast", "ultrafast", "scale"].includes(String(body.service_tier)) ? body.service_tier : "omitted",
       inputItems: Array.isArray(body.input) ? body.input.length : 0,
       tools: Array.isArray(body.tools) ? body.tools.length : 0,

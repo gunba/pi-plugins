@@ -114,6 +114,19 @@ an active directory.
 Archives contain regular files only; links are validated relative runtime
 paths, with Windows directory links restored as unprivileged junctions.
 
+Release builds reuse a verified dependency bundle from the previous published
+release when platform, architecture, Node ABI, dependency inputs and packaging
+recipe match. The key ignores only the two first-party release versions, not
+lockfile dependency entries or local dependency contents. A cache hit rebuilds
+current code with the checkout's locked build tools, restores production-only
+dependencies and reuses their original compressed archive. Archive integrity,
+extraction limits, relocation and the full fresh consumer check still run.
+A miss or invalid cache uses the normal locked installation. The cache index is
+published only after verification. It uses release assets because GitHub's
+Actions caches cannot be shared between different release tags; the first
+release with this index seeds subsequent builds. Local packaging can opt in
+with `PI_DESK_DEPENDENCY_CACHE=<directory>`.
+
 The release workflow accepts `pi-desk-v<version>` tags from commits with a
 successful main CI run. Build jobs have read-only repository access. A separate
 publisher uploads the complete Linux/Windows, Node 22/24 matrix and publishes it only

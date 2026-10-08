@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, link } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, link } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import * as tar from "tar";
@@ -12,6 +12,7 @@ import { atomicJson, readRelease, readState, runtimeIdentity, validId, versionDi
 
 export interface ReleaseAsset { name: string; size: number; sha256: string }
 interface RuntimeLink { path: string; target: string; directory: boolean }
+export interface VerifiedDependencies { artifact: RuntimeArtifact; file: string }
 export interface RuntimeArtifact {
 	format: 1; commit: string; sourceDigest: string;
 	runtime: Omit<RuntimeRelease, "source" | "readyAt" | "artifact">;
@@ -51,21 +52,57 @@ export function runtimeArtifact(input: unknown): RuntimeArtifact {
 	if (payloadDigest(value) !== r.digest) throw new Error("Runtime identity does not match its payloads.");
 	return value;
 }
-async function verify(file: string, asset: ReleaseAsset): Promise<void> {
+export async function verify(file: string, asset: ReleaseAsset): Promise<void> {
 	const info = await lstat(file);
 	if (!info.isFile() || info.size !== asset.size || await sha256(file) !== asset.sha256)
 		throw new Error(`Integrity check failed for ${asset.name}.`);
 }
 
+async function unpack(root: string, archives: { file: string; dependency: boolean }[], progress?: (message: string) => void): Promise<void> {
+	let bytes = 0, entries = 0;
+	for (const { file, dependency } of archives) {
+		progress?.(dependency ? "Extracting runtime dependencies" : "Extracting Desk code");
+		await tar.extract({
+			cwd: root, file, strict: true, preservePaths: false,
+			filter(path, entry) {
+				if (!sourcePath(path) || !("type" in entry) || !["File", "Directory"].includes(entry.type) || dependencyPath(path) !== dependency
+					|| ++entries > 100_000 || (bytes += entry.size ?? 0) > 2 * 1024 * 1024 * 1024)
+					throw new Error("Runtime archive contains an invalid entry.");
+				return true;
+			},
+		});
+	}
+}
+async function restoreLinks(root: string, destination: string, links: RuntimeLink[]): Promise<void> {
+	for (const item of links) {
+		const target = join(root, item.target), path = join(root, item.path);
+		await mkdir(dirname(path), { recursive: true });
+		if (!within(root, await realpath(dirname(path))) || !within(root, await realpath(target))
+			|| (await lstat(target)).isDirectory() !== item.directory) throw new Error("Runtime link target is invalid.");
+		if (process.platform === "win32") {
+			if (item.directory) await symlink(join(destination, item.target), path, "junction");
+			else await link(target, path);
+		} else await symlink(relative(dirname(path), target), path, item.directory ? "dir" : "file");
+	}
+}
+
+/** Rehydrate only verified dependencies into a fresh source snapshot. */
+export async function unpackDependencies(root: string, bundle: VerifiedDependencies): Promise<void> {
+	const artifact = runtimeArtifact(bundle.artifact);
+	await verify(bundle.file, artifact.dependencies);
+	await unpack(root, [{ file: bundle.file, dependency: true }]);
+	await restoreLinks(root, root, artifact.links.filter(item => dependencyPath(item.path)));
+}
+
 /** CI packs regular files separately from relocatable links and reusable dependencies. */
-export async function packRuntime(home: string, id: string, output: string, commit: string): Promise<string> {
+export async function packRuntime(home: string, id: string, output: string, commit: string, cached?: VerifiedDependencies): Promise<string> {
 	const release = readRelease(home, id), root = await realpath(versionDirectory(home, id));
 	await mkdir(output, { recursive: true });
 	const code: string[] = [], dependencies: string[] = [], links: RuntimeLink[] = [];
 	const visit = async (path: string) => {
 		for (const item of await readdir(join(root, path), { withFileTypes: true })) {
 			const name = `${path}/${item.name}`, file = join(root, name);
-			if (item.name === ".package-lock.json") continue;
+			if (item.name === ".package-lock.json" || cached && item.name === "node_modules") continue;
 			if (item.isSymbolicLink()) {
 				const target = await realpath(file);
 				if (!within(root, target)) throw new Error(`Runtime link escapes the release: ${name}`);
@@ -82,11 +119,21 @@ export async function packRuntime(home: string, id: string, output: string, comm
 		return { name, size: (await lstat(file)).size, sha256: await sha256(file) };
 	};
 	const prefix = artifactName(release.desk).replace(/\.json$/, "");
+	const reuse = async () => {
+		const artifact = runtimeArtifact(cached!.artifact);
+		await verify(cached!.file, artifact.dependencies);
+		const target = join(output, artifact.dependencies.name);
+		if (resolve(cached!.file) !== resolve(target)) await copyFile(cached!.file, target);
+		links.push(...artifact.links.filter(item => dependencyPath(item.path)));
+		return { ...artifact.dependencies };
+	};
 	const [deps, packedCode] = await Promise.all([
-		pack(dependencies, `${prefix}-dependencies.tgz`), pack(code, `${prefix}-code.tgz`),
+		cached ? reuse() : pack(dependencies, `${prefix}-dependencies.tgz`), pack(code, `${prefix}-code.tgz`),
 	]);
-	const shared = `pi-desk-dependencies-${release.platform}-${release.arch}-node${release.node}-${deps.sha256}.tgz`;
-	await rename(join(output, deps.name), join(output, shared)); deps.name = shared;
+	if (!cached) {
+		const shared = `pi-desk-dependencies-${release.platform}-${release.arch}-node${release.node}-${deps.sha256}.tgz`;
+		await rename(join(output, deps.name), join(output, shared)); deps.name = shared;
+	}
 	const payload = { sourceDigest: release.digest, code: packedCode, dependencies: deps, links: links.sort((a, b) => a.path.localeCompare(b.path)) };
 	const digest = payloadDigest(payload);
 	const runtime = { format: release.format, id: runtimeIdentity(digest, release.platform, release.arch, release.node), digest, plugins: release.plugins,
@@ -107,6 +154,7 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 	try {
 		const state = readState(home);
 		if (!state) throw new Error("Set up Desk before installing a runtime release.");
+		progress?.("Verifying runtime archives");
 		await verify(code, artifact.code);
 		await verify(dependencies, artifact.dependencies);
 		const destination = versionDirectory(home, artifact.runtime.id);
@@ -119,30 +167,9 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 		}
 		if (state.active === artifact.runtime.id) throw new Error("The selected runtime is damaged. It cannot be replaced while active.");
 		temporary = await mkdtemp(join(home, ".download-"));
-		let bytes = 0, entries = 0;
-		const unpack = (file: string, dependency: boolean) => tar.extract({
-			cwd: temporary!, file, strict: true, preservePaths: false,
-			filter(path, entry) {
-				if (!sourcePath(path) || !("type" in entry) || !["File", "Directory"].includes(entry.type) || dependencyPath(path) !== dependency
-					|| ++entries > 100_000 || (bytes += entry.size ?? 0) > 2 * 1024 * 1024 * 1024)
-					throw new Error("Runtime archive contains an invalid entry.");
-				return true;
-			},
-		});
-		await unpack(code, false);
-		await unpack(dependencies, true);
-		for (const item of artifact.links) {
-			const target = join(temporary, item.target), path = join(temporary, item.path);
-			await mkdir(dirname(path), { recursive: true });
-			if (!within(temporary, await realpath(dirname(path))) || !within(temporary, await realpath(target))
-				|| (await lstat(target)).isDirectory() !== item.directory)
-				throw new Error("Runtime link target is invalid.");
-			// Junctions must name their final location, not the temporary extraction directory.
-			if (process.platform === "win32") {
-				if (item.directory) await symlink(resolve(destination, item.target), path, "junction");
-				else await link(target, path);
-			} else await symlink(relative(dirname(path), target), path);
-		}
+		await unpack(temporary, [{ file: code, dependency: false }, { file: dependencies, dependency: true }], progress);
+		// Windows junctions must name their final location before publication.
+		await restoreLinks(temporary, destination, artifact.links);
 		const plugins = JSON.parse(await readFile(join(temporary, "source", "package.json"), "utf8"));
 		const desk = JSON.parse(await readFile(join(temporary, "source", "pi-desk", "package.json"), "utf8"));
 		const sdk = JSON.parse(await readFile(join(temporary, "source", "pi-desk", "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8"));
@@ -168,6 +195,7 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 		}
 		temporary = undefined;
 		try {
+			progress?.("Checking published runtime");
 			const app = join(destination, "source", "pi-desk"), options = { cwd: app, windowsHide: true, timeout: 60_000 };
 			await execute(process.execPath, [join(app, "dist", "host", "cli.js"), "--help"], options);
 			await execute(process.execPath, ["--input-type=module", "-e",

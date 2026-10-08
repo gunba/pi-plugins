@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -31,7 +31,7 @@ async function harness(t) {
     }
     rmSync(directory, { recursive: true, force: true });
   });
-  async function load({ failClear = false, mode = "print" } = {}) {
+  async function load({ failClear = false, mode = "print", oauth = false } = {}) {
     const loader = new DefaultResourceLoader({
       cwd: directory, agentDir: directory, eventBus: bus, settingsManager: SettingsManager.inMemory(),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -40,7 +40,7 @@ async function harness(t) {
     await loader.reload();
     const result = loader.getExtensions();
     assert.deepEqual(result.errors, []);
-    const runner = new ExtensionRunner(result.extensions, result.runtime, directory, SessionManager.inMemory(directory), {});
+    const runner = new ExtensionRunner(result.extensions, result.runtime, directory, SessionManager.inMemory(directory), { isUsingOAuth: () => oauth });
     let model = { id: "offline", api: "openai-codex-responses", provider: "openai-codex" };
     runner.bindCore({ getThinkingLevel: () => "off" }, { getContextUsage: () => undefined, getModel: () => model });
     const statuses = [], errors = [];
@@ -58,7 +58,7 @@ async function harness(t) {
     bus.emit("pi-codex-wire:allowance", headers);
     assert.ok(instance.statuses.at(-1)?.includes("80%"));
   }
-  return { load, start, timers, bus };
+  return { load, start, timers, bus, directory };
 }
 
 test("allowance badges distinguish weekly quota from the actual reset countdown", async t => {
@@ -91,6 +91,46 @@ test("switching to Claude does not show cached Codex allowance as its capacity",
   assert.equal(h.timers.size, 0);
   await instance.select({ id: "codex-fixture", provider: "openai-codex", api: "openai-codex-responses" });
   assert.match(publications.at(-1).badges[0].value, /80%/);
+});
+
+test("Claude allowance uses normal response headers and stays within its saved account", async t => {
+  const h = await harness(t), publications = [];
+  h.bus.on("pi-ui/discover-v2", probe => { probe.presentation = { publish: (_id, value) => publications.push(value) }; });
+  const ids = ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"];
+  let selected = ids[0];
+  h.bus.on("pi:model-credentials", probe => { probe.binding = { accountId: provider => provider === "anthropic" ? selected : "pi" }; });
+  const instance = await h.load({ mode: "rpc", oauth: true }); await h.start(instance);
+  const codexBefore = readFileSync(join(h.directory, "usage.json"), "utf8");
+  await instance.select({ id: "claude-fixture", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com" });
+  const response = used => instance.runner.emit({ type: "after_provider_response", status: 200, headers: {
+    "anthropic-ratelimit-unified-5h-utilization": used,
+    "anthropic-ratelimit-unified-5h-reset": String(Math.floor(Date.now() / 1000) + 3600),
+  } });
+  await instance.runner.emit({ type: "before_provider_request", payload: {} }); await response("0.25");
+  assert.match(publications.at(-1).badges[0].value, /75% left.*resets in/);
+  assert.match(publications.at(-1).badges[0].description, /Claude/);
+  assert.equal(readFileSync(join(h.directory, "usage.json"), "utf8"), codexBefore);
+  selected = ids[1]; h.bus.emit("pi:model-account-changed", {});
+  await response("0.9");
+  assert.deepEqual(publications.at(-1).badges, [], "late old-account headers are discarded");
+  await instance.runner.emit({ type: "before_provider_request", payload: {} }); await response("0.6");
+  assert.match(publications.at(-1).badges[0].value, /40% left/);
+  selected = ids[0]; h.bus.emit("pi:model-account-changed", {});
+  assert.match(publications.at(-1).badges[0].value, /75% left/);
+  const saved = JSON.parse(readFileSync(join(h.directory, `usage-claude-${ids[0]}.json`), "utf8"));
+  assert.equal(saved.claude.primary.usedPercent, 25);
+  assert.equal(saved.codex, undefined);
+});
+
+test("API-key Claude headers and another session's response do not replace allowance", async t => {
+  const h = await harness(t), parent = await h.load(); await h.start(parent);
+  const other = await h.load({ oauth: false });
+  await other.runner.emit({ type: "session_start", reason: "new" });
+  await other.select({ id: "claude-fixture", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com" });
+  await other.runner.emit({ type: "before_provider_request", payload: {} });
+  await other.runner.emit({ type: "after_provider_response", status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.9" } });
+  assert.equal(other.statuses.at(-1), undefined);
+  assert.match(parent.statuses.at(-1), /80%/);
 });
 
 test("late old-runner request cannot poison the replacement usage timer", async t => {

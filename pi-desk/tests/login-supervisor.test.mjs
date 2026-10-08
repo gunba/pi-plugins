@@ -162,17 +162,20 @@ test("a real managed wrapper survives public host replacement with the same busy
 	exit = new Promise((resolve, reject) => { wrapper.once("exit", code => resolve(code)); wrapper.once("error", reject); });
 	const until = Date.now() + 90000;
 	const waitHost = async runtime => {
+		let lastProbe, launchError;
 		while (Date.now() < until) {
 			assert.equal(wrapper.exitCode, null, output);
 			const state = await probeHost(data);
+			lastProbe = { state: state.state, error: state.error, pid: state.host?.pid, runtime: state.host?.runtime,
+				restore: state.host?.restore, sessions: state.host?.sessions };
 			if (state.state === "running" && state.host.runtime === runtime && state.host.restore?.pending !== true && state.host.sessions.working === 1) {
 				// HTTP readiness can precede the wrapper acknowledgement that releases startup admission.
 				try { const launch = new SessionLease(join(data, "launch")); launch.close(); return state.host; }
-				catch (error) { if (!(error instanceof SessionOwnedError)) throw error; }
+				catch (error) { if (!(error instanceof SessionOwnedError)) throw error; launchError = error.message; }
 			}
 			await delay(25);
 		}
-		assert.fail(`Fixture host did not become ready: ${output}`);
+		assert.fail(`Fixture host did not become ready: ${JSON.stringify({ expectedRuntime: runtime, lastProbe, launchError })}\n${output}`);
 	};
 	const first = await waitHost(source), supervisor = liveSupervisor(data);
 	assert.equal(supervisor.pid, wrapper.pid); assert.equal(first.supervisor, supervisor.instance);

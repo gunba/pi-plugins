@@ -61,7 +61,14 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm --prefix pi-desk ci --ignore-scripts --no-audit --no-fund
       - run: npm --prefix pi-desk rebuild keytar
+      - name: Restore verified dependency bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: node pi-desk/manage/dependency-cache.ts --restore-release . "$RUNNER_TEMP/desk-dependency-cache"
       - name: Build and verify portable runtime
+        env:
+          PI_DESK_DEPENDENCY_CACHE: ${{ runner.temp }}/desk-dependency-cache
         shell: bash
         run: node pi-desk/manage/pack-release.ts "$RUNNER_TEMP/desk-release"
       # v7.0.1

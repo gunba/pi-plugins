@@ -558,9 +558,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     >
       {session.snapshot?.thinkingLevels.map((level) => (
         <option key={level} value={level}>
-          {level === "off"
-            ? "No reasoning"
-            : `${level} reasoning`}
+          {level.charAt(0).toUpperCase() + level.slice(1)}
         </option>
       ))}
     </select>

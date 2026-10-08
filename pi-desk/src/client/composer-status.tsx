@@ -46,7 +46,10 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		</label> : <span className="composer-badge" key={key} title={badge.description ?? `${badge.label} ${badge.value}`}>{badge.label} {badge.value}</span>;
 	};
 	return <div className="composer-status">
-		<div className="composer-status-inline">{contextControl}<div className="composer-badges-inline">{badges.filter(badge => badge.compact).map(badgeControl)}</div></div>
+		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
+			<div className="composer-facts-inline">{badges.filter(badge => !badge.control).map(badgeControl)}</div>
+			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
+		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}
 			aria-label={`${connected ? state : "Disconnected"} · Conversation status and options`} title="Conversation status and options" aria-haspopup="dialog" aria-expanded={menu.open}>
 			<span className={`status-dot ${connected ? sessionActivity(session) : "offline"}`} /><Icon name="more" />

@@ -23,6 +23,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 	const accountName = (model: Model) => model.accountName ?? (snapshot.accounts === undefined ? "Account unavailable"
 		: snapshot.accounts[model.provider] && snapshot.accounts[model.provider] !== "pi" ? "Saved account" : "Pi credentials");
 	const provider = selected?.provider ?? "", label = providerNames[provider] ?? provider;
+	const compactName = provider === "anthropic" ? selected?.name.replace(/^Claude\s+/i, "") : selected?.name;
 	const reason = (model: Model): string | undefined => {
 		if (selected && model.provider !== provider && !contextAware) return "Restart this conversation when idle to switch providers.";
 		if (constraint && constraint.provider !== model.provider) {
@@ -30,7 +31,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 			if (snapshot.activity !== "idle") return "Finish current work before summarizing and switching providers.";
 		}
 	};
-	const filtered = snapshot.models.filter(model => `${model.name} ${model.id} ${providerNames[model.provider] ?? model.provider}`.toLowerCase().includes(query.trim().toLowerCase()));
+	const filtered = open ? snapshot.models.filter(model => `${model.name} ${model.id} ${providerNames[model.provider] ?? model.provider}`.toLowerCase().includes(query.trim().toLowerCase())) : [];
 	const groups = new Map<string, Model[]>();
 	for (const model of filtered) {
 		const group = groups.get(model.provider) ?? [];
@@ -70,13 +71,13 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 		<button ref={trigger} type="button" className="model-picker" disabled={disabled} popoverTarget={menuId}
 			aria-label={`Choose model${selected ? `: ${selected.name}` : ""}`} aria-haspopup="dialog" aria-expanded={open}
 			title={selected ? `${label} · ${selected.id} · ${accountName(selected)}` : "Choose a model"}>
-			<ProviderIcon id={provider} title={label} /><span>{selected?.name ?? "Choose model"}</span>
+			<ProviderIcon id={provider} title={label} /><span>{compactName ?? "Choose model"}</span>
 			<svg className="model-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
 		</button>
 		<div ref={menu} id={menuId} popover="auto" className="model-menu" role="dialog" aria-label="Choose a model"
 			onBeforeToggle={event => { popover.beforeToggle(event); if (event.newState === "open") { setQuery(""); setActive(selected ? modelKey(selected) : ""); } }}
 			onToggle={popover.toggle} onKeyDown={popover.keyDown}>
-			<div className="model-menu-search"><input data-autofocus type="search" form="" role="combobox" aria-label="Find a model" placeholder="Find a model…" value={query}
+			{open && <><div className="model-menu-search"><input data-autofocus type="search" form="" role="combobox" aria-label="Find a model" placeholder="Find a model…" value={query}
 				aria-expanded={open} aria-controls={`${menuId}-list`} aria-autocomplete="list" aria-activedescendant={open && current ? optionId(current) : undefined}
 				onChange={event => { setQuery(event.currentTarget.value); setActive(""); }} onKeyDown={event => {
 					if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -104,7 +105,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 					<button type="button" disabled={!selected} onClick={() => { close(); accounts(provider); }}>Accounts</button></div>
 				{!contextAware && selected && snapshot.models.some(model => model.provider !== provider) && <p>Restart this conversation when idle to switch providers. Current work can keep running.</p>}
 				{constraint && <p>{constraint.portable ? "Encrypted Codex context needs a summary before switching providers. Choose a model when idle to continue." : constraint.reason} <button type="button" onClick={() => { close(); history(); }}>History</button></p>}
-			</div>
+			</div></>}
 		</div>
 		{confirmation.dialog}
 	</div>;

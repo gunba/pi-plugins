@@ -82,6 +82,58 @@ test("inherited child allowance cannot replace the parent's account limits", asy
     "a child can use a different subscription from its parent");
 });
 
+test("the SDK header deadline cancels Wire catalog loading before inference", async t => {
+  const h = harness(t);
+  let catalogAborted = false, inferenceRequests = 0;
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 250);
+        init.signal.addEventListener("abort", () => {
+          clearTimeout(timer); catalogAborted = true; reject(init.signal.reason);
+        }, { once: true });
+      });
+      return Response.json({ models: [{ slug: model.id }] });
+    }
+    inferenceRequests++;
+    return new Response('data: {"type":"response.completed","response":{"id":"fixture","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  const response = await h.provider().streamSimple(model, { messages: [] }, {
+    apiKey: jwt, timeoutMs: 30, maxRetries: 0, fetch: fetcher,
+  }).result();
+  assert.equal(catalogAborted, true, "the supplied-fetch deadline must reach the catalog request");
+  assert.equal(inferenceRequests, 0, "an expired attempt must not reach inference");
+  assert.equal(response.stopReason, "error");
+  assert.match(response.errorMessage, /headers timed out/);
+});
+
+test("Codex requests readable summaries even when the catalog default is none", async t => {
+  const h = harness(t), summaries = [];
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id,
+      supports_reasoning_summaries: true, supports_reasoning_summary_parameter: true, default_reasoning_summary: "none" }] });
+    const summary = decode(init).reasoning.summary;
+    summaries.push(summary);
+    const item = { type: "reasoning", id: "rs_summary", summary: [{ type: "summary_text", text: "Checking the assumptions." }], encrypted_content: "OPAQUE" };
+    const events = summary ? [
+      { type: "response.created", response: { id: "summary" } },
+      { type: "response.output_item.added", output_index: 0, item: { ...item, summary: [] } },
+      { type: "response.reasoning_summary_text.delta", output_index: 0, delta: "Checking the assumptions." },
+      { type: "response.output_item.done", output_index: 0, item },
+    ] : [];
+    events.push({ type: "response.completed", response: { id: "summary", status: "completed", output: summary ? [item] : [] } });
+    return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  };
+  const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoning: "medium", fetch: fetcher }).result();
+  assert.equal(result.stopReason, "stop", result.errorMessage);
+  assert.equal(summaries[0], "auto");
+  assert.equal(result.content.find(block => block.type === "thinking")?.thinking, "Checking the assumptions.");
+  assert.match(result.content[0].thinkingSignature, /OPAQUE/, "readable summaries do not replace replay state");
+  await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoningSummary: "none", fetch: fetcher }).result();
+  assert.equal(summaries[1], undefined, "an explicit caller choice still wins");
+});
+
 test("failed manual reactivation remains fail-closed rather than restoring stock Codex", async t => {
   const h = harness(t);
   h.ctx.sessionManager.getBranch = () => { throw new Error("fixture activation failure"); };

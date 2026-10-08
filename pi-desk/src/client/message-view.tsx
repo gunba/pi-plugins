@@ -87,13 +87,19 @@ function ThinkingGroup({ parts, sessionKey, source }: {
 	parts: { message: ChatMessage; block: TextBlock; index: number }[]; sessionKey: string; source?: string;
 }) {
 	const active = parts.find(part => part.message.complete === false)?.message;
+	const readable = parts.flatMap(part => {
+		// Presentation only: retain native reasoning/signatures and join streamed text before removing SGR formatting.
+		const text = part.block.text.replace(/(?:\u001b\[|\u009b)[\d;:]*m/g, "").replace(/\u001b(?:\[[\d;:]*)?$|\u009b[\d;:]*$/, "");
+		return text.trim() || part.block.full || part.block.truncated ? [{ ...part, block: { ...part.block, text } }] : [];
+	});
 	return <Disclosure id={`thinking:${parts[0]?.message.id}:${parts[0]?.index}`} className="tool-card thinking-pill"
 		summary={<><Icon name="thinking" /><strong>Thinking</strong>
-		{parts.length > 1 && <span className="thinking-count" title="Reasoning sections in this reply">{parts.length} sections</span>}
+		{readable.length > 1 && <span className="thinking-count" title="Readable reasoning sections in this reply">{readable.length} sections</span>}
+		{!active && !readable.length && <span className="thinking-count">No summary provided</span>}
 		{active && <span className="tool-status" title="Elapsed response time, including network waiting—not measured reasoning time."><span>Elapsed</span><Elapsed started={active.timestamp} /></span>}</>}>
-		<div className="thinking-output">{parts.map(({ message, block, index }) => <ReferenceContext key={`${message.id}:${index}`} value={{ message: message.id, source }}>
+		<div className="thinking-output">{readable.length ? readable.map(({ message, block, index }) => <ReferenceContext key={`${message.id}:${index}`} value={{ message: message.id, source }}>
 			<RenderedText message={message} block={block} sessionKey={sessionKey} />
-		</ReferenceContext>)}</div>
+		</ReferenceContext>) : <p className="muted">{active ? "Waiting for a reasoning summary…" : "No readable reasoning summary was included in this response."}</p>}</div>
 	</Disclosure>;
 }
 function thinkingParts(messages: ChatMessage[]) {

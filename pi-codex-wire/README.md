@@ -147,6 +147,10 @@ Request records include the effective timeout and whether streaming was requeste
 Pi's `httpIdleTimeoutMs` setting controls the default header/idle wait; an explicit
 provider timeout takes precedence. For streaming responses these are not limits
 on total generation time; native compaction uses the same idle deadline.
+Pi's supplied-fetch deadline also covers catalog lookup and transport setup.
+Wire propagates that signal, so an expired attempt cannot continue through a
+slow catalog lookup into inference. A headers-timeout message alone does not
+prove that the network was waiting for response headers throughout that time.
 For SSE, the body deadline renews on complete data events. Heartbeat comments
 and unfinished event fragments do not extend it. Lite event normalization reads
 across network-chunk boundaries, and cancellation terminates both the network
@@ -200,7 +204,8 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - Native `x-codex-routing-hint` on HTTP requests and WebSocket handshakes, using the final model and explicitly selected service tier.
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
 - Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Pi's named effort levels follow the 0.159.1 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
-- Wire owns the passive allowance footer and `/pi-usage`. Counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. No global WebSocket interception is installed. The footer handles a 7-day window reported as the primary window.
+- Wire owns the passive allowance footer and `/pi-usage`. Codex counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. Claude subscription windows use Pi's native response-header event for the official Anthropic OAuth endpoint. Each provider/account keeps a separate snapshot; late headers from a changed account are ignored. No polling, extra model requests or global WebSocket interception is installed. API token limits are not presented as subscription allowance. The footer handles a 7-day window reported as the primary window.
+- Normal turns retain Pi's `auto` reasoning-summary request instead of adopting a catalog default of `none`. Explicit caller choices and the model's supported-parameter flag still apply. The backend may omit a readable summary; encrypted replay state is preserved separately. Diagnostics record the requested summary mode, not its content.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
 On the first model request, the plugin reads `/codex/models?client_version=0.159.1` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions. Catalogs and inference support can depend on this version: updating Pi's model list does not update Wire's pinned client identity.

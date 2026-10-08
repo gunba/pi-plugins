@@ -13,6 +13,7 @@ import { Icon, SectionIcon } from "./icons.tsx";
 import { ContextPanel } from "./context-panel.tsx";
 import { toolAvailability } from "./tool-availability.ts";
 import { ProviderAccountsPanel } from "./provider-accounts.tsx";
+import { Disclosure } from "./disclosure.tsx";
 
 export const settingsSections = [
 	{ id: "general", title: "General" }, { id: "conversation", title: "Conversation" },
@@ -109,14 +110,14 @@ export function SettingsContent({ section, host, account, session, computer, con
 				<p className="muted">Registration is not activation. Codemode and tool search start off unless enabled in defaults; tools exposed through them need not appear directly in the model's tool list.</p>
 				<button className="quiet-action" disabled={settingBusy || !connected || !snapshot.commands.some(command => command.name === "pi-config")}
 					onClick={() => run(invoke({ kind: "native", name: "pi-config", args: "" }))}><Icon name="settings" />Edit Pi defaults</button>
-				<details className="settings-inventory"><summary>Extensions</summary><ul>{snapshot.extensions.map(extension =>
+				<Disclosure id={`settings:${session.key}:extensions`} className="settings-inventory" summary="Extensions"><ul>{snapshot.extensions.map(extension =>
 					<li className={extension.error ? "error-text" : ""} key={extension.path} title={extension.path}>
-						<Icon name={extension.error ? "info" : "plug"} /><span>{extension.path.split(/[\\/]/).at(-1)}{extension.error ? `: ${extension.error}` : ""}</span></li>)}</ul></details>
-				<details className="settings-inventory"><summary>Tools</summary><ul>{snapshot.tools.map(tool =>
+						<Icon name={extension.error ? "info" : "plug"} /><span>{extension.path.split(/[\\/]/).at(-1)}{extension.error ? `: ${extension.error}` : ""}</span></li>)}</ul></Disclosure>
+				<Disclosure id={`settings:${session.key}:tools`} className="settings-inventory" summary="Tools"><ul>{snapshot.tools.map(tool =>
 					<li key={tool.name} title={[tool.description, tool.source].filter(Boolean).join("\n")}><Icon name={tool.declared ? "check" : tool.callable ? "code" : "tools"} /><span>{tool.name}
 						{tool.conversationChoice !== undefined ? <small>Conversation override: {tool.conversationChoice ? "on" : "off"}</small>
 							: tool.defaultActive === false && !tool.active ? <small>Registered off by default</small> : null}</span>
-						<small>{toolAvailability(tool)}</small></li>)}</ul></details>
+						<small>{toolAvailability(tool)}</small></li>)}</ul></Disclosure>
 				<button className="quiet-action" disabled={busy || !connected} onClick={() => run(invoke({ kind: "reload" }))}><Icon name="refresh" />Reload Pi resources</button>
 			</section>
 		</> : <p className="muted">Open a conversation to see its tools and extensions.</p>)}

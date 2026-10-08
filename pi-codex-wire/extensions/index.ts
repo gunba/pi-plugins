@@ -271,10 +271,12 @@ export default function codexWire(pi: ExtensionAPI): void {
         // interface; WireTransport independently chooses the actual network transport.
         opts.transport = "sse";
         opts.fetch = async (url, init) => {
+          // Pi's fetch deadline covers catalog lookup and transport setup, not just network headers.
+          const fetchSignal = init?.signal ? AbortSignal.any([requestSignal, init.signal]) : requestSignal;
           const headers = new Headers(init?.headers);
-          const metadata = await catalog!.model(model.id, String(url), headers, requestSignal, options?.fetch);
+          const metadata = await catalog!.model(model.id, String(url), headers, fetchSignal, options?.fetch);
           metadataForRequest = metadata;
-          requestSignal.throwIfAborted();
+          fetchSignal.throwIfAborted();
           if (metadata.used_fallback_model_metadata === true && !fallbackWarnings.has(model.id)) {
             fallbackWarnings.add(model.id);
             ctx.ui.notify("Selected model is unlisted. Using native Codex fallback capabilities; the requested model is unchanged.", "warning");
@@ -282,8 +284,10 @@ export default function codexWire(pi: ExtensionAPI): void {
           const source = structuredClone(body);
           // Pi's built-in low verbosity is a provider default, not a user choice.
           if (!(options && "textVerbosity" in options)) delete object(source.text).verbosity;
-          if (!(options && "reasoningSummary" in options) && metadata.default_reasoning_summary !== undefined) {
-            object(source.reasoning).summary = metadata.default_reasoning_summary;
+          // Keep Pi's readable-summary default instead of replacing it with a catalog "none".
+          // streamSimple may drop provider-specific options, so preserve an explicit caller choice here.
+          if (options && "reasoningSummary" in options) {
+            source.reasoning = { ...object(source.reasoning), summary: options.reasoningSummary };
           }
           // Pi's Codex streamSimple rebuilds its options and drops serviceTier.
           // Apply the opt-in to the serialized request, before catalog validation.
@@ -305,7 +309,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             verbositySupported: metadata.support_verbosity === true, nativeFallback: metadata.used_fallback_model_metadata === true });
           return currentTransport.request({
             url: String(url), body: shaped, headers: outgoing,
-            signal: requestSignal, fetcher: options?.fetch,
+            signal: fetchSignal, fetcher: options?.fetch,
             compression: requestCompression(compression === "on", model.provider, String(url), headers),
             normalizeEvent: metadata.use_responses_lite === true ? normalizeLiteEvent : undefined,
             requestId, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
