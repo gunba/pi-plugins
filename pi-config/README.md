@@ -34,11 +34,27 @@ replacement helpers for its paired model/settings updates.
 
 ## Pi Desk
 
-The same discovery, setting reference, JSON validation and checked file writer
-are available through Desk's structured presentation. Open **Configuration**
-in session settings, or use `/pi-config`. Search and page
-through files, inspect a preview, insert a documented default, and edit with a
-form. Use the session's **Reload Pi resources** control after saving.
+Open **Pi settings & resources** in session settings, or use `/pi-config`.
+The browser has searchable categories for settings, instructions, skills, prompts,
+extensions and MCP files. Results are paged on the owning computer, including
+large resource inventories.
+
+Settings show Pi's effective merged values, saved global/project values and the
+documented reference defaults separately. Keys returned by Pi or present in saved
+settings remain visible even if they have no reference entry. Reviewing a setting
+opens its scoped JSON file before any save; existing values are retained.
+
+Desk supplies loaded-resource metadata from the conversation's native loader,
+including extensions that register no commands. Files merely found on disk are
+identified separately. Skills being loaded means available by name, not that their
+full contents have already entered the conversation. Hosts without the native
+inventory report that limitation. Previews show saved files, not a live prompt;
+**Opening context** shows the conversation's assembled prompt.
+
+Editing reuses the terminal's JSON validation, protected projection and checked
+file writer. Managed runtime resources are read-only. Use **Reload Pi resources**
+after saving; some settings need a new session. A host-only update does not replace
+an older conversation's configuration controller.
 
 Standard credential, authorization, environment, connection-command and URL
 fields in JSON stay on the computer. The remote editor receives placeholders;

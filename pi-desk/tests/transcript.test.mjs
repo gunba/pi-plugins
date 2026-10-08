@@ -109,7 +109,7 @@ test("adjacent thinking messages share a display group without merging native id
 	assert.deepEqual(rows[2].thinking, [third]);
 });
 
-test("scheduled deliveries display their payload and times without changing native context", () => {
+test("historical scheduled deliveries display their payload and times without changing native context", () => {
 	const transcript = new Transcript(), manager = SessionManager.inMemory("/tmp");
 	const content = "Automated delivery instructions\n\n<scheduled-message>\nReview the result.\n</scheduled-message>";
 	const details = { id: "timer", createdAt: 1000, dueAt: 601000, message: "Review the result.", delivery: "steer" };

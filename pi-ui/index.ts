@@ -77,6 +77,10 @@ export type UiAnswer =
 	| { kind: "selection"; selections: string[]; comment?: string }
 	| { kind: "freeform"; text: string }
 	| { kind: "confirm"; confirmed: boolean };
+export type UiResource = {
+	path: string; title: string; kind: "context" | "skill" | "prompt" | "extension";
+	loaded: boolean; readonly?: boolean; description?: string;
+};
 export interface Presentation {
 	version: 2;
 	/** The host is holding this session for maintenance. Autonomous producers keep their pending work. */
@@ -94,6 +98,8 @@ export interface Presentation {
 	registerMaintenance?(owner: UiMaintenance): UiTranscriptHandle;
 	/** Execute a registered extension command through its normal interactive SDK path. */
 	runCommand?(name: string, args?: string): Promise<void>;
+	/** Loaded resource metadata from this session, when its owner exposes a native loader. */
+	resources?(): UiResource[];
 }
 export interface UiMaintenance {
 	scopes(): readonly string[];

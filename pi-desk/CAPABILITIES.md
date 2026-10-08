@@ -33,7 +33,10 @@ Project-trust and scoped-model terminal selectors, GitHub sharing and native bug
 reporting are not bridged. Their menu entries explain the gap rather than send
 the command to a model. A newly discovered built-in with no adapter receives the
 same explicit treatment. The inventory is read beside the pinned SDK’s immutable
-entry because Pi 1.0.4 does not export its command catalog at the package root.
+entry because Pi 1.1 does not export its command catalog at the package root.
+Desk loads the public SDK factories for Codemode, tool search and MCP. The CLI's
+llama.cpp management extension is not exported through that SDK interface and is
+not loaded in Desk.
 
 ## Unattended work
 
@@ -58,15 +61,14 @@ restart; Settings identifies them.
 | `pi-codex-compat` | Managed process, image-inspection and image-generation tools; process state, output and images in chat |
 | `pi-web-search` | Native search tool, readable results and Markdown citations |
 | `pi-ask-user` | Choice, multi-select, free text, comments, editor, cancel and timed forms |
-| `pi-scheduler` | **Work → Scheduled** for create/cancel/details; native durable delivery and receipts |
-| `pi-config` | Configuration panel: search, preview, setting reference, edit and checked save |
+| `pi-config` | Searchable Settings/Resources browser: effective and saved values, native loaded-file inventory, protected previews and checked editing |
 | `pi-system-context` | The worker's host/project context, not the browser's operating system |
 | `pi-compaction-context` | Native compaction hooks; manual compaction in conversation settings |
 | `pi-session-memory` | Native branch-aware memory/pruning hooks; no browser memory store |
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
 | `pi-context-ledger` | Expandable initial-context card and Settings controls; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
-| `pi-party` | Account-wide encrypted discovery and messaging; shared membership dialogs, owning-driver resume, approved creation and confirmed close-all with per-computer outcomes. Already-closed agents are skipped without waking their owner. |
+| `pi-party` | Account-wide encrypted discovery and messaging; inline party labels, shared membership dialogs and Disband without stopping work. Owning-driver resume, approved creation and separate confirmed close-all report per-computer outcomes. Already-closed agents are skipped without waking their owner. |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
 | `pi-subagents` | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |
@@ -74,7 +76,8 @@ restart; Settings identifies them.
 | Browser skill / Chrome DevTools | Host Chrome tools and screenshots; Settings links to the installed extension's native dialogs |
 | Native MCP / Gmail | Pi's tools and connection controls; native codemode and tool search run on the owning computer |
 | `pi-tool-display` | Terminal decoration stays in Pi; Desk projects underlying results without running ANSI renderers |
-| Local environment / DCG guard | Normal discovery and native context/tool-call hooks, including inherited child policy |
+| `pi-command-guard` | In-process shell/file risk screening, exact-call native confirmation and inherited child policy; not an OS sandbox |
+| Local environment / other guards | Normal discovery and native context/tool-call hooks; installing Desk does not disable another guard |
 | Skills, prompts and project resources | Native discovery, project trust and command expansion |
 | Session ownership | Desk pre-open lease; shared terminal presence and shutdown integration |
 

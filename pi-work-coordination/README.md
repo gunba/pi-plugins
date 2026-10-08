@@ -2,8 +2,7 @@
 
 `wait_agent({timeout_ms?})` waits for an agent message or final-status
 notification. Already queued notifications return immediately; new input also
-ends the wait, including scheduled reminders. The tool stays pending and returns through Pi's normal agent
-loop. It never ends the turn or starts a separate wake.
+ends the wait. The tool stays pending and returns through Pi's normal agent loop. It never ends the turn or starts a separate wake.
 
 The default timeout is 30 seconds. Shorter requests are clamped to 10 seconds;
 the maximum is one hour, matching Codex V2's default limits. A timeout returns
@@ -11,7 +10,7 @@ the maximum is one hour, matching Codex V2's default limits. A timeout returns
 and branch replacement release the wait. Native SDK, RPC and terminal sessions
 share the same implementation.
 
-Use `write_stdin` for a running process and `schedule` for timed reminders.
+Use `write_stdin` for a running process.
 
 ## Integration
 

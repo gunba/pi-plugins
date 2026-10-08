@@ -45,10 +45,11 @@ import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from 
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
-import { PartyDialog, PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
+import { PartyDialog, PartyLabel, PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
 import { DetailsView } from "./details-view.tsx";
+import { Configuration } from "./configuration.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
@@ -583,15 +584,17 @@ export function App({ account }: { account?: BrowserAccount }) {
           <PartySessions directory={computer.parties} computer={computer.id} computers={partyComputers} connected={computer.connected}
             sessions={host.sessions.filter(item => item.computer === computer.id)
               .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
-            renderSession={(item, agent) => <div className="session-row" key={item.key}>
+            renderSession={(item, agent, manage) => <div className={`session-row${agent?.party ? " with-party" : ""}`} key={item.key}>
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
                 <span className={`status-dot ${sessionActivity(item)}`} role="img"
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><PartyWakeMarker agent={agent} /></span>
-                  <small><span className="session-activity">{activityLabel(sessionActivity(item))}</span> · {basename(item.cwd)}</small></span>
+                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
+                    {agent?.party && <><span aria-hidden="true">·</span><PartyLabel name={agent.party} /></>}</small></span>
               </button>
+              {agent?.party && <button className="icon-button session-party" aria-label={`Manage party ${agent.party}`} title={`Manage party · ${agent.party}`} onClick={manage}><Icon name="more" /></button>}
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
@@ -911,7 +914,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             (visibleViews.length ? (
               visibleViews.map((view) => (
                 <section className="panel-card" key={view.id} data-view={view.id}>
-                  {view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
+                  {view.kind === "configuration" ? <Configuration key={`${selected}:${ui?.generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
+                    invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
+                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
                     invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
                   <div className="panel-section-heading">
                   {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
@@ -950,7 +955,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             ) : (
               <p className="muted">
                 {panel === "view" ? "This view is unavailable. Reopen it from this session's controls."
-                  : "Goals, tasks, agents and scheduled work will appear here."}
+                  : "Plans, agents and party activity will appear here."}
               </p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}

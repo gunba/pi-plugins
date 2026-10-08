@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.29.10",
+  "version": "0.29.11",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -24,12 +24,12 @@
       "./pi-session-ownership/index.ts",
       "./pi-desk/extensions/desk.ts",
       "./pi-codex-wire/extensions/index.ts",
+      "./node_modules/@gotgenes/pi-anthropic-auth/src/index.ts",
       "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",
-      "./pi-scheduler/extensions/scheduler.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-compaction-context/extensions/compaction-context.ts",
@@ -41,7 +41,8 @@
       "./pi-plan/extensions/plan.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-output-budget/extensions/index.ts",
-      "./pi-skill-refiner/index.ts"
+      "./pi-skill-refiner/index.ts",
+      "./pi-command-guard/index.ts"
     ],
     "skills": [
       "./pi-browser/skills/browse",
@@ -71,6 +72,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@gotgenes/pi-anthropic-auth": "3.4.2",
     "diff": "8.0.2",
     "jiti": "2.7.0",
     "mdast-util-from-markdown": "^2.0.2",
@@ -79,9 +81,9 @@
     "tar": "7.5.22"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.4",
-    "@earendil-works/pi-coding-agent": "1.0.4",
-    "@earendil-works/pi-tui": "1.0.4",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "typebox": "1.3.27",
     "@types/node": "22.19.19",
     "@types/proper-lockfile": "4.1.4",

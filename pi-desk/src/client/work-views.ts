@@ -9,6 +9,5 @@ export function openView(view: string, section?: string): { panel: "workspace" |
 	const last = view.lastIndexOf("/") + 1;
 	if (view.slice(last) === "party") return { panel: "workspace", focused: view };
 	if (view.slice(last) !== "work") return { panel: "view", focused: view };
-	const target = section === "scheduled" ? "scheduler" : section;
-	return { panel: "workspace", focused: target ? `${view.slice(0, last)}${target}` : undefined };
+	return { panel: "workspace", focused: section ? `${view.slice(0, last)}${section}` : undefined };
 }

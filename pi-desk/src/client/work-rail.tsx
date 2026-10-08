@@ -26,7 +26,7 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, manag
 	useEffect(() => { localStorage.setItem("pi-desk:workspace-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
 	useEffect(() => { if (focused) { setHidden(current => current.filter(id => id !== focused)); setCollapsed(current => current.filter(id => id !== focused)); } }, [focused]);
 	const sections = views.filter(view => (!view.scope || view.id === focused) && view.surface !== "settings" && !["work", "conversation"].includes(view.kind));
-	const order = ["plan", "subagents", "party", "scheduler"];
+	const order = ["plan", "subagents", "party"];
 	sections.sort((a, b) => (order.indexOf(a.id) < 0 ? 99 : order.indexOf(a.id)) - (order.indexOf(b.id) < 0 ? 99 : order.indexOf(b.id)));
 	const inventory = agentInventory(views);
 	const agentState = leadingActivity(inventory.current.map(view => (view.data as UiConversation).status ?? "idle"));

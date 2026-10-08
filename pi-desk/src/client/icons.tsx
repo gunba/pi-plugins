@@ -49,7 +49,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 const sections: Record<string, string> = {
 	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
-	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", plan: "plan", "pi-party": "party", party: "party", subagents: "layers", scheduler: "clock",
+	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", plan: "plan", "pi-party": "party", party: "party", subagents: "layers",
 };
 export function SectionIcon({ id }: { id: string }) { return <Icon name={sections[id] ?? "settings"} />; }
 

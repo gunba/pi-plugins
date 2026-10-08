@@ -40,17 +40,13 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   provider router, fallback provider, summary workflow, or separately selected
   model. Native citation references render as readable terminal text without
   altering the model's source evidence.
+- [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) — pinned native
+  Claude OAuth compatibility, including request identity and prompt shaping for
+  root sessions, inherited child providers and compaction. Uses Pi's account
+  storage and transport; no Claude Code process wrapper.
 - `pi-ask-user` — conservative local fork of `pi-ask-user@0.11.2` that
   provides the interactive `ask_user` tool without loading the upstream
   mandatory decision-gate skill by default.
-- `pi-scheduler` — adds `/schedule <delay> <message>` and an agent-facing
-  `schedule` tool for delayed messages (`15m`, `5h`, `5.5h`, `30d`) with a
-  compact shared summary and full details in `/work scheduled`.
-  `/schedule list` also opens this view. Agents can cancel pending messages with
-  `cancel_scheduled_message`. Due reminders appear as labelled scheduler
-  messages instead of newly typed user messages. Agent-created messages steer
-  an active run, as do user-created reminders. Session-scoped SQLite transactions
-  protect concurrent scheduling and delivery in live TUI and RPC sessions.
 - `pi-config` — adds `/pi-config` and `/pcfg` for Pi-native settings, context,
   skills, and MCP configuration.
 - `pi-system-context` — adds compact local environment context to the system
@@ -58,6 +54,7 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
+- [`pi-command-guard`](pi-command-guard/README.md) — in-process command and file-change screening, per-call confirmations and inherited SDK-child protection.
 - [`pi-output-budget`](pi-output-budget/README.md) — bounded text previews,
   immutable complete-output artifacts, character paging, batched read-only
   file inspection, and compact replay links for older archived results.

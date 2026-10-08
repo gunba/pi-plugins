@@ -1,10 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Editor, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type Focusable } from "@earendil-works/pi-tui";
 import { readOptional, writeCheckedFile } from "../files.ts";
-import { getPresentation } from "../../pi-ui/index.ts";
+import { getPresentation, type UiResource } from "../../pi-ui/index.ts";
 import { ConfigPresentation } from "../presentation.ts";
 
 type SurfaceTool = "pi" | "mcp";
@@ -22,6 +22,7 @@ type ConfigEntry = {
   format: FileFormat;
   scope: "global" | "project" | "workspace" | "package" | "compat";
   loaded?: boolean;
+  readonly?: boolean;
   createTemplate?: () => string;
   note?: string;
   exists: boolean;
@@ -241,7 +242,7 @@ function ancestorDirs(cwd: string): string[] {
   return dirs;
 }
 
-function discoverEntries(pi: ExtensionAPI, ctx: Pick<ExtensionContext, "cwd">): ConfigEntry[] {
+function discoverEntries(pi: ExtensionAPI, ctx: Pick<ExtensionContext, "cwd">, inventory?: UiResource[]): ConfigEntry[] {
   const cwd = ctx.cwd;
   const agentDir = piAgentDir();
   const entries: ConfigEntry[] = [];
@@ -258,6 +259,17 @@ function discoverEntries(pi: ExtensionAPI, ctx: Pick<ExtensionContext, "cwd">): 
   addMcpEntries(add, cwd, agentDir, pi);
   addLoadedCommandEntries(add, pi);
   addKnownResourceEntries(add, cwd, agentDir);
+  for (const entry of entries) if (["settings", "model", "mcp"].includes(entry.kind)) entry.loaded = undefined;
+  if (inventory) {
+    // Files found on disk are not necessarily part of this session\'s active resources.
+    for (const entry of entries) if (["context", "skill", "prompt", "extension"].includes(entry.kind)) entry.loaded = false;
+    for (const resource of inventory) {
+      add({ title: resource.title, group: "Native resources", kind: resource.kind, tool: "pi", path: resource.path,
+        format: inferFormat(resource.path), scope: resource.readonly ? "package" : scopeForResourceRoot(dirname(resource.path), cwd, agentDir), loaded: resource.loaded, readonly: resource.readonly, note: resource.description });
+      const entry = entries.find(entry => entry.kind === resource.kind && resolve(entry.path) === resolve(resource.path));
+      if (entry) { entry.loaded = resource.loaded; entry.readonly = resource.readonly; if (resource.description) entry.note = resource.description; }
+    }
+  }
 
   return entries.sort((a, b) => {
     const group = a.group.localeCompare(b.group);
@@ -1512,9 +1524,21 @@ export default function piConfig(pi: ExtensionAPI) {
     const presentation = getPresentation(pi);
     if (!presentation?.capabilities.includes("details")) return;
     remote = new ConfigPresentation(presentation, {
-      discover: () => discoverEntries(pi, ctx),
-      matches: (entry, filter) => matchesFilter(entry as ConfigEntry, filter, ctx.cwd),
-      fields: entry => settingCatalogForEntry(entry as ConfigEntry),
+      discover: () => {
+        const inventory = presentation.resources?.(), entries = discoverEntries(pi, ctx, inventory);
+        // Older hosts and child scopes may expose commands but no instruction inventory.
+        if (!inventory) for (const entry of entries) if (entry.kind === "context") entry.loaded = undefined;
+        const canonical = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
+        const runtime = process.env.PI_DESK_RUNTIME ? canonical(process.env.PI_DESK_RUNTIME) : undefined;
+        for (const entry of entries) {
+          const part = runtime ? relative(runtime, canonical(entry.path)) : undefined;
+          if (/^(builtin|inline):/.test(entry.path) || part !== undefined && (!part || !isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"))) entry.readonly = true;
+        }
+        return entries;
+      },
+      effective: () => pi.getSettings(),
+      nativeResources: !!presentation.resources,
+      reference: () => PI_SETTINGS,
       validate: (entry, text) => validateConfigText(entry as ConfigEntry, text),
       insert: insertJsonSetting,
     }, (message, level = "info") => ctx.ui.notify(message, level));

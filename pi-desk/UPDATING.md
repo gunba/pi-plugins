@@ -149,6 +149,20 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.31 retains API 8 and pins Pi 1.1.0. New workers load the maintained
+Claude subscription extension and first-party command guard. Settings separates
+tool declarations from callable tools and shows computer/project defaults and
+conversation choices. Pi's Codemode and tool-search defaults are opt-in; use
+`defaultTools: ["+codemode", "+tool_search"]` to add them without replacing the
+native defaults. Preserve deliberate conversation selections.
+
+The Settings/Resources browser and flat party sidebar require the matching
+website; native resource controllers and tool metadata need a new worker.
+Disband removes memberships without closing conversations. Existing workers
+keep their SDK, plugins, protection and accepted work during a host-only update.
+Replace an old guard only after the new worker's protection has been verified;
+see [command protection](../pi-command-guard/README.md).
+
 Version 0.5.30 retains API 8. Model overrides no longer invalidate Codex Wire
 ownership or child compaction when Pi refreshes provider metadata. Affected
 conversations need an individual worker restart after the host update; their
@@ -200,6 +214,10 @@ API 5 checkpoint controller. Prepare the verified release while work continues,
 then pause work and restart through the installed stable launcher. Do not send
 the new Update now request to an older controller. Once API 5 is active, the
 website can checkpoint running work during subsequent updates.
+
+The scheduled-message extension and its commands are retired. Before replacing
+older workers, finish or cancel pending reminders through their existing controls.
+Saved messages and scheduler database files are not deleted.
 
 ## Recovery and rollback
 

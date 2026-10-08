@@ -15,6 +15,7 @@ import {
 	type UiValue,
 	type UiView,
 	type UiDetails,
+	type UiResource,
 	type PresentationScope,
 	type UiTranscriptSource,
 	type UiTranscriptHandle,
@@ -106,7 +107,7 @@ export class DeskPresentation implements Presentation {
 		initTheme("dark", false);
 	}
 
-	install(pi: ExtensionAPI): void {
+	install(pi: ExtensionAPI, resources?: () => UiResource[]): void {
 		let active = true;
 		const revision = this.presentationRevision;
 		const current = () => active && revision === this.presentationRevision && !this.retired;
@@ -116,6 +117,7 @@ export class DeskPresentation implements Presentation {
 			get suspended() { return !current() || host.suspended; },
 			get operatorAvailable() { return host.operatorAvailable; },
 			capabilities: this.capabilities,
+			...(resources ? { resources: () => { if (!current()) throw Error("The resource view belongs to a previous session."); return resources(); } } : {}),
 			batch: update => { if (current()) this.batch(update); },
 			...(this.command ? { runCommand: async (name: string, args?: string) => {
 				if (!current()) throw new Error("The command belongs to a previous session.");

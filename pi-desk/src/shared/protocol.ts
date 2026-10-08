@@ -43,7 +43,11 @@ export interface SessionSnapshot {
 	thinking: string;
 	thinkingLevels: string[];
 	activity: "idle" | "running" | "waiting" | "error";
-	tools: { name: string; description: string; active: boolean }[];
+	tools: { name: string; description: string; active: boolean;
+		exposure?: string; callable?: boolean; declared?: boolean; defaultActive?: boolean;
+		source?: string; conversationChoice?: boolean }[];
+	/** Omitted by workers that do not publish native tool-selection provenance. */
+	toolDefaults?: { computer?: string[]; project?: string[]; resolved?: string[] };
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string; accountName?: string }[];

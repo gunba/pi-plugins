@@ -1,19 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import type { Presentation, UiAction, UiDetails, UiValue } from "../pi-ui/index.ts";
+import type { Presentation, UiAction, UiValue } from "../pi-ui/index.ts";
+import { configCategories, type ConfigFileView, type ConfigSettingView, type ConfigViewData } from "./view.ts";
 import { readOptional, writeCheckedFile } from "./files.ts";
 
 export interface ConfigDocument {
 	id: string; title: string; path: string; group: string; kind: string; scope: string;
-	format: "json" | "markdown" | "text"; exists: boolean; loaded?: boolean; note?: string; createTemplate?: () => string;
+	format: "json" | "markdown" | "text"; exists: boolean; loaded?: boolean; readonly?: boolean; note?: string; createTemplate?: () => string;
 }
 export interface ConfigField {
 	key: string; label: string; type: string; description: string; defaultValue: unknown; choices?: string[];
 }
 export interface ConfigUiOperations {
 	discover(): ConfigDocument[];
-	matches(entry: ConfigDocument, filter: string): boolean;
-	fields(entry: ConfigDocument): ConfigField[];
+	effective(): unknown;
+	reference(): ConfigField[];
+	nativeResources?: boolean;
 	validate(entry: ConfigDocument, text: string): string | undefined;
 	insert(text: string, key: string, value: unknown): string | null;
 }
@@ -61,11 +63,11 @@ export function projectConfig(text: string): { text: string; restore: (edited: s
 export class ConfigPresentation {
 	private active = true;
 	private filter = "";
+	private category = "settings";
+	private search = "";
 	private offset = 0;
 	private entries?: ConfigDocument[];
 	private selected?: { entry: ConfigDocument; original: string | undefined; projection: ReturnType<typeof projectConfig> };
-	private reference = false;
-	private fieldFilter = "";
 	private readonly remote: Presentation;
 	private readonly ops: ConfigUiOperations;
 	private readonly notify: (message: string, level?: "info" | "error") => void;
@@ -77,7 +79,11 @@ export class ConfigPresentation {
 	close(): void { this.active = false; this.remote.publish("config", undefined); }
 	open(filter = ""): void {
 		this.check();
-		this.filter = filter; this.offset = 0; this.selected = undefined; this.entries = this.ops.discover(); this.render(); this.remote.open("config");
+		this.filter = filter;
+		const category = ({ md: "context", skills: "skill", prompts: "prompt", extensions: "extension" } as Record<string, string>)[filter] ?? filter;
+		this.category = configCategories.some(item => item.id === category) ? category : "settings";
+		this.search = this.category === category ? "" : filter; this.offset = 0;
+		this.selected = undefined; this.entries = this.ops.discover(); this.render(); this.remote.open("config");
 	}
 	private check(): void { if (!this.active) throw new Error("Configuration belongs to a previous session or branch."); }
 	private select(entry: ConfigDocument): void {
@@ -88,11 +94,12 @@ export class ConfigPresentation {
 		const validation = this.ops.validate(entry, text);
 		if (validation) throw new Error(entry.format === "json" ? "This file is not valid JSON. Repair it on the computer before opening the remote editor." : validation);
 		const projection = entry.format === "json" ? projectConfig(text) : { text, restore: (text: string) => text, protectedCount: 0 };
-		this.selected = { entry, original, projection }; this.reference = false; this.offset = 0; this.render();
+		this.selected = { entry, original, projection }; this.render();
 	}
 	private async edit(initial = this.selected?.projection.text): Promise<void> {
 		const selected = this.selected;
 		if (!selected || initial === undefined) return;
+		if (selected.entry.readonly) throw Error("This resource belongs to an installed runtime. Edit its source rather than the managed copy.");
 		if (selected.original === undefined) {
 			const answer = await this.remote.request({ kind: "confirm", title: "Create file", message: selected.entry.path });
 			this.check();
@@ -118,62 +125,111 @@ export class ConfigPresentation {
 			return;
 		}
 	}
-	private async search(reference = false): Promise<void> {
-		const answer = await this.remote.request({ kind: "input", title: reference ? "Find a setting" : "Find a configuration file",
-			value: reference ? this.fieldFilter : this.filter });
-		this.check();
-		if (answer?.kind !== "freeform") return;
-		if (reference) this.fieldFilter = answer.text;
-		else this.filter = answer.text;
-		this.offset = 0;
+	private settingWarnings: string[] = [];
+	private settingRows(): ConfigSettingView[] {
+		this.settingWarnings = [];
+		const safe = (value: unknown) => JSON.parse(projectConfig(JSON.stringify(value ?? {})).text.replace(/\[host-only:[^\]]+\]/g, "[Protected on computer]"));
+		const effective = safe(this.ops.effective());
+		const saved = (scope: string) => {
+			const entry = this.entries?.find(entry => entry.kind === "settings" && entry.scope === scope);
+			if (!entry || !entry.exists) return {};
+			try {
+				if (statSync(entry.path).size > 256 * 1024) throw Error("Large file");
+				return safe(JSON.parse(readOptional(entry.path) ?? "{}"));
+			} catch { this.settingWarnings.push(`Saved ${scope} values are unavailable. Open ${entry.title} for details.`); return {}; }
+		};
+		const global = saved("global"), project = saved("project");
+		const catalog = new Map(this.ops.reference().map(field => [field.key, field]));
+		const keys = new Set(catalog.keys());
+		const visit = (value: unknown, prefix = "") => {
+			if (!value || typeof value !== "object" || Array.isArray(value)) return;
+			for (const [key, child] of Object.entries(value)) {
+				const path = prefix ? `${prefix}.${key}` : key;
+				if (!child || typeof child !== "object" || Array.isArray(child) || !Object.keys(child).length || catalog.has(path)) keys.add(path);
+				visit(child, path);
+			}
+		};
+		visit(effective); visit(global); visit(project);
+		const display = (value: unknown): string | undefined => {
+			if (value === undefined) return undefined;
+			const text = JSON.stringify(value, null, 2);
+			return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+		};
+		return [...keys].sort().map(key => {
+			const field = catalog.get(key), value = atPath(effective, key);
+			return { key, label: field?.label ?? key, type: field?.type ?? (Array.isArray(value) ? "array" : typeof value),
+				description: field?.description ?? "Present in this session or its saved settings.", choices: field?.choices,
+				value: display(value), defaultValue: display(field?.defaultValue), global: display(atPath(global, key)), project: display(atPath(project, key)) };
+		});
 	}
 	private render(): void {
 		if (!this.active) return;
 		const callbacks: Record<string, (value: UiValue) => Promise<void>> = {};
-		const action = (id: string, label: string, run: () => void | Promise<void>): UiAction => {
-			callbacks[id] = async () => { this.check(); try { await run(); } finally { if (this.active) this.render(); } };
+		const action = (id: string, label: string, run: (value: UiValue) => void | Promise<void>): UiAction => {
+			callbacks[id] = async value => { this.check(); try { await run(value); } finally { if (this.active) this.render(); } };
 			return { id, label };
 		};
-		const actions: UiAction[] = [];
-		let details: UiDetails;
+		const fileView = (entry: ConfigDocument): ConfigFileView => ({
+			id: entry.id, title: entry.title, path: entry.path, kind: entry.kind, scope: entry.scope,
+			format: entry.format, exists: entry.exists, loaded: entry.loaded, readonly: entry.readonly, note: entry.note,
+		});
+		const matches = (text: string) => this.search.toLowerCase().split(/\s+/).every(word => text.toLowerCase().includes(word));
+		const kinds: readonly string[] = configCategories.find(category => category.id === this.category)?.kinds ?? [];
+		const documents = (this.entries ?? []).filter(entry => (this.category === "all" || kinds.includes(entry.kind)) && matches(`${entry.title} ${entry.path} ${entry.scope} ${entry.note ?? ""}`)).map(fileView);
+		const settings = this.entries && !this.selected && ["settings", "all"].includes(this.category) ? this.settingRows().filter(field => matches(`${field.key} ${field.label} ${field.description}`)) : [];
+		const rows = [...documents.map(file => ({ file })), ...settings.map(field => ({ field }))];
+		const offset = Math.min(this.offset, Math.max(0, Math.ceil(rows.length / 40) - 1) * 40);
+		const page = this.selected ? [] : rows.slice(offset, offset + 40);
+		const data: ConfigViewData = {
+			loaded: !!this.entries, query: this.filter, nativeResources: !!this.ops.nativeResources,
+			category: this.category, filter: this.search, offset, total: rows.length,
+			documents: page.flatMap(row => "file" in row ? [row.file] : []), settings: page.flatMap(row => "field" in row ? [row.field] : []),
+		};
+		const actions: UiAction[] = [
+			action("list", "Search resources", value => {
+				if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.query !== "string" || value.query.length > 500
+					|| !configCategories.some(item => item.id === value.category) || !Number.isSafeInteger(value.offset) || Number(value.offset) < 0) throw Error("Choose a category and search query.");
+				this.category = String(value.category); this.search = value.query; this.offset = Math.floor(Number(value.offset) / 40) * 40;
+			}),
+			action("browse", "Refresh", () => { this.entries = this.ops.discover(); this.selected = undefined; }),
+			action("open", "Open file", value => {
+				const entry = this.entries?.find(entry => entry.id === value);
+				if (!entry) throw Error("This file is no longer in the resource inventory.");
+				this.select(entry);
+			}),
+			action("review-setting", "Review setting", async value => {
+				if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.key !== "string" || !["global", "project"].includes(String(value.scope))) throw Error("Choose a setting and scope.");
+				if (value.key.split(".").some(key => ["__proto__", "constructor", "prototype"].includes(key))) throw Error("This key cannot be inserted with the setting editor.");
+				if (!this.settingRows().some(field => field.key === value.key)) throw Error("This setting is no longer listed.");
+				const entry = this.entries?.find(entry => entry.kind === "settings" && entry.scope === value.scope);
+				if (!entry) throw Error("The settings file is unavailable.");
+				this.select(entry);
+				const current = atPath(JSON.parse(this.selected!.projection.text), value.key);
+				const reference = this.ops.reference().find(field => field.key === value.key);
+				const active = atPath(JSON.parse(projectConfig(JSON.stringify(this.ops.effective() ?? {})).text), value.key);
+				if (current === undefined && JSON.stringify(active)?.includes("[host-only:")) throw Error("Change this protected setting on the computer.");
+				const initial = current !== undefined ? this.selected!.projection.text
+					: this.ops.insert(this.selected!.projection.text, value.key, active ?? reference?.defaultValue ?? null);
+				if (initial === null) throw Error("This setting cannot be inserted into the current file.");
+				await this.edit(initial);
+			}),
+		];
 		if (this.selected) {
 			const { entry, projection } = this.selected;
-			details = { summary: entry.title, fields: [
-				{ label: "Path", value: entry.path }, { label: "Scope", value: entry.scope },
-				{ label: "Protected fields", value: String(projection.protectedCount) },
-			] };
-			actions.push(action("files", "All files", () => { this.selected = undefined; this.entries = this.ops.discover(); this.offset = 0; }),
-				action("reopen", "Reopen file", () => this.select(entry)), action("edit", "Edit file", () => this.edit()));
-			const fields = this.ops.fields(entry);
-			if (fields.length) actions.push(action("reference", this.reference ? "Show preview" : "Setting reference", () => { this.reference = !this.reference; this.offset = 0; }));
-			if (this.reference) {
-				const found = fields.filter(field => `${field.key} ${field.label} ${field.description}`.toLowerCase().includes(this.fieldFilter.toLowerCase()));
-				details.items = found.slice(this.offset, this.offset + 30).map(field => ({
-					id: field.key, title: field.label, subtitle: `${field.key} · ${field.type}`,
-					body: `${field.description}\nDefault: ${JSON.stringify(field.defaultValue)}${field.choices ? `\nChoices: ${field.choices.join(", ")}` : ""}`,
-					actions: [action(`insert:${field.key}`, "Insert default & review", async () => {
-						const initial = this.ops.insert(projection.text, field.key, field.defaultValue);
-						if (initial === null) throw new Error("This setting cannot be inserted into the current file.");
-						await this.edit(initial);
-					})],
-				}));
-				actions.push(action("search-fields", "Find a setting", () => this.search(true)));
-				if (found.length > this.offset + 30) actions.push(action("more", "More settings", () => { this.offset += 30; }));
-				if (this.offset) actions.push(action("previous", "Previous settings", () => { this.offset = Math.max(0, this.offset - 30); }));
-			} else details.items = [{ id: "preview", title: "Preview", body: projection.text.slice(0, 12_000),
-				status: projection.text.length > 12_000 ? "Open the editor for the complete file." : undefined }];
-		} else {
-			const entries = this.entries?.filter(entry => this.ops.matches(entry, this.filter)) ?? [];
-			details = { summary: this.entries ? `${entries.length} files${this.filter ? ` · ${this.filter}` : ""}` : "Inspect and edit Pi settings and resources on this computer.",
-				items: entries.slice(this.offset, this.offset + 30).map((entry, index) => ({
-					id: entry.id, title: entry.title, subtitle: `${entry.scope} · ${entry.group}${entry.exists ? "" : " · not created"}`,
-					body: entry.path, actions: [action(`open:${index}`, "Open", () => this.select(entry))],
-				})) };
-			actions.push(action("browse", this.entries ? "Refresh files" : "Browse configuration", () => { this.entries = this.ops.discover(); this.offset = 0; }),
-				action("search", "Search files", async () => { await this.search(); this.entries ??= this.ops.discover(); }));
-			if (entries.length > this.offset + 30) actions.push(action("next", "More files", () => { this.offset += 30; }));
-			if (this.offset) actions.push(action("previous", "Previous files", () => { this.offset = Math.max(0, this.offset - 30); }));
+			data.selected = { file: fileView(entry), preview: projection.text.slice(0, 24_000), truncated: projection.text.length > 24_000, protectedCount: projection.protectedCount };
+			actions.push(action("files", "Back", () => { this.selected = undefined; this.entries = this.ops.discover(); }),
+				action("reopen", "Refresh file", () => this.select(entry)));
+			if (!entry.readonly) actions.push(action("edit", "Edit file", () => this.edit()));
 		}
-		this.remote.publish("config", { kind: "details", title: "Configuration", surface: "settings", data: details, actions }, callbacks);
+		data.warnings = !this.selected && ["settings", "all"].includes(this.category) ? this.settingWarnings : undefined;
+		this.remote.publish("config", { kind: "configuration", title: "Pi settings & resources", surface: "settings", data, actions }, callbacks);
 	}
+}
+
+function atPath(value: unknown, path: string): unknown {
+	for (const key of path.split(".")) {
+		if (!value || typeof value !== "object" || !Object.hasOwn(value, key)) return undefined;
+		value = (value as Record<string, unknown>)[key];
+	}
+	return value;
 }

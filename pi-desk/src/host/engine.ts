@@ -44,6 +44,8 @@ import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
 import { NativeContext } from "./context.ts";
+import { toolInventory } from "./tool-inventory.ts";
+import { resourceInventory } from "../../../pi-ui/resources.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
@@ -192,7 +194,7 @@ export class DeskEngine {
 						{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
 						{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
 						{ name: "pi-desk", factory: pi => {
-						this.presentation.install(pi);
+						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);
 						installIntegrations(pi);
 						installModelCredentials(pi, accounts.capability());
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
@@ -400,7 +402,7 @@ export class DeskEngine {
 		if (!this.runtime || this.replacing) throw new Error("Session is still starting.");
 		const session = this.runtime.session;
 		const loaded = this.runtime.services.resourceLoader.getExtensions();
-		const active = new Set(session.getActiveToolNames());
+		const inventory = toolInventory(session, this.contexts.get(session)?.toolChoices());
 		const ui = this.presentation.snapshot();
 		const context = session.getContextUsage();
 		const defaults = session.settingsManager.getGlobalSettings();
@@ -424,7 +426,7 @@ export class DeskEngine {
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
 			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: portableSummaryAvailable(session.sessionId) } : null,
 			activity: ui.interactions.some(item => !item.settings) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
-			tools: session.getAllTools().map(tool => ({ name: tool.name, description: tool.description, active: active.has(tool.name) })),
+			...inventory,
 			extensions: [
 				...loaded.extensions.map(extension => ({ path: extension.path })),
 				...loaded.errors.map(error => ({ path: error.path, error: error.error })),

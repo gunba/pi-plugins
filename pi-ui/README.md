@@ -31,6 +31,18 @@ clicking the badge invokes the same control directly, with the next boolean
 value and the normal view revision/action lock. Other badges are read-only.
 Badges are not a parsing contract for terminal status strings.
 
+## Settings and resources
+
+An owner with a native resource loader may expose `resources()`: metadata for that
+session's loaded instructions, skills, prompts and extensions, with read-only
+markers for managed files. It does not expose file contents or another scope's
+resources. The capability retires with its presentation lease.
+
+`pi-config` publishes `kind: "configuration"` for its browser. The controller owns
+inventory search, bounded pages, protected previews and file actions; the browser
+owns input drafts and display selection. Effective values come from Pi's
+`getSettings()`, not a parallel settings store.
+
 ## Side conversations
 
 A host advertising `conversations` renders `kind: "conversation"` views with

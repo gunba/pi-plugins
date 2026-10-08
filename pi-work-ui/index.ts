@@ -262,7 +262,7 @@ export function ensureWorkUi(pi: ExtensionAPI): WorkUi {
 	pi.on("session_tree", (_event, ctx) => ui.start(ctx));
 	pi.on("session_shutdown", () => { try { ui.close(); } finally { release(); } });
 	pi.registerCommand("work", {
-		description: "Open work details: plan, subagents, party, scheduled",
+		description: "Open work details: plan, subagents, party",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui" && !getPresentation(pi)) { ctx.ui.notify("Work details require an interactive client.", "warning"); return; }
 			const id = args.trim() as WorkSectionId;

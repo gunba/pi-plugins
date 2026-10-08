@@ -3,7 +3,7 @@
   --bg: #faf9f6;
   --surface: #fff;
   --sidebar: #f1f1ee;
-  --party-surface: #eae9e5;
+  --party-label-lightness: 25%;
   --border: #e7e6e1;
   --text: #303136;
   --muted: #6e6f75;
@@ -24,7 +24,7 @@
   --bg: #1b1c20;
   --surface: #232429;
   --sidebar: #17181c;
-  --party-surface: #1d1e24;
+  --party-label-lightness: 76%;
   --border: #33343b;
   --text: #e6e5e9;
   --muted: #96959f;

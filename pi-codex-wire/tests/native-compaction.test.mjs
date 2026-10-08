@@ -175,7 +175,7 @@ test("a portable handoff replaces encrypted model context without replaying tool
 	assert.equal(h.calls.length, callsBefore + 1);
 	const summaryRequest = h.calls.at(-1).body;
 	assert.ok(summaryRequest.input.some(item => item.type === "compaction"), "summary writer receives the original checkpoint");
-	assert.ok(!summaryRequest.tools?.length, "summary writer cannot run tools");
+	assert.equal(summaryRequest.tool_choice, "none", "summary writer cannot run tools");
 	const projection = h.manager.buildSessionProjection();
 	assert.equal(projection.entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);
 	assert.ok(projection.messages.some(message => message.role === "compactionSummary" && message.summary === "Fixture response."));
@@ -183,6 +183,33 @@ test("a portable handoff replaces encrypted model context without replaying tool
 	assert.ok(h.manager.getBranch().some(entry => entry.details?.[CHECKPOINT] === checkpoint.details[CHECKPOINT]));
 	assert.deepEqual(readFileSync(h.manager.getSessionFile()).subarray(0, before.length), before);
 	assertCheckpointContext({ messages: convertToLlm(projection.messages) }, "anthropic", projection.entries);
+});
+
+test("portable summaries disable transcript tools and preserve incomplete-response reasons", async t => {
+	const h = await harness(t);
+	await h.session.compact();
+	h.manager.appendMessage({ role: "system", content: "Updated tools", timestamp: Date.now(),
+		toolsAdded: [{ name: "fixture_lookup", description: "Look up a value", parameters: Type.Object({ value: Type.String() }) }] });
+	const before = readFileSync(h.manager.getSessionFile()), projection = h.manager.buildSessionProjection().messages;
+	const complete = h.runtime.complete.bind(h.runtime), signal = new AbortController().signal;
+	for (const stopReason of ["length", "toolUse", "error"]) {
+		h.runtime.complete = async () => ({ ...assistant("Incomplete"), stopReason });
+		await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), new RegExp(`stop reason: ${stopReason}`));
+		assert.deepEqual(readFileSync(h.manager.getSessionFile()), before, "failed summaries must leave native context unchanged");
+	}
+	h.runtime.complete = async () => ({ ...assistant(""), content: [{ type: "toolCall", id: "unexpected", name: "fixture_lookup", arguments: {} }] });
+	await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), /returned a tool call/);
+	h.runtime.complete = complete;
+	await summarizePortableContext(h.session.sessionId, signal, 2048);
+	const request = h.calls.at(-1).body;
+	const tools = [...request.tools ?? [], ...request.input.filter(item => item.type === "additional_tools").flatMap(item => item.tools)]
+		.flatMap(tool => tool.type === "namespace" ? tool.tools : [tool]);
+	assert.ok(tools.some(tool => tool.name === "fixture_lookup"), "retain native declarations for historical tool-call serialization");
+	assert.equal(request.tool_choice, "none", "a summary must not continue the task using a tool from a transcript delta");
+	assert.ok(request.input.some(item => item.type === "compaction"));
+	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, before.length).equals(before));
+	assert.deepEqual(h.manager.buildSessionProjection().messages, projection, "transport metadata must not replace active context");
+	assert.equal(h.session.thinkingLevel, "xhigh");
 });
 
 test("retaining an older compaction entry does not require or replay its superseded checkpoint", async t => {

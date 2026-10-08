@@ -28,7 +28,7 @@ function countTools(result) {
 
 test("real loader deduplicates distinct ExtensionAPI event facades on one underlying bus", async (t) => {
   const facades = [];
-  const result = await load(t, ["scheduler", "goal", "subagents"].map((name) => ({ name, factory(pi) {
+  const result = await load(t, ["party", "goal", "subagents"].map((name) => ({ name, factory(pi) {
     facades.push(pi.events);
     ensureWorkCoordination(pi);
     ensureWorkCoordination(pi);

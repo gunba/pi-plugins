@@ -13,7 +13,7 @@ controls, questions and Work summaries. Sign into the same Microsoft-owned
 workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
-forks, compaction, configuration, Party, plan/scheduler and child-agent
+forks, compaction, configuration, Party, plans and child-agent
 controls are connected. The conversation footer shows model/thinking, context,
 recorded usage and first-party Fast/allowance badges, with expanded settings
 panels. Initial-context breakdowns, model accounts, MCP
@@ -21,8 +21,8 @@ connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
 connection states and account-wide access controls. Parties share encrypted
-discovery, membership and messages across those computers; their sidebar groups
-open shared membership controls and a confirmed close-all action. Unsent drafts stay in their
+discovery, membership and messages across those computers. Inline party labels
+open membership controls, Disband and a separate confirmed close-agents action. Unsent drafts stay in their
 browser. An unavailable computer does not
 block the others.
 The included `/desk` command handles setup, staged updates, restart and optional
@@ -77,17 +77,26 @@ replace its context. If model selection fails after saving a summary, that summa
 remains available with the current model. **History** offers the alternative of
 branching before the checkpoint. `/model` never silently generates a paid handoff.
 
+Claude subscription sign-in uses Pi's native OAuth with the pinned
+[`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth)
+compatibility extension. Its OAuth request identity, billing-header system block
+and prompt shaping apply through the configured native provider, including child
+sessions and prose compaction. No Claude Code executable or wrapper is used;
+API-key requests and other providers keep their native transport.
+
 Claude uses Pi's native thinking levels, tools, model request handling and prose
 compaction. Codex Fast/Ultrafast, Wire transport and encrypted compaction remain
 Codex-specific. Claude startup does not activate Codex Wire; Wire activates when
 a Codex model or child needs it. Recorded token, cache and cost totals work across models, but are
 not a subscription balance; Claude's remaining subscription allowance is not
-provided by this integration. Provider subscription eligibility and billing remain
-subject to the provider's current rules.
+provided by this integration. `/anthropic-auth:status` provides the extension's
+account diagnostics on explicit request.
 
 Remote sign-in, model switching and handoff failure/cancellation have offline
-regression checks. An isolated native Claude session with mocked responses also
-verified tool execution, prose compaction and named-account inheritance.
+regression checks. The packaged Claude extension is checked with native sessions
+and mocked responses: tool-name round trips, stable cached prefixes, named-account
+inheritance, child-provider shaping and prose compaction. Codex handoff requests
+disable tool selection and retain the provider's stop reason when a summary fails.
 Live Claude authorization, refresh and inference still need
 account-owner acceptance before claiming end-to-end support.
 
@@ -215,7 +224,7 @@ runs separately so a slow Windows query does not block folders or projects.
 Folder rows are paged; only the selected computer is queried.
 
 Closing or suspending a browser does not stop a worker: questions, children,
-timers and goal continuation remain with the owning computer. Stop the session
+and goal continuation remain with the owning computer. Stop the session
 or host to stop its active work.
 
 Computer labels describe this browser's link: Connecting, Connected,
@@ -227,13 +236,12 @@ directory report cannot enable commands or extend an authorization lease.
 
 Explicitly resuming a saved session also loads its native plugin state:
 
-- Overdue scheduled messages can be delivered immediately.
 - Queued child work and unfinished child deliveries can run again. The
   subagents plugin uses at-least-once recovery; inspect history after a crash
   before resuming work with external effects.
 - Restored goals are disarmed and need their own **Resume** action.
 
-Stopping does not delete pending child inbox entries or scheduled messages.
+Stopping does not delete pending child inbox entries.
 Desk retains unresolved browser input for review, but does not replay it or
 unfinished controls after a worker or host restart.
 Shutdown cancels native work and questions, then joins pending startup,
@@ -750,7 +758,8 @@ MCP connections subscribes to the adapter's documented `status/v1` channel and
 uses its registered commands for connection refresh, OAuth, enable/disable and
 logout. A fully deferred adapter may publish no server inventory until Connect
 initializes it. No additional MCP client or credential store is created.
-Configuration uses the protected Configuration panel. The adapter's guided
+Configuration uses **Pi settings & resources**: effective settings, scoped saved
+values and native resource metadata, with protected previews and checked editing. The adapter's guided
 terminal-only setup screens remain host setup operations. A stdio server with
 its own credentials, such as a local Gmail wrapper, keeps that server's setup
 procedure; the adapter's OAuth command applies to HTTP OAuth servers.

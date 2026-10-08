@@ -32,6 +32,7 @@ export class NativeContext {
 		};
 	}
 	attach(session: AgentSession): void { this.session = session; this.apply(); }
+	toolChoices(): Record<string, boolean> { return { ...this.profile().data.tools }; }
 	private profile(): { revision: string; data: Profile } {
 		const branch = this.manager.getBranch();
 		for (let index = branch.length - 1; index >= 0; index--) {

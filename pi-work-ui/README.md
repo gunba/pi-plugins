@@ -1,11 +1,11 @@
 # Work view
 
-Plan, Subagents, Party and Scheduled share one compact panel above Pi's editor.
+Plan, Subagents and Party share one compact panel above Pi's editor.
 Each section shows its state before the clipped preview.
 The Plan summary shows objective/current step, progress and continuation mode.
 Round usage, limit, revision and all steps are in the detail view.
 
-Use `/work` or `/work plan|subagents|party|scheduled` to open the modal.
+Use `/work` or `/work plan|subagents|party` to open the modal.
 In fullscreen mode, clicking a summary row opens that section.
 
 The modal works in regular and fullscreen terminal modes:
@@ -20,9 +20,7 @@ show the selected section and its position. Details update while open; closing
 restores editor focus and the existing draft.
 
 Subagents reuses `/subagents` for transcripts, follow-ups and interruption. Party
-opens the existing chat view. Scheduled offers cancellation by ID, prefix or
-`all`; `/schedule list` and Ctrl+Alt+S open its section directly. Other domain
-commands and tools remain available. Ctrl+O controls native tool output.
+opens the existing chat view. Other domain commands and tools remain available. Ctrl+O controls native tool output.
 
 ## Integration
 
@@ -31,7 +29,7 @@ This shared module is not a separate auto-loaded extension. Consumers call
 one set of lifecycle hooks and one `/work` command per underlying bus.
 
 After `session_start` or `session_tree`, obtain a generation-bound source with
-`ui.source("plan" | "subagents" | "party" | "scheduled")`. Replacing a source,
+`ui.source("plan" | "subagents" | "party")`. Replacing a source,
 changing branches, or shutting down invalidates old publishers and pointer
 callbacks. Navigation is display state only: viewing does not resume plans,
 write session history or start inference.

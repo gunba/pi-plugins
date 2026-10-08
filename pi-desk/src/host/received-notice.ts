@@ -1,11 +1,11 @@
 import type { ChatMessage } from "../shared/protocol.ts";
-import { SCHEDULED_MESSAGE_TYPE } from "../../../pi-scheduler/extensions/receipts.ts";
 
 /** Only native custom-message types identify notices; user and assistant prose is untouched. */
 export function receivedNotice(message: Record<string, unknown>): { notice?: ChatMessage["notice"]; content: unknown } {
 	const content = message.content;
 	if (message.role !== "custom") return { content };
-	if (message.customType === SCHEDULED_MESSAGE_TYPE) {
+	// Retain the attribution of reminders already saved in native histories.
+	if (message.customType === "pi-scheduler-scheduled-message") {
 		const details = message.details as { message?: unknown; createdAt?: unknown; dueAt?: unknown } | undefined;
 		if (typeof details?.message === "string" && typeof details.createdAt === "number" && Number.isFinite(details.createdAt) &&
 			typeof details.dueAt === "number" && Number.isFinite(details.dueAt)) {

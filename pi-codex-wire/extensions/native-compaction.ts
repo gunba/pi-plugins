@@ -59,11 +59,13 @@ async function checkpointSummary(ctx: ExtensionContext, settings: Settings, sign
 	const sessionId = randomUUID();
 	const response = await retryCompaction(async () => {
 		const result = await ctx.modelRegistry.complete(ctx.model!, context, {
-			signal, sessionId, cacheRetention: "none", timeoutMs: timeout === 0 ? 2_147_483_647 : timeout,
+			signal, sessionId, cacheRetention: "none", toolChoice: "none", timeoutMs: timeout === 0 ? 2_147_483_647 : timeout,
 			...providerSettings, ...(thinking !== "off" ? { reasoningEffort: thinking } : {}), ...(maxTokens ? { maxTokens } : {}),
 		});
 		signal.throwIfAborted();
-		if (result.stopReason !== "stop" || result.content.some(part => part.type === "toolCall")) throw new Error(result.errorMessage ?? "Context summary did not complete.");
+		const toolCall = result.content.some(part => part.type === "toolCall");
+		if (result.stopReason !== "stop" || toolCall) throw new Error(result.errorMessage
+			?? `Context summary did not complete (stop reason: ${result.stopReason}${toolCall ? "; returned a tool call" : ""}).`);
 		return result;
 	}, settings.getRetrySettings(), signal,
 		(attempt, maximum, ms) => ctx.ui.notify(`Retrying context summary ${attempt}/${maximum} in ${ms}ms.`, "warning"));

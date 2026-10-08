@@ -7,14 +7,19 @@ and party messages, removal, and delivery controls. Sending offers an explicit
 choice between queueing quietly and requesting a reply. Invitations do not
 change membership.
 
-The sidebar groups agents by party under their computer. **New party** creates
-a party with selected registered agents; the group controls add or remove members.
-The membership dialog lists agents from all connected computers. These are direct
-user membership changes, not invitations; ownership, paused delivery and wake
-budgets stay with each agent. **Close party agents** asks for confirmation, then
-stops members on their owning computers and reports each result. Closing retains
-saved native history and membership. Removing the last member ends the group but
-does not stop an agent.
+Conversation rows show a consistently colored party name beside their status and
+folder. The row menu opens membership controls; **Parties** also lists groups
+whose conversations are closed. **New party** groups selected registered agents.
+The membership dialog includes members across connected computers and their children.
+These are direct membership changes, not invitations; ownership, delivery pauses
+and wake budgets stay with each agent.
+
+**Disband party** removes the displayed members without closing conversations or
+stopping work. Saved history and direct messages remain; pending party broadcasts
+tied to the old memberships are withdrawn. Disconnected computers and membership
+changes are reported rather than silently skipped. **Close agents** is a separate,
+confirmed action that stops members on their owning computers while retaining
+saved native history and membership.
 
 History is paged and direct messages are participant-scoped. Opening a message
 does not deliver it to Pi, consume its wake budget, or start an agent. Long

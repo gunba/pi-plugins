@@ -11,6 +11,7 @@ import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { ContextPanel } from "./context-panel.tsx";
+import { toolAvailability } from "./tool-availability.ts";
 import { ProviderAccountsPanel } from "./provider-accounts.tsx";
 
 export const settingsSections = [
@@ -45,6 +46,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(error => setError(String(error))); };
 	const snapshot = session?.snapshot, ui = session?.ui, controls = session?.controls ?? [];
 	const availability = computer ? computer.operatorAvailability : host.operatorAvailability;
+	const defaultsLabel = (values: string[] | undefined, inherited: string) => values === undefined ? inherited : JSON.stringify(values);
 	return <>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{section === "general" && <>
@@ -99,12 +101,22 @@ export function SettingsContent({ section, host, account, session, computer, con
 					<option key={command.name} value={command.name}>/{command.name}{command.description ? ` — ${command.description}` : ""}</option>)}</select></label>
 			</section>
 			<section className="panel-card"><h3><Icon name="tools" />{snapshot.tools.length} tools · {snapshot.extensions.length} extensions</h3>
+				{snapshot.toolDefaults ? <>
+					<p className="muted">Computer defaults: <code>{defaultsLabel(snapshot.toolDefaults.computer, "Pi defaults")}</code></p>
+					<p className="muted">Project defaults: <code>{defaultsLabel(snapshot.toolDefaults.project, "Inherit computer")}</code></p>
+					<p className="muted">Resolved startup selection: <code>{defaultsLabel(snapshot.toolDefaults.resolved, "Pi defaults")}</code>. Extensions and conversation choices can change the current selection below.</p>
+				</> : <p className="muted">This worker does not report tool-selection sources. Its current selection is shown below.</p>}
+				<p className="muted">Registration is not activation. Codemode and tool search start off unless enabled in defaults; tools exposed through them need not appear directly in the model's tool list.</p>
+				<button className="quiet-action" disabled={settingBusy || !connected || !snapshot.commands.some(command => command.name === "pi-config")}
+					onClick={() => run(invoke({ kind: "native", name: "pi-config", args: "" }))}><Icon name="settings" />Edit Pi defaults</button>
 				<details className="settings-inventory"><summary>Extensions</summary><ul>{snapshot.extensions.map(extension =>
 					<li className={extension.error ? "error-text" : ""} key={extension.path} title={extension.path}>
 						<Icon name={extension.error ? "info" : "plug"} /><span>{extension.path.split(/[\\/]/).at(-1)}{extension.error ? `: ${extension.error}` : ""}</span></li>)}</ul></details>
 				<details className="settings-inventory"><summary>Tools</summary><ul>{snapshot.tools.map(tool =>
-					<li key={tool.name}><span className={`status-dot ${tool.active ? "running" : "idle"}`} /><span>{tool.name}</span>
-						<small>{tool.active ? "Active" : "Available"}</small></li>)}</ul></details>
+					<li key={tool.name} title={[tool.description, tool.source].filter(Boolean).join("\n")}><Icon name={tool.declared ? "check" : tool.callable ? "code" : "tools"} /><span>{tool.name}
+						{tool.conversationChoice !== undefined ? <small>Conversation override: {tool.conversationChoice ? "on" : "off"}</small>
+							: tool.defaultActive === false && !tool.active ? <small>Registered off by default</small> : null}</span>
+						<small>{toolAvailability(tool)}</small></li>)}</ul></details>
 				<button className="quiet-action" disabled={busy || !connected} onClick={() => run(invoke({ kind: "reload" }))}><Icon name="refresh" />Reload Pi resources</button>
 			</section>
 		</> : <p className="muted">Open a conversation to see its tools and extensions.</p>)}

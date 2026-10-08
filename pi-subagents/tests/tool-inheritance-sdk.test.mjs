@@ -6,12 +6,13 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Type } from "typebox";
 import { AssistantMessageEventStream, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
-import { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, createCodemodeExtension, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { PiSdkDriverFactory } from "../extensions/pi-sdk-driver.ts";
 import { childPolicySources } from "../extensions/child-policies.ts";
 
 const SEARCH_SOURCE = fileURLToPath(new URL("../../pi-web-search/extensions/web-search.ts", import.meta.url));
 const PARTY_SOURCE = fileURLToPath(new URL("../../pi-party/index.ts", import.meta.url));
+const GUARD_SOURCE = fileURLToPath(new URL("../../pi-command-guard/index.ts", import.meta.url));
 const ZERO_USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model = (id) => ({ id, name: id, api: "openai-codex-responses", provider: "openai-codex",
@@ -63,8 +64,8 @@ export default function(pi) {
 		state.stopped = true;
 		appendFileSync(${JSON.stringify(auditPath)}, JSON.stringify({ kind: "shutdown", id: ctx.sessionManager.getSessionId(), calls: state.calls }) + "\\n");
 	});
-	for (const name of ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool"]) pi.registerTool({
-		name, label: name, description: "Offline source-owned integration fixture", parameters: Type.Object({}),
+	for (const name of ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", "exec_command"]) pi.registerTool({
+		name, label: name, description: "Offline source-owned integration fixture; never executes a command", parameters: Type.Object(name === "exec_command" ? { cmd: Type.String() } : {}),
 		async execute(_id, _args, _signal, _update, ctx) {
 			const details = { name, cwd: ctx.cwd, model: ctx.model?.id, id: ctx.sessionManager.getSessionId(), started,
 				calls: ++state.calls, stopped: state.stopped, factoryFlag, flag: pi.getFlag("allow-restricted"),
@@ -76,7 +77,7 @@ export default function(pi) {
 }`;
 }
 
-async function integration(t, { search = false, party = false, policy = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
+async function integration(t, { search = false, party = false, policy = false, guard = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-tool-inheritance-sdk-"));
 	const agentDir = join(directory, "agent"); const rootCwd = join(directory, "root-work");
 	await mkdir(agentDir); await mkdir(rootCwd);
@@ -144,13 +145,14 @@ async function integration(t, { search = false, party = false, policy = false, i
 	const rootManager = SessionManager.inMemory(rootCwd, { id: "root-tool-fixture" });
 	const events = createEventBus();
 	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, eventBus: events, settingsManager: SettingsManager.inMemory(settings),
-		additionalExtensionPaths: [fixturePath, ...(policy ? [policyPath] : []), ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
+		additionalExtensionPaths: [fixturePath, ...(policy ? [policyPath] : []), ...(guard ? [GUARD_SOURCE, "builtin:codemode"] : []), ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
+		extensionFactories: guard ? [{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() }] : [],
 		noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
-		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(search ? ["web_search"] : []),
+		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(guard ? ["exec_command", "codemode"] : []), ...(search ? ["web_search"] : []),
 			...(party ? ["party_members", "party_send", "party_read", "party_discover", "party_join", "party_profile", "party_leave"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
@@ -209,6 +211,25 @@ test("hook-only root policy blocks a real SDK child's tool execution", { timeout
 	assert.equal(executed(child.manager).length, 0);
 	assert.ok(h.rootCatalogs.every(catalog => catalog.every(tool => !tool.sourceInfo.path.endsWith("policy.ts"))),
 		"the guard has no tool metadata to inherit");
+});
+
+test("command protection follows real root, codemode and SDK child calls without executing commands", { timeout: 25000 }, async (t) => {
+	const h = await integration(t, { guard: true, initialActive: ["exec_command", "codemode"] });
+	await h.rootSession.prompt(promptTool("exec_command", { cmd: "rm -rf /" }));
+	assert.match(text(toolResults(h.rootManager).at(-1).content), /Command protection/);
+	assert.equal(executed(h.rootManager).length, 0);
+	const child = await h.open("command-guard-child");
+	assert.match((await call(child, "exec_command", { cmd: "rm -rf /" })).output, /Command protection/);
+	assert.equal(executed(child.manager).length, 0);
+	for (const target of [h.rootSession, child.driver]) {
+		await target.prompt(promptTool("codemode", { code: 'text(await tools.exec_command({cmd: "rm -rf /"}));' }));
+	}
+	assert.match(text(toolResults(h.rootManager).at(-1).content), /Command protection/);
+	assert.match(text(toolResults(child.manager).at(-1).content), /Command protection/);
+	assert.equal(executed(h.rootManager).length, 0);
+	assert.equal(executed(child.manager).length, 0);
+	await call(child, "exec_command", { cmd: "echo fixture-only" });
+	assert.equal(executed(child.manager).length, 1, "allowed call reaches only the fake executor");
 });
 
 test("actual web_search inherits child-selected Codex model and child session in its fake POST", { timeout: 25000 }, async (t) => {
