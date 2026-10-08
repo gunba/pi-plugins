@@ -42,7 +42,7 @@ test("a transcript host preserves and restores compacted user bodies without cha
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("saved errors keep their native branch position without entering model context", () => {
+test("archived UI notices remain in native records but do not reappear in chat", () => {
 	const manager = SessionManager.inMemory("/tmp");
 	const feedback = { id: "error", text: "The provider failed", level: "error", timestamp: 123, generation: "first-worker" };
 	manager.appendMessage({ role: "user", content: "Hello", timestamp: 100 });
@@ -51,6 +51,7 @@ test("saved errors keep their native branch position without entering model cont
 	const history = new Transcript().history(manager.getBranch());
 	assert.deepEqual(history.messages.map(message => message.role), ["user", "note", "user"]);
 	assert.deepEqual(history.messages[1].feedback, feedback);
+	assert.deepEqual(transcriptRows(history.messages).map(row => row.message.role), ["user", "user"]);
 	assert.deepEqual(manager.buildSessionContext().messages.map(message => message.role), ["user", "user"]);
 });
 import { Transcript } from "../src/host/transcript.ts";

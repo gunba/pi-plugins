@@ -24,9 +24,6 @@ import type { WorkspaceState as HostState } from "./workspace.ts";
 import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
 import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
-import { dismissNotice, noticeIdentity, readDismissals } from "./notice-dismissals.ts";
-import type { Feedback } from "../shared/feedback.ts";
-import { readFeedback, saveFeedback } from "./chat-feedback.ts";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ConversationFooter } from "./conversation-footer.tsx";
 import { ModelPicker } from "./model-picker.tsx";
@@ -40,7 +37,7 @@ import { PlanView } from "./plan-view.tsx";
 import { Icon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
-import { reportDeskError } from "./desk-status.ts";
+import { LiveNotices, reportDeskError } from "./desk-status.ts";
 import { agentInventory } from "./agent-inventory.ts";
 import { ViewPreviews } from "./view-previews.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
@@ -114,8 +111,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [feedback, setFeedback] = useState(() => readFeedback(localStorage));
-  useEffect(() => saveFeedback(localStorage, feedback), [feedback]);
+  const liveNotices = useRef(new LiveNotices());
   const setError = useCallback((text: string, _key?: string) => { if (text) reportDeskError(text); }, []);
   useEffect(() => {
     const failed = (event: ErrorEvent) => reportDeskError(event.error ?? event.message);
@@ -133,10 +129,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
   const questionDrafts = useRef(new Map<string, QuestionDraft>());
-  const [dismissedNotices, setDismissedNotices] = useState(() => readDismissals(localStorage));
-  const dismissFeedback = useCallback((item: Feedback) => {
-    setDismissedNotices(dismissNotice(localStorage, noticeIdentity(selected, item.generation, item.id)));
-  }, [selected]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const session = state.host?.sessions.find(
@@ -298,17 +290,12 @@ export function App({ account }: { account?: BrowserAccount }) {
     !!session?.inputs?.some(input => input.state === "sending") ||
     !!question;
   useEffect(() => {
-    const notices = (ui?.notifications ?? []).filter(item => item.level !== "info").map(item => ({
-      ...item, level: item.level as "warning" | "error", timestamp: item.timestamp ?? Date.now(), generation: item.generation ?? ui!.generation,
-    }));
+    const notice = liveNotices.current.latest(selected, ui);
+    if (notice) reportDeskError(notice.text);
+  }, [selected, ui]);
+  useEffect(() => {
     if (session?.error) reportDeskError(session.error);
-    if (!notices.length) return;
-    setFeedback(previous => {
-      const old = previous[selected] ?? [], known = new Set(old.map(item => item.id));
-      const added = notices.filter(item => !known.has(item.id));
-      return added.length ? { ...previous, [selected]: [...old, ...added].slice(-80) } : previous;
-    });
-  }, [selected, ui?.notifications, ui?.generation, session?.error, session?.activation]);
+  }, [session?.error, session?.activation]);
 
   const refresh = async () => {
     try {
@@ -708,9 +695,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
-          feedback={feedback[selected]} dismissed={dismissedNotices}
-          renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
-            dismissFeedback={dismissFeedback} />}
+          renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>

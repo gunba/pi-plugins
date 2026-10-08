@@ -23,10 +23,10 @@ export function patchJitiEvaluator(bytes: Buffer, version: string): string {
 	if (version !== VERSION) throw new Error(`Child module isolation requires jiti@${VERSION}; found ${version}.`);
 	let source = verifiedSource(bytes, EVALUATOR_SHA256, "evaluator");
 	const patches: Array<[string, string]> = [
-		// Keep one interop wrapper per exported object in this graph. Native-style
-		// CJS mutation requires live property reads, not Jiti's memoized values.
+		// Native binary APIs reject interop proxies, including proxied Buffers.
+		// Other exports keep one wrapper with live CJS property reads per graph.
 		['function jitiInteropDefault(e,t){return',
-			'function jitiInteropDefault(e,t){const cache=e.opts.__piChildInterop,object=t!==null&&(typeof t==="object"||typeof t==="function");if(object&&cache.has(t))return cache.get(t);const result='],
+			'function jitiInteropDefault(e,t){if(ArrayBuffer.isView(t)||t instanceof ArrayBuffer)return t;const cache=e.opts.__piChildInterop,object=t!==null&&(typeof t==="object"||typeof t==="function");if(object&&cache.has(t))return cache.get(t);const result='],
 		['}(t):t}let Ei;', '}(t):t;if(object)cache.set(t,result);return result}let Ei;'],
 		['if(E.has(n))return E.get(n);let c;return', 'let c;return'],
 		['E.set(n,c),c},apply:l?', 'c},apply:l?'],

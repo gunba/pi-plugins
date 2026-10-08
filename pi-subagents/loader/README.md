@@ -4,7 +4,7 @@
 
 ## Why the adapter is needed
 
-Stock Jiti still uses native loading for `.mjs`, `.cjs` and package-type-module `.js` when both `moduleCache` and `tryNative` are false. Those paths reuse provider state between child activations. Its default interop proxy also caches property values, which breaks mutable CJS exports when CJS code is forced through the evaluator.
+Stock Jiti still uses native loading for `.mjs`, `.cjs` and package-type-module `.js` when both `moduleCache` and `tryNative` are false. Those paths reuse provider state between child activations. Its default interop proxy also caches property values and wraps binary exports. That breaks mutable CJS exports and causes native APIs such as `WebAssembly.compile` to reject otherwise valid buffers.
 
 The adapter:
 
@@ -14,7 +14,7 @@ The adapter:
 4. Evaluates that verified copy with `node:vm.compileFunction` and Jiti's package-scoped `require`.
 5. Creates one private module cache and interop-wrapper cache per activation. Multiple entrypoint imports share those caches; a new activation gets new ones.
 
-The patches force JavaScript/TypeScript graph transpilation, keep CJS interop reads live, preserve wrapper identity within the graph, and parse JSON into graph-local objects. Explicit `data:` imports and unknown code extensions fail rather than use unisolated native loading. Native addons (`.node`) remain native.
+The patches force JavaScript/TypeScript graph transpilation, keep CJS interop reads live, preserve wrapper identity within the graph, leave binary exports unwrapped, and parse JSON into graph-local objects. Explicit `data:` imports and unknown code extensions fail rather than use unisolated native loading. Native addons (`.node`) remain native.
 
 The Babel transformer remains the installed, verified native transformer. Transform-file caching stays enabled; cached transform text does not contain live provider state. Jiti environment settings cannot enable native-first loading, a global module cache or additional code-extension escape paths in this adapter.
 

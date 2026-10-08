@@ -13,7 +13,6 @@ import { planRoundNotice } from "./plan-round.ts";
 import { readSkills } from "../shared/skill-activity.ts";
 import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
-import type { Feedback } from "../shared/feedback.ts";
 
 const timeLabel = (timestamp: number) => timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 function toolArgumentPreview(serialized?: string): string {
@@ -127,17 +126,12 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 		})}
 	</div>;
 }
-export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues, dismissFeedback }: {
+export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; thinking?: ChatMessage[];
-	traceContinues?: boolean; dismissFeedback?: (feedback: Feedback) => void;
+	traceContinues?: boolean;
 }) {
 	const time = timeLabel(message.timestamp), round = planRoundNotice(message);
-	if (message.feedback) return <article className={`message message-feedback feedback-${message.feedback.level}`} role="status">
-		<div className="feedback-heading"><Icon name="warning" /><strong>{message.feedback.level === "error" ? "Error" : "Warning"}</strong><time>{time}</time>
-			{dismissFeedback && <button className="icon-button" aria-label="Dismiss notification" onClick={() => dismissFeedback(message.feedback!)}>
-				<Icon name="close" /></button>}</div>
-		<p>{message.feedback.text}</p>
-	</article>;
+	if (message.feedback) return null;
 	if (round) return <article className="message message-plan-round"><div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
 		<span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div><p>{round.objective}</p></article>;
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {

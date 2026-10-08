@@ -6,10 +6,7 @@ import { api } from "./connection.ts";
 import { reportDeskError } from "./desk-status.ts";
 import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
 import { transcriptRows } from "./transcript-rows.ts";
-import { conversationFeedback } from "./chat-feedback.ts";
 import { DisclosureStates } from "./disclosure.tsx";
-import type { Feedback } from "../shared/feedback.ts";
-const noFeedback: Feedback[] = [], noDismissals: string[] = [];
 interface ReadingPosition {
 	from?: string; anchor?: string; offset: number; follow: boolean; sizes?: Record<string, number>;
 }
@@ -20,12 +17,10 @@ function rememberPosition(key: string, position: ReadingPosition): void {
 }
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
-export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest,
-	feedback = noFeedback, dismissed = noDismissals }: {
+export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[], traceContinues?: boolean) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
-	feedback?: Feedback[]; dismissed?: string[];
 }) {
 	const storageKey = transcriptKey(session, source);
 	const saved = useRef<ReadingPosition | undefined>(readingPositions.get(storageKey));
@@ -51,10 +46,9 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const details = useRef(new Map<string, boolean[]>());
 	const disclosures = useRef(new Map<string, boolean>());
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
-	const nativeMessages = useMemo(() => {
-		const native = live ? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS) : page?.messages ?? [];
-		return conversationFeedback(native, feedback, session, dismissed, live ? { before: page?.before } : page ?? {});
-	}, [page, messages, live, feedback, dismissed, session]);
+	const nativeMessages = useMemo(() => live
+		? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS)
+		: page?.messages ?? [], [page, messages, live]);
 	const rows = useMemo(() => transcriptRows(nativeMessages), [nativeMessages]);
 	const visible = useMemo(() => rows.map(row => row.message), [rows]);
 	const newest = messages.at(-1);

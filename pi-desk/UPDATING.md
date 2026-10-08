@@ -149,6 +149,12 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.29 retains API 8. The browser shows new operational notices in a
+single temporary status bar rather than replaying saved warning cards. Existing
+native records remain unchanged. The binary-export correction in child extension
+loading requires a newly started worker; a host-only update does not replace
+running conversations.
+
 Version 0.5.26 retains API 8. Updated hosts and the website can attach to older
 workers without restarting them. The model picker identifies older workers and
 keeps cross-provider switching unavailable until an individual idle restart;

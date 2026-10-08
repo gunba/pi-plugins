@@ -13,6 +13,7 @@ export interface TranscriptRow {
 export function transcriptRows(messages: CachedMessage[]): TranscriptRow[] {
 	const rows: TranscriptRow[] = [], calls = new Map<string, TranscriptRow>();
 	for (const message of messages) {
+		if (message.feedback) continue;
 		const parent = message.role === "tool" && message.toolCallId ? calls.get(message.toolCallId) : undefined;
 		if (parent) { parent.results = { ...parent.results, [message.toolCallId!]: message }; continue; }
 		const blocks = message.blocks.filter(block => block && !isEmptyText(block));

@@ -1,3 +1,20 @@
+import type { PresentationSnapshot } from "../shared/protocol.ts";
+
+/** Only new live notices surface; opening or reconnecting never replays a backlog. */
+export class LiveNotices {
+	private key = "";
+	private seen = new Set<string>();
+	latest(session: string, ui?: Pick<PresentationSnapshot, "generation" | "notifications">, now = Date.now()) {
+		const key = JSON.stringify([session, ui?.generation]);
+		const notices = ui?.notifications ?? [];
+		const fresh = this.key === key ? notices.filter(notice => !this.seen.has(notice.id)
+			&& notice.level !== "info" && notice.timestamp !== undefined && notice.timestamp >= now - 12_000) : [];
+		this.key = key;
+		this.seen = new Set(notices.map(notice => notice.id));
+		return fresh.filter(notice => notice.level === "error").at(-1) ?? fresh.at(-1);
+	}
+}
+
 export interface DeskStatus { id: number; text: string; details: string; expires: number }
 let status: DeskStatus | undefined, last = "", lastAt = 0, sequence = 0;
 const listeners = new Set<() => void>();

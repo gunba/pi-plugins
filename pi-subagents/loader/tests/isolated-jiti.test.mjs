@@ -123,6 +123,25 @@ test("static/dynamic CJS default imports retain compatibility and live mutable e
 	assert.equal(module.staticState.calls, 2);
 });
 
+test("CJS binary exports remain valid WebAssembly inputs within isolated graphs", async (t) => {
+	const root = await fixture(t, {
+		"binary.cjs": "module.exports = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);",
+		"entry.cjs": `const bytes = require("./binary.cjs");
+			exports.bytes = bytes;
+			exports.compile = () => WebAssembly.compile(bytes);`,
+		"entry.mjs": `import bytes from "./binary.cjs"; export { bytes };`,
+	});
+	const native = require(join(root, "binary.cjs"));
+	const a = await createIsolatedJiti(import.meta.url, {});
+	const b = await createIsolatedJiti(import.meta.url, {});
+	const first = await a.import(join(root, "entry.cjs"));
+	assert.equal(ArrayBuffer.isView(first.bytes), true, "binary exports must not be interop proxies");
+	assert.ok(await first.compile() instanceof WebAssembly.Module);
+	assert.equal((await a.import(join(root, "entry.mjs"))).bytes, first.bytes);
+	assert.notEqual((await b.import(join(root, "entry.cjs"))).bytes, first.bytes);
+	assert.notEqual(first.bytes, native, "native and isolated graphs still own separate buffers");
+});
+
 test("JSON dependencies are graph-local, preserving a native parent's cached object", async (t) => {
 	const root = await fixture(t, {
 		"state.json": '{ "count": 0 }',

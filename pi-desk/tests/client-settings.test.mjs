@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dismissNotice, noticeIdentity, readDismissals } from "../src/client/notice-dismissals.ts";
 import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
-import { conversationFeedback, readFeedback, saveFeedback } from "../src/client/chat-feedback.ts";
-import { deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
+import { LiveNotices, deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
 import { clearSubmission, createSubmission, readSubmission, submissionDecision, submitWithReceipt } from "../src/client/input-submission.ts";
 import { leadingActivity, sessionActivity } from "../src/client/activity.ts";
 
@@ -67,10 +65,6 @@ test("lost input acknowledgements are reconciled before a resend warning", async
 
 test("Desk storage errors use one transient status and do not become conversation feedback", () => {
 	const browser = { id: "browser", text: "InvalidStateError: database connection is closing", level: "error", timestamp: 100, generation: "browser" };
-	const native = { ...browser, id: "native", text: "Tool failed", generation: "worker" };
-	const storage = { getItem: () => JSON.stringify({ one: [browser, native] }) };
-	assert.deepEqual(readFeedback(storage).one, [native]);
-	assert.deepEqual(conversationFeedback([], [browser, native], "one", []).map(message => message.feedback.id), ["native"]);
 	let notifications = 0;
 	const unsubscribe = subscribeDeskStatus(() => notifications++);
 	try {
@@ -137,32 +131,24 @@ test("account picker distinguishes unavailable and changing selection from defau
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("errors stay at their point in chat, deduplicate saved notices and stay dismissed after reopening", () => {
-	const values = new Map(), storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
-	const feedback = { id: "error", text: "Failed operation", level: "error", timestamp: 200, generation: "original-worker" };
-	const messages = [100, 300].map((timestamp, order) => ({ id: `message:${order}`, role: "user", timestamp, order,
-		revision: 0, blocks: [{ type: "text", text: "Message" }] }));
-	const inline = conversationFeedback(messages, [feedback], "one", []);
-	assert.deepEqual(inline.map(message => message.timestamp), [100, 200, 300]);
-	assert.deepEqual(conversationFeedback(inline, [feedback], "one", []), inline);
-	const native = { ...inline[1], id: "entry:error", entryId: "error", order: inline[1].order };
-	assert.deepEqual(conversationFeedback([...inline, native], [feedback], "one", []).filter(message => message.feedback), [native]);
-	saveFeedback(storage, { one: [feedback] });
-	assert.deepEqual(readFeedback(storage).one, [feedback]);
-	const hidden = dismissNotice(storage, noticeIdentity("one", feedback.generation, feedback.id));
-	assert.deepEqual(conversationFeedback(inline, readFeedback(storage).one, "one", hidden), messages);
-	assert.equal(conversationFeedback(inline, [feedback], "two", hidden).length, 3);
-	assert.equal(conversationFeedback(messages.slice(1), [feedback], "one", [], { before: "earlier" }).length, 1);
-});
-
-test("dismissed notifications survive reopening, without hiding another session's errors", () => {
-	const values = new Map(), storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
-	const first = noticeIdentity("one", "generation", "error");
-	dismissNotice(storage, first);
-	assert.deepEqual(readDismissals(storage), [first]);
-	assert.ok(!readDismissals(storage).includes(noticeIdentity("two", "generation", "error")));
-	for (let index = 0; index < 600; index++) dismissNotice(storage, String(index));
-	assert.equal(readDismissals(storage).length, 512);
+test("opening conversations does not replay notifications; only fresh live notices surface once", () => {
+	const notices = new LiveNotices();
+	const old = { id: "old", level: "warning", text: "Using HTTPS", timestamp: 1_000 };
+	const ui = { generation: "worker", notifications: [old] };
+	assert.equal(notices.latest("one", ui, 2_000), undefined, "initial inventory is not a new event");
+	const fresh = { ...old, id: "fresh", timestamp: 3_000 };
+	ui.notifications.push(fresh);
+	assert.equal(notices.latest("one", ui, 3_000), fresh);
+	assert.equal(notices.latest("one", ui, 3_000), undefined);
+	assert.equal(notices.latest("two", ui, 4_000), undefined);
+	assert.equal(notices.latest("one", ui, 4_000), undefined, "returning must not replay the old session's alerts");
+	ui.notifications.push({ ...fresh, id: "buffered" });
+	assert.equal(notices.latest("one", ui, 30_000), undefined, "late snapshots must not replay buffered alerts");
+	const error = { ...fresh, id: "error", level: "error", timestamp: 30_000 };
+	ui.notifications.push(error, { ...fresh, id: "later-warning", timestamp: 30_000 });
+	assert.equal(notices.latest("one", ui, 30_000), error, "one banner, with errors taking priority");
+	assert.equal(notices.latest("one", ui, 30_000), undefined, "the rest of a batch must not queue behind it");
+	assert.equal(notices.latest("one", { ...ui, generation: "new-worker" }, 30_000), undefined);
 });
 test("resuming unnamed history uses its opening user text without changing its native name", () => {
 	const entries = [

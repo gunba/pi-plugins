@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DeskPresentation } from "../src/host/presentation.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
-import { FEEDBACK_ENTRY } from "../src/shared/feedback.ts";
 import { sessionDisplay } from "../src/host/session-display.ts";
 
 test("display sessions carry panel data once rather than a stale duplicate in native state", () => {
@@ -15,19 +14,18 @@ test("display sessions carry panel data once rather than a stale duplicate in na
 	assert.ok(JSON.stringify(display).length < JSON.stringify({ snapshot: native, ui }).length * 0.6);
 });
 
-test("native UI failures are timestamped saved metadata, not new model messages", () => {
+test("UI notifications stay transient and never append to native conversation history", () => {
 	const entries = [], handlers = new Map();
 	const presentation = new DeskPresentation(() => {}, () => {});
 	presentation.install({ appendEntry: (type, data) => entries.push({ type, data }), on() {},
 		events: { on: (name, fn) => { handlers.set(name, fn); return () => handlers.delete(name); } } });
 	presentation.notify("Failed to authenticate", "error");
 	presentation.notify("Connected", "info");
-	assert.equal(entries.length, 1);
-	assert.equal(entries[0].type, FEEDBACK_ENTRY);
-	assert.equal(entries[0].data.level, "error");
-	assert.ok(entries[0].data.timestamp > 0);
-	assert.equal(entries[0].data.generation, presentation.generation);
-	assert.deepEqual(presentation.snapshot().notifications[0], entries[0].data);
+	assert.deepEqual(entries, []);
+	const notice = presentation.snapshot().notifications[0];
+	assert.equal(notice.level, "error");
+	assert.ok(notice.timestamp > 0);
+	assert.equal(notice.generation, presentation.generation);
 });
 
 test("native selection context does not become an oversized modal heading", async () => {
