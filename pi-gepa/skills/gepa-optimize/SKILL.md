@@ -44,6 +44,7 @@ When an evaluation runs an agent that produces files, write a private runner aro
 - each evaluation stages fresh inputs in its own workspace and runs a fresh session with the candidate text applied;
 - finished runs are cached on disk by the candidate text the example uses, so a restarted study reuses them, and interrupted sessions resume rather than restart;
 - infrastructure failures raise an exception derived from `BaseException`, which GEPA does not convert into a zero score;
+- when the grader cannot verify an output for reasons unrelated to the candidate, score what can be read, flag it in the feedback and keep counting how often it happens; a zero would add noise, not information;
 - task time and tokens are recorded beside the score, not folded into it;
 - call ledgers store request metadata, not full conversation contexts, which grow quadratically with session length;
 - large per-run copies (runtimes, staged inputs, skill bundles) are deleted once a run is graded;
