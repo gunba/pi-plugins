@@ -73,9 +73,8 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-context-window`](pi-context-window/README.md) — `/context-window`
   opens a modal for the active model's window and checkpoint setting, including
   an opt-in 1M/900K preset for supported OpenAI models.
-- [`pi-party`](pi-party/README.md) — local agent discovery, self-managed parties,
-  invitations and direct or group messaging, with message previews and a live
-  `/party chat` conversation viewer.
+- [`pi-party`](pi-party/README.md) — agent discovery and direct messages between
+  Pi agents on this and connected Desk computers, with an `/inbox` viewer.
 - [`pi-gepa`](pi-gepa/skills/gepa-optimize/SKILL.md) — bounded GEPA optimisation
   of prompts and other text artifacts, with task evaluators, held-out checks and
   native Pi model authentication. Python experiments run in a private environment.

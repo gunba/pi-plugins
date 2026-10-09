@@ -43,7 +43,7 @@ import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
 import { workspaceIdentity } from "../shared/account.ts";
-import { PartyOperations, type DriverControl } from "../../../pi-party/operations.ts";
+import { PartyOperations } from "../../../pi-party/operations.ts";
 import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import { agentId, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
@@ -161,11 +161,11 @@ export class DeskHost {
 			}] : []), () => {
 				this.refreshUpdates();
 				for (const managed of this.sessions.values()) this.drainInputs(managed);
-				this.flushPartyWakes(); this.flushLocalPartyOperations();
+				this.flushLocalPartyOperations();
 			});
-			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); this.flushPartyWakes(); });
+			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
-			this.partyOperations.startHost(); this.flushLocalPartyOperations(); this.flushPartyWakes();
+			this.partyOperations.startHost(); this.flushLocalPartyOperations();
 			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
@@ -188,7 +188,7 @@ export class DeskHost {
 			this.heartbeat = setInterval(() => {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
 				this.refreshUpdates(); this.refreshParties();
-				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); this.flushPartyWakes(); }
+				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
 			this.heartbeat.unref();
@@ -223,7 +223,7 @@ export class DeskHost {
 				if (!this.closing) {
 					this.refreshUpdates();
 					for (const managed of this.sessions.values()) this.drainInputs(managed);
-					this.flushPartyWakes(); this.flushLocalPartyOperations();
+					this.flushLocalPartyOperations();
 				}
 			});
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
@@ -407,7 +407,7 @@ export class DeskHost {
 			this.accountIdentity = identity;
 			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {
 				if (this.closing || revision !== this.accountRevision) return;
-				this.parties!.networkChanged(); this.refreshParties(); this.flushPartyWakes();
+				this.parties!.networkChanged(); this.refreshParties();
 			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) });
 			this.partyNetwork = network;
 			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy,
@@ -608,38 +608,6 @@ export class DeskHost {
 		catch (error) { console.error("Catalog publication failed:", error); }
 	}
 
-	private rememberPartyDriver(view: SessionView): string | undefined {
-		const root = view.snapshot?.id ?? view.agentId ?? (view.file ? readSessionHeader(view.file).id : undefined);
-		if (!root || !uuid(root) || !view.file || !this.partyOperations || this.partyOperations.driverKnown(root)) return root;
-		const children: string[] = [];
-		try {
-			const directory = join(this.options.agentDir!, "subagents", "sessions", encodeURIComponent(root));
-			for (const name of readdirSync(directory)) {
-				const child = name.endsWith(".jsonl") ? name.slice(-42, -6) : undefined;
-				if (uuid(child)) children.push(child);
-			}
-		} catch { /* The root may not have a child catalogue. */ }
-		this.partyOperations.rememberDriver(root, view.file, children);
-		return root;
-	}
-	private flushPartyWakes(): void {
-		if (this.closing || this.checkpoints?.held || this.restoringUpdate || !this.partyOperations || !this.parties) return;
-		try {
-			const targets: string[] = [];
-			for (const { view, worker } of this.sessions.values()) {
-				if (!isOpenSession(view)) continue;
-				const root = this.rememberPartyDriver(view);
-				if (!root) continue;
-				const member = this.parties.store.member(root);
-				if (member && (!worker || !member.delivery)) targets.push(root);
-				for (const child of this.partyOperations.driverChildren(root)) {
-					if ((this.partyOperations.driver(child)?.seen ?? 0) <= Date.now() - LEASE_MS) targets.push(child);
-				}
-			}
-			this.partyOperations.autoWakes(this.parties.store, targets, "host", (computer, request) => this.executePartyOperation(computer, request));
-		} catch { console.error("Party automatic wakes could not be read."); }
-	}
-
 	private flushLocalPartyOperations(): void {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate || !this.partyOperations) return;
 		let requests: PartyOperation[];
@@ -691,97 +659,10 @@ export class DeskHost {
 		});
 	}
 
-	private async closePartyAgents(party: string, values: unknown): Promise<{ results: { id: string; state?: string; error?: string }[] }> {
-		if (!Array.isArray(values) || !values.length || values.length > 64) throw Error("Select 1–64 party agents.");
-		const targets = values.map(value => { const item = object(value); return { id: string(item.id, 100), epoch: string(item.epoch, 100) }; });
-		if (new Set(targets.map(target => target.id)).size !== targets.length) throw Error("Duplicate party agent.");
-		const store = this.parties!.store, results: { id: string; state?: string; error?: string }[] = [];
-		// Children settle through their driver before a selected root tears that driver down.
-		targets.sort((a, b) => Number(store.member(b.id)?.kind === "child") - Number(store.member(a.id)?.kind === "child"));
-		for (const target of targets) {
-			try {
-				const member = store.member(target.id);
-				if (!member || member.computer || member.room !== party || member.epoch !== target.epoch) throw Error("Party membership changed. Review the current members.");
-				if (member.kind === "child") {
-					const result = await this.controlPartyChild({ id: randomUUID(), kind: "close", target: member.session, party,
-						target_epoch: member.epoch, expires: Date.now() + 300_000 });
-					results.push({ id: target.id, state: result!.state }); continue;
-				}
-				const managed = [...this.sessions.values()].find(({ view }) => (view.snapshot?.id ?? view.agentId) === member.session);
-				const wasOpen = !!managed?.worker || member.heartbeat > Date.now() - LEASE_MS;
-				if (managed?.worker) {
-					const id = randomUUID(); await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, id);
-					this.inputs!.interrupt(managed.view.key, "The party was closed"); this.inputEvent(managed);
-					await this.waitForControl(managed.view.key, id);
-				} else if (member.heartbeat > Date.now() - LEASE_MS) {
-					const file = store.sessionFile(member.session) ?? SessionManager.findById(member.cwd, member.session,
-						configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir));
-					if (!file || readSessionHeader(file).id !== member.session) throw Error("The desktop owner's native session is unavailable.");
-					const { lease } = await resumeLease(file, { takeover: true, signal: AbortSignal.timeout(30_000) }); lease.close();
-				}
-				results.push({ id: target.id, state: wasOpen ? "closed" : "already_closed" });
-			} catch (error) { results.push({ id: target.id, error: error instanceof Error ? error.message : String(error) }); }
-		}
-		this.refreshParties(); this.partyNetwork?.flush(); return { results };
-	}
-
-	private async controlPartyChild(control: DriverControl): Promise<OperationResult["result"]> {
-		let reference = this.partyOperations!.driver(control.target);
-		if (!reference) {
-			for (const { view } of this.sessions.values()) this.rememberPartyDriver(view);
-			reference = this.partyOperations!.driver(control.target);
-		}
-		if (control.kind === "close" && (!reference || reference.seen <= Date.now() - LEASE_MS)) {
-			const child = this.parties!.store.member(control.target);
-			if (!child || child.heartbeat <= Date.now() - LEASE_MS) return { session: control.target, state: "already_closed" };
-		}
-		if (!reference) throw Error("The child's owning parent driver is unavailable; resume its parent conversation first.");
-		if (reference.seen <= Date.now() - LEASE_MS) {
-			const root = reference.root;
-			const managed = [...this.sessions.values()].find(({ view }) => (view.snapshot?.id ?? view.agentId) === root);
-			if (!reference.file || readSessionHeader(reference.file).id !== root) throw Error("The owning parent's saved native session is unavailable.");
-			await this.waitForSession(managed?.worker ? managed.view.key : this.createSession(readSessionHeader(reference.file).cwd, reference.file, managed));
-			reference = this.partyOperations!.driver(control.target);
-			if (!reference || reference.seen <= Date.now() - LEASE_MS) throw Error("The owning parent did not restore this child driver.");
-		}
-		this.partyOperations!.queueDriver(reference, control);
-		const outcome = await this.partyOperations!.waitDriver(control.id);
-		this.parties!.networkChanged(); this.refreshParties(); this.partyNetwork?.flush();
-		return outcome.result;
-	}
-
 	private async executePartyOperation(computer: string, request: PartyOperation): Promise<OperationResult["result"]> {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw Error("Desk is updating or shutting down.");
 		const store = this.parties!.store;
 		this.partyOperations!.validate(store, computer, request);
-		if (request.kind === "remove") {
-			store.detachMember(request.target!, request.party, request.target_epoch!, {
-				id: computer === "local" ? request.sender : agentId(computer, request.sender), epoch: request.sender_epoch,
-			});
-			this.parties!.networkChanged(); this.refreshParties(); this.partyNetwork?.flush();
-			return { session: request.target!, state: "removed" };
-		}
-		if (request.kind === "resume") {
-			const member = store.member(request.target!)!;
-			if (member.kind === "child") return this.controlPartyChild({
-				id: request.id, kind: "resume", target: member.session, party: request.party, target_epoch: request.target_epoch!, expires: request.expires,
-				peer: { computer, sender: request.sender, epoch: request.sender_epoch },
-			});
-			let managed = [...this.sessions.values()].find(({ view }) => (view.snapshot?.id ?? view.agentId) === member.session);
-			if (!managed?.worker && member.heartbeat > Date.now() - LEASE_MS) {
-				store.resumeDelivery(member.session, request.target_epoch!); this.parties!.networkChanged();
-				return { session: member.session, state: "already_running" };
-			}
-			if (!managed?.worker) {
-				const file = managed?.view.file ?? store.sessionFile(member.session)
-					?? SessionManager.findById(member.cwd, member.session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir));
-				if (!file || readSessionHeader(file).id !== member.session) throw Error("The saved native Pi session file is unavailable.");
-				managed = await this.waitForSession(this.createSession(member.cwd, file, managed));
-			} else managed = await this.waitForSession(managed.view.key);
-			this.partyOperations!.validate(store, computer, request);
-			store.resumeDelivery(member.session, request.target_epoch!); this.parties!.networkChanged(); this.partyNetwork?.flush();
-			return { session: member.session, state: "ready", key: managed.view.key };
-		}
 		let fork: { cwd: string; file: string } | undefined;
 		if (request.kind === "fork") {
 			const member = store.member(request.sender)!;
@@ -790,15 +671,14 @@ export class DeskHost {
 			if (!file) throw Error("The source agent\'s saved native session is unavailable.");
 			fork = createPartyFork(file, member.session, request.call!);
 		}
-		const key = this.createSession(fork?.cwd ?? request.cwd!, fork?.file);
+		const key = this.createSession(fork?.cwd ?? request.cwd, fork?.file);
 		try {
 			const managed = await this.waitForSession(key), worker = managed.worker!;
 			this.partyOperations!.validate(store, computer, request);
-			await worker.command({ kind: "name", name: request.label! });
+			await worker.command({ kind: "name", name: request.label });
 			this.partyOperations!.validate(store, computer, request);
-			this.parties!.setMembership([managed.view.agentId!], request.party);
 			this.inputs!.admit(key, { id: request.id, activation: managed.view.activation!, generation: worker.generation,
-				command: { kind: "prompt", text: request.task!, behavior: "followUp" } });
+				command: { kind: "prompt", text: request.task, behavior: "followUp" } });
 			this.inputEvent(managed); this.drainInputs(managed); this.refreshParties(); this.partyNetwork?.flush();
 			return { session: managed.view.agentId!, state: "queued", key };
 		} catch (error) {
@@ -1104,14 +984,6 @@ export class DeskHost {
 			if (dotInput?.[2] && request.method === "POST") return reply({ input: this.dot!.cancelInput(
 				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], data.connection === undefined ? undefined : string(data.connection, 64)) });
 			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
-			if (url.pathname === "/api/parties/close" && request.method === "POST") return reply(await this.closePartyAgents(string(data.party, 48), data.agents));
-			if (request.method === "POST" && ["/api/parties/join", "/api/parties/leave"].includes(url.pathname)) {
-				const party = string(data.party, 48);
-				this.parties!.setMembership(data.agents, url.pathname.endsWith("/leave") ? null : party,
-					url.pathname.endsWith("/leave") ? party : undefined);
-				this.refreshParties();
-				return reply(this.parties!.snapshot);
-			}
 			if (url.pathname === "/api/runtime/update" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host does not use a managed runtime." }, 409);
 				await launchOperation(this.runtimeHome, "update");

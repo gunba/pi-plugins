@@ -20,9 +20,8 @@ panels. Initial-context breakdowns, model accounts, MCP
 connections and Chrome management are connected. Live tool output, patch diffs,
 attachments, paged artifacts and host file previews/downloads are available.
 The shared app combines sessions from several computers, with independent
-connection states and account-wide access controls. Parties share encrypted
-discovery, membership and messages across those computers. Inline party labels
-open membership controls, Disband and a separate confirmed close-agents action. Unsent drafts stay in their
+connection states and account-wide access controls. Agents on those computers
+can find and message each other over an encrypted channel. Unsent drafts stay in their
 browser. An unavailable computer does not
 block the others.
 The included `/desk` command handles setup, staged updates, restart and optional
@@ -209,10 +208,8 @@ messages still queued for delivery are discarded; unresolved host admissions
 remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay browser
 prompts. An interrupted session can be resumed or closed; its composer is unavailable
-until Pi starts again. A new wake-requesting message from a current party member
-can resume an interrupted open workspace member through its owning session or
-parent driver. Explicitly closed conversations are not reopened by automatic
-peer delivery.
+until Pi starts again. Messages from other agents never reopen a closed or
+interrupted conversation; they wait until it runs again.
 
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,

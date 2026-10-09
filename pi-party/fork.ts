@@ -5,7 +5,7 @@ export function partyForkPoint(branch: readonly SessionEntry[], call: string): s
 	for (let index = branch.length - 1; index > 0; index--) {
 		const entry = branch[index];
 		if (entry.type === "message" && entry.message.role === "assistant"
-			&& entry.message.content.some(block => block.type === "toolCall" && block.name === "party_fork" && block.id === call)) return branch[index - 1].id;
+			&& entry.message.content.some(block => block.type === "toolCall" && block.name === "agent_fork" && block.id === call)) return branch[index - 1].id;
 	}
 	throw Error("The executing fork call has no saved context checkpoint.");
 }

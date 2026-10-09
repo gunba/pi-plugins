@@ -23,42 +23,36 @@ test("late lifecycle results cannot overwrite a stopped controller's receipt", a
 	const store = new PartyStore(directory), operations = new PartyOperations(directory);
 	t.after(() => { operations.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
 	operations.startHost();
-	const sender = randomUUID(), recipient = randomUUID(), owner = randomUUID();
-	for (const id of [sender, recipient]) {
-		store.register(id, owner, id); store.join(id, owner, "shared", id);
-	}
-	const request = operations.queue(store, sender, owner, { kind: "resume", target: recipient });
+	const sender = randomUUID(), owner = randomUUID();
+	store.register(sender, owner, sender);
+	const request = operations.queue(store, sender, owner, { kind: "create", cwd: directory, task: "Start", label: "New" });
 	let finish;
 	const pending = operations.receive("local", request, () => new Promise(resolve => { finish = resolve; }));
 	operations.startHost();
-	finish({ session: recipient, state: "ready" });
+	finish({ session: randomUUID(), state: "queued" });
 	assert.match((await pending).error, /host stopped/);
 	const repeated = await operations.receive("local", request, () => assert.fail("Must not replay an interrupted operation"));
 	assert.match(repeated.error, /host stopped/);
 	assert.match(operations.recent(sender).find(row => row.id === request.id).response.error, /host stopped/);
 });
-
-test("registered agents exchange direct messages across party boundaries", t => {
+test("registered agents exchange direct messages", t => {
 	const { a, b } = fixture(t);
-	a.join("first", "owner-a", "1", "Studio topics");
+	a.register("first", "owner-a", "Studio topics");
 	assert.throws(() => b.send("second", "owner-b", "first", "hello", true), /registration/);
-	b.join("second", "owner-b", "1", "Studio skills");
-	a.join("unrelated", "owner-c", "2", "Other client");
-	assert.equal(a.members("first", "owner-a").length, 2);
-	a.send("first", "owner-a", "unrelated", "Direct coordination", true);
-	assert.equal(a.pending("unrelated", "owner-c")[0].room, "");
-	const [sent] = a.send("first", "owner-a", "sec", "Check the revised topic", true);
+	b.register("second", "owner-b", "Studio skills");
+	a.register("unrelated", "owner-c", "Other client");
+	const sent = a.send("first", "owner-a", "sec", "Check the revised topic", true);
 	assert.equal(b.pending("second", "owner-b")[0].id, sent.id);
 	assert.equal(b.pending("second", "owner-b")[0].sender_label, "Studio topics");
+	assert.deepEqual(a.pending("unrelated", "owner-c"), []);
 	b.admit("second", "owner-b", [sent.id]);
 	assert.deepEqual(b.pending("second", "owner-b"), []);
 });
-
 test("owner leases fence duplicate processes and preserve inbox across reconnect", t => {
 	const { a, b, advance } = fixture(t);
-	a.join("first", "a", "one", "First");
-	b.join("second", "b", "one", "Second");
-	const [sent] = a.send("first", "a", "second", "Waiting", false);
+	a.register("first", "a", "First");
+	b.register("second", "b", "Second");
+	const sent = a.send("first", "a", "second", "Waiting", false);
 	assert.throws(() => a.register("second", "replacement", "Second"), /another Pi process/);
 	advance(LEASE_MS + 1);
 	const oldEpoch = b.member("second").epoch;
@@ -70,32 +64,9 @@ test("owner leases fence duplicate processes and preserve inbox across reconnect
 	assert.equal(a.member("second").owner, "replacement");
 });
 
-test("leave and room switching revoke queued deliveries rather than leaking into rejoined sessions", t => {
-	const { a, b } = fixture(t);
-	a.join("first", "a", "one", "First");
-	b.join("second", "b", "one", "Second");
-	a.send("first", "a", "all", "old room", true);
-	b.leave("second", "b");
-	b.join("second", "b", "one", "Second");
-	assert.deepEqual(b.pending("second", "b"), []);
-	a.send("first", "a", "all", "sender leaving", true);
-	a.join("first", "a", "two", "First");
-	assert.deepEqual(b.pending("second", "b"), []);
-	assert.equal(b.members("second", "b").length, 1);
-});
-
-test("broadcast delivery is atomic when any inbox is full", t => {
-	const { a } = fixture(t);
-	for (const id of ["first", "second", "third"]) a.join(id, id, "1", id);
-	for (let i = 0; i < 64; i++) a.send("first", "first", "third", `message ${i}`, false);
-	assert.throws(() => a.send("first", "first", "all", "broadcast", false), /full/);
-	assert.equal(a.pending("second", "second").length, 0);
-	assert.equal(a.pending("third", "third").length, 64);
-});
-
 test("automatic wake budget is bounded across database connections and reconnects", t => {
 	const { a, b } = fixture(t);
-	a.join("first", "owner", "1", "First");
+	a.register("first", "owner", "First");
 	for (let i = 0; i < 8; i++) assert.equal(a.reserveWake("first", "owner"), true);
 	assert.equal(b.reserveWake("first", "owner"), false);
 	a.release("first", "owner");
@@ -105,43 +76,36 @@ test("automatic wake budget is bounded across database connections and reconnect
 	assert.equal(b.reserveWake("first", "new"), true);
 });
 
-test("room and message validation, ambiguity, and receipt ownership", t => {
+test("message validation, ambiguity, full inboxes and receipt ownership", t => {
 	const { a } = fixture(t);
-	assert.throws(() => a.join("x", "x", "../secrets", "x"), /Party IDs/);
-	for (const id of ["first", "peer-a", "peer-b"]) a.join(id, id, "CASE", id);
-	assert.equal(a.member("first").room, "case");
+	for (const id of ["first", "peer-a", "peer-b"]) a.register(id, id, id);
 	assert.throws(() => a.send("first", "first", "peer", "ambiguous", false), /unambiguous/);
-	for (const text of ["", " \t\n"]) {
-		assert.throws(() => a.send("first", "first", "all", text, false), /non-whitespace/);
-	}
-	const [sent] = a.send("first", "first", "peer-a", "private", false);
+	for (const text of ["", " \t\n"]) assert.throws(() => a.send("first", "first", "peer-a", text, false), /non-whitespace/);
+	const sent = a.send("first", "first", "peer-a", "private", false);
 	a.admit("peer-b", "peer-b", [sent.id]);
 	assert.equal(a.pending("peer-a", "peer-a").length, 1);
+	for (let i = 1; i < 64; i++) a.send("first", "first", "peer-a", `message ${i}`, false);
+	assert.throws(() => a.send("first", "first", "peer-a", "overflow", false), /full/);
 });
-
-test("large Unicode messages survive broadcast and independent database reads intact", t => {
+test("large Unicode messages survive independent database reads intact", t => {
 	const { a, b } = fixture(t);
-	for (const id of ["first", "second", "third"]) a.join(id, id, "1", id);
+	for (const id of ["first", "second"]) a.register(id, id, id);
 	const text = "Detailed findings 🧪\n".repeat(10_000);
-	const sent = a.send("first", "first", "all", text, false);
-	assert.equal(sent.length, 2);
-	for (const recipient of ["second", "third"]) {
-		const [message] = b.pending(recipient, recipient);
-		assert.equal(message.text, text);
-		assert.equal(message.wake, 0);
-		b.admit(recipient, recipient, [message.id]);
-		assert.deepEqual(b.pending(recipient, recipient), []);
-	}
+	a.send("first", "first", "second", text, false);
+	const [message] = b.pending("second", "second");
+	assert.equal(message.text, text);
+	assert.equal(message.wake, 0);
+	b.admit("second", "second", [message.id]);
+	assert.deepEqual(b.pending("second", "second"), []);
 });
-
-test("history pages are complete, ordered, room-scoped and cannot admit or wake recipients", t => {
+test("history pages are complete, ordered, participant-scoped and cannot admit or wake recipients", t => {
 	const { a, b } = fixture(t);
-	a.join("first", "a", "chat", "Studio cleanup");
-	b.join("second", "b", "chat", "Copilot Skills");
-	a.join("other", "c", "elsewhere", "Other room");
-	a.join("other-peer", "d", "elsewhere", "Other peer");
-	a.send("other", "c", "all", "Private to another room", true);
-	const messages = Array.from({ length: 53 }, (_, i) => a.send("first", "a", "all", i === 0 ? "Long Unicode 🧪\n".repeat(10000) : `Message ${i}`, true)[0]);
+	a.register("first", "a", "Studio cleanup");
+	b.register("second", "b", "Copilot Skills");
+	a.register("other", "c", "Other");
+	a.register("other-peer", "d", "Other peer");
+	a.send("other", "c", "other-peer", "Private to others", true);
+	const messages = Array.from({ length: 53 }, (_, i) => a.send("first", "a", "second", i === 0 ? "Long Unicode 🧪\n".repeat(10000) : `Message ${i}`, true));
 	b.admit("second", "b", messages.slice(0, 25).map(message => message.id));
 	const state = JSON.stringify([b.member("second"), b.pending("second", "b")]);
 	const latest = b.history("second", "b");
@@ -166,18 +130,16 @@ test("history pages are complete, ordered, room-scoped and cannot admit or wake 
 	b.touch("second", "b", "idle", "Renamed conversation");
 	assert.equal(a.history("first", "a").messages[0].recipient_label, "Renamed conversation");
 	b.admit("second", "b", messages.map(message => message.id));
-	b.leave("second", "b");
-	assert.equal(a.history("first", "a").messages[0].recipient_label, "Former member");
 });
 
 test("independent Node processes commit messages through the shared SQLite store", { timeout: 30000 }, async t => {
 	const { a, directory } = fixture(t);
-	a.join("recipient", "parent", "ipc", "Recipient");
+	a.register("recipient", "parent", "Recipient");
 	const source = new URL("./store.ts", import.meta.url).href;
 	const code = `import { PartyStore } from ${JSON.stringify(source)};
 		const db = new PartyStore(process.argv[1]);
 		const id = process.argv[2];
-		db.join(id, id, "ipc", id);
+		db.register(id, id, id);
 		for (let i = 0; i < 10; i++) db.send(id, id, "recipient", id + ":" + i, false);
 		db.release(id, id); db.close();`;
 	await Promise.all(["sender-a", "sender-b"].map(id => new Promise((resolve, reject) => {
@@ -220,87 +182,43 @@ test("discovery registers ungrouped agents, searches metadata, and excludes expi
 	assert.equal(next.nextOffset, undefined);
 });
 
-test("network discovery retains active agents beyond a large archived party registry", t => {
+test("network discovery retains active agents beyond a large archived registry", t => {
 	const { a } = fixture(t);
 	for (let i = 0; i < 700; i++) {
 		const id = `00000000-0000-4000-a000-${i.toString(16).padStart(12, "0")}`;
-		a.register(id, "owner", "Archived"); a.join(id, "owner", "history", "Archived"); a.release(id, "owner");
+		a.register(id, "owner", "Archived"); a.release(id, "owner");
 	}
 	const live = "ffffffff-ffff-4fff-afff-ffffffffffff";
 	a.register(live, "live-owner", "Active");
 	const directory = a.networkDirectory();
-	assert.equal(directory.length, 701);
+	assert.equal(directory.length, 1, "released agents are not advertised to other computers");
 	assert.equal(directory.find(peer => peer.session === live)?.state, "idle");
 	assert.ok(directory.every(peer => !("owner" in peer) && !("heartbeat" in peer)));
 });
 
-test("invitations are direct messages, never implicit membership changes", t => {
-	const { a, b } = fixture(t);
-	a.join("a", "a", "research", "Research");
-	b.join("b", "b", "other", "Implementation");
-	a.register("c", "c", "Observer");
-	const epoch = b.member("b").epoch;
-	const [invitation] = a.send("a", "a", "b", "Compare transport findings?", true, "research");
-	assert.equal(invitation.kind, "invite");
-	assert.equal(invitation.invite_room, "research");
-	assert.equal(b.member("b").room, "other");
-	assert.equal(b.member("b").epoch, epoch);
-	assert.equal(b.pending("b", "b")[0].id, invitation.id);
-	assert.equal(a.history("a", "a").messages.length, 0);
-	assert.equal(a.history("c", "c", undefined, true).messages.length, 0);
-	b.join("b", "b", invitation.invite_room, "Implementation");
-	assert.equal(b.members("b", "b").length, 2);
-	assert.equal(b.pending("b", "b")[0].id, invitation.id, "joining does not discard direct messages");
-});
-
-test("any member can remove a peer without removing its registration or direct inbox", t => {
-	const { a, b } = fixture(t);
-	a.join("a", "a", "team", "A"); b.join("b", "b", "team", "B");
-	a.join("c", "c", "elsewhere", "C");
-	const [group] = a.send("a", "a", "all", "Room-only", true);
-	const [direct] = a.send("a", "a", "b", "Private", true);
-	const old = b.member("b");
-	assert.throws(() => a.remove("c", "c", "b"), /unambiguous/);
-	assert.throws(() => a.remove("a", "wrong", "b"), /owned/);
-	a.remove("a", "a", "b");
-	assert.equal(b.member("b").room, "");
-	assert.equal(b.member("b").owner, old.owner);
-	assert.equal(b.member("b").agent_epoch, old.agent_epoch);
-	assert.notEqual(b.member("b").epoch, old.epoch);
-	assert.equal(b.isCurrent("b", "b", group.id), false);
-	assert.deepEqual(b.pending("b", "b").map(x => x.id), [direct.id]);
-	b.join("b", "b", "team", "B");
-	b.remove("b", "b", "a");
-	assert.equal(a.member("a").room, "");
-	assert.equal(b.history("b", "b", undefined, true).messages[0].id, direct.id);
-});
-
 test("direct history is participant-only and exact IDs take precedence over prefixes", t => {
 	const { a } = fixture(t);
-	for (const id of ["a", "peer", "peer-long", "observer"]) a.join(id, id, "team", id);
+	for (const id of ["a", "peer", "peer-long", "observer"]) a.register(id, id, id);
 	a.send("a", "a", "peer", "Private note", false);
 	assert.equal(a.pending("peer", "peer").length, 1);
 	assert.equal(a.pending("peer-long", "peer-long").length, 0);
-	assert.equal(a.history("observer", "observer", undefined, true).messages.length, 0);
 	assert.equal(a.history("observer", "observer").messages.length, 0);
-	a.leave("peer", "peer");
 	assert.equal(a.history("peer", "peer").messages[0].text, "Private note");
-	assert.throws(() => a.send("peer", "peer", "all", "no room", true), /requires a party/);
 	assert.throws(() => a.send("a", "a", "a", "self", true), /unambiguous/);
 });
-
-test("upgrading the original database preserves membership, inbox and admitted receipts", t => {
+test("upgrading a party database keeps direct messages and receipts and drops group state", t => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-upgrade-"));
 	const old = new DatabaseSync(join(directory, "party.sqlite"));
 	old.exec(`CREATE TABLE members (session TEXT PRIMARY KEY,room TEXT NOT NULL,epoch TEXT NOT NULL,label TEXT NOT NULL,owner TEXT NOT NULL,heartbeat INTEGER NOT NULL,state TEXT NOT NULL,wakes INTEGER NOT NULL DEFAULT 0);
 		CREATE TABLE messages (id TEXT PRIMARY KEY,room TEXT NOT NULL,sender TEXT NOT NULL,sender_epoch TEXT NOT NULL,sender_label TEXT NOT NULL,recipient TEXT NOT NULL,recipient_epoch TEXT NOT NULL,text TEXT NOT NULL,created INTEGER NOT NULL,wake INTEGER NOT NULL,admitted INTEGER NOT NULL DEFAULT 0);
 		INSERT INTO members VALUES ('a','team','ea','A','a',0,'offline',0),('b','team','eb','B','b',0,'offline',7);
-		INSERT INTO messages VALUES ('pending','team','a','ea','A','b','eb','Old pending',1,1,0),('done','team','a','ea','A','b','eb','Old delivered',2,0,1);`);
+		INSERT INTO messages VALUES ('pending','','a','ea','A','b','eb','Old pending',1,1,0),('done','','a','ea','A','b','eb','Old delivered',2,0,1),
+			('broadcast','team','a','ea','A','b','eb','Old broadcast',3,1,0);`);
 	old.close();
 	const db = new PartyStore(directory);
 	t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 	db.register("b", "new-owner", "B");
-	assert.equal(db.member("b").epoch, "eb");
+	assert.equal(db.member("b").room, "");
 	assert.equal(db.member("b").wakes, 0, "legacy batch counts cannot represent autonomous idle starts");
 	assert.deepEqual(db.pending("b", "new-owner").map(x => x.id), ["pending"]);
 	assert.equal(db.history("b", "new-owner").messages.length, 2);

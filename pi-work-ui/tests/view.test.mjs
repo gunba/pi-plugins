@@ -10,7 +10,7 @@ const plain = { fg(_color, text) { return text; }, bold(text) { return text; } }
 const steps = [{ content: "finished", status: "completed" }, { content: "current", status: "in_progress" }, { content: "next", status: "pending" }];
 const plan = { id: "p", revision: 2, phase: "active", activation: "armed", autoContinue: true, steps, roundsStarted: 3, maxRounds: 50, objective: "Verify 漢字 👨‍👩‍👧‍👦 é 🇦🇺" };
 const agents = [{ id: "a", label: "Unit tests", state: "running", activity: "testing" }, { id: "b", label: "Compile", state: "error", errorMessage: "Compiler failed" }];
-const snapshot = () => [["plan", planWorkSection(plan)], ["subagents", subagentWorkSection(agents)], ["party", { label: "Party", status: "2 peers", detail: "Peer details" }]];
+const snapshot = () => [["plan", planWorkSection(plan)], ["subagents", subagentWorkSection(agents)], ["messages", { label: "Party", status: "2 peers", detail: "Peer details" }]];
 const mouse = (y, extra = {}) => ({ type: "click", button: "left", x: 1, y, screenX: 1, screenY: y, width: 100, height: 20, shift: false, alt: false, ctrl: false, ...extra });
 const modal = (data = snapshot(), theme = plain, height = 24) => new WorkModal(data, "plan", theme, getKeybindings(), () => height, () => {}, () => {});
 

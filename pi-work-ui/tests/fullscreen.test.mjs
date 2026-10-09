@@ -52,7 +52,7 @@ for (const Renderer of [TuiAltScreen, TuiMainScreen]) test(`native ${Renderer.na
 	} };
 	ui.start(ctx);
 	ui.source("plan").set({ label: "Plan", status: "active", summary: "Summary", detail: `Plan details\n${Array.from({ length: 80 }, (_, i) => `Line ${i}`).join("\n")}` });
-	const todos = ui.source("party");
+	const todos = ui.source("messages");
 	todos.set({ label: "Party", status: "1 active", summary: "Summary", detail: "Task details" });
 	let editorText = "draft";
 	const editor = new Text("draft", 0, 0);
@@ -76,7 +76,7 @@ for (const Renderer of [TuiAltScreen, TuiMainScreen]) test(`native ${Renderer.na
 	input("\x1b[F");
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.match(overlay.lines().join("\n"), /Line 79/);
-	input("\t"); input("\t"); // Plan → Subagents → Party.
+	input("\t"); input("\t"); // Plan → Subagents → Messages.
 	await new Promise(resolve => setTimeout(resolve, 40));
 	assert.match(overlay.lines().join("\n"), /Task details/);
 	todos.set({ label: "Party", status: "done", summary: "Summary", detail: "Task details updated" });
@@ -133,7 +133,7 @@ test("native chat input dock routes a complete mouse gesture to work controls", 
 		},
 	} });
 	ui.source("plan").set({ label: "Plan", status: "active", summary: "Plan summary", detail: "Plan details" });
-	ui.source("party").set({ label: "Party", status: "active", summary: "Peer summary", detail: "Task details" });
+	ui.source("messages").set({ label: "Party", status: "active", summary: "Peer summary", detail: "Task details" });
 	tui.setFocus(editor);
 	tui.start();
 	t.after(() => { ui.close(); tui.stop(); });

@@ -68,7 +68,7 @@ restart; Settings identifies them.
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
 | `pi-context-ledger` | Expandable initial-context card and Settings controls; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
-| `pi-party` | Account-wide encrypted discovery and messaging; inline party labels, shared membership dialogs and Disband without stopping work. Owning-driver resume, approved creation and separate confirmed close-all report per-computer outcomes. Already-closed agents are skipped without waking their owner. |
+| `pi-party` | Account-wide encrypted agent discovery and direct messages, a Messages card, and user-approved agent creation on a chosen computer. |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
 | `pi-subagents` | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |
@@ -131,10 +131,10 @@ reopened only if transaction creation failed before any read or write was admitt
 - Secret configuration fields stay protected. Editing malformed sensitive
   files or changing protected connection fields requires a host-side editor.
   Native OAuth flows may also require the provider's browser setup on the host.
-- Shared parties require computers enrolled under the same account and a running
-  Desk connection. Local party operation remains independent. Remote inbox
-  acceptance is not a reply; disconnected recipients and uncertain lifecycle
-  outcomes are reported explicitly. Party channels cannot invoke browser APIs.
+- Messaging across computers requires computers enrolled under the same account
+  and a running Desk connection; messaging on one computer works without it.
+  Remote inbox acceptance is not a reply; disconnected recipients and uncertain
+  creation outcomes are reported explicitly. The agent channel cannot invoke browser APIs.
 - Tool-title timestamp decoration is not patched into Pi's private TUI.
   The terminal keeps its live activity clock; Desk uses native timing metadata.
 - Stop a terminal session before moving it to Desk. The terminal extension runs

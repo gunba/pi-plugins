@@ -20,7 +20,7 @@ session information also remain resident.
 
 Compacted subagent and party notifications retain only their `details.messageId`
 or batched `details.messageIds` delivery markers, not their content.
-`party_read` tool results retain only `details.partyMessageIds`.
+`agent_inbox` (formerly `party_read`) tool results retain only `details.partyMessageIds`.
 Reload recovery uses these markers to distinguish delivered messages from
 genuinely pending reports.
 

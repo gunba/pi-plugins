@@ -2,7 +2,7 @@ import { getMarkdownTheme, type Theme, type ToolDefinition, type ToolRenderResul
 import { Container, Markdown, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { safeWorkText } from "../pi-work-ui/view.ts";
 
-type PartyTool = "send" | "members" | "read";
+type PartyTool = "send" | "read";
 type Label = (id: string) => string;
 type RenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
 type RenderResult = Parameters<NonNullable<ToolDefinition["renderResult"]>>[0];
@@ -15,7 +15,7 @@ function messageBody(text: string, expanded: boolean): Component {
 
 export function renderPartyCall(kind: PartyTool, args: { to?: string; message?: string }, theme: Theme, context: RenderContext, label: Label): Component {
 	const to = typeof args.to === "string" ? args.to : "";
-	const title = kind === "send" ? `${to === "all" ? "Party" : "Direct"} → ${to === "all" ? "everyone" : to ? label(to) : "…"}` : kind === "members" ? "Party members" : "Peer inbox";
+	const title = kind === "send" ? `Message → ${to ? label(to) : "…"}` : "Agent inbox";
 	const heading = theme.fg("toolTitle", theme.bold(safeWorkText(title)));
 	if (kind !== "send" || typeof args.message !== "string") return rows([heading]);
 	const container = new Container();
@@ -26,7 +26,7 @@ export function renderPartyCall(kind: PartyTool, args: { to?: string; message?: 
 
 export function renderPartyResult(kind: PartyTool, result: RenderResult, options: ToolRenderResultOptions, theme: Theme, context: RenderContext, label: Label): Component {
 	const raw = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-	if (context.isError) return options.expanded ? new Text(theme.fg("error", safeWorkText(raw, true)), 0, 0) : rows([theme.fg("error", preview(raw) || "Party operation failed")]);
+	if (context.isError) return options.expanded ? new Text(theme.fg("error", safeWorkText(raw, true)), 0, 0) : rows([theme.fg("error", preview(raw) || "Agent message failed")]);
 	if (options.isPartial) return rows([theme.fg("muted", kind === "send" ? "Sending…" : "Reading…")]);
 	let value;
 	try { value = JSON.parse(raw); }
@@ -34,17 +34,14 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 	let lines: string[];
 	if (kind === "send" && Array.isArray(value?.queued)) {
 		const wake = (context.args as { wake?: boolean })?.wake !== false ? "reply requested" : "FYI · no wake";
-		lines = [`Queued for ${value.queued.length} ${value.queued.length === 1 ? "recipient" : "recipients"} · ${wake}`];
+		lines = [`Queued · ${wake}`];
 		for (const receipt of value.queued) {
 			const held = receipt.recipient?.deliveryReason && (receipt.recipient.delivery !== "limited" || receipt.wakeRequested);
 			if (held || options.expanded) lines.push(`→ ${label(String(receipt.to))}${held ? ` · ${receipt.recipient.deliveryReason}` : ""}`);
 		}
-	} else if (kind === "members" && Array.isArray(value)) {
-		lines = value.map(peer => `${peer.label}${peer.self ? " (you)" : ""} · ${peer.state}`);
-		if (!lines.length) lines.push("No party members.");
 	} else if (kind === "read" && Array.isArray(value)) {
-		lines = value.map(message => `${message.label || label(String(message.sender))}${message.kind === "invite" ? ` · invitation to ${message.invitedParty}` : ""}: ${options.expanded ? message.message : preview(String(message.message))}`);
-		if (!lines.length) lines.push("No unread party messages.");
+		lines = value.map(message => `${message.label || label(String(message.sender))}: ${options.expanded ? message.message : preview(String(message.message))}`);
+		if (!lines.length) lines.push("No unread messages.");
 	} else lines = [raw];
 	const display = lines.map(line => theme.fg("toolOutput", safeWorkText(line, true)));
 	return options.expanded ? new Text(display.join("\n"), 0, 0) : rows(display);
@@ -52,7 +49,7 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 
 export function renderPartyNotice(message: { content: unknown }, options: { expanded: boolean }, theme: Theme): Component {
 	const raw = typeof message.content === "string" ? message.content : "";
-	const [header = "Party message", ...body] = raw.split("\n");
+	const [header = "Message", ...body] = raw.split("\n");
 	const container = new Container();
 	container.addChild(rows([theme.fg("accent", safeWorkText(header.replace(/ \([0-9a-f-]{36}\)$/i, "")))]));
 	container.addChild(messageBody(body.join("\n"), options.expanded));

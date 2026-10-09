@@ -162,22 +162,6 @@ test("interrupt affects only the current turn and parks queued work until a late
 	}
 });
 
-test("party resume unparks existing FIFO work without duplicating a queued turn", async () => {
-	const factory = new FakeDriverFactory(blockingPrompt), h = createHarness({ factory });
-	try {
-		const child = await h.runtime.start({ description: "Peer worker", prompt: "hold", context: "fresh", runInBackground: true, parent: h.parent() });
-		await waitUntil(() => factory.opens[0]?.isRunning);
-		h.runtime.followupTask(h.runtime.rootAuthority, child.subagentId, "queued work");
-		h.runtime.interrupt(h.runtime.rootAuthority, child.subagentId);
-		await waitUntil(() => !factory.opens[0].isRunning); await new Promise(setImmediate);
-		factory.onPrompt = async (_driver, text) => completedOutcome(text);
-		assert.equal(h.runtime.resumePartyAgent(h.runtime.rootAuthority, child.subagentId), "queued");
-		await waitUntil(() => factory.promptLog.some(row => row.message === "queued work"));
-		assert.equal(factory.promptLog.filter(row => row.message === "queued work").length, 1);
-		assert.equal(factory.promptLog.some(row => row.message.includes("party_read")), false);
-	} finally { await h.cleanup(); }
-});
-
 test("foreground delegation returns the selected result and is not continuable", async () => {
 	const harness = createHarness();
 	try {

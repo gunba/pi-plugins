@@ -90,7 +90,7 @@ function pruneEntryPayload(entry: SessionEntry, preserveCustomState: boolean): n
 			if ("content" in message) released += clearField(message, "content", []);
 			if ("output" in message) released += clearField(message, "output", "");
 			if ("details" in message) {
-				const ids = message.role === "toolResult" && message.toolName === "party_read"
+				const ids = message.role === "toolResult" && ["agent_inbox", "party_read"].includes(String(message.toolName))
 					? record(message.details)?.partyMessageIds : undefined;
 				released += clearField(message, "details", Array.isArray(ids)
 					? { partyMessageIds: ids.filter((id): id is string => typeof id === "string") } : undefined);

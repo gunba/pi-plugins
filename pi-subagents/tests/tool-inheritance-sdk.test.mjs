@@ -153,7 +153,7 @@ async function integration(t, { search = false, party = false, policy = false, g
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
 		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(guard ? ["exec_command", "codemode"] : []), ...(search ? ["web_search"] : []),
-			...(party ? ["party_members", "party_send", "party_read", "party_discover", "party_join", "party_profile", "party_leave"] : [])] }));
+			...(party ? ["agent_send", "agent_inbox", "agent_discover", "agent_profile"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
 	const rootCatalogs = [];
@@ -262,8 +262,8 @@ test("child initialization retains enabled tools from multiple source extensions
 	assert.equal(h.requests.length, 1);
 });
 
-test("party tools inherit with child-local discovery and membership", { timeout: 25000 }, async (t) => {
-	const names = ["party_members", "party_send", "party_read", "party_discover", "party_join", "party_profile", "party_leave"];
+test("agent message tools inherit with child-local discovery", { timeout: 25000 }, async (t) => {
+	const names = ["agent_send", "agent_inbox", "agent_discover", "agent_profile"];
 	const h = await integration(t, { party: true, initialActive: ["custom_inventory", ...names] });
 	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
 	const child = await h.open("root-party-child", { descriptorTools: ["custom_inventory", ...names] });
@@ -271,27 +271,22 @@ test("party tools inherit with child-local discovery and membership", { timeout:
 	assert.ok(available.includes("custom_inventory"));
 	assert.ok(names.every(name => available.includes(name)));
 	await call(child, "custom_inventory");
-	await call(child, "party_members");
+	await call(child, "agent_profile", { description: "Reviewing inheritance" });
 	assert.equal(toolResults(child.manager).at(-1).isError, false);
-	await call(child, "party_join", { party: "child-team" });
-	await call(child, "party_profile", { description: "Reviewing inheritance" });
-	const found = JSON.parse((await call(child, "party_discover")).output).agents;
-	assert.equal(found.find(agent => agent.id === "root-party-child").party, "child-team");
+	const found = JSON.parse((await call(child, "agent_discover")).output).agents;
 	assert.equal(found.find(agent => agent.id === "root-party-child").kind, "child");
 	assert.equal(found.find(agent => agent.id === "root-party-child").wakeable, false);
-	assert.equal(found.find(agent => agent.id === "root-tool-fixture").party, null);
 	const before = h.observations.length;
-	const sender = h.rootSession.agent.state.tools.find(tool => tool.name === "party_send");
+	const sender = h.rootSession.agent.state.tools.find(tool => tool.name === "agent_send");
 	await sender.execute("peer-direct", { to: "root-party-child", message: "NATIVE DIRECT FINDING", wake: true });
 	await new Promise(resolve => setTimeout(resolve, 50));
-	assert.equal(h.observations.length, before, "party cannot start an untracked idle-child turn");
+	assert.equal(h.observations.length, before, "a message cannot start an untracked idle-child turn");
 	assert.equal(child.driver.isRunning, false);
-	await call(child, "party_members");
+	await call(child, "agent_inbox");
 	assert.ok(h.observations.slice(before).some(item => item.peerMessageSeen), "queued direct message reaches the next native SDK child turn");
 	assert.ok(names.every(name => h.rootSession.getActiveToolNames().includes(name)));
 	assert.equal(h.requests.length, 0);
 });
-
 test("arbitrary tools use child cwd/model/session, retain false parent flags and hooks, and isolate shutdown state", { timeout: 25000 }, async (t) => {
 	const h = await integration(t);
 	const rootTool = h.rootSession.agent.state.tools.find((tool) => tool.name === "custom_inventory");

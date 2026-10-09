@@ -45,7 +45,7 @@ import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from 
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
-import { PartyDialog, PartyLabel, PartySessions, PartyWakeMarker } from "./party-sessions.tsx";
+import { AgentWakeMarker } from "./agent-wake.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
 import { DetailsView } from "./details-view.tsx";
@@ -94,7 +94,6 @@ export function App({ account }: { account?: BrowserAccount }) {
     "workspace" | "settings" | "view" | "agents" | undefined
   >();
   const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-visible") !== "false");
-  const [workspaceParty, setWorkspaceParty] = useState<{ party?: string }>();
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -533,9 +532,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const host = state.host;
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }];
-  const partyComputers = computers.map(computer => ({ id: computer.id, name: computer.name, connected: computer.connected, directory: computer.parties }));
-  const manageParty = () => setWorkspaceParty({ party: partyComputers.flatMap(computer => computer.directory?.agents ?? [])
-    .find(agent => agent.id === (session?.snapshot?.id ?? session?.agentId))?.party ?? undefined });
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
@@ -605,24 +601,23 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>}
           {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
             <button onClick={() => location.reload()}>Reload app</button></div>}
-          <PartySessions directory={computer.parties} computer={computer.id} computers={partyComputers} connected={computer.connected}
-            sessions={host.sessions.filter(item => item.computer === computer.id)
-              .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created)}
-            renderSession={(item, agent, manage) => <div className={`session-row${agent?.party ? " with-party" : ""}`} key={item.key}>
+          {host.sessions.filter(item => item.computer === computer.id)
+            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map(item => {
+            const agent = computer.parties?.agents.find(peer => peer.id === (item.snapshot?.id ?? item.agentId));
+            return <div className="session-row" key={item.key}>
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
                 <span className={`status-dot ${sessionActivity(item)}`} role="img"
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
-                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><PartyWakeMarker agent={agent} /></span>
-                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
-                    {agent?.party && <><span aria-hidden="true">·</span><PartyLabel name={agent.party} /></>}</small></span>
+                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><AgentWakeMarker agent={agent} /></span>
+                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span></small></span>
               </button>
-              {agent?.party && <button className="icon-button session-party" aria-label={`Manage party ${agent.party}`} title={`Manage party · ${agent.party}`} onClick={manage}><Icon name="more" /></button>}
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
-            </div>} />
+            </div>;
+          })}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
             <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
@@ -876,7 +871,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </>}
       </main>
       {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
-        invoke={run} openAgents={openAgentPane} manageParty={manageParty} focused={panel === "workspace" ? focusedView : undefined}
+        invoke={run} openAgents={openAgentPane} focused={panel === "workspace" ? focusedView : undefined}
         openView={id => { setFocusedView(id); setPanel("view"); }} />}
       {panel && !(panel === "workspace" && wideWorkspace) && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
@@ -907,7 +902,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
             answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
           {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
-            invoke={run} openAgents={openAgentPane} manageParty={manageParty} focused={focusedView}
+            invoke={run} openAgents={openAgentPane} focused={focusedView}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
@@ -927,7 +922,6 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <div className="panel-section-heading">
                   {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
                   <WorkspaceActions view={view} disabled={!!view.working || !connected}
-                    manageParty={view.id === "party" ? manageParty : undefined}
                     invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
                   </div>
                   {view.working && <p className="muted" role="status">{view.working}…</p>}
@@ -961,7 +955,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             ) : (
               <p className="muted">
                 {panel === "view" ? "This view is unavailable. Reopen it from this session's controls."
-                  : "Plans, agents and party activity will appear here."}
+                  : "Plans, agents and messages will appear here."}
               </p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
@@ -971,7 +965,6 @@ export function App({ account }: { account?: BrowserAccount }) {
           </SettingsLayout>
         </Inspector>
       )}
-      {workspaceParty && <PartyDialog computers={partyComputers} party={workspaceParty.party} preferred={session?.computer} close={() => setWorkspaceParty(undefined)} />}
       {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);

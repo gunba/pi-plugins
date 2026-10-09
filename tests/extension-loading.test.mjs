@@ -30,7 +30,7 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   assert.ok(result.extensions.some(extension => extension.commands.has('codex-wire')));
   assert.ok(result.extensions.some(extension => extension.tools.has('spawn_agent')));
   assert.ok(result.extensions.every(extension => !extension.tools.has('subagent') && !extension.tools.has('subagent_fork') && !extension.tools.has('report')));
-  assert.ok(result.extensions.some(extension => extension.tools.has('party_send')));
+  assert.ok(result.extensions.some(extension => extension.tools.has('agent_send')));
   assert.ok(result.extensions.some(extension => extension.commands.has('context-window')));
   assert.equal(result.extensions.filter(extension => extension.commands.has('work')).length, 1);
   const links = result.extensions.find(extension => extension.path.replaceAll('\\', '/').endsWith('/pi-local-links/extensions/local-links.ts'));

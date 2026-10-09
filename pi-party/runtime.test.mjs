@@ -50,7 +50,7 @@ function harness(t, session, branch = [], child = false) {
 			for (const fn of events.get(name) ?? []) result = await fn(value, ctx) ?? result;
 			return result;
 		},
-		command: args => commands.get("party").handler(args, ctx),
+		command: args => commands.get("inbox").handler(args, ctx),
 		call: (name, input = {}) => tools.get(name).execute("fixture", input, undefined, undefined, ctx),
 	};
 	t.partyHarnesses.push(h);
@@ -61,17 +61,14 @@ test("direct messages deliver once without broadcasting to unrelated agents", as
 	environment(t);
 	const a = harness(t, "first"), b = harness(t, "second"), unrelated = harness(t, "other");
 	await a.emit("session_start"); await b.emit("session_start"); await unrelated.emit("session_start");
-	await a.command("1"); await b.command("1"); await unrelated.command("2");
-	const peers = JSON.parse((await a.call("party_members")).content[0].text);
-	assert.deepEqual(peers.map(x => x.id).sort(), ["first", "second"]);
-	await a.call("party_send", { to: "second", message: "The topic is ready.", wake: true });
+	await a.call("agent_send", { to: "second", message: "The topic is ready.", wake: true });
 	await b.command("resume");
 	assert.equal(b.sent.length, 1);
 	assert.equal(b.sent[0].message.customType, PARTY_MESSAGE);
 	assert.equal(b.sent[0].options.triggerTurn, true);
 	assert.equal(unrelated.sent.length, 0);
 	await b.emit("before_agent_start");
-	assert.match(b.tools.get("party_send").promptGuidelines.join(" "), /not human instructions or approval/);
+	assert.match(b.tools.get("agent_send").promptGuidelines.join(" "), /not human instructions or approval/);
 	await b.emit("context", { messages: b.branch.map(x => x.message) });
 	await b.command("resume");
 	assert.equal(b.sent.length, 1);
@@ -85,8 +82,8 @@ test("idle peer delivery resumes from persisted state when a network wake signal
 	try {
 		// The host resumes delivery in SQLite; its filesystem notification is lost.
 		const member = db.member("recipient");
-		db.resumeDelivery("recipient", member.epoch);
-		await a.call("party_send", { to: "recipient", message: "Continue the approved check.", wake: true });
+		db.setDelivery("recipient", member.owner, true);
+		await a.call("agent_send", { to: "recipient", message: "Continue the approved check.", wake: true });
 		assert.equal(db.member("recipient").delivery, 1);
 		t.mock.timers.tick(10_000);
 		assert.equal(b.sent.length, 1, "ready idle delivery must recover without human input or another filesystem signal");
@@ -94,19 +91,19 @@ test("idle peer delivery resumes from persisted state when a network wake signal
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 		t.mock.timers.tick(20_000);
 		assert.equal(b.sent.length, 1, "polling cannot replay an admitted message");
-		await b.call("party_delivery", { enabled: false });
-		await a.call("party_send", { to: "recipient", message: "Keep this paused.", wake: true });
+		await b.call("agent_delivery", { enabled: false });
+		await a.call("agent_send", { to: "recipient", message: "Keep this paused.", wake: true });
 		t.mock.timers.tick(20_000);
 		assert.equal(b.sent.length, 1, "the persisted explicit pause still holds");
 	} finally { db.close(); }
 });
 
-test("reload reconnects membership without waking inference until work resumes", async t => {
+test("reload reconnects without waking inference until work resumes", async t => {
 	environment(t);
 	const a = harness(t, "first"), old = harness(t, "second");
 	await a.emit("session_start"); await old.emit("session_start");
-	await a.command("1"); await old.command("1"); await old.emit("session_shutdown");
-	await a.call("party_send", { to: "second", message: "Waiting after reload" });
+	await old.emit("session_shutdown");
+	await a.call("agent_send", { to: "second", message: "Waiting after reload" });
 	const resumed = harness(t, "second");
 	await resumed.emit("session_start", { reason: "reload" });
 	t.mock.timers.tick(30_000);
@@ -116,13 +113,13 @@ test("reload reconnects membership without waking inference until work resumes",
 	assert.equal(resumed.sent.length, 1);
 });
 
-test("roster calls and opening live chat cannot arm, wake or acknowledge a dormant session", async t => {
+test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant session", async t => {
 	environment(t);
 	initTheme("dark", false);
 	const a = harness(t, "first"), old = harness(t, "second");
 	await a.emit("session_start"); await old.emit("session_start");
-	await a.command("1"); await old.command("1"); await old.emit("session_shutdown");
-	await a.call("party_send", { to: "all", message: "**Waiting** for the next task" });
+	await old.emit("session_shutdown");
+	await a.call("agent_send", { to: "second", message: "**Waiting** for the next task" });
 	const b = harness(t, "second");
 	await b.emit("session_start");
 	b.ctx.mode = "tui";
@@ -135,10 +132,10 @@ test("roster calls and opening live chat cannot arm, wake or acknowledge a dorma
 	try {
 		const owner = connection.member("second").owner;
 		const before = JSON.stringify([connection.pending("second", owner), connection.member("second").wakes]);
-		const opening = b.command("chat");
+		const opening = b.command("");
 		assert.ok(view);
 		assert.match(view.render(100).join("\n"), /Waiting/);
-		await a.call("party_members"); await b.call("party_members");
+		await a.call("agent_discover"); await b.call("agent_discover");
 		t.mock.timers.tick(30_000);
 		view.handleInput("\x1b[H"); view.render(100); view.handleInput("\x1b[F"); view.refresh();
 		assert.equal(a.sent.length, 0);
@@ -150,22 +147,21 @@ test("roster calls and opening live chat cannot arm, wake or acknowledge a dorma
 	} finally { connection.close(); }
 });
 
-test("party_send accepts and delivers large messages without a schema or runtime length cap", async t => {
+test("agent_send accepts and delivers large messages without a schema or runtime length cap", async t => {
 	environment(t);
 	const a = harness(t, "first"), b = harness(t, "second");
 	await a.emit("session_start"); await b.emit("session_start");
-	await a.command("1"); await b.command("1");
-	const tool = a.tools.get("party_send");
+	const tool = a.tools.get("agent_send");
 	assert.equal(tool.parameters.properties.message.maxLength, undefined);
 	const text = "Detailed findings 🧪\n".repeat(10_000);
 	const args = { to: "second", message: text, wake: false };
 	assert.deepEqual(validateToolArguments(tool, {
-		type: "toolCall", id: "large-party-message", name: "party_send", arguments: args,
+		type: "toolCall", id: "large-party-message", name: "agent_send", arguments: args,
 	}), args);
-	await a.call("party_send", args);
+	await a.call("agent_send", args);
 	await b.command("resume");
 	assert.equal(b.sent.length, 1);
-	assert.equal(b.sent[0].message.content, `Direct message · first (first)\n\n${text}`);
+	assert.equal(b.sent[0].message.content, `Message · first (first)\n\n${text}`);
 	assert.equal(b.sent[0].options.triggerTurn, false);
 	await b.emit("context", { messages: b.branch.map(x => x.message) });
 	await b.command("resume");
@@ -176,8 +172,7 @@ test("silent messages do not wake idle peers and compact delivery IDs suppress r
 	environment(t);
 	const a = harness(t, "first"), b = harness(t, "second");
 	await a.emit("session_start"); await b.emit("session_start");
-	await a.command("1"); await b.command("1");
-	await a.call("party_send", { to: "second", message: "FYI", wake: false });
+	await a.call("agent_send", { to: "second", message: "FYI", wake: false });
 	await b.command("resume");
 	assert.equal(b.sent[0].options.triggerTurn, false);
 	const id = b.sent[0].message.details.messageId;
@@ -189,25 +184,13 @@ test("silent messages do not wake idle peers and compact delivery IDs suppress r
 	assert.equal(reopened.sent.length, 0);
 });
 
-test("leaving filters queued peer context that was not yet admitted", async t => {
-	environment(t);
-	const a = harness(t, "first"), b = harness(t, "second");
-	await a.emit("session_start"); await b.emit("session_start");
-	await a.command("1"); await b.command("1");
-	await a.call("party_send", { to: "all", message: "Old membership" });
-	await b.command("resume");
-	await b.command("leave");
-	const result = await b.emit("context", { messages: b.branch.map(x => x.message) });
-	assert.deepEqual(result.messages, []);
-});
-
 test("working delivery does not exhaust idle wakes; actual idle wakes stay bounded", async t => {
 	environment(t);
 	const a = harness(t, "first"), b = harness(t, "second");
 	await a.emit("session_start"); await b.emit("session_start");
-	await a.command("1"); await b.command("1"); b.setBusy(true);
+	await b.command("resume"); b.setBusy(true);
 	for (let i = 0; i < 10; i++) {
-		await a.call("party_send", { to: "second", message: `Coordination ${i}` });
+		await a.call("agent_send", { to: "second", message: `Coordination ${i}` });
 		t.mock.timers.tick(10_000);
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 	}
@@ -215,16 +198,16 @@ test("working delivery does not exhaust idle wakes; actual idle wakes stay bound
 	assert.ok(b.sent.every(item => !item.options.triggerTurn), "steering must not start another run");
 	b.setBusy(false);
 	for (let i = 10; i < 19; i++) {
-		await a.call("party_send", { to: "second", message: `Idle coordination ${i}` });
+		await a.call("agent_send", { to: "second", message: `Idle coordination ${i}` });
 		t.mock.timers.tick(10_000);
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 	}
 	assert.equal(b.sent.length, 18);
-	const peers = JSON.parse((await b.call("party_members")).content[0].text);
-	assert.equal(peers.find(peer => peer.self).delivery, "limited");
-	assert.match(peers.find(peer => peer.self).deliveryReason, /wake limit/i);
+	const self = async () => JSON.parse((await b.call("agent_discover", { query: "second" })).content[0].text).agents.find(peer => peer.self);
+	assert.equal((await self()).delivery, "limited");
+	assert.match((await self()).deliveryReason, /wake limit/i);
 	await b.emit("session_start");
-	assert.equal(JSON.parse((await b.call("party_members")).content[0].text).find(peer => peer.self).delivery, "limited",
+	assert.equal((await self()).delivery, "limited",
 		"a wake limit must not be hidden by dormant startup delivery");
 	await b.emit("input", { source: "extension" });
 	t.mock.timers.tick(10_000);
@@ -238,15 +221,15 @@ test("held wake requests do not block silent messages behind the delivery batch"
 	environment(t);
 	const a = harness(t, "sender"), b = harness(t, "recipient");
 	await a.emit("session_start"); await b.emit("session_start");
-	await a.command("team"); await b.command("team");
+	await b.command("resume");
 	for (let i = 0; i < 8; i++) {
-		await a.call("party_send", { to: "recipient", message: `Wake ${i}` });
+		await a.call("agent_send", { to: "recipient", message: `Wake ${i}` });
 		t.mock.timers.tick(10_000);
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 	}
 	assert.equal(b.sent.length, 8);
-	for (let i = 0; i < 9; i++) await a.call("party_send", { to: "recipient", message: `Held ${i}` });
-	await a.call("party_send", { to: "recipient", message: "Silent update", wake: false });
+	for (let i = 0; i < 9; i++) await a.call("agent_send", { to: "recipient", message: `Held ${i}` });
+	await a.call("agent_send", { to: "recipient", message: "Silent update", wake: false });
 	t.mock.timers.tick(20_000);
 	assert.equal(b.sent.length, 9);
 	assert.match(b.sent.at(-1).message.content, /Silent update/);
@@ -288,126 +271,98 @@ test("native session entries retain party receipt IDs through compaction and reo
 	assert.deepEqual(readFileSync(path), original);
 });
 
-test("agents discover, describe, invite, join, remove and leave entirely through tools", async t => {
+test("agents discover, describe and message each other entirely through tools", async t => {
 	environment(t);
 	const a = harness(t, "transport"), b = harness(t, "decoder"), c = harness(t, "observer");
 	for (const h of [a, b, c]) await h.emit("session_start");
-	await b.call("party_profile", { description: "Investigating stream decoding" });
-	const found = JSON.parse((await a.call("party_discover", { query: "decoding" })).content[0].text).agents;
+	await b.call("agent_profile", { description: "Investigating stream decoding" });
+	const found = JSON.parse((await a.call("agent_discover", { query: "decoding" })).content[0].text).agents;
 	assert.deepEqual(found.map(x => x.id), ["decoder"]);
 	assert.equal(found[0].cwd, "C:/work/decoder");
 	assert.equal(found[0].delivery, "paused");
 	assert.equal("owner" in found[0], false);
 	assert.equal("epoch" in found[0], false);
-	assert.equal("transcript" in found[0], false);
+	assert.equal("party" in found[0], false);
 	assert.equal(b.sent.length, 0, "discovery is read-only");
-	await a.call("party_join", { party: "streams" });
-	await a.call("party_invite", { agent: "decoder", message: "Compare our findings" });
-	assert.deepEqual(JSON.parse((await b.call("party_members")).content[0].text), []);
-	await b.emit("before_agent_start");
-	assert.equal(b.sent.length, 1);
-	assert.match(b.sent[0].message.content, /Invitation to party streams/);
-	assert.match(b.sent[0].message.content, /party_join/);
-	await b.emit("context", { messages: b.branch.map(x => x.message) });
-	await b.call("party_join", { party: "streams" });
-	assert.equal(JSON.parse((await b.call("party_members")).content[0].text).length, 2);
-	await b.call("party_remove", { agent: "transport" });
-	assert.deepEqual(JSON.parse((await a.call("party_members")).content[0].text), []);
-	await b.call("party_send", { to: "transport", message: "Direct follow-up", wake: false });
-	await a.call("party_delivery", { enabled: true });
+	for (const removed of ["party_join", "party_invite", "party_members", "party_remove", "party_leave", "party_resume"]) assert.equal(a.tools.has(removed), false);
+	await b.call("agent_send", { to: "transport", message: "Direct follow-up", wake: false });
+	await a.call("agent_delivery", { enabled: true });
 	assert.match(a.sent.at(-1).message.content, /Direct follow-up/);
 	assert.equal(a.sent.at(-1).options.triggerTurn, false);
-	await b.call("party_leave");
-	assert.equal(JSON.parse((await c.call("party_discover")).content[0].text).agents.length, 3);
+	assert.equal(c.sent.length, 0);
+	assert.equal(JSON.parse((await c.call("agent_discover")).content[0].text).agents.length, 3);
 });
-
-test("remote removal revokes in-flight broadcasts without discarding direct context", async t => {
-	environment(t);
-	const a = harness(t, "a"), b = harness(t, "b");
-	await a.emit("session_start"); await b.emit("session_start");
-	await a.call("party_join", { party: "team" }); await b.call("party_join", { party: "team" });
-	await a.call("party_send", { to: "all", message: "Room context" });
-	await a.call("party_send", { to: "b", message: "Direct context", wake: false });
-	await b.call("party_delivery", { enabled: true });
-	assert.equal(b.sent.length, 2);
-	await a.call("party_remove", { agent: "b" });
-	const context = await b.emit("context", { messages: b.branch.map(x => x.message) });
-	assert.equal(context.messages.length, 1);
-	assert.match(context.messages[0].content, /Direct context/);
-	assert.equal(JSON.parse((await b.call("party_members")).content[0].text).length, 0);
-});
-
 test("delivery can be paused, read and resumed by an agent without human-input attribution", async t => {
 	environment(t);
 	const a = harness(t, "a"), b = harness(t, "b");
 	await a.emit("session_start"); await b.emit("session_start");
-	await b.call("party_delivery", { enabled: false });
-	await a.call("party_send", { to: "b", message: "Queued while paused" });
+	await b.call("agent_delivery", { enabled: false });
+	await a.call("agent_send", { to: "b", message: "Queued while paused" });
 	await b.emit("before_agent_start");
 	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 0);
-	const read = await b.call("party_read");
+	const read = await b.call("agent_inbox");
 	assert.equal(JSON.parse(read.content[0].text)[0].message, "Queued while paused");
-	await b.emit("context", { messages: [{ role: "toolResult", toolName: "party_read", details: read.details }] });
-	await a.call("party_send", { to: "b", message: "Resume autonomously" });
-	await b.call("party_delivery", { enabled: true });
+	await b.emit("context", { messages: [{ role: "toolResult", toolName: "agent_inbox", details: read.details }] });
+	await a.call("agent_send", { to: "b", message: "Resume autonomously" });
+	await b.call("agent_delivery", { enabled: true });
 	assert.equal(b.sent.length, 1);
 	assert.match(b.sent[0].message.content, /Resume autonomously/);
 });
 
-test("managed children have local party tools without an out-of-driver idle wake", async t => {
+test("managed children have local message tools without an out-of-driver idle wake", async t => {
 	environment(t);
 	const a = harness(t, "a"), b = harness(t, "child", [], true);
 	await a.emit("session_start"); await b.emit("session_start");
-	await b.call("party_delivery", { enabled: true });
-	await a.call("party_send", { to: "child", message: "For your next managed turn", wake: true });
+	await b.call("agent_delivery", { enabled: true });
+	await a.call("agent_send", { to: "child", message: "For your next managed turn", wake: true });
 	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 0);
 	await b.emit("before_agent_start");
 	assert.equal(b.sent.length, 1);
 	assert.equal(b.sent[0].options.triggerTurn, false);
-	const agents = JSON.parse((await a.call("party_discover")).content[0].text).agents;
+	const agents = JSON.parse((await a.call("agent_discover")).content[0].text).agents;
 	assert.equal(agents.find(x => x.id === "child").wakeable, false);
-	await b.call("party_join", { party: "child-team" });
-	assert.equal(JSON.parse((await a.call("party_members")).content[0].text).length, 0);
 });
 
-test("direct chat is private and remains open when no party is joined", async t => {
+test("the inbox shows only this agent's messages and does not deliver them", async t => {
 	environment(t);
 	initTheme("dark", false);
 	const a = harness(t, "a"), b = harness(t, "b"), c = harness(t, "c");
 	for (const h of [a, b, c]) await h.emit("session_start");
-	await a.call("party_invite", { agent: "b" }).then(() => assert.fail("requires a party"), error => assert.match(String(error), /Join a party/));
-	await a.call("party_send", { to: "b", message: "Private direct findings", wake: false });
-	b.ctx.mode = "tui";
-	let view;
-	b.ctx.ui.custom = factory => new Promise(resolve => {
-		view = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text, bold: text => text }, {}, resolve);
-	});
-	const opening = b.command("chat direct");
-	assert.match(view.render(100).join("\n"), /Private direct findings/);
-	t.mock.timers.tick(10_000);
-	assert.match(view.render(100).join("\n"), /Direct messages/);
-	assert.equal(b.sent.length, 0);
-	await b.call("party_join", { party: "another" });
-	await b.call("party_leave");
-	assert.match(view.render(100).join("\n"), /Private direct findings/);
-	view.close(); await opening;
+	await a.call("agent_send", { to: "b", message: "Private direct findings", wake: false });
+	for (const [h, expected] of [[b, true], [c, false]]) {
+		h.ctx.mode = "tui";
+		let view;
+		h.ctx.ui.custom = factory => new Promise(resolve => {
+			view = factory({ terminal: { rows: 30 }, requestRender() {} }, { fg: (_color, text) => text, bold: text => text }, {}, resolve);
+		});
+		const opening = h.command("");
+		t.mock.timers.tick(10_000);
+		assert.equal(/Private direct findings/.test(view.render(100).join("\n")), expected);
+		assert.equal(h.sent.length, 0);
+		view.close(); await opening;
+	}
 });
-
-test("an explicit delivery pause persists across reload and party changes", async t => {
+test("an explicit delivery pause persists across reload", async t => {
 	environment(t);
 	const a = harness(t, "a"), b = harness(t, "b");
 	await a.emit("session_start"); await b.emit("session_start");
-	await b.call("party_delivery", { enabled: false });
+	await b.call("agent_delivery", { enabled: false });
 	await b.emit("session_shutdown");
 	const restored = harness(t, "b");
 	await restored.emit("session_start", { reason: "reload" });
-	await a.call("party_send", { to: "b", message: "Still paused" });
-	await restored.call("party_join", { party: "new-party" });
+	await a.call("agent_send", { to: "b", message: "Still paused" });
 	await restored.emit("input", { source: "interactive" });
 	await restored.emit("before_agent_start");
 	assert.equal(restored.sent.length, 0);
-	await restored.call("party_delivery", { enabled: true });
+	await restored.call("agent_delivery", { enabled: true });
 	assert.equal(restored.sent.length, 1);
+});
+
+test("agent_fork finds its checkpoint under the renamed tool", async () => {
+	const { partyForkPoint } = await import("./fork.ts");
+	const branch = [{ id: "before" }, { id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "agent_fork", id: "fork-1" }] } }];
+	assert.equal(partyForkPoint(branch, "fork-1"), "before");
+	assert.throws(() => partyForkPoint(branch, "other"), /no saved context checkpoint/);
 });

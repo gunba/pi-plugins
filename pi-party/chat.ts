@@ -4,7 +4,6 @@ import { safeWorkText } from "../pi-work-ui/view.ts";
 import type { HistoryPage, HistoryQuery } from "./store.ts";
 
 interface ChatOptions {
-	room: string;
 	session: string;
 	load: (query?: HistoryQuery) => HistoryPage;
 	theme: Theme;
@@ -31,14 +30,10 @@ export class PartyChat implements Component {
 
 	constructor(options: ChatOptions) {
 		this.options = options;
-		this.page = { room: options.room, messages: [], hasOlder: false, hasNewer: false };
+		this.page = { messages: [], hasOlder: false, hasNewer: false };
 		this.latest();
 	}
-	private load(query?: HistoryQuery): HistoryPage {
-		const page = this.options.load(query);
-		if (page.room !== this.options.room) throw Error("Party membership changed. Close and reopen the chat.");
-		return page;
-	}
+	private load(query?: HistoryQuery): HistoryPage { return this.options.load(query); }
 	private attempt(action: () => void): void {
 		if (this.closed) return;
 		try { action(); this.error = ""; }
@@ -56,11 +51,11 @@ export class PartyChat implements Component {
 			const time = new Date(message.created).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 			const route = `${participant(message.sender, message.sender_label)} → ${participant(message.recipient, message.recipient_label)}`;
 			const delivery = message.admitted ? "Delivered" : "Queued";
-			const wake = `${message.wake ? "reply requested" : "FYI"}${message.kind === "invite" ? ` · invitation to ${safeWorkText(message.invite_room)}` : ""}`;
+			const wake = message.wake ? "reply requested" : "FYI";
 			return [new Text(theme.fg("accent", theme.bold(route)) + "\n" + theme.fg("muted", `${time} · ${delivery} · ${wake}`), 0, 0),
 				new Markdown(safeWorkText(message.text, true), 0, 0, getMarkdownTheme()), new Spacer(1)];
 		});
-		if (!this.content.length) this.content.push(new Text(theme.fg("muted", "No messages yet. Messages sent with party_send will appear here."), 0, 0));
+		if (!this.content.length) this.content.push(new Text(theme.fg("muted", "No messages yet. Messages sent with agent_send will appear here."), 0, 0));
 	}
 	refresh(): void {
 		this.attempt(() => {
@@ -136,7 +131,7 @@ export class PartyChat implements Component {
 			const body = truncateToWidth(line, inner, "…");
 			return fit(theme.fg("border", "│ ") + body + " ".repeat(Math.max(0, inner - visibleWidth(body))) + theme.fg("border", " │"));
 		};
-		const title = truncateToWidth(` ${this.options.room ? `Party ${safeWorkText(this.options.room)}` : "Direct messages"} · Chat `, Math.max(1, this.width - 7), "…");
+		const title = truncateToWidth(` Agent messages `, Math.max(1, this.width - 7), "…");
 		const top = theme.fg("border", `╭${title}${"─".repeat(Math.max(0, this.width - visibleWidth(title) - 5))} × ╮`);
 		const count = this.page.messages.length;
 		const status = this.error || `${this.live ? "Live · " : ""}${count} ${count === 1 ? "message" : "messages"} · ${this.top + 1}–${Math.min(this.total, this.top + this.viewport)} of ${this.total} lines${this.newer || this.page.hasNewer ? " · newer messages — End to view" : ""}`;

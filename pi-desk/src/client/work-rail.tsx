@@ -14,11 +14,11 @@ const preference = (key: string): string[] => {
 	try { const value = JSON.parse(localStorage.getItem(key) ?? "[]"); return Array.isArray(value) ? value : []; }
 	catch { return []; }
 };
-const names: Record<string, string> = { subagents: "Agents", party: "Party", plan: "Plan" };
-export function WorkRail({ views, connected, invoke, openAgents, openView, manageParty, focused, embedded }: {
+const names: Record<string, string> = { subagents: "Agents", messages: "Messages", plan: "Plan" };
+export function WorkRail({ views, connected, invoke, openAgents, openView, focused, embedded }: {
 	views: readonly ViewSnapshot[]; connected: boolean; invoke: (command: WorkerCommand) => void;
 	openAgents: (id?: string, history?: boolean) => void; openView: (id: string) => void;
-	manageParty: () => void; focused?: string; embedded?: boolean;
+	focused?: string; embedded?: boolean;
 }) {
 	const [hidden, setHidden] = useState(() => preference("pi-desk:workspace-hidden"));
 	const [collapsed, setCollapsed] = useState(() => preference("pi-desk:workspace-collapsed"));
@@ -26,7 +26,7 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, manag
 	useEffect(() => { localStorage.setItem("pi-desk:workspace-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
 	useEffect(() => { if (focused) { setHidden(current => current.filter(id => id !== focused)); setCollapsed(current => current.filter(id => id !== focused)); } }, [focused]);
 	const sections = views.filter(view => (!view.scope || view.id === focused) && view.surface !== "settings" && !["work", "conversation"].includes(view.kind));
-	const order = ["plan", "subagents", "party"];
+	const order = ["plan", "subagents", "messages"];
 	sections.sort((a, b) => (order.indexOf(a.id) < 0 ? 99 : order.indexOf(a.id)) - (order.indexOf(b.id) < 0 ? 99 : order.indexOf(b.id)));
 	const inventory = agentInventory(views);
 	const agentState = leadingActivity(inventory.current.map(view => (view.data as UiConversation).status ?? "idle"));
@@ -50,7 +50,7 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, manag
 					{!closed && <div className="workspace-section-content">
 						{view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} disabled={locked}
 							invoke={action} expand={() => openView(view.id)} /> : <>
-							<WorkspaceActions view={view} invoke={action} disabled={locked} manageParty={view.id === "party" ? manageParty : undefined} />
+							<WorkspaceActions view={view} invoke={action} disabled={locked} />
 							{view.working && <p className="muted" role="status">{view.working}…</p>}
 							{view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
 							{view.id === "subagents" ? <>
@@ -60,33 +60,33 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, manag
 								{!inventory.current.length && <p className="workspace-empty">No agents working.</p>}
 								{inventory.history.length > 0 && <button className="rail-agent-history" onClick={() => openAgents(undefined, true)}><Icon name="clock" />Previous agents <span>{inventory.history.length}</span><span>›</span></button>}
 								<Disclosure id="agent-launch-defaults" className="workspace-secondary" summary="Launch defaults"><DetailsView data={{ fields: (view.data as UiDetails).fields }} disabled={locked} invoke={action} /></Disclosure>
-							</> : view.id === "party" ? <PartyContent data={view.data as UiDetails} invoke={action} disabled={locked} />
+							</> : view.id === "messages" ? <MessagesContent data={view.data as UiDetails} invoke={action} disabled={locked} />
 								: view.kind === "details" ? <DetailsView data={view.data as UiDetails} disabled={locked} invoke={action} />
 								: <button className="quiet-action" onClick={() => openView(view.id)}>Open {view.title}<Icon name="expand" /></button>}
 						</>}
 					</div>}
 				</section>;
 			})}
-			{!sections.length && <div className="work-rail-empty"><Icon name="layers" /><p>A conversation's plan, agents and party appear here.</p></div>}
+			{!sections.length && <div className="work-rail-empty"><Icon name="layers" /><p>A conversation's plan, agents and messages appear here.</p></div>}
 			{!!sections.length && sections.every(view => hidden.includes(view.id)) && <p className="workspace-empty">All sections hidden. Use Customize workspace to show them.</p>}
 		</div>
 	</aside>;
 }
 
-function PartyContent({ data, invoke, disabled }: { data: UiDetails; invoke: (action: UiAction) => void; disabled: boolean }) {
+function MessagesContent({ data, invoke, disabled }: { data: UiDetails; invoke: (action: UiAction) => void; disabled: boolean }) {
 	return <div className="workspace-party">
 		{data.summary && <p className="workspace-summary">{data.summary}</p>}
 		{data.items?.map(item => {
-			const message = item.actions?.find(action => action.id.startsWith("send:"));
-			const actions = item.actions?.filter(action => action !== message && !action.id.startsWith("remove:")) ?? [];
+			const message = item.actions?.find(action => action.id.startsWith("send:") || action.id.startsWith("reply:"));
+			const actions = item.actions?.filter(action => action !== message) ?? [];
 			return <div className="workspace-peer" key={item.id}>
-				<Disclosure id={`party:${item.id}`} className="workspace-peer-details" summary={<><strong>{item.title}</strong>{item.subtitle && <small>{item.subtitle}</small>}{item.status && <small className="workspace-peer-status">{item.status}</small>}</>}>
+				<Disclosure id={`messages:${item.id}`} className="workspace-peer-details" summary={<><strong>{item.title}</strong>{item.subtitle && <small>{item.subtitle}</small>}{item.status && <small className="workspace-peer-status">{item.status}</small>}</>}>
 					{item.body && <p className="detail-copy">{item.body}</p>}
 				</Disclosure>
 				{message && <button className="icon-button" title={`Message ${item.title}`} aria-label={`Message ${item.title}`} disabled={disabled} onClick={() => invoke(message)}><Icon name="chat" /></button>}
 				<ActionMenu actions={actions} disabled={disabled} invoke={invoke} label={`Actions for ${item.title}`} />
 			</div>;
 		})}
-		{!!data.fields?.length && <Disclosure id="party-delivery-details" className="workspace-secondary" summary="Delivery & session details"><DetailsView data={{ fields: data.fields }} disabled={disabled} invoke={invoke} /></Disclosure>}
+		{!!data.fields?.length && <Disclosure id="messages-delivery-details" className="workspace-secondary" summary="Delivery & session details"><DetailsView data={{ fields: data.fields }} disabled={disabled} invoke={invoke} /></Disclosure>}
 	</div>;
 }

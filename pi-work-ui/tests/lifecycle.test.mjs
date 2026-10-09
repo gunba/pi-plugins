@@ -42,7 +42,7 @@ test("one widget integrates three sources in stable order without footer/editor 
 	const ui = new WorkUi();
 	ui.start(h.ctx);
 	const agents = ui.source("subagents");
-	const todos = ui.source("party");
+	const todos = ui.source("messages");
 	const goal = ui.source("plan");
 	agents.set({ ...section("Agents"), label: "Subagents" });
 	todos.set({ ...section("Tasks"), label: "Party" });
@@ -50,7 +50,7 @@ test("one widget integrates three sources in stable order without footer/editor 
 	assert.equal(h.widgets.length, 1);
 	assert.equal(h.widgets[0].key, "pi-work");
 	assert.deepEqual(h.widgets[0].options, { placement: "aboveEditor" });
-	assert.deepEqual(ui.snapshot().map(([id]) => id), ["plan", "subagents", "party"]);
+	assert.deepEqual(ui.snapshot().map(([id]) => id), ["plan", "subagents", "messages"]);
 	assert.equal(h.lines().length, 4);
 	goal.set(section("Updated objective"));
 	assert.match(h.lines().join("\n"), /Updated objective/);
@@ -240,7 +240,7 @@ test("real loader registers once for distinct API facades on the same underlying
 
 test("standalone consumers each register their own panel and command", async (t) => {
 	const hubs = [];
-	for (const name of ["plan", "subagents", "party"]) {
+	for (const name of ["plan", "subagents", "messages"]) {
 		const result = await load(t, [{ name, factory(pi) { hubs.push(ensureWorkUi(pi)); } }]);
 		assert.deepEqual(result.errors, []); assertOneRegistration(result);
 	}

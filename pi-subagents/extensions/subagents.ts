@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getModelCredentials } from "../model-credentials.ts";
 import { join } from "node:path";
-import { PartyDriver } from "../../pi-party/driver.ts";
 import { SESSION_USAGE_CHANGED } from "../../pi-session-usage/index.ts";
 import {
 	getAgentDir,
@@ -262,7 +261,6 @@ export default function subagents(pi: ExtensionAPI): void {
 	let activityUi: WorkUiSource | undefined;
 	let closeDashboard: (() => void) | undefined;
 	let runtime: SubagentRuntime | undefined;
-	let partyDriver: PartyDriver | undefined;
 	let presentation: SubagentPresentation | undefined;
 	let notices: NoticeBatcher | undefined;
 	let unsubscribeRuntime: (() => void) | undefined;
@@ -299,7 +297,6 @@ export default function subagents(pi: ExtensionAPI): void {
 
 	const stopRuntime = async (): Promise<void> => {
 		maintenanceHandle?.close(); maintenanceHandle = undefined;
-		partyDriver?.close(); partyDriver = undefined;
 		presentation?.close();
 		presentation = undefined;
 		const active = runtime;
@@ -432,7 +429,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				toolCallId: `human:${randomUUID()}`, cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(),
 			}), permissions);
 		}
-		unsubscribeRuntime = created.subscribe(() => { updateActivity(activity, created); partyDriver?.refresh(); });
+		unsubscribeRuntime = created.subscribe(() => { updateActivity(activity, created); });
 		created.initialize();
 		maintenanceHandle = remote?.registerMaintenance?.({
 			scopes: () => created.maintenanceScopes(), inspect: () => created.checkpointReady(),
@@ -440,10 +437,6 @@ export default function subagents(pi: ExtensionAPI): void {
 			restore: async id => { created.restoreMaintenance(id); },
 			release: async id => { await created.releaseMaintenance(id); notices!.setPaused(false); },
 		});
-		partyDriver = new PartyDriver(join(getAgentDir(), "party"), ctx.sessionManager.getSessionId(), () => ctx.sessionManager.getSessionFile() ?? "",
-			() => created.snapshot().filter(child => !child.diagnosticReason).map(child => child.id),
-			request => request.kind === "resume" ? Promise.resolve(created.resumePartyAgent(created.rootAuthority, request.target))
-				: created.closePartyAgent(created.rootAuthority, request.target));
 		for (const notice of recoveredNotices) notices.add(notice);
 
 		updateActivity(activity, created);

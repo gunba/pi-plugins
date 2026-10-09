@@ -17,11 +17,11 @@ function fixture(t) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-chat-"));
 	let time = 1789300000000, height = 24, closed = 0;
 	const db = new PartyStore(directory, () => time++);
-	db.join(sender, "a", "cleanup", "Copilot Skills");
-	db.join(recipient, "b", "cleanup", "Studio Bridge");
+	db.register(sender, "a", "Copilot Skills");
+	db.register(recipient, "b", "Studio Bridge");
 	t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
-	return { db, send: text => db.send(sender, "a", "all", text, true), height: value => { height = value; },
-		view: () => new PartyChat({ room: "cleanup", session: sender, theme, height: () => height, requestRender() {}, done() { closed++; }, load: query => db.history(sender, "a", query) }), closed: () => closed };
+	return { db, send: text => db.send(sender, "a", recipient, text, true), height: value => { height = value; },
+		view: () => new PartyChat({ session: sender, theme, height: () => height, requestRender() {}, done() { closed++; }, load: query => db.history(sender, "a", query) }), closed: () => closed };
 }
 const plain = (view, width = 100) => stripVTControlCharacters(view.render(width).join("\n"));
 
@@ -74,17 +74,7 @@ test("history navigation holds position during arrivals and End resumes followin
 	assert.deepEqual(view.render(100), []);
 });
 
-test("chat reports read failures and refuses a changed room without rendering its history", t => {
-	const f = fixture(t);
-	f.send("Visible room");
-	const view = f.view();
-	f.db.join(sender, "a", "other", "Copilot Skills");
-	view.refresh();
-	assert.match(plain(view), /Party membership changed/);
-	assert.doesNotMatch(plain(view), /Party other/);
-});
-
-test("party tool and incoming previews retain useful text and names without exposing IDs", () => {
+test("agent message tool and incoming previews retain useful text and names without exposing IDs", () => {
 	initTheme("dark", false);
 	const text = "**Cleanup ready**\n\nSecond paragraph with the full findings.";
 	const args = Object.freeze({ to: recipient, message: text, wake: false });
@@ -94,7 +84,7 @@ test("party tool and incoming previews retain useful text and names without expo
 	const ctx = { args, expanded: false, isError: false };
 	const call = renderPartyCall("send", args, theme, ctx, label);
 	const status = renderPartyResult("send", result, { expanded: false, isPartial: false }, theme, ctx, label);
-	assert.match(plain(call), /Direct → Studio Bridge/);
+	assert.match(plain(call), /Message → Studio Bridge/);
 	assert.match(plain(call), /Cleanup ready/);
 	assert.match(plain(status), /FYI · no wake/);
 	const held = { content: [{ type: "text", text: JSON.stringify({ queued: [{
@@ -108,8 +98,7 @@ test("party tool and incoming previews retain useful text and names without expo
 	assert.doesNotMatch(heldStatus, /receipt-private|22222222/);
 	assert.doesNotMatch(plain(status), /receipt-private|22222222/);
 	assert.match(plain(renderPartyCall("send", args, theme, { ...ctx, expanded: true }, label)), /Second paragraph/);
-	assert.match(plain(renderPartyCall("send", { ...args, to: "all" }, theme, ctx, label)), /everyone/);
-	const notice = { content: `Party cleanup · Copilot Skills (${sender})\n\n${text}` };
+	const notice = { content: `Message · Copilot Skills (${sender})\n\n${text}` };
 	assert.match(plain(renderPartyNotice(notice, { expanded: false }, theme)), /Cleanup ready/);
 	assert.doesNotMatch(plain(renderPartyNotice(notice, { expanded: true }, theme)), /11111111/);
 	for (const width of [1, 5, 25, 80]) assert.ok(call.render(width).every(line => visibleWidth(line) <= width));
@@ -127,7 +116,7 @@ test("native fullscreen overlay routes navigation and mouse scrolling, then rest
 	const editor = new Text(draft, 0, 0);
 	editor.handleInput = data => { draft += data; };
 	tui.addChild(editor); tui.setFocus(editor); tui.start();
-	const view = new PartyChat({ room: "cleanup", session: sender, theme, height: () => 24,
+	const view = new PartyChat({ session: sender, theme, height: () => 24,
 		requestRender: () => tui.requestRender(), done: () => overlay.hide(), load: query => f.db.history(sender, "a", query) });
 	overlay = tui.showOverlay(view, { width: 80, anchor: "center", maxHeight: "85%" });
 	t.after(() => { view.dispose(); tui.stop(); });
@@ -152,16 +141,16 @@ test("native tool expansion reveals the complete sent message and keeps receipts
 	const result = { content: [{ type: "text", text: JSON.stringify({ queued: [{ id: "receipt-private", to: recipient }] }) }], details: {}, isError: false };
 	const before = JSON.stringify(result);
 	const label = () => "Studio Bridge";
-	const definition = { name: "party_send", renderCall: (args, theme, context) => renderPartyCall("send", args, theme, context, label),
+	const definition = { name: "agent_send", renderCall: (args, theme, context) => renderPartyCall("send", args, theme, context, label),
 		renderResult: (result, options, theme, context) => renderPartyResult("send", result, options, theme, context, label) };
-	const component = new ToolExecutionComponent("party_send", "call", args, {}, definition, { terminal: { columns: 100, rows: 40 }, requestRender() {} }, process.cwd());
+	const component = new ToolExecutionComponent("agent_send", "call", args, {}, definition, { terminal: { columns: 100, rows: 40 }, requestRender() {} }, process.cwd());
 	component.updateResult(result);
 	assert.match(plain(component), /Studio Bridge/);
 	assert.doesNotMatch(plain(component), /Final detail|receipt-private|22222222/);
 	component.setExpanded(true);
 	assert.match(plain(component), /Final detail/);
 	component.setExpanded(false);
-	const lines = component.render(100), y = lines.findIndex(line => line.includes("Direct →"));
+	const lines = component.render(100), y = lines.findIndex(line => line.includes("Message →"));
 	assert.equal(component.handleMouse({ type: "click", button: "left", x: 3, y, screenX: 3, screenY: y, width: 100, height: lines.length, shift: false, alt: false, ctrl: false }).handled, true);
 	assert.match(plain(component), /Final detail/);
 	assert.equal(JSON.stringify(result), before);

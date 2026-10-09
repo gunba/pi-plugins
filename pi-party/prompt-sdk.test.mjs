@@ -76,20 +76,19 @@ async function fixture(t, extraExtensions = [], uiContext) {
 	return { session, runtime, db, contexts, requests, errors, started: started.promise };
 }
 
-test("human and peer messages remain queued while party creation awaits user approval", { timeout: 15000 }, async t => {
+test("human and peer messages remain queued while agent creation awaits user approval", { timeout: 15000 }, async t => {
 	const entered = Promise.withResolvers(), approval = Promise.withResolvers();
 	t.after(() => approval.resolve(false));
 	const f = await fixture(t, [], { confirm: async () => { entered.resolve(); return approval.promise; } });
-	await f.session.agent.state.tools.find(tool => tool.name === "party_join").execute("join", { party: "approval-room" });
 	const running = f.session.prompt("REVIEW TASK");
 	await f.started;
-	f.requests[0].finish(false, [{ type: "toolCall", id: "create", name: "party_create", arguments: {
+	f.requests[0].finish(false, [{ type: "toolCall", id: "create", name: "agent_create", arguments: {
 		cwd: "/fixture", label: "Reviewer", task: "Inspect the separate implementation.",
 	} }]);
 	await entered.promise;
 	await f.session.prompt("HUMAN COMMENT WHILE WAITING", { streamingBehavior: "steer" });
 	f.db.send("sender", "sender-process", "recipient", "PEER COMMENT WHILE WAITING", true);
-	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("pulse", { enabled: true });
+	await f.session.agent.state.tools.find(tool => tool.name === "agent_delivery").execute("pulse", { enabled: true });
 	await nextTick();
 	assert.equal(f.requests.length, 1, "an approval wait cannot start another model run");
 	approval.resolve(false);
@@ -102,7 +101,7 @@ test("human and peer messages remain queued while party creation awaits user app
 	assert.deepEqual(f.errors, []);
 });
 
-test("queued party wakes join a human prompt without launching a second low-level run", { timeout: 15000 }, async t => {
+test("queued agent-message wakes join a human prompt without launching a second low-level run", { timeout: 15000 }, async t => {
 	const f = await fixture(t);
 	f.db.send("sender", "sender-process", "recipient", "QUEUED PEER FINDING", true);
 	let promptError;
@@ -128,7 +127,7 @@ test("queued party wakes join a human prompt without launching a second low-leve
 	assert.deepEqual(f.errors, []);
 });
 
-test("party arrivals during an asynchronous prompt hook are attached to that prompt", { timeout: 15000 }, async t => {
+test("agent-message arrivals during an asynchronous prompt hook are attached to that prompt", { timeout: 15000 }, async t => {
 	const entered = Promise.withResolvers(), gate = Promise.withResolvers();
 	t.after(() => gate.resolve());
 	const f = await fixture(t, [pi => pi.on("before_agent_start", async () => { entered.resolve(); await gate.promise; })]);
@@ -136,7 +135,7 @@ test("party arrivals during an asynchronous prompt hook are attached to that pro
 	const running = f.session.prompt("HUMAN TASK").catch(error => { promptError = error; });
 	await entered.promise;
 	f.db.send("sender", "sender-process", "recipient", "LATE PEER FINDING", true);
-	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("resume", { enabled: true });
+	await f.session.agent.state.tools.find(tool => tool.name === "agent_delivery").execute("resume", { enabled: true });
 	await nextTick();
 	assert.equal(f.requests.length, 0, "a party wake cannot overtake prompt preparation");
 	gate.resolve();
@@ -149,7 +148,7 @@ test("party arrivals during an asynchronous prompt hook are attached to that pro
 	assert.deepEqual(f.errors, []);
 });
 
-test("party wakes cannot overtake native authentication preflight", { timeout: 15000 }, async t => {
+test("agent-message wakes cannot overtake native authentication preflight", { timeout: 15000 }, async t => {
 	const entered = Promise.withResolvers(), gate = Promise.withResolvers();
 	t.after(() => gate.resolve());
 	const f = await fixture(t), check = f.runtime.checkAuth.bind(f.runtime);
@@ -162,7 +161,7 @@ test("party wakes cannot overtake native authentication preflight", { timeout: 1
 	const running = f.session.prompt("HUMAN TASK", { streamingBehavior: "steer" }).catch(error => { promptError = error; });
 	await entered.promise;
 	f.db.send("sender", "sender-process", "recipient", "AUTH-PREFLIGHT PEER FINDING", true);
-	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("resume", { enabled: true });
+	await f.session.agent.state.tools.find(tool => tool.name === "agent_delivery").execute("resume", { enabled: true });
 	await nextTick();
 	const requestsBeforeAdmission = f.requests.length;
 	gate.resolve(); await f.started; await nextTick();
@@ -178,7 +177,7 @@ test("party wakes cannot overtake native authentication preflight", { timeout: 1
 test("an idle agent awakened by a peer remains steerable and cancellable", { timeout: 15000 }, async t => {
 	const f = await fixture(t);
 	f.db.send("sender", "sender-process", "recipient", "PEER-INITIATED TASK", true);
-	await f.session.agent.state.tools.find(tool => tool.name === "party_delivery").execute("resume", { enabled: true });
+	await f.session.agent.state.tools.find(tool => tool.name === "agent_delivery").execute("resume", { enabled: true });
 	await f.started;
 	assert.equal(f.session.isStreaming, true);
 	assert.equal(f.session.agent.state.isStreaming, true);

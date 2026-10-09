@@ -7,10 +7,10 @@ export const agentId = (computer: string, session: string) => `${session}@${comp
 export const nativeId = (id: string) => id.split("@")[0];
 export type NetworkMember = Omit<Member, "owner" | "computer" | "heartbeat">;
 export interface DeliveryReceipt { id: string; accepted: boolean; error?: string }
+/** User-approved agent creation over the computer channel; not a general remote command. */
 export interface PartyOperation {
-	id: string; sender: string; sender_epoch: string; party: string; created: number; expires: number;
-	kind: "remove" | "resume" | "create" | "fork"; target?: string; target_epoch?: string;
-	cwd?: string; task?: string; label?: string; call?: string;
+	id: string; sender: string; sender_epoch: string; created: number; expires: number;
+	kind: "create" | "fork"; cwd: string; task: string; label: string; call?: string;
 }
 export interface OperationResult { id: string; result?: { session: string; state: string; key?: string }; error?: string }
 export type PartyPacket =
@@ -37,44 +37,37 @@ function id(value: unknown): string {
 	if (!uuid(value)) throw Error("Invalid party agent identity.");
 	return value;
 }
-function room(value: unknown): string {
-	const result = text(value, 48);
-	if (result && !/^[a-z0-9][a-z0-9_-]*$/.test(result)) throw Error("Invalid party name.");
-	return result;
-}
 export function remoteMember(computer: string, value: unknown, now: number): Member {
 	const input = record(value), state = text(input.state, 20), kind = text(input.kind, 20);
 	if (!["idle", "working", "offline"].includes(state) || !["session", "child"].includes(kind)) throw Error("Invalid party agent state.");
 	return { session: agentId(id(computer), id(input.session)), computer, owner: "",
-		room: room(input.room), epoch: id(input.epoch), agent_epoch: id(input.agent_epoch),
+		room: "", epoch: id(input.epoch), agent_epoch: id(input.agent_epoch),
 		label: text(input.label, 120), cwd: text(input.cwd, 4096), description: text(input.description, 1600),
 		state, kind, heartbeat: state === "offline" ? 0 : now, wakes: integer(input.wakes, 8),
 		delivery: integer(input.delivery, 1), muted: integer(input.muted, 1) };
 }
 export function remoteMessage(value: unknown): PartyMessage {
-	const input = record(value), kind = text(input.kind, 20);
-	if (!["message", "invite"].includes(kind)) throw Error("Invalid party message kind.");
+	const input = record(value);
+	if (input.kind !== "message" || input.room !== "") throw Error("Only direct agent messages are supported.");
 	const message: PartyMessage = { id: id(input.id), sender: id(input.sender), recipient: id(input.recipient),
 		sender_epoch: id(input.sender_epoch), recipient_epoch: id(input.recipient_epoch),
-		sender_label: text(input.sender_label, 120), text: text(input.text, MAX_NETWORK_PACKET), room: room(input.room),
-		created: integer(input.created), wake: integer(input.wake, 1), kind, invite_room: room(input.invite_room) };
-	if (!message.text.trim() || (kind === "invite") !== !!message.invite_room || kind === "invite" && message.room) throw Error("Invalid party message.");
+		sender_label: text(input.sender_label, 120), text: text(input.text, MAX_NETWORK_PACKET), room: "",
+		created: integer(input.created), wake: integer(input.wake, 1), kind: "message", invite_room: "" };
+	if (!message.text.trim()) throw Error("Invalid agent message.");
 	return message;
 }
 export function partyOperation(value: unknown): PartyOperation {
 	const input = record(value), kind = text(input.kind, 20);
-	if (kind !== "remove" && kind !== "resume" && kind !== "create" && kind !== "fork") throw Error("Invalid party operation.");
+	if (kind !== "create" && kind !== "fork") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
-		party: room(input.party), kind, created: integer(input.created), expires: integer(input.expires) };
-	if (!operation.party || operation.expires <= operation.created || operation.expires - operation.created > 300_000) throw Error("Invalid party operation lifetime.");
-	if (kind === "create" || kind === "fork") {
-		if (kind === "fork") {
-			operation.call = text(input.call, 512);
-			if (!operation.call) throw Error("Specify the executing fork call.");
-		}
-		operation.cwd = text(input.cwd, 4096); operation.task = text(input.task, 32_000); operation.label = text(input.label, 120);
-		if (!operation.cwd.trim() || !operation.task.trim() || !operation.label.trim()) throw Error("Specify a directory, task and name for the new agent.");
-	} else { operation.target = id(input.target); operation.target_epoch = id(input.target_epoch); }
+		kind, created: integer(input.created), expires: integer(input.expires),
+		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
+	if (operation.expires <= operation.created || operation.expires - operation.created > 300_000) throw Error("Invalid agent operation lifetime.");
+	if (kind === "fork") {
+		operation.call = text(input.call, 512);
+		if (!operation.call) throw Error("Specify the executing fork call.");
+	}
+	if (!operation.cwd.trim() || !operation.task.trim() || !operation.label.trim()) throw Error("Specify a directory, task and name for the new agent.");
 	return operation;
 }
 export function operationResult(value: unknown): OperationResult {

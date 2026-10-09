@@ -1,16 +1,14 @@
+/** A registered agent as shown by Desk; messaging itself happens through agent tools. */
 export interface PartyAgent {
 	id: string;
-	epoch: string;
 	label: string;
 	cwd: string;
 	description: string;
 	kind: string;
-	party: string | null;
 	state: string;
 	delivery: string;
 	deliveryReason?: string;
 }
 export interface PartyDirectory {
 	agents: PartyAgent[];
-	groups: { name: string; members: string[] }[];
 }
