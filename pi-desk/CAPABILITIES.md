@@ -76,7 +76,7 @@ restart; Settings identifies them.
 | Browser skill / Chrome DevTools | Host Chrome tools and screenshots; Settings links to the installed extension's native dialogs |
 | Native MCP / Gmail | Pi's tools and connection controls; native codemode and tool search run on the owning computer |
 | `pi-tool-display` | Terminal decoration stays in Pi; Desk projects underlying results without running ANSI renderers |
-| `pi-command-guard` | In-process shell/file risk screening, exact-call native confirmation and inherited child policy; not an OS sandbox |
+| `pi-command-guard` | Drive/Git wipe checks, exact-call native confirmation and inherited child policy; not an OS sandbox |
 | Local environment / other guards | Normal discovery and native context/tool-call hooks; installing Desk does not disable another guard |
 | Skills, prompts and project resources | Native discovery, project trust and command expansion |
 | Session ownership | Desk pre-open lease; shared terminal presence and shutdown integration |

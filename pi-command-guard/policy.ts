@@ -17,8 +17,7 @@ function program(source: string, env: Environment, depth: number): Assessment {
 		const name = token.text.toLowerCase(), owner = tokens.slice(Math.max(0, i - 6), i).map(part => part.text).join("").toLowerCase();
 		if (/^(?:rmtree|rm_rf|remove_tree|rmsync|rmdirsync|unlinksync|unlink|rmdir)$/.test(name) || /^(?:rm|remove|delete)$/.test(name) && /(?:fs|shutil|os|path|directory|file|deno)(?:\.|\.promises\.)$/.test(owner)) {
 			const first = tokens[i + 2], value = first?.string ? first.text : undefined;
-			if (value) hits.push(pathFinding(value, env, { deletion: true, recursive: /rmtree|rm|delete/.test(name) }));
-			else hits.push(confirm("inline-deletion", "A recognized filesystem deletion call has an unresolved target."));
+			if (value) hits.push(pathFinding(value, env, { deletion: true }));
 		}
 		const first = tokens[i + 2];
 		if (/^(?:eval|exec|function|compile)$/.test(name) && first?.string) hits.push(finding(program(first.text, env, depth + 1)));
@@ -39,7 +38,7 @@ function program(source: string, env: Environment, depth: number): Assessment {
 
 export function assessCommand(source: string, env: Environment, dialect: Dialect = "posix", depth = 0): Assessment {
 	if (source.length > MAX_COMMAND || depth > 4) return { decision: "pass" };
-	if (source.includes("\0")) return block("invalid-command", "The command contains a null character.");
+	if (source.includes("\0")) return { decision: "pass" };
 	// Inspect a complete heredoc as input to its consuming command, not the first command on the line.
 	const here = source.match(/^([^\n]*?)\s<<(-?)(['"]?)([A-Za-z_]\w*)\3([^\n]*)\n/);
 	if (here) {
@@ -87,7 +86,7 @@ function command(words: Word[], env: Environment, dialect: Dialect, depth: numbe
 	const name = commandName(words[0].text), args = words.slice(1);
 	if (/^\[(?:system\.)?io\.(?:directory|file)\]::delete$/i.test(name)) {
 		const target = args.find(word => !word.operator);
-		return [target && pathFinding(target.text, env, { deletion: true, recursive: true, dynamic: target.dynamic, cwdChanged }), confirm("inline-deletion", "A .NET filesystem deletion is requested.")];
+		return [target && pathFinding(target.text, env, { deletion: true, dynamic: target.dynamic, cwdChanged })];
 	}
 	if (["eval", "invoke-expression", "iex"].includes(name)) {
 		const body = args.filter(word => word.text.toLowerCase() !== "-command");
@@ -140,25 +139,25 @@ function command(words: Word[], env: Environment, dialect: Dialect, depth: numbe
 		return input !== undefined && (!args.length || args.some(word => word.text === "-")) ? [finding(program(input, env, depth + 1))] : [];
 	}
 	const values = args.map(word => word.text), lower = values.map(value => value.toLowerCase());
-	if (/^(?:mkfs(?:\..+)?|format|format-volume|clear-disk|initialize-disk|remove-partition|diskpart|wipefs)$/.test(name)) return [block("disk-destruction", "Disk formatting, partition removal or filesystem destruction is not admitted by this guard.")];
+	if (/^(?:format-volume|clear-disk|remove-partition)$/.test(name)) return [block("disk-destruction", "The command would erase a disk or volume.")];
+	if (/^(?:mkfs(?:\..+)?|wipefs)$/.test(name)) return args.map(target => pathFinding(target.text, env, { dynamic: target.dynamic }));
+	if (name === "format" && values.some(value => /^[a-z]:[/\\]*$/i.test(value))) return [block("disk-destruction", "The command would format a drive.")];
+	if (name === "diskpart" && input && /(?:^|\n)\s*(?:clean(?:\s+all)?|format\b|delete\s+(?:disk|partition|volume))\s*/i.test(input)) return [block("disk-destruction", "The diskpart input would erase a disk or volume.")];
 	if (name === "dd") {
 		const output = args.find(word => word.text.startsWith("of="));
-		return output ? [pathFinding(output.text.slice(3), env, { dynamic: output.dynamic }), confirm("raw-copy", "A block-copy command will overwrite its output.")] : [];
+		return output ? [pathFinding(output.text.slice(3), env, { dynamic: output.dynamic })] : [];
 	}
 	const deletion = /^(?:rm|rmdir|rd|del|erase|remove-item|ri|unlink|shred|wipe)$/.test(name);
 	if (deletion) {
-		const recursive = lower.some(value => /^(?:--recursive|-recurse(?:[:=]true)?|\/s)$/.test(value) || /^-[a-z]*r[a-z]*$/i.test(value));
 		const targets = args.filter(word => !word.operator && word.text !== "--" && !word.text.startsWith("-") && !(dialect === "cmd" && /^\/[a-z]+$/i.test(word.text)) && word.text !== "@");
-		return targets.length ? targets.map(target => pathFinding(target.text, env, { deletion: true, recursive: recursive || /shred|wipe/.test(name), dynamic: target.dynamic, cwdChanged }))
-			: [confirm("deletion-input", "Deletion targets come from unresolved input.")];
+		return targets.map(target => pathFinding(target.text, env, { deletion: true, dynamic: target.dynamic, cwdChanged }));
 	}
 	if (["mv", "move", "move-item", "cp", "copy", "copy-item", "truncate", "clear-content", "set-content", "out-file"].includes(name)) {
 		const targets = args.filter(word => !word.operator && !word.text.startsWith("-"));
-		const selected = /^(?:mv|move|move-item)$/.test(name) ? targets : targets.slice(-1);
-		return selected.map(target => pathFinding(target.text, env, { deletion: /^(?:mv|move|move-item)$/.test(name), dynamic: target.dynamic, cwdChanged }));
+		return targets.slice(-1).map(target => pathFinding(target.text, env, { dynamic: target.dynamic, cwdChanged }));
 	}
 	if (name === "find") {
-		if (lower.includes("-delete")) return [pathFinding(values[0] || ".", env, { deletion: true, dynamic: args[0]?.dynamic, cwdChanged }), confirm("find-delete", "A filesystem search deletes matching entries.")];
+		if (lower.includes("-delete") && !lower.some(value => ["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-type", "-size", "-mtime", "-mmin", "-maxdepth"].includes(value))) return [pathFinding(values[0] || ".", env, { deletion: true, dynamic: args[0]?.dynamic, cwdChanged })];
 		const at = lower.findIndex(value => ["-exec", "-execdir"].includes(value));
 		if (at >= 0) return command(args.slice(at + 1), env, dialect, depth + 1, cwdChanged || lower[at] === "-execdir");
 	}
@@ -174,18 +173,17 @@ function command(words: Word[], env: Environment, dialect: Dialect, depth: numbe
 		let start = 0;
 		while (start < values.length && values[start].startsWith("-")) { const option = values[start++]; if (["-C", "-c", "--git-dir", "--work-tree"].includes(option)) start++; }
 		const sub = lower[start], rest = lower.slice(start + 1);
-		if (sub === "clean" && !rest.some(value => /^-[a-z]*n|--dry-run/.test(value))) return [confirm("git-clean", "Git would remove untracked files.")];
-		if (sub === "reset" && rest.includes("--hard") || sub === "restore" && !rest.includes("--staged") || sub === "checkout" && (rest.includes("--") || rest.some(value => ["-f", "--force"].includes(value)))
-			|| sub === "switch" && rest.some(value => ["--discard-changes", "-f"].includes(value)) || sub === "branch" && values.slice(start + 1).includes("-D")
-			|| sub === "stash" && rest.some(value => ["clear", "drop"].includes(value)) || sub === "reflog" && rest.includes("expire")) return [confirm("git-discard", "Git would discard working changes or recovery history.")];
-		if (sub === "push" && rest.some(value => value.startsWith("--force") || value === "-f" || value === "--mirror" || value.startsWith("+"))) return [confirm("git-rewrite", "Git would rewrite remote references.")];
+		const wholeTree = rest.some(value => [".", "./", ":/", ":(top)", ":(top)*", "*"].includes(value));
+		const force = rest.some(value => value === "--force" || /^-[^-]*f/.test(value));
+		const dryRun = rest.some(value => value === "--dry-run" || /^-[^-]*n/.test(value));
+		if (sub === "clean" && force && !dryRun && (wholeTree || rest.every(value => value.startsWith("-")))) return [confirm("git-clean", "Git would wipe untracked working-tree files.")];
+		if (sub === "reset" && rest.includes("--hard")
+			|| sub === "restore" && (!rest.includes("--staged") || rest.includes("--worktree")) && wholeTree
+			|| sub === "checkout" && (force || rest.includes("--") && wholeTree)
+			|| sub === "switch" && (force || rest.includes("--discard-changes"))
+			|| sub === "stash" && rest[0] === "clear"
+			|| sub === "reflog" && rest[0] === "expire" && rest.includes("--all")) return [confirm("git-discard", "Git would discard working-tree changes or repository recovery history.")];
+		if (sub === "push" && !dryRun && rest.some(value => value === "--force" || value === "-f" || value === "--mirror" || value.startsWith("+"))) return [confirm("git-rewrite", "Git would overwrite remote history without a lease check.")];
 	}
-	if (["docker", "podman"].includes(name) && lower.some(value => ["prune", "rm", "remove"].includes(value)) || ["kubectl", "aws", "az", "gcloud", "terraform"].includes(name) && lower.some(value => ["delete", "destroy", "rm", "rb"].includes(value))) return [confirm("remote-delete", "A container, infrastructure or remote-data deletion is requested.")];
-	if (["psql", "mysql", "sqlite3", "sqlcmd"].includes(name) && [...values, input ?? ""].some(value => /(?:^|;)\s*(?:drop|truncate)\b|(?:^|;)\s*delete\s+from\b/i.test(value))) return [confirm("database-delete", "A database deletion statement is requested.")];
-	if (name === "reg" && lower[0] === "delete") return [confirm("registry-delete", "A Windows registry deletion is requested.")];
 	return [];
-}
-
-export function assessFile(path: string, env: Environment): Assessment {
-	return pathFinding(path, env) ?? { decision: "pass" };
 }

@@ -155,6 +155,13 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
+Version 0.5.34 retains API 8 and Pi 1.1.0. Command protection is limited to
+whole-drive destruction and destructive Git wipes. Ordinary cleanup and file
+edits no longer prompt. Retire external DCG through native resource settings;
+leaving it loaded still applies its separate policy and process timeouts. The
+new policy needs a new worker, while resource exclusion takes effect on a safe
+reload or start. Host-only updates do not change active workers' loaded guards.
+
 Version 0.5.32 retains API 8 and Pi 1.1.0. The website combines composer and
 status controls. Updated hosts can reconnect to the same live worker after a
 channel loss. New workers are required for reduced command-guard prompting,

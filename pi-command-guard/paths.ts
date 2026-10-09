@@ -1,8 +1,7 @@
 import { posix, win32 } from "node:path";
 
 export type Environment = {
-	cwd: string; home: string; temp: string; platform: "win32" | "posix";
-	agentDir?: string; runtime?: string; workspace?: string;
+	cwd: string; home: string; platform: "win32" | "posix";
 };
 export type Finding = { decision: "confirm" | "block"; rule: string; reason: string };
 export const confirm = (rule: string, reason: string): Finding => ({ decision: "confirm", rule, reason });
@@ -20,33 +19,21 @@ export function normalizePath(path: string, env: Environment): string {
 	}
 	return posix.resolve(env.cwd, path).replace(/\/$/, "") || "/";
 }
-const contains = (root: string, path: string) => root === path || path.startsWith(root.endsWith("/") ? root : root + "/");
-const device = (path: string) => /^\/dev\/(?:sd[a-z]|hd[a-z]|nvme\d|vd[a-z]|disk\d|mmcblk\d)/i.test(path) || /^\\\\\.\\(?:physicaldrive|harddisk|[a-z]:)/i.test(path);
-const systemRoots = (env: Environment) => env.platform === "win32"
-	? ["Windows", "Program Files", "Program Files (x86)", "ProgramData", "Users"].map(name => `${win32.parse(env.home).root || "C:/"}${name}`)
-	: ["/bin", "/sbin", "/usr", "/etc", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys", "/home", "/root", "/var"];
+const device = (path: string) => /^\/dev\/(?:(?:sd|hd|vd)[a-z]+\d*|nvme\d+n\d+(?:p\d+)?|disk\d+(?:s\d+)?|mmcblk\d+(?:p\d+)?)$/i.test(path) || /^\\\\\.\\(?:physicaldrive\d+|harddisk\d+|[a-z]:)$/i.test(path);
 
-export function pathFinding(path: string, env: Environment, options: { deletion?: boolean; recursive?: boolean; dynamic?: boolean; cwdChanged?: boolean } = {}): Finding | undefined {
-	if (device(path)) return block("raw-device", "A raw storage device is a target.");
+export function pathFinding(path: string, env: Environment, options: { deletion?: boolean; dynamic?: boolean; cwdChanged?: boolean } = {}): Finding | undefined {
+	if (device(path)) return block("raw-device", "The command would overwrite or delete a storage device.");
 	if (env.platform === "win32") path = windowsPath(path);
-	if (options.deletion && /^(?:~|\$(?:home|pwd)|\$\{(?:home|pwd)\}|\$env:(?:userprofile|systemroot|windir|systemdrive)|%(?:userprofile|systemroot|windir|systemdrive)%)[/\\]*$/i.test(path)) return block("root-delete", "Deletion targets an entire home, working or system directory.");
-	if (options.dynamic) return options.deletion ? confirm("unresolved-path", "A deletion target contains an unresolved expansion.") : undefined;
-	if (env.platform === "win32" && /^[a-z]:(?![/\\])/i.test(path)) return path.length === 2 ? block("root-delete", "A drive root is a target.") : options.deletion ? confirm("drive-relative", "The deletion target depends on another working directory.") : undefined;
-	const wild = /[*?\[\]{}]/.test(path), base = path.split(/[*?\[\]{}]/)[0];
-	if (options.cwdChanged && !(env.platform === "win32" ? win32 : posix).isAbsolute(path)) return options.deletion ? confirm("changed-cwd", "Deletion uses a relative target after changing directories.") : undefined;
-	const resolved = normalizePath(base || ".", env), roots = systemRoots(env).map(root => normalizePath(root, env));
-	const windowsSystem = env.platform === "win32" && resolved.match(/^[a-z]:\/(?:windows|program files(?: \(x86\))?|programdata|users)(?=\/|$)/);
-	if (windowsSystem) roots.push(windowsSystem[0]);
+	if (options.deletion && /^(?:\$env:systemdrive|%systemdrive%)[/\\]+(?:\*|\*\.\*)?$/i.test(path)) return block("root-delete", "Deletion targets an entire drive.");
+	if (options.dynamic) return undefined;
+	if (env.platform === "win32" && /^[a-z]:(?![/\\])/i.test(path)) return undefined;
+	if (options.cwdChanged && !(env.platform === "win32" ? win32 : posix).isAbsolute(path)) return undefined;
+	// Only a whole-directory glob denotes a wipe; /tmp* is not the filesystem root.
+	const base = path.replace(/([/\\])(?:\*\*?|\*\.\*)$/, "$1");
+	if (/[*?\[\]{}]/.test(base)) return undefined;
+	const resolved = normalizePath(base || "/", env);
 	const volume = env.platform === "win32" ? normalizePath(win32.parse(resolved).root || resolved, env) : "/";
-	if (resolved === volume || options.deletion && [...roots, normalizePath(env.home, env), normalizePath(env.cwd, env), normalizePath(env.workspace ?? env.cwd, env), normalizePath(env.temp, env)].some(root => contains(resolved, root))) {
-		return block("root-delete", "The operation targets a whole filesystem, home, working or system directory.");
-	}
-	const systemFiles = roots.filter(root => root !== "/home" && !(env.platform === "win32" && root.endsWith("/users")) && root !== normalizePath(env.home, env));
-	if (systemFiles.some(root => contains(root, resolved))) return confirm("system-path", "A system location would be changed.");
-	if (env.runtime && contains(normalizePath(env.runtime, env), resolved)) return block("runtime-write", "Installed runtime files are immutable; this operation would change one.");
-	if (/(?:^|\/)(?:\.git|\.ssh|\.gnupg)(?:\/|$)/i.test(resolved) || /(?:^|\/)(?:auth\.json|trust\.json)$|\/(?:\.aws\/credentials|\.kube\/config)$/i.test(resolved)
-		|| env.agentDir && resolved === normalizePath(env.agentDir + "/settings.json", env)) return confirm("sensitive-file", "Credentials, trust, agent configuration or version-control internals would be changed.");
-	if (wild) return confirm("wildcard-mutation", "The mutation includes a wildcard target.");
-	if (options.recursive) return confirm("recursive-delete", "Recursive deletion requires confirmation of its targets.");
+	if (options.deletion && (resolved === volume || env.platform === "win32" && /^[a-z]:$/i.test(resolved))) return block("root-delete", "Deletion targets an entire filesystem or drive.");
+	if (options.deletion && /(?:^|\/)\.git(?:\/(?:objects|refs|logs))?$/i.test(resolved)) return confirm("git-directory", "The command would delete Git repository history or recovery data.");
 	return undefined;
 }

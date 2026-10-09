@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { createJiti } from 'jiti';
 const jiti = createJiti(import.meta.url);
 const { default: install } = await jiti.import('../index.ts');
@@ -17,7 +15,7 @@ function harness(answer = async () => false) {
   return { handlers, settings, ctx, controller, questions: () => questions,
     call: event => handlers.get('tool_call')(event, ctx) };
 }
-const removal = () => ({ toolName: 'exec_command', toolCallId: 'one', input: { cmd: 'rm -rf /tmp/owned-task/runtime', shell: '/bin/bash' } });
+const removal = () => ({ toolName: 'exec_command', toolCallId: 'one', input: { cmd: 'git reset --hard', shell: '/bin/bash' } });
 
 test('hard denials do not request an override; harmless metadata invokes no dialog or command', async () => {
   const h = harness(async () => { throw Error('no dialog expected'); });
@@ -58,9 +56,12 @@ test('changing arguments, command configuration or identity invalidates approval
   }
 });
 
-test('only native bash prefixes are included; file edits use the same approval boundary', async () => {
+test('only native bash prefixes are included; ordinary cleanup and file edits do not prompt', async () => {
   const h = harness(async () => false); h.settings.shellCommandPrefix = 'rm -rf /';
   assert.equal((await h.call({ toolName: 'bash', input: { command: 'echo hi' } })).block, true);
   assert.equal(await h.call({ toolName: 'exec_command', input: { cmd: 'echo hi' } }), undefined);
-  assert.equal((await h.call({ toolName: 'write', input: { path: join(homedir(), '.ssh', 'config'), content: 'example' } })).block, true);
+  assert.equal(await h.call({ toolName: 'write', input: { path: '/etc/profile', content: 'example' } }), undefined);
+  assert.equal(await h.call({ toolName: 'edit', input: { path: '.git/config', edits: [] } }), undefined);
+  assert.equal(await h.call({ ...removal(), input: { cmd: 'rm -rf /tmp/owned-task/runtime', shell: '/bin/bash' } }), undefined);
+  assert.equal(h.questions(), 0);
 });

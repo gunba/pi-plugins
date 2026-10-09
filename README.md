@@ -54,7 +54,7 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - `pi-compaction-context` — carries the active `AGENTS.md` / `CLAUDE.md`
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
-- [`pi-command-guard`](pi-command-guard/README.md) — in-process command and file-change screening, per-call confirmations and inherited SDK-child protection.
+- [`pi-command-guard`](pi-command-guard/README.md) — in-process drive/Git wipe protection, exact-call confirmations and inherited SDK-child policy.
 - [`pi-output-budget`](pi-output-budget/README.md) — bounded text previews,
   immutable complete-output artifacts, character paging, batched read-only
   file inspection, and compact replay links for older archived results.
