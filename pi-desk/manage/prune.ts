@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { probeHost } from "../src/host/lifecycle.ts";
+import { liveSupervisor } from "../src/host/login-supervisor.ts";
 import { readInstallation } from "./installation.ts";
 import { readState, validId } from "./store.ts";
 
@@ -36,20 +38,37 @@ export function keepList(home: string): string[] {
 	return entries;
 }
 
+/** Long-lived Desk processes run code from the slot that was active when they started, not from state.json. */
+async function processPins(home: string): Promise<string[]> {
+	const directory = readInstallation(home).directory, pins: string[] = [];
+	const host = await probeHost(directory);
+	if (host.state === "running") {
+		if (!validId(host.host?.runtime)) throw new Error("the running host did not report its runtime");
+		pins.push(host.host!.runtime!);
+	} else if (host.state !== "stopped") throw new Error(`the host is ${host.state}`);
+	const supervisor = liveSupervisor(directory);
+	if (supervisor) {
+		if (!validId(supervisor.runtime)) throw new Error("the login supervisor started before runtime tracking; old versions are kept until it restarts");
+		pins.push(supervisor.runtime);
+	}
+	return pins;
+}
+
 function archiveOf(versions: string, id: string): string | undefined {
 	try { return JSON.parse(readFileSync(join(versions, id, "runtime.json"), "utf8"))?.artifact?.dependencies; }
 	catch { return undefined; }
 }
 
 /**
- * Remove runtime slots nothing can use: not active, pending, previous (rollback), pinned by an actor or listed in `keep`.
+ * Remove runtime slots nothing can use: not active, pending, previous (rollback), running the host or login
+ * supervisor, pinned by an actor or listed in `keep`.
  * Callers must hold the runtime `manage` lease. A slot whose files are open (Windows) cannot be renamed and is left.
  */
 export async function pruneRuntimes(home: string, keepArchive?: string): Promise<PruneResult> {
 	const versions = resolve(home, "versions"), state = readState(home);
 	if (!state?.active) return { kept: [], removed: [], busy: [], archives: 0 };
 	let pins: Set<string>, prefixes: string[];
-	try { pins = workerPins(home); prefixes = keepList(home); }
+	try { pins = new Set([...workerPins(home), ...await processPins(home)]); prefixes = keepList(home); }
 	catch (error) { return { kept: [], removed: [], busy: [], archives: 0, skipped: String(error) }; }
 	const keep = new Set([state.active, state.pending, state.previous, state.autoApply, ...pins].filter(validId));
 	for (const id of existsSync(versions) ? readdirSync(versions) : []) if (validId(id) && prefixes.some(prefix => id.startsWith(prefix))) keep.add(id);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pruneRuntimes } from "../manage/prune.ts";
+import { SessionLease } from "../../pi-session-ownership/lease.ts";
 
 const id = n => String(n).repeat(64);
 const archive = n => `a${n.toString(16).padStart(63, "0")}`;
@@ -40,5 +41,18 @@ test("unused runtime slots and archives are removed; selected, rollback, actor-p
 		await writeFile(join(data, "workers", "live", "worker.json"), "{}");
 		await writeFile(join(home, "keep"), "not-an-id\n");
 		assert.match((await pruneRuntimes(home)).skipped ?? "", /Invalid entry/);
+		await writeFile(join(home, "keep"), "");
+
+		// A live login supervisor runs the slot that was active when it started.
+		const lease = new SessionLease(join(data, "supervisor")), supervisor = { version: 1, instance: "11111111-1111-1111-1111-111111111111",
+			owner: "22222222-2222-2222-2222-222222222222", pid: process.pid, node: process.execPath, entry: join(home, "launch.mjs") };
+		try {
+			await writeFile(join(data, "supervisor.json"), JSON.stringify(supervisor));
+			assert.match((await pruneRuntimes(home)).skipped ?? "", /supervisor/);
+			assert.equal((await readdir(join(home, "versions"))).length, 6);
+			await writeFile(join(data, "supervisor.json"), JSON.stringify({ ...supervisor, runtime: id(7) }));
+			assert.deepEqual((await pruneRuntimes(home)).removed, [id(2)]);
+			assert.ok((await readdir(join(home, "versions"))).includes(id(7)));
+		} finally { lease.close(); }
 	} finally { await rm(root, { recursive: true, force: true }); }
 });

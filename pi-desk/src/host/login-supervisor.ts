@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
 import { atomicJson, readState } from "../../manage/store.ts";
@@ -9,6 +9,8 @@ import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 
 export interface SupervisorRecord {
 	version: 1; instance: string; owner: string; pid: number; node: string; entry: string;
+	/** Runtime id this wrapper's code was loaded from; old versions are kept while it lives. */
+	runtime?: string;
 }
 const file = (directory: string) => join(directory, "supervisor.json");
 export function liveSupervisor(directory: string): SupervisorRecord | undefined {
@@ -29,7 +31,8 @@ export class LoginSupervisor {
 	private directory: string;
 	constructor(directory: string, owner: string, node: string, entry: string) {
 		this.directory = directory; this.lease = new SessionLease(join(directory, "supervisor"));
-		this.record = { version: 1, instance: randomUUID(), owner, pid: process.pid, node, entry };
+		const runtime = basename(process.env.PI_DESK_RUNTIME ?? "");
+		this.record = { version: 1, instance: randomUUID(), owner, pid: process.pid, node, entry, ...(runtime ? { runtime } : {}) };
 		try { atomicJson(file(directory), this.record); } catch (error) { this.lease.close(); throw error; }
 	}
 	close(): void {
