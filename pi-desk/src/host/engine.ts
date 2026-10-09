@@ -422,6 +422,7 @@ export class DeskEngine {
 			id: session.sessionId, file: session.sessionFile, cwd: this.runtime.cwd, name: session.sessionName,
 			title: sessionTitle(session.sessionName, this.opening.text),
 			leaf: session.sessionManager.getLeafId(),
+			empty: !session.sessionManager.getEntries().some(entry => entry.type === "message"),
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image"),
 				accountName: this.accountBindings.get(this.runtime.services.modelRuntime)?.name(session.model.provider) } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,

@@ -12,7 +12,7 @@ const providerNames: Record<string, string> = {
 	google: "Google", "google-gemini-cli": "Google Gemini", "github-copilot": "GitHub Copilot",
 };
 export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
-	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "activity" | "model" | "models" | "accounts" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
+	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "accounts" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
 	accounts: (provider: string) => void; history: () => void;
 }) {
 	const [query, setQuery] = useState(""), [active, setActive] = useState("");
@@ -53,7 +53,8 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 		if (disabled || reason(model)) return;
 		close();
 		if (selected && modelKey(model) === modelKey(selected)) return;
-		if (model.provider === provider || !selected) { select(model); return; }
+		// Nothing to carry over or summarize in an empty conversation.
+		if (model.provider === provider || !selected || snapshot.empty) { select(model); return; }
 		const portable = !!constraint && constraint.provider !== model.provider;
 		if (portable && (!constraint.portable || !snapshot.leaf)) return;
 		const accepted = await confirmation.request({ title: portable ? "Summarize and switch model?" : "Switch model provider?",

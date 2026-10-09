@@ -35,6 +35,8 @@ export interface SessionSnapshot {
 	name?: string;
 	title?: string;
 	leaf?: string | null;
+	/** No messages yet, so a provider switch carries nothing over. Omitted by older workers. */
+	empty?: boolean;
 	model?: { id: string; provider: string; name: string; images: boolean; accountName?: string };
 	defaultModel?: { id: string; provider: string };
 	/** Null means context-aware switching is supported without a current constraint. */
