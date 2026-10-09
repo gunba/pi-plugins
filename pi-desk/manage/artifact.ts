@@ -84,6 +84,42 @@ async function unpack(root: string, archives: { file: string; dependency: boolea
 		});
 	}
 }
+/**
+ * Hard-link an installed version's files for an identical dependency archive instead of extracting it again.
+ * Every archive entry must exist there with the same size; otherwise the caller extracts normally.
+ */
+export async function reuseDependencies(home: string, root: string, sha256: string, archive: string, progress?: (message: string) => void): Promise<boolean> {
+	let source: string | undefined;
+	for (const id of await readdir(join(home, "versions")).catch(() => [] as string[])) {
+		if (!validId(id)) continue;
+		try {
+			if (JSON.parse(await readFile(join(home, "versions", id, "runtime.json"), "utf8"))?.artifact?.dependencies === sha256) { source = join(home, "versions", id); break; }
+		} catch { /* Not a complete runtime. */ }
+	}
+	if (!source) return false;
+	try {
+		const entries: { path: string; size: number; directory: boolean }[] = [];
+		await tar.list({ file: archive, strict: true, onReadEntry: entry => {
+			if (!sourcePath(entry.path) || !["File", "Directory"].includes(entry.type) || !dependencyPath(entry.path) || entries.length >= 100_000)
+				throw new Error("Runtime archive contains an invalid entry.");
+			entries.push({ path: entry.path, size: entry.size ?? 0, directory: entry.type === "Directory" });
+			entry.resume();
+		} });
+		progress?.("Reusing unchanged runtime dependencies");
+		for (const entry of entries) {
+			const target = join(root, entry.path);
+			if (entry.directory) { await mkdir(target, { recursive: true }); continue; }
+			const from = join(source, entry.path), info = await lstat(from);
+			if (!info.isFile() || info.size !== entry.size) throw new Error(`Installed dependency differs: ${entry.path}`);
+			await mkdir(dirname(target), { recursive: true });
+			await link(from, target);
+		}
+		return true;
+	} catch (error) {
+		progress?.(`Extracting dependencies instead of reusing them: ${error instanceof Error ? error.message : String(error)}`);
+		return false;
+	}
+}
 async function restoreLinks(root: string, destination: string, links: RuntimeLink[]): Promise<void> {
 	for (const item of links) {
 		const target = join(root, item.target), path = join(root, item.path);
@@ -179,7 +215,13 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 		if (state.active === artifact.runtime.id) throw new Error("The selected runtime is damaged. It cannot be replaced while active.");
 		await reclaimSpace(home, progress, dependencies);
 		temporary = await mkdtemp(join(home, ".download-"));
-		await unpack(temporary, [{ file: code, dependency: false }, { file: dependencies, dependency: true }], progress);
+		if (await reuseDependencies(home, temporary, artifact.dependencies.sha256, dependencies, progress))
+			await unpack(temporary, [{ file: code, dependency: false }], progress);
+		else {
+			await rm(temporary, { recursive: true, force: true });
+			temporary = await mkdtemp(join(home, ".download-"));
+			await unpack(temporary, [{ file: code, dependency: false }, { file: dependencies, dependency: true }], progress);
+		}
 		// Windows junctions must name their final location before publication.
 		await restoreLinks(temporary, destination, artifact.links);
 		const plugins = JSON.parse(await readFile(join(temporary, "source", "package.json"), "utf8"));
