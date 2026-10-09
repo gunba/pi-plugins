@@ -780,7 +780,9 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot && <NativeQueue queue={session.snapshot.queue} />}
+            {session.snapshot && <NativeQueue queue={session.snapshot.queue}
+              sendNow={connected && session.state === "ready" && session.workerRuntime?.queueNow
+                ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined} />}
             <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}

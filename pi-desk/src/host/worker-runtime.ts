@@ -48,7 +48,7 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 	};
 	const describe = (): WorkerState => {
 		if (engine && initialized && !nativeClosed) { try { snapshot = engine.snapshot(); } catch { /* Keep the last valid snapshot during a transition. */ } }
-		return { ...(snapshot ? { snapshot } : {}), runtime: { version: RELEASE.version, plugins: plugins.version, engine: RELEASE.engine, runtime: bootstrap.options.runtimeDirectory, unattended: true, sendNow: true }, controls: controls.snapshot(), ...(historyReady ? { historyReady } : {}), ...(initialGeneration ? { initialGeneration } : {}) };
+		return { ...(snapshot ? { snapshot } : {}), runtime: { version: RELEASE.version, plugins: plugins.version, engine: RELEASE.engine, runtime: bootstrap.options.runtimeDirectory, unattended: true, sendNow: true, queueNow: true }, controls: controls.snapshot(), ...(historyReady ? { historyReady } : {}), ...(initialGeneration ? { initialGeneration } : {}) };
 	};
 	const closeNative = async () => {
 		if (!engineJob) { nativeClosed = true; return; }

@@ -72,6 +72,10 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			return { kind: data.kind, id: string(data.id, 80), offset: Number(data.offset), origin: origin(),
 				query: data.query === undefined ? undefined : string(data.query, 1000) };
 		case "name": return { kind: data.kind, name: string(data.name, 300) };
+		case "queue_now":
+			if (data.queue !== "steering" && data.queue !== "followUp") throw new Error("Invalid queue.");
+			if (!Number.isSafeInteger(data.index) || Number(data.index) < 0 || Number(data.index) > 10_000) throw new Error("Invalid queue position.");
+			return { kind: data.kind, queue: data.queue, index: Number(data.index), text: string(data.text) };
 		case "model": {
 			if (data.makeDefault !== undefined && typeof data.makeDefault !== "boolean") throw Error("Invalid default model selection.");
 			const context = data.context as { mode?: unknown; leaf?: unknown } | undefined;

@@ -93,7 +93,7 @@ export interface TreePage {
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -157,6 +157,7 @@ export type WorkerCommand =
 	| { kind: "native_read"; name: string; args: string }
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
+	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }

@@ -2,7 +2,7 @@ import type { WorkerCommand } from "./protocol.ts";
 
 export const CONTROL_LABELS = {
 	native: "Pi command", compact: "Compact context", navigate: "Change branch", fork: "Fork conversation",
-	reload: "Reload resources", model: "Change model", account: "Change account", thinking: "Change reasoning", abort: "Stop work", close: "Close conversation",
+	reload: "Reload resources", model: "Change model", account: "Change account", thinking: "Change reasoning", abort: "Stop work", queue_now: "Send now", close: "Close conversation",
 	context_update: "Change context", context_save: "Save instruction file",
 } as const;
 export type ControlKind = keyof typeof CONTROL_LABELS;

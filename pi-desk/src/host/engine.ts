@@ -48,9 +48,11 @@ import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
+import { promoteFollowUp } from "./native-queue-order.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 
+const queuePreview = (text: string) => text.length > 300 ? `${text.slice(0, 300)}…` : text;
 const modelContextCache = new WeakMap<SessionManager, { leaf: string | null; constraint: SessionSnapshot["modelSwitchConstraint"] }>();
 function modelSwitchConstraint(session: AgentSession, fresh = false): SessionSnapshot["modelSwitchConstraint"] {
 	const manager = session.sessionManager, leaf = manager.getLeafId(), cached = modelContextCache.get(manager);
@@ -406,7 +408,7 @@ export class DeskEngine {
 		const ui = this.presentation.snapshot();
 		const context = session.getContextUsage();
 		const defaults = session.settingsManager.getGlobalSettings();
-		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(text => text.length > 300 ? `${text.slice(0, 300)}…` : text) });
+		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
 			this.opening = { manager, text: openingMessage(manager.getEntries()) };
@@ -462,7 +464,7 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "native_read", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "native_read", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
@@ -571,6 +573,13 @@ export class DeskEngine {
 				await this.change(async () => { session.setThinkingLevel(level); }, true);
 				return;
 			}
+			case "queue_now": {
+				const queued = command.queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();
+				const text = queued[command.index];
+				if (text === undefined || queuePreview(text) !== command.text) throw new Error("That message is no longer waiting.");
+				if (command.queue === "followUp") promoteFollowUp(session, command.index, text);
+			}
+			// falls through: interrupt the turn so steering, including the promoted message, is delivered now.
 			case "abort": {
 				this.handoffAbort?.abort();
 				this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();

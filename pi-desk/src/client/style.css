@@ -1042,6 +1042,9 @@ details[open] > summary:before {
 .queue-group li { display:flex; align-items:baseline; gap:9px; font-size:13px; line-height:1.45; color:var(--text); }
 .queue-group li > span { flex:none; color:var(--muted); font-size:11px; }
 .queue-group li > p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; }
+.queue-send-now { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border:1px solid var(--border); border-radius:6px; background:transparent; color:var(--accent); font-size:11px; cursor:pointer; }
+.queue-send-now:hover { background:var(--accent-soft); }
+.queue-group li > .queue-send-now { margin-left:auto; flex:none; align-self:center; padding:2px 6px; }
 .queue-group li + li { border-top:1px solid var(--border); margin-top:6px; padding-top:6px; }
 .agent-activity-bar { display: flex; gap: 12px; align-items: center; flex-shrink: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; padding: 9px 28px; text-align: left; font-size: 12px; }
 .agent-activity-bar > span { color: var(--muted); }

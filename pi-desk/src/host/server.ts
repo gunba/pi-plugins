@@ -1246,7 +1246,8 @@ export class DeskHost {
 					const command = workerCommandFrom(data.command);
 					if (["asset", "artifact", "file", "history", "snapshot", "prompt"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
 					if (isControl(command)) {
-						if (command.kind !== "abort" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
+						if (command.kind === "queue_now" && !managed.worker.runtime?.queueNow) throw new Error("Restart this conversation to use Send now on waiting messages.");
+						if (command.kind !== "abort" && command.kind !== "queue_now" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
 							throw new Error("Cancel or finish pending messages before changing this session.");
 						return reply({ result: await managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
 					}
