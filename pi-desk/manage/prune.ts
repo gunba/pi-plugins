@@ -26,22 +26,33 @@ function workerPins(home: string): Set<string> {
 	return pins;
 }
 
+/** `<runtime>/keep`: one runtime id or prefix (6+ hex) per line, for processes that run a version outside Desk. */
+export function keepList(home: string): string[] {
+	const file = join(home, "keep");
+	if (!existsSync(file)) return [];
+	const entries = readFileSync(file, "utf8").split(/\r?\n/).map(line => line.replace(/#.*/, "").trim()).filter(Boolean);
+	const invalid = entries.find(entry => !/^[a-f0-9]{6,64}$/.test(entry));
+	if (invalid) throw new Error(`Invalid entry in ${file}: ${invalid}`);
+	return entries;
+}
+
 function archiveOf(versions: string, id: string): string | undefined {
 	try { return JSON.parse(readFileSync(join(versions, id, "runtime.json"), "utf8"))?.artifact?.dependencies; }
 	catch { return undefined; }
 }
 
 /**
- * Remove runtime slots nothing can use: not active, pending, previous (rollback) or pinned by an actor.
+ * Remove runtime slots nothing can use: not active, pending, previous (rollback), pinned by an actor or listed in `keep`.
  * Callers must hold the runtime `manage` lease. A slot whose files are open (Windows) cannot be renamed and is left.
  */
 export async function pruneRuntimes(home: string, keepArchive?: string): Promise<PruneResult> {
 	const versions = resolve(home, "versions"), state = readState(home);
 	if (!state?.active) return { kept: [], removed: [], busy: [], archives: 0 };
-	let pins: Set<string>;
-	try { pins = workerPins(home); }
+	let pins: Set<string>, prefixes: string[];
+	try { pins = workerPins(home); prefixes = keepList(home); }
 	catch (error) { return { kept: [], removed: [], busy: [], archives: 0, skipped: String(error) }; }
 	const keep = new Set([state.active, state.pending, state.previous, state.autoApply, ...pins].filter(validId));
+	for (const id of existsSync(versions) ? readdirSync(versions) : []) if (validId(id) && prefixes.some(prefix => id.startsWith(prefix))) keep.add(id);
 	const trash = join(home, ".trash"), removed: string[] = [], busy: string[] = [];
 	await mkdir(trash, { recursive: true, mode: 0o700 });
 	for (const id of existsSync(versions) ? readdirSync(versions) : []) {

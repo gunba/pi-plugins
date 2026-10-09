@@ -1,11 +1,12 @@
 // Release deployment, one command per target.
 //   node pi-desk/manage/deploy.ts host <version>     Update this computer's Desk host and wait for the outcome.
 //   node pi-desk/manage/deploy.ts website [--dry-run] Publish the website from this computer's active runtime.
-//   node pi-desk/manage/deploy.ts prune               Remove runtime versions nothing can use (updates also do this).
+//   node pi-desk/manage/deploy.ts prune [--keep id]   Remove runtime versions nothing can use (updates also do this).
+//                                                     --keep adds a version id/prefix to <runtime>/keep permanently.
 // The website mode requires `az login` with access to the Static Web App serving account.json's appOrigin.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -17,14 +18,18 @@ const read = async (file: string) => JSON.parse(await readFile(file, "utf8"));
 
 if (mode === "host" && /^\d+\.\d+\.\d+$/.test(argument ?? "")) await host(argument!);
 else if (mode === "website") await website(argument === "--dry-run");
-else if (mode === "prune") await prune();
-else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website [--dry-run] | prune");
+else if (mode === "prune") await prune(process.argv.slice(3));
+else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website [--dry-run] | prune [--keep id]...");
 
-async function prune(): Promise<void> {
+async function prune(args: string[]): Promise<void> {
 	const { SessionLease } = await import("../../pi-session-ownership/lease.ts");
-	const { pruneRuntimes } = await import("./prune.ts");
+	const { keepList, pruneRuntimes } = await import("./prune.ts");
+	const keep = args.flatMap((arg, index) => args[index - 1] === "--keep" ? [arg.toLowerCase()] : []);
+	if (args.length !== keep.length * 2 || keep.some(id => !/^[a-f0-9]{6,64}$/.test(id))) throw new Error("Usage: prune [--keep <runtime id or 6+ hex prefix>]...");
 	const lease = new SessionLease(join(runtime, "manage"));
 	try {
+		const listed = keepList(runtime), added = keep.filter(id => !listed.includes(id));
+		if (added.length) await appendFile(join(runtime, "keep"), added.map(id => id + "\n").join(""));
 		const result = await pruneRuntimes(runtime);
 		if (result.skipped) throw new Error(`Nothing removed: ${result.skipped}`);
 		if (!result.kept.length) throw new Error("Nothing removed: no active runtime.");

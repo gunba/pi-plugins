@@ -56,6 +56,10 @@ Do not:
   update because some conversation is busy;
 - report progress in abbreviations, hashes or PIDs. Use plain sentences.
 
+Desk deletes runtime versions nothing uses before preparing another. A process
+that runs a version from outside Desk must be listed first:
+`node pi-desk/manage/deploy.ts prune --keep <runtime id prefix>`.
+
 When a fix is meant to change behaviour Jordan sees (a prompt, a block, a
 layout), confirm that behaviour is gone in a new conversation before
 reporting it fixed. Check for older copies of the same feature still loaded,
