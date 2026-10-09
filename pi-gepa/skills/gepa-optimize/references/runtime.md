@@ -56,11 +56,18 @@ Resolve all paths below from the config file's directory. Arrays are opaque exam
     "request_seconds": 180
   },
   "workers": 4,
+  "samples": 1,
   "minibatch_size": 3,
   "seed_number": 0,
   "stop_at_score": 1.0
 }
 ```
+
+A `.json` seed is a dictionary of named text components, such as one entry per skill file; GEPA then edits one component per proposal and `winner.json` holds the selected dictionary. Any other seed file is one text candidate.
+
+`samples` averages that many evaluator calls for each candidate/example. Each candidate/example is measured once and reused, including the seed's baseline inside search, so a parent is not resampled on later iterations. Set `samples` above 1 when the seed's run-to-run spread is comparable to the improvement you hope to detect.
+
+After the baseline, the run stops with `saturated` when every training score reaches `stop_at_score` (default 1.0), and with `degenerate_validation` when every validation example has the same 0 or ceiling score. Fix the metric or splits before searching; `allow_tied_validation: true` overrides the second check.
 
 Replace model placeholders from the session's `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`, or verified native session/default values. The runner never picks a provider or changes global defaults. Omit `task_model` for deterministic artifact evaluation; keep `reflection_model`. Set concurrency to available cores for CPU-bound evaluators; use an explicit rate-conscious limit for hosted models. The search seed fixes sampling order, not provider generation randomness.
 
@@ -78,14 +85,19 @@ def evaluate(candidate, example, task_lm):
         {"role": "system", "content": candidate},
         {"role": "user", "content": example["input"]},
     ])
+    expected = example["expected"]
     try:
         prediction = json.loads(output)
     except json.JSONDecodeError as error:
         return 0.0, {"input": example["input"], "output": output,
-                     "error": str(error), "expected": example["expected"]}
-    score = float(prediction == example["expected"])
-    return score, {"input": example["input"], "output": output,
-                   "expected": example["expected"]}
+                     "error": str(error), "expected": expected}
+    if not isinstance(prediction, dict):
+        prediction = {}
+    # Partial credit per field gives the search a gradient; exact match alone rarely does.
+    wrong = {key: {"expected": value, "actual": prediction.get(key)}
+             for key, value in expected.items() if prediction.get(key) != value}
+    score = 1 - len(wrong) / len(expected)
+    return score, {"input": example["input"], "output": output, "wrong_fields": wrong}
 ```
 
 The runner adds the `task_lm` argument then adapts this to upstream's two-argument evaluator contract. `task_lm(prompt) -> text` accepts a string or system/user/assistant text messages. Multiple calls permit repeated samples or same-model judges, all within the total-call cap. Do not use it to expose expected answers to the task model. It is `None` in deterministic runs.

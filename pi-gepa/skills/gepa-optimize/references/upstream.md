@@ -15,9 +15,11 @@ The other upstream engines have different prerequisites and selection semantics:
 
 Upstream recommends roughly 15–20 candidates' worth of selection evaluations for substantive search. Small bounded trials can establish working integration but cannot establish superiority over manual revision or best-of-N. Count actual proposals and accepted candidates; training saturation can reject every proposal.
 
+Acceptance is `strict_improvement` on the minibatch sum: a proposal that ties its parent is rejected, and the final winner is the best validation mean, with ties going to the earliest candidate (the seed). A pass/fail metric where every candidate fails the same checks therefore always returns the seed. With `module_selector: round_robin`, a dictionary seed has one component revised per proposal; the reflection prompt shows only that component, so put context about the other components in `background`. GEPA's own `cache_evaluation` keys on the whole candidate; an evaluator whose examples read only some components can cache more finely itself.
+
 ## Dependencies and maintenance
 
-The pinned base package declares no runtime dependencies and supports Python 3.10–3.14. Its `full` extra includes LiteLLM, datasets, experiment trackers and native dependencies; it is not needed here. The runner disables cloudpickle serialization, evaluation caching and progress bars. Candidate text is passed to the evaluator, never executed by the runner. An evaluator that executes generated code needs its own isolation boundary.
+The pinned base package declares no runtime dependencies and supports Python 3.10–3.14. Its `full` extra includes LiteLLM, datasets, experiment trackers and native dependencies; it is not needed here. The runner disables cloudpickle serialization, GEPA's evaluation cache (it memoises measurements itself) and progress bars. Candidate text is passed to the evaluator, never executed by the runner. An evaluator that executes generated code needs its own isolation boundary.
 
 MIT licence: [upstream licence](https://github.com/gepa-ai/gepa/blob/fb1ed589fd83372caef499cffc2c73173d3b096b/LICENSE), also preserved at `../../../LICENSE.gepa`.
 

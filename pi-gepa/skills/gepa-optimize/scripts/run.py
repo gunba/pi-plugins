@@ -37,6 +37,20 @@ def private_path(value, base):
     return path
 
 
+def read_seed(path):
+    """Text seed, or a JSON object of named text components for multi-file candidates."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() != ".json":
+        if not text.strip():
+            raise ValueError("Seed must contain text")
+        return text
+    seed = json.loads(text)
+    if not isinstance(seed, dict) or not seed or not all(
+            isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in seed.items()):
+        raise ValueError("A JSON seed must map component names to nonempty text")
+    return seed
+
+
 def read_split(path):
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list) or not data:
@@ -207,9 +221,8 @@ def run(config_path, preflight=False):
     positive(budget["max_evals"], "max_evals")
     positive(budget["max_proposals"], "max_proposals")
     workers = positive(config.get("workers", os.cpu_count() or 1), "workers")
-    seed = paths["seed"].read_text(encoding="utf-8")
-    if not seed.strip():
-        raise ValueError("Seed must contain text")
+    samples = positive(config.get("samples", 1), "samples")
+    seed = read_seed(paths["seed"])
     # Record holdout identity without decoding its examples before candidate selection.
     frozen = {key: hashlib.sha256(paths[key].read_bytes()).hexdigest() for key in
               ("seed", "train", "validation", "holdout", "evaluator")}
@@ -238,8 +251,9 @@ def run(config_path, preflight=False):
         reflection = PiLM(bridge, config["reflection_model"], "reflection")
         task = PiLM(bridge, config["task_model"], "task") if config.get("task_model") else None
         log_lock = threading.Lock()
+        memo, memo_lock = {}, threading.Lock()
 
-        def evaluate(candidate, example):
+        def sample(candidate, example):
             # Invalid candidate output should be scored by the evaluator. Authentication,
             # transport and budget failures propagate instead of becoming training feedback.
             score, feedback = evaluator(candidate, example, task)
@@ -248,11 +262,26 @@ def run(config_path, preflight=False):
             if not isinstance(feedback, dict):
                 raise ValueError("Evaluator feedback must be a dict")
             json.dumps(feedback, allow_nan=False)
+            return float(score), feedback
+
+        def evaluate(candidate, example):
+            # One averaged measurement per candidate/example: a parent is not resampled each iteration.
+            key = (digest(candidate), digest(example))
+            with memo_lock:
+                if key in memo:
+                    return memo[key]
+            results = [sample(candidate, example) for _ in range(samples)]
+            score = sum(row[0] for row in results) / samples
+            feedback = dict(results[0][1])
+            if samples > 1:
+                feedback["sample_scores"] = [row[0] for row in results]
             with log_lock:
                 with (directory / "evaluations.jsonl").open("a", encoding="utf-8") as stream:
-                    stream.write(json.dumps({"candidate_sha256": digest(candidate), "example_sha256": digest(example),
+                    stream.write(json.dumps({"candidate_sha256": key[0], "example_sha256": key[1],
                                              "score": score, "feedback": feedback}, ensure_ascii=False) + "\n")
-            return float(score), feedback
+            with memo_lock:
+                memo[key] = (score, feedback)
+            return score, feedback
 
         def score_split(candidate, examples):
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -264,6 +293,15 @@ def run(config_path, preflight=False):
                     (("train", train), ("validation", validation))}
         summary["baseline"] = baseline
         write_json(directory / "result.json", summary)
+        ceiling = config.get("stop_at_score", 1.0)
+        if all(score >= ceiling for score in baseline["train"]["scores"]):
+            summary["status"] = "saturated"
+            return summary
+        tied = set(baseline["validation"]["scores"])
+        if len(tied) == 1 and tied <= {0.0, ceiling} and not config.get("allow_tied_validation"):
+            summary["status"] = "degenerate_validation"
+            summary["error"] = "Every validation example has the same floor or ceiling score; candidates cannot be separated."
+            return summary
         result = optimize_anything(
             seed_candidate=seed, evaluator=evaluate, dataset=train, valset=validation,
             objective=config["objective"], background=config.get("background", ""),
@@ -284,9 +322,14 @@ def run(config_path, preflight=False):
             ),
         )
         winner = result.best_candidate
-        if not isinstance(winner, str):
-            raise TypeError("Expected one text candidate")
-        (directory / "winner.txt").write_text(winner, encoding="utf-8")
+        if isinstance(seed, dict):
+            if not isinstance(winner, dict):
+                raise TypeError("Expected a component dictionary")
+            write_json(directory / "winner.json", winner)
+        else:
+            if not isinstance(winner, str):
+                raise TypeError("Expected one text candidate")
+            (directory / "winner.txt").write_text(winner, encoding="utf-8")
         proposals = [json.loads(path.read_text(encoding="utf-8")) for path in
                      (directory / "search" / "iterations").glob("*/meta.json") if path.parent.name != "seed"]
         if config.get("stop_at_score") is not None and result.best_score >= config["stop_at_score"]:
@@ -335,6 +378,9 @@ def run(config_path, preflight=False):
 
 
 def main():
+    if not sys.flags.utf8_mode:
+        # GEPA writes its state files with the platform default encoding.
+        sys.exit(subprocess.call([sys.executable, "-X", "utf8", *sys.argv]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path)
     parser.add_argument("--preflight", action="store_true", help="Check native model/auth access without a completion")
