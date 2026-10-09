@@ -60,10 +60,10 @@ async function host(version: string): Promise<void> {
 }
 
 async function website(dryRun: boolean): Promise<void> {
-	const { publishApp } = await import("../src/host/publish-app.ts");
+	// The active runtime ships with its dependencies; source checkouts may not have them installed.
 	const { active } = await read(join(runtime, "state.json"));
 	const { desk: version } = await read(join(runtime, "versions", active, "runtime.json"));
-	const client = join(runtime, "versions", active, "source", "pi-desk", "dist", "client");
+	const cli = join(runtime, "versions", active, "source", "pi-desk", "dist", "host", "cli.js");
 	const { appOrigin, config } = await read(join(agentDir, "desk", "account.json"));
 	const az = (...args: string[]) => execFileSync("az", [...args, "--only-show-errors", "-o", "tsv"],
 		{ encoding: "utf8", shell: process.platform === "win32" }).trim();
@@ -72,7 +72,7 @@ async function website(dryRun: boolean): Promise<void> {
 	if (!name || !group) throw new Error(`No Static Web App serves ${hostname} in the signed-in Azure subscription.`);
 	const temporary = await mkdtemp(join(tmpdir(), "pi-desk-app-")), output = join(temporary, "app");
 	try {
-		await publishApp({ account: config, appOrigin, output }, client);
+		execFileSync(process.execPath, [cli, "publish-app", "--account", config.origin, "--app-origin", appOrigin, "--output", output], { stdio: ["ignore", "ignore", "inherit"] });
 		const index = createHash("sha256").update(await readFile(join(output, "index.html"))).digest("hex");
 		console.log(`Website ${version} prepared for ${appOrigin} (${group}/${name}).`);
 		if (dryRun) return;
