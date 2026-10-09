@@ -13,7 +13,7 @@ import test from "node:test";
 import { atomicJson, readState, runtimeIdentity, versionDirectory } from "../manage/store.ts";
 import { runOperation, operationStatus } from "../manage/operations.ts";
 import { saveInstallation } from "../manage/installation.ts";
-import { probeHost, stopHost } from "../src/host/lifecycle.ts";
+import { probeHost, SHUTDOWN_WAIT_MS, stopHost } from "../src/host/lifecycle.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 import { SessionWorker } from "../src/host/worker-client.ts";
 import { attachWorker, waitWorkerStopped, readWorkerRecord, workerDirectory } from "../src/host/worker-registry.ts";
@@ -40,7 +40,7 @@ test("the same login supervisor restarts only the host through its stable entry 
 			calls++;
 			assert.equal(data, directory); assert.equal(cwd, directory);
 			assert.deepEqual(args, ["--data-dir", directory]); assert.equal(options.entry, entry);
-			assert.equal(options.managed, true); assert.equal(options.waitForLaunch, 30_000);
+			assert.equal(options.managed, true); assert.equal(options.waitForLaunch, SHUTDOWN_WAIT_MS);
 			const supervisor = liveSupervisor(directory);
 			assert.equal(supervisor.pid, process.pid);
 			assert.equal(options.environment.PI_DESK_SUPERVISOR, supervisor.instance);

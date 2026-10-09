@@ -2,7 +2,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
-import { probeHost, stopHost } from "../src/host/lifecycle.ts";
+import { probeHost, SHUTDOWN_WAIT_MS, stopHost } from "../src/host/lifecycle.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
 import { managerStatus } from "../src/host/login-manager.ts";
 import { liveSupervisor } from "../src/host/login-supervisor.ts";
@@ -108,7 +108,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 			if (result.deferred !== undefined) return { deferred: result.deferred };
 		}
 		if (login && !supervisor) {
-			const until = Date.now() + 30_000;
+			const until = Date.now() + SHUTDOWN_WAIT_MS;
 			for (;;) {
 				const status = await managerStatus(login);
 				if (status.error) throw new Error(status.error);

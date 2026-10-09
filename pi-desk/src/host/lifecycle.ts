@@ -60,6 +60,9 @@ async function inspectHost(directory: string, launchHeld: boolean): Promise<Host
 	return stoppedProbe(directory, "The host lock is occupied or unavailable, but no runtime record exists. It may be starting or running an older release.", launchHeld);
 }
 
+/** Constrained computers can take minutes to load extensions and restore conversations. */
+export const STARTUP_WAIT_MS = 180_000, SHUTDOWN_WAIT_MS = 120_000;
+
 export interface StartedHost {
 	host: HostStatus; reused: boolean; exited?: Promise<number | null>;
 }
@@ -98,8 +101,11 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 			let handedOff = false;
 			try {
 				await new Promise<void>((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error(`Startup is still unconfirmed. Check status and ${log}; the host was not killed.`)), 30_000);
-					const finish = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+					// A login supervisor owns the host process: giving up on a live, slow host would end both.
+					const timer = options.managed ? undefined : setTimeout(() => finish(new Error(`Startup is still unconfirmed. Check status and ${log}; the host was not killed.`)), STARTUP_WAIT_MS);
+					const cancel = () => finish(new Error("Startup was cancelled."));
+					options.signal?.addEventListener("abort", cancel, { once: true });
+					const finish = (error?: Error) => { clearTimeout(timer); options.signal?.removeEventListener("abort", cancel); error ? reject(error) : resolve(); };
 					child.once("error", error => finish(error));
 					child.once("exit", code => finish(new Error(`Host exited during startup (${code}). See ${log}.`)));
 					child.on("message", message => {
@@ -151,7 +157,7 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 		throw error;
 	}
 	if (result.deferred !== undefined) return { stopped: false, deferred: result.deferred };
-	const until = Date.now() + 30_000;
+	const until = Date.now() + SHUTDOWN_WAIT_MS;
 	while (Date.now() < until) {
 		if (readHostRecord(directory)?.instance !== record.instance) return { stopped: true };
 		const lease = freeLease(directory);

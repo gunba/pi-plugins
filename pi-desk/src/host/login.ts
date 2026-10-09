@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
 import { loginEnvironment, loginFile, loginPathsValid, makeLoginConfig, readLoginConfig, saveLoginConfig, type LoginConfig } from "./login-config.ts";
 import { disableManager, installManager, managerStatus, removeManager, startManager, stopManager, type LoginStatus } from "./login-manager.ts";
-import { probeHost, startHost, stopHost, type StartedHost } from "./lifecycle.ts";
+import { probeHost, SHUTDOWN_WAIT_MS, startHost, STARTUP_WAIT_MS, stopHost, type StartedHost } from "./lifecycle.ts";
 import { atomicJson } from "../../manage/store.ts";
 import { canonicalPath, selectedRuntime } from "../../manage/installation.ts";
 import { LoginSupervisor, liveSupervisor, handoffTicket, waitHandoffSelection } from "./login-supervisor.ts";
@@ -62,7 +62,7 @@ export async function stopLogin(config: LoginConfig): Promise<{ stopped: boolean
 		return { ...result, stopped: result.stopped || before.state !== "stopped" };
 	}
 	// No End/TerminateTask call: wait for the Node host and hidden task wrapper.
-	const until = Date.now() + 30_000;
+	const until = Date.now() + SHUTDOWN_WAIT_MS;
 	let result = { stopped: false } as { stopped: boolean; unclean?: boolean };
 	while (Date.now() < until) {
 		const host = await probeHost(config.directory), manager = await managerStatus(config);
@@ -110,7 +110,7 @@ export async function startLogin(config: LoginConfig): Promise<StartedHost> {
 	if (current.state === "running") return { host: current.host!, reused: true };
 	if (current.state !== "stopped") throw new Error(`Host is ${current.state}. ${current.error ?? "Wait for shutdown."}`);
 	if (!liveSupervisor(config.directory)) await startManager(config);
-	const until = Date.now() + 30_000;
+	const until = Date.now() + STARTUP_WAIT_MS;
 	while (Date.now() < until) {
 		const status = await probeHost(config.directory);
 		if (status.state === "running") return { host: status.host!, reused: false };
@@ -143,7 +143,7 @@ export async function runLogin(directory: string,
 		while (!stopping) {
 			ready = false;
 			const started = await services.start(directory, config.cwd, config.arguments,
-				{ managed: true, environment, entry: config.entry, waitForLaunch: 30_000, signal: abort.signal });
+				{ managed: true, environment, entry: config.entry, waitForLaunch: SHUTDOWN_WAIT_MS, signal: abort.signal });
 			rmSync(join(directory, "login-error.txt"), { force: true });
 			ready = true; if (stopping) stop();
 			const code = await started.exited;
