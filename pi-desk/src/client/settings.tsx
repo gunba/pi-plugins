@@ -85,6 +85,10 @@ export function SettingsContent({ section, host, account, session, computer, con
 				{session.workerRuntime && <p className="muted">Worker {session.workerRuntime.version} · Plugins {session.workerRuntime.plugins} · Pi {session.workerRuntime.engine}
 					{computer?.release && computer.release.version !== session.workerRuntime.version && <>. Host {computer.release.version}; this conversation keeps its loaded code until restarted.</>}
 				</p>}
+				{session.workerRuntime && computer?.release && computer.release.version !== session.workerRuntime.version && session.state === "ready" &&
+					<button disabled={busy || !connected} title="Close and reopen this conversation on the host's current version. History is kept."
+						onClick={() => run(api(`/sessions/${session.key}/restart`, { replace: true }))}>
+						<Icon name="refresh" />Restart on Desk {computer.release.version}</button>}
 				<label className="setting-control">Pin conversation<input type="checkbox" role="switch" checked={!!session.pinned}
 					disabled={busy || !connected} onChange={event => run(api(`/sessions/${session.key}/metadata`,
 						{ generation: ui?.generation, pinned: event.target.checked }))} /></label>

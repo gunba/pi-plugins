@@ -639,6 +639,22 @@ export class DeskHost {
 		});
 	}
 
+	/** Close an idle conversation's worker and reopen the saved session on this host's current runtime. */
+	private async replaceWorker(managed: ManagedSession): Promise<string> {
+		const view = managed.view, worker = managed.worker!, snapshot = view.snapshot;
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
+		if (view.state !== "ready" || !view.file || !snapshot) throw new Error("Only a started, saved conversation can be restarted.");
+		if (snapshot.activity === "running" || view.ui?.interactions.length || snapshot.queue.steering.count || snapshot.queue.followUp.count
+			|| view.controls?.some(control => control.state === "running")
+			|| this.inputs!.pending(view.key).some(input => input.state === "queued" || input.state === "sending"))
+			throw new Error("Restart when the conversation is idle, with no questions or waiting messages.");
+		const id = randomUUID();
+		await worker.submitControl({ kind: "close" }, worker.generation, id);
+		await this.waitForControl(view.key, id);
+		await worker.close(true);
+		return this.createSession(view.cwd, view.file, this.sessions.get(view.key));
+	}
+
 	private waitForControl(key: string, id: string): Promise<void> {
 		return new Promise((resolve, reject) => {
 			let finished = false;
@@ -1041,6 +1057,7 @@ export class DeskHost {
 					}
 				} else if (!id && request.method === "POST") {
 					if (inputRoute[2] === "restart") {
+						if (managed.worker && data.replace === true) return reply({ key: await this.replaceWorker(managed) }, 202);
 						if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
 						if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
 						return reply({ key: this.createSession(managed.view.cwd, managed.view.file, managed, data.takeover === true) }, 202);
