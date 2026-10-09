@@ -42,9 +42,10 @@ broken: stop and tell Jordan what failed in one plain sentence.
    conversations still need a restart to pick up plugin changes. Done.
 
 Running conversations keep the code they started with. Plugin fixes (command
-guard, tools, providers) reach a conversation only after it restarts. Do not
-script worker replacement; name the conversations and let Jordan restart them,
-or restart an idle one you own.
+guard, tools, providers) reach a conversation only after it restarts: idle ones
+have **Settings & tools → Conversation → Restart on Desk <version>** (or
+`POST /api/sessions/<key>/restart {"replace":true}`). Do not script it further;
+name busy conversations and let Jordan restart them.
 
 Do not:
 
