@@ -88,8 +88,10 @@ function ThinkingGroup({ parts, sessionKey, source }: {
 }) {
 	const active = parts.find(part => part.message.complete === false)?.message;
 	const readable = parts.flatMap(part => {
-		// Presentation only: retain native reasoning/signatures and join streamed text before removing SGR formatting.
-		const text = part.block.text.replace(/(?:\u001b\[|\u009b)[\d;:]*m/g, "").replace(/\u001b(?:\[[\d;:]*)?$|\u009b[\d;:]*$/, "");
+		// Presentation only: retain native reasoning/signatures and join streamed text before removing SGR formatting
+		// and the "Thinking:" label pi-tool-display saves into messages for its terminal view.
+		const text = part.block.text.replace(/(?:\u001b\[|\u009b)[\d;:]*m/g, "").replace(/\u001b(?:\[[\d;:]*)?$|\u009b[\d;:]*$/, "")
+			.replace(/^(?:\s*thinking:)+\s*/i, "");
 		return text.trim() || part.block.full || part.block.truncated ? [{ ...part, block: { ...part.block, text } }] : [];
 	});
 	return <Disclosure id={`thinking:${parts[0]?.message.id}:${parts[0]?.index}`} className="tool-card thinking-pill"

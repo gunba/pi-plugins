@@ -44,6 +44,7 @@ test("thinking formatting does not leak terminal codes or change the saved conte
 	const thought = message("styled", "assistant", [{ type: "thinking", text }]);
 	const html = render({ message: thought }, new Map([["thinking:styled:0", true]]));
 	assert.match(html, /A readable summary/);
+	assert.doesNotMatch(html, /Thinking:/, "the panel is already labelled Thinking");
 	assert.doesNotMatch(html, /38;2;167|39m|\u001b|\u009b/);
 	assert.equal(thought.blocks[0].text, text);
 	thought.blocks[0].text = "Partial summary\u001b[38;2;";
