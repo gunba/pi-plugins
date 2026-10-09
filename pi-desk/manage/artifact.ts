@@ -7,10 +7,21 @@ import { promisify } from "node:util";
 import * as tar from "tar";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { publishDirectory, retryablePublicationError } from "../src/host/file-publication.ts";
+import { pruneRuntimes } from "./prune.ts";
 import { within } from "./source.ts";
 import { atomicJson, readRelease, readState, runtimeIdentity, validId, versionDirectory, type RuntimeRelease } from "./store.ts";
 
 export interface ReleaseAsset { name: string; size: number; sha256: string }
+
+/** Free unused runtime slots before unpacking another full runtime. Never blocks an update. */
+export async function reclaimSpace(home: string, progress?: (message: string) => void, keepArchive?: string): Promise<void> {
+	try {
+		const result = await pruneRuntimes(home, keepArchive);
+		if (result.skipped) progress?.(`Kept old runtimes: ${result.skipped}`);
+		else if (result.removed.length || result.busy.length || result.archives)
+			progress?.(`Removed ${result.removed.length} unused runtimes and ${result.archives} archives${result.busy.length ? `; ${result.busy.length} in use were kept` : ""}`);
+	} catch (error) { progress?.(`Could not remove old runtimes: ${String(error)}`); }
+}
 interface RuntimeLink { path: string; target: string; directory: boolean }
 export interface VerifiedDependencies { artifact: RuntimeArtifact; file: string }
 export interface RuntimeArtifact {
@@ -166,6 +177,7 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 		if (state.active === artifact.runtime.id) throw new Error("The selected runtime is damaged. It cannot be replaced while active.");
+		await reclaimSpace(home, progress, dependencies);
 		temporary = await mkdtemp(join(home, ".download-"));
 		await unpack(temporary, [{ file: code, dependency: false }, { file: dependencies, dependency: true }], progress);
 		// Windows junctions must name their final location before publication.

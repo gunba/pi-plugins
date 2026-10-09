@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { captureSource, within, writeSource } from "./source.ts";
-import { unpackDependencies, type VerifiedDependencies } from "./artifact.ts";
+import { reclaimSpace, unpackDependencies, type VerifiedDependencies } from "./artifact.ts";
 import { atomicJson, readRelease, readState, runtimeId, versionDirectory, type RuntimeRelease } from "./store.ts";
 
 /** Invoke npm's JS entry with this Node, including on Windows without a cmd shim. */
@@ -118,6 +118,7 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 			return release;
 		}
 		await mkdir(join(home, "versions"), { recursive: true, mode: 0o700 });
+		await reclaimSpace(home, progress, options.dependencies?.file);
 		temporary = await mkdtemp(join(home, ".staging-"));
 		const copy = join(temporary, "source");
 		await writeSource(snapshot, copy);
