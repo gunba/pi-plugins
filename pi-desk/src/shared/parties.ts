@@ -11,4 +11,6 @@ export interface PartyAgent {
 }
 export interface PartyDirectory {
 	agents: PartyAgent[];
+	/** Always empty; kept so website tabs from before party removal keep rendering. Remove with the next API bump. */
+	groups: never[];
 }

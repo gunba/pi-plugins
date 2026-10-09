@@ -12,7 +12,7 @@ export class Parties {
 	private timer?: ReturnType<typeof setTimeout>;
 	private directory: string;
 	private signature = "";
-	snapshot: PartyDirectory = { agents: [] };
+	snapshot: PartyDirectory = { agents: [], groups: [] };
 	constructor(agentDir: string, changed: () => void) {
 		this.directory = join(agentDir, "party");
 		this.store = new PartyStore(this.directory);
@@ -35,7 +35,7 @@ export class Parties {
 			return { id: peer.session, label: peer.label, cwd: peer.cwd, description: peer.description, kind: peer.kind, state,
 				...partyDelivery(peer, !!peer.delivery, state) };
 		}).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
-		const next = { agents }, signature = JSON.stringify(next);
+		const next = { agents, groups: [] }, signature = JSON.stringify(next);
 		if (signature === this.signature) return false;
 		this.signature = signature; this.snapshot = next; return true;
 	}
