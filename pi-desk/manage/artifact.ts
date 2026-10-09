@@ -250,7 +250,7 @@ export async function installArtifact(home: string, input: RuntimeArtifact, code
 		temporary = undefined;
 		try {
 			progress?.("Checking published runtime");
-			const app = join(destination, "source", "pi-desk"), options = { cwd: app, windowsHide: true, timeout: 60_000 };
+			const app = join(destination, "source", "pi-desk"), options = { cwd: app, windowsHide: true, timeout: 180_000 };
 			await execute(process.execPath, [join(app, "dist", "host", "cli.js"), "--help"], options);
 			await execute(process.execPath, ["--input-type=module", "-e",
 				'import {createRequire} from "node:module"; createRequire(process.cwd()+"/package.json")("keytar");'], options);

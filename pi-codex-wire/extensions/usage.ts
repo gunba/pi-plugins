@@ -384,7 +384,7 @@ function formatSessionCostDetails(ctx: ExtensionContext, state: UsageState): str
 
 function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   if (state.disposed) return;
-  const model = ctx.model, ui = ctx.ui;
+  const ui = ctx.ui;
   const status = state.enabled
     ? formatUsageStatus(state, ui.theme, contextUsageSource(ctx))
     : undefined;

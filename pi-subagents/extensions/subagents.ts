@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { getModelCredentials } from "../model-credentials.ts";
-import { join } from "node:path";
 import { SESSION_USAGE_CHANGED } from "../../pi-session-usage/index.ts";
 import {
 	getAgentDir,

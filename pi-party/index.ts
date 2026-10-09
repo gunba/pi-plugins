@@ -10,7 +10,7 @@ import { LEASE_MS, PartyStore, type Member } from "./store.ts";
 import { PartyChat } from "./chat.ts";
 import { renderPartyCall, renderPartyResult, renderPartyNotice } from "./render.ts";
 import { getPresentation } from "../pi-ui/index.ts";
-import { MESSAGES_VIEW, PartyPresentation } from "./presentation.ts";
+import { PartyPresentation } from "./presentation.ts";
 import { PartyOperations } from "./operations.ts";
 import { agentId } from "./network.ts";
 import { partyForkPoint } from "./fork.ts";

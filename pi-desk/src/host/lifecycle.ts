@@ -10,7 +10,7 @@ export interface HostProbe { state: "running" | "stopping" | "stopped" | "unresp
 
 export async function controlRequest<T extends { instance: string }>(record: HostRecord, operation: string, body?: object): Promise<T> {
 	const response = await fetch(`${record.origin}/api/host/${operation}`, {
-		method: body ? "POST" : "GET", redirect: "error", signal: AbortSignal.timeout(2500),
+		method: body ? "POST" : "GET", redirect: "error", signal: AbortSignal.timeout(15_000), // A busy host on a slow PC is not unresponsive.
 		headers: { Authorization: `Bearer ${record.secret}`, "Content-Type": "application/json" },
 		...(body ? { body: JSON.stringify({ ...body, instance: record.instance }) } : {}),
 	});

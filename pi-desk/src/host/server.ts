@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdirSync, readdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
-import { uuid } from "../../../pi-party/network.ts";
+import { mkdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,10 +43,8 @@ import { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
 import { workspaceIdentity } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
-import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
-import { agentId, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
+import type { PartyOperation, OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
-import { LEASE_MS } from "../../../pi-party/store.ts";
 import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }

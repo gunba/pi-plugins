@@ -155,89 +155,13 @@ for rollback.
    selected conversations. The existing computer identity should remain;
    use sign-in only if authorization is actually missing.
 
-Version 0.5.34 retains API 8 and Pi 1.1.0. Command protection is limited to
-whole-drive destruction and destructive Git wipes. Ordinary cleanup and file
-edits no longer prompt. Retire external DCG through native resource settings;
-leaving it loaded still applies its separate policy and process timeouts. The
-new policy needs a new worker, while resource exclusion takes effect on a safe
-reload or start. Host-only updates do not change active workers' loaded guards.
+Release notes are on the GitHub release for each `pi-desk-v*` tag. When
+`API_VERSION` in `src/shared/release.ts` changes, update hosts and the website
+together; older computers show **Update required** until then. A version
+mismatch is not a reason to delete sessions, credentials or drafts.
 
-Version 0.5.32 retains API 8 and Pi 1.1.0. The website combines composer and
-status controls. Updated hosts can reconnect to the same live worker after a
-channel loss. New workers are required for reduced command-guard prompting,
-automatic WebSocket recovery, the portable-handoff bookkeeping correction and
-canonical parent-file matching when restoring managed agents. Existing worker
-histories, selections and accepted work are not rewritten or replayed.
-
-Version 0.5.31 retains API 8 and pins Pi 1.1.0. New workers load the maintained
-Claude subscription extension and first-party command guard. Settings separates
-tool declarations from callable tools and shows computer/project defaults and
-conversation choices. Pi's Codemode and tool-search defaults are opt-in; use
-`defaultTools: ["+codemode", "+tool_search"]` to add them without replacing the
-native defaults. Preserve deliberate conversation selections.
-
-The Settings/Resources browser and flat party sidebar require the matching
-website; native resource controllers and tool metadata need a new worker.
-Disband removes memberships without closing conversations. Existing workers
-keep their SDK, plugins, protection and accepted work during a host-only update.
-Replace an old guard only after the new worker's protection has been verified;
-see [command protection](../pi-command-guard/README.md).
-
-Version 0.5.30 retains API 8. Model overrides no longer invalidate Codex Wire
-ownership or child compaction when Pi refreshes provider metadata. Affected
-conversations need an individual worker restart after the host update; their
-saved context limits, accounts and histories remain in place.
-
-Version 0.5.29 retains API 8. The browser shows new operational notices in a
-single temporary status bar rather than replaying saved warning cards. Existing
-native records remain unchanged. The binary-export correction in child extension
-loading requires a newly started worker; a host-only update does not replace
-running conversations.
-
-Version 0.5.26 retains API 8. Updated hosts and the website can attach to older
-workers without restarting them. The model picker identifies older workers and
-keeps cross-provider switching unavailable until an individual idle restart;
-new conversations use the new Claude and context-handoff behavior. Host sign-in,
-party close-all and browser layout fixes do not require restarting conversations.
-
-Version 0.5.24 retains API 8; optional worker capabilities are advertised, so
-older connected computers can continue working with the updated website. Send
-now, availability and the full native command inventory require a supporting
-worker; their absence is not a claim that its loaded runtime was upgraded.
-
-Version 0.5.21 uses API 8: Dot connection commands select a saved account, and
-message/upload commands carry a connection binding. Coordinate hosts, shared
-services and the website when moving from API 7; an older client must not send
-queued Dot work without that binding. Existing histories and delivery receipts
-remain in place. Select the Dot's saved ChatGPT login after the update; this does
-not change agent accounts or defaults.
-
-Versions 0.5.18–0.5.20 use API 7: display sessions carry presentation data
-once in `ui`, not a second copy in `snapshot.ui`. Moving from an older API requires
-updating hosts, the website and shared services together. API 7 components can be
-updated independently; optional Dot avatar and writing data require a 0.5.19 host,
-and nested skill-read labels require a 0.5.20 host. Version 0.5.15–0.5.17 uses API 6; versions 0.5.9 and
-0.5.10 use API 5. These releases use first-party presentation version 2. Deploy matching
-website, account and broker artifacts before treating the cutover as complete.
-Older computers may temporarily show **Update required**. A version mismatch
-is not a reason to delete sessions, credentials or drafts.
-
-Keep the website origin to retain browser storage. If it changes, export drafts
-and files first. Do not copy `login.json`, signing keys or protected caches
-between computers. Initial migration still requires local access to stop/update
-an unmanaged host. A pre-0.5 managed host needs one final source preparation/
-restart to acquire the release updater; subsequent updates use the website
-or `/desk update`.
-
-Computers running API 4 or earlier need a paused-work bootstrap to acquire the
-API 5 checkpoint controller. Prepare the verified release while work continues,
-then pause work and restart through the installed stable launcher. Do not send
-the new Update now request to an older controller. Once API 5 is active, the
-website can checkpoint running work during subsequent updates.
-
-The scheduled-message extension and its commands are retired. Before replacing
-older workers, finish or cancel pending reminders through their existing controls.
-Saved messages and scheduler database files are not deleted.
+Keep the website origin to retain browser storage. Do not copy `login.json`,
+signing keys or protected caches between computers.
 
 ## Recovery and rollback
 
@@ -336,10 +260,9 @@ and remote connectivity without printing secrets. It does not start workers,
 verify Microsoft login or test model accounts. A deliberately stopped host is
 a warning; failed checks return status 1.
 
-Verify protected-store persistence on the target platform. CI's Windows DPAPI
-check does not establish workplace approval, browser OAuth or proxy acceptance.
-Headless Linux CI cannot establish an unlocked desktop keyring. Real Windows
-login-start and physical-phone acceptance remain separate release checks.
+Linux and Windows CI cover routine changes. Check a real Windows login-start
+or a phone only when the change affects them. The release process is in the
+repository's `AGENTS.md`.
 
 Breaking application DTO changes increment `API_VERSION` in
 `src/shared/release.ts`. Local requests and remote handshakes bind that revision.

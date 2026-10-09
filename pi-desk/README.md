@@ -13,7 +13,7 @@ controls, questions and Work summaries. Sign into the same Microsoft-owned
 workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
-forks, compaction, configuration, Party, plans and child-agent
+forks, compaction, configuration, agent messages, plans and child-agent
 controls are connected. The conversation footer shows model/thinking, context,
 recorded usage and first-party Fast/allowance badges, with expanded settings
 panels. Initial-context breakdowns, model accounts, MCP

@@ -278,7 +278,7 @@ export async function launchOperation(home: string, action: Exclude<DeskOperatio
 		const child = spawn(node, [file, home, action, ...(target ? [target] : [])], { detached: true, windowsHide: true, stdio: ["ignore", fd, fd, "ipc"] });
 		try {
 			await new Promise<void>((accept, reject) => {
-				const timer = setTimeout(() => reject(new Error("Operation startup is unconfirmed. Use /desk status before retrying.")), 10000);
+				const timer = setTimeout(() => reject(new Error("Operation startup is unconfirmed. Use /desk status before retrying.")), 60_000);
 				const finish = (error?: Error) => { clearTimeout(timer); error ? reject(error) : accept(); };
 				child.once("error", finish);
 				child.once("exit", code => finish(new Error(`Desk controller exited (${code}). Check operation.log.`)));
