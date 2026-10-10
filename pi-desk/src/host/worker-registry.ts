@@ -133,8 +133,10 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 export async function waitWorkerStopped(directory: string, instance: string, timeout = 30_000): Promise<void> {
 	const until = Date.now() + timeout;
 	while (Date.now() < until) {
-		const record = readWorkerRecord(directory);
-		if ((!record || record.instance !== instance) && vacant(directory)) return;
+		const record = readWorkerRecord(directory), bootstrap = readWorkerBootstrap(directory);
+		// A relaunch is refused while the previous worker's process exists, so stopping includes its exit.
+		const exiting = bootstrap?.instance === instance && bootstrap.pid !== undefined && !pidAbsent(bootstrap.pid);
+		if ((!record || record.instance !== instance) && vacant(directory) && !exiting) return;
 		await delay(25);
 	}
 	throw new WorkerConnectionError("Worker shutdown is still unconfirmed. No process was force-killed.");

@@ -66,7 +66,8 @@ const runtime = await serveWorker(process.argv[2], async send => {
  };
 });
 process.on('SIGTERM', () => void runtime.stop());
-runtime.closed.then(() => process.exit(0), () => process.exit(1));
+// Like a real worker, exit a little after the record and lease are released.
+runtime.closed.then(() => setTimeout(() => process.exit(0), 300), () => process.exit(1));
 `);
 	await writeFile(hostFixture, `
 import { attachWorker } from ${JSON.stringify(source("worker-registry"))};
@@ -121,6 +122,8 @@ connection.channel.send({ type: 'command', id: 'accepted-work', generation: 'fix
 	await waitWorkerStopped(directory, next.record.instance);
 	stopped = true;
 	assert.equal(readWorkerRecord(directory), undefined);
+	// Restart relaunches immediately; the launch guard refuses while this process still exists.
+	assert.throws(() => process.kill(initialized.pid, 0), { code: "ESRCH" });
 	await next.channel.detach();
 });
 
