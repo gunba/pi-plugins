@@ -418,7 +418,7 @@ export class DeskHost {
 				}, status: update, party: {
 					connected: (id, send, close) => network.connected(id, send, close),
 					receive: (id, packet) => network.receive(id, packet),
-				}, connector: { key: () => this.dotConnector?.key(), handle: body => this.dotConnector!.handle(body) },
+				}, connector: { enabled: () => !!this.dotConnector?.enabled, handle: request => this.dotConnector!.handle(request, this.connectorUrl()!) },
 			});
 			this.relay.start();
 		} catch {
@@ -653,6 +653,11 @@ export class DeskHost {
 		await this.waitForControl(view.key, id);
 		await worker.close(true);
 		return this.createSession(view.cwd, view.file, this.sessions.get(view.key));
+	}
+
+	/** This computer's public MCP address through the relay; undefined until the account connection is up. */
+	private connectorUrl(): string | undefined {
+		return this.relayStatus && this.accountIdentity ? `${this.relayStatus.origin}/connector/${this.accountIdentity.device.id}` : undefined;
 	}
 
 	private waitForControl(key: string, id: string): Promise<void> {
@@ -959,13 +964,17 @@ export class DeskHost {
 				return reply({});
 			}
 			if (url.pathname === "/api/dot/connector") {
-				const view = () => ({ enabled: !!this.dotConnector?.enabled, url: this.relayStatus ? this.dotConnector?.url(this.relayStatus.origin) : undefined,
-					relay: this.relayStatus?.state ?? "offline" });
+				const connector = this.dotConnector!;
+				const view = () => ({ enabled: connector.enabled, url: connector.enabled ? this.connectorUrl() : undefined, relay: this.relayStatus?.state ?? "offline",
+					approvals: connector.enabled ? connector.approvals() : [], connections: connector.connections() });
 				if (request.method === "GET") return reply(view());
 				if (request.method === "POST") {
-					if (data.enabled === true) this.dotConnector!.enable(); else if (data.enabled === false) this.dotConnector!.disable();
-					else throw new Error("Choose enabled true or false.");
-					this.relay?.connectorChanged(); this.refreshParties(); this.partyNetwork?.flush();
+					if (typeof data.approve === "string" || typeof data.deny === "string") connector.decide(string(data.approve ?? data.deny, 36), typeof data.approve === "string");
+					else {
+						if (data.enabled === true) connector.enable(); else if (data.enabled === false) connector.disable();
+						else throw new Error("Choose enabled true or false.");
+						this.relay?.connectorChanged(); this.refreshParties(); this.partyNetwork?.flush();
+					}
 					return reply(view());
 				}
 			}

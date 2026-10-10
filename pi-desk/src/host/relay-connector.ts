@@ -25,6 +25,8 @@ export interface HostAccount extends ChannelIdentity {
 	lease(peers: MembershipPeer[], purpose?: "party"): Promise<MembershipLease>;
 	heartbeat(connected: boolean): Promise<unknown>;
 }
+export interface ConnectorRequest { method: string; path: string; query: string; headers: { authorization?: string; "content-type"?: string }; body: string }
+export interface ConnectorResponse { status: number; headers?: Record<string, string>; body: string }
 export interface RelayStatus { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string }
 interface Options {
 	appOrigin: string; proxy?: string; account: HostAccount;
@@ -35,8 +37,8 @@ interface Options {
 		connected: (id: string, send: (payload: unknown) => Promise<void>, close: () => void) => () => void;
 		receive: (id: string, payload: unknown) => void | Promise<void>;
 	};
-	/** Dot connector: the relay forwards HTTP bodies addressed to the secret behind this key. */
-	connector?: { key: () => string | undefined; handle: (body: string) => Promise<{ status: number; body: string }> };
+	/** Dot connector: the relay forwards HTTP requests for this host's connector path; the host authenticates them. */
+	connector?: { enabled: () => boolean; handle: (request: ConnectorRequest) => Promise<ConnectorResponse> };
 }
 
 export class RelayConnector {
@@ -102,7 +104,7 @@ export class RelayConnector {
 	/** Publish the current connector key (or its removal) to the relay. */
 	connectorChanged(): void {
 		if (!this.options.connector || !this.admitted || this.socket?.readyState !== WebSocket.OPEN) return;
-		this.socket.send(JSON.stringify({ type: "connector-enable", key: this.options.connector.key() ?? null }));
+		this.socket.send(JSON.stringify({ type: "connector-enable", enabled: this.options.connector.enabled() }));
 	}
 	private open(): void {
 		const socket = new WebSocket(socketUrl(this.status.origin, "/host", this.options.account.device.id), {
@@ -151,8 +153,11 @@ export class RelayConnector {
 				}
 				if (message.type === "renewed") return;
 				if (message.type === "connector") {
-					const id = string(message.id, 64), body = string(message.body, 256 * 1024);
-					void (this.options.connector?.handle(body) ?? Promise.resolve({ status: 404, body: "" }))
+					const id = string(message.id, 64), headers = object(message.headers ?? {});
+					const header = (name: string) => headers[name] === undefined ? undefined : string(headers[name], 8000);
+					const request: ConnectorRequest = { method: string(message.method, 10), path: string(message.path, 200), query: string(message.query, 4000),
+						headers: { authorization: header("authorization"), "content-type": header("content-type") }, body: string(message.body, 256 * 1024) };
+					void (this.options.connector?.handle(request) ?? Promise.resolve({ status: 404, body: "" }))
 						.catch(() => ({ status: 500, body: JSON.stringify({ error: "The connector failed." }) }))
 						.then(result => { if (this.socket === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "connector-result", id, ...result })); });
 					return;

@@ -2123,3 +2123,5 @@ details[open] > summary:before {
 .dot-agent-access h4 { margin:0 0 6px; }
 .dot-connector-url { display:flex; gap:6px; margin:6px 0 10px; }
 .dot-connector-url input { flex:1; min-width:0; font-family:var(--mono, monospace); font-size:12px; }
+.dot-approval { margin:8px 0; padding:8px 10px; border:1px solid var(--accent); border-radius:8px; }
+.dot-approval button { margin-right:6px; }
