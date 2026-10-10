@@ -86,8 +86,8 @@ export interface ChatMessage {
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule"; title: string; queuedAt?: number; dueAt?: number };
-	/** A saved summary that replaced earlier context: compaction, a model handoff or an abandoned branch. */
-	summary?: { kind: "compaction" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
+	/** A saved summary that replaced earlier context: compaction, an encrypted Codex checkpoint, a model handoff or an abandoned branch. */
+	summary?: { kind: "compaction" | "checkpoint" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }

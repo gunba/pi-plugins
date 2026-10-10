@@ -720,7 +720,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
-            summarised={contextFrom !== undefined && message.order < contextFrom} />}
+            summarised={contextFrom !== undefined && message.order < contextFrom} contextStart={message.order === contextFrom} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>

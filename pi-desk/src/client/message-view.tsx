@@ -162,19 +162,29 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 function SummaryCard({ message, sessionKey, source, faded }: { message: ChatMessage; sessionKey: string; source?: string; faded: string }) {
 	const summary = message.summary!;
 	const title = summary.kind === "branch" ? "Branch summary" : summary.kind === "handoff" ? "Context summarised for a model switch" : "Context compacted";
-	const detail = summary.tokensBefore ? `${tokenFormat.format(summary.tokensBefore)} tokens summarised` : summary.model;
+	const detail = [summary.tokensBefore && `from ${tokenFormat.format(summary.tokensBefore)} tokens`, summary.kind === "checkpoint" && "Codex checkpoint", summary.model]
+		.filter(Boolean).join(" · ");
 	return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-summary summary-${summary.kind}${faded}`}>
 		<Disclosure id={`summary:${message.id}`} className="summary-card"
 			summary={<><Icon name="layers" /><strong>{title}</strong>{detail && <span className="summary-detail">{detail}</span>}<time>{timeLabel(message.timestamp)}</time></>}>
 			<p className="summary-explanation">{summary.kind === "branch" ? "A summary of the branch you left, carried into this one."
+				: summary.kind === "checkpoint" ? "Codex replaced the earlier messages, which are faded, with an encrypted checkpoint only Codex can read. Recent messages were kept as they were."
 				: "From here, the model sees this summary instead of the earlier messages, which are faded. Recent messages were kept as they were."}</p>
-			<MessageBody message={message} sessionKey={sessionKey} source={source} />
-			<div className="summary-footer">{summary.cost !== undefined && <span>Summary cost ${summary.cost.toFixed(2)}</span>}
-				<CopyMarkdown message={message} sessionKey={sessionKey} /></div>
+			{summary.kind !== "checkpoint" && <MessageBody message={message} sessionKey={sessionKey} source={source} />}
+			{(summary.cost !== undefined || summary.kind !== "checkpoint") && <div className="summary-footer">
+				{summary.cost !== undefined && <span>Cost ${summary.cost.toFixed(2)}</span>}
+				{summary.kind !== "checkpoint" && <CopyMarkdown message={message} sessionKey={sessionKey} />}</div>}
 		</Disclosure>
 	</article></ReferenceContext>;
 }
-export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues, summarised }: {
+export const MessageView = memo(function MessageView({ contextStart, ...props }: Parameters<typeof MessageRow>[0] & {
+	/** The first message the model still sees word for word after the latest compaction. */
+	contextStart?: boolean;
+}) {
+	const row = <MessageRow {...props} />;
+	return contextStart ? <><div className="context-start" role="separator">Model context starts here</div>{row}</> : row;
+});
+function MessageRow({ message, sessionKey, source, results, thinking, traceContinues, summarised }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; thinking?: ChatMessage[];
 	traceContinues?: boolean;
 	/** The model no longer sees this message verbatim, only through a compaction summary. */
@@ -211,4 +221,4 @@ export const MessageView = memo(function MessageView({ message, sessionKey, sour
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
 		</article>
 	</ReferenceContext>;
-});
+}

@@ -2142,3 +2142,5 @@ details[open] > summary:before {
 .summary-card > .message-body { padding:0 14px; max-height:480px; overflow:auto; font-size:13px; }
 .summary-card .markdown > :first-child { margin-top:0; }
 .summary-footer { display:flex; align-items:center; gap:10px; padding:6px 10px 8px 14px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); }
+.context-start { display:flex; align-items:center; gap:10px; margin:4px 0 16px; color:var(--accent); font-size:11px; }
+.context-start::before, .context-start::after { content:""; flex:1; border-top:1px dashed var(--accent); opacity:.5; }

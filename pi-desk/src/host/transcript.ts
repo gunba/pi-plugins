@@ -215,9 +215,11 @@ export class Transcript {
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			const message = this.message({ role: "custom", content: entry.summary, timestamp: Date.parse(entry.timestamp) }, entry.id, undefined, order, cwd);
 			if (!message) return;
-			const handoff = record(record(entry.details).modelHandoff), cost = entry.usage?.cost?.total;
+			const details = record(entry.details), handoff = record(details.modelHandoff), cost = entry.usage?.cost?.total;
 			message.summary = {
-				kind: entry.type === "branch_summary" ? "branch" : typeof handoff.model === "string" ? "handoff" : "compaction",
+				// Codex Wire saves only a placeholder; the checkpoint itself is encrypted for Codex.
+				kind: entry.type === "branch_summary" ? "branch" : typeof handoff.model === "string" ? "handoff"
+					: details.codexWireCheckpoint !== undefined ? "checkpoint" : "compaction",
 				...(entry.type === "compaction" && entry.tokensBefore > 0 ? { tokensBefore: entry.tokensBefore } : {}),
 				...(typeof handoff.model === "string" ? { model: handoff.model.slice(0, 200) } : {}),
 				...(typeof cost === "number" && cost > 0 ? { cost } : {}),
