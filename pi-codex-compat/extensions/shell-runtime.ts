@@ -99,6 +99,8 @@ type ExecSession = {
 	shutdownRequested: boolean;
 	activeCalls: number;
 	lastUsed: number;
+	/** Wall-clock time just before the shell was spawned. */
+	launchedAt: number;
 	outputArtifact?: string;
 	outputArtifactDirectory?: string;
 	artifactError?: string;
@@ -120,7 +122,9 @@ export type ProcessTreeDependencies = {
 	platform: NodeJS.Platform;
 	onFailure?: (message: string) => void;
 	kill: (pid: number, signal: NodeJS.Signals) => void;
-	killWindowsTree?: (pid: number) => Promise<void>;
+	killWindowsTree?: (pid: number, since?: number) => Promise<void>;
+	/** Wall-clock start of the command, so a Windows sweep only targets processes it created. */
+	started?: number;
 };
 
 export type HeadTailSnapshot = {
@@ -419,7 +423,7 @@ export async function terminateProcessTree(
 	if (!pid) return false;
 	if (dependencies.platform === "win32") {
 		try {
-			await (dependencies.killWindowsTree ?? terminateWindowsProcessTree)(pid);
+			await (dependencies.killWindowsTree ?? terminateWindowsProcessTree)(pid, dependencies.started);
 			return true;
 		} catch (error) {
 			dependencies.onFailure?.(`Windows process-tree termination failed: ${String(error)}`);
@@ -923,6 +927,7 @@ function recordTerminationAttempt(
 	let failure: string | undefined;
 	const attempt = terminateProcessTree(session.child, signal, {
 		...defaultProcessTreeDependencies,
+		started: session.launchedAt,
 		onFailure: (message) => {
 			failure = `${message} (session ${session.id})`;
 		},
@@ -1253,6 +1258,7 @@ async function createExecSession(
 			throw error;
 		}
 		let child: ChildProcessWithoutNullStreams;
+		const launchedAt = Date.now();
 		try {
 			child = spawn(launch.shell, launch.args, {
 				cwd: workdir,
@@ -1270,6 +1276,7 @@ async function createExecSession(
 			throw error;
 		}
 		const session: ExecSession = {
+			launchedAt,
 			id: allocateSessionId(),
 			owner,
 			cmd: params.cmd,

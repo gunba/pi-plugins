@@ -276,15 +276,15 @@ test("process termination uses Windows taskkill and Unix process groups", async 
 	const trees = [];
 	assert.equal(
 		await terminateProcessTree({ pid: 123, exitCode: null, signalCode: null }, "SIGTERM", {
-			platform: "win32",
-			async killWindowsTree(pid) { trees.push(pid); },
+			platform: "win32", started: 1000,
+			async killWindowsTree(pid, since) { trees.push([pid, since]); },
 			kill() {
 				assert.fail("Windows must terminate the tree, not only the shell");
 			},
 		}),
 		true,
 	);
-	assert.deepEqual(trees, [123]);
+	assert.deepEqual(trees, [[123, 1000]], "the sweep only targets processes created since the command started");
 
 	const killed = [];
 	assert.equal(
