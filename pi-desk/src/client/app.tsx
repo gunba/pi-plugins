@@ -115,7 +115,9 @@ export function App({ account }: { account?: BrowserAccount }) {
   const liveNotices = useRef(new LiveNotices());
   const setError = useCallback((text: string, _key?: string) => { if (text) reportDeskError(text); }, []);
   useEffect(() => {
-    const failed = (event: ErrorEvent) => reportDeskError(event.error ?? event.message);
+    // Browsers report a resize made during a ResizeObserver callback, as measured transcript rows do,
+    // then deliver the rest next frame. Nothing is lost, so it is not an error worth showing.
+    const failed = (event: ErrorEvent) => { if (!event.error && /^ResizeObserver loop/.test(event.message)) return; reportDeskError(event.error ?? event.message); };
     const rejected = (event: PromiseRejectionEvent) => reportDeskError(event.reason);
     window.addEventListener("error", failed); window.addEventListener("unhandledrejection", rejected);
     return () => { window.removeEventListener("error", failed); window.removeEventListener("unhandledrejection", rejected); };
