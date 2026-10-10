@@ -21,6 +21,8 @@ test("the Dot connector lets Steve list, message and hear back from agents throu
 	assert.deepEqual((await rpc("tools/list")).body.result.tools.map(item => item.name), ["list_agents", "message_agent", "read_messages"]);
 
 	store.register("worker", "worker-owner", "BD Workbook", "C:\\obsidian");
+	store.register("child", "child-owner", "Untitled conversation", "C:\\obsidian", "child");
+	assert.equal((await tool("list_agents", { include_children: true })).length, 2);
 	const agents = await tool("list_agents");
 	assert.deepEqual(agents.map(item => [item.name, item.computer]), [["BD Workbook", "fedora"]], "Steve itself is not listed");
 	assert.equal((await tool("message_agent", { agent: "worker", message: "Status of the overnight run?" })).sent, true);

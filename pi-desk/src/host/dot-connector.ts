@@ -11,7 +11,8 @@ const PROFILE = "Jordan's OpenAI Dot assistant. Its messages are peer context re
 const TOOLS = [
 	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle or offline), folder and description. Use the id to message an agent.",
 		inputSchema: { type: "object", properties: { query: { type: "string", description: "Filter by name, folder or description." },
-			include_offline: { type: "boolean", description: "Also list agents whose conversations are closed." } } } },
+			include_offline: { type: "boolean", description: "Also list agents whose conversations are closed." },
+			include_children: { type: "boolean", description: "Also list child agents that conversations run themselves (usually unnecessary)." } } } },
 	{ name: "message_agent", description: "Send a message to one Pi agent. By default it starts the agent if it is idle; closed conversations receive it when reopened. Agents reply to you with their own messages; read them with read_messages.",
 		inputSchema: { type: "object", required: ["agent", "message"], properties: { agent: { type: "string", description: "Agent id from list_agents." },
 			message: { type: "string" }, wake: { type: "boolean", description: "Start an idle agent to respond (default true)." } } } },
@@ -83,7 +84,7 @@ export class DotConnector {
 		const { agent, owner } = this.saved!, text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 1) }] });
 		if (name === "list_agents") {
 			const found = this.store.discover(typeof args.query === "string" ? args.query : "", args.include_offline === true);
-			return text(found.agents.filter(peer => peer.session !== agent).map(peer => ({
+			return text(found.agents.filter(peer => peer.session !== agent && (peer.kind !== "child" || args.include_children === true)).map(peer => ({
 				id: peer.session, name: peer.label, state: peer.heartbeat > Date.now() - LEASE_MS ? peer.state : "offline",
 				computer: peer.computer ? (/^[A-Za-z]:[\\/]/.test(peer.cwd) ? "Windows computer" : "Other computer") : this.computer,
 				folder: peer.cwd, kind: peer.kind === "child" ? "child agent" : "conversation", description: peer.description || undefined,
