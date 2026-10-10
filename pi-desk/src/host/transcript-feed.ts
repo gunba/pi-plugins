@@ -121,6 +121,11 @@ export class TranscriptFeed {
 				this.emit({ type: "chat", generation, message: { ...message, revision: ++this.revision },
 					...(message.toolCallId ? { replaces: this.toolId(message.toolCallId) } : {}) });
 			}
+		} else if (event.type === "compaction_end" && event.result && !event.aborted) {
+			// Pi appends compaction entries without an entry_appended event.
+			const branch = this.branch(), order = branch.findLastIndex(entry => entry.type === "compaction");
+			const message = order >= 0 ? this.transcript.entry(branch[order]!, order, this.cwd()) : undefined;
+			if (message) this.emit({ type: "chat", generation, message: { ...message, revision: ++this.revision } });
 		} else if (event.type === "message_update") {
 			this.live = event.message;
 			const delta = event.assistantMessageEvent;

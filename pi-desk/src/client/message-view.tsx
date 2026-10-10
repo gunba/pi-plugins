@@ -1,8 +1,9 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
-import { ReferenceContext } from "./reference-origin.tsx";
+import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
+import { acquireAsset } from "./connection.ts";
 import { AssetImage, AssetLink } from "./assets.tsx";
 import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
@@ -14,6 +15,30 @@ import { readSkills } from "../shared/skill-activity.ts";
 import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
 
+const tokenFormat = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+async function assetText(session: string, asset: string, origin: string): Promise<string> {
+	const lease = acquireAsset(session, asset, origin);
+	try { return await (await fetch(await lease.loaded)).text(); } finally { lease.release(); }
+}
+/** Copies the message's own Markdown source, fetching complete text when the view holds a preview. */
+function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKey: string }) {
+	const origin = useReferenceQuery();
+	const [status, setStatus] = useState("");
+	const blocks = message.blocks.filter((block): block is TextBlock => block?.type === "text" && !!block.text.trim());
+	if (!blocks.length || message.complete === false) return null;
+	const copy = () => {
+		const done = (label: string) => { setStatus(label); setTimeout(() => setStatus(""), 1500); };
+		const complete = () => Promise.all(blocks.map(block => block.full ? assetText(sessionKey, block.full, origin) : block.text))
+			.then(parts => parts.join("\n\n"));
+		// Browsers require the write to start within the click; a promised item keeps that while complete text loads.
+		const write = !blocks.some(block => block.full) ? navigator.clipboard.writeText(blocks.map(block => block.text).join("\n\n"))
+			: typeof ClipboardItem === "function" ? navigator.clipboard.write([new ClipboardItem({ "text/plain": complete().then(text => new Blob([text], { type: "text/plain" })) })])
+			: complete().then(text => navigator.clipboard.writeText(text));
+		void write.then(() => done(blocks.some(block => block.truncated && !block.full) ? "Copied preview" : "Copied"), () => done("Copy failed"));
+	};
+	return <button type="button" className="message-copy" title="Copy as Markdown" aria-label="Copy as Markdown" onClick={copy}>
+		{status ? <span>{status}</span> : <Icon name="copy" />}</button>;
+}
 const timeLabel = (timestamp: number) => timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 function toolArgumentPreview(serialized?: string): string {
 	try {
@@ -134,17 +159,35 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 		})}
 	</div>;
 }
-export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues }: {
+function SummaryCard({ message, sessionKey, source, faded }: { message: ChatMessage; sessionKey: string; source?: string; faded: string }) {
+	const summary = message.summary!;
+	const title = summary.kind === "branch" ? "Branch summary" : summary.kind === "handoff" ? "Context summarised for a model switch" : "Context compacted";
+	const detail = summary.tokensBefore ? `${tokenFormat.format(summary.tokensBefore)} tokens summarised` : summary.model;
+	return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-summary summary-${summary.kind}${faded}`}>
+		<Disclosure id={`summary:${message.id}`} className="summary-card"
+			summary={<><Icon name="layers" /><strong>{title}</strong>{detail && <span className="summary-detail">{detail}</span>}<time>{timeLabel(message.timestamp)}</time></>}>
+			<p className="summary-explanation">{summary.kind === "branch" ? "A summary of the branch you left, carried into this one."
+				: "From here, the model sees this summary instead of the earlier messages, which are faded. Recent messages were kept as they were."}</p>
+			<MessageBody message={message} sessionKey={sessionKey} source={source} />
+			<div className="summary-footer">{summary.cost !== undefined && <span>Summary cost ${summary.cost.toFixed(2)}</span>}
+				<CopyMarkdown message={message} sessionKey={sessionKey} /></div>
+		</Disclosure>
+	</article></ReferenceContext>;
+}
+export const MessageView = memo(function MessageView({ message, sessionKey, source, results, thinking, traceContinues, summarised }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; thinking?: ChatMessage[];
 	traceContinues?: boolean;
+	/** The model no longer sees this message verbatim, only through a compaction summary. */
+	summarised?: boolean;
 }) {
-	const time = timeLabel(message.timestamp), round = planRoundNotice(message);
+	const time = timeLabel(message.timestamp), round = planRoundNotice(message), faded = summarised ? " message-summarised" : "";
 	if (message.feedback) return null;
-	if (round) return <article className="message message-plan-round"><div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
+	if (message.summary) return <SummaryCard message={message} sessionKey={sessionKey} source={source} faded={faded} />;
+	if (round) return <article className={`message message-plan-round${faded}`}><div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
 		<span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div><p>{round.objective}</p></article>;
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
 		const notice = message.notice;
-		return <ReferenceContext value={{ message: message.id, source }}><article className="message message-received">
+		return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-received${faded}`}>
 			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule"}
 				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : "info"} />
 					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></>}>
@@ -158,10 +201,11 @@ export const MessageView = memo(function MessageView({ message, sessionKey, sour
 	}
 	const activityOnly = message.role === "tool" || isActivityOnly(message);
 	return <ReferenceContext value={{ message: message.id, source }}>
-		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}${traceContinues ? " message-trace-tail" : ""}`}>
+		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}${traceContinues ? " message-trace-tail" : ""}${faded}`}>
 			{!activityOnly && <div className="message-heading"><span className={message.role === "assistant" ? "assistant-avatar" : "message-label"}>
 				{message.role === "assistant" ? "π" : message.role === "user" ? source ? "Input" : "You" : "Note"}</span>
-				{message.role === "assistant" && <strong>Pi</strong>}<time>{time}</time></div>}
+				{message.role === "assistant" && <strong>Pi</strong>}<time>{time}</time>
+				{!thinking && <CopyMarkdown message={message} sessionKey={sessionKey} />}</div>}
 			{thinking ? <div className="message-body"><ThinkingGroup parts={thinkingParts(thinking)} sessionKey={sessionKey} source={source} /></div>
 				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}

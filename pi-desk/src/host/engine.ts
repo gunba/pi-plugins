@@ -100,6 +100,9 @@ export class DeskEngine {
 	private queueGuards = new WeakMap<AgentSession, NativeQueueGuard>();
 	private opening?: { manager: SessionManager; text?: string };
 	private usageCache?: { manager: SessionManager; leaf: string | null; revision: number; value: SessionSnapshot["usage"] };
+	private branch?: { manager: SessionManager; read: () => ReturnType<SessionManager["getBranch"]> };
+	private compacting?: SessionSnapshot["compacting"];
+	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
 
 	constructor(send: (message: WorkerMessage) => void) {
 		this.send = send;
@@ -339,11 +342,13 @@ export class DeskEngine {
 		this.feed?.close();
 		let leaf: string | null | undefined;
 		let branch: ReturnType<SessionManager["getBranch"]> = [];
-		const feed = this.feed = new TranscriptFeed(this.transcript, () => {
-			const current = manager.getLeafId();
-			if (current !== leaf) { branch = manager.getBranch(); leaf = current; }
+		const current = () => {
+			const next = manager.getLeafId();
+			if (next !== leaf) { branch = manager.getBranch(); leaf = next; }
 			return branch;
-		}, () => this.presentation.generation, this.send, () => manager.getCwd());
+		};
+		this.branch = { manager, read: current };
+		const feed = this.feed = new TranscriptFeed(this.transcript, current, () => this.presentation.generation, this.send, () => manager.getCwd());
 		this.send({ type: "ui", snapshot: this.presentation.snapshot() });
 		this.send({ type: "history_ready", generation: this.presentation.generation });
 		return feed;
@@ -355,9 +360,16 @@ export class DeskEngine {
 		this.unsubscribe?.();
 		this.running = false;
 		this.failed = false;
+		this.compacting = undefined;
 		const feed = this.openTranscript(session.sessionManager);
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
+			if (event.type === "compaction_start") this.compacting = { reason: event.reason, started: Date.now() };
+			if (event.type === "compaction_end") {
+				this.compacting = undefined;
+				// A manual compaction reports its failure to the caller.
+				if (event.errorMessage && !event.aborted && event.reason !== "manual") this.presentation.notify(`Context compaction failed: ${event.errorMessage}`, "error");
+			}
 			if (event.type === "message_end" || event.type === "agent_settled") this.usageRevision++;
 			if (event.type === "agent_start") this.running = true;
 			if (event.type === "agent_settled") this.running = false;
@@ -443,8 +455,23 @@ export class DeskEngine {
 			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent } : undefined,
 			usage: this.usageCache.value,
+			contextFrom: this.contextFrom(manager, leaf),
+			compacting: this.compacting,
 			ui,
 		};
+	}
+
+	/** Messages before the latest compaction's kept range reach the model only through its summary. */
+	private contextFrom(manager: SessionManager, leaf: string | null): number | undefined {
+		if (this.contextCache?.manager === manager && this.contextCache.leaf === leaf) return this.contextCache.value;
+		const branch = this.branch?.manager === manager ? this.branch.read() : manager.getBranch();
+		const at = branch.findLastIndex(entry => entry.type === "compaction");
+		const compaction = branch[at];
+		const kept = compaction?.type === "compaction" && compaction.firstKeptEntryId
+			? branch.findIndex(entry => entry.id === compaction.firstKeptEntryId) : -1;
+		const value = at < 0 ? undefined : kept >= 0 && kept < at ? kept : at;
+		this.contextCache = { manager, leaf, value };
+		return value;
 	}
 
 	async command(generation: string, command: WorkerCommand): Promise<unknown> {

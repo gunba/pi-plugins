@@ -2125,3 +2125,20 @@ details[open] > summary:before {
 .dot-connector-url input { flex:1; min-width:0; font-family:var(--mono, monospace); font-size:12px; }
 .dot-approval { margin:8px 0; padding:8px 10px; border:1px solid var(--accent); border-radius:8px; }
 .dot-approval button { margin-right:6px; }
+.message-copy { margin-left:auto; display:inline-flex; align-items:center; gap:4px; padding:3px 6px; border:0; background:none; color:var(--muted); font-size:11px; opacity:0; }
+.message-copy .ui-icon { width:14px; height:14px; }
+.message:hover .message-copy, .message-copy:focus-visible, .message-copy:has(span) { opacity:1; }
+@media (hover:none) { .message-copy { opacity:.7; } }
+.message-summarised { opacity:.55; transition:opacity .15s; }
+.message-summarised:hover, .message-summarised:focus-within { opacity:1; }
+.message-summary { margin:16px 0 20px 34px; }
+.summary-card { border:1px dashed var(--accent); border-radius:9px; background:var(--surface); font-size:12px; }
+.summary-card > summary { display:flex; align-items:center; gap:8px; padding:10px 12px; }
+.summary-card > summary > .ui-icon { color:var(--accent); flex:none; }
+.summary-card > summary > strong { font-weight:500; }
+.summary-card > summary > .summary-detail { color:var(--muted); font-variant-numeric:tabular-nums; }
+.summary-card > summary > time { margin-left:auto; color:var(--muted); font-size:10px; white-space:nowrap; }
+.summary-explanation { margin:0; padding:0 14px 8px; color:var(--muted); }
+.summary-card > .message-body { padding:0 14px; max-height:480px; overflow:auto; font-size:13px; }
+.summary-card .markdown > :first-child { margin-top:0; }
+.summary-footer { display:flex; align-items:center; gap:10px; padding:6px 10px 8px 14px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); }

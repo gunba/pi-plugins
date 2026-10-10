@@ -55,6 +55,9 @@ export interface SessionSnapshot {
 	models: { id: string; provider: string; name: string; accountName?: string }[];
 	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	context?: { tokens: number | null; contextWindow: number; percent: number | null };
+	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
+	contextFrom?: number;
+	compacting?: { reason: "manual" | "threshold" | "overflow"; started: number };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 	ui: PresentationSnapshot;
 }
@@ -83,6 +86,8 @@ export interface ChatMessage {
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule"; title: string; queuedAt?: number; dueAt?: number };
+	/** A saved summary that replaced earlier context: compaction, a model handoff or an abandoned branch. */
+	summary?: { kind: "compaction" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }

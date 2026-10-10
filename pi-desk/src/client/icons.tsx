@@ -8,6 +8,7 @@ const paths: Record<string, ReactNode> = {
 	preview: <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
 	computer: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></>,
 	tools: <path d="m14 6 4 4 3-3a6 6 0 0 1-8 7l-7 7-3-3 7-7a6 6 0 0 1 7-8Z" />,
+	copy: <><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>,
 	activity: <path d="M2 12h5l3-8 4 16 3-8h5" />,
 	clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
 	thinking: <><path d="M12 18V6a3 3 0 0 0-6-1 4 4 0 0 0-3 6 4 4 0 0 0 3 7 3 3 0 0 0 6 0Zm0-12a3 3 0 0 1 6-1 4 4 0 0 1 3 6 4 4 0 0 1-3 7 3 3 0 0 1-6 0" /><path d="M6 5v3m12-3v3M6 18v-3m12 3v-3M3 11h3m15 0h-3" /></>,

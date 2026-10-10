@@ -212,6 +212,18 @@ export class Transcript {
 
 	entry(entry: SessionEntry, order = 0, cwd?: string): ChatMessage | undefined {
 		if (entry.type === "message") return this.message(entry.message, entry.id, undefined, order, cwd);
+		if (entry.type === "compaction" || entry.type === "branch_summary") {
+			const message = this.message({ role: "custom", content: entry.summary, timestamp: Date.parse(entry.timestamp) }, entry.id, undefined, order, cwd);
+			if (!message) return;
+			const handoff = record(record(entry.details).modelHandoff), cost = entry.usage?.cost?.total;
+			message.summary = {
+				kind: entry.type === "branch_summary" ? "branch" : typeof handoff.model === "string" ? "handoff" : "compaction",
+				...(entry.type === "compaction" && entry.tokensBefore > 0 ? { tokensBefore: entry.tokensBefore } : {}),
+				...(typeof handoff.model === "string" ? { model: handoff.model.slice(0, 200) } : {}),
+				...(typeof cost === "number" && cost > 0 ? { cost } : {}),
+			};
+			return message;
+		}
 		if (entry.type === "custom_message") return this.message({
 			role: "custom", customType: entry.customType, details: entry.details,
 			content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
@@ -237,7 +249,8 @@ export class Transcript {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
-			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY].includes(entry.customType);
+			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY].includes(entry.customType)
+			|| entry.type === "compaction" || entry.type === "branch_summary";
 		const anchor = position.before ?? position.after ?? position.from;
 		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;
 		if (index < 0 || anchor && !visible(branch[index]!)) throw new Error("History position no longer exists on this branch.");

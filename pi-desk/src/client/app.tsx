@@ -52,6 +52,7 @@ import { DetailsView } from "./details-view.tsx";
 import { Configuration } from "./configuration.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
+import { Elapsed } from "./transcript-parts.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -283,6 +284,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, selected]);
   const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
+  const contextFrom = session?.snapshot?.contextFrom, compacting = session?.snapshot?.compacting;
   const busy =
     controlBusy ||
     session?.snapshot?.activity === "running" ||
@@ -717,7 +719,8 @@ export function App({ account }: { account?: BrowserAccount }) {
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
-          renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} />}
+          renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
+            summarised={contextFrom !== undefined && message.order < contextFrom} />}
           empty={
               <div className="welcome">
                 <div className="welcome-mark">π</div>
@@ -753,7 +756,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
-                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
+                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…"
+                  : compacting ? <>{compacting.reason === "manual" ? "Compacting context…" : compacting.reason === "overflow" ? "Context overflowed. Compacting, then retrying…"
+                    : "Context is nearly full. Compacting…"} <Elapsed started={compacting.started} /></> : "Pi is working…"}
               </div>
             )}</>}
         />
