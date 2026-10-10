@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { MAX_WIRE, validId, newSecret, PROTOCOL_VERSION } from "../shared/secure-channel.ts";
@@ -42,7 +42,10 @@ export async function runRelay(args: string[]): Promise<void> {
 	process.once("SIGINT", close); process.once("SIGTERM", close);
 }
 
-interface Room { socket: WebSocket; peers: Map<string, WebSocket>; parties: Set<string>; partyEnabled: boolean; credential: DeviceCredential }
+interface Room { socket: WebSocket; peers: Map<string, WebSocket>; parties: Set<string>; partyEnabled: boolean; credential: DeviceCredential; connector?: string }
+interface ConnectorCall { room: Room; finish: (status: number, body: string) => void }
+const CONNECTOR_BODY = 256 * 1024;
+const connectorKey = (secret: string) => createHash("sha256").update(secret).digest("hex");
 function requestUrl(target: string | undefined, origin: string): URL | undefined {
 	try {
 		const url = new URL(target ?? "/", origin);
@@ -52,12 +55,16 @@ function requestUrl(target: string | undefined, origin: string): URL | undefined
 export class RelayServer {
 	private rooms = new Map<string, Room>();
 	private sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_WIRE * 2, perMessageDeflate: false });
+	private connectorCalls = new Map<string, ConnectorCall>();
 	private server = createServer((request, response) => {
 		securityHeaders(response);
-		if (request.method !== "GET" || request.headers.host !== new URL(this.origin).host) { response.writeHead(403); response.end(); return; }
+		if (request.headers.host !== new URL(this.origin).host) { response.writeHead(403); response.end(); return; }
 		const url = requestUrl(request.url, this.origin);
 		if (!url) { response.writeHead(400); response.end(); return; }
 		const path = url.pathname;
+		const connector = /^\/connector\/([A-Za-z0-9_-]{43,128})$/.exec(path);
+		if (connector) { this.connector(connector[1]!, request, response); return; }
+		if (request.method !== "GET") { response.writeHead(403); response.end(); return; }
 		if (path === "/health") {
 			response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			response.end(JSON.stringify({ status: "ok", appOrigin: this.appOrigin, ...RELEASE }));
@@ -162,6 +169,15 @@ export class RelayServer {
 					return;
 				}
 				if (message.type === "party-enable") { room.partyEnabled = true; this.announceHosts(); return; }
+				if (message.type === "connector-enable") {
+					if (message.key !== null && !(typeof message.key === "string" && /^[a-f0-9]{64}$/.test(message.key))) throw new Error("Invalid connector key.");
+					room.connector = message.key ?? undefined; return;
+				}
+				if (message.type === "connector-result") {
+					const call = this.connectorCalls.get(String(message.id));
+					if (!call || call.room !== room || !Number.isInteger(message.status) || typeof message.body !== "string" || message.body.length > CONNECTOR_BODY) return;
+					call.finish(message.status, message.body); return;
+				}
 				if (message.type === "party-open") {
 					if (!room.partyEnabled) throw new Error("Party transport is not enabled.");
 					if (!validId(message.peer) || message.peer === id) throw new Error("Invalid party computer.");
@@ -195,9 +211,32 @@ export class RelayServer {
 		socket.once("close", () => {
 			if (this.rooms.get(id) !== room) return;
 			this.rooms.delete(id);
+			for (const call of [...this.connectorCalls.values()]) if (call.room === room) call.finish(503, JSON.stringify({ error: "The computer disconnected." }));
 			for (const peer of room.peers.values()) peer.close(1012, "Host disconnected");
 			for (const other of room.parties) this.closeParty(id, other);
 			this.announceHosts();
+		});
+	}
+	/** A Dot connector (MCP over HTTP) addressed by a secret only its host knows; the relay keeps the hash. */
+	private connector(secret: string, request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): void {
+		if (request.method !== "POST") { response.writeHead(405, { Allow: "POST" }); response.end(); return; }
+		const key = connectorKey(secret);
+		const room = [...this.rooms.values()].find(item => item.connector === key && item.credential.expires > Date.now() / 1000);
+		if (!room) { response.writeHead(404); response.end(); return; }
+		const chunks: Buffer[] = []; let size = 0, done = false;
+		const finish = (status: number, body: string, id?: string) => {
+			if (done) return; done = true;
+			if (id) { clearTimeout(timer); this.connectorCalls.delete(id); }
+			response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(body);
+		};
+		let timer: ReturnType<typeof setTimeout>;
+		request.on("data", chunk => { size += chunk.length; if (size > CONNECTOR_BODY) { request.destroy(); finish(413, ""); } else chunks.push(chunk); });
+		request.on("end", () => {
+			if (done) return;
+			const id = randomUUID();
+			timer = setTimeout(() => finish(504, JSON.stringify({ error: "The computer did not answer in time." }), id), 30_000);
+			this.connectorCalls.set(id, { room, finish: (status, body) => finish(status, body, id) });
+			this.send(room.socket, { type: "connector", id, body: Buffer.concat(chunks).toString("utf8") });
 		});
 	}
 	private announceHosts(): void {

@@ -41,6 +41,7 @@ import { isOpenSession } from "../shared/workspace.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
+import { DotConnector } from "./dot-connector.ts";
 import { workspaceIdentity } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
 import type { PartyOperation, OperationResult } from "../../../pi-party/network.ts";
@@ -80,6 +81,7 @@ export class DeskHost {
 	private watchers = new Set<(event: HostEvent) => void>();
 	private relay?: RelayConnector;
 	private relayStatus?: RelayStatus;
+	private dotConnector?: DotConnector;
 	private accountIdentity?: NativeAccountIdentity;
 	private accountRevision = 0;
 	private accountRetry?: ReturnType<typeof setTimeout>;
@@ -163,6 +165,7 @@ export class DeskHost {
 			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
 			this.partyOperations.startHost(); this.flushLocalPartyOperations();
+			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
 			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
@@ -232,7 +235,7 @@ export class DeskHost {
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.relay?.close(); this.partyNetwork?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
@@ -415,7 +418,7 @@ export class DeskHost {
 				}, status: update, party: {
 					connected: (id, send, close) => network.connected(id, send, close),
 					receive: (id, packet) => network.receive(id, packet),
-				},
+				}, connector: { key: () => this.dotConnector?.key(), handle: body => this.dotConnector!.handle(body) },
 			});
 			this.relay.start();
 		} catch {
@@ -955,6 +958,17 @@ export class DeskHost {
 				else this.providerAccounts!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
 				return reply({});
 			}
+			if (url.pathname === "/api/dot/connector") {
+				const view = () => ({ enabled: !!this.dotConnector?.enabled, url: this.relayStatus ? this.dotConnector?.url(this.relayStatus.origin) : undefined,
+					relay: this.relayStatus?.state ?? "offline" });
+				if (request.method === "GET") return reply(view());
+				if (request.method === "POST") {
+					if (data.enabled === true) this.dotConnector!.enable(); else if (data.enabled === false) this.dotConnector!.disable();
+					else throw new Error("Choose enabled true or false.");
+					this.relay?.connectorChanged(); this.refreshParties(); this.partyNetwork?.flush();
+					return reply(view());
+				}
+			}
 			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
 			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
 				void this.dot!.connect(string(data.account, 36)).catch(() => {}); return reply({ accepted: true }, 202);
@@ -1225,7 +1239,7 @@ export class DeskHost {
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close(); this.partyNetwork?.close();
 		this.accountIdentity?.close();
-		try { this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.dotConnector?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));

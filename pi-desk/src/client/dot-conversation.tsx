@@ -7,6 +7,7 @@ import { Modal } from "./surfaces.tsx";
 import { DOT_FILE_COUNT, type DotInput, type DotMessage, type DotSnapshot, type DotUpload, type DotDownload, type DotSurfaceFrame, type DotSurfaceMode } from "../shared/dot.ts";
 import { stageDotFiles, saveDotDownload } from "./dot-files.ts";
 import { DotNativeView } from "./dot-native-view.tsx";
+import { DotAgentAccess } from "./dot-agent-access.tsx";
 import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
@@ -334,6 +335,7 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 					ready={ready} busy={busy || opening || !!view.busy || view.state === "connecting"} connect={account => dot.action("connect", account)} disconnect={() => dot.action("disconnect")} />
 				<p>No ChatGPT window is needed for messages, attachments or live updates. Keep the connection computer online.</p>
 				<p className="muted">Activity, computer and management views open ChatGPT only when you ask. Those views may need a separate browser sign-in to the same account.</p>
+				<DotAgentAccess key={`access:${dot.id ?? "local"}`} computer={dot.id} online={dot.online} />
 			</> : <p role="status">{dot.loaded ? "Update Desk on this computer to use Dot’s saved-account connection. Your queued messages have not been sent." : "Checking this computer’s Dot support…"}</p>}
 			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
 		</section>}

@@ -1,6 +1,7 @@
 // Release deployment, one command per target.
 //   node pi-desk/manage/deploy.ts host <version>     Update this computer's Desk host and wait for the outcome.
 //   node pi-desk/manage/deploy.ts website [--dry-run] Publish the website from this computer's active runtime.
+//   node pi-desk/manage/deploy.ts relay [--dry-run]   Deploy the routing relay from the active runtime (browsers reconnect).
 //   node pi-desk/manage/deploy.ts prune [--keep id]   Remove runtime versions nothing can use (updates also do this).
 //                                                     --keep adds a version id/prefix to <runtime>/keep permanently.
 // The website mode requires `az login` with access to the Static Web App serving account.json's appOrigin.
@@ -18,8 +19,38 @@ const read = async (file: string) => JSON.parse(await readFile(file, "utf8"));
 
 if (mode === "host" && /^\d+\.\d+\.\d+$/.test(argument ?? "")) await host(argument!);
 else if (mode === "website") await website(argument === "--dry-run");
+else if (mode === "relay") await relayDeploy(argument === "--dry-run");
 else if (mode === "prune") await prune(process.argv.slice(3));
-else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website [--dry-run] | prune [--keep id]...");
+else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website [--dry-run] | relay [--dry-run] | prune [--keep id]...");
+
+async function relayDeploy(dryRun: boolean): Promise<void> {
+	const { active } = await read(join(runtime, "state.json"));
+	const { desk: version } = await read(join(runtime, "versions", active, "runtime.json"));
+	const bundle = join(runtime, "versions", active, "source", "pi-desk", "dist", "relay", "pi-desk-relay.js");
+	const { config } = await read(join(agentDir, "desk", "account.json"));
+	const az = (...args: string[]) => execFileSync("az", [...args, "--only-show-errors", "-o", "tsv"], { encoding: "utf8", shell: process.platform === "win32" }).trim();
+	const hostname = new URL(config.relayOrigin).host;
+	const [name, group] = az("webapp", "list", "--query", `[?defaultHostName=='${hostname}'].[name,resourceGroup] | [0]`).split(/\s+/);
+	if (!name || !group) throw new Error(`No App Service serves ${hostname} in the signed-in Azure subscription.`);
+	const temporary = await mkdtemp(join(tmpdir(), "pi-desk-relay-"));
+	try {
+		const { copyFile, writeFile } = await import("node:fs/promises");
+		await copyFile(bundle, join(temporary, "pi-desk-relay.js"));
+		await writeFile(join(temporary, "package.json"), JSON.stringify({ type: "module" }) + "\n");
+		const zip = join(temporary, "relay.zip");
+		execFileSync(process.platform === "win32" ? "tar" : "zip", process.platform === "win32" ? ["-a", "-cf", zip, "pi-desk-relay.js", "package.json"] : ["-q", zip, "pi-desk-relay.js", "package.json"], { cwd: temporary });
+		console.log(`Relay ${version} prepared for ${config.relayOrigin} (${group}/${name}).`);
+		if (dryRun) return;
+		az("webapp", "deploy", "-g", group, "-n", name, "--type", "zip", "--src-path", zip);
+		for (let attempt = 0; ; attempt++) {
+			const health = await fetch(`${config.relayOrigin}/health`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
+			if (health?.version === version) break;
+			if (attempt === 24) throw new Error(`The relay still reports ${health?.version ?? "no version"}.`);
+			await delay(5000);
+		}
+		console.log(`Relay ${version} is live at ${config.relayOrigin}. Browsers and computers reconnect on their own.`);
+	} finally { await rm(temporary, { recursive: true, force: true }); }
+}
 
 async function prune(args: string[]): Promise<void> {
 	const { SessionLease } = await import("../../pi-session-ownership/lease.ts");

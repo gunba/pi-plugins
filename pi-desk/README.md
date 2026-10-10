@@ -151,6 +151,15 @@ Browser permission dialogs, external authorization windows, microphone capture
 and audio playback are not forwarded; complete those steps on the connection
 computer. Video can be viewed in the native interface without forwarded audio.
 
+**Agent access** (in the Dot connection panel) lets the Dot message your Pi agents.
+Turning it on registers the Dot as "Steve (Dot)" in agent messaging and shows a
+connector URL to add in ChatGPT as a custom MCP connector without authentication.
+The connector has three tools: list agents across connected computers, message
+an agent, and read the agents' replies. It cannot read transcripts, run tools or
+change settings, and agents treat its messages as peer context. Requests travel
+through the relay, which sees those messages but not transcripts. Turning it off
+revokes the URL.
+
 The direct adapter uses ChatGPT's private backend protocol, not a supported
 public Dot API. Native views also depend on ChatGPT's web interface. Provider
 changes can require an adapter update; unsupported authorization and permission

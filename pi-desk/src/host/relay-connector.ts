@@ -35,6 +35,8 @@ interface Options {
 		connected: (id: string, send: (payload: unknown) => Promise<void>, close: () => void) => () => void;
 		receive: (id: string, payload: unknown) => void | Promise<void>;
 	};
+	/** Dot connector: the relay forwards HTTP bodies addressed to the secret behind this key. */
+	connector?: { key: () => string | undefined; handle: (body: string) => Promise<{ status: number; body: string }> };
 }
 
 export class RelayConnector {
@@ -97,6 +99,11 @@ export class RelayConnector {
 			}
 		} finally { this.connecting = false; }
 	}
+	/** Publish the current connector key (or its removal) to the relay. */
+	connectorChanged(): void {
+		if (!this.options.connector || !this.admitted || this.socket?.readyState !== WebSocket.OPEN) return;
+		this.socket.send(JSON.stringify({ type: "connector-enable", key: this.options.connector.key() ?? null }));
+	}
 	private open(): void {
 		const socket = new WebSocket(socketUrl(this.status.origin, "/host", this.options.account.device.id), {
 			agent: this.agent, handshakeTimeout: 15_000, maxPayload: MAX_WIRE * 2, perMessageDeflate: false,
@@ -134,6 +141,7 @@ export class RelayConnector {
 					if (message.type !== "admitted" || !authenticating || message.protocol !== PROTOCOL_VERSION) throw new Error("Invalid admission.");
 					this.admitted = true; this.backoff = 1000; this.update("online");
 					if (this.options.party) socket.send(JSON.stringify({ type: "party-enable" }));
+					this.connectorChanged();
 					this.refresh = setInterval(maintain, 20_000); this.refresh.unref();
 					this.expiry = setInterval(() => {
 						if (performance.now() >= this.hostLeaseUntil) { socket.terminate(); return; }
@@ -142,6 +150,13 @@ export class RelayConnector {
 					maintain(); return;
 				}
 				if (message.type === "renewed") return;
+				if (message.type === "connector") {
+					const id = string(message.id, 64), body = string(message.body, 256 * 1024);
+					void (this.options.connector?.handle(body) ?? Promise.resolve({ status: 404, body: "" }))
+						.catch(() => ({ status: 500, body: JSON.stringify({ error: "The connector failed." }) }))
+						.then(result => { if (this.socket === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "connector-result", id, ...result })); });
+					return;
+				}
 				if (message.type === "hosts") {
 					if (!Array.isArray(message.hosts) || message.hosts.length > 256 || !message.hosts.every(validId)) throw new Error("Invalid computer directory.");
 					this.computers = message.hosts; this.connectParties(); return;
