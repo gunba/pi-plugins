@@ -199,6 +199,10 @@ test("Speed selection preserves Fast and explicitly selects the advertised Ultra
   await request();
   assert.equal(bodies.at(-1).service_tier, undefined);
   assert.ok(hints.at(-1) && !hints.at(-1).includes(";tier="));
+  // Another conversation on this computer turns Fast on; this one follows without restarting.
+  writeFileSync(join(h.directory, "codex-wire", "fast-mode"), "on");
+  await request();
+  assert.equal(bodies.at(-1).service_tier, "priority");
 });
 
 test("Fast does not alter unsupported catalog models or API-key Codex requests", async t => {
