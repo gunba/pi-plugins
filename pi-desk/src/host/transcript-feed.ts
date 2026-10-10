@@ -123,7 +123,9 @@ export class TranscriptFeed {
 			}
 		} else if (event.type === "compaction_end" && event.result && !event.aborted) {
 			// Pi appends compaction entries without an entry_appended event.
-			const branch = this.branch(), order = branch.findLastIndex(entry => entry.type === "compaction");
+			const branch = this.branch();
+			let order = branch.length - 1;
+			while (order >= 0 && branch[order]!.type !== "compaction") order--;
 			const message = order >= 0 ? this.transcript.entry(branch[order]!, order, this.cwd()) : undefined;
 			if (message) this.emit({ type: "chat", generation, message: { ...message, revision: ++this.revision } });
 		} else if (event.type === "message_update") {

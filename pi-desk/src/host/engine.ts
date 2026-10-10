@@ -465,7 +465,8 @@ export class DeskEngine {
 	private contextFrom(manager: SessionManager, leaf: string | null): number | undefined {
 		if (this.contextCache?.manager === manager && this.contextCache.leaf === leaf) return this.contextCache.value;
 		const branch = this.branch?.manager === manager ? this.branch.read() : manager.getBranch();
-		const at = branch.findLastIndex(entry => entry.type === "compaction");
+		let at = branch.length - 1;
+		while (at >= 0 && branch[at]!.type !== "compaction") at--;
 		const compaction = branch[at];
 		const kept = compaction?.type === "compaction" && compaction.firstKeptEntryId
 			? branch.findIndex(entry => entry.id === compaction.firstKeptEntryId) : -1;
