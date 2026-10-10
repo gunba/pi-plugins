@@ -48,6 +48,8 @@ When an evaluation runs an agent that produces files, write a private runner aro
 - task time and tokens are recorded beside the score, not folded into it;
 - call ledgers store request metadata, not full conversation contexts, which grow quadratically with session length;
 - large per-run copies (runtimes, staged inputs, skill bundles) are deleted once a run is graded;
+- sessions that stop writing and using CPU are stopped and resumed, and a run that stops is restarted from saved state rather than waiting for the user;
+- an unattended run keeps the machine awake; on Windows with Modern Standby this needs the display-required flag as well as system-required;
 - on Windows, run Python with `-X utf8`; GEPA writes its state files with the default encoding.
 
 ## Report
