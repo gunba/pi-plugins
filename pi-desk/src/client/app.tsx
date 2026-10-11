@@ -54,6 +54,7 @@ import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { CompactionOverlay } from "./compaction-overlay.tsx";
 import { VersionBanner, VersionTag } from "./conversation-version.tsx";
+import { NewConversationModel, rememberModel, rememberedModel, type ModelChoice } from "./new-model.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -109,6 +110,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const autoAgents = useRef("");
   const [cwd, setCwd] = useState("");
   const [newComputer, setNewComputer] = useState<string>();
+  const [newModel, setNewModel] = useState<ModelChoice>({ model: "", reasoning: "" });
   const [draft, setDraft] = useState("");
   const [deliveryMode, setDeliveryMode] = useState(() => readDelivery(localStorage));
   const composerInput = useRef<HTMLTextAreaElement>(null);
@@ -445,7 +447,9 @@ export function App({ account }: { account?: BrowserAccount }) {
     const request = ++createRequest.current;
     setCreating(true); setCreateError("");
     try {
-      const result = await api<{ key: string }>("/sessions", { cwd }, newComputer);
+      rememberModel(newComputer, newModel);
+      const result = await api<{ key: string }>("/sessions", { cwd, ...(newModel.model ? { model: newModel.model } : {}),
+        ...(newModel.reasoning ? { reasoning: newModel.reasoning } : {}) }, newComputer);
       if (request !== createRequest.current) return;
       setSelected(result.key);
       setCreate(false);
@@ -466,6 +470,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       : currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
     setNewComputer(computer?.id);
+    setNewModel(rememberedModel(computer?.id));
     setCwd(session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? state.host?.cwd ?? "");
     setCreate(true);
   }
@@ -998,6 +1003,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {state.host.computers && <label>Computer
               <select aria-label="Computer for new conversation" disabled={creating} value={newComputer ?? ""} onChange={event => {
                 setNewComputer(event.target.value);
+                setNewModel(rememberedModel(event.target.value));
                 setCwd(state.host!.computers!.find(computer => computer.id === event.target.value)?.cwd ?? "");
               }}>
                 {!newComputer && <option value="">Choose a connected computer</option>}
@@ -1008,8 +1014,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             </label>}
             <FolderField key={newComputer ?? "local"} value={cwd} onChange={setCwd} computer={newComputer}
               disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)} />
+            <NewConversationModel sessions={state.host.sessions} computer={newComputer} value={newModel} change={setNewModel} disabled={creating} />
             <p className="muted">
-              Pi loads this project's instructions, tools, and settings.
+              Pi loads this project's instructions, tools, and settings. Your model choice is remembered for next time.
             </p>
             {createError && <p className="error-text" role="alert">{createError}</p>}
             <div className="dialog-actions">

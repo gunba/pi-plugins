@@ -49,7 +49,10 @@ import { configuredSessionDirectory } from "./session-directories.ts";
 import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
-interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number }
+interface ModelChoice { model?: string; reasoning?: string }
+interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number;
+	/** A new conversation's chosen model, applied once it is ready and before any message is delivered. */
+	setup?: ModelChoice; settingUp?: Promise<void> }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -552,6 +555,12 @@ export class DeskHost {
 	private drainInputs(managed: ManagedSession): void {
 		if (managed.draining || managed.reconciling || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
 			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
+		if (managed.setup) {
+			if (!managed.settingUp) managed.settingUp = this.applyAgentModel(managed, managed.setup)
+				.catch(error => console.error(`The chosen model was not applied: ${error instanceof Error ? error.message : String(error)}`))
+				.then(() => { managed.setup = undefined; managed.settingUp = undefined; this.drainInputs(managed); });
+			return;
+		}
 		const worker = managed.worker, key = managed.view.key;
 		// Admission returns before worker dispatch, leaving queued input cancellable.
 		managed.draining = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
@@ -715,7 +724,7 @@ export class DeskHost {
 	}
 
 	/** Set a new agent's requested model and reasoning before its task is admitted. */
-	private async applyAgentModel(managed: ManagedSession, request: PartyOperation): Promise<{ model?: string; reasoning?: string }> {
+	private async applyAgentModel(managed: ManagedSession, request: ModelChoice): Promise<{ model?: string; reasoning?: string }> {
 		const worker = managed.worker!, applied: { model?: string; reasoning?: string } = {};
 		if (request.model) {
 			const models = managed.view.snapshot?.models ?? [];
@@ -1080,7 +1089,11 @@ export class DeskHost {
 				hidden: url.searchParams.get("hidden") === "1", offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
 			}));
 			if (url.pathname === "/api/sessions" && request.method === "POST") {
-				return reply({ key: this.createSession(string(data.cwd, 4000) || this.options.cwd) }, 202);
+				const key = this.createSession(string(data.cwd, 4000) || this.options.cwd);
+				const model = data.model === undefined ? undefined : string(data.model, 300), reasoning = data.reasoning === undefined ? undefined : string(data.reasoning, 20);
+				const managed = this.sessions.get(key);
+				if (managed && (model || reasoning)) managed.setup = { ...(model ? { model } : {}), ...(reasoning ? { reasoning } : {}) };
+				return reply({ key }, 202);
 			}
 			if (url.pathname === "/api/resume" && request.method === "POST") {
 				const file = realpathSync(string(data.file, 4000));
