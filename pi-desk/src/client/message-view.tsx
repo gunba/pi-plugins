@@ -14,6 +14,7 @@ import { planRoundNotice } from "./plan-round.ts";
 import { readSkills } from "../shared/skill-activity.ts";
 import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
+import { thinkingPreview, toolArgumentPreview } from "./tool-preview.ts";
 
 const tokenFormat = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 async function assetText(session: string, asset: string, origin: string): Promise<string> {
@@ -49,13 +50,6 @@ function timeLabel(timestamp: number): string {
 function Time({ timestamp }: { timestamp: number }) {
 	return timestamp ? <time dateTime={new Date(timestamp).toISOString()} title={new Date(timestamp).toLocaleString()}>{timeLabel(timestamp)}</time> : null;
 }
-function toolArgumentPreview(serialized?: string): string {
-	try {
-		const args = JSON.parse(serialized ?? "{}");
-		const value = args.path ?? args.command ?? args.cmd ?? args.q ?? args.query;
-		return typeof value === "string" ? value.replace(/\s+/g, " ").slice(0, 160) : "";
-	} catch { return ""; }
-}
 function ToolStatus({ message }: { message?: ChatMessage }) {
 	const tool = message?.tool;
 	if (!tool) return null;
@@ -79,7 +73,7 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 		summary={<><span className="tool-icon">{skills.length || nestedSkills.length ? <Icon name="context" /> : "⌘"}</span><strong>{skills.length ? skills.length === 1 ? "Read skill" : "Read skills" : name}</strong>
 			<span className="tool-argument-preview">{skills.length ? `${skills.join(", ")} · ` : ""}{file
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
-				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(call?.arguments)}</span>
+				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(name, call?.arguments)}</span>
 			<ToolStatus message={result} />
 			{!result?.tool && <Time timestamp={owner.timestamp} />}
 		</>}>
@@ -130,6 +124,7 @@ function ThinkingGroup({ parts, sessionKey, source }: {
 	});
 	return <Disclosure id={`thinking:${parts[0]?.message.id}:${parts[0]?.index}`} className="tool-card thinking-pill"
 		summary={<><Icon name="thinking" /><strong>Thinking</strong>
+		{readable.length > 0 && <span className="tool-argument-preview">{thinkingPreview(readable[0]!.block.text)}</span>}
 		{readable.length > 1 && <span className="thinking-count" title="Readable reasoning sections in this reply">{readable.length} sections</span>}
 		{!active && !readable.length && <span className="thinking-count">No summary provided</span>}
 		{active && <span className="tool-status" title="Elapsed response time, including network waiting—not measured reasoning time."><span>Elapsed</span><Elapsed started={active.timestamp} /></span>}</>}>
