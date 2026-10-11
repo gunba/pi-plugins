@@ -664,7 +664,7 @@ export class DeskHost {
 	}
 
 	/** Close an idle conversation's worker and reopen the saved session on this host's current runtime. */
-	private async replaceWorker(managed: ManagedSession, closed?: () => void): Promise<string> {
+	private async replaceWorker(managed: ManagedSession): Promise<string> {
 		const view = managed.view, worker = managed.worker!, snapshot = view.snapshot;
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
 		if (view.state !== "ready" || !view.file || !snapshot) throw new Error("Only a started, saved conversation can be restarted.");
@@ -672,11 +672,23 @@ export class DeskHost {
 			|| view.controls?.some(control => control.state === "running")
 			|| this.inputs!.pending(view.key).some(input => input.state === "queued" || input.state === "sending"))
 			throw new Error("Restart when the conversation is idle, with no questions or waiting messages.");
-		const id = randomUUID();
+		const id = randomUUID(), agent = view.agentId ?? snapshot.id;
+		// Whether peers can wake it now; releasing the old process clears that.
+		const armed = agent ? !!this.parties?.store.member(agent)?.delivery : undefined;
 		await worker.submitControl({ kind: "close" }, worker.generation, id);
 		await this.waitForControl(view.key, id);
 		await worker.close(true);
-		closed?.();
+		// The old process has released its registration. Peers see "restarting" rather than offline, and
+		// messages wait in its inbox. Refreshes stop once the new process registers under its own owner.
+		const owner = agent ? this.parties?.store.restarting(agent, undefined, armed) : undefined;
+		if (agent && owner) {
+			const until = Date.now() + 120_000;
+			const keepAlive = setInterval(() => {
+				try { if (Date.now() > until || !this.parties?.store.restarting(agent, owner)) clearInterval(keepAlive); }
+				catch { clearInterval(keepAlive); }
+			}, 15_000);
+			keepAlive.unref();
+		}
 		return this.createSession(view.cwd, view.file, this.sessions.get(view.key));
 	}
 
@@ -689,25 +701,16 @@ export class DeskHost {
 
 	/** Restart one idle conversation onto this host's version, keeping its agent reachable meanwhile. */
 	private async restartForUpdate(managed: ManagedSession): Promise<void> {
-		const key = managed.view.key, agent = managed.view.agentId ?? managed.view.snapshot?.id;
+		const key = managed.view.key;
 		this.restartAttempts.set(key, RELEASE.version);
 		managed.view = { ...managed.view, updating: true };
 		this.emit({ type: "session", session: managed.view });
-		let owner: string | undefined, keepAlive: ReturnType<typeof setInterval> | undefined;
-		// Whether peers can wake it now; releasing the old process clears that.
-		const armed = agent ? !!this.parties?.store.member(agent)?.delivery : undefined;
 		try {
-			await this.replaceWorker(managed, () => {
-				// The old process has released its registration; peers see "restarting", and messages wait in its inbox.
-				if (!agent || !this.parties) return;
-				owner = this.parties.store.restarting(agent, undefined, armed);
-				if (owner) keepAlive = setInterval(() => { try { this.parties?.store.restarting(agent, owner); } catch { /* Presence only. */ } }, 15_000);
-			});
+			await this.replaceWorker(managed);
 			await this.waitForSession(key);
 		} catch (error) {
 			console.error(`Desk could not restart ${managed.view.title ?? key} onto ${RELEASE.version}: ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
-			clearInterval(keepAlive);
 			const current = this.sessions.get(key);
 			if (current?.view.updating) { current.view = { ...current.view, updating: undefined }; this.emit({ type: "session", session: current.view }); }
 			this.refreshUpdates();
