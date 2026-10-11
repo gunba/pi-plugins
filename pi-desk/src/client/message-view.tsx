@@ -39,7 +39,16 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 	return <button type="button" className="message-copy" title="Copy as Markdown" aria-label="Copy as Markdown" onClick={copy}>
 		{status ? <span>{status}</span> : <Icon name="copy" />}</button>;
 }
-const timeLabel = (timestamp: number) => timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+/** Time of day, with the date when it is not today. */
+function timeLabel(timestamp: number): string {
+	if (!timestamp) return "";
+	const date = new Date(timestamp), now = new Date(), time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	if (date.toDateString() === now.toDateString()) return time;
+	return `${date.toLocaleDateString([], { day: "numeric", month: "short", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) })}, ${time}`;
+}
+function Time({ timestamp }: { timestamp: number }) {
+	return timestamp ? <time dateTime={new Date(timestamp).toISOString()} title={new Date(timestamp).toLocaleString()}>{timeLabel(timestamp)}</time> : null;
+}
 function toolArgumentPreview(serialized?: string): string {
 	try {
 		const args = JSON.parse(serialized ?? "{}");
@@ -72,7 +81,7 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
 				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(call?.arguments)}</span>
 			<ToolStatus message={result} />
-			{!result?.tool && <time>{timeLabel(owner.timestamp)}</time>}
+			{!result?.tool && <Time timestamp={owner.timestamp} />}
 		</>}>
 		{result && <ReferenceContext value={{ message: result.id, source }}>
 			<div className="tool-output"><MessageBody message={result} sessionKey={sessionKey} source={source} omitFile={resultFile?.type === "file" ? resultFile.file.id : undefined} />
@@ -166,7 +175,7 @@ function SummaryCard({ message, sessionKey, source, faded }: { message: ChatMess
 		.filter(Boolean).join(" · ");
 	return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-summary summary-${summary.kind}${faded}`}>
 		<Disclosure id={`summary:${message.id}`} className="summary-card"
-			summary={<><Icon name="layers" /><strong>{title}</strong>{detail && <span className="summary-detail">{detail}</span>}<time>{timeLabel(message.timestamp)}</time></>}>
+			summary={<><Icon name="layers" /><strong>{title}</strong>{detail && <span className="summary-detail">{detail}</span>}<Time timestamp={message.timestamp} /></>}>
 			<p className="summary-explanation">{summary.kind === "branch" ? "A summary of the branch you left, carried into this one."
 				: summary.kind === "checkpoint" ? "Codex replaced the earlier messages, which are faded, with an encrypted checkpoint only Codex can read. Recent messages were kept as they were."
 				: "From here, the model sees this summary instead of the earlier messages, which are faded. Recent messages were kept as they were."}</p>
@@ -190,17 +199,17 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 	/** The model no longer sees this message verbatim, only through a compaction summary. */
 	summarised?: boolean;
 }) {
-	const time = timeLabel(message.timestamp), round = planRoundNotice(message), faded = summarised ? " message-summarised" : "";
+	const time = <Time timestamp={message.timestamp} />, round = planRoundNotice(message), faded = summarised ? " message-summarised" : "";
 	if (message.feedback) return null;
 	if (message.summary) return <SummaryCard message={message} sessionKey={sessionKey} source={source} faded={faded} />;
 	if (round) return <article className={`message message-plan-round${faded}`}><div className="plan-round-heading"><Icon name="plan" /><strong>Plan</strong>
-		<span>Round {round.round} of {round.maxRounds}</span><time>{time}</time></div><p>{round.objective}</p></article>;
+		<span>Round {round.round} of {round.maxRounds}</span>{time}</div><p>{round.objective}</p></article>;
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
 		const notice = message.notice;
 		return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-received${faded}`}>
 			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule"}
 				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : "info"} />
-					<strong>{notice?.title ?? "Notification"}</strong><time>{time}</time></>}>
+					<strong>{notice?.title ?? "Notification"}</strong>{time}</>}>
 				{notice?.kind === "schedule" && <div className="notice-metadata">
 					<span title={new Date(notice.queuedAt!).toLocaleString()}>Queued {timeLabel(notice.queuedAt!)}</span>
 					<span title={new Date(notice.dueAt!).toLocaleString()}>Due {timeLabel(notice.dueAt!)}</span>
@@ -214,11 +223,11 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}${traceContinues ? " message-trace-tail" : ""}${faded}`}>
 			{!activityOnly && <div className="message-heading"><span className={message.role === "assistant" ? "assistant-avatar" : "message-label"}>
 				{message.role === "assistant" ? "π" : message.role === "user" ? source ? "Input" : "You" : "Note"}</span>
-				{message.role === "assistant" && <strong>Pi</strong>}<time>{time}</time>
-				{!thinking && <CopyMarkdown message={message} sessionKey={sessionKey} />}</div>}
+				{message.role === "assistant" && <strong>Pi</strong>}{time}</div>}
 			{thinking ? <div className="message-body"><ThinkingGroup parts={thinkingParts(thinking)} sessionKey={sessionKey} source={source} /></div>
 				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
+			{!activityOnly && !thinking && <div className="message-actions"><CopyMarkdown message={message} sessionKey={sessionKey} /></div>}
 		</article>
 	</ReferenceContext>;
 }

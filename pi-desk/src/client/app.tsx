@@ -34,7 +34,7 @@ import { WorkRail } from "./work-rail.tsx";
 import { WorkspaceActions } from "./workspace-actions.tsx";
 import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
 import { PlanView } from "./plan-view.tsx";
-import { Icon, SectionIcon } from "./icons.tsx";
+import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
 import { LiveNotices, reportDeskError } from "./desk-status.ts";
@@ -52,7 +52,7 @@ import { DetailsView } from "./details-view.tsx";
 import { Configuration } from "./configuration.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
-import { Elapsed } from "./transcript-parts.tsx";
+import { CompactionOverlay } from "./compaction-overlay.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -286,7 +286,10 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, selected]);
   const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
-  const contextFrom = session?.snapshot?.contextFrom, compacting = session?.snapshot?.compacting;
+  const contextFrom = session?.snapshot?.contextFrom, compactControl = controls.find(control => control.kind === "compact" && control.state === "running");
+  // Workers before 0.5.42 report only manual compaction, as a running control.
+  const compacting = session?.snapshot?.compacting ?? (compactControl ? { reason: "manual" as const, started: compactControl.started } : undefined);
+  const [stoppingCompaction, setStoppingCompaction] = useState(false);
   const busy =
     controlBusy ||
     session?.snapshot?.activity === "running" ||
@@ -615,7 +618,10 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span className={`status-dot ${sessionActivity(item)}`} role="img"
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><AgentWakeMarker agent={agent} /></span>
-                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span></small></span>
+                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
+                    {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}`}>
+                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
+                      <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</small></span>
               </button>
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
@@ -703,7 +709,9 @@ export function App({ account }: { account?: BrowserAccount }) {
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}
-        {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls} />}
+        {session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
+          stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
+        {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls.filter(control => control !== compactControl)} />}
         {session?.state === "ready" && extensionErrors.length > 0 && <div className="connection-banner" role="alert">
           <span>Pi could not load {extensionErrors.length === 1 ? "an extension" : "some extensions"}. Retry loading before sending messages. Your conversation is retained; this does not resend your last message.</span>
           <button disabled={!connected || controlBusy || !["idle", "error"].includes(session.snapshot?.activity ?? "")}
@@ -758,9 +766,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
-                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…"
-                  : compacting ? <>{compacting.reason === "manual" ? "Compacting context…" : compacting.reason === "overflow" ? "Context overflowed. Compacting, then retrying…"
-                    : "Context is nearly full. Compacting…"} <Elapsed started={compacting.started} /></> : "Pi is working…"}
+                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
               </div>
             )}</>}
         />
