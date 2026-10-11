@@ -29,6 +29,7 @@
       "./pi-local-links/extensions/local-links.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
+    "./pi-browser/extensions/web-fetch.ts",
       "./pi-ask-user/index.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",

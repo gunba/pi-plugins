@@ -39,3 +39,23 @@ Return selected fields rather than whole HTML. Use
 `chrome_devtools_screenshot` for visual checks; `savePath` must remain inside
 the working directory or OS temporary directory. Large text uses Pi's normal
 `read_artifact` references.
+
+## Sites that refuse scripts
+
+To read or check URLs, use `web_fetch` rather than curl, wget or scripts. Many
+sites, including AustLII and the Federal Court, answer scripts with a bot check
+(Cloudflare, Akamai, CloudFront), a rate limit or a TLS failure. A script sees
+an ordinary 403 or connection error. That means neither "broken" nor "fine".
+`web_fetch` names the protection and loads such pages in a background Chrome
+tab, so its outcome is the real one: `ok`, `not_found`, `blocked`,
+`http_error` or `network_error`.
+
+When checking a page in Chrome yourself:
+
+- A challenge page reloads itself. "Inspected target navigated or closed" during
+  the first read is expected; wait a moment and read again.
+- A page can load with HTTP 200 and still be missing. Check the title or the
+  main heading for "Page not found" before calling a link good.
+- If a check still shows after about 30 seconds, ask the user to complete it in
+  Chrome, then try again.
+
