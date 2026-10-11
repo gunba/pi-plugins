@@ -758,7 +758,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </button>}
         {session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
           stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
-        {session && <VersionBanner key={`${selected}:version`} session={session} computer={currentComputer ?? { name: host.name, release: host.release }} busy={busy || !connected} report={setError} />}
+        {session && <VersionBanner key={`${selected}:version`} session={session} computer={currentComputer ?? { name: host.name, release: host.release, updates: host.updates }} busy={busy || !connected} report={setError} />}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls.filter(control => control !== compactControl)} />}
         {session?.state === "ready" && extensionErrors.length > 0 && <div className="connection-banner" role="alert">
           <span>Pi could not load {extensionErrors.length === 1 ? "an extension" : "some extensions"}. Retry loading before sending messages. Your conversation is retained; this does not resend your last message.</span>

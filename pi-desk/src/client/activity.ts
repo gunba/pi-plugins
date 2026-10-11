@@ -1,6 +1,7 @@
 import type { SessionView } from "../shared/protocol.ts";
 
-export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting">): string {
+export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating">): string {
+	if (session.updating) return "updating";
 	if (session.state === "closed" || session.state === "failed") return session.state;
 	if (session.reconnecting) return "connecting";
 	if (session.ui?.interactions.some(item => !item.settings)) return "waiting";
@@ -8,7 +9,7 @@ export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" 
 }
 export function leadingActivity(states: readonly string[]): string {
 	const normalized = states.map(state => state === "working" ? "running" : state === "attention" ? "waiting" : state === "ready" ? "idle" : state);
-	return ["waiting", "error", "failed", "running", "starting", "connecting", "idle", "interrupted", "offline", "closed"]
+	return ["waiting", "error", "failed", "running", "updating", "starting", "connecting", "idle", "interrupted", "offline", "closed"]
 		.find(state => normalized.includes(state)) ?? "closed";
 }
 export function activityLabel(state: string): string {
@@ -20,6 +21,7 @@ export function activityLabel(state: string): string {
 		case "failed": return "Unavailable";
 		case "interrupted": return "Stopped";
 		case "starting": return "Starting";
+		case "updating": return "Updating";
 		case "connecting": return "Connecting";
 		case "online": return "Online";
 		case "offline": return "Offline";

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { WorkspaceSession } from "./workspace.ts";
 
-type Host = { name: string; release?: { version: string } };
+type Host = { name: string; release?: { version: string }; updates?: { automatic?: { conversations: boolean } } };
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 
@@ -27,7 +27,8 @@ export function VersionBanner({ session, computer, busy, report }: {
 	if (!stale) return null;
 	return <div className="version-banner" role="status">
 		<Icon name="refresh" />
-		<span>This conversation runs Desk {stale.running}; {computer?.name ?? "this computer"} has {stale.current}. It keeps its tools and fixes until restarted. History is kept.</span>
+		<span>This conversation runs Desk {stale.running}; {computer?.name ?? "this computer"} has {stale.current}.
+			{computer?.updates?.automatic?.conversations ? " It moves to the new version by itself after 10 idle minutes, or restart it now." : " It keeps its tools and fixes until restarted."} History is kept.</span>
 		<button disabled={busy || restarting} title={busy ? "Restart when the conversation is idle." : undefined} onClick={() => {
 			setRestarting(true);
 			void api(`/sessions/${session.key}/restart`, { replace: true }, session.computer)

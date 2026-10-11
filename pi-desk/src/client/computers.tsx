@@ -70,7 +70,7 @@ function ComputerCard({ computer }: { computer: Computer }) {
 	</details>;
 }
 export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" | "connected" | "updates"> & { id?: string } }) {
-	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+	const [error, setError] = useState(""), [busy, setBusy] = useState(false), [restarted, setRestarted] = useState("");
 	const confirmation = useConfirmation(`${computer.id ?? "local"}:update`);
 	const updates = computer.updates;
 	if (!updates) return null;
@@ -98,6 +98,25 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 				{updates.pending && <> Version {updates.pending} is ready.</>}</p>
 			: updates.message && <p role={updates.phase === "failed" ? "alert" : "status"}>{updates.message}</p>}
 
+		{updates.automatic && <div className="automatic-updates">
+			<label className="setting-control"><span>Update Desk automatically<small>When every conversation has been idle for 10 minutes. Running conversations are never interrupted.</small></span>
+				<input type="checkbox" role="switch" checked={updates.automatic.host} disabled={busy || !computer.connected}
+					onChange={event => run("/runtime/automatic", { host: event.target.checked })} /></label>
+			<label className="setting-control"><span>Move idle conversations to the new version<small>Each restarts once it has been idle for 10 minutes, with no agents, plans or commands still running. History is kept, and messages sent meanwhile wait for it.</small></span>
+				<input type="checkbox" role="switch" checked={updates.automatic.conversations} disabled={busy || !computer.connected}
+					onChange={event => run("/runtime/automatic", { conversations: event.target.checked })} /></label>
+		</div>}
+		{!!updates.outdated && <div className="outdated-conversations">
+			<p role="status">{updates.outdated === 1 ? "1 conversation is" : `${updates.outdated} conversations are`} on an older version of Desk.</p>
+			<button disabled={busy || !computer.connected} onClick={() => {
+				setBusy(true); setError(""); setRestarted("");
+				void api<{ restarting: number; skipped: { title: string; reason: string }[] }>("/runtime/restart-idle", {}, computer.id).then(result => {
+					setRestarted([result.restarting ? `Restarting ${result.restarting} idle conversation${result.restarting === 1 ? "" : "s"}.` : "No conversation can be restarted right now.",
+						...result.skipped.map(item => `${item.title || "A conversation"} ${item.reason}.`)].join(" "));
+				}).catch(error => setError(String(error))).finally(() => setBusy(false));
+			}}>Update idle conversations now</button>
+			{restarted && <p className="muted">{restarted}</p>}
+		</div>}
 		{updates.checkError && <p className="muted">Update check: {updates.checkError}</p>}
 		{updates.checkedAt && !updates.checking && <p className="muted">{!updates.available && !updates.checkError ? "Up to date · " : ""}
 			Checked {new Date(updates.checkedAt).toLocaleString()}</p>}

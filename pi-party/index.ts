@@ -304,11 +304,15 @@ export default function party(pi: ExtensionAPI): void {
 		description: "Open agent messages; /inbox pause; /inbox resume",
 		handler: handleInbox,
 	});
-	const receipt = (message: { id: string; recipient: string; wake: number }) => ({ id: message.id, to: message.recipient,
-		wakeRequested: message.wake === 1, recipient: publicAgent(database().member(message.recipient)!) });
+	const receipt = (message: { id: string; recipient: string; wake: number }) => {
+		const recipient = database().member(message.recipient)!;
+		return { id: message.id, to: message.recipient, wakeRequested: message.wake === 1, recipient: publicAgent(recipient),
+			...(recipient.state === "restarting" ? { note: "This agent is restarting onto a new Desk version. The message is kept and delivered when it is back, usually within a minute." }
+				: recipient.state === "offline" ? { note: "This agent is not running. The message is kept and delivered when its conversation is next opened." } : {}) };
+	};
 	pi.registerTool({
 		name: "agent_discover", label: "Discover agents",
-		description: "Find Pi agents on this computer and connected Desk computers by session name, working directory or agent-written description. Active agents by default; no conversation history is read.",
+		description: "Find Pi agents on this computer and connected Desk computers by session name, working directory or agent-written description. Active agents by default; no conversation history is read. An agent in state restarting is moving to a new Desk version and is back within about a minute; messages sent meanwhile wait for it.",
 		parameters: Type.Object({ query: Type.Optional(Type.String()), includeOffline: Type.Optional(Type.Boolean()), offset: Type.Optional(Type.Integer({ minimum: 0 })) }),
 		async execute(_id, params) {
 			const found = database().discover(params.query, params.includeOffline, params.offset);

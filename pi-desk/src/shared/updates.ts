@@ -9,4 +9,8 @@ export interface RuntimeUpdateState {
 	checkedAt?: number;
 	checking?: boolean;
 	checkError?: string;
+	/** Whether this computer updates itself, and moves idle conversations onto the new version, unasked. */
+	automatic?: { host: boolean; conversations: boolean };
+	/** Open conversations still running an older Desk than this host. */
+	outdated?: number;
 }

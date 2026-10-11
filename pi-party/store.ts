@@ -221,6 +221,17 @@ export class PartyStore {
 			return this.member(session)!;
 		});
 	}
+	/**
+	 * Desk is restarting this agent's conversation onto a new version. It keeps its identity and inbox, so
+	 * peers see it as restarting rather than offline. Only the old process's registration is changed;
+	 * pass the returned owner to refresh it, which stops once the new process registers.
+	 */
+	restarting(session: string, owner?: string): string | undefined {
+		const member = this.member(session);
+		if (!member || owner !== undefined && member.owner !== owner) return;
+		this.db.prepare("UPDATE members SET state='restarting', heartbeat=? WHERE session=? AND owner=?").run(this.now(), session, member.owner);
+		return member.owner;
+	}
 	sessionFile(session: string): string | undefined {
 		return (this.db.prepare("SELECT file FROM session_files WHERE session=?").get(session) as { file: string } | undefined)?.file;
 	}

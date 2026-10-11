@@ -24,6 +24,7 @@ import { isControl } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
+import { QUIET_MS, readAutomatic, restartBlockers, workerHasRunningCommands, writeAutomatic, type AutomaticUpdates } from "./automatic-updates.ts";
 import { InputLedger } from "./inputs.ts";
 import { ProviderAccounts } from "./provider-accounts.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
@@ -105,6 +106,15 @@ export class DeskHost {
 	private updateWatch?: FSWatcher;
 	private updateTimer?: ReturnType<typeof setTimeout>;
 	private applyingUpdate = false;
+	private automatic: AutomaticUpdates = { host: true, conversations: true };
+	/** When each open conversation was last seen busy; it qualifies for an automatic restart after QUIET_MS. */
+	private quietSince = new Map<string, number>();
+	/** The version each conversation was last restarted for, so a failed restart is not repeated. */
+	private restartAttempts = new Map<string, string>();
+	private maintaining = false;
+	private forcedMaintenance?: { only?: string };
+	private hostUpdateAttempted?: string;
+	private readonly started = Date.now();
 	private updateCheckTimer?: ReturnType<typeof setTimeout>;
 	private updateCheckAbort = new AbortController();
 	private checkingUpdate = false;
@@ -126,6 +136,7 @@ export class DeskHost {
 	async start(): Promise<{ origin: string; pairingUrl: string }> {
 		const directory = this.options.dataDir ?? join(this.options.agentDir!, "desk");
 		this.directory = directory;
+		this.automatic = readAutomatic(directory);
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
@@ -190,7 +201,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
-				this.refreshUpdates(); this.refreshParties();
+				this.refreshUpdates(); this.refreshParties(); void this.maintain();
 				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -336,7 +347,8 @@ export class DeskHost {
 		try {
 			const value = runtimeUpdateState(this.runtimeHome);
 			if (!value) throw new Error("The managed runtime selection is missing.");
-			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError };
+			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError,
+				automatic: this.automatic, outdated: this.outdated().length };
 			if (this.restoringUpdate) next = { ...next, phase: "applying", message: "Restoring conversations…" };
 		}
 		catch (error) { next = { current: RELEASE.version, phase: "failed", message: error instanceof Error ? error.message : String(error) }; }
@@ -508,7 +520,10 @@ export class DeskHost {
 		else { this.emit({ type: "worker", key, message }); return; }
 		this.emit({ type: "session", session: managed.view });
 		this.persist();
-		if (message.type === "snapshot") { this.refreshParties(); this.drainInputs(managed); }
+		if (message.type === "snapshot") {
+			if (message.snapshot.activity !== "idle") this.quietSince.delete(key);
+			this.refreshParties(); this.drainInputs(managed);
+		}
 	}
 
 	private reconnectWorker(managed: ManagedSession, instance: string): void {
@@ -649,7 +664,7 @@ export class DeskHost {
 	}
 
 	/** Close an idle conversation's worker and reopen the saved session on this host's current runtime. */
-	private async replaceWorker(managed: ManagedSession): Promise<string> {
+	private async replaceWorker(managed: ManagedSession, closed?: () => void): Promise<string> {
 		const view = managed.view, worker = managed.worker!, snapshot = view.snapshot;
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
 		if (view.state !== "ready" || !view.file || !snapshot) throw new Error("Only a started, saved conversation can be restarted.");
@@ -661,7 +676,89 @@ export class DeskHost {
 		await worker.submitControl({ kind: "close" }, worker.generation, id);
 		await this.waitForControl(view.key, id);
 		await worker.close(true);
+		closed?.();
 		return this.createSession(view.cwd, view.file, this.sessions.get(view.key));
+	}
+
+	/** Conversations on an older Desk than this host, with what would stop each being restarted now. */
+	private outdated(): { managed: ManagedSession; blockers: string[] }[] {
+		return [...this.sessions.values()].filter(managed => managed.worker && managed.view.state === "ready"
+			&& managed.view.workerRuntime?.version !== RELEASE.version).map(managed => ({ managed,
+			blockers: restartBlockers(managed.view, this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending")) }));
+	}
+
+	/** Restart one idle conversation onto this host's version, keeping its agent reachable meanwhile. */
+	private async restartForUpdate(managed: ManagedSession): Promise<void> {
+		const key = managed.view.key, agent = managed.view.agentId ?? managed.view.snapshot?.id;
+		this.restartAttempts.set(key, RELEASE.version);
+		managed.view = { ...managed.view, updating: true };
+		this.emit({ type: "session", session: managed.view });
+		let owner: string | undefined, keepAlive: ReturnType<typeof setInterval> | undefined;
+		try {
+			await this.replaceWorker(managed, () => {
+				// The old process has released its registration; peers see "restarting", and messages wait in its inbox.
+				if (!agent || !this.parties) return;
+				owner = this.parties.store.restarting(agent);
+				if (owner) keepAlive = setInterval(() => { try { this.parties?.store.restarting(agent, owner); } catch { /* Presence only. */ } }, 15_000);
+			});
+			await this.waitForSession(key);
+		} catch (error) {
+			console.error(`Desk could not restart ${managed.view.title ?? key} onto ${RELEASE.version}: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			clearInterval(keepAlive);
+			const current = this.sessions.get(key);
+			if (current?.view.updating) { current.view = { ...current.view, updating: undefined }; this.emit({ type: "session", session: current.view }); }
+			this.refreshUpdates();
+		}
+	}
+
+	/**
+	 * Keep this computer current without interrupting work: restart one idle conversation at a time onto
+	 * this host's version, and update the host itself when every conversation has been quiet for a while.
+	 */
+	private async maintain(force = false, only?: string): Promise<void> {
+		if (this.maintaining) { if (force) this.forcedMaintenance = { only }; return; }
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate || this.applyingUpdate) return;
+		this.maintaining = true;
+		try {
+			const now = Date.now();
+			let allQuiet = now - this.started > QUIET_MS;
+			for (const managed of this.sessions.values()) {
+				if (!managed.worker || managed.view.state === "closed") continue;
+				const key = managed.view.key;
+				const busy = restartBlockers(managed.view, this.inputs!.pending(key).some(input => input.state === "queued" || input.state === "sending"))
+					.some(reason => reason !== "its folder is missing");
+				if (busy) { this.quietSince.delete(key); allQuiet = false; continue; }
+				if (!this.quietSince.has(key)) this.quietSince.set(key, now);
+				if (now - this.quietSince.get(key)! < QUIET_MS) allQuiet = false;
+			}
+			if (force || this.automatic.conversations) {
+				for (const { managed, blockers } of this.outdated()) {
+					const key = managed.view.key;
+					if (only && key !== only) continue;
+					if (blockers.length || this.restartAttempts.get(key) === RELEASE.version) continue;
+					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
+					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid)) continue;
+					await this.restartForUpdate(managed);
+					if (!force) return;
+				}
+			}
+			const available = this.updates?.available;
+			if (!force && !only && this.automatic.host && allQuiet && available && this.updates?.phase === "idle" && this.hostUpdateAttempted !== available
+				&& this.runtimeHome && !this.dot?.busy && !this.providerAccounts?.signingIn) {
+				// Workers outlive the host; their conversations move onto the new version here once they are idle.
+				this.hostUpdateAttempted = available;
+				await launchOperation(this.runtimeHome, "update-now", available);
+				this.refreshUpdates();
+			}
+		} catch (error) {
+			console.error(`Automatic update check failed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			this.maintaining = false;
+			// A request made during a background pass runs once that pass ends.
+			const queued = this.forcedMaintenance; this.forcedMaintenance = undefined;
+			if (queued) void this.maintain(true, queued.only);
+		}
 	}
 
 	/** This computer's public MCP address through the relay; undefined until the account connection is up. */
@@ -1067,6 +1164,19 @@ export class DeskHost {
 				await launchOperation(this.runtimeHome, "update-now", version);
 				this.refreshUpdates();
 				return reply({ accepted: true }, 202);
+			}
+			if (url.pathname === "/api/runtime/automatic" && request.method === "POST") {
+				const next = { host: typeof data.host === "boolean" ? data.host : this.automatic.host,
+					conversations: typeof data.conversations === "boolean" ? data.conversations : this.automatic.conversations };
+				writeAutomatic(this.directory, next); this.automatic = next; this.refreshUpdates();
+				return reply({ automatic: next });
+			}
+			if (url.pathname === "/api/runtime/restart-idle" && request.method === "POST") {
+				const only = data.key === undefined ? undefined : string(data.key, 100);
+				const outdated = this.outdated().filter(item => !only || item.managed.view.key === only);
+				void this.maintain(true, only);
+				return reply({ restarting: outdated.filter(item => !item.blockers.length).length,
+					skipped: outdated.filter(item => item.blockers.length).map(item => ({ title: item.managed.view.title ?? item.managed.view.name ?? "", reason: item.blockers.join(", ") })) }, 202);
 			}
 			if (url.pathname === "/api/runtime/check" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host is not a managed installation." }, 409);

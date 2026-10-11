@@ -28,6 +28,8 @@ export class SessionWorker {
 	runtimeDirectory?: string;
 	runtime?: WorkerRuntimeInfo;
 	instance?: string;
+	/** The worker's operating-system process, once attached. */
+	pid?: number;
 	snapshot?: SessionSnapshot;
 	closedCheckpoint?: CheckpointSnapshot & { checkpoint: string };
 	private readonly event: (message: WorkerMessage) => void;
@@ -46,6 +48,7 @@ export class SessionWorker {
 		}, { module: location.module, runtimeDirectory: process.env.PI_DESK_RUNTIME || undefined,
 			adoptOnly: !!location.adopt, expectedInstance: location.adopt }).then(connection => {
 			this.instance = connection.record.instance;
+			this.pid = connection.record.pid;
 			this.runtimeDirectory = connection.record.runtimeDirectory;
 			return connection;
 		});

@@ -110,6 +110,8 @@ export interface SessionView {
 	state: "starting" | "ready" | "failed" | "closed";
 	/** The host is reconnecting to the same actor, not starting a native session. */
 	reconnecting?: boolean;
+	/** Desk is restarting this idle conversation onto its current version. */
+	updating?: boolean;
 	/** Native state; presentation data is carried once in ui below. */
 	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */

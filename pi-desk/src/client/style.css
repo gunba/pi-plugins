@@ -488,8 +488,8 @@ details[open] > summary:before {
 .status-dot.online, .status-dot.idle, .status-dot.ready { --status-color:#43ca87; }
 .status-dot.running, .status-dot.working { --status-color:#5ca9ed; }
 /* Opening or reconnecting is not work in progress. */
-.status-dot.connecting, .status-dot.starting { --status-color:#e0a43a; }
-.status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before {
+.status-dot.connecting, .status-dot.starting, .status-dot.updating { --status-color:#e0a43a; }
+.status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before, .status-dot.updating::before {
   content:""; position:absolute; inset:-3px; border:1.5px solid transparent; border-top-color:var(--status-color); border-right-color:var(--status-color);
   border-radius:50%; animation:activity-orbit 1.8s linear infinite;
 }
@@ -1628,7 +1628,7 @@ details[open] > summary:before {
     transition: none !important;
     scroll-behavior: auto !important;
   }
-  .status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before {
+  .status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before, .status-dot.updating::before {
     animation: activity-orbit 3s linear infinite !important;
   }
 }
@@ -2241,3 +2241,6 @@ details[open] > summary:before {
 .new-model-fields { display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:12px; margin-top:4px; }
 .new-model-fields select { width:100%; margin:8px 0 14px; }
 @media (max-width: 560px) { .new-model-fields { grid-template-columns:1fr; } }
+.automatic-updates { margin:6px 0 4px; }
+.outdated-conversations { display:grid; gap:8px; justify-items:start; margin:12px 0; padding:12px 0; border-top:1px solid var(--border); }
+.outdated-conversations > p { margin:0; }
