@@ -694,11 +694,13 @@ export class DeskHost {
 		managed.view = { ...managed.view, updating: true };
 		this.emit({ type: "session", session: managed.view });
 		let owner: string | undefined, keepAlive: ReturnType<typeof setInterval> | undefined;
+		// Whether peers can wake it now; releasing the old process clears that.
+		const armed = agent ? !!this.parties?.store.member(agent)?.delivery : undefined;
 		try {
 			await this.replaceWorker(managed, () => {
 				// The old process has released its registration; peers see "restarting", and messages wait in its inbox.
 				if (!agent || !this.parties) return;
-				owner = this.parties.store.restarting(agent);
+				owner = this.parties.store.restarting(agent, undefined, armed);
 				if (owner) keepAlive = setInterval(() => { try { this.parties?.store.restarting(agent, owner); } catch { /* Presence only. */ } }, 15_000);
 			});
 			await this.waitForSession(key);

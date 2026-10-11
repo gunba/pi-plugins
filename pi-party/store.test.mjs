@@ -68,8 +68,10 @@ test("a conversation Desk restarts re-registers while marked restarting and rece
 	const { a, b } = fixture(t);
 	a.register("sender", "s", "Sender");
 	b.register("target", "old", "Target");
+	b.setDelivery("target", "old", true);
+	const armed = !!b.member("target").delivery;
 	b.release("target", "old");
-	const owner = a.restarting("target");
+	const owner = a.restarting("target", undefined, armed);
 	assert.equal(owner, "old");
 	assert.equal(a.member("target").state, "restarting");
 	const sent = a.send("sender", "s", "target", "While restarting", true);
@@ -77,6 +79,7 @@ test("a conversation Desk restarts re-registers while marked restarting and rece
 	a.restarting("target", owner);
 	b.register("target", "new", "Target");
 	assert.equal(b.member("target").state, "idle");
+	assert.equal(b.member("target").delivery, 1, "peers can still wake it");
 	assert.equal(b.pending("target", "new")[0].id, sent.id);
 	a.restarting("target", owner);
 	assert.equal(b.member("target").state, "idle", "a stale keep-alive does not mark the new process restarting");

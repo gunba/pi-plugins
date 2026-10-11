@@ -217,7 +217,8 @@ export class PartyStore {
 				(session,room,epoch,label,owner,heartbeat,state,wakes,agent_epoch,cwd,description,kind,delivery)
 				VALUES (?,'',?,?,?,?, 'idle',0,?,?,'',?,0)
 				ON CONFLICT(session) DO UPDATE SET label=excluded.label, owner=excluded.owner,
-				heartbeat=excluded.heartbeat,state=excluded.state,cwd=excluded.cwd,kind=excluded.kind,delivery=0`)
+				heartbeat=excluded.heartbeat,state=excluded.state,cwd=excluded.cwd,kind=excluded.kind,
+				delivery=CASE WHEN members.state='restarting' THEN members.delivery ELSE 0 END`)
 				.run(session, randomUUID(), label.slice(0, 120), owner, this.now(), randomUUID(), cwd, kind);
 			if (file) this.db.prepare("INSERT INTO session_files VALUES (?,?) ON CONFLICT(session) DO UPDATE SET file=excluded.file").run(session, file);
 			return this.member(session)!;
@@ -228,10 +229,12 @@ export class PartyStore {
 	 * peers see it as restarting rather than offline. Only the old process's registration is changed;
 	 * pass the returned owner to refresh it, which stops once the new process registers.
 	 */
-	restarting(session: string, owner?: string): string | undefined {
+	restarting(session: string, owner?: string, delivery?: boolean): string | undefined {
 		const member = this.member(session);
 		if (!member || owner !== undefined && member.owner !== owner) return;
-		this.db.prepare("UPDATE members SET state='restarting', heartbeat=? WHERE session=? AND owner=?").run(this.now(), session, member.owner);
+		// Releasing the old process disarmed delivery; restore what it was so peers can still wake the agent.
+		this.db.prepare("UPDATE members SET state='restarting', heartbeat=?, delivery=COALESCE(?, delivery) WHERE session=? AND owner=?")
+			.run(this.now(), delivery === undefined ? null : delivery ? 1 : 0, session, member.owner);
 		return member.owner;
 	}
 	sessionFile(session: string): string | undefined {
