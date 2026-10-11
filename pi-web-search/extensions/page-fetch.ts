@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { challengeTitle, classify, htmlText, htmlTitle, networkDetail, softNotFound, type Outcome } from "./page-check.ts";
 
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
@@ -187,46 +185,25 @@ async function pool<T, R>(items: T[], limit: number, work: (item: T) => Promise<
 }
 
 const MEANING: Record<Outcome, string> = {
-	ok: "page loaded", not_found: "missing page", blocked: "refused an automated client; not evidence the page is missing",
+	ok: "page loaded", not_found: "missing page", blocked: "the site refused an automated client; this is not evidence the page is missing",
 	http_error: "server error", network_error: "could not connect",
 };
-function describe(result: PageResult): string {
-	const facts = [result.status !== undefined && `HTTP ${result.status}`, `via ${result.via}`, result.protection, result.finalUrl && `final URL ${result.finalUrl}`,
-		result.script && `script saw ${result.script.status ? `HTTP ${result.script.status} ` : ""}${result.script.protection ?? result.script.detail ?? result.script.outcome}`].filter(Boolean);
-	return `${result.url}\n  ${result.outcome}: ${MEANING[result.outcome]} (${facts.join("; ")})${result.title ? `\n  Title: ${result.title}` : ""}${result.detail ? `\n  ${result.detail}` : ""}`;
+/** One page's outcome for the model, with the next step when only an interactive browser can help. */
+export function describePage(result: PageResult): string {
+	const facts = [result.status !== undefined && `HTTP ${result.status}`, `via ${result.via === "browser" ? "Chrome" : "direct request"}`, result.protection,
+		result.finalUrl && `final URL ${result.finalUrl}`,
+		result.script && `a script saw ${result.script.status ? `HTTP ${result.script.status} ` : ""}${result.script.protection ?? result.script.detail ?? result.script.outcome}`].filter(Boolean);
+	const next = result.outcome === "blocked" || result.status === 401 || result.outcome === "network_error" && result.via === "http"
+		? "\n  Open it with the browser tools (chrome_devtools_*) to sign in or complete the check, or ask the user." : "";
+	return `${result.url}\n  ${result.outcome}: ${MEANING[result.outcome]} (${facts.join("; ")})${result.title ? `\n  Title: ${result.title}` : ""}${result.detail ? `\n  ${result.detail}` : ""}${next}`;
 }
 
-export default function webFetchExtension(pi: ExtensionAPI): void {
-	pi.registerTool({
-		name: "web_fetch", label: "Fetch page",
-		description: "Read or check web pages. Each URL is fetched directly; when a site refuses automated clients (Cloudflare, Akamai, CloudFront and similar bot protection) or the connection fails, it is loaded in a background tab of the user's Chrome instead. Outcomes: ok, not_found (including pages that return 200 but say \"Page not found\"), blocked, http_error or network_error.",
-		promptSnippet: "Read or check web pages, falling back to Chrome when a site refuses automated clients",
-		promptGuidelines: [
-			"Use web_fetch rather than curl, wget or scripts to read or check URLs: those report bot protection, rate limits and TLS failures as ordinary errors.",
-			"A blocked outcome means the site refused an automated client, not that the page is missing or broken. Do not report it as a broken link or as missing evidence.",
-		],
-		parameters: Type.Object({
-			urls: Type.Array(Type.String({ minLength: 1, maxLength: 4000 }), { minItems: 1, maxItems: 50, description: "http(s) URLs to read or check." }),
-			text: Type.Optional(Type.Boolean({ description: "Include readable page text. Defaults to true for one URL and false for several." })),
-			max_chars: Type.Optional(Type.Integer({ minimum: 500, maximum: 60_000, description: "Page text limit per URL. Default 12000." })),
-			browser: Type.Optional(StringEnum(["auto", "never", "always"] as const, {
-				description: "auto (default) uses Chrome only when the direct request is blocked or cannot connect." })),
-		}),
-		async execute(_id, params, signal) {
-			const abort = signal ?? new AbortController().signal;
-			const urls = params.urls.map(url => url.trim());
-			const bad = urls.find(url => { try { return !/^https?:$/.test(new URL(url).protocol); } catch { return true; } });
-			if (bad) throw Error(`Not an http(s) URL: ${bad}`);
-			const includeText = params.text ?? urls.length === 1, maxChars = params.max_chars ?? 12_000;
-			// Direct requests run in parallel; browser fallbacks are few at a time to keep Chrome responsive.
-			const browser = params.browser ?? "auto";
-			const direct = browser === "always" ? undefined : await pool(urls, 8, url => scriptFetch(url, abort));
-			const results = await pool(urls.map((url, index) => ({ url, index })), 3,
-				({ url, index }) => settle(url, direct?.[index], includeText, maxChars, browser, abort));
-			const text = results.map(result => describe(result) + (result.text ? `\n\n${result.text}${result.truncated ? "\n[…truncated]" : ""}\n` : "")).join("\n");
-			const counts = results.reduce<Record<string, number>>((all, result) => ({ ...all, [result.outcome]: (all[result.outcome] ?? 0) + 1 }), {});
-			return { content: [{ type: "text", text: `${results.length > 1 ? `${Object.entries(counts).map(([key, count]) => `${count} ${key}`).join(", ")}\n\n` : ""}${text}` }],
-				details: { results: results.map(({ text: _text, ...result }) => result) } };
-		},
-	});
+/** Read or check pages: direct requests in parallel, Chrome for those a script cannot load, a few at a time. */
+export async function fetchPages(urls: string[], options: { text: boolean; maxChars: number; browser?: "auto" | "never" | "always" }, signal: AbortSignal): Promise<PageResult[]> {
+	const bad = urls.find(url => { try { return !/^https?:$/.test(new URL(url).protocol); } catch { return true; } });
+	if (bad) throw Error(`Not an http(s) URL: ${bad}`);
+	const browser = options.browser ?? "auto";
+	const direct = browser === "always" ? undefined : await pool(urls, 8, url => scriptFetch(url, signal));
+	return pool(urls.map((url, index) => ({ url, index })), 3,
+		({ url, index }) => settle(url, direct?.[index], options.text, options.maxChars, browser, signal));
 }

@@ -1,10 +1,39 @@
 # Codex web search
 
-Pi's `web_search` tool is an adapter for Codex's standalone **`alpha/search`**
-service. Its display label is `web.run`. It uses the selected ChatGPT Codex
-model and that model's OAuth credentials; it does not select another model,
-call Perplexity or run a separate Pi summarization agent. The service's
-internal implementation is not established by this client inspection.
+Pi's `web_search` tool is the single web tool for every model. Its display
+label is `web.run`. Searching, opening, clicking, finding, PDF screenshots,
+finance, weather, sports and time go to Codex's standalone **`alpha/search`**
+service. Pages Codex cannot open, and link checks, are fetched directly and,
+when a site refuses automated clients, in the user's Chrome. It does not call
+Perplexity or run a separate Pi summarization agent. The service's internal
+implementation is not established by this client inspection.
+
+## Routing
+
+| Request | With a ChatGPT login on the computer | Without one |
+|---|---|---|
+| `search_query`, `image_query`, `click`, `find`, `screenshot`, `finance`, `weather`, `sports`, `time` | Codex search | Not available; the result says so |
+| `open` | Codex search; any page it reports as "not accessible" is fetched directly | URLs are fetched directly; reference IDs need Codex |
+| `check` (up to 50 URLs) | Fetched directly; status only | Same |
+
+Search uses the conversation's model when it is a ChatGPT Codex model.
+Otherwise it uses the computer's default model if that is a Codex model, or
+the newest signed-in Codex model, with the same OAuth credentials. Claude
+conversations therefore search through the ChatGPT plan; no Anthropic search
+tool is involved.
+
+Codex search reports a Cloudflare challenge and a real 404 identically ("URL …
+is not accessible via this tool"), so those pages are always fetched here.
+The direct fetch names bot protection (Cloudflare, Akamai, CloudFront, AWS
+WAF, Imperva, DataDome, PerimeterX, Sucuri, rate limits, a bare 403) and
+connection failures, and retries those in a background tab of the configured
+Chrome (`pi-chrome-devtools.json`, default `http://127.0.0.1:9222`). The tab
+waits up to 30 seconds for self-reloading challenges and is closed afterwards.
+Each page gets an outcome: `ok`, `not_found` (including 200 pages titled
+"Page not found"), `blocked`, `http_error` or `network_error`. A `blocked`
+outcome means the site refused an automated client, not that the page is
+missing; the result tells the model to use the browser tools when only an
+interactive browser can help.
 
 ## Provenance
 
@@ -56,9 +85,9 @@ cannot start a late request, and response overflow cancels the body reader.
 
 | Area | Pi adapter | Inspected native standalone tool |
 |---|---|---|
-| Exposure | One function named `web_search`, labelled `web.run`; eligible ChatGPT Codex models | `web` namespace with a `run` function, selected per turn |
+| Exposure | One function named `web_search`, labelled `web.run`, for every model | `web` namespace with a `run` function, selected per turn |
 | Commands | Same eleven top-level command/response-length fields; explicit batching and numeric constraints | Corresponding Rust command types and generated schema |
-| Model | Selected `model.id` | Current call's model |
+| Model | The conversation's Codex model, else the default or newest signed-in Codex model | Current call's model |
 | Recent conversation | Not sent | Last two user text messages and up to 1,000 tokens of intervening assistant output |
 | Reasoning | Omitted | Explicitly `None`, omitted during serialization |
 | Settings | Direct caller, live external access | Configured cached/indexed/live mode, location, context size and domain filters |

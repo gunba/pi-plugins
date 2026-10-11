@@ -10,8 +10,12 @@ import {
 	CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
 	isChatGptCodexModel,
 } from "../../pi-codex-compat/extensions/model-tools.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { renderSearchResult } from "./render.ts";
 import { requestService } from "../../pi-codex-service/index.ts";
+import { describePage, fetchPages, type PageResult } from "./page-fetch.ts";
 
 const searchQuery = Type.Object(
 	{
@@ -156,6 +160,12 @@ export const WEB_SEARCH_PARAMETERS = Type.Object(
 		time: Type.Optional(
 			Type.Array(timeOperation, { description: "Get the current time for UTC offsets." }),
 		),
+		check: Type.Optional(
+			Type.Array(Type.String({ minLength: 1, maxLength: 4000 }), {
+				description: "Check whether URLs load, without reading them. Each gets ok, not_found, blocked (the site refused an automated client), http_error or network_error. Use for link checks.",
+				maxItems: 50,
+			}),
+		),
 		response_length: Type.Optional(
 			StringEnum(["short", "medium", "long"] as const, {
 				description: "Amount of search output to return.",
@@ -196,23 +206,22 @@ export type WebSearchParams = {
 		locale?: string;
 	}>;
 	time?: Array<{ utc_offset: string }>;
+	check?: string[];
 	response_length?: "short" | "medium" | "long";
 };
 
 export type WebSearchDetails = {
-	model: string;
+	/** The Codex model that ran the search, when Codex was used. */
+	model?: string;
 	results?: unknown[];
+	/** Pages read or checked directly or in Chrome. */
+	pages?: Array<Omit<PageResult, "text">>;
 };
 
 type UnknownRecord = Record<string, unknown>;
 
 export type WebSearchDependencies = {
 	fetchImpl?: typeof globalThis.fetch;
-};
-
-export type WebSearchActivationState = {
-	enabled: boolean;
-	eligible?: boolean;
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -235,80 +244,111 @@ function parseSearchResponse(text: string): { output: string; results?: unknown[
 	};
 }
 
+const COMMANDS = ["search_query", "image_query", "open", "click", "find", "screenshot", "finance", "weather", "sports", "time"] as const;
+const NOT_ACCESSIBLE = /URL (\S+) is not accessible via this tool\./g;
+const SEPARATOR = "\n" + "-".repeat(80) + "\n";
+
+/** The Codex model for search: this conversation's, else the computer's default Codex model, else any signed-in one. */
+export function searchModel(ctx: ExtensionContext): ExtensionContext["model"] | undefined {
+	if (ctx.model && isChatGptCodexModel(ctx.model)) return ctx.model;
+	const available = ctx.modelRegistry.getAvailable().filter(model => isChatGptCodexModel(model));
+	if (!available.length) return;
+	let preferred: string | undefined;
+	try {
+		const settings = JSON.parse(readFileSync(join(getAgentDir(), "settings.json"), "utf8")) as { defaultProvider?: string; defaultModel?: string };
+		if (settings.defaultProvider === "openai-codex") preferred = settings.defaultModel;
+	} catch { /* No saved default. */ }
+	return available.find(model => model.id === preferred)
+		?? [...available].sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }))[0];
+}
+
+function pageSection(result: PageResult): string {
+	return describePage(result) + (result.text ? `\n\n${result.text}${result.truncated ? "\n[…truncated]" : ""}` : "");
+}
+
 export async function executeWebSearch(
 	params: WebSearchParams,
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 	dependencies: WebSearchDependencies = {},
 ): Promise<AgentToolResult<WebSearchDetails>> {
-	const model = ctx.model;
-	if (!model || !isChatGptCodexModel(model)) {
-		throw new Error("web_search requires a ChatGPT Codex model");
-	}
 	if (signal?.aborted) throw new Error("web_search aborted");
-	const text = await requestService(ctx, model, {
-		path: "alpha/search", codex: true, label: "Codex search",
-		maxResponseBytes: 32 * 1024 * 1024,
-		body: {
-			id: ctx.sessionManager.getSessionId(),
-			model: model.id,
-			commands: params,
-			settings: {
-				allowed_callers: ["direct"],
-				external_web_access: true,
-			},
-			max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
-		},
-	}, signal, dependencies.fetchImpl);
-	const result = parseSearchResponse(text);
+	const abort = signal ?? new AbortController().signal;
+	const { check, ...commands } = params;
+	const requested = COMMANDS.filter(name => commands[name]?.length);
+	const sections: string[] = [], pages: PageResult[] = [];
+	let model: ExtensionContext["model"] | undefined, results: unknown[] | undefined;
+	if (requested.length) {
+		model = searchModel(ctx);
+		if (model) {
+			const text = await requestService(ctx, model, {
+				path: "alpha/search", codex: true, label: "Codex search",
+				maxResponseBytes: 32 * 1024 * 1024,
+				body: {
+					id: ctx.sessionManager.getSessionId(),
+					model: model.id,
+					commands,
+					settings: {
+						allowed_callers: ["direct"],
+						external_web_access: true,
+					},
+					max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
+				},
+			}, signal, dependencies.fetchImpl);
+			const response = parseSearchResponse(text);
+			results = response.results;
+			sections.push(response.output);
+			// Codex reports bot-protected and missing pages alike; fetch them here to tell which.
+			const refused = [...new Set([...response.output.matchAll(NOT_ACCESSIBLE)].map(match => match[1]!.replace(/[.,;]+$/, "")))]
+				.filter(url => /^https?:\/\//.test(url));
+			if (refused.length) {
+				const fetched = await fetchPages(refused, { text: true, maxChars: 12_000 }, abort);
+				pages.push(...fetched);
+				sections.push(`Codex search could not open ${refused.length === 1 ? "this page" : "these pages"}, so ${refused.length === 1 ? "it was" : "they were"} fetched directly:\n\n${fetched.map(pageSection).join(SEPARATOR)}`);
+			}
+		} else {
+			const urls = (commands.open ?? []).map(item => item.ref_id).filter(ref => /^https?:\/\//.test(ref));
+			const unsupported = requested.filter(name => name !== "open");
+			if (!urls.length && !check?.length) throw new Error("Web search needs a ChatGPT login on this computer. Without one, web_search can only open or check URLs; use the browser tools to search.");
+			if (urls.length) {
+				const fetched = await fetchPages(urls, { text: true, maxChars: 12_000 }, abort);
+				pages.push(...fetched);
+				sections.push(fetched.map(pageSection).join(SEPARATOR));
+			}
+			if (unsupported.length || urls.length < (commands.open?.length ?? 0))
+				sections.push(`Not done: ${[...unsupported, ...(urls.length < (commands.open?.length ?? 0) ? ["open by reference ID"] : [])].join(", ")}. These need Codex search, which needs a ChatGPT login on this computer.`);
+		}
+	}
+	if (check?.length) {
+		const checked = await fetchPages(check.map(url => url.trim()), { text: false, maxChars: 2000 }, abort);
+		pages.push(...checked);
+		const counts = checked.reduce<Record<string, number>>((all, page) => ({ ...all, [page.outcome]: (all[page.outcome] ?? 0) + 1 }), {});
+		sections.push(`Checked ${checked.length} URL${checked.length === 1 ? "" : "s"}: ${Object.entries(counts).map(([outcome, count]) => `${count} ${outcome}`).join(", ")}\n\n${checked.map(describePage).join("\n")}`);
+	}
+	if (!sections.length) throw new Error("Give web_search at least one search, page or URL to check.");
 	return {
-		content: [{ type: "text", text: result.output }],
+		content: [{ type: "text", text: sections.join(SEPARATOR) }],
 		details: {
-			model: `${model.provider}/${model.id}`,
-			results: result.results,
+			...(model ? { model: `${model.provider}/${model.id}` } : {}),
+			...(results ? { results } : {}),
+			...(pages.length ? { pages: pages.map(({ text: _text, ...page }) => page) } : {}),
 		},
-	};
-}
-
-export function syncWebSearchTool(
-	activeTools: string[],
-	model: ExtensionContext["model"],
-	state: WebSearchActivationState,
-): { activeTools: string[]; state: WebSearchActivationState } {
-	const currentlyActive = activeTools.includes("web_search");
-	let eligible = state.eligible ?? currentlyActive;
-	if (state.enabled && !currentlyActive) eligible = false;
-	if (!state.enabled && currentlyActive) eligible = true;
-	const base = activeTools.filter((name) => name !== "web_search");
-	const enabled = eligible && isChatGptCodexModel(model);
-	return {
-		activeTools: enabled ? [...base, "web_search"] : base,
-		state: { enabled, eligible },
 	};
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
-	let activationState: WebSearchActivationState = { enabled: false };
-	const syncTools = (model: ExtensionContext["model"]): void => {
-		const result = syncWebSearchTool(pi.getActiveTools(), model, activationState);
-		activationState = result.state;
-		if (result.activeTools.join("\0") !== pi.getActiveTools().join("\0")) {
-			pi.setActiveTools(result.activeTools);
-		}
-	};
-	pi.on("session_start", (_event, ctx) => syncTools(ctx.model));
-	pi.on("model_select", (event) => syncTools(event.model));
 	pi.registerTool({
 		name: "web_search",
 		label: "web.run",
 		description:
-			"Access the internet through Codex standalone search. Supports batched web/image queries, opening results or URLs, clicking links, finding page text, PDF screenshots, finance, weather, sports, and time. The request always uses the currently selected ChatGPT Codex model and never selects a fallback or summary model.",
-		promptSnippet:
-			"Access the internet through Codex standalone search using the currently selected model",
+			"Search the web, open pages and check links. Searching, clicking and finding text use Codex web search with the ChatGPT login on this computer, whichever model this conversation uses. Pages Codex cannot open, and all link checks, are fetched directly, and in the user's Chrome when a site refuses automated clients. For sign-ins, forms or other interaction, use the browser tools.",
+		promptSnippet: "Search the web, open pages and check links",
 		promptGuidelines: [
 			"Use web_search when the user asks to search or when current, unstable information must be verified.",
 			"Batch independent searches in one web_search call, with no more than four search_query entries.",
 			"When web_search returns sources, cite the supporting pages with Markdown links.",
+			"Use web_search open or check rather than curl, wget or scripts for URLs: those report bot protection, rate limits and TLS failures as ordinary errors.",
+			"A blocked outcome means the site refused an automated client, not that the page is missing. Do not report it as a broken link or missing evidence.",
 		],
 		parameters: WEB_SEARCH_PARAMETERS,
 		renderResult: renderSearchResult,

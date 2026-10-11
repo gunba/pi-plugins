@@ -3,23 +3,9 @@
 The `browse` skill uses `@narumitw/pi-chrome-devtools`, a native Pi extension.
 There is no browser runtime or MCP server in this repository.
 
-## `web_fetch`
-
-`web_fetch` reads or checks up to 50 URLs. It fetches each URL directly first.
-When the site refuses automated clients or the connection fails, it loads the
-URL in a background tab of the configured Chrome instead. Refusals include
-Cloudflare, Akamai, CloudFront, AWS WAF, Imperva, DataDome, PerimeterX and
-Sucuri checks, rate limits and a bare 403. Connection failures include TLS
-errors, resets and timeouts. Each result has an outcome: `ok`, `not_found`,
-`blocked`, `http_error` or `network_error`. `not_found` includes pages that
-return 200 with a "Page not found" title. A `blocked` result means the site
-refused an automated client, not that the page is missing.
-
-The browser fallback waits up to 30 seconds for challenge pages, which reload
-themselves, and closes its tab afterwards. It uses the endpoint in
-`pi-chrome-devtools.json`, defaulting to `http://127.0.0.1:9222`. Without a
-reachable Chrome, the result keeps the direct outcome and says it was not
-verified. Direct requests use Pi's proxy settings.
+`web_search` (in `pi-web-search`) reads and checks pages and falls back to this
+Chrome when a site refuses automated clients; see its README. Use the browser
+tools directly for sign-ins, forms and other interaction.
 
 ## Connect Chrome
 

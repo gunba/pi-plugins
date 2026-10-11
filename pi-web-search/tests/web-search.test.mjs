@@ -4,7 +4,6 @@ import test from "node:test";
 import webSearchExtension, {
 	WEB_SEARCH_PARAMETERS,
 	executeWebSearch,
-	syncWebSearchTool,
 } from "../extensions/web-search.ts";
 import { serviceEndpoint } from "../../pi-codex-service/index.ts";
 
@@ -15,13 +14,16 @@ function jwt(accountId) {
 	})}.signature`;
 }
 
-function mockContext({ model, auth, sessionId = "session-123" }) {
+function mockContext({ model, auth, sessionId = "session-123", available = [], searchModel = model }) {
 	return {
 		model,
 		modelRegistry: {
 			async getApiKeyAndHeaders(receivedModel) {
-				assert.equal(receivedModel, model);
+				assert.equal(receivedModel, searchModel);
 				return auth;
+			},
+			getAvailable() {
+				return available;
 			},
 		},
 		sessionManager: {
@@ -66,44 +68,9 @@ test("registers one Codex-shaped search tool", () => {
 		"weather",
 		"sports",
 		"time",
+		"check",
 		"response_length",
 	]);
-});
-
-test("exposes search only for ChatGPT Codex without overriding manual disablement", () => {
-	const initial = syncWebSearchTool(
-		["read", "web_search"],
-		CODEX_MODEL,
-		{ enabled: false },
-	);
-	assert.deepEqual(initial.activeTools, ["read", "web_search"]);
-
-	const away = syncWebSearchTool(
-		initial.activeTools,
-		{ provider: "anthropic", id: "claude-opus-4-6" },
-		initial.state,
-	);
-	assert.deepEqual(away.activeTools, ["read"]);
-
-	const back = syncWebSearchTool(away.activeTools, CODEX_MODEL, away.state);
-	assert.deepEqual(back.activeTools, ["read", "web_search"]);
-
-	const manuallyDisabled = syncWebSearchTool(["read"], CODEX_MODEL, back.state);
-	assert.deepEqual(manuallyDisabled.activeTools, ["read"]);
-	assert.deepEqual(
-		syncWebSearchTool(manuallyDisabled.activeTools, CODEX_MODEL, manuallyDisabled.state)
-			.activeTools,
-		["read"],
-	);
-});
-
-test("manual re-enable restores eligibility across model suppression", () => {
- const off = syncWebSearchTool(["read"], CODEX_MODEL, { enabled: true, eligible: true });
- const on = syncWebSearchTool(["read", "web_search"], CODEX_MODEL, off.state);
- assert.deepEqual(on.activeTools, ["read", "web_search"]);
- const away = syncWebSearchTool(on.activeTools, { provider: "anthropic", id: "claude" }, on.state);
- assert.deepEqual(away.activeTools, ["read"]);
- assert.deepEqual(syncWebSearchTool(away.activeTools, CODEX_MODEL, away.state).activeTools, on.activeTools);
 });
 
 test("posts Codex commands with the selected Pi model and no model fallback", async () => {
@@ -210,21 +177,37 @@ test("normalizes Codex response base URLs", () => {
 	);
 });
 
-test("rejects non-Codex models instead of routing to another provider", async () => {
+const ANTHROPIC_MODEL = {
+		provider: "anthropic",
+		id: "claude-opus-4-6",
+		api: "anthropic-messages",
+		baseUrl: "https://api.anthropic.com",
+	};
+
+test("searches through a signed-in Codex model when the conversation uses another provider", async () => {
+	let body;
+	const result = await executeWebSearch(
+		{ search_query: [{ q: "test" }] },
+		undefined,
+		mockContext({ model: ANTHROPIC_MODEL, available: [ANTHROPIC_MODEL, CODEX_MODEL], searchModel: CODEX_MODEL, auth: { ok: true, apiKey: jwt("acct-42") } }),
+		{
+			async fetchImpl(_url, init) {
+				body = JSON.parse(init.body);
+				return new Response(JSON.stringify({ output: "found" }));
+			},
+		},
+	);
+	assert.equal(body.model, CODEX_MODEL.id);
+	assert.equal(result.details.model, "openai-codex/gpt-5.6-sol");
+});
+
+test("without a ChatGPT login, search says so instead of using another provider", async () => {
 	let called = false;
 	await assert.rejects(
 		executeWebSearch(
 			{ search_query: [{ q: "test" }] },
 			undefined,
-			mockContext({
-				model: {
-					provider: "anthropic",
-					id: "claude-opus-4-6",
-					api: "anthropic-messages",
-					baseUrl: "https://api.anthropic.com",
-				},
-				auth: { ok: true, apiKey: "unused" },
-			}),
+			mockContext({ model: ANTHROPIC_MODEL, available: [ANTHROPIC_MODEL], auth: { ok: true, apiKey: "unused" } }),
 			{
 				async fetchImpl() {
 					called = true;
@@ -232,7 +215,7 @@ test("rejects non-Codex models instead of routing to another provider", async ()
 				},
 			},
 		),
-		/web_search requires a ChatGPT Codex model/,
+		/needs a ChatGPT login/,
 	);
 	assert.equal(called, false);
 });
