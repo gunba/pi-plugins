@@ -59,3 +59,16 @@ export function pendingDotMessages(outbox: DotOutbox, dot: string | undefined, m
 	const remote = new Set(messages.map(message => message.id));
 	return outbox.inputs.filter(input => input.dot === dot && (!input.messageId || !remote.has(input.messageId)));
 }
+
+/** Whether a local message is finished with: not sent, or set aside unresolved. Sending or sent messages stay. */
+export function removableDotInput(input: DotOutboxInput): boolean {
+	return input.state === "not-sent" || !!input.ignored && input.state !== "sending" && input.state !== "accepted";
+}
+
+/** Drop a finished local message; with edit, its text returns to the composer after any current draft. */
+export function removeDotInput(outbox: DotOutbox, id: string, edit = false): DotOutbox {
+	const input = outbox.inputs.find(item => item.id === id);
+	if (!input || !removableDotInput(input)) return outbox;
+	const draft = edit && input.text.trim() ? [outbox.draft.trim(), input.text].filter(Boolean).join("\n\n") : outbox.draft;
+	return { draft, inputs: outbox.inputs.filter(item => item.id !== id) };
+}

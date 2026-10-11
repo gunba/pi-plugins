@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, reviewDotQueue } from "../src/client/dot-outbox.ts";
+import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, removeDotInput, reviewDotQueue } from "../src/client/dot-outbox.ts";
 const connection = "a".repeat(64);
 const file = { id: "file", dot: "dot", connection, name: "example.txt", mime: "text/plain", size: 4, received: 4, state: "ready" };
 const receipt = (input, state, extra = {}) => ({ ...input, state, ...extra });
@@ -51,4 +51,19 @@ test("reload retains queued work but never blindly resends an interrupted submis
  values.set("pi-desk:dot:pc:draft", "Saved draft");
  const prior = readDotOutbox({ getItem: key => values.get(key) ?? null }, "pc");
  assert.equal(prior.inputs[0].state, "unknown"); assert.equal(prior.draft, "Saved draft");
+});
+
+test("a cancelled or skipped message can be removed or edited, but a sent one cannot", () => {
+ let state = enqueueDot({ draft: "And note to set up watching", inputs: [] }, "dot", connection, [], "cancelled");
+ state = reconcileDotInput(state, receipt(state.inputs[0], "not-sent", { error: "Cancelled before Desk accepted this message." }));
+ state = { ...state, inputs: state.inputs.map(input => ({ ...input, ignored: true })) };
+ assert.deepEqual(removeDotInput(state, "cancelled").inputs, [], "a skipped, unsent message no longer stays forever");
+ const edited = removeDotInput({ ...state, draft: "Newer" }, "cancelled", true);
+ assert.equal(edited.draft, `Newer\n\n${state.inputs[0].text}`); assert.equal(edited.inputs.length, 0);
+ let sent = enqueueDot({ draft: "Sent", inputs: [] }, "dot", connection, [], "sent");
+ sent = reconcileDotInput(sent, receipt(sent.inputs[0], "accepted"));
+ assert.equal(removeDotInput(sent, "sent"), sent);
+ const unresolved = { draft: "", inputs: [{ ...sent.inputs[0], id: "u", state: "unknown" }] };
+ assert.equal(removeDotInput(unresolved, "u"), unresolved, "an unresolved attempt is kept until the user sets it aside");
+ assert.equal(removeDotInput({ ...unresolved, inputs: [{ ...unresolved.inputs[0], ignored: true }] }, "u").inputs.length, 0);
 });

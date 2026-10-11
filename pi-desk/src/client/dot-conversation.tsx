@@ -11,7 +11,7 @@ import { DotAgentAccess } from "./dot-agent-access.tsx";
 import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
-import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
+import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, removableDotInput, removeDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
 import { dotReadKey, markDotRead, mergeDotReadStates, readDotReadState, unreadDotMessages, type DotReadState } from "./dot-unread.ts";
 
 const empty: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
@@ -253,6 +253,15 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		: loaded && !supported ? "Update Desk" : view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
 	return { computers, id, online, view, loaded, supported, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: supported ? before ?? view.before : undefined, draft, pending, busy, error: error || pollError,
 		loadingHistory, receipt, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
+		/** Remove a message that was not sent; Edit puts its text back in the composer and keeps its files staged. */
+		remove(input: DotOutboxInput, edit = false) {
+			if (!removableDotInput(input)) return;
+			const files = (view.uploads ?? []).filter(file => input.files?.includes(file.id) && ["ready", "staging", "uploaded"].includes(file.state));
+			if (!commit(removeDotInput(outboxRef.current, input.id, edit))) return;
+			if (!edit) for (const file of files) void api(`/dot/uploads/${file.id}/discard`, {}, id)
+				.then(() => setView(previous => ({ ...previous, uploads: previous.uploads?.filter(item => item.id !== file.id) })))
+				.catch(error => setError(errorText(error)));
+		},
 		skip(input: DotOutboxInput) { amend(input.id, { ignored: true, ...(input.state === "queued" ? { state: "not-sent", error: "Cancelled before sending." } : {}) }); },
 		chooseComputer(value: string) { setChosen(value); localStorage.setItem("pi-desk:dot-computer", value); },
 	};
@@ -381,9 +390,14 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 					<div className={`dot-delivery ${input.state}`} role="status">
 						{input.state === "sending" && <span className="status-dot running" aria-hidden="true" />}
 						<span>{input.state === "queued" ? !dot.online ? "Queued · Offline" : view.paused ? "Queued · Dot paused" : "Queued" : input.state === "sending" ? "Sending…" : input.state === "accepted" ? "Sent" : input.state === "not-sent" ? "Not sent" : "Delivery needs confirmation"}</span>
+						{input.state === "not-sent" && <>
+							<button className="text-button" disabled={busy || !dot.supported || !view.connection} onClick={() => dot.retry(input)}>Retry</button>
+							<button className="text-button" title="Put this message back in the composer" onClick={() => dot.remove(input, true)}>Edit</button>
+							<button className="text-button" onClick={() => dot.remove(input)}>Remove</button></>}
+						{input.ignored && input.state === "unknown" && <button className="text-button" title="Stop tracking this attempt here. If it reached Dot, it still appears in the conversation."
+							onClick={() => dot.remove(input)}>Remove</button>}
 						{!input.ignored && <>
 							{input.state === "queued" && <button className="text-button" onClick={() => dot.skip(input)}>Cancel</button>}
-							{input.state === "not-sent" && <><button className="text-button" disabled={busy || !dot.supported || !view.connection} onClick={() => dot.retry(input)}>Retry</button><button className="text-button" onClick={() => dot.skip(input)}>Skip</button></>}
 							{input.state === "unknown" && <><button className="text-button" disabled={busy} onClick={() => void dot.check(input.id)}>Check delivery</button>
 								<ActionMenu label="Delivery options" disabled={busy || opening} actions={[...(ready && (!input.connection || input.connection === view.connection) ? [{ id: "review", label: "Review in Dot" }] : []),
 									{ id: "cancel", label: "Cancel unconfirmed attempt" }, { id: "continue", label: "Leave unresolved and continue queue" }]}
