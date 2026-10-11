@@ -16,12 +16,14 @@ export function protection(status: number, headers: { get(name: string): string 
 	const server = header("server"), text = body.slice(0, 64_000).toLowerCase();
 	if (header("cf-mitigated") === "challenge") return "Cloudflare challenge";
 	if (header("x-vercel-mitigated")) return "Vercel challenge";
-	if (header("x-amzn-waf-action") || /awswaf|aws-waf-token/.test(text)) return "AWS WAF challenge";
+	if (header("x-amzn-waf-action")) return "AWS WAF challenge";
+	// Protected sites include these scripts and headers on ordinary pages too; they only mean a block on a refusal.
+	if (status < 400 && status !== 202 || status === 404 || status === 410) return;
+	if (/awswaf|aws-waf-token/.test(text)) return "AWS WAF challenge";
 	if (header("x-datadome") || /captcha-delivery\.com/.test(text)) return "DataDome challenge";
 	if (/px-captcha|_pxhd|perimeterx/.test(text)) return "PerimeterX challenge";
 	if (header("x-iinfo") || /incapsula incident id|_incapsula_resource/.test(text)) return "Imperva block";
 	if (header("x-sucuri-id") || /sucuri website firewall/.test(text)) return "Sucuri block";
-	if (status < 400) return;
 	if (server.includes("cloudflare") && /just a moment|attention required|cf-chl|challenge-platform|cf-turnstile|cf_chl_opt|cf-error-details/.test(text)) return "Cloudflare challenge";
 	if (header("x-cache").includes("error from cloudfront") && /request blocked|request could not be satisfied/.test(text)) return "CloudFront block";
 	if (server.includes("akamaighost") || /errors\.edgesuite\.net|reference&#32;&#35;[0-9a-f.]+/.test(text)) return "Akamai block";

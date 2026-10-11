@@ -3,7 +3,11 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { challengeTitle, classify, htmlText, htmlTitle, networkDetail, softNotFound, type Outcome } from "./page-check.ts";
 
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+// Firewalls disagree: some refuse a full Chrome string from a client that is not Chrome, others refuse a bare one.
+const USER_AGENTS = ["Mozilla/5.0", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"];
+/** Chrome loads to one site are spaced so a batch cannot trip its rate limit on the user's own browser. */
+const BROWSER_SPACING_MS = 1500;
+const browserQueues = new Map<string, Promise<unknown>>();
 const BODY_LIMIT = 4 * 1024 * 1024;
 const BROWSER_WAIT_MS = 30_000;
 
@@ -32,10 +36,20 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
 }
 
 export async function scriptFetch(url: string, signal: AbortSignal): Promise<PageResult & { retry: boolean; body?: string }> {
+	let first: Awaited<ReturnType<typeof fetchAs>> | undefined;
+	for (const agent of USER_AGENTS) {
+		const result = await fetchAs(url, agent, signal);
+		if (result.outcome !== "blocked") return result;
+		first ??= result;
+	}
+	return first!;
+}
+
+async function fetchAs(url: string, agent: string, signal: AbortSignal): Promise<PageResult & { retry: boolean; body?: string }> {
 	const timeout = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
 	try {
 		const response = await fetch(url, { redirect: "follow", signal: timeout, headers: {
-			"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-AU,en;q=0.9",
+			"User-Agent": agent, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-AU,en;q=0.9",
 		} });
 		const type = response.headers.get("content-type") ?? "";
 		const textual = !type || /text\/|html|xml|json|javascript/.test(type);
@@ -164,7 +178,12 @@ async function settle(url: string, direct: Direct | undefined, includeText: bool
 	}
 	const script = direct && { status: direct.status, outcome: direct.outcome, protection: direct.protection, detail: direct.detail };
 	try {
-		const page = await browserLoad(url, includeText ? maxChars : 2000, signal);
+		const host = new URL(url).host, previous = browserQueues.get(host) ?? Promise.resolve();
+		const turn = previous.then(() => browserLoad(url, includeText ? maxChars : 2000, signal));
+		const spaced: Promise<unknown> = turn.catch(() => {}).then(() => delay(BROWSER_SPACING_MS, signal)).catch(() => {})
+			.finally(() => { if (browserQueues.get(host) === spaced) browserQueues.delete(host); });
+		browserQueues.set(host, spaced);
+		const page = await turn;
 		return { url, ...page, ...(includeText ? {} : { text: undefined, truncated: undefined }), ...(script ? { script } : {}) };
 	} catch (error) {
 		signal.throwIfAborted();
