@@ -53,6 +53,7 @@ import { Configuration } from "./configuration.tsx";
 import { ExternalLinks } from "./external-links.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { CompactionOverlay } from "./compaction-overlay.tsx";
+import { VersionBanner, VersionTag } from "./conversation-version.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -538,7 +539,7 @@ export function App({ account }: { account?: BrowserAccount }) {
 
   const host = state.host;
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
-    connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties }];
+    connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
@@ -619,7 +620,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><AgentWakeMarker agent={agent} /></span>
                   <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
-                    {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}`}>
+                    <VersionTag session={item} computer={computer} />
+                    {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
                       <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
                       <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</small></span>
               </button>
@@ -711,6 +713,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </button>}
         {session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
           stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
+        {session && <VersionBanner key={`${selected}:version`} session={session} computer={currentComputer ?? { name: host.name, release: host.release }} busy={busy || !connected} report={setError} />}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls.filter(control => control !== compactControl)} />}
         {session?.state === "ready" && extensionErrors.length > 0 && <div className="connection-banner" role="alert">
           <span>Pi could not load {extensionErrors.length === 1 ? "an extension" : "some extensions"}. Retry loading before sending messages. Your conversation is retained; this does not resend your last message.</span>

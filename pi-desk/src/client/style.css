@@ -469,6 +469,12 @@ details[open] > summary:before {
 .session-item .session-metadata { display:flex; align-items:center; gap:4px; }
 .session-metadata .session-activity, .session-metadata > [aria-hidden] { flex:none; }
 .session-metadata .session-folder { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.session-version { flex:none; margin-left:2px; padding:0 5px; border-radius:4px; background:color-mix(in srgb, #d08a2c 18%, transparent); color:#d08a2c; font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
+.version-banner { display:flex; align-items:center; gap:10px; margin:0 28px 10px; padding:9px 12px; border:1px solid color-mix(in srgb, #d08a2c 45%, var(--border)); border-radius:10px; background:color-mix(in srgb, #d08a2c 8%, var(--surface)); font-size:12px; }
+.version-banner > .ui-icon { flex:none; width:16px; height:16px; color:#d08a2c; }
+.version-banner > span { flex:1; min-width:0; }
+.version-banner > button { flex:none; white-space:nowrap; }
+@media (max-width: 760px) { .version-banner { margin:0 16px 10px; flex-wrap:wrap; } }
 .session-metadata .session-model { margin-left:auto; padding-left:6px; display:inline-flex; align-items:center; gap:4px; min-width:0; max-width:55%; flex:none; }
 .session-model > span:last-child { overflow:hidden; text-overflow:ellipsis; }
 .session-model .provider-icon { width:13px; height:13px; border-radius:0; background:none; color:inherit; }
