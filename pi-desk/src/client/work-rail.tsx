@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { UiAction, UiConversation, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import type { ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
-import { PlanView } from "./plan-view.tsx";
+import { PlanControls, PlanView } from "./plan-view.tsx";
 import { DetailsView } from "./details-view.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { ActionMenu } from "./action-menu.tsx";
@@ -42,14 +42,16 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, focus
 				const closed = collapsed.includes(view.id), locked = !connected || !!view.working;
 				const action = (item: UiAction, value?: UiValue) => invoke({ kind: "action", view: view.id, revision: view.revision, action: item.id, value });
 				return <section className="workspace-section" key={view.id} data-view={view.id}>
-					<button className="workspace-section-heading" aria-expanded={!closed} onClick={() => setCollapsed(current => closed ? current.filter(id => id !== view.id) : [...current, view.id])}>
-						<SectionIcon id={view.id} /><strong>{names[view.id] ?? view.title}</strong>
-						{view.id === "subagents" && <><span className={`status-dot ${agentState}`} title={activityLabel(agentState)} /><small>{inventory.current.length} current</small></>}
-						<span className={`party-chevron${closed ? "" : " expanded"}`} aria-hidden="true">›</span>
-					</button>
+					<div className="workspace-section-row">
+						<button className="workspace-section-heading" aria-expanded={!closed} onClick={() => setCollapsed(current => closed ? current.filter(id => id !== view.id) : [...current, view.id])}>
+							<SectionIcon id={view.id} /><strong>{names[view.id] ?? view.title}</strong>
+							{view.id === "subagents" && <><span className={`status-dot ${agentState}`} title={activityLabel(agentState)} /><small>{inventory.current.length} current</small></>}
+							<span className={`party-chevron${closed ? "" : " expanded"}`} aria-hidden="true">›</span>
+						</button>
+						{view.id === "plan" && view.kind === "details" && <PlanControls view={view} disabled={locked} invoke={action} expand={() => openView(view.id)} />}
+					</div>
 					{!closed && <div className="workspace-section-content">
-						{view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} disabled={locked}
-							invoke={action} expand={() => openView(view.id)} /> : <>
+						{view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} controls={false} disabled={locked} invoke={action} /> : <>
 							<WorkspaceActions view={view} invoke={action} disabled={locked} />
 							{view.working && <p className="muted" role="status">{view.working}…</p>}
 							{view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}

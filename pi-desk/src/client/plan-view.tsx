@@ -3,28 +3,42 @@ import type { ViewSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
 
-export function PlanView({ view, invoke, disabled, showHeading = true, expand }: {
-	view: ViewSnapshot; invoke: (action: UiAction) => void; disabled?: boolean; showHeading?: boolean; expand?: () => void;
-}) {
-	const data = view.data as UiDetails, items = data.items ?? [], actions = view.actions ?? [];
+function planParts(view: ViewSnapshot) {
+	const data = view.data as UiDetails, actions = view.actions ?? [];
 	const field = (label: string) => data.fields?.find(field => field.label === label)?.value;
-	const completed = items.filter(item => item.status === "completed").length;
 	const automatic = field("Continuation")?.startsWith("Automatic");
 	const primary = actions.find(action => action.id === "resume" || action.id === "complete")
 		?? (automatic ? actions.find(action => action.id === "pause") : undefined)
 		?? actions.find(action => action.id === "create");
-	const add = actions.find(action => action.id === "add"), edit = actions.find(action => action.id === "objective");
+	const add = actions.find(action => action.id === "add");
+	return { data, actions, field, automatic, primary, add };
+}
+
+/** Pause/resume, expand and the rest of the plan's actions, for a heading row rather than beside the objective. */
+export function PlanControls({ view, invoke, disabled, expand }: {
+	view: ViewSnapshot; invoke: (action: UiAction) => void; disabled?: boolean; expand?: () => void;
+}) {
+	const { actions, primary, add } = planParts(view), locked = disabled || !!view.working;
+	return <div className="plan-controls">
+		{primary && <button type="button" className="quiet-action" disabled={locked} onClick={() => invoke(primary)}>
+			<Icon name={primary.id === "pause" ? "pause" : primary.id === "resume" ? "play" : primary.id === "create" ? "plus" : "check"} />{primary.label}</button>}
+		{expand && <button type="button" className="icon-button" title="Expand plan" aria-label="Expand plan" onClick={expand}><Icon name="expand" /></button>}
+		<ActionMenu actions={actions.filter(action => action !== primary && action !== add)} invoke={invoke} disabled={locked} label="Plan actions" />
+	</div>;
+}
+
+export function PlanView({ view, invoke, disabled, showHeading = true, controls = true, expand }: {
+	view: ViewSnapshot; invoke: (action: UiAction) => void; disabled?: boolean; showHeading?: boolean;
+	/** False when the surrounding heading row shows PlanControls. */
+	controls?: boolean; expand?: () => void;
+}) {
+	const { data, field, automatic, add } = planParts(view), items = data.items ?? [];
+	const completed = items.filter(item => item.status === "completed").length;
 	const locked = disabled || !!view.working;
 	return <section className="plan-view" aria-label="Plan">
-		<header className={`plan-heading${showHeading ? "" : " compact"}`}>{showHeading && <span><Icon name="plan" /><strong>Plan</strong></span>}
-			<div>{expand && <button type="button" className="icon-button" title="Expand plan" aria-label="Expand plan" onClick={expand}><Icon name="expand" /></button>}
-				{primary && <button type="button" className="quiet-action" disabled={locked} onClick={() => invoke(primary)}>
-				<Icon name={primary.id === "pause" ? "pause" : primary.id === "resume" ? "play" : primary.id === "create" ? "plus" : "check"} />{primary.label}</button>}
-				<ActionMenu actions={actions.filter(action => action !== primary && action !== add && action !== edit)}
-					invoke={invoke} disabled={locked} label="Plan actions" /></div>
-		</header>
-		<div className="plan-objective"><p>{data.summary}</p>{edit && <button className="icon-button" title="Edit objective" aria-label="Edit objective"
-			disabled={locked} onClick={() => invoke(edit)}><Icon name="edit" /></button>}</div>
+		{(showHeading || controls) && <header className="plan-heading">{showHeading ? <span><Icon name="plan" /><strong>Plan</strong></span> : <span />}
+			{controls && <PlanControls view={view} invoke={invoke} disabled={disabled} expand={expand} />}</header>}
+		<div className="plan-objective"><p>{data.summary}</p></div>
 		{view.actionError && <p role="alert" className="error-text">{view.actionError}</p>}
 		{items.length > 0 && <div className="plan-progress">
 			<div><span>{completed} of {items.length} complete</span><span className="plan-phase">{field("State")}</span></div>

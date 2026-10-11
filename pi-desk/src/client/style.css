@@ -2012,14 +2012,17 @@ details[open] > summary:before {
 .workspace-peer-details small { display:block; color:var(--muted); font-size:10px; line-height:1.5; margin-top:3px; overflow-wrap:anywhere; }
 .workspace-peer-status { opacity:.85; }
 .workspace-peer-details .detail-copy { font-size:11px; line-height:1.6; margin:8px 0; }
-.work-rail .plan-heading.compact { margin-top:0; }
 .work-rail-heading .icon-button { width:28px; height:28px; }
 .work-rail-empty { padding:30px 12px; text-align:center; color:var(--muted); font-size:13px; }
 .work-rail-empty .ui-icon { width:24px; height:24px; }
 .plan-heading, .plan-heading > span, .plan-heading > div { display:flex; align-items:center; gap:8px; }
 .plan-heading { justify-content:space-between; gap:12px; margin-bottom:16px; }
 .plan-view { display:flow-root; }
-.plan-heading.compact { float:right; margin:0 0 6px 10px; }
+.plan-controls { display:flex; align-items:center; gap:2px; flex:none; }
+.plan-controls .icon-button { width:28px; height:28px; }
+.plan-controls .quiet-action { padding:5px 8px; }
+.workspace-section-row { display:flex; align-items:center; gap:6px; min-width:0; }
+.workspace-section-row > .workspace-section-heading { flex:1; min-width:0; }
 .plan-heading > span > .ui-icon { color:var(--accent); }
 .plan-heading strong { font-size:15px; font-weight:600; }
 .plan-objective { display:flex; align-items:flex-start; gap:6px; margin-bottom:14px; }
