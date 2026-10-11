@@ -298,13 +298,16 @@ export async function executeWebSearch(
 			const response = parseSearchResponse(text);
 			results = response.results;
 			sections.push(response.output);
-			// Codex reports bot-protected and missing pages alike; fetch them here to tell which.
-			const refused = [...new Set([...response.output.matchAll(NOT_ACCESSIBLE)].map(match => match[1]!.replace(/[.,;]+$/, "")))]
+			// Codex reports bot-protected and missing pages alike, and can skip opens batched with a search.
+			// Fetch those here so the outcome is known.
+			const skipped = (commands.open ?? []).map(item => item.ref_id)
+				.filter(ref => /^https?:\/\//.test(ref) && !response.output.includes(`"ref_id":${JSON.stringify(ref)}`));
+			const refused = [...new Set([...[...response.output.matchAll(NOT_ACCESSIBLE)].map(match => match[1]!.replace(/[.,;]+$/, "")), ...skipped])]
 				.filter(url => /^https?:\/\//.test(url));
 			if (refused.length) {
 				const fetched = await fetchPages(refused, { text: true, maxChars: 12_000 }, abort);
 				pages.push(...fetched);
-				sections.push(`Codex search could not open ${refused.length === 1 ? "this page" : "these pages"}, so ${refused.length === 1 ? "it was" : "they were"} fetched directly:\n\n${fetched.map(pageSection).join(SEPARATOR)}`);
+				sections.push(`Codex search did not open ${refused.length === 1 ? "this page" : "these pages"}, so ${refused.length === 1 ? "it was" : "they were"} fetched directly:\n\n${fetched.map(pageSection).join(SEPARATOR)}`);
 			}
 		} else {
 			const urls = (commands.open ?? []).map(item => item.ref_id).filter(ref => /^https?:\/\//.test(ref));
