@@ -34,7 +34,10 @@ test("closed tool output and thinking do not build their hidden Markdown bodies"
 	tool.toolName = "bash"; tool.toolCallId = "call";
 	const thought = message("thought", "assistant", [{ type: "thinking", text: "HIDDEN_THINKING_BODY ".repeat(1000) }]);
 	assert.doesNotMatch(render({ message: tool }), /HIDDEN_TOOL_BODY/);
-	assert.doesNotMatch(render({ message: thought }), /HIDDEN_THINKING_BODY/);
+	// A closed pill shows one bounded line of the summary as its preview, not the rendered body.
+	const closed = render({ message: thought });
+	assert.doesNotMatch(closed, /thinking-output|class="markdown"/);
+	assert.ok((closed.match(/HIDDEN_THINKING_BODY/g) ?? []).length <= 12, "the preview is one short line");
 	assert.match(render({ message: tool }, new Map([["tool:call", true]])), /HIDDEN_TOOL_BODY/);
 	assert.match(render({ message: thought }, new Map([["thinking:thought:0", true]])), /HIDDEN_THINKING_BODY/);
 });
