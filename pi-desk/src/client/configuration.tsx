@@ -39,7 +39,7 @@ export function Configuration({ view, disabled, invoke }: {
 	const rows = [...data.documents.map(file => ({ file })), ...data.settings.map(field => ({ field }))];
 	const offset = data.offset;
 	return <div className="configuration-browser">
-		<header className="configuration-heading"><div><h3>Pi settings & resources</h3><p className="muted">This conversation’s settings and files on its computer.</p></div>
+		<header className="configuration-heading"><div><p className="muted">Pi's settings, instructions, skills, prompts and extensions on this computer, as this conversation sees them.</p></div>
 			<button className="icon-button" title="Refresh settings and resource inventory" aria-label="Refresh settings and resource inventory" disabled={disabled} onClick={() => { attempted.current = undefined; action(data.selected ? "reopen" : "browse"); }}><Icon name="refresh" /></button></header>
 		{view.working && <p className="muted" role="status">{view.working}…</p>}
 		{view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}

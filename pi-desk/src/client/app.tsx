@@ -22,7 +22,7 @@ import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
 import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
-import { SettingsLayout, SettingsContent, settingsSections } from "./settings.tsx";
+import { SettingsLayout, SettingsContent, settingsGroups, settingsSections, MERGED_VIEWS } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ComposerStatus } from "./composer-status.tsx";
@@ -62,6 +62,7 @@ import type {
   HistoryPage,
   InteractionSnapshot,
   SessionView,
+  ViewSnapshot,
   WorkerCommand,
 } from "../shared/protocol.ts";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
@@ -213,7 +214,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };
   const commandHandlers: DeskCommandHandlers = {
     settings: { description: "Open Settings; optionally choose a section.", execute: args => {
-      const section = args || "general";
+      const section = args || (session ? "conversation" : "general");
       if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
       setSettingsSection(section); setPanel("settings");
     } },
@@ -287,6 +288,46 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, selected]);
   const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
+  /** One workspace or settings view as a card; settings pages reuse it to group related views. */
+  const viewCard = (view: ViewSnapshot) => (
+                <section className="panel-card" key={view.id} data-view={view.id}>
+                  {view.kind === "configuration" ? <Configuration key={`${selected}:${ui?.generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
+                    invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
+                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
+                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
+                  <div className="panel-section-heading">
+                  {panel !== "view" && <h3><SectionIcon id={view.id} />{view.title}</h3>}
+                  <WorkspaceActions view={view} disabled={!!view.working || !connected}
+                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
+                  </div>
+                  {view.working && <p className="muted" role="status">{view.working}…</p>}
+                  {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
+                  {view.kind === "details" ? <>
+                    <DetailsView data={view.id === "subagents" ? { ...view.data as UiDetails, items: [] } : view.data as UiDetails}
+                      disabled={!!view.working || !connected} invoke={(action, value) => run({
+                        kind: "action", view: view.id, revision: view.revision, action: action.id, value,
+                      })} />
+                    {view.id === "subagents" && <button onClick={() => openAgentPane(undefined, true)}>Browse agents and history →</button>}
+                    {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
+                      source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
+                      connected={connected} epoch={epoch}
+                      messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
+                      onLatest={storeHistory} renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
+                  </> : view.kind === "ledger" ? <div>
+                    <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
+                    {(view.data as { ledger?: Ledger }).ledger
+                      ? <LedgerCard ledger={(view.data as { ledger: Ledger }).ledger} expanded />
+                      : <p>No saved breakdown. Recompute one, or start a conversation.</p>}
+                  </div> : (
+                    <pre>
+                      {typeof view.data === "string"
+                        ? view.data
+                        : JSON.stringify(view.data, null, 2)}
+                    </pre>
+                  )}
+                  </>}
+                </section>
+  );
   const contextFrom = session?.snapshot?.contextFrom, compactControl = controls.find(control => control.kind === "compact" && control.state === "running");
   // Workers before 0.5.42 report only manual compaction, as a running control.
   const compacting = session?.snapshot?.compacting ?? (compactControl ? { reason: "manual" as const, started: compactControl.started } : undefined);
@@ -638,11 +679,12 @@ export function App({ account }: { account?: BrowserAccount }) {
         <div className="sidebar-bottom">
           <button
             onClick={() => {
+              setSettingsSection("general");
               setPanel("settings");
               setSidebar(false);
             }}
           >
-            ⚙ <span>Settings & tools</span>
+            <Icon name="settings" /><span>Settings</span>
           </button>
           <div className="host-label" title="Connections from this browser">
             <span
@@ -674,23 +716,21 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            <button type="button" className="icon-button" title="Workspace" aria-label="Workspace" aria-pressed={showWorkRail || panel === "workspace"}
+            {(() => {
+              const shown = showWorkRail || panel === "workspace";
+              return <button type="button" className="icon-button" title={shown ? "Hide plan, agents and messages" : "Show plan, agents and messages"}
+                aria-label="Work panel" aria-pressed={shown}
+                onClick={() => {
+                  if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-visible", String(visible)); setPanel(undefined); }
+                  else setPanel(panel === "workspace" ? undefined : "workspace");
+                }}><Icon name="panel-right" /></button>;
+            })()}
+            <button type="button" className="icon-button" title="Conversation settings" aria-label="Conversation settings" aria-pressed={settings}
               onClick={() => {
-                if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-visible", String(visible)); setPanel(undefined); }
-                else setPanel(panel === "workspace" ? undefined : "workspace");
-              }}><Icon name="layers" /></button>
-            <button type="button" className="icon-button" title="Opening context" aria-label="Opening context"
-              disabled={session?.state !== "ready"} aria-pressed={panel === "settings" && settingsSection === "context"}
-              onClick={() => { setSettingsSection("context"); setPanel("settings"); }}><Icon name="context" /></button>
-            <button
-              className="icon-button"
-              aria-label="Conversation settings"
-              onClick={() =>
-                setPanel(panel === "settings" ? undefined : "settings")
-              }
-            >
-              <Icon name="more" />
-            </button>
+                if (settings) { setPanel(undefined); return; }
+                if (session && !["conversation", "context", "tools", "activity"].includes(settingsSection)) setSettingsSection("conversation");
+                setPanel("settings");
+              }}><Icon name="settings" /></button>
             {session?.activation && <CloseConversationButton icon session={session} name={title(session)}
               computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
               confirmed={() => setPanel(undefined)} />}
@@ -909,9 +949,10 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>
           </div>
           <SettingsLayout enabled={settings} active={panel === "view" ? focusedView : settingsSection}
-            sections={[...settingsSections.slice(0, 2), ...settingsViews.map(view => ({ id: view.id, title: view.title })), ...settingsSections.slice(2)]}
+            groups={settingsGroups({ session: session ? title(session) : undefined, computer: currentComputer?.name ?? host.name,
+              views: settingsViews.map(view => ({ id: view.id, title: view.title })) })}
             choose={id => {
-              if (settingsViews.some(view => view.id === id)) { setFocusedView(id); setPanel("view"); }
+              if (settingsViews.some(view => view.id === id && !MERGED_VIEWS.has(view.id))) { setFocusedView(id); setPanel("view"); }
               else { setSettingsSection(id); setPanel("settings"); }
             }}>
           {settings && settingsForms.map(interaction => <SettingsForm key={`${selected}/${interaction.id}`} interaction={interaction}
@@ -929,45 +970,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {panel === "view" &&
             (visibleViews.length ? (
-              visibleViews.map((view) => (
-                <section className="panel-card" key={view.id} data-view={view.id}>
-                  {view.kind === "configuration" ? <Configuration key={`${selected}:${ui?.generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
-                    invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
-                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
-                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
-                  <div className="panel-section-heading">
-                  {(panel !== "view" || settings) && <h3><SectionIcon id={view.id} />{view.title}</h3>}
-                  <WorkspaceActions view={view} disabled={!!view.working || !connected}
-                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
-                  </div>
-                  {view.working && <p className="muted" role="status">{view.working}…</p>}
-                  {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
-                  {view.kind === "details" ? <>
-                    <DetailsView data={view.id === "subagents" ? { ...view.data as UiDetails, items: [] } : view.data as UiDetails}
-                      disabled={!!view.working || !connected} invoke={(action, value) => run({
-                        kind: "action", view: view.id, revision: view.revision, action: action.id, value,
-                      })} />
-                    {view.id === "subagents" && <button onClick={() => openAgentPane(undefined, true)}>Browse agents and history →</button>}
-                    {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
-                      source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
-                      connected={connected} epoch={epoch}
-                      messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
-                      onLatest={storeHistory} renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
-                  </> : view.kind === "ledger" ? <div>
-                    <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
-                    {(view.data as { ledger?: Ledger }).ledger
-                      ? <LedgerCard ledger={(view.data as { ledger: Ledger }).ledger} expanded />
-                      : <p>No saved breakdown. Recompute one, or start a conversation.</p>}
-                  </div> : (
-                    <pre>
-                      {typeof view.data === "string"
-                        ? view.data
-                        : JSON.stringify(view.data, null, 2)}
-                    </pre>
-                  )}
-                  </>}
-                </section>
-              ))
+              visibleViews.map(view => viewCard(view))
             ) : (
               <p className="muted">
                 {panel === "view" ? "This view is unavailable. Reopen it from this session's controls."
@@ -975,6 +978,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               </p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
+            renderView={id => { const view = ui?.views.find(item => item.id === id && !item.scope); return view ? viewCard(view) : null; }}
             session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy} providerHint={providerHint}
             invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}

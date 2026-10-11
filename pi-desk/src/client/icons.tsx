@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 const paths: Record<string, ReactNode> = {
-	settings: <><path d="m9 3-1 3-3 1v4l3 1 1 3h4l1-3 3-1V7l-3-1-1-3Z" transform="translate(1 3)" /><circle cx="12" cy="12" r="3" /></>,
+	// Lucide "settings" (ISC licence).
+	settings: <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></>,
 	chat: <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3V6a2 2 0 0 1 1-2Z" />,
 	folder: <path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />,
 	download: <><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" /></>,
@@ -18,6 +19,7 @@ const paths: Record<string, ReactNode> = {
 	usage: <><path d="M12 3v9h9A9 9 0 1 1 12 3Z" /><path d="M16 3a7 7 0 0 1 5 5h-5Z" /></>,
 	code: <><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-11-2 14" /></>,
 	sliders: <><path d="M4 7h4m4 0h8M4 17h8m4 0h4" /><circle cx="10" cy="7" r="2" /><circle cx="14" cy="17" r="2" /></>,
+	"panel-right": <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /><path d="M17.5 8h1M17.5 11h1" /></>,
 	layers: <><path d="m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 4 9-4" /></>,
 	context: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M8 5v14m5-8h4m-4 4h4" /></>,
 	globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>,
@@ -48,7 +50,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 		fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name] ?? paths.settings}</svg>;
 }
 const sections: Record<string, string> = {
-	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity",
+	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity", availability: "clock",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
 	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", plan: "plan", "pi-party": "chat", messages: "chat", subagents: "layers",
 };

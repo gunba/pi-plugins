@@ -93,7 +93,7 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 	const idle = session?.state === "ready" && session.snapshot?.activity !== "running" && session.snapshot?.activity !== "waiting"
 		&& !session.snapshot?.queue.steering.count && !session.snapshot?.queue.followUp.count;
 	return <>
-		<section className="panel-card"><h3><Icon name="account" />Model accounts</h3>
+		<section className="panel-card"><h3><Icon name="account" />Saved accounts</h3>
 			<label className="setting-control">Provider<select aria-label="Model account provider" value={providerId} disabled={working}
 				onChange={event => { setProvider(event.target.value); setMethod("oauth"); }}>
 				{!provider && <option value={providerId}>{providerName}</option>}
