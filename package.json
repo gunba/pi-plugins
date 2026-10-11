@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.29.27",
+  "version": "0.29.28",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -29,7 +29,7 @@
       "./pi-local-links/extensions/local-links.ts",
       "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
-    "./pi-browser/extensions/web-fetch.ts",
+      "./pi-browser/extensions/web-fetch.ts",
       "./pi-ask-user/index.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
