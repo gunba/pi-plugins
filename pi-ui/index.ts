@@ -48,7 +48,9 @@ export interface UiView {
 	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
 	badges?: { label: string; value: string; description?: string; compact?: boolean;
 		/** Action ID of a published toggle control for direct interaction. */
-		control?: string }[];
+		control?: string;
+		/** A remaining amount hosts may draw as a gauge, with value as its text alternative. */
+		meter?: { value: number; max: number; resetsAt?: number } }[];
 	/** Model capacity and the selected working window, in tokens. */
 	context?: { capacity: number; limit: number };
 	actions?: UiAction[];

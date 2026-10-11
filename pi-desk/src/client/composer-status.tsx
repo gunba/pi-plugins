@@ -31,6 +31,24 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		{capacity && limit ? <><ContextMeter capacity={capacity} limit={limit} used={context?.tokens} />
 			<span>{context?.tokens == null ? "—" : tokens(context.tokens)} / {tokens(limit)}</span></> : "Context not measured"}
 	</button>;
+	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
+	const gauge = (badge: typeof badges[number]) => {
+		if (badge.meter) return badge.meter;
+		const left = /^(\d{1,3})% left/.exec(badge.value);
+		return left ? { value: Number(left[1]), max: 100, resetsAt: undefined } : undefined;
+	};
+	const usageBadge = (badge: typeof badges[number], index: number) => {
+		const meter = gauge(badge)!, percent = Math.max(0, Math.min(100, meter.value / Math.max(1, meter.max) * 100));
+		const reset = meter.resetsAt ? new Date(meter.resetsAt) : undefined;
+		const resetText = reset ? ` · resets ${reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+			: reset.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : (/· (resets in .+)$/.exec(badge.value)?.[1] ? ` · ${/· (resets in .+)$/.exec(badge.value)![1]}` : "");
+		return <span className={`usage-gauge${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
+			title={`${badge.label === "Weekly" ? "Weekly" : `${badge.label}`} allowance: ${Math.round(percent)}% left${resetText}${badge.description ? `\n${badge.description}` : ""}`}>
+			<span className="usage-gauge-label">{badge.label === "Weekly" ? "Week" : badge.label}</span>
+			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
+			<span className="usage-gauge-value">{Math.round(percent)}%</span>
+		</span>;
+	};
 	const badgeControl = (badge: typeof badges[number], index: number) => {
 		const control = badge.view.kind === "details" ? (badge.view.data as UiDetails | null)?.controls?.find(item => item.action.id === badge.control) : undefined;
 		const key = `${badge.view.id}/${index}`, locked = disabled || !connected || pending || !!badge.view.working || control?.disabled;
@@ -47,7 +65,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	};
 	return <div className="composer-status">
 		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
-			<div className="composer-facts-inline">{badges.filter(badge => !badge.control).map(badgeControl)}</div>
+			<div className="composer-facts-inline">{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
 			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
 		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}

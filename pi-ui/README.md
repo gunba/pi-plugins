@@ -22,13 +22,15 @@ The controller remains the state owner. Views contain plain data; action,
 interaction and transcript callbacks stay in the host. This module has no
 browser or terminal dependency at runtime.
 
-Views may include `badges: [{ label, value, description?, compact?, control? }]`
+Views may include `badges: [{ label, value, description?, compact?, control?, meter? }]`
 for compact facts beside the conversation. The publishing controller owns their
 meaning and updates. Desk shows root badges in its footer; child-scope badges
 do not describe the parent session. `compact: true` keeps a badge visible on
 mobile. `control` is the action ID of a toggle in that view's `data.controls`;
 clicking the badge invokes the same control directly, with the next boolean
 value and the normal view revision/action lock. Other badges are read-only.
+`meter: { value, max, resetsAt? }` marks a remaining amount, such as an
+allowance, that hosts may draw as a gauge; `value` stays its text form.
 Badges are not a parsing contract for terminal status strings.
 
 ## Settings and resources

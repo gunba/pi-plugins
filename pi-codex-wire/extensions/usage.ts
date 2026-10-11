@@ -437,6 +437,7 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
       return [{
         label: window.label === "7d" ? "Weekly" : window.label,
         value: `${100 - window.usedPercent}% left${reset ? ` · resets in ${reset}` : ""}`,
+        meter: { value: 100 - window.usedPercent, max: 100, ...(window.resetAtMs ? { resetsAt: window.resetAtMs } : {}) },
         description: `Reported ${SOURCE_LABELS[source]} allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}${window.resetAtMs ? ` · resets ${new Date(window.resetAtMs).toLocaleString()}` : " · reset time unknown"}`,
       }];
     }) : [],
