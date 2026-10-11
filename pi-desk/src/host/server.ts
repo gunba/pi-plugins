@@ -697,11 +697,12 @@ export class DeskHost {
 			const managed = await this.waitForSession(key), worker = managed.worker!;
 			this.partyOperations!.validate(store, computer, request);
 			await worker.command({ kind: "name", name: request.label });
+			const setup = await this.applyAgentModel(managed, request);
 			this.partyOperations!.validate(store, computer, request);
 			this.inputs!.admit(key, { id: request.id, activation: managed.view.activation!, generation: worker.generation,
 				command: { kind: "prompt", text: request.task, behavior: "followUp" } });
 			this.inputEvent(managed); this.drainInputs(managed); this.refreshParties(); this.partyNetwork?.flush();
-			return { session: managed.view.agentId!, state: "queued", key };
+			return { session: managed.view.agentId!, state: "queued", key, ...setup };
 		} catch (error) {
 			const managed = this.sessions.get(key);
 			if (managed?.worker) {
@@ -711,6 +712,29 @@ export class DeskHost {
 			}
 			throw error;
 		}
+	}
+
+	/** Set a new agent's requested model and reasoning before its task is admitted. */
+	private async applyAgentModel(managed: ManagedSession, request: PartyOperation): Promise<{ model?: string; reasoning?: string }> {
+		const worker = managed.worker!, applied: { model?: string; reasoning?: string } = {};
+		if (request.model) {
+			const models = managed.view.snapshot?.models ?? [];
+			const matches = models.filter(model => `${model.provider}/${model.id}` === request.model || model.id === request.model);
+			const listed = () => models.slice(0, 60).map(model => `${model.provider}/${model.id}`).join(", ");
+			if (!matches.length) throw Error(`Model ${request.model} is not available on this computer. Available: ${listed() || "none"}.`);
+			if (matches.length > 1) throw Error(`Model ${request.model} is ambiguous. Use one of: ${matches.map(model => `${model.provider}/${model.id}`).join(", ")}.`);
+			await worker.command({ kind: "model", provider: matches[0]!.provider, id: matches[0]!.id });
+			applied.model = `${matches[0]!.provider}/${matches[0]!.id}`;
+		}
+		if (request.reasoning) {
+			try { await worker.command({ kind: "thinking", level: request.reasoning }); }
+			catch (error) {
+				const levels = (await worker.command({ kind: "snapshot" }) as { thinkingLevels?: string[] }).thinkingLevels;
+				throw Error(`${error instanceof Error ? error.message : String(error)}${levels?.length ? ` Available: ${levels.join(", ")}.` : ""}`);
+			}
+			applied.reasoning = request.reasoning;
+		}
+		return applied;
 	}
 
 	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, checkpoint?: string, adopt?: string): string {

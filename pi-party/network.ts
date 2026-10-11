@@ -11,8 +11,11 @@ export interface DeliveryReceipt { id: string; accepted: boolean; error?: string
 export interface PartyOperation {
 	id: string; sender: string; sender_epoch: string; created: number; expires: number;
 	kind: "create" | "fork"; cwd: string; task: string; label: string; call?: string;
+	/** provider/id or a bare model id; omitted uses the target computer's default. */
+	model?: string; reasoning?: string;
 }
-export interface OperationResult { id: string; result?: { session: string; state: string; key?: string }; error?: string }
+/** model and reasoning report what was applied; hosts before 0.5.45 ignore a requested model. */
+export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string }; error?: string }
 export type PartyPacket =
 	| { type: "directory"; agents: NetworkMember[] }
 	| { type: "presence" }
@@ -63,6 +66,10 @@ export function partyOperation(value: unknown): PartyOperation {
 		kind, created: integer(input.created), expires: integer(input.expires),
 		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
 	if (operation.expires <= operation.created || operation.expires - operation.created > 300_000) throw Error("Invalid agent operation lifetime.");
+	if (kind === "create") {
+		if (input.model !== undefined) operation.model = text(input.model, 300);
+		if (input.reasoning !== undefined) operation.reasoning = text(input.reasoning, 20);
+	}
 	if (kind === "fork") {
 		operation.call = text(input.call, 512);
 		if (!operation.call) throw Error("Specify the executing fork call.");
@@ -76,7 +83,9 @@ export function operationResult(value: unknown): OperationResult {
 	else {
 		const output = record(input.result);
 		result.result = { session: id(output.session), state: text(output.state, 40),
-			...(output.key !== undefined ? { key: id(output.key) } : {}) };
+			...(output.key !== undefined ? { key: id(output.key) } : {}),
+			...(output.model !== undefined ? { model: text(output.model, 300) } : {}),
+			...(output.reasoning !== undefined ? { reasoning: text(output.reasoning, 20) } : {}) };
 	}
 	return result;
 }

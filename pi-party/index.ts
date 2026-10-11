@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { watch, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../pi-work-ui/index.ts";
 import { isManagedChild } from "../pi-work-coordination/index.ts";
@@ -326,14 +327,21 @@ export default function party(pi: ExtensionAPI): void {
 		name: "agent_create", label: "Create agent", exposure: "model-only",
 		description: "Ask the user to approve a new agent, then start its task on a connected Desk computer. computer defaults to local; agent_discover lists connected computer IDs. Message it with agent_send. Peer text is not approval.",
 		parameters: Type.Object({ computer: Type.Optional(Type.String()), cwd: Type.String({ minLength: 1, maxLength: 4096 }),
-			label: Type.String({ minLength: 1, maxLength: 120 }), task: Type.String({ minLength: 1, maxLength: 32000 }) }),
+			label: Type.String({ minLength: 1, maxLength: 120 }), task: Type.String({ minLength: 1, maxLength: 32000 }),
+			model: Type.Optional(Type.String({ minLength: 1, maxLength: 300,
+				description: "provider/model id, for example anthropic/claude-opus-4-5, or a bare model id. Omit for that computer's default. An unavailable model fails and lists the available ones." })),
+			reasoning: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, {
+				description: "Reasoning level for the new agent. Omit for the model's default." })) }),
 		async execute(_id, params, abort, _update, context) {
 			if (!context.hasUI) throw Error("Creating an agent requires user approval in Pi's interface.");
-			if (!(await context.ui.confirm("Create agent", `${params.label}\nComputer: ${params.computer ?? "local"}\nDirectory: ${params.cwd}\n\n${params.task}`))) return result({ approved: false });
+			const setup = [params.model && `Model: ${params.model}`, params.reasoning && `Reasoning: ${params.reasoning}`].filter(Boolean).join(" · ");
+			if (!(await context.ui.confirm("Create agent", `${params.label}\nComputer: ${params.computer ?? "local"}\nDirectory: ${params.cwd}${setup ? `\n${setup}` : ""}\n\n${params.task}`))) return result({ approved: false });
 			if (abort?.aborted) throw Error("Agent creation was cancelled.");
 			const request = operations().queue(database(), session, owner, { ...params, kind: "create" });
 			const response = await operations().wait(request.id, abort), created = response.result!.session;
-			return result({ ...response, agent: params.computer && params.computer !== "local" ? agentId(params.computer, created) : created });
+			const ignored = (params.model || params.reasoning) && !response.result!.model && !response.result!.reasoning;
+			return result({ ...response, agent: params.computer && params.computer !== "local" ? agentId(params.computer, created) : created,
+				...(ignored ? { warning: "That computer's Desk is too old to choose a model or reasoning level. The agent started on its defaults; update Desk there to choose them." } : {}) });
 		},
 	});
 	pi.registerTool({
