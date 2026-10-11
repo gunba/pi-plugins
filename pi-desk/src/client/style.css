@@ -1303,7 +1303,8 @@ details[open] > summary:before {
 }
 .command-usage { padding:8px 10px; font-size:11px; line-height:1.4; color:var(--muted); max-height:72px; overflow:auto; overflow-wrap:anywhere; }
 .command-usage strong { color:var(--text); }
-.modal::backdrop { backdrop-filter:blur(3px); }
+/* No backdrop-filter: blurring the whole window behind animated content is recomputed every frame and can stall Linux desktops. */
+.modal::backdrop { background:#0b0b108c; }
 .modal .panel-title {
   margin-bottom: 18px;
 }
@@ -2161,7 +2162,7 @@ details[open] > summary:before {
 .context-start { display:flex; align-items:center; gap:10px; margin:4px 0 16px; color:var(--accent); font-size:11px; }
 .context-start::before, .context-start::after { content:""; flex:1; border-top:1px dashed var(--accent); opacity:.5; }
 .compaction-overlay { position:absolute; inset:82px 0 0 0; z-index:20; display:grid; place-items:center; padding:24px;
-  background:color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter:blur(6px); animation:compaction-in .2s ease-out; }
+  background:color-mix(in srgb, var(--bg) 94%, transparent); animation:compaction-in .2s ease-out; }
 @media (max-width: 760px) { .compaction-overlay { inset-block-start:68px; } }
 @keyframes compaction-in { from { opacity:0; } }
 .compaction-panel { width:min(440px, 100%); padding:30px 30px 24px; border:1px solid var(--border); border-radius:16px; background:var(--surface);
