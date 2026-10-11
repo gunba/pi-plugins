@@ -2241,8 +2241,14 @@ details[open] > summary:before {
 .branch-actions { display:flex; gap:6px; flex:none; }
 .branch-actions button { padding:5px 9px; font-size:12px; }
 @media (max-width: 760px) { .branch-points li { flex-wrap:wrap; } .branch-actions { flex-wrap:wrap; } }
-.new-model-fields { display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:12px; margin-top:4px; }
-.new-model-fields select { width:100%; margin:8px 0 14px; }
+.new-model-fields { display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:12px; margin:4px 0 14px; }
+.new-model-field { display:grid; gap:8px; min-width:0; }
+.new-model-field .model-picker-group { max-width:none; }
+.new-model-field .model-picker, .field-picker { display:flex; align-items:center; gap:8px; width:100%; max-width:none; min-height:42px; padding:6px 12px;
+  border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font-size:14px; font-weight:500; text-align:left; }
+.new-model-field .model-picker > span:not(.provider-icon), .field-picker > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.new-model-field .model-picker:hover, .field-picker:hover { border-color:var(--focus-border); background:var(--surface); }
+.field-picker .model-picker-chevron { width:14px; height:14px; flex:none; color:var(--muted); }
 @media (max-width: 560px) { .new-model-fields { grid-template-columns:1fr; } }
 .automatic-updates { margin:6px 0 4px; }
 .outdated-conversations { display:grid; gap:8px; justify-items:start; margin:12px 0; padding:12px 0; border-top:1px solid var(--border); }

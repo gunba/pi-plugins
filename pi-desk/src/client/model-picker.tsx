@@ -13,7 +13,8 @@ const providerNames: Record<string, string> = {
 };
 export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "accounts" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
-	accounts: (provider: string) => void; history: () => void;
+	/** Omitted where account and history links do not apply, such as a conversation not yet created. */
+	accounts?: (provider: string) => void; history?: () => void;
 }) {
 	const [query, setQuery] = useState(""), [active, setActive] = useState("");
 	const selected = snapshot.model, constraint = snapshot.modelSwitchConstraint;
@@ -103,9 +104,9 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 			</div>
 			<div className="model-menu-footer">
 				<div className="model-menu-account"><span title={selected ? `${label} · ${accountName(selected)}` : undefined}>{label}{selected && ` · ${accountName(selected)}`}</span>
-					<button type="button" disabled={!selected} onClick={() => { close(); accounts(provider); }}>Accounts</button></div>
+					{accounts && <button type="button" disabled={!selected} onClick={() => { close(); accounts(provider); }}>Accounts</button>}</div>
 				{!contextAware && selected && snapshot.models.some(model => model.provider !== provider) && <p>Restart this conversation when idle to switch providers. Current work can keep running.</p>}
-				{constraint && <p>{constraint.portable ? "Encrypted Codex context needs a summary before switching providers. Choose a model when idle to continue." : constraint.reason} <button type="button" onClick={() => { close(); history(); }}>History</button></p>}
+				{constraint && <p>{constraint.portable ? "Encrypted Codex context needs a summary before switching providers. Choose a model when idle to continue." : constraint.reason} {history && <button type="button" onClick={() => { close(); history(); }}>History</button>}</p>}
 			</div></>}
 		</div>
 		{confirmation.dialog}
