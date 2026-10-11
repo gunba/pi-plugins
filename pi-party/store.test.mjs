@@ -64,6 +64,24 @@ test("owner leases fence duplicate processes and preserve inbox across reconnect
 	assert.equal(a.member("second").owner, "replacement");
 });
 
+test("a conversation Desk restarts re-registers while marked restarting and receives messages sent meanwhile", t => {
+	const { a, b } = fixture(t);
+	a.register("sender", "s", "Sender");
+	b.register("target", "old", "Target");
+	b.release("target", "old");
+	const owner = a.restarting("target");
+	assert.equal(owner, "old");
+	assert.equal(a.member("target").state, "restarting");
+	const sent = a.send("sender", "s", "target", "While restarting", true);
+	// The host keeps the mark fresh, which must not fence out the replacement process.
+	a.restarting("target", owner);
+	b.register("target", "new", "Target");
+	assert.equal(b.member("target").state, "idle");
+	assert.equal(b.pending("target", "new")[0].id, sent.id);
+	a.restarting("target", owner);
+	assert.equal(b.member("target").state, "idle", "a stale keep-alive does not mark the new process restarting");
+});
+
 test("automatic wake budget is bounded across database connections and reconnects", t => {
 	const { a, b } = fixture(t);
 	a.register("first", "owner", "First");

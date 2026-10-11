@@ -210,7 +210,9 @@ export class PartyStore {
 	register(session: string, owner: string, label: string, cwd = "", kind = "session", file?: string): Member {
 		return this.tx(() => {
 			const old = this.member(session);
-			if (old && old.owner !== owner && old.heartbeat > this.now() - LEASE_MS) throw Error("This session is already connected from another Pi process.");
+			// A conversation Desk is restarting has released its old process; its replacement takes the registration over.
+			if (old && old.owner !== owner && old.heartbeat > this.now() - LEASE_MS && old.state !== "restarting")
+				throw Error("This session is already connected from another Pi process.");
 			this.db.prepare(`INSERT INTO members
 				(session,room,epoch,label,owner,heartbeat,state,wakes,agent_epoch,cwd,description,kind,delivery)
 				VALUES (?,'',?,?,?,?, 'idle',0,?,?,'',?,0)
