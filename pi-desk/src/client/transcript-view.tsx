@@ -35,6 +35,10 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const [pinned, setPinned] = useState("");
 	const request = useRef(0), scroller = useRef<HTMLDivElement>(null);
 	const loadingRef = useRef(false);
+	// A failed history read is shown and retried rather than leaving the pane blank.
+	const [failure, setFailure] = useState<string>();
+	const attempts = useRef(0), retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const loadLatest = useRef<() => void>(() => undefined);
 	const userScroll = useRef(false), restoring = useRef(true), following = useRef(live);
 	const navigation = useRef(0), lastScrollTop = useRef(0), scrollPointer = useRef(false);
 	const touchY = useRef<number | undefined>(undefined);
@@ -95,7 +99,10 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		if (source) query.set("source", source);
 		try {
 			const data = await api<HistoryPage>(`/sessions/${session}/history?${query}`);
-			if (id !== request.current || data.generation !== generation) return;
+			if (id !== request.current) return;
+			// The conversation restarted while this was in flight; read it again from the new process.
+			if (data.generation !== generation) { retry("The conversation restarted while its messages were loading."); return; }
+			attempts.current = 0; setFailure(undefined);
 			const moved = navigation.current !== startedNavigation;
 			// A reconnect refresh must not undo navigation performed while it was in flight.
 			if (moved && page?.generation === generation && !position.before && !position.after) return;
@@ -125,15 +132,26 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				saved.current = undefined; void load(); return;
 			}
 			reportDeskError(error);
+			retry(error instanceof Error ? error.message : String(error));
 		} finally { if (id === request.current) { loadingRef.current = false; setLoading(false); } }
+	};
+	loadLatest.current = () => void load();
+	/** Show why the history is missing and try again a few times, backing off. */
+	const retry = (reason: string) => {
+		setFailure(reason);
+		clearTimeout(retryTimer.current);
+		if (attempts.current >= 3) return;
+		const delay = 1000 * 2 ** attempts.current++;
+		retryTimer.current = setTimeout(() => loadLatest.current(), delay);
 	};
 	useEffect(() => {
 		if (connected) {
+			attempts.current = 0;
 			const position = capture.current() ?? saved.current;
 			if (position?.follow === false && position.from) void load({ from: position.from }, position);
 			else void load();
 		}
-		return () => { request.current++; };
+		return () => { request.current++; clearTimeout(retryTimer.current); };
 	}, [session, source, generation, connected, epoch]);
 	useEffect(() => {
 		if (lastLatestRequest.current !== latestRequest && connected) {
@@ -151,7 +169,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			const index = Math.max(0, rows.findIndex(row => row.message.entryId === position.anchor || row.thinking?.some(message => message.entryId === position.anchor)));
 			virtualizer.scrollToIndex(index, { align: "start" });
 		}
-		let lastOffset: number | undefined;
+		// Row heights can settle slowly or flip as text rewraps; after about half a second reveal the messages anyway.
+		let lastOffset: number | undefined, frames = 0;
 		const reveal = () => {
 			if (target.current !== position) return;
 			const viewport = scroller.current;
@@ -163,7 +182,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				const start = virtualizer.getOffsetForIndex(index, "start")?.[0] ?? 0;
 				offset = Math.min(maximum, start + Math.min(position.offset, virtualizer.measurementsCache[index]?.size ?? position.offset));
 			}
-			if (lastOffset !== offset || Math.abs(viewport.scrollTop - offset) > 1) {
+			if ((lastOffset !== offset || Math.abs(viewport.scrollTop - offset) > 1) && ++frames < 30) {
 				lastOffset = offset; virtualizer.scrollToOffset(offset);
 				restoreFrame.current = requestAnimationFrame(reveal); return;
 			}
@@ -258,6 +277,9 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	};
 	return <DisclosureStates.Provider value={disclosures.current}><div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
 		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
+		{!loading && !positioned && failure && <div className="history-status history-failure" role="alert">
+			<span>Couldn't load messages. {failure}</span>
+			<button type="button" className="quiet-action" disabled={!connected} onClick={() => { attempts.current = 0; void load(); }}>Retry</button></div>}
 		{(!live || !atEnd) && visible.length > 0 && <button className="jump-to-latest" aria-label="Jump to newest messages"
 			disabled={loading || !connected} onClick={() => void load()}>↓ <span>Back to latest</span></button>}
 		<div className={`transcript-scroll ${source ? "transcript-messages" : "transcript"}`} ref={scroller}
