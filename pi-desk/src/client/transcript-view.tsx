@@ -170,7 +170,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			virtualizer.scrollToIndex(index, { align: "start" });
 		}
 		// Row heights can settle slowly or flip as text rewraps; after about half a second reveal the messages anyway.
-		let lastOffset: number | undefined, frames = 0;
+		let lastOffset: number | undefined, lastTop: number | undefined, frames = 0;
 		const reveal = () => {
 			if (target.current !== position) return;
 			const viewport = scroller.current;
@@ -182,8 +182,11 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				const start = virtualizer.getOffsetForIndex(index, "start")?.[0] ?? 0;
 				offset = Math.min(maximum, start + Math.min(position.offset, virtualizer.measurementsCache[index]?.size ?? position.offset));
 			}
-			if ((lastOffset !== offset || Math.abs(viewport.scrollTop - offset) > 1) && ++frames < 30) {
-				lastOffset = offset; virtualizer.scrollToOffset(offset);
+			// At fractional zoom the browser scrolls in device-pixel steps and may stop just short of the target;
+			// once the target is stable and the browser scrolls no further, it is in place.
+			const settled = lastOffset === offset && (Math.abs(viewport.scrollTop - offset) <= 1 || viewport.scrollTop === lastTop);
+			if (!settled && ++frames < 30) {
+				lastOffset = offset; lastTop = viewport.scrollTop; virtualizer.scrollToOffset(offset);
 				restoreFrame.current = requestAnimationFrame(reveal); return;
 			}
 			target.current = undefined; restoring.current = false; setPositioned(true); persist();
