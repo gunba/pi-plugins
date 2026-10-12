@@ -13,6 +13,8 @@ import { renderPartyCall, renderPartyResult, renderPartyNotice } from "./render.
 import { getPresentation } from "../pi-ui/index.ts";
 import { PartyPresentation } from "./presentation.ts";
 import { PartyOperations } from "./operations.ts";
+import { QuestStore } from "./quests.ts";
+import { isToday, QUEST_KINDS, type Quest } from "./quest-model.ts";
 import { agentId } from "./network.ts";
 import { partyForkPoint } from "./fork.ts";
 import { partyDelivery } from "./availability.ts";
@@ -68,6 +70,8 @@ export default function party(pi: ExtensionAPI): void {
 	const database = () => store ??= new PartyStore(directory);
 	const signal = () => { writeFileSync(join(directory, "changed"), randomUUID(), { mode: 0o600 }); };
 	const operations = () => { database(); return lifecycle ??= new PartyOperations(directory); };
+	let questStore: QuestStore | undefined;
+	const quests = () => questStore ??= new QuestStore(directory);
 	const member = () => store?.member(session);
 	const syncFlight = () => {
 		if (!store || member()?.owner !== owner) return;
@@ -200,7 +204,7 @@ export default function party(pi: ExtensionAPI): void {
 		remote?.close(); remote = undefined;
 		stopped = true; armed = false; preparingPrompt = false; stopTransport();
 		try { store?.release(session, owner); }
-		finally { lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
+		finally { questStore?.close(); questStore = undefined; lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
 	});
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
@@ -362,6 +366,46 @@ export default function party(pi: ExtensionAPI): void {
 			const request = operations().queue(database(), session, owner, { ...params, kind: "fork", cwd: context.cwd, call: id });
 			const response = await operations().wait(request.id, abort);
 			return result({ ...response, agent: response.result!.session, parent: session });
+		},
+	});
+	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: quest.state, ...(quest.due ? { due: quest.due } : {}),
+		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
+		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
+	pi.registerTool({
+		name: "quest_add", label: "Add to Jordan's quest log",
+		description: "Add something Jordan needs to do himself to his quest log, such as a review, decision, approval or test you are waiting on. Keep the title short and actionable (\"Review the RSM skill links PR\"); put context, links and what to check in notes. You get a message when he completes or abandons it. Do not add your own work.",
+		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }), notes: Type.Optional(Type.String({ maxLength: 4000 })),
+			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main for important work, daily for today-only, side otherwise (default)." })),
+			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, only if there is a real deadline." })),
+			steps: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 30 })),
+			notify: Type.Optional(Type.Boolean({ description: "Message you when it is done or abandoned (default true)." })) }),
+		async execute(_id, params) {
+			const quest = quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
+			return result({ added: questJson(quest!) });
+		},
+	});
+	pi.registerTool({
+		name: "quest_list", label: "Read Jordan's quest log",
+		description: "Read Jordan's open quests on this computer, to avoid duplicates or check on quests you added.",
+		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
+		async execute(_id, params) {
+			const view = quests().view();
+			const open = view.quests.filter(quest => quest.state === "open" && (!params.mine || quest.source.kind === "agent" && quest.source.id === session));
+			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })) });
+		},
+	});
+	pi.registerTool({
+		name: "quest_update", label: "Update a quest you added",
+		description: "Change, complete or abandon a quest you added to Jordan's quest log, for example when he tells you it is done or no longer needed.",
+		parameters: Type.Object({ id: Type.String(), title: Type.Optional(Type.String({ maxLength: 200 })), notes: Type.Optional(Type.String({ maxLength: 4000 })),
+			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),
+			state: Type.Optional(StringEnum(["open", "done", "abandoned"] as const)) }),
+		async execute(_id, params) {
+			const by = { kind: "agent" as const, id: session, label: label() }, { id, state, ...fields } = params;
+			let quest = Object.keys(fields).length ? quests().apply(by, { action: "update", id, ...fields }) : quests().get(id);
+			if (state) quest = quests().apply(by, { action: state === "done" ? "complete" : state === "abandoned" ? "abandon" : "reopen", id });
+			if (!quest) throw Error(`No quest has the id ${id}.`);
+			return result({ quest: questJson(quest) });
 		},
 	});
 	pi.registerTool({

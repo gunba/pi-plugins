@@ -263,6 +263,13 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 				.catch(error => setError(errorText(error)));
 		},
 		skip(input: DotOutboxInput) { amend(input.id, { ignored: true, ...(input.state === "queued" ? { state: "not-sent", error: "Cancelled before sending." } : {}) }); },
+		/** Queue a message to the Dot without touching the draft, for actions elsewhere in Desk. */
+		queue(text: string) {
+			if (!supported || !view.id || !view.connection || !outboxLoaded.current) { setError("Connect your Dot first."); return; }
+			const draft = outboxRef.current.draft;
+			try { commit({ ...enqueueDot({ ...outboxRef.current, draft: text }, view.id, view.connection, []), draft }); }
+			catch (error) { setError(errorText(error)); }
+		},
 		chooseComputer(value: string) { setChosen(value); localStorage.setItem("pi-desk:dot-computer", value); },
 	};
 }
@@ -281,7 +288,7 @@ export function DotNavigation({ dot, selected, open }: { dot: DotConversationSta
 	</button>;
 }
 
-export function DotConversation({ dot, openNavigation }: { dot: DotConversationState; openNavigation: () => void }) {
+export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotConversationState; openNavigation: () => void; openQuests?: () => void }) {
 	const [showConnection, setShowConnection] = useState(false), [native, setNative] = useState<DotSurfaceFrame>(), [opening, setOpening] = useState(false), [nativeError, setNativeError] = useState("");
 	const [discarding, setDiscarding] = useState<DotUpload>();
 	const picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), live = useRef(true), nativeLock = useRef(false), connection = useRef({ computer: dot.id, dot: dot.view.id, binding: dot.view.connection });
@@ -326,6 +333,7 @@ export function DotConversation({ dot, openNavigation }: { dot: DotConversationS
 			<DotAvatar image={view.avatar} />
 			<div className="conversation-heading"><span>Dot · {dot.status}</span><strong>{name}</strong></div>
 			<div className="top-actions dot-actions">
+				{openQuests && <button className="subtle-button" onClick={openQuests}>Quests</button>}
 				{ready && !native && <button className="subtle-button" disabled={busy || !!pending || opening} onClick={() => void openNative("activity")}>Activity</button>}
 				{ready && <button className="subtle-button" aria-expanded={showConnection} onClick={() => setShowConnection(value => !value)}>Connection</button>}
 				{ready && !native && <ActionMenu label="Dot options" disabled={busy || opening || pending?.state === "sending"}

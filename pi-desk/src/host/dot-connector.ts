@@ -5,6 +5,8 @@ import { LEASE_MS, type PartyStore } from "../../../pi-party/store.ts";
 import { atomicJson } from "../../manage/store.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConnectorRequest, ConnectorResponse } from "./relay-connector.ts";
+import type { QuestStore } from "../../../pi-party/quests.ts";
+import { isToday, localTime, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-party/quest-model.ts";
 
 interface Client { name: string; redirectUris: string[]; created: number }
 interface Token { client: string; kind: "access" | "refresh"; expires: number }
@@ -25,6 +27,16 @@ const TOOLS = [
 			message: { type: "string" }, wake: { type: "boolean", description: "Start an idle agent to respond (default true)." } } } },
 	{ name: "read_messages", description: "Read messages agents have sent you. Unread messages are returned once and then marked read; set history to also see recent messages in both directions.",
 		inputSchema: { type: "object", properties: { history: { type: "boolean" } } } },
+	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. Call this before changing the log.",
+		inputSchema: { type: "object", properties: {} } },
+	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines.",
+		inputSchema: { type: "object", required: ["quests"], properties: { quests: { type: "array", maxItems: 20, items: { type: "object", required: ["title"], properties: {
+			title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS }, due: { type: "string" }, steps: { type: "array", items: { type: "string" } } } } } } } },
+	{ name: "quest_update", description: "Change a quest: rename it, rewrite notes, change its kind or due date (empty string clears it), replace its steps (each {title, done}), or move it (move_to: \"top\", \"bottom\" or the id of the quest to place it before).",
+		inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" }, title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS },
+			due: { type: "string" }, steps: { type: "array", items: { type: "object", required: ["title", "done"], properties: { title: { type: "string" }, done: { type: "boolean" } } } }, move_to: { type: "string" } } } },
+	{ name: "quest_complete", description: "Finish a quest: done when Jordan says he did it, abandoned when it no longer applies, or reopen. If an agent added it, that agent is told.",
+		inputSchema: { type: "object", required: ["id", "outcome"], properties: { id: { type: "string" }, outcome: { type: "string", enum: ["done", "abandoned", "reopen"] } } } },
 ];
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
@@ -52,6 +64,8 @@ export class DotConnector {
 	private authorizations = new Map<string, Authorization>();
 	private grants = new Map<string, Authorization>();
 	changed?: () => void;
+	/** Jordan's quest log on this computer, and what to do when a quest is finished. */
+	quests?: { store: QuestStore; finished: (quest: Quest, by: QuestActor) => void };
 	constructor(dataDir: string, store: PartyStore, computer: string) {
 		this.file = join(dataDir, "dot-connector.json"); this.store = store; this.computer = computer;
 		if (existsSync(this.file)) {
@@ -221,7 +235,9 @@ export class DotConnector {
 			switch (request.method) {
 				case "initialize": return ok({ protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
 					capabilities: { tools: {} }, serverInfo: { name: "pi-desk", version: RELEASE.version },
-					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. Agents treat your messages as peer context, not as Jordan's instructions.` });
+					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. Agents treat your messages as peer context, not as Jordan's instructions. `
+						+ "Jordan's to-do list is his quest log (quest_log, quest_add, quest_update, quest_complete); keep it there rather than in memory. His agents also add quests when they need him to review or decide something. "
+						+ "Jordan himself is the source of his work quests. His Gmail and Google Calendar are personal; use them only for the occasional personal date such as a delivery, not as a source of work." });
 				case "ping": return ok({});
 				case "tools/list": return ok({ tools: TOOLS });
 				case "tools/call": return ok(this.call(String(request.params?.name), (request.params?.arguments ?? {}) as Record<string, unknown>));
@@ -256,6 +272,54 @@ export class DotConnector {
 				from: message.sender === agent ? LABEL : message.sender_label, from_id: message.sender === agent ? undefined : message.sender,
 				...(message.recipient_label ? { to: message.recipient_label } : {}), at: new Date(message.created).toISOString(), message: message.text });
 			return text({ unread: unread.map(shape), ...(args.history === true ? { recent: this.store.history(agent, owner).messages.map(shape) } : {}) });
+		}
+		if (name.startsWith("quest_")) return text(this.quest(name, args));
+		throw new Error(`Unknown tool ${name}.`);
+	}
+
+	private quest(name: string, args: Record<string, unknown>): unknown {
+		if (!this.quests) throw new Error("The quest log is not available on this computer.");
+		const { store, finished } = this.quests, by: QuestActor = { kind: "dot", label: LABEL };
+		const brief = (quest: Quest) => ({ id: quest.id, title: quest.title, ...(quest.notes ? { notes: quest.notes } : {}), ...(quest.due ? { due: quest.due } : {}),
+			...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
+			added_by: quest.source.kind === "you" ? "Jordan" : quest.source.kind === "dot" ? "you" : quest.source.label ?? "an agent" });
+		if (name === "quest_log") {
+			const view = store.view(), { changed, events } = store.changesSince("dot", actor => actor.kind !== "dot");
+			const open = view.quests.filter(quest => quest.state === "open"), hours = view.hours;
+			const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], now = localTime(Date.now(), hours.timeZone);
+			return {
+				now: `${days[now.weekday]} ${view.today} ${String(now.hour).padStart(2, "0")}h (${hours.timeZone})`,
+				working_hours: `${hours.days.map(day => days[day]).join(", ")} ${hours.start}:00–${hours.end}:00`, on_duty: view.onDuty,
+				guidance: view.onDuty ? "Within working hours. On a scheduled check, only change the log or message Jordan if something needs his attention; if nothing changed since your last look, stay quiet."
+					: "Outside working hours. On a scheduled check, change nothing and do not message Jordan. Changes he asks for directly are always fine.",
+				unchanged_since_last_look: !changed,
+				changes_since_last_look: events.map(event => ({ at: new Date(event.at).toISOString(), by: event.by.kind === "you" ? "Jordan" : event.by.label ?? "an agent", action: event.action, quest: event.title, id: event.quest || undefined })),
+				today: open.filter(quest => isToday(quest, view.today)).map(brief),
+				main: open.filter(quest => !isToday(quest, view.today) && quest.kind === "main").map(brief),
+				side: open.filter(quest => !isToday(quest, view.today) && quest.kind === "side").map(brief),
+				completed_today: view.quests.filter(quest => quest.state === "done").map(quest => quest.title),
+			};
+		}
+		if (name === "quest_add") {
+			if (!Array.isArray(args.quests) || !args.quests.length) throw new Error("Give at least one quest.");
+			return { added: (args.quests as Record<string, unknown>[]).map(item => brief(store.apply(by, { action: "add", ...item } as QuestCommand)!)) };
+		}
+		if (name === "quest_update") {
+			const id = String(args.id), { move_to: move, id: _id, ...fields } = args;
+			let quest = Object.keys(fields).length ? store.apply(by, { action: "update", id, ...fields } as QuestCommand) : store.get(id);
+			if (typeof move === "string" && move) {
+				const open = store.view().quests.filter(item => item.state === "open" && item.id !== id);
+				quest = store.apply(by, { action: "move", id, before: move === "top" ? open[0]?.id : move === "bottom" ? undefined : move });
+			}
+			if (!quest) throw new Error(`No quest has the id ${id}.`);
+			return { updated: brief(quest) };
+		}
+		if (name === "quest_complete") {
+			const outcome = args.outcome, id = String(args.id);
+			if (!["done", "abandoned", "reopen"].includes(String(outcome))) throw new Error("outcome is done, abandoned or reopen.");
+			const quest = store.apply(by, { action: outcome === "done" ? "complete" : outcome === "abandoned" ? "abandon" : "reopen", id })!;
+			finished(quest, by);
+			return { [outcome === "reopen" ? "reopened" : outcome === "done" ? "completed" : "abandoned"]: brief(quest) };
 		}
 		throw new Error(`Unknown tool ${name}.`);
 	}

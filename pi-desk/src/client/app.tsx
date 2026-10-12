@@ -55,6 +55,7 @@ import { TranscriptView } from "./transcript-view.tsx";
 import { CompactionOverlay } from "./compaction-overlay.tsx";
 import { VersionBanner, VersionTag } from "./conversation-version.tsx";
 import { NewConversationModel, rememberModel, rememberedModel, type ModelChoice } from "./new-model.tsx";
+import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -95,7 +96,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [sidebar, setSidebar] = useState(false);
   const wideWorkspace = useMedia("(min-width: 1280px)");
   const [panel, setPanel] = useState<
-    "workspace" | "settings" | "view" | "agents" | undefined
+    "workspace" | "settings" | "view" | "agents" | "quests" | undefined
   >();
   const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-visible") !== "false");
   const [create, setCreate] = useState(false);
@@ -586,6 +587,14 @@ export function App({ account }: { account?: BrowserAccount }) {
   const host = state.host;
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
+  const questLogs: QuestLog[] = host.computers
+    ? host.computers.flatMap(computer => computer.quests ? [{ computer: computer.id, name: computer.name, view: computer.quests, connected: computer.connected }] : [])
+    : host.quests ? [{ name: host.name, view: host.quests, connected }] : [];
+  const openQuests = questLogs.reduce((count, log) => count + log.view.quests.filter(quest => quest.state === "open").length, 0);
+  const agentSession = (id: string) => host.sessions.find(item => (item.snapshot?.id ?? item.agentId) === id);
+  const questTracker = <QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? title(found) : undefined; }}
+    openAgent={id => { const found = agentSession(id); if (found) { setSelected(found.key); setPanel(undefined); setSidebar(false); } }}
+    ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} />;
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
@@ -633,6 +642,10 @@ export function App({ account }: { account?: BrowserAccount }) {
         <div className="nav-label">Dots</div>
         <nav className="dot-list" aria-label="Dots">
           <DotNavigation dot={dot} selected={dotSelected} open={() => { setSelected("dot"); setSidebar(false); setPanel(undefined); }} />
+          {questLogs.length > 0 && !(dotSelected && wideWorkspace) && <button className={`session-item quest-navigation${panel === "quests" ? " selected" : ""}`}
+            onClick={() => { setPanel(panel === "quests" ? undefined : "quests"); setSidebar(false); }}>
+            <span className="quest-navigation-icon" aria-hidden="true"><Icon name="check" /></span>
+            <span><strong>Quests</strong><small>{openQuests ? `${openQuests} open` : "All clear"}</small></span></button>}
         </nav>
         <div className="nav-label">
           Computers <span>{computers.length}</span>
@@ -701,7 +714,8 @@ export function App({ account }: { account?: BrowserAccount }) {
         </div>
       </Navigation>
       <main className={`main${dotSelected ? " main-dot" : ""}`} data-primary-focus tabIndex={-1}>
-        {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)} /> : <>
+        {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)}
+          openQuests={questLogs.length && !wideWorkspace ? () => setPanel(panel === "quests" ? undefined : "quests") : undefined} /> : <>
         <header className="topbar">
           <button
             className="icon-button mobile-nav"
@@ -931,17 +945,18 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
         </>}
       </main>
+      {dotSelected && wideWorkspace && questLogs.length > 0 && <div className="quest-rail">{questTracker}</div>}
       {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
         invoke={run} openAgents={openAgentPane} focused={panel === "workspace" ? focusedView : undefined}
         openView={id => { setFocusedView(id); setPanel("view"); }} />}
       {panel && !(panel === "workspace" && wideWorkspace) && (
-        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
-          close={() => setPanel(undefined)} back={panel !== "workspace" && !settings ? () => setPanel("workspace") : undefined}>
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "quests" ? "Quests" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
+          close={() => setPanel(undefined)} back={panel !== "workspace" && panel !== "quests" && !settings ? () => setPanel("workspace") : undefined}>
           <div className="panel-title">
-            {panel !== "workspace" && !settings && <button className="icon-button"
+            {panel !== "workspace" && panel !== "quests" && !settings && <button className="icon-button"
               aria-label="Back to workspace" onClick={() => setPanel("workspace")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "view"
+              {settings ? "Settings" : panel === "quests" ? "Quests" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "view"
                   ? visibleViews[0]?.title ?? "Details"
                 : "Settings & tools"}
             </h2>
@@ -963,6 +978,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {settings && settingsForms.map(interaction => <SettingsForm key={`${selected}/${interaction.id}`} interaction={interaction}
             draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
             answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
+          {panel === "quests" && questTracker}
           {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
             invoke={run} openAgents={openAgentPane} focused={focusedView}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}

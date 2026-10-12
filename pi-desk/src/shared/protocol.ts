@@ -132,6 +132,8 @@ export interface SessionView {
 export interface HostState { release: ReleaseInfo; operatorAvailability?: import("./operator.ts").OperatorAvailability; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
+	/** This computer's quest log. Omitted by hosts before 0.5.62. */
+	quests?: import("./quests.ts").QuestView;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 export type HostEvent =
 	| { type: "state"; state: HostState }

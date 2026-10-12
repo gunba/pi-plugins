@@ -45,6 +45,8 @@ import { PartyNetwork } from "./party-network.ts";
 import { DotConnector } from "./dot-connector.ts";
 import { workspaceIdentity } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
+import { QuestStore } from "../../../pi-party/quests.ts";
+import type { Quest, QuestActor, QuestCommand, QuestView } from "../shared/quests.ts";
 import type { PartyOperation, OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { DotConnection } from "./dot.ts";
@@ -86,6 +88,8 @@ export class DeskHost {
 	private relay?: RelayConnector;
 	private relayStatus?: RelayStatus;
 	private dotConnector?: DotConnector;
+	private quests?: QuestStore;
+	private questView?: QuestView;
 	private accountIdentity?: NativeAccountIdentity;
 	private accountRevision = 0;
 	private accountRetry?: ReturnType<typeof setTimeout>;
@@ -176,10 +180,13 @@ export class DeskHost {
 				for (const managed of this.sessions.values()) this.drainInputs(managed);
 				this.flushLocalPartyOperations();
 			});
-			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
+			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.refreshQuests(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
 			this.partyOperations.startHost(); this.flushLocalPartyOperations();
+			this.quests = new QuestStore(join(this.options.agentDir!, "party"));
+			this.refreshQuests();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
+			this.dotConnector.quests = { store: this.quests, finished: (quest, by) => this.questFinished(quest, by) };
 			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
@@ -201,7 +208,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
-				this.refreshUpdates(); this.refreshParties(); void this.maintain();
+				this.refreshUpdates(); this.refreshParties(); this.refreshQuests(); void this.maintain();
 				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -249,7 +256,7 @@ export class DeskHost {
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
@@ -330,7 +337,28 @@ export class DeskHost {
 	state(): HostState {
 		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
-			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError };
+			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView };
+	}
+
+	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
+	private refreshQuests(): void {
+		if (this.closing || !this.quests) return;
+		let next: QuestView;
+		try { next = this.quests.view(); } catch (error) { console.error(`The quest log could not be read: ${error instanceof Error ? error.message : String(error)}`); return; }
+		if (JSON.stringify(next) === JSON.stringify(this.questView)) return;
+		this.questView = next; this.emit({ type: "state", state: this.state() });
+	}
+
+	/** Tell the agent that added a quest that it is finished, from the host's quest-log identity. */
+	private questFinished(quest: Quest, by: QuestActor): void {
+		if (!this.parties || !this.quests || quest.source.kind !== "agent" || !quest.source.id || !quest.notify || by.kind === "agent" && by.id === quest.source.id) return;
+		if (quest.state !== "done" && quest.state !== "abandoned") return;
+		try {
+			const service = this.quests.service(), store = this.parties.store;
+			if (store.member(service.session)?.owner !== service.owner) store.register(service.session, service.owner, "Quest log", "", "service");
+			const who = by.kind === "dot" ? "Jordan's Dot" : "Jordan";
+			store.send(service.session, service.owner, quest.source.id, `${who} ${quest.state === "done" ? "completed" : "abandoned"} the quest you added: “${quest.title}” (id ${quest.id}).${quest.state === "done" ? " Carry on with anything that was waiting on it." : ""}`, true);
+		} catch (error) { console.error(`The agent that added “${quest.title}” could not be told: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 
 	private refreshParties(): void {
@@ -1170,6 +1198,16 @@ export class DeskHost {
 				this.refreshUpdates();
 				return reply({ accepted: true }, 202);
 			}
+			if (url.pathname === "/api/quests" && this.quests) {
+				if (request.method === "POST") {
+					const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
+					const quest = this.quests.apply(by, command);
+					if (quest) this.questFinished(quest, by);
+					this.refreshQuests();
+					return reply({ quest: quest ?? null, quests: this.questView });
+				}
+				return reply(this.quests.view());
+			}
 			if (url.pathname === "/api/runtime/automatic" && request.method === "POST") {
 				const next = { host: typeof data.host === "boolean" ? data.host : this.automatic.host,
 					conversations: typeof data.conversations === "boolean" ? data.conversations : this.automatic.conversations };
@@ -1400,7 +1438,7 @@ export class DeskHost {
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close(); this.partyNetwork?.close();
 		this.accountIdentity?.close();
-		try { this.dotConnector?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));
