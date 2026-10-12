@@ -1914,7 +1914,10 @@ details[open] > summary:before {
 .dot-empty h1 { margin:0; font-size:30px; font-weight:550; letter-spacing:-1px; }
 .dot-empty p { margin:0; max-width:360px; color:var(--muted); line-height:1.6; }
 .dot-composer-dock { width:100%; max-width:900px; margin:0 auto; padding:0 32px 24px; }
-.dot-compose-row { display:grid; grid-template-columns:34px minmax(0,1fr) 36px; align-items:end; gap:10px; }
+.dot-compose-row { display:grid; grid-template-columns:34px minmax(0,1fr) auto 36px; align-items:end; gap:10px; }
+/* Browsers without speech recognition render no dictation button. */
+.dot-compose-row:not(:has(.dictation)) { grid-template-columns:34px minmax(0,1fr) 36px; }
+.dot-compose-row > .dictation { margin-bottom:8px; }
 .dot-composer { border-radius:12px; }
 .dot-composer textarea { min-height:52px; max-height:220px; padding:14px 16px; resize:none; line-height:22px; }
 .dot-compose-row > button { margin-bottom:8px; }

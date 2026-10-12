@@ -149,7 +149,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 			<div className="quest-header-actions">
 				<button type="button" className="icon-button" aria-pressed={sound} title={sound ? "Completion sound on" : "Completion sound off"}
 					onClick={() => { const next = !sound; setSound(next); localStorage.setItem("pi-desk:quest-sound", next ? "on" : "off"); if (next) chime(); }}>
-					<Icon name={sound ? "play" : "pause"} /></button>
+					<Icon name={sound ? "sound" : "sound-off"} /></button>
 				<button type="button" className="icon-button" aria-expanded={hoursOpen} title="Working hours" onClick={() => setHoursOpen(value => !value)}><Icon name="clock" /></button>
 			</div>
 		</header>

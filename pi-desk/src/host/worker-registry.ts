@@ -105,7 +105,9 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 			"--report-exclude-env", "--report-exclude-network", `--report-filename=${join(directory, "failure.json")}`,
 			settings.module ?? fileURLToPath(new URL("./worker.js", import.meta.url)), directory], {
 			cwd: options.cwd, detached: true, windowsHide: true, stdio: "ignore",
-			env: { ...environment, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
+			// Conversations here are paced by a person, so pauses often outlast a 5-minute prompt cache and the
+			// whole context is written again; a 1-hour cache costs more per write but avoids most of those.
+			env: { PI_CACHE_RETENTION: "long", ...environment, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
 		});
 		let spawnError: Error | undefined;
 		child.once("error", error => {
