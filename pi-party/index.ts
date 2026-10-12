@@ -374,7 +374,7 @@ export default function party(pi: ExtensionAPI): void {
 		from: Type.Optional(Type.String({ description: "YYYY-MM-DD the cadence counts from and first due date (default today). Doing it late never shifts the cadence." })),
 		weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { minItems: 1, maxItems: 7, description: "Weekly only: weekdays it is due, 0 = Sunday (default the start date's weekday)." })),
 	}, { description: "Makes it a repeating daily that reopens by itself on each due date, in the quest log's time zone. Day-level only: no timed notifications." });
-	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: isReady(quest) ? "done, waiting to be turned in" : quest.state, ...(quest.due ? { due: quest.due } : {}),
+	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: isReady(quest) ? "done, waiting to be turned in" : quest.state, ...(quest.due ? { due: quest.due } : {}), ...(quest.scheduled ? { scheduled: quest.scheduled } : {}),
 		...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
 		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
@@ -383,7 +383,8 @@ export default function party(pi: ExtensionAPI): void {
 		description: "Add something Jordan needs to do himself to his quest log, such as a review, decision, approval or test you are waiting on. Keep the title short and actionable (\"Review the RSM skill links PR\"); put context, links and what to check in notes. You get a message when he completes or abandons it. Do not add your own work.",
 		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }), notes: Type.Optional(Type.String({ maxLength: 4000 })),
 			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main for important work, daily for today-only, side otherwise (default)." })),
-			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, only if there is a real deadline." })),
+			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, only if there is a real deadline; it can be done any time before." })),
+			scheduled: Type.Optional(Type.String({ description: "YYYY-MM-DD the day it happens, like an appointment: it stays under Upcoming until then. Put any time in the title." })),
 			steps: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 30 })),
 			repeat: Type.Optional(repeatSchema),
 			notify: Type.Optional(Type.Boolean({ description: "Message you when it is done or abandoned (default true)." })) }),
@@ -394,21 +395,22 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "quest_list", label: "Read Jordan's quest log",
-		description: "Read Jordan's quests on this computer (open, finished ones not yet turned in, and repeating ones not due again yet), to avoid duplicates or check on quests you added.",
+		description: "Read Jordan's quests on this computer (open, finished ones not yet turned in, and upcoming: scheduled for a later day or repeating and not due yet), to avoid duplicates or check on quests you added.",
 		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
 		async execute(_id, params) {
 			const view = quests().view();
 			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
 			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
 			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
-				not_due_yet: (view.upcoming ?? []).filter(mine).map(quest => ({ ...questJson(quest), state: `not due until ${quest.next}` })) });
+				upcoming: (view.upcoming ?? []).filter(mine).map(quest => ({ ...questJson(quest), state: `${quest.repeat ? "not due" : "scheduled"} until ${quest.next}` })) });
 		},
 	});
 	pi.registerTool({
 		name: "quest_update", label: "Update a quest you added",
 		description: "Change, complete or abandon a quest you added to Jordan's quest log, for example when he tells you it is done or no longer needed.",
 		parameters: Type.Object({ id: Type.String(), title: Type.Optional(Type.String({ maxLength: 200 })), notes: Type.Optional(Type.String({ maxLength: 4000 })),
-			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),
+			due: Type.Optional(Type.String({ description: "YYYY-MM-DD deadline, or empty to clear." })),
+			scheduled: Type.Optional(Type.String({ description: "YYYY-MM-DD day it happens, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),
 			repeat: Type.Optional(Type.Union([repeatSchema, Type.Null()], { description: "A new schedule, or null to stop repeating." })),
 			state: Type.Optional(StringEnum(["open", "done", "abandoned"] as const)) }),
 		async execute(_id, params) {

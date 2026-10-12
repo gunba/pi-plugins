@@ -49,6 +49,12 @@ function dueLabel(due: string | undefined, today: string, repeating = false): { 
 	if (due === today) return { text: "Due today", tone: "today" };
 	return { text: `Due ${new Date(`${due}T12:00:00`).toLocaleDateString([], { day: "numeric", month: "short" })}`, tone: "" };
 }
+/** A scheduled day: shown on the day itself, or after it if not ticked off; before it the quest is under Upcoming. */
+function scheduledLabel(on: string | undefined, today: string, resting?: boolean): { text: string; tone: string } | undefined {
+	if (!on) return;
+	if (resting || on > today) return { text: shortDate(on), tone: "" };
+	return on === today ? { text: "Today", tone: "today" } : { text: `Was ${shortDate(on)}`, tone: "overdue" };
+}
 
 export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	logs: QuestLog[];
@@ -85,7 +91,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		{ id: "log", label: "Quests", items: live.filter(item => !isToday(item.quest, today)) },
 	];
 	const resting: Item[] = logs.flatMap(log => (log.view.upcoming ?? []).map(quest => ({ quest, log, key: `${log.computer ?? "local"}:${quest.id}`, resting: true })));
-	sections.push({ id: "upcoming", label: "Repeating", items: resting });
+	sections.push({ id: "upcoming", label: "Upcoming", items: resting });
 	const ready = live.filter(item => isReady(item.quest));
 	const done = ready.filter(item => localTime(item.quest.completed!, home.view.hours.timeZone).date === today).length;
 	const total = done + sections[0]!.items.filter(item => item.quest.state === "open").length;
@@ -120,7 +126,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	};
 
 	const row = (item: Item) => {
-		const { quest } = item, expanded = open === item.key, due = dueLabel(quest.due, today, !!quest.repeat), finished = !item.resting && quest.state === "done";
+		const { quest } = item, expanded = open === item.key, due = dueLabel(quest.due, today, !!quest.repeat) ?? scheduledLabel(quest.scheduled, today, item.resting), finished = !item.resting && quest.state === "done";
 		return <li key={item.key} className={`quest quest-${quest.kind}${finished ? " done" : ""}${item.resting ? " resting" : ""}${finishing.includes(item.key) ? " finishing" : ""}${expanded ? " expanded" : ""}`}
 			draggable={!finished && !item.resting && !editing} onDragStart={() => { dragged.current = item.key; }} onDragOver={event => event.preventDefault()} onDrop={event => drop(item, event)}>
 			<button type="button" className="quest-check" aria-label={finished ? `Reopen ${quest.title}` : `Complete ${quest.title}`} title={finished ? "Ready to turn in. Click to reopen" : "Complete"}
@@ -201,8 +207,10 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	</aside>;
 }
 
-function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: string; save: (fields: { title: string; notes: string; kind: QuestKind; due: string; steps?: Quest["steps"]; repeat: QuestRepeat | null }) => void; cancel: () => void }) {
-	const [title, setTitle] = useState(quest.title), [notes, setNotes] = useState(quest.notes ?? ""), [kind, setKind] = useState(quest.kind), [due, setDue] = useState(quest.repeat ? "" : quest.due ?? "");
+function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: string; save: (fields: { title: string; notes: string; kind: QuestKind; due: string; scheduled: string; steps?: Quest["steps"]; repeat: QuestRepeat | null }) => void; cancel: () => void }) {
+	const [title, setTitle] = useState(quest.title), [notes, setNotes] = useState(quest.notes ?? ""), [kind, setKind] = useState(quest.kind);
+	// One date: a deadline (due by) or the day it happens (scheduled on).
+	const [dateKind, setDateKind] = useState<"due" | "scheduled">(quest.scheduled ? "scheduled" : "due"), [due, setDue] = useState(quest.repeat ? "" : quest.scheduled ?? quest.due ?? "");
 	const [unit, setUnit] = useState<QuestRepeat["unit"] | "">(quest.repeat?.unit ?? ""), [every, setEvery] = useState(quest.repeat?.every ?? 1);
 	const [from, setFrom] = useState(quest.repeat?.from ?? today), [days, setDays] = useState<number[]>(quest.repeat?.weekdays ?? []);
 	const schedule: QuestRepeat | null = unit && /^\d{4}-\d{2}-\d{2}$/.test(from) ? { every: Math.max(1, Math.min(366, Math.round(every) || 1)), unit, from, ...(unit === "week" && days.length ? { weekdays: days } : {}) } : null;
@@ -211,7 +219,7 @@ function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: stri
 	return <form className="quest-editor" onSubmit={event => {
 		event.preventDefault();
 		const lines = steps.split("\n").map(line => line.trim()).filter(Boolean);
-		save({ title, notes, kind: schedule ? "daily" : kind, due: schedule ? "" : due, repeat: schedule, steps: lines.map(line => ({ title: line, done: quest.steps?.find(step => step.title === line)?.done ?? false })) });
+		save({ title, notes, kind: schedule ? "daily" : kind, due: schedule || dateKind !== "due" ? "" : due, scheduled: schedule || dateKind !== "scheduled" ? "" : due, repeat: schedule, steps: lines.map(line => ({ title: line, done: quest.steps?.find(step => step.title === line)?.done ?? false })) });
 	}}>
 		<input value={title} onChange={event => setTitle(event.target.value)} aria-label="Quest title" maxLength={200} autoFocus />
 		<textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Notes" aria-label="Notes" rows={2} />
@@ -228,7 +236,10 @@ function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: stri
 		{schedule ? <small className="muted">Repeats: {repeatLabel(schedule)}{firstDue ? `. ${firstDue === today ? "Due today" : `Next due ${shortDate(firstDue)}`}` : ""}. Doing it late doesn't move the schedule.</small>
 			: <div className="quest-editor-row">
 				<select value={kind} onChange={event => setKind(event.target.value as QuestKind)} aria-label="Kind">{QUEST_KINDS.map(value => <option key={value} value={value}>{QUEST_KIND_NAMES[value]}</option>)}</select>
-				<input type="date" value={due} onChange={event => setDue(event.target.value)} aria-label="Due date" />
+				<select value={dateKind} onChange={event => setDateKind(event.target.value as "due" | "scheduled")} aria-label="Date means"
+					title="Due by: a deadline you can act on before. Happens on: an appointment or event, kept under Upcoming until the day.">
+					<option value="due">Due by</option><option value="scheduled">Happens on</option></select>
+				<input type="date" value={due} onChange={event => setDue(event.target.value)} aria-label={dateKind === "due" ? "Due date" : "Scheduled date"} />
 			</div>}
 		<div className="quest-editor-row"><button type="button" onClick={cancel}>Cancel</button><button className="primary" type="submit">Save</button></div>
 	</form>;

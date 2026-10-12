@@ -15,9 +15,9 @@ const kind = (value: unknown): QuestKind | undefined => {
 	if (!QUEST_KINDS.includes(value as QuestKind)) throw Error(`A quest kind is one of ${QUEST_KINDS.join(", ")}.`);
 	return value as QuestKind;
 };
-const date = (value: unknown) => {
+const date = (value: unknown, name = "due") => {
 	if (value === undefined || value === null || value === "") return undefined;
-	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) throw Error("Give due dates as YYYY-MM-DD.");
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) throw Error(`Give ${name} dates as YYYY-MM-DD.`);
 	return value;
 };
 const weekdays = (value: unknown) => {
@@ -64,6 +64,7 @@ export class QuestStore {
 			CREATE TABLE IF NOT EXISTS quest_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
 		const columns = new Set((this.db.prepare("PRAGMA table_info(quests)").all() as { name: string }[]).map(row => row.name));
 		if (!columns.has("repeat")) this.db.exec("ALTER TABLE quests ADD COLUMN repeat TEXT");
+		if (!columns.has("scheduled")) this.db.exec("ALTER TABLE quests ADD COLUMN scheduled TEXT");
 		if (!columns.has("turned_in")) {
 			this.db.exec("ALTER TABLE quests ADD COLUMN turned_in INTEGER");
 			// Finished quests used to leave the log after a day; keep those gone and today's waiting to be turned in.
@@ -94,7 +95,7 @@ export class QuestStore {
 	private row(value: Record<string, unknown> | undefined): Quest | undefined {
 		if (!value) return;
 		return { id: String(value.id), title: String(value.title), ...(value.notes ? { notes: String(value.notes) } : {}), kind: value.kind as QuestKind,
-			state: value.state as Quest["state"], ...(value.due ? { due: String(value.due) } : {}), ...(value.steps ? { steps: JSON.parse(String(value.steps)) } : {}),
+			state: value.state as Quest["state"], ...(value.due ? { due: String(value.due) } : {}), ...(value.scheduled ? { scheduled: String(value.scheduled) } : {}), ...(value.steps ? { steps: JSON.parse(String(value.steps)) } : {}),
 			...(value.repeat ? { repeat: this.schedule(JSON.parse(String(value.repeat)), Number(value.created)) } : {}), ...(value.turned_in ? { turnedIn: Number(value.turned_in) } : {}),
 			source: JSON.parse(String(value.source)), ...(value.notify ? { notify: true } : {}), created: Number(value.created), updated: Number(value.updated),
 			...(value.completed ? { completed: Number(value.completed) } : {}) };
@@ -130,7 +131,11 @@ export class QuestStore {
 		const upcoming: Quest[] = [];
 		const quests = rows.flatMap(row => {
 			const quest = this.row(row)!;
-			if (!quest.repeat) return [quest];
+			// A scheduled quest waits under Upcoming until its day.
+			if (!quest.repeat) {
+				if (quest.state === "open" && quest.scheduled && quest.scheduled > today) { upcoming.push({ ...quest, next: quest.scheduled }); return []; }
+				return [quest];
+			}
 			// Open from each due date until done (late if past it), then waiting to be turned in, then resting until the next due date.
 			const last = lastDue(quest.repeat, today), next = nextDue(quest.repeat, today);
 			const done = !!last && !!quest.completed && localTime(quest.completed, hours.timeZone).date >= last;
@@ -178,15 +183,16 @@ export class QuestStore {
 					const first = (this.db.prepare("SELECT MIN(position) AS p FROM quests WHERE state='open'").get() as { p: number | null }).p;
 					const last = (this.db.prepare("SELECT MAX(position) AS p FROM quests WHERE state='open'").get() as { p: number | null }).p;
 					const schedule = repeat(command.repeat, today);
+					const on = schedule ? undefined : date(command.scheduled, "scheduled");
 					const quest: Quest = { id: randomBytes(3).toString("hex"), title: text(command.title, 200, "title"), kind: schedule ? "daily" : kind(command.kind) ?? "side", state: "open",
-						notes: optionalText(command.notes, 4000), due: schedule ? undefined : date(command.due), steps: steps(command.steps), ...(schedule ? { repeat: schedule } : {}), source: by,
+						notes: optionalText(command.notes, 4000), due: schedule || on ? undefined : date(command.due), ...(on ? { scheduled: on } : {}), steps: steps(command.steps), ...(schedule ? { repeat: schedule } : {}), source: by,
 						...(by.kind === "agent" && options.notify !== false ? { notify: true } : {}), created: now, updated: now };
 					// Jordan's own quests go to the top; others' at the bottom.
 					const position = by.kind === "you" ? (first ?? 0) - 1 : (last ?? 0) + 1;
-					this.db.prepare(`INSERT INTO quests (id,title,notes,kind,state,due,steps,source,notify,position,created,updated,completed,repeat)
-						VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(quest.id, quest.title, quest.notes ?? null, quest.kind, "open",
+					this.db.prepare(`INSERT INTO quests (id,title,notes,kind,state,due,steps,source,notify,position,created,updated,completed,repeat,scheduled)
+						VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(quest.id, quest.title, quest.notes ?? null, quest.kind, "open",
 						quest.due ?? null, quest.steps ? JSON.stringify(quest.steps) : null, JSON.stringify(quest.source), quest.notify ? 1 : 0, position, now, now, null,
-						quest.repeat ? JSON.stringify(quest.repeat) : null);
+						quest.repeat ? JSON.stringify(quest.repeat) : null, quest.scheduled ?? null);
 					this.event(by, "added", quest); return quest;
 				}
 				case "update": {
@@ -196,11 +202,15 @@ export class QuestStore {
 						...(command.kind !== undefined ? { kind: kind(command.kind)! } : {}),
 						...(command.notes !== undefined ? { notes: optionalText(command.notes, 4000) } : {}),
 						...(command.due !== undefined ? { due: date(command.due) } : {}),
+						...(command.scheduled !== undefined ? { scheduled: date(command.scheduled, "scheduled") } : {}),
 						...(command.steps !== undefined ? { steps: steps(command.steps) } : {}),
 						...(command.repeat !== undefined ? { repeat: repeat(command.repeat, today) } : {}) };
-					if (next.repeat) { next.kind = "daily"; next.due = undefined; }
-					this.db.prepare("UPDATE quests SET title=?,notes=?,kind=?,due=?,steps=?,repeat=?,updated=? WHERE id=?").run(next.title, next.notes ?? null, next.kind,
-						next.due ?? null, next.steps?.length ? JSON.stringify(next.steps) : null, next.repeat ? JSON.stringify(next.repeat) : null, now, quest.id);
+					// A quest has one kind of date: a repeat schedule, a scheduled day or a deadline. The one just given wins.
+					if (next.repeat) { next.kind = "daily"; next.due = undefined; next.scheduled = undefined; }
+					else if (next.scheduled && command.due === undefined) next.due = undefined;
+					else if (next.due) next.scheduled = undefined;
+					this.db.prepare("UPDATE quests SET title=?,notes=?,kind=?,due=?,scheduled=?,steps=?,repeat=?,updated=? WHERE id=?").run(next.title, next.notes ?? null, next.kind,
+						next.due ?? null, next.scheduled ?? null, next.steps?.length ? JSON.stringify(next.steps) : null, next.repeat ? JSON.stringify(next.repeat) : null, now, quest.id);
 					this.event(by, "updated", next); return next;
 				}
 				case "complete": case "abandon": case "reopen": {

@@ -11,12 +11,14 @@ export interface Quest {
 	notes?: string;
 	kind: QuestKind;
 	state: QuestState;
-	/** YYYY-MM-DD in the log's time zone. */
+	/** A deadline, YYYY-MM-DD in the log's time zone: it can be done any time before. */
 	due?: string;
+	/** The day it happens, like an appointment: it waits under Upcoming and joins Daily on that day. */
+	scheduled?: string;
 	steps?: QuestStep[];
 	/** A repeating daily's schedule; it reopens by itself on each due date. */
 	repeat?: QuestRepeat;
-	/** For a repeating quest, its next due date after today (computed). */
+	/** For a repeating or scheduled quest that is not due yet, the date it next joins Daily (computed). */
 	next?: string;
 	/** When the quest giver (Jordan or his Dot) took the finished quest; until then it waits with a "?". */
 	turnedIn?: number;
@@ -46,7 +48,7 @@ export interface QuestHours { days: number[]; start: number; end: number; timeZo
 export interface QuestView {
 	/** Open quests and finished ones waiting to be turned in, in order. Repeating quests appear on and after their due dates until done. */
 	quests: Quest[];
-	/** Repeating quests not due again yet, with their next due date. */
+	/** Scheduled quests before their day and repeating quests not due again yet, soonest first, with the date in next. */
 	upcoming?: Quest[];
 	hours: QuestHours;
 	today: string;
@@ -56,8 +58,8 @@ export interface QuestView {
 	revision: number;
 }
 export type QuestCommand =
-	| { action: "add"; title: string; kind?: QuestKind; notes?: string; due?: string; steps?: string[]; repeat?: Partial<QuestRepeat> }
-	| { action: "update"; id: string; title?: string; kind?: QuestKind; notes?: string; due?: string | null; steps?: QuestStep[]; repeat?: Partial<QuestRepeat> | null }
+	| { action: "add"; title: string; kind?: QuestKind; notes?: string; due?: string; scheduled?: string; steps?: string[]; repeat?: Partial<QuestRepeat> }
+	| { action: "update"; id: string; title?: string; kind?: QuestKind; notes?: string; due?: string | null; scheduled?: string | null; steps?: QuestStep[]; repeat?: Partial<QuestRepeat> | null }
 	| { action: "complete" | "reopen" | "abandon"; id: string }
 	/** Turn in one finished quest, or every finished quest the actor may change. */
 	| { action: "turnin"; id?: string }
@@ -82,7 +84,7 @@ export function isOnDuty(hours: QuestHours, at = Date.now()): boolean {
 /** Finished but not yet turned in. */
 export function isReady(quest: Quest): boolean { return quest.state === "done" && !(quest.turnedIn && quest.completed && quest.turnedIn >= quest.completed); }
 
-export function isToday(quest: Quest, today: string): boolean { return quest.kind === "daily" || !!quest.due && quest.due <= today; }
+export function isToday(quest: Quest, today: string): boolean { return quest.kind === "daily" || !!quest.due && quest.due <= today || !!quest.scheduled && quest.scheduled <= today; }
 
 /** Consecutive working days ending today (or yesterday, if nothing is done yet today) with a completion. */
 export function questStreak(completedDays: Iterable<string>, hours: QuestHours, at = Date.now()): number {
