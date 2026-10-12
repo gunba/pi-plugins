@@ -31,9 +31,9 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		{capacity && limit ? <><ContextMeter capacity={capacity} limit={limit} used={context?.tokens} />
 			<span>{context?.tokens == null ? "—" : tokens(context.tokens)} / {tokens(limit)}</span></> : "Context not measured"}
 	</button>;
-	// Reset countdowns tick once a minute.
+	// Reset countdowns are coarse, so they only need refreshing every ten minutes.
 	const [now, setNow] = useState(Date.now());
-	useEffect(() => { const timer = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 60_000); return () => clearInterval(timer); }, []);
+	useEffect(() => { const timer = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 600_000); return () => clearInterval(timer); }, []);
 	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
 	const gauge = (badge: typeof badges[number]) => {
 		if (badge.meter) return badge.meter;
@@ -92,11 +92,11 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	</div>;
 }
 
-/** Time until a reset, short enough for the status bar: "45m", "2h 10m", "3d 4h". */
+/** Time until a reset, coarse enough for the status bar: "50m" (in ten-minute steps), "2h", "3d 4h". */
 function countdown(ms: number): string {
-	const minutes = Math.max(0, Math.ceil(ms / 60_000));
-	if (minutes < 60) return `${minutes}m`;
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+	const minutes = Math.max(0, ms / 60_000), steps = Math.max(10, Math.ceil(minutes / 10) * 10);
+	if (steps < 60) return `${steps}m`;
+	const hours = Math.max(1, Math.floor(minutes / 60));
+	if (hours < 24) return `${hours}h`;
 	return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
 }
