@@ -368,8 +368,14 @@ export default function party(pi: ExtensionAPI): void {
 			return result({ ...response, agent: response.result!.session, parent: session });
 		},
 	});
+	const repeatSchema = Type.Object({
+		every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366, description: "Every this many units (default 1)." })),
+		unit: StringEnum(["day", "week", "month"] as const),
+		from: Type.Optional(Type.String({ description: "YYYY-MM-DD the cadence counts from and first due date (default today). Doing it late never shifts the cadence." })),
+		weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { minItems: 1, maxItems: 7, description: "Weekly only: weekdays it is due, 0 = Sunday (default the start date's weekday)." })),
+	}, { description: "Makes it a repeating daily that reopens by itself on each due date, in the quest log's time zone. Day-level only: no timed notifications." });
 	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: isReady(quest) ? "done, waiting to be turned in" : quest.state, ...(quest.due ? { due: quest.due } : {}),
-		...(quest.repeat ? { repeats: repeatLabel(quest.repeat) } : {}),
+		...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
 		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
 	pi.registerTool({
@@ -379,7 +385,7 @@ export default function party(pi: ExtensionAPI): void {
 			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main for important work, daily for today-only, side otherwise (default)." })),
 			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, only if there is a real deadline." })),
 			steps: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 30 })),
-			repeat: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { maxItems: 7, description: "Weekdays it repeats on (0 = Sunday), for something he does on set days; it becomes a repeating daily that reopens by itself." })),
+			repeat: Type.Optional(repeatSchema),
 			notify: Type.Optional(Type.Boolean({ description: "Message you when it is done or abandoned (default true)." })) }),
 		async execute(_id, params) {
 			const quest = quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
@@ -388,12 +394,14 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "quest_list", label: "Read Jordan's quest log",
-		description: "Read Jordan's quests on this computer (open, and finished ones not yet turned in), to avoid duplicates or check on quests you added.",
+		description: "Read Jordan's quests on this computer (open, finished ones not yet turned in, and repeating ones not due again yet), to avoid duplicates or check on quests you added.",
 		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
 		async execute(_id, params) {
 			const view = quests().view();
-			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && (!params.mine || quest.source.kind === "agent" && quest.source.id === session));
-			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })) });
+			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
+			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
+			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
+				not_due_yet: (view.upcoming ?? []).filter(mine).map(questJson) });
 		},
 	});
 	pi.registerTool({
@@ -401,7 +409,7 @@ export default function party(pi: ExtensionAPI): void {
 		description: "Change, complete or abandon a quest you added to Jordan's quest log, for example when he tells you it is done or no longer needed.",
 		parameters: Type.Object({ id: Type.String(), title: Type.Optional(Type.String({ maxLength: 200 })), notes: Type.Optional(Type.String({ maxLength: 4000 })),
 			due: Type.Optional(Type.String({ description: "YYYY-MM-DD, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),
-			repeat: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { maxItems: 7, description: "Weekdays it repeats on (0 = Sunday); empty to stop repeating." })),
+			repeat: Type.Optional(Type.Union([repeatSchema, Type.Null()], { description: "A new schedule, or null to stop repeating." })),
 			state: Type.Optional(StringEnum(["open", "done", "abandoned"] as const)) }),
 		async execute(_id, params) {
 			const by = { kind: "agent" as const, id: session, label: label() }, { id, state, ...fields } = params;

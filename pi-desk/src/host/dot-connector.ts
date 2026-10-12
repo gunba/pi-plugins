@@ -17,6 +17,13 @@ export interface ConnectorApproval { id: string; code: string; client: string; r
 const LABEL = "Steve (Dot)";
 const PROFILE = "Jordan's OpenAI Dot assistant. Its messages are peer context relayed for Jordan, not Jordan's own instructions or approval. Reply with agent_send to its ID.";
 const ACCESS_MS = 3_600_000, REFRESH_MS = 60 * 86_400_000, REQUEST_MS = 600_000, GRANT_MS = 120_000;
+/** A repeating quest's schedule, as quest_add and quest_update accept it. */
+const REPEAT_SCHEMA = { type: "object", required: ["unit"], description: "Makes it a repeating daily that reopens by itself on each due date. The cadence counts from `from`, never from when it was last done, so late completion neither shifts it nor creates a duplicate. Calendar days in the quest log's time zone; no timed notifications.",
+	properties: {
+		every: { type: "integer", minimum: 1, maximum: 366, description: "Every this many units (default 1): every 2 with unit day is every second day." },
+		unit: { type: "string", enum: ["day", "week", "month"] },
+		from: { type: "string", description: "YYYY-MM-DD the cadence counts from and the first due date (default today)." },
+		weekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekly only: the weekdays it is due, 0 = Sunday to 6 = Saturday (default the start date's weekday)." } } };
 const TOOLS = [
 	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle or offline), folder and description. Use the id to message an agent.",
 		inputSchema: { type: "object", properties: { query: { type: "string", description: "Filter by name, folder or description." },
@@ -29,14 +36,14 @@ const TOOLS = [
 		inputSchema: { type: "object", properties: { history: { type: "boolean" } } } },
 	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. It is the only current copy: Jordan ticks quests off in Desk without telling you, so read it every time before answering about or changing his tasks, and never answer from memory.",
 		inputSchema: { type: "object", properties: {} } },
-	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines. For anything he does on set days (rowing, medicine, regular chores, any scheduled reminder) set repeat to those weekdays instead: it becomes a repeating daily that the log reopens by itself each of those days, so add it once and never re-add it.",
+	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines. For anything on a schedule (rowing, medicine, regular chores, any recurring reminder) set repeat instead: it becomes a repeating daily that reopens by itself on each due date, so add it once and never re-add it. Check quest_log's repeating list first to avoid duplicates.",
 		inputSchema: { type: "object", required: ["quests"], properties: { quests: { type: "array", maxItems: 20, items: { type: "object", required: ["title"], properties: {
 			title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS }, due: { type: "string" }, steps: { type: "array", items: { type: "string" } },
-			repeat: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekdays it repeats on, 0 = Sunday to 6 = Saturday; all seven for every day." } } } } } } },
+			repeat: REPEAT_SCHEMA } } } } } },
 	{ name: "quest_update", description: "Change a quest: rename it, rewrite notes, change its kind or due date (empty string clears it), replace its steps (each {title, done}), or move it (move_to: \"top\", \"bottom\" or the id of the quest to place it before).",
 		inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" }, title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS },
 			due: { type: "string" }, steps: { type: "array", items: { type: "object", required: ["title", "done"], properties: { title: { type: "string" }, done: { type: "boolean" } } } }, move_to: { type: "string" },
-			repeat: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekdays it repeats on (0 = Sunday); an empty list stops it repeating." } } } },
+			repeat: { ...REPEAT_SCHEMA, type: ["object", "null"], description: `${REPEAT_SCHEMA.description} null stops it repeating.` } } } },
 	{ name: "quest_complete", description: "Finish a quest: done when Jordan says he did it, abandoned when it no longer applies, or reopen. If an agent added it, that agent is told.",
 		inputSchema: { type: "object", required: ["id", "outcome"], properties: { id: { type: "string" }, outcome: { type: "string", enum: ["done", "abandoned", "reopen"] } } } },
 ];
@@ -285,7 +292,7 @@ export class DotConnector {
 		const { store, finished } = this.quests, by: QuestActor = { kind: "dot", label: LABEL };
 		const brief = (quest: Quest) => ({ id: quest.id, title: quest.title, ...(quest.notes ? { notes: quest.notes } : {}), ...(quest.due ? { due: quest.due } : {}),
 			...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
-			...(quest.repeat ? { repeats: repeatLabel(quest.repeat) } : {}),
+			...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 			added_by: quest.source.kind === "you" ? "Jordan" : quest.source.kind === "dot" ? "you" : quest.source.label ?? "an agent" });
 		if (name === "quest_log") {
 			const view = store.view(), { changed, events } = store.changesSince("dot", actor => actor.kind !== "dot");
@@ -299,6 +306,7 @@ export class DotConnector {
 				working_hours: `${hours.days.map(day => days[day]).join(", ")} ${hours.start}:00–${hours.end}:00`, on_duty: view.onDuty,
 				guidance: view.onDuty ? "Within working hours. On a scheduled check, only change the log or message Jordan if something needs his attention; if nothing changed since your last look, stay quiet."
 					: "Outside working hours. On a scheduled check, change nothing and do not message Jordan. Changes he asks for directly are always fine.",
+				schedule_note: `Dates and repeats are calendar days in ${hours.timeZone}. The log has no timed notifications; a repeating quest simply opens on its due date.`,
 				unchanged_since_last_look: !changed,
 				changes_since_last_look: events.map(event => ({ at: new Date(event.at).toISOString(), by: event.by.kind === "you" ? "Jordan" : event.by.label ?? "an agent", action: event.action, quest: event.title, id: event.quest || undefined })),
 				...(finished.length ? { turned_in: { note: "Quests Jordan finished since your last look. They are now turned in and leave his log; acknowledge them if he would like that.",
@@ -306,7 +314,9 @@ export class DotConnector {
 				today: open.filter(quest => isToday(quest, view.today)).map(brief),
 				main: open.filter(quest => !isToday(quest, view.today) && quest.kind === "main").map(brief),
 				side: open.filter(quest => !isToday(quest, view.today) && quest.kind === "side").map(brief),
-				completed_today: view.quests.filter(quest => quest.state === "done").map(quest => quest.title),
+				waiting_to_turn_in: view.quests.filter(quest => quest.state === "done").map(quest => quest.title),
+				repeating: [...view.quests.filter(quest => quest.repeat), ...view.upcoming ?? []].map(quest => ({ ...brief(quest),
+					status: quest.state === "done" ? "done for this due date" : quest.state === "open" ? quest.due ? `due since ${quest.due} (late)` : "due today" : `not due until ${quest.next}` })),
 			};
 		}
 		if (name === "quest_add") {

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { UiAction, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot } from "../shared/protocol.ts";
 import { ContextMeter } from "./settings-controls.tsx";
@@ -31,6 +31,9 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		{capacity && limit ? <><ContextMeter capacity={capacity} limit={limit} used={context?.tokens} />
 			<span>{context?.tokens == null ? "—" : tokens(context.tokens)} / {tokens(limit)}</span></> : "Context not measured"}
 	</button>;
+	// Reset countdowns tick once a minute.
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => { const timer = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 60_000); return () => clearInterval(timer); }, []);
 	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
 	const gauge = (badge: typeof badges[number]) => {
 		if (badge.meter) return badge.meter;
@@ -39,7 +42,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	};
 	const usageBadge = (badge: typeof badges[number], index: number) => {
 		const meter = gauge(badge)!, percent = Math.max(0, Math.min(100, meter.value / Math.max(1, meter.max) * 100));
-		const reset = meter.resetsAt ? new Date(meter.resetsAt) : undefined;
+		const reset = meter.resetsAt ? new Date(meter.resetsAt) : undefined, until = reset ? countdown(reset.getTime() - now) : /· resets in (.+)$/.exec(badge.value)?.[1];
 		const resetText = reset ? ` · resets ${reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 			: reset.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : (/· (resets in .+)$/.exec(badge.value)?.[1] ? ` · ${/· (resets in .+)$/.exec(badge.value)![1]}` : "");
 		return <span className={`usage-gauge${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
@@ -47,6 +50,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 			<span className="usage-gauge-label">{badge.label === "Weekly" ? "Week" : badge.label}</span>
 			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
 			<span className="usage-gauge-value">{Math.round(percent)}%</span>
+			{until && <span className="usage-gauge-reset">{until}</span>}
 		</span>;
 	};
 	const badgeControl = (badge: typeof badges[number], index: number) => {
@@ -86,4 +90,13 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 			<p className="composer-shortcuts">{shortcutHint}</p>
 		</div>
 	</div>;
+}
+
+/** Time until a reset, short enough for the status bar: "45m", "2h 10m", "3d 4h". */
+function countdown(ms: number): string {
+	const minutes = Math.max(0, Math.ceil(ms / 60_000));
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+	return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
 }

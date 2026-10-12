@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { defaultHours, isOnDuty, isReady, localTime, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand, type QuestEvent, type QuestHours, type QuestKind, type QuestStep, type QuestView } from "./quest-model.ts";
+import { defaultHours, isOnDuty, isReady, lastDue, localTime, nextDue, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand, type QuestEvent, type QuestHours, type QuestKind, type QuestRepeat, type QuestStep, type QuestView } from "./quest-model.ts";
 
 const MAX_OPEN = 200;
 const text = (value: unknown, limit: number, name: string) => {
@@ -20,11 +20,21 @@ const date = (value: unknown) => {
 	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) throw Error("Give due dates as YYYY-MM-DD.");
 	return value;
 };
-const repeat = (value: unknown): number[] | undefined => {
+const weekdays = (value: unknown) => {
+	if (!Array.isArray(value) || !value.length || value.some(day => !Number.isInteger(day) || day < 0 || day > 6)) throw Error("repeat.weekdays is a list of weekdays, 0 (Sunday) to 6 (Saturday).");
+	return [...new Set(value as number[])].sort();
+};
+/** A schedule from a tool or the editor; a bare list of weekdays means weekly on those days, starting today. */
+const repeat = (value: unknown, today: string): QuestRepeat | undefined => {
 	if (value === undefined || value === null) return undefined;
-	if (!Array.isArray(value) || value.some(day => !Number.isInteger(day) || day < 0 || day > 6)) throw Error("repeat is a list of weekdays, 0 (Sunday) to 6 (Saturday).");
-	const days = [...new Set(value as number[])].sort();
-	return days.length ? days : undefined;
+	if (Array.isArray(value)) return value.length ? { every: 1, unit: "week", from: today, weekdays: weekdays(value) } : undefined;
+	if (typeof value !== "object") throw Error("repeat is { every, unit, from, weekdays? }.");
+	const { every = 1, unit = "day", from, weekdays: days } = value as Record<string, unknown>;
+	if (!Number.isInteger(every) || (every as number) < 1 || (every as number) > 366) throw Error("repeat.every is a whole number from 1 to 366.");
+	if (unit !== "day" && unit !== "week" && unit !== "month") throw Error('repeat.unit is "day", "week" or "month".');
+	if (days !== undefined && unit !== "week") throw Error("repeat.weekdays only applies when unit is \"week\".");
+	if (from !== undefined && (typeof from !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(from) || Number.isNaN(Date.parse(from)))) throw Error("repeat.from is a start date, YYYY-MM-DD.");
+	return { every: every as number, unit, from: (from as string | undefined) ?? today, ...(days !== undefined ? { weekdays: weekdays(days) } : {}) };
 };
 const steps = (value: unknown): QuestStep[] | undefined => {
 	if (value === undefined) return;
@@ -76,11 +86,16 @@ export class QuestStore {
 	private setMeta(key: string, value: string): void {
 		this.db.prepare("INSERT INTO quest_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
 	}
+	/** A stored schedule; early repeating quests stored a bare list of weekdays, counted from the day they were added. */
+	private schedule(value: unknown, created: number): QuestRepeat {
+		return Array.isArray(value) ? { every: 1, unit: "week", from: localTime(created, this.hours().timeZone).date, weekdays: value as number[] } : value as QuestRepeat;
+	}
+
 	private row(value: Record<string, unknown> | undefined): Quest | undefined {
 		if (!value) return;
 		return { id: String(value.id), title: String(value.title), ...(value.notes ? { notes: String(value.notes) } : {}), kind: value.kind as QuestKind,
 			state: value.state as Quest["state"], ...(value.due ? { due: String(value.due) } : {}), ...(value.steps ? { steps: JSON.parse(String(value.steps)) } : {}),
-			...(value.repeat ? { repeat: JSON.parse(String(value.repeat)) } : {}), ...(value.turned_in ? { turnedIn: Number(value.turned_in) } : {}),
+			...(value.repeat ? { repeat: this.schedule(JSON.parse(String(value.repeat)), Number(value.created)) } : {}), ...(value.turned_in ? { turnedIn: Number(value.turned_in) } : {}),
 			source: JSON.parse(String(value.source)), ...(value.notify ? { notify: true } : {}), created: Number(value.created), updated: Number(value.updated),
 			...(value.completed ? { completed: Number(value.completed) } : {}) };
 	}
@@ -109,21 +124,26 @@ export class QuestStore {
 
 	view(at = Date.now()): QuestView {
 		const hours = this.hours(), today = localTime(at, hours.timeZone).date;
-		const weekday = localTime(at, hours.timeZone).weekday;
 		// Finished quests stay, marked ready, until Jordan or his Dot turns them in.
 		const rows = this.db.prepare(`SELECT * FROM quests WHERE state='open' OR state='done' AND (turned_in IS NULL OR turned_in<completed)
 			OR repeat IS NOT NULL AND state<>'abandoned' ORDER BY position, created`).all() as Record<string, unknown>[];
+		const upcoming: Quest[] = [];
 		const quests = rows.flatMap(row => {
 			const quest = this.row(row)!;
 			if (!quest.repeat) return [quest];
-			// A repeating daily is open on its days until done that day, then waits to be turned in; otherwise it is hidden.
-			if (quest.completed && localTime(quest.completed, hours.timeZone).date === today) return isReady(quest) ? [quest] : [];
-			return quest.repeat.includes(weekday) ? [{ ...quest, state: "open" as const, completed: undefined, turnedIn: undefined }] : [];
+			// Open from each due date until done (late if past it), then waiting to be turned in, then resting until the next due date.
+			const last = lastDue(quest.repeat, today), next = nextDue(quest.repeat, today);
+			const done = !!last && !!quest.completed && localTime(quest.completed, hours.timeZone).date >= last;
+			if (last && !done) return [{ ...quest, state: "open" as const, completed: undefined, turnedIn: undefined, ...(last < today ? { due: last } : {}), next }];
+			if (done && isReady(quest)) return [{ ...quest, next }];
+			upcoming.push({ ...quest, next });
+			return [];
 		});
+		upcoming.sort((a, b) => a.next!.localeCompare(b.next!));
 		const days = new Set<string>();
 		for (const row of this.db.prepare("SELECT completed AS at FROM quests WHERE completed>? UNION SELECT at FROM quest_events WHERE action='completed' AND at>?")
 			.all(at - 400 * 86_400_000, at - 400 * 86_400_000) as { at: number }[]) days.add(localTime(row.at, hours.timeZone).date);
-		return { quests, hours, today, onDuty: isOnDuty(hours, at), completedDays: [...days].sort().reverse(), revision: this.revision() };
+		return { quests, upcoming, hours, today, onDuty: isOnDuty(hours, at), completedDays: [...days].sort().reverse(), revision: this.revision() };
 	}
 
 	/** Finished quests waiting to be turned in, oldest first. */
@@ -145,7 +165,7 @@ export class QuestStore {
 	/** Apply one change. Agents may only change quests they added; returns the quest for any follow-up. */
 	apply(by: QuestActor, command: QuestCommand, options: { notify?: boolean } = {}): Quest | undefined {
 		const result = this.tx(() => {
-			const now = Date.now();
+			const now = Date.now(), today = localTime(now, this.hours().timeZone).date;
 			const own = (quest: Quest) => {
 				if (by.kind === "agent" && !(quest.source.kind === "agent" && quest.source.id === by.id))
 					throw Error("Agents can only change quests they added. Message Jordan or his Dot about others.");
@@ -157,9 +177,9 @@ export class QuestStore {
 					if (open >= MAX_OPEN) throw Error("The quest log is full. Complete or abandon some quests first.");
 					const first = (this.db.prepare("SELECT MIN(position) AS p FROM quests WHERE state='open'").get() as { p: number | null }).p;
 					const last = (this.db.prepare("SELECT MAX(position) AS p FROM quests WHERE state='open'").get() as { p: number | null }).p;
-					const days = repeat(command.repeat);
-					const quest: Quest = { id: randomBytes(3).toString("hex"), title: text(command.title, 200, "title"), kind: days ? "daily" : kind(command.kind) ?? "side", state: "open",
-						notes: optionalText(command.notes, 4000), due: days ? undefined : date(command.due), steps: steps(command.steps), ...(days ? { repeat: days } : {}), source: by,
+					const schedule = repeat(command.repeat, today);
+					const quest: Quest = { id: randomBytes(3).toString("hex"), title: text(command.title, 200, "title"), kind: schedule ? "daily" : kind(command.kind) ?? "side", state: "open",
+						notes: optionalText(command.notes, 4000), due: schedule ? undefined : date(command.due), steps: steps(command.steps), ...(schedule ? { repeat: schedule } : {}), source: by,
 						...(by.kind === "agent" && options.notify !== false ? { notify: true } : {}), created: now, updated: now };
 					// Jordan's own quests go to the top; others' at the bottom.
 					const position = by.kind === "you" ? (first ?? 0) - 1 : (last ?? 0) + 1;
@@ -177,8 +197,8 @@ export class QuestStore {
 						...(command.notes !== undefined ? { notes: optionalText(command.notes, 4000) } : {}),
 						...(command.due !== undefined ? { due: date(command.due) } : {}),
 						...(command.steps !== undefined ? { steps: steps(command.steps) } : {}),
-						...(command.repeat !== undefined ? { repeat: repeat(command.repeat) } : {}) };
-					if (next.repeat) next.kind = "daily";
+						...(command.repeat !== undefined ? { repeat: repeat(command.repeat, today) } : {}) };
+					if (next.repeat) { next.kind = "daily"; next.due = undefined; }
 					this.db.prepare("UPDATE quests SET title=?,notes=?,kind=?,due=?,steps=?,repeat=?,updated=? WHERE id=?").run(next.title, next.notes ?? null, next.kind,
 						next.due ?? null, next.steps?.length ? JSON.stringify(next.steps) : null, next.repeat ? JSON.stringify(next.repeat) : null, now, quest.id);
 					this.event(by, "updated", next); return next;
@@ -186,9 +206,10 @@ export class QuestStore {
 				case "complete": case "abandon": case "reopen": {
 					const quest = own(this.require(command.id));
 					const state = command.action === "complete" ? "done" : command.action === "abandon" ? "abandoned" : "open";
-					// A recurring daily is done again each day it applies.
-					const doneToday = !!quest.completed && localTime(quest.completed, this.hours().timeZone).date === localTime(now, this.hours().timeZone).date;
-					if (quest.state === state && !(quest.repeat && state === "done" && !doneToday)) return quest;
+					// A repeating quest is done again for each due date.
+					const last = quest.repeat && lastDue(quest.repeat, today), timeZone = this.hours().timeZone;
+					const doneForLast = !!last && !!quest.completed && localTime(quest.completed, timeZone).date >= last;
+					if (quest.state === state && !(quest.repeat && state === "done" && !doneForLast)) return quest;
 					this.db.prepare("UPDATE quests SET state=?,completed=?,updated=? WHERE id=?").run(state, state === "done" ? now : null, now, quest.id);
 					const next = { ...quest, state, ...(state === "done" ? { completed: now } : { completed: undefined }), updated: now } as Quest;
 					this.event(by, command.action === "complete" ? "completed" : command.action === "abandon" ? "abandoned" : "reopened", next); return next;

@@ -1111,6 +1111,8 @@ details[open] > summary:before {
 .usage-gauge-track { position:relative; width:34px; height:5px; border-radius:3px; background:var(--border); overflow:hidden; }
 .usage-gauge-track > span { position:absolute; inset:0 auto 0 0; border-radius:inherit; background:var(--accent); }
 .usage-gauge-value { color:var(--text); font-variant-numeric:tabular-nums; min-width:3ch; }
+.usage-gauge-reset { font-variant-numeric:tabular-nums; }
+.usage-gauge-reset::before { content:"· "; }
 .usage-gauge.low .usage-gauge-track > span { background:#d08a2c; }
 .usage-gauge.critical .usage-gauge-track > span { background:var(--danger); }
 .usage-gauge.critical .usage-gauge-value { color:var(--danger); }
@@ -2365,3 +2367,10 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-toast.asked { border:1px solid var(--border); background:var(--surface); box-shadow:0 8px 30px #0004; padding:8px 14px; }
 .quest-days button[aria-pressed=true] { color:var(--quest-blue); border-color:var(--quest-blue); background:color-mix(in srgb, var(--quest-blue) 10%, transparent); }
 .quest-navigation-icon { color:#ffd100; background:color-mix(in srgb, #ffd100 12%, transparent); font:900 17px/1 Georgia,"Times New Roman",serif; text-shadow:1px 1px 0 #1a1203, -1px -1px 0 #1a1203, 1px -1px 0 #1a1203, -1px 1px 0 #1a1203; }
+.quest.resting .quest-marker { opacity:.6; }
+.quest.resting .quest-title { opacity:.8; }
+.quest-repeat-row { gap:10px; flex-wrap:wrap; }
+.quest-repeat-row > * { flex:none; }
+.quest-repeat-row select { width:auto; }
+.quest-repeat-row label { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; }
+.quest-repeat-row input[type=number] { width:7ch; }
