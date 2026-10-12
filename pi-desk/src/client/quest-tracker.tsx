@@ -2,7 +2,16 @@ import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "rea
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
-import { isToday, questStreak, QUEST_KIND_NAMES, QUEST_KINDS, type Quest, type QuestCommand, type QuestKind, type QuestView } from "../shared/quests.ts";
+import { isReady, isToday, localTime, questStreak, repeatLabel, QUEST_KIND_NAMES, QUEST_KINDS, type Quest, type QuestCommand, type QuestKind, type QuestView } from "../shared/quests.ts";
+
+/** Classic quest-giver markers: ! until the quest is done, then ? until it is turned in. Dailies and repeatables are blue. */
+function QuestMarker({ quest, finishing }: { quest: Quest; finishing: boolean }) {
+	const ready = quest.state === "done" || finishing || !!quest.steps?.length && quest.steps.every(step => step.done);
+	const glyph = ready ? "?" : "!", tone = quest.kind === "daily" || quest.repeat ? "blue" : "gold";
+	return <svg className={`quest-marker marker-${tone}`} viewBox="0 0 20 24" aria-hidden="true">
+		<text x="10" y="20" textAnchor="middle">{glyph}</text>
+	</svg>;
+}
 
 /** One computer's quest log as the browser sees it. */
 export interface QuestLog { computer?: string; name: string; view: QuestView; connected: boolean }
@@ -66,14 +75,15 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	};
 	const items: Item[] = [...logs].sort((a, b) => Number(b === home) - Number(a === home))
 		.flatMap(log => log.view.quests.map(quest => ({ quest, log, key: `${log.computer ?? "local"}:${quest.id}` })));
-	const today = home.view.today, live = items.filter(item => item.quest.state === "open");
+	// Finished quests keep their place, marked "?", until turned in. Importance shows as title colour, like quest level.
+	const today = home.view.today, live = items.filter(item => item.quest.state === "open" || isReady(item.quest));
 	const sections = [
-		{ id: "today", label: "Today", items: live.filter(item => isToday(item.quest, today)) },
-		{ id: "main", label: "Main quests", items: live.filter(item => !isToday(item.quest, today) && item.quest.kind === "main") },
-		{ id: "side", label: "Side quests", items: live.filter(item => !isToday(item.quest, today) && item.quest.kind === "side") },
-		{ id: "done", label: "Completed today", items: items.filter(item => item.quest.state === "done") },
+		{ id: "today", label: "Daily", items: live.filter(item => isToday(item.quest, today)) },
+		{ id: "log", label: "Quests", items: live.filter(item => !isToday(item.quest, today)) },
 	];
-	const done = sections[3]!.items.length, total = done + sections[0]!.items.length;
+	const ready = live.filter(item => isReady(item.quest));
+	const done = ready.filter(item => localTime(item.quest.completed!, home.view.hours.timeZone).date === today).length;
+	const total = done + sections[0]!.items.filter(item => item.quest.state === "open").length;
 	const streak = questStreak(logs.flatMap(log => log.view.completedDays), home.view.hours);
 
 	const complete = (item: Item) => {
@@ -81,7 +91,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		setFinishing(current => [...current, item.key]);
 		if (sound) chime();
 		setToast({ kind: "complete", text: item.quest.title });
-		// Let the flourish play before the quest moves to Completed.
+		// Let the flourish play before the marker turns to "?".
 		setTimeout(() => void run(item.log, { action: "complete", id: item.quest.id }).finally(() => setFinishing(current => current.filter(key => key !== item.key))), 650);
 	};
 	const add = (event: FormEvent) => {
@@ -100,23 +110,25 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		const from = item.quest.source;
 		if (from.kind === "agent" && from.id) return <button type="button" className="quest-source" title="Open the conversation that added this"
 			onClick={() => openAgent(from.id!)}>{agentName(from.id) ?? from.label ?? "Agent"}</button>;
-		if (from.kind === "dot") return <span className="quest-source">{ask?.name ?? "Dot"}</span>;
 		return null;
 	};
 
 	const row = (item: Item) => {
 		const { quest } = item, expanded = open === item.key, due = dueLabel(quest.due, today), finished = quest.state === "done";
-		const stepsDone = quest.steps?.filter(step => step.done).length ?? 0;
-		return <li key={item.key} className={`quest${finished ? " done" : ""}${finishing.includes(item.key) ? " finishing" : ""}${expanded ? " expanded" : ""}`}
+		return <li key={item.key} className={`quest quest-${quest.kind}${finished ? " done" : ""}${finishing.includes(item.key) ? " finishing" : ""}${expanded ? " expanded" : ""}`}
 			draggable={!finished && !editing} onDragStart={() => { dragged.current = item.key; }} onDragOver={event => event.preventDefault()} onDrop={event => drop(item, event)}>
-			<button type="button" className="quest-check" aria-label={finished ? `Reopen ${quest.title}` : `Complete ${quest.title}`} disabled={!item.log.connected}
-				onClick={() => finished ? void run(item.log, { action: "reopen", id: quest.id }) : complete(item)}>{(finished || finishing.includes(item.key)) && <Icon name="check" />}</button>
+			<button type="button" className="quest-check" aria-label={finished ? `Reopen ${quest.title}` : `Complete ${quest.title}`} title={finished ? "Ready to turn in. Click to reopen" : "Complete"}
+				disabled={!item.log.connected} onClick={() => finished ? void run(item.log, { action: "reopen", id: quest.id }) : complete(item)}>
+				<QuestMarker quest={quest} finishing={finishing.includes(item.key)} /></button>
 			<div className="quest-body">
 				{editing === item.key ? <QuestEditor quest={quest} cancel={() => setEditing(undefined)}
 					save={fields => void run(item.log, { action: "update", id: quest.id, ...fields }).then(ok => { if (ok) setEditing(undefined); })} /> : <>
 					<button type="button" className="quest-title" aria-expanded={expanded} onClick={() => setOpen(expanded ? undefined : item.key)}>{quest.title}</button>
+					{quest.steps && !expanded && <ul className="quest-objectives">{quest.steps.slice(0, 6).map((step, index) =>
+						<li key={index} className={step.done ? "done" : ""}>- {step.title}{step.done && " (Complete)"}</li>)}
+						{quest.steps.length > 6 && <li>- {quest.steps.length - 6} more</li>}</ul>}
 					<div className="quest-meta">
-						{quest.steps && <span>{stepsDone}/{quest.steps.length}</span>}
+						{quest.repeat && <span className="quest-repeat">{repeatLabel(quest.repeat)}</span>}
 						{due && <span className={`quest-due ${due.tone}`}>{due.text}</span>}
 						{source(item)}
 						{item.log !== home && <span className="quest-computer">{item.log.name}</span>}
@@ -126,6 +138,10 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 						{quest.steps && <ul className="quest-steps">{quest.steps.map((step, index) => <li key={index}>
 							<label><input type="checkbox" checked={step.done} disabled={finished || !item.log.connected} onChange={() => void run(item.log, { action: "update", id: quest.id,
 								steps: quest.steps!.map((other, at) => at === index ? { ...other, done: !other.done } : other) })} />{step.title}</label></li>)}</ul>}
+						{finished && <div className="quest-actions">
+							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => void run(item.log, { action: "turnin", id: quest.id })}><Icon name="check" />Turn in</button>
+							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => void run(item.log, { action: "reopen", id: quest.id })}>Reopen</button>
+						</div>}
 						{!finished && <div className="quest-actions">
 							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => setEditing(item.key)}><Icon name="edit" />Edit</button>
 							{ask && item.log === home && <ActionMenu label={`Ask ${ask.name}`} actions={ASKS.map(({ id, label }) => ({ id, label }))} invoke={action => {
@@ -147,17 +163,19 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 				{total > 0 && <span className="quest-progress" title={`${done} of ${total} done today`}><span style={{ width: `${Math.round(done / total * 100)}%` }} /></span>}
 				<small>{total ? `${done}/${total} today` : done ? `${done} done today` : ""}{streak > 1 ? ` · ${streak}-day streak` : ""}</small></div>
 			<div className="quest-header-actions">
+				{ready.length > 0 && <button type="button" className="quiet-action quest-turnin" title={`Turn in ${ready.length} finished ${ready.length === 1 ? "quest" : "quests"}${ask ? `. ${ask.name} does this when it next reads the log` : ""}`}
+					onClick={() => { for (const log of logs) if (log.connected && ready.some(item => item.log === log)) void run(log, { action: "turnin" }); }}>Turn in {ready.length}</button>}
 				<button type="button" className="icon-button" aria-pressed={sound} title={sound ? "Completion sound on" : "Completion sound off"}
 					onClick={() => { const next = !sound; setSound(next); localStorage.setItem("pi-desk:quest-sound", next ? "on" : "off"); if (next) chime(); }}>
 					<Icon name={sound ? "sound" : "sound-off"} /></button>
 				<button type="button" className="icon-button" aria-expanded={hoursOpen} title="Working hours" onClick={() => setHoursOpen(value => !value)}><Icon name="clock" /></button>
 			</div>
 		</header>
-		{toast && <div className={`quest-toast ${toast.kind}`} role="status"><Icon name="check" /><span>{toast.kind === "asked" ? toast.text : <>Quest complete<small>{toast.text}</small></>}</span></div>}
+		{toast && <div className={`quest-toast ${toast.kind}`} role="status"><span>{toast.kind === "asked" ? toast.text : <><strong className="quest-toast-heading">{toast.text} completed.</strong></>}</span></div>}
 		{hoursOpen && <QuestHoursEditor log={home} ask={ask} save={hours => void run(home, { action: "hours", hours })} />}
 		<form className="quest-add" onSubmit={add}>
 			<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a quest…" aria-label="New quest" maxLength={200} disabled={!home.connected} />
-			<div className="quest-kinds" role="radiogroup" aria-label="Quest kind">{QUEST_KINDS.map(value => <button type="button" role="radio" aria-checked={kind === value} key={value}
+			<div className="quest-kinds" role="radiogroup" aria-label="Quest kind">{QUEST_KINDS.map(value => <button type="button" role="radio" aria-checked={kind === value} key={value} className={`quest-kind-${value}`}
 				onClick={() => setKind(value)}>{QUEST_KIND_NAMES[value]}</button>)}</div>
 		</form>
 		{error && <p className="error-text" role="alert">{error}</p>}
@@ -179,21 +197,26 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	</aside>;
 }
 
-function QuestEditor({ quest, save, cancel }: { quest: Quest; save: (fields: { title: string; notes: string; kind: QuestKind; due: string; steps?: Quest["steps"] }) => void; cancel: () => void }) {
+function QuestEditor({ quest, save, cancel }: { quest: Quest; save: (fields: { title: string; notes: string; kind: QuestKind; due: string; steps?: Quest["steps"]; repeat: number[] | null }) => void; cancel: () => void }) {
 	const [title, setTitle] = useState(quest.title), [notes, setNotes] = useState(quest.notes ?? ""), [kind, setKind] = useState(quest.kind), [due, setDue] = useState(quest.due ?? "");
+	const [days, setDays] = useState<number[]>(quest.repeat ?? []);
 	const [steps, setSteps] = useState((quest.steps ?? []).map(step => step.title).join("\n"));
 	return <form className="quest-editor" onSubmit={event => {
 		event.preventDefault();
 		const lines = steps.split("\n").map(line => line.trim()).filter(Boolean);
-		save({ title, notes, kind, due, steps: lines.map(line => ({ title: line, done: quest.steps?.find(step => step.title === line)?.done ?? false })) });
+		save({ title, notes, kind, due, repeat: days.length ? days : null, steps: lines.map(line => ({ title: line, done: quest.steps?.find(step => step.title === line)?.done ?? false })) });
 	}}>
 		<input value={title} onChange={event => setTitle(event.target.value)} aria-label="Quest title" maxLength={200} autoFocus />
 		<textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Notes" aria-label="Notes" rows={2} />
 		<textarea value={steps} onChange={event => setSteps(event.target.value)} placeholder="Steps, one per line" aria-label="Steps" rows={2} />
 		<div className="quest-editor-row">
 			<select value={kind} onChange={event => setKind(event.target.value as QuestKind)} aria-label="Kind">{QUEST_KINDS.map(value => <option key={value} value={value}>{QUEST_KIND_NAMES[value]}</option>)}</select>
-			<input type="date" value={due} onChange={event => setDue(event.target.value)} aria-label="Due date" />
+			<input type="date" value={due} onChange={event => setDue(event.target.value)} aria-label="Due date" disabled={days.length > 0} />
 		</div>
+		<div className="quest-days" role="group" aria-label="Repeats on">{DAYS.map((label, day) => <button type="button" key={day} aria-pressed={days.includes(day)}
+			title={`Repeat every ${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day]}`}
+			onClick={() => setDays(current => current.includes(day) ? current.filter(value => value !== day) : [...current, day].sort())}>{label}</button>)}</div>
+		<small className="muted">{days.length ? `Repeats ${repeatLabel(days).toLowerCase()} as a daily quest.` : "Choose days to make it a repeating daily."}</small>
 		<div className="quest-editor-row"><button type="button" onClick={cancel}>Cancel</button><button className="primary" type="submit">Save</button></div>
 	</form>;
 }

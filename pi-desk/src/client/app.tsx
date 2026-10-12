@@ -645,7 +645,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           <DotNavigation dot={dot} selected={dotSelected} open={() => { setSelected("dot"); setSidebar(false); setPanel(undefined); }} />
           {questLogs.length > 0 && <button className={`session-item quest-navigation${questsSelected ? " selected" : ""}`} aria-current={questsSelected ? "page" : undefined}
             onClick={() => { setSelected("quests"); setSidebar(false); setPanel(undefined); }}>
-            <span className="quest-navigation-icon" aria-hidden="true"><Icon name="check" /></span>
+            <span className="quest-navigation-icon" aria-hidden="true">!</span>
             <span><strong>Quests</strong><small>{openQuests ? `${openQuests} open` : "All clear"}</small></span></button>}
         </nav>
         <div className="nav-label">

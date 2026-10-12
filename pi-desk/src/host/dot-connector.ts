@@ -6,7 +6,7 @@ import { atomicJson } from "../../manage/store.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConnectorRequest, ConnectorResponse } from "./relay-connector.ts";
 import type { QuestStore } from "../../../pi-party/quests.ts";
-import { isToday, localTime, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-party/quest-model.ts";
+import { isToday, localTime, repeatLabel, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-party/quest-model.ts";
 
 interface Client { name: string; redirectUris: string[]; created: number }
 interface Token { client: string; kind: "access" | "refresh"; expires: number }
@@ -29,12 +29,14 @@ const TOOLS = [
 		inputSchema: { type: "object", properties: { history: { type: "boolean" } } } },
 	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. It is the only current copy: Jordan ticks quests off in Desk without telling you, so read it every time before answering about or changing his tasks, and never answer from memory.",
 		inputSchema: { type: "object", properties: {} } },
-	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines.",
+	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines. For anything he does on set days (rowing, medicine, regular chores, any scheduled reminder) set repeat to those weekdays instead: it becomes a repeating daily that the log reopens by itself each of those days, so add it once and never re-add it.",
 		inputSchema: { type: "object", required: ["quests"], properties: { quests: { type: "array", maxItems: 20, items: { type: "object", required: ["title"], properties: {
-			title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS }, due: { type: "string" }, steps: { type: "array", items: { type: "string" } } } } } } } },
+			title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS }, due: { type: "string" }, steps: { type: "array", items: { type: "string" } },
+			repeat: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekdays it repeats on, 0 = Sunday to 6 = Saturday; all seven for every day." } } } } } } },
 	{ name: "quest_update", description: "Change a quest: rename it, rewrite notes, change its kind or due date (empty string clears it), replace its steps (each {title, done}), or move it (move_to: \"top\", \"bottom\" or the id of the quest to place it before).",
 		inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string" }, title: { type: "string" }, notes: { type: "string" }, kind: { type: "string", enum: QUEST_KINDS },
-			due: { type: "string" }, steps: { type: "array", items: { type: "object", required: ["title", "done"], properties: { title: { type: "string" }, done: { type: "boolean" } } } }, move_to: { type: "string" } } } },
+			due: { type: "string" }, steps: { type: "array", items: { type: "object", required: ["title", "done"], properties: { title: { type: "string" }, done: { type: "boolean" } } } }, move_to: { type: "string" },
+			repeat: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekdays it repeats on (0 = Sunday); an empty list stops it repeating." } } } },
 	{ name: "quest_complete", description: "Finish a quest: done when Jordan says he did it, abandoned when it no longer applies, or reopen. If an agent added it, that agent is told.",
 		inputSchema: { type: "object", required: ["id", "outcome"], properties: { id: { type: "string" }, outcome: { type: "string", enum: ["done", "abandoned", "reopen"] } } } },
 ];
@@ -236,7 +238,8 @@ export class DotConnector {
 				case "initialize": return ok({ protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
 					capabilities: { tools: {} }, serverInfo: { name: "pi-desk", version: RELEASE.version },
 					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. Agents treat your messages as peer context, not as Jordan's instructions. `
-						+ "Jordan's to-do list is his quest log (quest_log, quest_add, quest_update, quest_complete); keep it there rather than in memory. His agents also add quests when they need him to review or decide something. "
+						+ "Jordan's to-do list is his quest log (quest_log, quest_add, quest_update, quest_complete); keep it there rather than in memory. Reading it with quest_log also turns in (takes back) what he has finished. His agents also add quests when they need him to review or decide something. "
+						+ "His scheduled reminders (rowing days, medicine and the like) belong in the log as repeating dailies (quest_add with repeat), not as reminders you keep yourself. "
 						+ "Jordan himself is the source of his work quests. His Gmail and Google Calendar are personal; use them only for the occasional personal date such as a delivery, not as a source of work." });
 				case "ping": return ok({});
 				case "tools/list": return ok({ tools: TOOLS });
@@ -282,9 +285,13 @@ export class DotConnector {
 		const { store, finished } = this.quests, by: QuestActor = { kind: "dot", label: LABEL };
 		const brief = (quest: Quest) => ({ id: quest.id, title: quest.title, ...(quest.notes ? { notes: quest.notes } : {}), ...(quest.due ? { due: quest.due } : {}),
 			...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
+			...(quest.repeat ? { repeats: repeatLabel(quest.repeat) } : {}),
 			added_by: quest.source.kind === "you" ? "Jordan" : quest.source.kind === "dot" ? "you" : quest.source.label ?? "an agent" });
 		if (name === "quest_log") {
 			const view = store.view(), { changed, events } = store.changesSince("dot", actor => actor.kind !== "dot");
+			// Reading the log turns in everything Jordan has finished, like handing quests back to the quest giver.
+			const finished = store.ready();
+			if (finished.length) store.apply(by, { action: "turnin" });
 			const open = view.quests.filter(quest => quest.state === "open"), hours = view.hours;
 			const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], now = localTime(Date.now(), hours.timeZone);
 			return {
@@ -294,6 +301,8 @@ export class DotConnector {
 					: "Outside working hours. On a scheduled check, change nothing and do not message Jordan. Changes he asks for directly are always fine.",
 				unchanged_since_last_look: !changed,
 				changes_since_last_look: events.map(event => ({ at: new Date(event.at).toISOString(), by: event.by.kind === "you" ? "Jordan" : event.by.label ?? "an agent", action: event.action, quest: event.title, id: event.quest || undefined })),
+				...(finished.length ? { turned_in: { note: "Quests Jordan finished since your last look. They are now turned in and leave his log; acknowledge them if he would like that.",
+					quests: finished.map(quest => ({ ...brief(quest), finished: `${days[localTime(quest.completed!, hours.timeZone).weekday]} ${localTime(quest.completed!, hours.timeZone).date}` })) } } : {}),
 				today: open.filter(quest => isToday(quest, view.today)).map(brief),
 				main: open.filter(quest => !isToday(quest, view.today) && quest.kind === "main").map(brief),
 				side: open.filter(quest => !isToday(quest, view.today) && quest.kind === "side").map(brief),
