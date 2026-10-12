@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -69,6 +70,20 @@ function pidAbsent(pid: number): boolean {
 	try { process.kill(pid, 0); return false; }
 	catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
+/**
+ * Whether a recorded worker process has certainly exited. Its PID can later belong to something else: PIDs start low
+ * again after a reboot, and on Linux kill(pid, 0) also answers for a thread inside another process.
+ */
+function workerGone(directory: string, pid: number, file: "bootstrap.json" | "worker.json"): boolean {
+	if (pidAbsent(pid)) return true;
+	// Recorded before this boot: that process ended with the restart, whatever has its number now.
+	try { if (statSync(join(directory, file)).mtimeMs < Date.now() - uptime() * 1000 - 60_000) return true; } catch { /* no record */ }
+	// On Linux a live PID is the worker only if it is a process started for this worker directory.
+	if (process.platform === "linux") {
+		try { return !readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(directory); } catch { return true; }
+	}
+	return false;
+}
 
 /** One launch or authenticated adoption under an OS-backed launch lease. */
 export async function attachWorker(directory: string, options: WorkerInit, receive: (message: WorkerMessage) => void,
@@ -89,13 +104,13 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 			} catch (error) {
 				if (settings.adoptOnly) throw new WorkerConnectionError("The existing worker could not be adopted; no replacement was started.");
 				if (!vacant(directory)) throw new WorkerConnectionError("The existing worker could not be attached. Its lease is still held; it was not replaced.");
-				if (!pidAbsent(previous.pid)) throw new WorkerConnectionError("The previous worker process is still present; no replacement was started.");
+				if (!workerGone(directory, previous.pid, "worker.json")) throw new WorkerConnectionError("The previous worker process is still present; no replacement was started.");
 				removeWorkerRecord(directory, previous.instance);
 			}
 		}
 		if (settings.adoptOnly) throw new WorkerConnectionError("No existing worker endpoint was found; no worker was started.");
 		const pending = readWorkerBootstrap(directory);
-		if (!vacant(directory) || pending && !pending.failed && (!pending.pid || !pidAbsent(pending.pid)))
+		if (!vacant(directory) || pending && !pending.failed && (!pending.pid || !workerGone(directory, pending.pid, "bootstrap.json")))
 			throw new WorkerConnectionError("The previous worker launch is still unconfirmed; it was not repeated.");
 		const bootstrap: WorkerBootstrap = { version: 1, instance: randomUUID(), secret: randomBytes(32).toString("hex"),
 			options: { ...options, runtimeDirectory: settings.runtimeDirectory } };
@@ -137,7 +152,7 @@ export async function waitWorkerStopped(directory: string, instance: string, tim
 	while (Date.now() < until) {
 		const record = readWorkerRecord(directory), bootstrap = readWorkerBootstrap(directory);
 		// A relaunch is refused while the previous worker's process exists, so stopping includes its exit.
-		const exiting = bootstrap?.instance === instance && bootstrap.pid !== undefined && !pidAbsent(bootstrap.pid);
+		const exiting = bootstrap?.instance === instance && bootstrap.pid !== undefined && !workerGone(directory, bootstrap.pid, "bootstrap.json");
 		if ((!record || record.instance !== instance) && vacant(directory) && !exiting) return;
 		await delay(25);
 	}

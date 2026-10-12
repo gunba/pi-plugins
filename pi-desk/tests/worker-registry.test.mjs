@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -244,5 +245,20 @@ test("an occupied actor lease or unresolved launch cannot create a second worker
 	writeWorkerFile(root, "bootstrap.json", { version: 1, instance: randomUUID(), secret: randomBytes(32).toString("hex"), options: { cwd: root } });
 	try {
 		await assert.rejects(attachWorker(root, { cwd: root }, () => {}, () => {}, { module: "/not-launched.mjs" }), /unconfirmed/);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a recorded worker PID now used by an unrelated process does not block a relaunch", { skip: process.platform !== "linux" }, async () => {
+	// After a crash and reboot the old PID belonged to a thread inside Chrome, so the conversation could never resume.
+	const root = await mkdtemp(join(tmpdir(), "desk-worker-reused-pid-"));
+	try {
+		const identity = { version: 1, instance: randomUUID(), secret: randomBytes(32).toString("hex") };
+		const free = await new Promise(resolve => { const server = createServer().listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolve(port)); }); });
+		// This test process is alive but is not a worker for this directory.
+		writeWorkerFile(root, "bootstrap.json", { ...identity, options: { cwd: root }, pid: process.pid });
+		writeWorkerFile(root, "worker.json", { ...identity, pid: process.pid, port: free });
+		await assert.rejects(attachWorker(root, { cwd: root }, () => {}, () => {}, { module: join(root, "missing-worker.mjs"), timeout: 5000 }),
+			error => !/still present/.test(error.message) && /stopped during launch/.test(error.message));
+		assert.equal(readWorkerRecord(root), undefined, "the stale record is cleared before the relaunch");
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
