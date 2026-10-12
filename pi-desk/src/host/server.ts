@@ -55,7 +55,9 @@ interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: str
 interface ModelChoice { model?: string; reasoning?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number;
 	/** A new conversation's chosen model, applied once it is ready and before any message is delivered. */
-	setup?: ModelChoice; settingUp?: Promise<void> }
+	setup?: ModelChoice; settingUp?: Promise<void>;
+	/** Keep it in the sidebar once its close completes. */
+	keepOnClose?: boolean }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -504,7 +506,8 @@ export class DeskHost {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
 				managed.view = { ...managed.view, state: "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
-					inputs: this.inputs?.pending(key) };
+					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key) };
+				managed.keepOnClose = undefined;
 			}
 			this.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
@@ -893,7 +896,7 @@ export class DeskHost {
 			providerAccountsDirectory: join(this.options.dataDir ?? join(this.options.agentDir!, "desk"), "provider-accounts"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
-			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false,
+			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
@@ -1315,12 +1318,13 @@ export class DeskHost {
 					if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
 					if (!managed.worker) {
 						this.inputs!.interrupt(managed.view.key, "The conversation closed");
-						managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined,
+						managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
 							snapshot: undefined, ui: undefined, inputs: this.inputs!.pending(managed.view.key) };
 						this.persist(true);
 						this.emit({ type: "session", session: managed.view });
 						return reply({ accepted: true });
 					}
+					managed.keepOnClose = data.keep === true;
 					const result = await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
 					if (result.control.state === "running") {
 						this.inputs!.interrupt(managed.view.key, "The conversation is closing");

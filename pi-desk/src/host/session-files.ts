@@ -31,7 +31,7 @@ export class SessionCatalog {
 		return value.sessions.map((item: SessionView) => {
 			if (typeof item.key !== "string" || typeof item.cwd !== "string") throw new Error("Invalid Desk session reference.");
 			return { ...item, agentId: item.file && existsSync(item.file) ? readSessionHeader(item.file).id : item.agentId,
-				state: "closed", interrupted: isOpenSession(item),
+				state: "closed", interrupted: item.state !== "closed" || item.interrupted === true,
 				controls: item.controls?.map(control => control.state === "running"
 					? { ...control, state: "interrupted", error: "The host stopped before the outcome was recorded. Check saved history; this operation was not replayed." }
 					: control),
@@ -45,7 +45,7 @@ export class SessionCatalog {
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
-			pinned: view.pinned, interrupted: view.interrupted, error: view.error,
+			pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept,
 			controls: view.controls, activation: view.activation,
 		}));
 		const temporary = `${this.file}.${randomUUID()}.tmp`;

@@ -27,7 +27,7 @@ const TOOLS = [
 			message: { type: "string" }, wake: { type: "boolean", description: "Start an idle agent to respond (default true)." } } } },
 	{ name: "read_messages", description: "Read messages agents have sent you. Unread messages are returned once and then marked read; set history to also see recent messages in both directions.",
 		inputSchema: { type: "object", properties: { history: { type: "boolean" } } } },
-	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. Call this before changing the log.",
+	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. It is the only current copy: Jordan ticks quests off in Desk without telling you, so read it every time before answering about or changing his tasks, and never answer from memory.",
 		inputSchema: { type: "object", properties: {} } },
 	{ name: "quest_add", description: "Add quests to Jordan's quest log when he asks you to remember or do something. Short, actionable titles (\"Book the car service\"); details in notes. kind: main for important work, daily for today only, side otherwise. Set due (YYYY-MM-DD) only for real deadlines.",
 		inputSchema: { type: "object", required: ["quests"], properties: { quests: { type: "array", maxItems: 20, items: { type: "object", required: ["title"], properties: {

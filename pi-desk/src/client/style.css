@@ -497,7 +497,7 @@ details[open] > summary:before {
 .status-dot.waiting, .status-dot.attention { width:14px; height:16px; background:transparent; color:var(--input-needed); }
 .status-dot.waiting::after, .status-dot.attention::after { content:"?"; font:800 19px/1 system-ui; }
 .status-dot.error, .status-dot.failed { --status-color:#f07878; }
-.status-dot.closed, .status-dot.offline, .status-dot.interrupted, .status-dot.aborted { --status-color:var(--muted); opacity:.65; }
+.status-dot.closed, .status-dot.offline, .status-dot.interrupted, .status-dot.aborted, .status-dot.sleeping { --status-color:var(--muted); opacity:.65; }
 @keyframes activity-orbit { to { transform:rotate(360deg); } }
 .conversation-activity { display:flex; align-items:center; gap:9px; margin-right:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .top-actions > .session-close { position:static; transform:none; opacity:1; pointer-events:auto; }
@@ -2331,3 +2331,9 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-navigation-icon { display:grid; place-items:center; width:28px; height:28px; flex:none; border-radius:8px; color:#d9a53a; background:color-mix(in srgb, #d9a53a 14%, transparent); }
 .quest-navigation-icon .ui-icon { width:16px; height:16px; }
 @media (prefers-reduced-motion: reduce) { .quest.finishing, .quest.finishing .quest-check, .quest-toast { animation:none; } }
+.dictation { position:relative; display:inline-flex; align-items:center; }
+.dictation-button.listening { color:#fff; background:var(--danger); border-color:var(--danger); animation:dictation-pulse 1.4s ease-in-out infinite; }
+@keyframes dictation-pulse { 50% { box-shadow:0 0 0 5px color-mix(in srgb, var(--danger) 25%, transparent); } }
+.dictation-partial { position:absolute; right:0; bottom:calc(100% + 8px); max-width:min(420px, 70vw); padding:6px 10px; border:1px solid var(--border); border-radius:8px;
+  background:var(--surface); color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:0 6px 20px #0003; z-index:5; }
+@media (prefers-reduced-motion: reduce) { .dictation-button.listening { animation:none; } }

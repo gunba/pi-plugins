@@ -112,6 +112,8 @@ export interface SessionView {
 	reconnecting?: boolean;
 	/** Desk is restarting this idle conversation onto its current version. */
 	updating?: boolean;
+	/** Closed to free resources but kept in the sidebar to resume later. */
+	kept?: boolean;
 	/** Native state; presentation data is carried once in ui below. */
 	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */
