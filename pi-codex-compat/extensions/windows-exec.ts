@@ -50,5 +50,12 @@ export async function terminateWindowsProcessTree(pid: number, since?: number): 
 			env: { ...process.env, PI_SWEEP_TREE: [...tree].join(","), PI_SWEEP_SINCE: String(Math.floor(since)) },
 		}).catch(() => {});
 	}
-	if (failure) throw failure;
+	// taskkill also fails when a child exits between its listing and its kill. What matters is that the
+	// command's process is gone; the sweep above has handled its descendants.
+	if (failure && processExists(pid)) throw failure;
+}
+
+function processExists(pid: number): boolean {
+	try { process.kill(pid, 0); return true; }
+	catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
