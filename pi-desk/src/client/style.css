@@ -405,7 +405,8 @@ details[open] > summary:before {
 .inline-question .dialog-actions { position:sticky; bottom:0; z-index:2; background:var(--surface); padding-top:8px; }
 .inline-question > header .ui-icon { flex:none; margin-top:2px; }
 .inline-question h3 { margin:0; font-size:15px; line-height:1.5; }
-.inline-question .question-context, .inline-question .request-description { max-height:none; overflow:visible; }
+/* The card scrolls as one area, so its text is not capped: a capped box with visible overflow spilled over the options. */
+.inline-question .question-scroll .question-context, .inline-question .request-description { max-height:none; overflow:visible; }
 .inline-question .dialog-actions { margin-top:14px; }
 .computer-heading small { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px;
   min-width:0; overflow:hidden; text-overflow:ellipsis; }
