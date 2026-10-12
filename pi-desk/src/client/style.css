@@ -2270,11 +2270,7 @@ details[open] > summary:before {
 .quest-header-actions { display:flex; gap:2px; }
 .quest-header-actions .icon-button { width:28px; height:28px; color:var(--muted); }
 .quest-header-actions .ui-icon { width:15px; height:15px; }
-.quest-add { display:grid; gap:6px; }
 .quest-add input { width:100%; margin:0; padding:8px 10px; font-size:13px; }
-.quest-kinds { display:flex; gap:4px; }
-.quest-kinds button { padding:2px 9px; border-radius:10px; font-size:11px; color:var(--muted); background:transparent; }
-.quest-kinds button[aria-checked=true] { color:var(--quest-gold); border-color:var(--quest-gold); background:color-mix(in srgb, var(--quest-gold) 10%, transparent); }
 .quest-sections { flex:1; min-height:0; overflow:auto; margin:0 -6px; padding:0 6px; display:grid; align-content:start; gap:6px; }
 .quest-section-heading { display:flex; align-items:center; gap:6px; width:100%; padding:6px 0; border:0; background:transparent; font-size:12px; font-weight:650; color:var(--quest-gold); text-transform:uppercase; letter-spacing:.06em; text-align:left; }
 .quest-section-heading:hover { background:transparent; }
@@ -2340,9 +2336,8 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-page .quest-title { font-size:14.5px; }
 .quest-page .quest-meta, .quest-page .quest-detail { font-size:12px; }
 .quest-page .quest { padding:8px 8px; }
-.quest-page .quest-add { grid-template-columns:minmax(0,1fr) auto; align-items:center; }
 .quest-page .quest-add input { font-size:14px; padding:10px 12px; }
-@media (max-width: 760px) { .quest-page .quest-tracker { padding:8px 16px 20px; } .quest-page .quest-add { grid-template-columns:1fr; } }
+@media (max-width: 760px) { .quest-page .quest-tracker { padding:8px 16px 20px; } }
 
 :root:not([data-theme="dark"]) .quest-tracker { --quest-gold:#b98500; --quest-title:#8a6200; --quest-green:#2b8a2b; --quest-objective:#3c3a35; --quest-blue:#1f6fc5; --quest-shadow:none; }
 .quest-section-heading { letter-spacing:.02em; text-transform:none; font-size:13px; font-weight:700; color:var(--quest-gold); text-shadow:var(--quest-shadow); }
@@ -2350,8 +2345,6 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-side .quest-title { color:var(--quest-green); }
 .quest-title:hover { filter:brightness(1.2); }
 .quest-objectives { text-shadow:var(--quest-shadow); }
-.quest-kinds .quest-kind-daily[aria-checked=true] { color:var(--quest-blue); border-color:var(--quest-blue); }
-.quest-kinds .quest-kind-side[aria-checked=true] { color:var(--quest-green); border-color:var(--quest-green); }
 .quest-check { width:20px; height:24px; border:0; border-radius:0; background:transparent; padding:0; margin-top:-2px; }
 .quest-check:hover { background:transparent; transform:scale(1.12); }
 .quest-marker { width:20px; height:24px; overflow:visible; }
@@ -2370,6 +2363,5 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-toast { border:0; background:transparent; box-shadow:none; padding:4px 10px; }
 .quest-toast-heading { color:#ffd100; font-size:16px; font-weight:700; text-shadow:0 0 1px #000, 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 2px 6px #000c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
 .quest-toast.asked { border:1px solid var(--border); background:var(--surface); box-shadow:0 8px 30px #0004; padding:8px 14px; }
-.quest-kinds button[aria-checked=true] { color:var(--quest-gold); border-color:var(--quest-gold); }
 .quest-days button[aria-pressed=true] { color:var(--quest-blue); border-color:var(--quest-blue); background:color-mix(in srgb, var(--quest-blue) 10%, transparent); }
 .quest-navigation-icon { color:#ffd100; background:color-mix(in srgb, #ffd100 12%, transparent); font:900 17px/1 Georgia,"Times New Roman",serif; text-shadow:1px 1px 0 #1a1203, -1px -1px 0 #1a1203, 1px -1px 0 #1a1203, -1px 1px 0 #1a1203; }

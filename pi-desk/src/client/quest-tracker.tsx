@@ -58,7 +58,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	ask?: { name: string; send: (text: string) => void };
 }) {
 	const home = logs.find(log => log.computer === primary) ?? logs[0];
-	const [error, setError] = useState(""), [title, setTitle] = useState(""), [kind, setKind] = useState<QuestKind>("side");
+	const [error, setError] = useState(""), [title, setTitle] = useState("");
 	const [open, setOpen] = useState<string>(), [editing, setEditing] = useState<string>(), [hoursOpen, setHoursOpen] = useState(false);
 	const [collapsed, setCollapsed] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("pi-desk:quest-collapsed") ?? '["done"]'); } catch { return ["done"]; } });
 	const [sound, setSound] = useState(() => localStorage.getItem("pi-desk:quest-sound") !== "off");
@@ -98,7 +98,8 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		event.preventDefault();
 		const text = title.trim();
 		if (!text) return;
-		void run(home, { action: "add", title: text, kind }).then(ok => { if (ok) setTitle(""); });
+		// A typed quest is a normal (yellow) quest; Edit changes its kind.
+		void run(home, { action: "add", title: text, kind: "main" }).then(ok => { if (ok) setTitle(""); });
 	};
 	const drop = (target: Item | undefined, event: DragEvent) => {
 		event.preventDefault();
@@ -175,8 +176,6 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		{hoursOpen && <QuestHoursEditor log={home} ask={ask} save={hours => void run(home, { action: "hours", hours })} />}
 		<form className="quest-add" onSubmit={add}>
 			<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a quest…" aria-label="New quest" maxLength={200} disabled={!home.connected} />
-			<div className="quest-kinds" role="radiogroup" aria-label="Quest kind">{QUEST_KINDS.map(value => <button type="button" role="radio" aria-checked={kind === value} key={value} className={`quest-kind-${value}`}
-				onClick={() => setKind(value)}>{QUEST_KIND_NAMES[value]}</button>)}</div>
 		</form>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		<div className="quest-sections">
