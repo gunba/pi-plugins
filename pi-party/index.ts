@@ -401,7 +401,7 @@ export default function party(pi: ExtensionAPI): void {
 			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
 			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
 			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
-				not_due_yet: (view.upcoming ?? []).filter(mine).map(questJson) });
+				not_due_yet: (view.upcoming ?? []).filter(mine).map(quest => ({ ...questJson(quest), state: `not due until ${quest.next}` })) });
 		},
 	});
 	pi.registerTool({

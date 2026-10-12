@@ -315,8 +315,10 @@ export class DotConnector {
 				main: open.filter(quest => !isToday(quest, view.today) && quest.kind === "main").map(brief),
 				side: open.filter(quest => !isToday(quest, view.today) && quest.kind === "side").map(brief),
 				waiting_to_turn_in: view.quests.filter(quest => quest.state === "done").map(quest => quest.title),
-				repeating: [...view.quests.filter(quest => quest.repeat), ...view.upcoming ?? []].map(quest => ({ ...brief(quest),
-					status: quest.state === "done" ? "done for this due date" : quest.state === "open" ? quest.due ? `due since ${quest.due} (late)` : "due today" : `not due until ${quest.next}` })),
+				// Quests in the log are due (or done) now; upcoming ones keep their stored state, so their status comes from the list they are in.
+				repeating: [...view.quests.filter(quest => quest.repeat).map(quest => ({ ...brief(quest),
+					status: quest.state === "done" ? "done for this due date" : quest.due ? `due since ${quest.due} (late)` : "due today" })),
+				...(view.upcoming ?? []).map(quest => ({ ...brief(quest), status: `not due until ${quest.next}` }))],
 			};
 		}
 		if (name === "quest_add") {
