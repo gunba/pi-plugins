@@ -273,7 +273,11 @@ export default function outputBudget(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (_event, ctx) => {
     replayCandidates.delete(ctx.sessionManager.getSessionId());
   });
-  pi.on("context", async (event, ctx) => {
+  // context_with_system, not context: a changed list from a context handler makes Pi fold every
+  // mid-conversation prompt and tool change back into the request head, so each later tool load or
+  // prompt change rewrites the whole provider cache. Only tool results are replaced here, so the
+  // system messages stay where they are.
+  pi.on("context_with_system", async (event, ctx) => {
     const eligible = replayCandidates.get(ctx.sessionManager.getSessionId());
     if (!eligible?.size) return;
     const messages = await slimArchivedResults(
