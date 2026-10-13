@@ -1312,8 +1312,9 @@ export class DeskHost {
 				hidden: url.searchParams.get("hidden") === "1", offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
 			}));
 			if (url.pathname === "/api/sessions" && request.method === "POST") {
-				const key = this.createSession(string(data.cwd, 4000) || this.options.cwd);
+				// Validate everything first: a rejected request must not leave a conversation behind.
 				const model = data.model === undefined ? undefined : string(data.model, 300), reasoning = data.reasoning === undefined ? undefined : string(data.reasoning, 20);
+				const key = this.createSession(string(data.cwd, 4000) || this.options.cwd);
 				const managed = this.sessions.get(key);
 				if (managed && (model || reasoning)) managed.setup = { ...(model ? { model } : {}), ...(reasoning ? { reasoning } : {}) };
 				return reply({ key }, 202);
