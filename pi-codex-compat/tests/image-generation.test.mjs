@@ -361,6 +361,31 @@ test("ChatGPT Codex OAuth edits local images through the codex endpoint", async 
 	});
 });
 
+test("a Claude conversation generates images with the signed-in ChatGPT (Codex) account", async () => {
+	// image_gen was hidden and refused whenever the conversation itself chatted with Claude.
+	await withTempDir(async (root) => {
+		const claude = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages", input: ["text", "image"] };
+		const codex = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", baseUrl: "https://chatgpt.test/backend-api", input: ["text", "image"] };
+		let request, authFor;
+		const ctx = {
+			cwd: root, model: claude,
+			modelRegistry: {
+				getAvailable: () => [claude, codex],
+				async getApiKeyAndHeaders(model) { authFor = model; return { ok: true, apiKey: jwt("acct-7"), headers: {} }; },
+			},
+			sessionManager: { getBranch: () => [], buildContextEntries: () => [], getSessionId: () => "session-claude" },
+		};
+		const result = await executeImageGeneration("call-claude", { prompt: "a slide illustration", model: "gpt-image-2.5-flare" }, undefined, ctx, {
+			codexHome: join(root, "codex-home"),
+			async fetchImpl(url, init) { request = { url, init }; return jsonResponse({ data: [{ b64_json: PNG_DATA }] }); },
+		});
+		assert.equal(authFor, codex);
+		assert.equal(request.url, "https://chatgpt.test/backend-api/codex/images/generations");
+		assert.equal(new Headers(request.init.headers).get("chatgpt-account-id"), "acct-7");
+		assert.equal(result.content[0].type, "image", "Claude can see the picture it asked for");
+	});
+});
+
 test("recent conversation edits select the requested newest images in chronological order", async () => {
 	await withTempDir(async (root) => {
 		const first = PNG_DATA;

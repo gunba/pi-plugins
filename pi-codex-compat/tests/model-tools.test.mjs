@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PRESERVE_BUILTIN_BASH, isCodexLikeModel, isImageGenerationModel, syncCodexCompatTools, toolsForModel } from "../extensions/model-tools.ts";
+import { PRESERVE_BUILTIN_BASH, imageGenerationService, isCodexLikeModel, isImageGenerationModel, syncCodexCompatTools, toolsForModel } from "../extensions/model-tools.ts";
 
 const EMPTY = { enabled: false };
 const AUTH = { imageGenerationAuthenticated: true };
@@ -23,12 +23,19 @@ test("process control works across providers without suppressing native editing 
 	assert.deepEqual(toolsForModel(undefined), []);
 });
 
-test("image generation needs authentication and an eligible provider", () => {
+test("image generation needs a signed-in image service, whatever model the conversation uses", () => {
 	const text = { provider: "openai-codex", id: "gpt-6.1-sol", input: ["text"] };
 	assert.deepEqual(toolsForModel(text), ["exec_command", "write_stdin"]);
 	assert.deepEqual(toolsForModel(text, AUTH), ["exec_command", "write_stdin", "view_image", "image_gen"]);
-	assert.deepEqual(toolsForModel({ provider: "anthropic", id: "claude", input: ["text", "image"] }, AUTH),
-		["exec_command", "write_stdin", "view_image"]);
+	const claude = { provider: "anthropic", id: "claude", input: ["text", "image"] };
+	assert.deepEqual(toolsForModel(claude), ["exec_command", "write_stdin", "view_image"]);
+	assert.deepEqual(toolsForModel(claude, AUTH), ["exec_command", "write_stdin", "view_image", "image_gen"]);
+	// A Claude conversation uses a signed-in Codex account, before an OpenAI API one; Copilot never generates images.
+	const openai = { provider: "openai", id: "gpt-6.1-sol" }, copilot = { provider: "github-copilot", id: "gpt-6-sol" };
+	assert.equal(imageGenerationService(claude, [claude, copilot, openai, text]), text);
+	assert.equal(imageGenerationService(claude, [claude, openai]), openai);
+	assert.equal(imageGenerationService(claude, [claude, copilot]), undefined);
+	assert.equal(imageGenerationService(openai, [text]), openai, "the conversation's own model comes first");
 });
 
 test("resynchronization respects manual tool choices and never widens an allowlist", () => {

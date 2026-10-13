@@ -22,7 +22,7 @@ import {
 	decodedBase64ByteLength,
 	readLocalImageFile,
 } from "./image-limits.ts";
-import { isChatGptCodexModel, isImageGenerationModel } from "./model-tools.ts";
+import { imageGenerationService, isChatGptCodexModel, isImageGenerationModel } from "./model-tools.ts";
 import { requestService } from "../../pi-codex-service/index.ts";
 
 export const IMAGE_GENERATION_MODELS = [
@@ -441,10 +441,10 @@ export async function executeImageGeneration(
 	ctx: ExtensionContext,
 	dependencies: ImageGenerationDependencies = {},
 ): Promise<AgentToolResult<ImageGenerationDetails>> {
-	const model = ctx.model;
-	if (!model || !isImageGenerationModel(model)) {
-		throw new Error("image_gen is unavailable for the selected model");
-	}
+	// The image service need not be the conversation's model: a Claude conversation uses a signed-in ChatGPT account.
+	// The registry is only consulted when the conversation's own model cannot generate images.
+	const model = ctx.model && isImageGenerationModel(ctx.model) ? ctx.model : imageGenerationService(undefined, ctx.modelRegistry.getAvailable());
+	if (!model) throw new Error("image_gen needs a signed-in ChatGPT (Codex) or OpenAI account");
 	validateImageModel(params.model);
 	if (!params.prompt.trim()) throw new Error("prompt cannot be empty");
 	if (signal?.aborted) throw new Error("image generation aborted");
@@ -491,7 +491,8 @@ export async function executeImageGeneration(
 	const content: Array<NativeImageContent | { type: "text"; text: string }> = [
 		{ type: "text" as const, text: `Saved generated image to ${saved.path}` },
 	];
-	if (model.input?.includes("image")) content.unshift(generatedImage);
+	// Show the picture only to a conversation model that can see images.
+	if (ctx.model?.input?.includes("image")) content.unshift(generatedImage);
 	return {
 		content,
 		details: {

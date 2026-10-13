@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerImageTools } from "./image-tools.ts";
-import { CODEX_COMPAT_TOOL_NAMES, type ToolActivationState, syncCodexCompatTools } from "./model-tools.ts";
+import { CODEX_COMPAT_TOOL_NAMES, imageGenerationService, type ToolActivationState, syncCodexCompatTools } from "./model-tools.ts";
 import { createExecLifecycle, registerProcessTools } from "./process-tools.ts";
 
 export default function codexCompat(pi: ExtensionAPI): void {
@@ -8,7 +8,10 @@ export default function codexCompat(pi: ExtensionAPI): void {
 	let activation: ToolActivationState = { enabled: false };
 	const syncTools = (model: ExtensionContext["model"], ctx: Pick<ExtensionContext, "modelRegistry">) => {
 		const result = syncCodexCompatTools(pi.getActiveTools(), model, activation, {
-			imageGenerationAuthenticated: Boolean(model && ctx.modelRegistry.hasConfiguredAuth(model)),
+			imageGenerationAuthenticated: (() => {
+				const service = imageGenerationService(model, ctx.modelRegistry.getAvailable());
+				return Boolean(service && ctx.modelRegistry.hasConfiguredAuth(service));
+			})(),
 		});
 		activation = result.state;
 		if (result.activeTools.join("\0") !== pi.getActiveTools().join("\0")) pi.setActiveTools(result.activeTools);

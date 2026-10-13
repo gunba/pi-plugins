@@ -6,6 +6,7 @@ export type ModelDescriptor = {
 };
 
 export type ToolActivationCapabilities = {
+	/** An image-generation service is signed in: the conversation's own model, or a ChatGPT (Codex) or OpenAI account. */
 	imageGenerationAuthenticated?: boolean;
 };
 
@@ -99,16 +100,29 @@ export function isImageGenerationModel(
 	return provider === "openai" || isCodexProvider(provider);
 }
 
+/**
+ * The model whose account and endpoint image_gen uses. The image request goes to that service whatever model the
+ * conversation chats with, so a Claude conversation can use a signed-in ChatGPT (Codex) account. The conversation's
+ * own model comes first when it can generate images; otherwise a signed-in Codex model, then an OpenAI API one.
+ */
+export function imageGenerationService<T extends ModelDescriptor>(
+	current: T | null | undefined,
+	signedIn: readonly T[],
+): T | undefined {
+	if (current && isImageGenerationModel(current)) return current;
+	const eligible = signedIn.filter(model => isImageGenerationModel(model));
+	return eligible.find(model => isChatGptCodexModel(model)) ?? eligible[0];
+}
+
 export function toolsForModel(
 	model: ModelDescriptor | null | undefined,
 	capabilities: ToolActivationCapabilities = {},
 ): string[] {
 	if (!model) return [];
 	const tools = ["exec_command", "write_stdin"];
-	const canGenerateImages =
-		capabilities.imageGenerationAuthenticated === true &&
-		isImageGenerationModel(model);
-	if (model?.input?.includes("image") || canGenerateImages) {
+	const canGenerateImages = capabilities.imageGenerationAuthenticated === true;
+	// A text-only model views images through its own provider, so that still needs an image-generation model here.
+	if (model?.input?.includes("image") || canGenerateImages && isImageGenerationModel(model)) {
 		tools.push("view_image");
 	}
 	if (canGenerateImages) tools.push("image_gen");
