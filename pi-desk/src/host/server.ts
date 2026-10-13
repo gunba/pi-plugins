@@ -57,7 +57,9 @@ interface ManagedSession { view: SessionView; worker?: SessionWorker; initialize
 	/** A new conversation's chosen model, applied once it is ready and before any message is delivered. */
 	setup?: ModelChoice; settingUp?: Promise<void>;
 	/** Keep it in the sidebar once its close completes. */
-	keepOnClose?: boolean }
+	keepOnClose?: boolean;
+	/** Its process is being replaced: closing it is the first half of a restart, so it stays open and selected. */
+	replacing?: boolean }
 interface EventClient { response: ServerResponse; device: string }
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -507,7 +509,7 @@ export class DeskHost {
 			if (message.control.kind === "close" && message.control.state === "completed") {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
-				managed.view = { ...managed.view, state: "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
+				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
 					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key) };
 				managed.keepOnClose = undefined;
 			}
@@ -521,7 +523,9 @@ export class DeskHost {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
-				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", ...sessionDisplay(message.snapshot) };
+				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", ...sessionDisplay(message.snapshot),
+				// The replacement process is up, so a restart onto a new version is over.
+				...(managed.view.updating && !managed.replacing ? { updating: undefined } : {}) };
 		} else if (message.type === "history_ready") {
 			if (managed.view.ui?.generation !== message.generation) return;
 			managed.view = { ...managed.view, historyReady: true };
@@ -711,9 +715,20 @@ export class DeskHost {
 		const id = randomUUID(), agent = view.agentId ?? snapshot.id;
 		// Whether peers can wake it now; releasing the old process clears that.
 		const armed = agent ? !!this.parties?.store.member(agent)?.delivery : undefined;
-		await worker.submitControl({ kind: "close" }, worker.generation, id);
-		await this.waitForControl(view.key, id);
-		await worker.close(true);
+		// One continuous restart: the conversation stays listed and selected, shown as updating, until the new process is up.
+		managed.replacing = true;
+		managed.view = { ...managed.view, updating: true }; this.emit({ type: "session", session: managed.view });
+		try {
+			await worker.submitControl({ kind: "close" }, worker.generation, id);
+			await this.waitForControl(view.key, id);
+			await worker.close(true);
+		} catch (error) {
+			managed.replacing = undefined;
+			const message = error instanceof Error ? error.message : String(error);
+			managed.view = { ...managed.view, updating: undefined, ...(managed.worker ? {} : { state: "failed" as const, error: message, interrupted: true }) };
+			this.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			throw error;
+		}
 		// The old process has released its registration. Peers see "restarting" rather than offline, and
 		// messages wait in its inbox. Refreshes stop once the new process registers under its own owner.
 		const owner = agent ? this.parties?.store.restarting(agent, undefined, armed) : undefined;
@@ -725,7 +740,15 @@ export class DeskHost {
 			}, 15_000);
 			keepAlive.unref();
 		}
-		return this.createSession(view.cwd, view.file, this.sessions.get(view.key));
+		try { return this.createSession(view.cwd, view.file, this.sessions.get(view.key)); }
+		catch (error) {
+			// The old process is gone; show the conversation as failed (Resume restarts it) rather than starting forever.
+			const current = this.sessions.get(view.key) ?? managed;
+			current.replacing = undefined;
+			current.view = { ...current.view, updating: undefined, state: "failed", error: error instanceof Error ? error.message : String(error), interrupted: true };
+			this.emit({ type: "session", session: current.view }); this.persistEvent(true);
+			throw error;
+		}
 	}
 
 	/** Conversations on an older Desk than this host, with what would stop each being restarted now. */

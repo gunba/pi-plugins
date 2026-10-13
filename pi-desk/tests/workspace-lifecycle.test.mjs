@@ -68,6 +68,21 @@ test("a closing conversation does not report Starting when its presentation is t
 	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("restarting a conversation onto a new process keeps it open and selected", async () => {
+	// The close half of a restart dropped the conversation from the list, so Desk fell back to the intro splash.
+	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	try {
+		await host.start();
+		const key = randomUUID(), close = randomUUID();
+		host.sessions.set(key, { replacing: true, view: { key, activation: randomUUID(), cwd: dir, created: 1, state: "ready", updating: true }, worker: { close: async () => {} } });
+		host.workerEvent(key, { type: "control", control: { id: close, kind: "close", state: "completed", generation: "", started: 1, ended: 2 } });
+		const listed = host.state().sessions.find(session => session.key === key);
+		assert.equal(listed?.state, "starting");
+		assert.equal(listed?.updating, true);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("host restart preserves open membership without starting Pi; explicit close can dismiss it", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
 	const key = randomUUID(), oldActivation = randomUUID();
