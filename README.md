@@ -78,9 +78,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-gepa`](pi-gepa/skills/gepa-optimize/SKILL.md) — bounded GEPA optimisation
   of prompts and other text artifacts, with task evaluators, held-out checks and
   native Pi model authentication. Python experiments run in a private environment.
-- [`pi-system-one`](pi-system-one/README.md) — a codemode `classify` tool that
-  asks a System One classifier model, by default TypeSafe's Jev, the same typed
-  questions about many items or a JSONL file, with guidance on when to use it.
+- [`pi-system-one`](pi-system-one/README.md) — one system-prompt paragraph on
+  when to use System One classifier models such as TypeSafe's Jev through
+  codemode's `models.classify`.
 - [`pi-browser`](pi-browser/README.md) — a focused browser skill for
   `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
   observations limit context, and full text uses the output archive.
