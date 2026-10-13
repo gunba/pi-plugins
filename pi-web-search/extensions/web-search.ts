@@ -122,55 +122,23 @@ const timeOperation = Type.Object(
 	{ additionalProperties: false },
 );
 
+// Only the operations conversations use. Codex web search also offers sports, finance, weather, time,
+// PDF screenshots and image search; none were used in 90 days, so they are not declared to the model.
 export const WEB_SEARCH_PARAMETERS = Type.Object(
 	{
 		search_query: Type.Optional(
-			Type.Array(searchQuery, {
-				description: "Query the internet search engine. Batch up to four queries.",
-				maxItems: 4,
-			}),
+			Type.Array(searchQuery, { description: "Up to four web searches.", maxItems: 4 }),
 		),
-		image_query: Type.Optional(
-			Type.Array(searchQuery, {
-				description: "Query the image search engine. Batch up to two queries.",
-				maxItems: 2,
-			}),
-		),
-		open: Type.Optional(
-			Type.Array(openOperation, { description: "Open pages by reference ID or URL." }),
-		),
-		click: Type.Optional(
-			Type.Array(clickOperation, { description: "Open numbered links from fetched pages." }),
-		),
-		find: Type.Optional(
-			Type.Array(findOperation, { description: "Find text patterns in pages." }),
-		),
-		screenshot: Type.Optional(
-			Type.Array(screenshotOperation, { description: "Take screenshots of PDF pages." }),
-		),
-		finance: Type.Optional(
-			Type.Array(financeOperation, { description: "Look up market prices." }),
-		),
-		weather: Type.Optional(
-			Type.Array(weatherOperation, { description: "Look up weather forecasts." }),
-		),
-		sports: Type.Optional(
-			Type.Array(sportsOperation, { description: "Look up sports schedules or standings." }),
-		),
-		time: Type.Optional(
-			Type.Array(timeOperation, { description: "Get the current time for UTC offsets." }),
-		),
+		open: Type.Optional(Type.Array(openOperation, { description: "Open pages by reference ID or URL." })),
+		click: Type.Optional(Type.Array(clickOperation, { description: "Follow numbered links in opened pages." })),
+		find: Type.Optional(Type.Array(findOperation, { description: "Find text in opened pages." })),
 		check: Type.Optional(
 			Type.Array(Type.String({ minLength: 1, maxLength: 4000 }), {
-				description: "Check whether URLs load, without reading them. Each gets ok, not_found, blocked (the site refused an automated client), http_error or network_error. Use for link checks.",
+				description: "Check up to 50 URLs load, without reading them: ok, not_found, blocked, http_error or network_error.",
 				maxItems: 50,
 			}),
 		),
-		response_length: Type.Optional(
-			StringEnum(["short", "medium", "long"] as const, {
-				description: "Amount of search output to return.",
-			}),
-		),
+		response_length: Type.Optional(StringEnum(["short", "medium", "long"] as const)),
 	},
 	{ additionalProperties: false },
 );
@@ -344,14 +312,11 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 		name: "web_search",
 		label: "web.run",
 		description:
-			"Search the web, open pages and check links. Searching, clicking and finding text use Codex web search with the ChatGPT login on this computer, whichever model this conversation uses. Pages Codex cannot open, and all link checks, are fetched directly, and in the user's Chrome when a site refuses automated clients. For sign-ins, forms or other interaction, use the browser tools.",
+			"Search the web, open pages, follow links, find text and check URLs, through the ChatGPT login whatever model this conversation uses. Sites that refuse automated clients are opened in Chrome. For sign-ins or forms use the browser tools.",
 		promptSnippet: "Search the web, open pages and check links",
 		promptGuidelines: [
-			"Use web_search when the user asks to search or when current, unstable information must be verified.",
-			"Batch independent searches in one web_search call, with no more than four search_query entries.",
-			"When web_search returns sources, cite the supporting pages with Markdown links.",
-			"Use web_search open or check rather than curl, wget or scripts for URLs: those report bot protection, rate limits and TLS failures as ordinary errors.",
-			"A blocked outcome means the site refused an automated client, not that the page is missing. Do not report it as a broken link or missing evidence.",
+			"Use web_search when asked to search or to verify current facts; batch independent searches in one call, and cite sources with Markdown links.",
+			"Open or check URLs with web_search, not curl or scripts. \"blocked\" means the site refused automated access, not that the page is missing.",
 		],
 		parameters: WEB_SEARCH_PARAMETERS,
 		renderResult: renderSearchResult,

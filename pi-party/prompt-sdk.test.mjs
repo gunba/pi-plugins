@@ -71,6 +71,8 @@ async function fixture(t, extraExtensions = [], uiContext) {
 		model: runtime.getModel("party-fixture", "offline"), resourceLoader: loader, sessionManager: manager, settingsManager: settings }));
 	new NativeQueueGuard(session, () => false);
 	await session.bindExtensions({ mode: "rpc", uiContext, onError: error => errors.push(error) });
+	// The rarely used agent tools are deferred; load them as tool_search would.
+	session.setActiveToolsByName([...session.getActiveToolNames(), "agent_create", "agent_fork", "agent_delivery", "agent_profile", "agent_inbox"]);
 	db = new PartyStore(join(directory, "party"));
 	db.register("sender", "sender-process", "Peer");
 	return { session, runtime, db, contexts, requests, errors, started: started.promise };

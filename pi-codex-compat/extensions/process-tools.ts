@@ -39,27 +39,20 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
-		description: "Run a command with plain pipes, returning output or a session ID for background work. Interactive terminal allocation is not supported.",
-		promptSnippet: "Run a command and retain its process handle if it is still running",
+		description: "Run a shell command and return its output, or a session_id if it is still running after yield_time_ms; continue it with write_stdin. No interactive terminal.",
+		promptSnippet: "Run a command, keeping it if it is still running",
 		promptGuidelines: [
-			"Omit yield_time_ms for ordinary commands. Use short waits only for persistent services or when independent useful work can run concurrently.",
-			"A command still running after the initial wait returns a session ID. Use write_stdin to wait for it and collect its output.",
-			"For large HTTP responses, save the body to a file and inspect selected fields or ranges. Command output is bounded; use returned log paths or read_artifact references to recover omitted output.",
+			"Leave yield_time_ms unset for ordinary commands; use a short wait only to do other work meanwhile.",
+			"Command output is capped: save large output, such as HTTP responses, to a file and read the parts you need.",
 		],
 		parameters: Type.Object({
-			cmd: Type.String({ description: "Shell command to execute." }),
-			workdir: Type.Optional(Type.String({ description: "Working directory for the command. Defaults to the turn cwd." })),
-			tty: Type.Optional(Type.Boolean({
-				description: "Requests PTY allocation. False or omitted uses plain pipes; true is rejected by this extension because PTY/ConPTY support belongs to Codex core.",
-			})),
-			yield_time_ms: Type.Optional(Type.Integer({
-				description: "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms (2000-30000 ms on Windows).", minimum: 0,
-			})),
-			max_output_tokens: Type.Optional(Type.Integer({
-				description: "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.", minimum: 0,
-			})),
-			shell: Type.Optional(Type.String({ description: "Shell binary to launch. Defaults to Pi's configured shellPath, then Pi's platform shell discovery." })),
-			login: Type.Optional(Type.Boolean({ description: "True runs with login shell semantics; false disables them. Defaults to true." })),
+			cmd: Type.String(),
+			workdir: Type.Optional(Type.String({ description: "Default: the conversation's folder." })),
+			tty: Type.Optional(Type.Boolean({ description: "Not supported." })),
+			yield_time_ms: Type.Optional(Type.Integer({ description: "Wait before returning: default 10000, 250 to 30000.", minimum: 0 })),
+			max_output_tokens: Type.Optional(Type.Integer({ description: "Default 10000.", minimum: 0 })),
+			shell: Type.Optional(Type.String({ description: "Default: Pi's configured shell." })),
+			login: Type.Optional(Type.Boolean({ description: "Login shell; default true." })),
 		}, { additionalProperties: false }),
 		prepareArguments: prepareExecCommandArguments,
 		executionMode: "parallel",
@@ -78,24 +71,16 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 	pi.registerTool({
 		name: "write_stdin",
 		label: "write_stdin",
-		description: "Writes characters to an existing unified exec session and returns recent output. In this plain-pipe fallback, only empty polling or an exact U+0003 interrupt is accepted.",
-		promptSnippet: "Poll a Unified Exec session or send an exact Ctrl-C interrupt",
+		description: "Read more output from a running exec_command session, or send exactly \"\\u0003\" to interrupt it (Ctrl-C to its process group; on Windows its process tree is ended). Other input is rejected.",
+		promptSnippet: "Wait on or interrupt a running command",
 		promptGuidelines: [
-			"session_id comes from exec_command. Omitted or empty chars reads output; stdin is closed except for the U+0003 interruption request.",
-			"Use a longer yield_time_ms when waiting for a slow command. A timeout returns the same live process handle; it does not stop the command.",
-			"On Unix, exact Ctrl-C targets the process group with SIGINT. On Windows, it uses taskkill to terminate the command tree; it does not emit a console Ctrl-C event.",
+			"A wait that runs out leaves the command running; call write_stdin again, with a longer yield_time_ms for slow commands.",
 		],
 		parameters: Type.Object({
-			session_id: Type.Integer({ description: "Identifier of the running unified exec session.", minimum: 1 }),
-			chars: Type.Optional(Type.String({
-				description: "Empty or omitted polls without writing. Exact U+0003 requests interruption; all other non-empty input is rejected for plain-pipe sessions.",
-			})),
-			yield_time_ms: Type.Optional(Type.Integer({
-				description: "Wait before yielding output. Exact interrupt requests default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.", minimum: 0,
-			})),
-			max_output_tokens: Type.Optional(Type.Integer({
-				description: "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.", minimum: 0,
-			})),
+			session_id: Type.Integer({ description: "From exec_command.", minimum: 1 }),
+			chars: Type.Optional(Type.String({ description: "Empty to read output; \"\\u0003\" to interrupt." })),
+			yield_time_ms: Type.Optional(Type.Integer({ description: "Wait for output: reads 5000 to 300000, interrupts up to 30000.", minimum: 0 })),
+			max_output_tokens: Type.Optional(Type.Integer({ description: "Default 10000.", minimum: 0 })),
 		}, { additionalProperties: false }),
 		prepareArguments: prepareWriteStdinArguments,
 		executionMode: "parallel",

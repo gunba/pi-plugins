@@ -217,7 +217,28 @@ export default function (pi: ExtensionAPI) {
       `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 
+    const loadable = loadableTools(pi);
+    const sections = loadable ? `${context}\n\n${loadable}` : context;
     const appended = event.systemPromptOptions.appendSystemPrompt;
-    event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${context}` : context;
+    event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${sections}` : sections;
   });
+}
+
+/**
+ * Rarely used tools are deferred: not declared until tool_search loads them, which keeps them out of every
+ * request. tool_search does not list them, so name them here by group. The line only changes when the
+ * registered tools do, which keeps the prompt cache intact.
+ */
+export function loadableTools(pi: Pick<ExtensionAPI, "getAllTools">): string | undefined {
+  if (typeof pi.getAllTools !== "function") return undefined;
+  const groups = new Map<string, string[]>();
+  for (const tool of pi.getAllTools() ?? []) {
+    if (tool.exposure !== "deferred" || !tool.namespace?.name) continue;
+    const names = groups.get(tool.namespace.name) ?? [];
+    names.push(tool.name);
+    groups.set(tool.namespace.name, names);
+  }
+  if (!groups.size) return undefined;
+  const list = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([group, names]) => `${group} (${names.sort().join(", ")})`).join("; ");
+  return `### Tools to load\nLoad these with tool_search when needed: ${list}.`;
 }

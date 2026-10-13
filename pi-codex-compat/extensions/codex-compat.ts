@@ -19,7 +19,7 @@ export default function codexCompat(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => syncTools(ctx.model, ctx));
 	pi.on("model_select", (event, ctx) => syncTools(event.model, ctx));
 	pi.on("tool_result", event => {
-		if (event.isError || !CODEX_COMPAT_TOOL_NAMES.includes(event.toolName)) return;
+		if (event.isError || ![...CODEX_COMPAT_TOOL_NAMES, "image_gen"].includes(event.toolName)) return;
 		if (!event.details || typeof event.details !== "object") return;
 		const details = event.details as { error?: unknown; aborted?: unknown };
 		if (typeof details.error === "string" || details.aborted === true) return { isError: true };

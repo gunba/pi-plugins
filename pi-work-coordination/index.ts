@@ -70,7 +70,9 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   });
   pi.registerTool({
     name: "wait_agent", label: "Wait for agents",
-    description: "Wait for an agent message or final-status notification, including already queued messages. New user input also ends the wait. The tool stays pending; it does not end this turn or cancel child work. timeout_ms defaults to 30000, with a minimum of 10000 and maximum of 3600000. Use write_stdin for a running process.",
+    // Loaded with tool_search alongside the other subagent tools; see pi-subagents.
+    exposure: "deferred", namespace: { name: "subagents", description: "Start subagents and message, follow up, wait for, list or interrupt them." },
+    description: "Wait for a subagent's message or completion (or Jordan's next input). timeout_ms: 10000 to 3600000, default 30000. For a running command use write_stdin instead.",
     parameters: Type.Object({ timeout_ms: Type.Optional(Type.Integer({ maximum: 3_600_000 })) }, { additionalProperties: false }),
     outputSchema: Type.Object({ message: Type.String(), timed_out: Type.Boolean() }),
     executionMode: "sequential",

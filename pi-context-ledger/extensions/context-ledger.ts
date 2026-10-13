@@ -14,7 +14,7 @@ import type {
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { getPresentation } from "../../pi-ui/index.ts";
-import { LEDGER_ENTRY, readLedger, type Ledger, type LedgerGroup, type LedgerLeaf } from "../model.ts";
+import { LEDGER_ENTRY, LEDGER_MEASURED_ENTRY, measuredLedger, readLedger, type Ledger, type LedgerGroup, type LedgerLeaf } from "../model.ts";
 
 const CUSTOM_TYPE = LEDGER_ENTRY;
 const DISABLE_ENV = "PI_CONTEXT_LEDGER";
@@ -408,11 +408,18 @@ export default function contextLedger(pi: ExtensionAPI): void {
   const armedSessions = new Set<string>();
   const shownSessions = new Set<string>();
   const optionsBySession = new Map<string, BuildSystemPromptOptions>();
+  const measuring = new Set<string>();
   function publish(ctx: ExtensionContext): void {
     const remote = getPresentation(pi);
     if (!remote) return;
-    const entry = ctx.sessionManager.getBranch().slice().reverse().find(entry => entry.type === "custom" && entry.customType === CUSTOM_TYPE);
-    const ledger = entry?.type === "custom" ? readLedger(entry.data) : undefined;
+    const branch = ctx.sessionManager.getBranch();
+    const index = branch.map(entry => entry.type === "custom" && entry.customType === CUSTOM_TYPE).lastIndexOf(true);
+    const entry = index >= 0 ? branch[index] : undefined;
+    const estimate = entry?.type === "custom" ? readLedger(entry.data) : undefined;
+    // The first request's real size, recorded after this breakdown, replaces the character estimate.
+    const measured = branch.slice(index + 1).find(item => item.type === "custom" && item.customType === LEDGER_MEASURED_ENTRY);
+    const tokens = measured?.type === "custom" ? Number((measured.data as { tokens?: unknown } | undefined)?.tokens) : NaN;
+    const ledger = estimate && Number.isFinite(tokens) ? measuredLedger(estimate, tokens) : estimate;
     remote.publish(CUSTOM_TYPE, { kind: "ledger", surface: "settings", title: "Initial context",
       data: { ledger: ledger ?? null, autoEnabled },
       actions: [
@@ -451,7 +458,18 @@ export default function contextLedger(pi: ExtensionAPI): void {
 
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);
     pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
+    measuring.add(sessionId);
     publish(ctx);
+  });
+
+  // The first reply reports how large its request really was: the system prompt, tools and first message.
+  pi.on("message_end", (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId?.();
+    const message = event.message as { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
+    if (!sessionId || !measuring.has(sessionId) || message.role !== "assistant" || !message.usage) return;
+    measuring.delete(sessionId);
+    const tokens = (message.usage.input ?? 0) + (message.usage.cacheRead ?? 0) + (message.usage.cacheWrite ?? 0);
+    if (tokens > 0) { pi.appendEntry(LEDGER_MEASURED_ENTRY, { tokens }); publish(ctx); }
   });
 
   pi.registerCommand("context-ledger", {

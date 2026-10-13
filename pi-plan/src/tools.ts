@@ -8,19 +8,19 @@ const Step = Type.Object({
 }, { additionalProperties: false });
 const Definition = {
 	objective: Type.Optional(Type.String({ description: "Concise objective." })),
-	steps: Type.Optional(Type.Array(Step, { description: "Complete ordered step list; replaces the previous steps. Parallel work is allowed." })),
-	auto_continue: Type.Optional(Type.Boolean({ description: "Enable automatic continuation. False keeps a manual checklist." })),
+	steps: Type.Optional(Type.Array(Step, { description: "The whole ordered list; replaces the previous one." })),
+	auto_continue: Type.Optional(Type.Boolean({ description: "Keep working across automatic rounds; default off." })),
 	max_rounds: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
 };
 export const CreateParameters = Type.Object({
-	...Definition, objective: Type.String({ description: "The plan's completion objective." }),
+	...Definition, objective: Type.String({ description: "What done means." }),
 }, { additionalProperties: false });
 export const UpdateParameters = Type.Object({
 	plan_id: Type.String({ minLength: 1 }),
 	revision: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 	action: StringEnum(["edit", "pause", "resume", "complete", "blocked"] as const),
 	...Definition,
-	blocked_reason: Type.Optional(Type.String({ description: "Concrete blocking condition; only for action blocked." })),
+	blocked_reason: Type.Optional(Type.String({ description: "For action blocked." })),
 }, { additionalProperties: false });
 export type CreateParams = Static<typeof CreateParameters>;
 export type UpdateParams = Static<typeof UpdateParameters>;

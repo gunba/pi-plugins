@@ -278,7 +278,7 @@ async function createHarness() {
 			modelRuntime,
 			model,
 			thinkingLevel: "off",
-			tools: CODEX_COMPAT_TOOL_NAMES,
+			tools: [...CODEX_COMPAT_TOOL_NAMES, "image_gen"],
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager,
@@ -385,19 +385,15 @@ test("pi-codex-compat tools run through a real AgentSession agent loop", async (
 		await t.test("registers and wraps the managed process and image tools", () => {
 			assert.deepEqual(harness.extensionsResult.errors, []);
 			assert.equal(harness.extensionsResult.extensions.length, 2);
-			assert.deepEqual(
-				harness.session.getActiveToolNames().sort(),
-				[...CODEX_COMPAT_TOOL_NAMES].sort(),
-			);
+			// The harness also loads image_gen, as tool_search would in a conversation.
+			const declared = [...CODEX_COMPAT_TOOL_NAMES, "image_gen"].sort();
+			assert.deepEqual(harness.session.getActiveToolNames().sort(), declared);
 
 			const agentTools = new Map(
 				harness.session.agent.state.tools.map((tool) => [tool.name, tool]),
 			);
-			assert.deepEqual(
-				[...agentTools.keys()].sort(),
-				[...CODEX_COMPAT_TOOL_NAMES].sort(),
-			);
-			for (const name of CODEX_COMPAT_TOOL_NAMES) {
+			assert.deepEqual([...agentTools.keys()].sort(), declared);
+			for (const name of declared) {
 				const wrapped = agentTools.get(name);
 				const registered = harness.session.getToolDefinition(name);
 				assert.ok(wrapped, name);

@@ -1496,62 +1496,38 @@ export default function(pi: ExtensionAPI) {
       promptSnippet:
          "Collect a user decision or approval",
       promptGuidelines: [
-         "The dialog pauses tool execution until the user responds. Its context field can summarize findings relevant to the decision.",
+         "Other tool calls wait until the user answers.",
       ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
       // (potentially with side effects) before the user sees the prompt.
       executionMode: "sequential",
       parameters: Type.Object({
-         question: Type.String({ description: "The question to ask the user" }),
+         question: Type.String(),
          context: Type.Optional(
             Type.String({
-               description: "Relevant context to show before the question (summary of findings)",
+               description: "Findings shown above the question.",
             }),
          ),
          options: Type.Optional(
             Type.Array(
                Type.Union([
-                  Type.String({ description: "Short title for this option" }),
-                  Type.Object({
-                     title: Type.String({ description: "Short title for this option" }),
-                     description: Type.Optional(
-                        Type.String({ description: "Longer description explaining this option" }),
-                     ),
-                  }),
+                  Type.String(),
+                  Type.Object({ title: Type.String(), description: Type.Optional(Type.String()) }),
                ]),
-               { description: "Distinct options for a real choice; omit options when the question is open-ended" },
+               { description: "Distinct choices; omit for an open question." },
             ),
          ),
          allowMultiple: Type.Optional(
-            Type.Boolean({ description: "Allow selecting multiple options. Default: false" }),
+            Type.Boolean({ description: "Default false." }),
          ),
          allowFreeform: Type.Optional(
-            Type.Boolean({ description: "Add a freeform text option. Default: true" }),
+            Type.Boolean({ description: "Offer a typed answer too. Default true." }),
          ),
          allowComment: Type.Optional(
-            Type.Boolean({ description: "Collect an optional comment after selecting one or more options. Default: false" }),
+            Type.Boolean({ description: "Ask for an optional comment with the choice. Default false." }),
          ),
-         displayMode: Type.Optional(
-            StringEnum(["overlay", "inline"] as const, {
-               description: "UI rendering mode. 'overlay' shows a centered modal, 'inline' renders in-place. Default: PI_ASK_USER_DISPLAY_MODE env var if set, otherwise 'overlay'. Omit to respect the user's configured preference.",
-            }),
-         ),
-         overlayToggleKey: Type.Optional(
-            Type.String({
-               description:
-                  "Shortcut for hiding/showing the overlay popup (overlay mode only), e.g. 'alt+o' or 'ctrl+shift+h'. Pass 'off' to disable. Default: PI_ASK_USER_OVERLAY_TOGGLE_KEY env var if set, otherwise 'alt+o'.",
-            }),
-         ),
-         commentToggleKey: Type.Optional(
-            Type.String({
-               description:
-                  "Shortcut for toggling the optional comment/extra-context row when allowComment is true, e.g. 'ctrl+g'. Pass 'off' to disable. Default: PI_ASK_USER_COMMENT_TOGGLE_KEY env var if set, otherwise 'ctrl+g'.",
-            }),
-         ),
-         timeout: Type.Optional(
-            Type.Number({ description: "Auto-dismiss after N milliseconds. Returns null (cancelled) when expired." }),
-         ),
+         timeout: Type.Optional(Type.Number({ description: "Milliseconds before giving up; returns null." })),
       }),
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {

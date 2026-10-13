@@ -27,9 +27,7 @@ export function renderPlanWrapup(plan: Pick<PlanView, "objective">, blockedReaso
 }
 
 export function renderPlanGuidance(blockedAfter: number): string {
-	return "Use one branch-local plan with a concise objective and actionable steps. Ordinary checklists have automatic continuation off. "
-		+ "Enable auto_continue for sustained work across automatic rounds. Read get_plan before update_plan; copy its id and revision into plan_id and revision. "
-		+ "After resume, reload, or fork, automatic plans are disarmed; action resume rearms them. "
-		+ "Completing every step does not itself complete the objective. "
-		+ `During automatic work, report blocked only after the same concrete condition persists for at least ${blockedAfter} consecutive rounds.`;
+	return "One plan per branch: a concise objective and concrete steps. auto_continue keeps working across automatic rounds; "
+		+ "a resume, reload or fork pauses that until action resume. Call get_plan before update_plan and copy its id and revision. "
+		+ `Finishing the steps does not by itself complete the objective. Report blocked only after the same condition persists for ${blockedAfter} rounds.`;
 }

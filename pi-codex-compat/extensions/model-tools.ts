@@ -16,11 +16,11 @@ export type ToolActivationState = {
 	managedToolNames?: string[];
 };
 
+/** Tools this adapter switches on and off with the model. image_gen is not one: it is loaded with tool_search. */
 export const CODEX_COMPAT_TOOL_NAMES = [
 	"exec_command",
 	"write_stdin",
 	"view_image",
-	"image_gen",
 ];
 
 export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
@@ -125,7 +125,6 @@ export function toolsForModel(
 	if (model?.input?.includes("image") || canGenerateImages && isImageGenerationModel(model)) {
 		tools.push("view_image");
 	}
-	if (canGenerateImages) tools.push("image_gen");
 	return tools;
 }
 

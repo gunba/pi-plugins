@@ -173,21 +173,21 @@ class PlanController {
 			return new Text(theme.fg(plan !== undefined ? "toolOutput" : "error", safeWorkText(text, true)), 0, 0);
 		};
 		this.pi.registerTool({
-			name: "get_plan", label: "Get Plan", description: "Read the current branch-local plan, steps, exact id/revision and continuation state.",
+			name: "get_plan", label: "Get Plan", description: "Read the current plan, its steps, id, revision and continuation state.",
 			promptGuidelines: guidance, parameters: Type.Object({}, { additionalProperties: false }), executionMode: "sequential",
 			execute: async (_id, _params, _signal, _update, ctx) => this.run(ctx, () => result(this.store.get())),
 			renderCall: (_params, theme) => call("Read plan", {}, theme),
 			renderResult: renderer,
 		});
 		this.pi.registerTool({
-			name: "create_plan", label: "Create Plan", description: "Create one plan with an objective and steps. Automatic continuation is off unless explicitly enabled.",
+			name: "create_plan", label: "Create Plan", description: "Create the plan: an objective and steps.",
 			promptGuidelines: guidance, parameters: CreateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
 			execute: async (_id, params: CreateParams, _signal, _update, ctx) => this.run(ctx, () => result(this.store.create({ ...definition(params), objective: params.objective }))),
 			renderCall: (params, theme) => call("Create plan", params, theme),
 			renderResult: renderer,
 		});
 		this.pi.registerTool({
-			name: "update_plan", label: "Update Plan", description: "Update the exact current plan revision. Edit replaces only supplied fields; steps replaces the whole list. Continuation remains optional.",
+			name: "update_plan", label: "Update Plan", description: "Change the current plan revision: edit replaces the fields given; pause, resume, complete or blocked change its state.",
 			promptGuidelines: guidance, parameters: UpdateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
 			execute: async (_id, params: UpdateParams, _signal, _update, ctx) => this.run(ctx, () => result(this.control(params))),
 			renderCall: (params, theme) => call("Update plan", params, theme),

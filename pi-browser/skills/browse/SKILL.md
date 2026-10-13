@@ -1,6 +1,6 @@
 ---
 name: browse
-description: Inspect and control websites through the native Chrome DevTools tools. Use for authenticated web applications, browser research, form editing and UI verification.
+description: Use Chrome, with its signed-in sessions, to read, operate and check websites: web apps, forms and UI testing.
 ---
 
 # Browse

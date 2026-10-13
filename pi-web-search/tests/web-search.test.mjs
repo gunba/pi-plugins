@@ -57,20 +57,8 @@ test("registers one Codex-shaped search tool", () => {
 	assert.equal(tools[0].name, "web_search");
 	assert.equal(tools[0].label, "web.run");
 	assert.equal(tools[0].parameters, WEB_SEARCH_PARAMETERS);
-	assert.deepEqual(Object.keys(tools[0].parameters.properties), [
-		"search_query",
-		"image_query",
-		"open",
-		"click",
-		"find",
-		"screenshot",
-		"finance",
-		"weather",
-		"sports",
-		"time",
-		"check",
-		"response_length",
-	]);
+	// Only the operations conversations use; the other Codex operations went unused.
+	assert.deepEqual(Object.keys(tools[0].parameters.properties), ["search_query", "open", "click", "find", "check", "response_length"]);
 });
 
 test("posts Codex commands with the selected Pi model and no model fallback", async () => {

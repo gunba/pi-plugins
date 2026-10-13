@@ -76,15 +76,22 @@ function parentInvocation(
 	};
 }
 
+/**
+ * Subagent tools are loaded with tool_search when needed rather than declared in every request; most
+ * conversations never start one. Loading one group member brings the others, through the shared namespace.
+ */
+const SUBAGENTS = { exposure: "deferred" as const, namespace: { name: "subagents", description: "Start subagents and message, follow up, wait for, list or interrupt them." } };
+
 function spawnTool(runtime: RuntimeAccess, binding: ToolBinding): ToolDefinition {
 	return defineTool({
 		name: "spawn_agent",
 		label: "Spawn Agent",
-		description: "Start an asynchronous native Pi agent. Inherits completed parent context by default; fork_turns selects fresh or bounded context. Returns its task path and native ID, not its result.",
-		promptSnippet: "Start an agent with inherited or fresh context",
+		...SUBAGENTS,
+		description: "Start a background subagent. It inherits this conversation's context unless fork_turns is \"none\" or a turn count. Returns its task path and ID; its result arrives later as a message.",
+		promptSnippet: "Start a subagent",
 		promptGuidelines: [
-			"Background children send settlement notices automatically, so the parent can continue useful work without polling.",
-			"Model and thinking overrides require the user's conversation-level approval. The first override opens an approval dialog; after approval you may choose without asking again. If approval is denied, inherit the parent settings.",
+			"Subagents report back by themselves when they finish; keep working rather than polling.",
+			"A model or reasoning override asks Jordan once per conversation; if he declines, inherit this conversation's settings.",
 		],
 		parameters: spawnParameters(),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -126,7 +133,8 @@ export function createSubagentToolDefinitions(
 		defineTool({
 			name: "send_message",
 			label: "Send Message",
-			description: "Send a message to a parent, sibling or child in this agent tree. Delivered at a safe boundary; does not start an idle agent. Use followup_task to request a new turn.",
+			...SUBAGENTS,
+			description: "Message a parent, sibling or child subagent. It arrives at a safe point and does not start an idle agent; use followup_task for that.",
 			parameters: sendParameters,
 			execute: async (_id, params) => response({
 				message_id: resolveRuntime(runtime).sendMessage(binding.getAuthority(), params.target, params.message),
@@ -135,7 +143,8 @@ export function createSubagentToolDefinitions(
 		defineTool({
 			name: "followup_task",
 			label: "Follow-up Task",
-			description: "Request a follow-up from an agent in this tree, except the root. An active agent receives it at the next safe boundary; an idle agent starts a turn. Returns acceptance, not the answer.",
+			...SUBAGENTS,
+			description: "Give a subagent more work. A busy one gets it at its next safe point; an idle one starts a turn. Returns acceptance, not the answer.",
 			parameters: sendParameters,
 			execute: async (_id, params) => {
 				const owner = resolveRuntime(runtime);
@@ -146,7 +155,8 @@ export function createSubagentToolDefinitions(
 		defineTool({
 			name: "interrupt_agent",
 			label: "Interrupt Agent",
-			description: "Interrupt an agent's current turn or initialization. Preserves its identity, queued work and descendants. A known idle agent is not started; an unknown target is an error.",
+			...SUBAGENTS,
+			description: "Stop a subagent's current turn. It keeps its identity, queued work and children.",
 			parameters: interruptParameters,
 			execute: async (_id, params) => {
 				const owner = resolveRuntime(runtime);
@@ -160,7 +170,8 @@ export function createSubagentToolDefinitions(
 		defineTool({
 			name: "list_agents",
 			label: "List Agents",
-			description: "Discover the registered agent tree, including parents, siblings and saved children. running means active, idle means resident, and ready means cold but resumable. Completion messages arrive automatically.",
+			...SUBAGENTS,
+			description: "List this conversation's subagent tree: running (working), idle (loaded) or ready (saved, resumable).",
 			parameters: listParameters,
 			execute: async (_id, params) => response({
 				agents: resolveRuntime(runtime).listNamedAgents(binding.getAuthority(), params.path_prefix),

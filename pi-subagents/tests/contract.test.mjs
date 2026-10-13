@@ -101,8 +101,9 @@ test("spawn schema requires task_name and message without foreground controls", 
 		assert.deepEqual(Object.keys(schema.properties), ["task_name", "message", "fork_turns", "model", "reasoning_effort"]);
 		assert.deepEqual(schema.required, ["task_name", "message"]);
 		assert.equal(schema.additionalProperties, false);
-		assert.match(tool.description, /asynchronous/i);
-		assert.match(tool.promptGuidelines.join(" "), /continue useful work/i);
+		assert.match(tool.description, /background/i);
+		assert.match(tool.promptGuidelines.join(" "), /rather than polling/i);
+		assert.equal(tool.exposure, "deferred", "loaded with tool_search when needed");
 		assert.doesNotMatch(tool.promptGuidelines.join(" "), /wait_agent|blocked/i);
 		assert.match(schema.properties.fork_turns.description, /all \(default\).*none.*positive integer/);
 	} finally {
@@ -123,13 +124,13 @@ test("control schemas pin boundary delivery, current-turn interrupt, and discove
 		);
 		assert.match(byName.get("send_message").description, /parent, sibling or child/i);
 		assert.match(byName.get("send_message").description, /does not start an idle agent/i);
-		assert.match(byName.get("followup_task").description, /next safe boundary/i);
+		assert.match(byName.get("followup_task").description, /next safe point/i);
 		assert.deepEqual(
 			Object.keys(byName.get("interrupt_agent").parameters.properties),
 			["target"],
 		);
 		assert.match(byName.get("interrupt_agent").description, /current turn/i);
-		assert.match(byName.get("list_agents").description, /registered agent tree/i);
+		assert.match(byName.get("list_agents").description, /subagent tree/i);
 		assert.deepEqual(Object.keys(byName.get("list_agents").parameters.properties), ["path_prefix"]);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])

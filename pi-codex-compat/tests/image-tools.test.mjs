@@ -65,13 +65,11 @@ test("image tool metadata describes its model and reference contract without cho
 	const tools = registeredTools();
 	const viewImage = tools.get("view_image");
 	const imageGen = tools.get("image_gen");
-	assert.match(imageGen.description, /GPT Image 2\.5 Sunburst or Flare/);
-	assert.match(imageGen.promptSnippet, /GPT Image 2\.5 Sunburst or Flare/);
-	assert.match(
-		imageGen.promptGuidelines.join("\n"),
-		/provide `prompt` and `model`/,
-	);
-	assert.doesNotMatch(imageGen.promptGuidelines.join("\n"), /only `prompt`/);
+	// Loaded with tool_search rather than declared in every request; its contract lives in the description.
+	assert.equal(imageGen.exposure, "deferred");
+	assert.match(imageGen.description, /referenced_image_paths/);
+	assert.match(imageGen.description, /num_last_images_to_include/);
+	assert.match(imageGen.description, /up to five/);
 	assert.deepEqual(imageGen.parameters.required, ["prompt", "model"]);
 	assert.deepEqual(
 		imageGen.parameters.properties.model.anyOf.map((schema) => schema.const),
@@ -97,9 +95,7 @@ test("image tool metadata describes its model and reference contract without cho
 		viewImage.description,
 		"View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
 	);
-	assert.match(imageGen.promptGuidelines.join("\n"), /Choose one reference mode/);
-	assert.match(imageGen.promptGuidelines.join("\n"), /up to five references/);
-	assert.doesNotMatch(imageGen.promptGuidelines.join("\n"), /without reconfirmation|Always use|Do not use Python/);
+	assert.doesNotMatch(imageGen.description, /without reconfirmation|Always use|Do not use Python/);
 });
 
 test("view_image returns native image content and semantic rendering", async (t) => {

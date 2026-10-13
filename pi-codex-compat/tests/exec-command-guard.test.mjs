@@ -40,18 +40,9 @@ test("exec_command is a hard-cut strict Unified Exec schema", () => {
 	]);
 	assert.equal("command" in execCommand.parameters.properties, false);
 	assert.equal("timeout_ms" in execCommand.parameters.properties, false);
-	assert.match(
-		execCommand.parameters.properties.max_output_tokens.description,
-		/Defaults to 10000 tokens/,
-	);
-	assert.match(
-		execCommand.parameters.properties.yield_time_ms.description,
-		/2000-30000 ms on Windows/,
-	);
-	assert.match(
-		execCommand.parameters.properties.tty.description,
-		/true is rejected/,
-	);
+	assert.match(execCommand.parameters.properties.max_output_tokens.description, /10000/);
+	assert.match(execCommand.parameters.properties.yield_time_ms.description, /default 10000/);
+	assert.match(execCommand.parameters.properties.tty.description, /Not supported/);
 	assert.equal(execCommand.parameters.properties.yield_time_ms.type, "integer");
 	assert.equal(
 		execCommand.parameters.properties.max_output_tokens.type,
@@ -59,11 +50,9 @@ test("exec_command is a hard-cut strict Unified Exec schema", () => {
 	);
 	assert.equal(writeStdin.parameters.additionalProperties, false);
 	assert.equal(writeStdin.parameters.properties.session_id.type, "integer");
-	assert.match(writeStdin.description, /existing unified exec session/);
-	assert.match(
-		writeStdin.parameters.properties.chars.description,
-		/all other non-empty input is rejected/,
-	);
+	assert.match(writeStdin.description, /running exec_command session/);
+	assert.match(writeStdin.description, /Other input is rejected/);
+	assert.match(writeStdin.parameters.properties.chars.description, /interrupt/);
 });
 
 test("HTTP client names use normal execution instead of a retired tool guard", async () => {
@@ -82,8 +71,7 @@ test("HTTP client names use normal execution instead of a retired tool guard", a
 	for (const tool of registeredTools().values()) {
 		assert.doesNotMatch((tool.promptGuidelines ?? []).join("\n"), /context-mode|ctx_execute|ctx_fetch_and_index|fetch_content/);
 	}
-	assert.match(execCommand.promptGuidelines.join("\n"), /save the body to a file/);
-	assert.match(execCommand.promptGuidelines.join("\n"), /read_artifact/);
+	assert.match(execCommand.promptGuidelines.join("\n"), /save large output, such as HTTP responses, to a file/);
 });
 
 test("exec_command uses the managed runtime and returns Unified Exec metadata", async () => {

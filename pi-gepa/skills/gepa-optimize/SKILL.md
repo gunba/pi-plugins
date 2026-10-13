@@ -1,6 +1,6 @@
 ---
 name: gepa-optimize
-description: Optimise prompts, skills or other scorable text with GEPA, native Pi models and a feedback-rich evaluator. Use for bounded prompt or skill tuning, evaluator calibration or text-artifact search, including evaluations that run agent sessions, when training, validation and holdout examples are available.
+description: Tune a prompt, skill or other scored text automatically with GEPA, given training, validation and holdout examples.
 ---
 
 # GEPA optimisation

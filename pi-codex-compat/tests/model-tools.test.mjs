@@ -26,10 +26,11 @@ test("process control works across providers without suppressing native editing 
 test("image generation needs a signed-in image service, whatever model the conversation uses", () => {
 	const text = { provider: "openai-codex", id: "gpt-6.1-sol", input: ["text"] };
 	assert.deepEqual(toolsForModel(text), ["exec_command", "write_stdin"]);
-	assert.deepEqual(toolsForModel(text, AUTH), ["exec_command", "write_stdin", "view_image", "image_gen"]);
+	// image_gen itself is loaded with tool_search, so the model switch never adds or removes it.
+	assert.deepEqual(toolsForModel(text, AUTH), ["exec_command", "write_stdin", "view_image"]);
 	const claude = { provider: "anthropic", id: "claude", input: ["text", "image"] };
 	assert.deepEqual(toolsForModel(claude), ["exec_command", "write_stdin", "view_image"]);
-	assert.deepEqual(toolsForModel(claude, AUTH), ["exec_command", "write_stdin", "view_image", "image_gen"]);
+	assert.deepEqual(toolsForModel(claude, AUTH), ["exec_command", "write_stdin", "view_image"]);
 	// A Claude conversation uses a signed-in Codex account, before an OpenAI API one; Copilot never generates images.
 	const openai = { provider: "openai", id: "gpt-6.1-sol" }, copilot = { provider: "github-copilot", id: "gpt-6-sol" };
 	assert.equal(imageGenerationService(claude, [claude, copilot, openai, text]), text);
@@ -41,7 +42,7 @@ test("image generation needs a signed-in image service, whatever model the conve
 test("resynchronization respects manual tool choices and never widens an allowlist", () => {
 	const model = { provider: "openai-codex", id: "gpt-6.1-sol", input: ["text", "image"] };
 	assert.deepEqual(syncCodexCompatTools(["read", "edit"], model, EMPTY, AUTH).activeTools, ["read", "edit"]);
-	const initial = syncCodexCompatTools(["read", "edit", "custom", "exec_command", "write_stdin", "view_image", "image_gen"], model, EMPTY, AUTH);
+	const initial = syncCodexCompatTools(["read", "edit", "custom", "exec_command", "write_stdin", "view_image"], model, EMPTY, AUTH);
 	const reduced = initial.activeTools.filter(name => !["custom", "view_image"].includes(name));
 	const next = syncCodexCompatTools(reduced, model, initial.state, AUTH);
 	assert.deepEqual(next.activeTools, reduced);

@@ -161,16 +161,14 @@ export function registerImageTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "image_gen",
 		label: "image_gen",
-		description: "Generate images from descriptions or edit existing images from precise instructions, using up to five local or recent conversation references with OpenAI GPT Image 2.5 Sunburst or Flare.",
-		promptSnippet: "Generate or edit images with GPT Image 2.5 Sunburst or Flare, including local and recent conversation references",
-		promptGuidelines: [
-			"For a new image, provide `prompt` and `model`; for edits, also provide the image references.",
-			"Choose one reference mode: referenced_image_paths supplies local files in prompt order; num_last_images_to_include selects the most recent conversation images. Each supports up to five references.",
-		],
+		// Loaded with tool_search when needed; it needs a signed-in ChatGPT or OpenAI account, checked when it runs.
+		exposure: "deferred", namespace: { name: "images", description: "Generate or edit raster images." },
+		description: "Generate an image from a prompt, or edit up to five images: local files (referenced_image_paths) or the most recent conversation images (num_last_images_to_include). Uses a signed-in ChatGPT or OpenAI account.",
+		promptSnippet: "Generate or edit images",
 		parameters: Type.Object({
 			prompt: Type.String({ description: "Detailed generation prompt or precise editing instructions." }),
 			model: Type.Union([Type.Literal(IMAGE_GENERATION_MODELS[0]), Type.Literal(IMAGE_GENERATION_MODELS[1])], {
-				description: "Required image model. Sunburst prioritizes editing precision; Flare prioritizes fast, high-quality everyday generation. Both support generation and editing; there is no default.",
+				description: "Sunburst for precise edits; Flare for fast everyday generation.",
 			}),
 			referenced_image_paths: Type.Optional(Type.Array(
 				Type.String({ description: "Local image path, absolute or relative to the session cwd." }),
