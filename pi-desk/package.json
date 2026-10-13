@@ -12,6 +12,7 @@
   },
   "files": [
     "dist",
+    "dictation",
     "LICENSE",
     "README.md",
     "CAPABILITIES.md",

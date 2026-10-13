@@ -136,6 +136,8 @@ export interface HostState { release: ReleaseInfo; operatorAvailability?: import
 	updates?: import("./updates.ts").RuntimeUpdateState;
 	/** This computer's quest log. Omitted by hosts before 0.5.62. */
 	quests?: import("./quests.ts").QuestView;
+	/** This computer transcribes dictation (Whisper); browsers send recordings to a computer that does. */
+	dictation?: boolean;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 export type HostEvent =
 	| { type: "state"; state: HostState }

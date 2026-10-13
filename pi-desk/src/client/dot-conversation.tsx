@@ -11,7 +11,7 @@ import { DotAgentAccess } from "./dot-agent-access.tsx";
 import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
-import { DictationButton, withDictation } from "./dictation.tsx";
+import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
 import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, removableDotInput, removeDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
 import { dotReadKey, markDotRead, mergeDotReadStates, readDotReadState, unreadDotMessages, type DotReadState } from "./dot-unread.ts";
 
@@ -439,7 +439,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 						onChange={event => dot.saveDraft(event.target.value)} onKeyDown={event => {
 							if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); atBottom.current = true; dot.send(); }
 						}} /></div>
-					<DictationButton append={dot.dictate} report={message => setNativeError(message)} />
+					<DictationButton append={dot.dictate} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
 					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!dot.supported || !view.connection || !view.id || busy || opening || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
 				</div>
 				<div className="dot-composer-hint">{view.paused ? "Dot is paused. Resume it from Manage Dot to send queued messages." : "Shift+Enter for a new line"}</div>

@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { agentId, nativeId, networkMembers, remoteMember, remoteMessage, NETWORK_LIMIT, MAX_NETWORK_PACKET, uuid,
 	type DeliveryReceipt, type NetworkMember } from "./network.ts";
@@ -18,6 +18,26 @@ export interface PartyMessage {
 	id: string; room: string; sender: string; sender_epoch: string; sender_label: string;
 	recipient: string; recipient_epoch: string; text: string; created: number; wake: number;
 	kind: string; invite_room: string;
+}
+/** A file sent with a message, stored until the recipient's process saves it to disk. data is base64. */
+export interface MessageFile { name: string; size: number; sha256: string; data: string }
+/** Files per message, kept well inside the encrypted channel's 32 MB queue. */
+export const MAX_MESSAGE_FILES = 10, MAX_MESSAGE_FILE_BYTES = 8 * 1024 * 1024;
+
+/** Check files before they are stored: count, total size, plain file names, and that each matches its hash. */
+export function checkFiles(files: MessageFile[]): void {
+	if (files.length > MAX_MESSAGE_FILES) throw Error(`Send at most ${MAX_MESSAGE_FILES} files with one message.`);
+	let total = 0;
+	const names = new Set<string>();
+	for (const file of files) {
+		if (typeof file.name !== "string" || !file.name || file.name.length > 255 || /[\\/\x00-\x1f]|^\.\.?$/.test(file.name)) throw Error("Invalid file name.");
+		if (names.has(file.name)) throw Error(`Two files are called ${file.name}.`);
+		names.add(file.name);
+		const bytes = Buffer.from(typeof file.data === "string" ? file.data : "", "base64");
+		if (bytes.length !== file.size || createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw Error(`${file.name} arrived incomplete.`);
+		total += bytes.length;
+	}
+	if (total > MAX_MESSAGE_FILE_BYTES) throw Error(`Files are limited to ${MAX_MESSAGE_FILE_BYTES / 1024 / 1024} MB per message.`);
 }
 export interface HistoryCursor { created: number; id: string }
 export type HistoryQuery = { before: HistoryCursor } | { after: HistoryCursor } | { oldest: true } | undefined;
@@ -74,7 +94,11 @@ export class PartyStore {
 				CREATE TABLE IF NOT EXISTS session_files (session TEXT PRIMARY KEY, file TEXT NOT NULL);
 				CREATE TABLE IF NOT EXISTS network_messages (message TEXT PRIMARY KEY, computer TEXT NOT NULL,
 					status TEXT NOT NULL, error TEXT);
+				CREATE TABLE IF NOT EXISTS message_files (message TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
+					sha256 TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(message, name));
 			`);
+			// What each other computer's Desk said it supports, such as receiving files.
+			if (!columns("network_computers").has("operations")) this.db.exec("ALTER TABLE network_computers ADD COLUMN operations TEXT");
 			const policy = this.db.prepare("SELECT value FROM network_meta WHERE key=\'wake-policy\'").get() as { value: string } | undefined;
 			if (policy?.value !== "idle-starts") {
 				// Old delivery-batch counts cannot represent actual autonomous starts.
@@ -118,6 +142,23 @@ export class PartyStore {
 			this.db.prepare("UPDATE network_members SET heartbeat=? WHERE computer=? AND json_extract(profile,'$.state')<>'offline'").run(this.now(), computer);
 		});
 	}
+	/** Record what a computer's Desk announced it supports; older ones announce nothing. */
+	setComputerOperations(computer: string, operations: string[]): void {
+		this.db.prepare("UPDATE network_computers SET operations=? WHERE computer=?").run(JSON.stringify(operations), computer);
+	}
+	computerSupports(computer: string, operation: string): boolean {
+		const row = this.db.prepare("SELECT operations FROM network_computers WHERE computer=?").get(computer) as { operations: string | null } | undefined;
+		try { return !!row?.operations && (JSON.parse(row.operations) as string[]).includes(operation); } catch { return false; }
+	}
+	/** The files sent with a message, while they await delivery. */
+	messageFiles(message: string): MessageFile[] {
+		return (this.db.prepare("SELECT name,size,sha256,data FROM message_files WHERE message=? ORDER BY name").all(message) as { name: string; size: number; sha256: string; data: Uint8Array }[])
+			.map(row => ({ name: row.name, size: row.size, sha256: row.sha256, data: Buffer.from(row.data).toString("base64") }));
+	}
+	private insertFiles(message: string, files: MessageFile[]): void {
+		const insert = this.db.prepare("INSERT INTO message_files (message,name,size,sha256,data) VALUES (?,?,?,?,?)");
+		for (const file of files) insert.run(message, file.name, file.size, file.sha256, Buffer.from(file.data, "base64"));
+	}
 	computers(): { id: string; state: string }[] {
 		return (this.db.prepare("SELECT computer FROM network_computers ORDER BY computer").all() as { computer: string }[])
 			.map(row => ({ id: row.computer, state: this.computerOnline(row.computer) ? "connected" : "offline" }));
@@ -144,9 +185,13 @@ export class PartyStore {
 		let size = 256;
 		for (const message of messages) {
 			if (this.messageCurrent(message)) {
-				const wire = { ...message, recipient: nativeId(message.recipient) }, bytes = Buffer.byteLength(JSON.stringify(wire));
+				const files = this.messageFiles(message.id);
+				// A message with files travels in a packet of its own.
+				if (files.length && result.length) break;
+				const wire = { ...message, recipient: nativeId(message.recipient), ...(files.length ? { files } : {}) }, bytes = Buffer.byteLength(JSON.stringify(wire));
 				if (size + bytes > MAX_NETWORK_PACKET) break;
 				result.push(wire); size += bytes;
+				if (files.length) break;
 			}
 			else this.db.prepare("UPDATE network_messages SET status='failed',error=? WHERE message=?")
 				.run("Agent membership changed before delivery.", message.id);
@@ -155,6 +200,9 @@ export class PartyStore {
 	}
 	acceptRemoteMessage(computer: string, input: unknown): DeliveryReceipt {
 		const wire = remoteMessage(input), message = { ...wire, sender: agentId(computer, wire.sender) };
+		// Files are checked against their hashes and stored apart from the message row.
+		const raw = (input as { files?: unknown }).files, files = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGE_FILES + 1) as MessageFile[] : [];
+		checkFiles(files);
 		return this.tx(() => {
 			const old = this.db.prepare("SELECT * FROM messages WHERE id=?").get(message.id) as unknown as PartyMessage | undefined;
 			if (old) {
@@ -168,7 +216,9 @@ export class PartyStore {
 			}
 			const pending = this.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE recipient=? AND admitted=0").get(message.recipient) as { n: number };
 			if (pending.n >= 64) return { id: message.id, accepted: false, error: "The recipient's inbox is full." };
+			if (files.length && recipient.cwd === "ChatGPT") return { id: message.id, accepted: false, error: "This agent cannot receive files." };
 			this.insertMessage(message);
+			this.insertFiles(message.id, files);
 			return { id: message.id, accepted: true };
 		});
 	}
@@ -287,8 +337,9 @@ export class PartyStore {
 		if (matches.length !== 1) throw Error("Choose an unambiguous agent ID from agent_discover.");
 		return matches[0];
 	}
-	send(session: string, owner: string, target: string, text: string, wake: boolean): PartyMessage {
+	send(session: string, owner: string, target: string, text: string, wake: boolean, files: MessageFile[] = []): PartyMessage {
 		if (!text.trim()) throw Error("Messages must contain non-whitespace text.");
+		checkFiles(files);
 		return this.tx(() => {
 			const self = this.owned(session, owner);
 			const peer = this.resolve(target, this.db.prepare("SELECT * FROM party_agents WHERE session<>?").all(session) as unknown as Member[]);
@@ -297,16 +348,21 @@ export class PartyStore {
 				AND NOT EXISTS (SELECT 1 FROM network_messages n WHERE n.message=messages.id AND n.status<>'queued')`)
 				.get(peer.session) as { n: number };
 			if (pending.n >= 64) throw Error(`The inbox for ${peer.session} is full.`);
+			if (files.length && peer.cwd === "ChatGPT") throw Error(`${peer.label} cannot receive files; put what it needs in the message.`);
+			if (files.length && peer.computer && !this.computerSupports(peer.computer, "files"))
+				throw Error(`The computer for ${peer.label} runs an older Desk that cannot receive files. Update Desk there, or put what it needs in the message.`);
 			const message: PartyMessage = {
 				id: randomUUID(), room: "", sender: session, sender_epoch: self.agent_epoch, sender_label: self.label,
 				recipient: peer.session, recipient_epoch: peer.agent_epoch, text, created: this.now(), wake: wake ? 1 : 0, kind: "message", invite_room: "",
 			};
 			if (peer.computer && Buffer.byteLength(JSON.stringify(message)) > MAX_NETWORK_PACKET - 1024) throw Error("Message exceeds the encrypted transport limit.");
 			this.insertMessage(message);
+			this.insertFiles(message.id, files);
 			if (peer.computer) this.db.prepare("INSERT INTO network_messages (message,computer,status) VALUES (?,?,'queued')").run(message.id, peer.computer);
 			this.db.prepare(`DELETE FROM messages WHERE created<? AND (admitted=1 OR EXISTS
 				(SELECT 1 FROM network_messages n WHERE n.message=messages.id AND n.status<>'queued'))`).run(this.now() - 7 * 86_400_000);
 			this.db.exec("DELETE FROM network_messages WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id=network_messages.message)");
+			this.db.exec("DELETE FROM message_files WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id=message_files.message)");
 			return message;
 		});
 	}
@@ -335,8 +391,11 @@ export class PartyStore {
 	admit(session: string, owner: string, ids: string[]): void {
 		this.tx(() => {
 			this.owned(session, owner);
-			for (const id of ids) if (this.isCurrent(session, owner, id)) this.db.prepare("UPDATE messages SET admitted=1 WHERE id=? AND recipient=?")
-				.run(id, session);
+			for (const id of ids) if (this.isCurrent(session, owner, id)) {
+				this.db.prepare("UPDATE messages SET admitted=1 WHERE id=? AND recipient=?").run(id, session);
+				// Its files were saved to the recipient's disk when it was delivered.
+				this.db.prepare("DELETE FROM message_files WHERE message=?").run(id);
+			}
 		});
 	}
 	resetWakes(session: string, owner: string): void {

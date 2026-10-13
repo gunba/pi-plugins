@@ -46,6 +46,7 @@ import { DotConnector } from "./dot-connector.ts";
 import { workspaceIdentity } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
 import { QuestStore } from "../../../pi-party/quests.ts";
+import { Dictation, MAX_DICTATION_BYTES } from "./dictation.ts";
 import type { Quest, QuestActor, QuestCommand, QuestView } from "../shared/quests.ts";
 import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
@@ -93,6 +94,7 @@ export class DeskHost {
 	private relayStatus?: RelayStatus;
 	private dotConnector?: DotConnector;
 	private quests?: QuestStore;
+	private dictation?: Dictation;
 	private questView?: QuestView;
 	private accountIdentity?: NativeAccountIdentity;
 	private accountRevision = 0;
@@ -144,6 +146,7 @@ export class DeskHost {
 	async start(): Promise<{ origin: string; pairingUrl: string }> {
 		const directory = this.options.dataDir ?? join(this.options.agentDir!, "desk");
 		this.directory = directory;
+		this.dictation = new Dictation(directory);
 		this.automatic = readAutomatic(directory);
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
@@ -262,7 +265,7 @@ export class DeskHost {
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.dictation?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
@@ -343,7 +346,8 @@ export class DeskHost {
 	state(): HostState {
 		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
-			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView };
+			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView,
+			...(this.dictation?.available ? { dictation: true } : {}) };
 	}
 
 	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
@@ -887,7 +891,7 @@ export class DeskHost {
 
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
 	private partyComputer(): PartyComputer {
-		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume"] };
+		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files"] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
@@ -1250,6 +1254,12 @@ export class DeskHost {
 				this.refreshUpdates();
 				return reply({ accepted: true }, 202);
 			}
+			if (url.pathname === "/api/dictation" && request.method === "POST") {
+				if (!this.dictation?.available) return reply({ error: "Dictation is not set up on this computer." }, 409);
+				const audio = Buffer.from(string(data.audio, Math.ceil(MAX_DICTATION_BYTES * 4 / 3) + 4), "base64");
+				const language = typeof data.language === "string" && /^[a-z]{2}$/.test(data.language) ? data.language : undefined;
+				return reply(await this.dictation.transcribe(audio, typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", language));
+			}
 			if (url.pathname === "/api/quests" && this.quests) {
 				if (request.method === "POST") {
 					const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
@@ -1491,7 +1501,7 @@ export class DeskHost {
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close(); this.partyNetwork?.close();
 		this.accountIdentity?.close();
-		try { this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.dictation?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));
