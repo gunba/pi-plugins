@@ -525,10 +525,13 @@ export class DeskHost {
 		} else if (message.type === "history_ready") {
 			if (managed.view.ui?.generation !== message.generation) return;
 			managed.view = { ...managed.view, historyReady: true };
-		} else if (message.type === "ui") managed.view = { ...managed.view, ui: message.snapshot,
+		} else if (message.type === "ui") {
+			// Closing tears the presentation down, which announces new generations; that is not a restart.
+			if (managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
+			managed.view = { ...managed.view, ui: message.snapshot,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
-		else if (message.type === "detached") {
+		} else if (message.type === "detached") {
 			const instance = managed.worker?.instance;
 			const reconnect = instance && managed.initialized && !this.checkpoints?.held && !this.restoringUpdate
 				&& !managed.view.controls?.some(control => control.kind === "close" && control.state === "running")

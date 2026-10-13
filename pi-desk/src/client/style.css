@@ -491,7 +491,7 @@ details[open] > summary:before {
 .status-dot.online, .status-dot.idle, .status-dot.ready { --status-color:#43ca87; }
 .status-dot.running, .status-dot.working { --status-color:#5ca9ed; }
 /* Opening or reconnecting is not work in progress. */
-.status-dot.connecting, .status-dot.starting, .status-dot.updating { --status-color:#e0a43a; }
+.status-dot.connecting, .status-dot.starting, .status-dot.updating, .status-dot.closing { --status-color:#e0a43a; }
 .status-dot.running::before, .status-dot.working::before, .status-dot.connecting::before, .status-dot.starting::before, .status-dot.updating::before {
   content:""; position:absolute; inset:-3px; border:1.5px solid transparent; border-top-color:var(--status-color); border-right-color:var(--status-color);
   border-radius:50%; animation:activity-orbit 1.8s linear infinite;

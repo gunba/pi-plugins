@@ -51,6 +51,23 @@ test("explicit close removes a workspace session, but retains its native referen
 	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a closing conversation does not report Starting when its presentation is torn down", async () => {
+	// Closing announced new presentation generations, which the host took for a restart.
+	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	try {
+		await host.start();
+		const key = randomUUID(), close = randomUUID();
+		const ui = generation => ({ generation, views: [], interactions: [], statuses: {}, notifications: [], editorText: "", editorId: "e", title: "Pi Desk" });
+		host.sessions.set(key, { view: { key, activation: randomUUID(), cwd: dir, created: 1, state: "ready", ui: ui("first") }, worker: { close: async () => {} } });
+		host.workerEvent(key, { type: "control", control: { id: close, kind: "close", state: "running", generation: "", started: 1 } });
+		host.workerEvent(key, { type: "ui", snapshot: ui("teardown") });
+		assert.equal(host.sessions.get(key).view.state, "ready");
+		host.workerEvent(key, { type: "control", control: { id: close, kind: "close", state: "completed", generation: "", started: 1, ended: 2 } });
+		assert.equal(host.state().sessions.length, 0);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("host restart preserves open membership without starting Pi; explicit close can dismiss it", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
 	const key = randomUUID(), oldActivation = randomUUID();
