@@ -233,7 +233,8 @@ export function loadableTools(pi: Pick<ExtensionAPI, "getAllTools">): string | u
   if (typeof pi.getAllTools !== "function") return undefined;
   const groups = new Map<string, string[]>();
   for (const tool of pi.getAllTools() ?? []) {
-    if (tool.exposure !== "deferred" || !tool.namespace?.name) continue;
+    // MCP tools are called from codemode and listed in their own section.
+    if (tool.exposure !== "deferred" || !tool.namespace?.name || tool.name.startsWith("mcp__") || tool.namespace.name.startsWith("mcp")) continue;
     const names = groups.get(tool.namespace.name) ?? [];
     names.push(tool.name);
     groups.set(tool.namespace.name, names);

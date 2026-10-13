@@ -1,6 +1,6 @@
 ---
 name: browse
-description: Use Chrome, with its signed-in sessions, to read, operate and check websites: web apps, forms and UI testing.
+description: "Use Chrome, with its signed-in sessions, to read, operate and check websites, such as web apps, forms and UI tests."
 ---
 
 # Browse
