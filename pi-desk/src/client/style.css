@@ -396,6 +396,18 @@ details[open] > summary:before {
 .sidebar-update { margin:0 10px 6px; padding:4px 8px; font-size:13px; color:var(--accent); background:var(--accent-soft); border:0; }
 .computer-update { margin:12px 0; }
 .computer-update p { margin:8px 0; }
+.update-line { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; }
+.update-line > span { min-width:0; }
+.computer-version { color:var(--muted); font-size:12px; font-weight:400; }
+.computer-card > summary strong { font-weight:600; }
+.computer-more { margin-top:10px; border-top:1px solid var(--border); padding-top:8px; }
+.computer-more > summary { cursor:pointer; color:var(--muted); font-size:13px; }
+.computer-rename { display:flex; gap:8px; margin:10px 0; }
+.computer-rename input { flex:1; }
+.danger-action { color:var(--danger); }
+.computer-facts { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:10px 0 4px; font-size:13px; }
+.computer-facts dt { color:var(--muted); }
+.computer-facts dd { margin:0; overflow-wrap:anywhere; }
 .computer-name { display:flex; align-items:center; gap:7px; min-width:0; }
 .computer-name strong { font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; }
 .os-icon { width:19px; height:19px; flex:none; }
@@ -2259,8 +2271,8 @@ details[open] > summary:before {
 .field-picker .model-picker-chevron { width:14px; height:14px; flex:none; color:var(--muted); }
 @media (max-width: 560px) { .new-model-fields { grid-template-columns:1fr; } }
 .automatic-updates { margin:6px 0 4px; }
-.outdated-conversations { display:grid; gap:8px; justify-items:start; margin:12px 0; padding:12px 0; border-top:1px solid var(--border); }
-.outdated-conversations > p { margin:0; }
+.outdated-conversations { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 12px; margin:12px 0 0; padding-top:12px; border-top:1px solid var(--border); }
+.outdated-conversations > p { margin:0; flex-basis:100%; }
 /* Quest tracker */
 .quest-rail { display:flex; flex-direction:column; width:var(--workspace-pane); flex:none; min-height:0; background:var(--sidebar); border-left:1px solid var(--border); }
 .quest-tracker { --quest-gold:#ffd100; --quest-title:#ffd100; --quest-green:#40c040; --quest-objective:#e8e6e1; --quest-blue:#4aa8ff; --quest-shadow:1px 1px 0 #000; display:flex; flex-direction:column; gap:10px; min-height:0; flex:1; padding:18px 18px 12px; position:relative; }

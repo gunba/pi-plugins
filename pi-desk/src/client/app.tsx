@@ -663,7 +663,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             <p>{computer.storageError}</p><button disabled={!computer.connected} onClick={() => void api("/storage/retry", {}, computer.id).catch(error => console.error("Catalog retry failed:", error))}>Retry saving</button>
           </details>}
           {(computer.updates?.available || computer.updates?.pending || computer.updates?.phase === "preparing") &&
-            <button className="sidebar-update" onClick={() => { setPanel("settings"); setSidebar(false); }}>
+            <button className="sidebar-update" onClick={() => { setSettingsSection("computers"); setPanel("settings"); setSidebar(false); }}>
               {computer.updates.phase === "applying" ? "Applying update…" : computer.updates.phase === "preparing" ? "Preparing update…"
                 : computer.updates.pending ? "Update ready" : "Update available"} →
             </button>}

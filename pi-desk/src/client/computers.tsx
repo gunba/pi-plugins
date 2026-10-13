@@ -38,89 +38,120 @@ function ComputerCard({ computer }: { computer: Computer }) {
 		setBusy(true); setError("");
 		void work().catch(error => setError(String(error))).finally(() => setBusy(false));
 	};
-	return <details className="computer-card" open={!!computer.updates?.available || computer.updates?.phase === "waiting"}>
-		<summary><span className={`status-dot ${connectionTone(computer)}`} />{computer.name}
+	const updates = computer.updates;
+	return <details className="computer-card" open={!!updates?.available || updates?.phase === "waiting" || updates?.phase === "failed"}>
+		<summary><span className={`status-dot ${connectionTone(computer)}`} /><strong>{computer.name}</strong>
+			{computer.release && <span className="computer-version">Desk {computer.release.version}</span>}
 			<small>{connectionLabel(computer)}</small></summary>
-		<p className="muted">{computer.id.slice(0, 8)}{computer.error ? ` · ${computer.error}` : ""}</p>
-		{computer.release && <p className="muted">Host {computer.release.version} · API {computer.release.api} · Pi {computer.release.engine}</p>}
+		{computer.error && <p role="alert" className="error-text">{computer.error}</p>}
+		{computer.presence && !computer.presence.online && <p className="muted">No recent contact. Last seen {new Date(computer.presence.seen).toLocaleString()}.</p>}
+		{computer.connection === "upgrade" && <p>This app is newer than the computer expects. <button className="quiet-action" onClick={() => location.reload()}>Reload app</button></p>}
 		<SoftwareUpdate computer={computer} />
-		{computer.connection === "upgrade" && <button onClick={() => location.reload()}>Reload app</button>}
-		{computer.presence && <p className="muted">Last host report: {computer.presence.online ? "online" : "no recent connection"}.
-			{" "}Last contact {new Date(computer.presence.seen).toLocaleString()}.
-		</p>}
-		<details className="connection-details"><summary>Connection details</summary>
-			<p>Browser link: {connectionLabel(computer)}. Switching away pauses this app's connections, not Pi sessions.</p>
-			<p>{computer.diagnostics?.interruptions ?? 0} unexpected interruptions since opening this app.</p>
-			{computer.diagnostics?.last && <p>Last interruption: {computer.diagnostics.last.reason}
-				{computer.diagnostics.last.code === undefined ? "" : ` (code ${computer.diagnostics.last.code})`}
-				{" · "}{new Date(computer.diagnostics.last.at).toLocaleString()}</p>}
+		<details className="computer-more"><summary>Name and removal</summary>
+			<form className="computer-rename" onSubmit={event => { event.preventDefault(); run(() => renameComputer(computer.id, name)); }}>
+				<input aria-label="Computer name" maxLength={100} value={name} onChange={event => setName(event.target.value)} required />
+				<button disabled={busy || name.trim() === computer.name}>Rename</button>
+			</form>
+			<button className="danger-action" disabled={busy} onClick={() => {
+				void confirmation.request({ title: "Remove computer?", context: computer.name, accept: "Remove computer",
+					body: <p>Remove this computer from the workspace on every device. Existing connections lose access within one minute.
+						Running Pi sessions remain on the computer. Sign in there again to enrol it again.</p>,
+				}).then(accepted => { if (accepted) run(() => removeComputer(computer.id)); });
+			}}>Remove from workspace</button>
 		</details>
-		<form onSubmit={event => { event.preventDefault(); run(() => renameComputer(computer.id, name)); }}>
-			<label>Computer name<input aria-label="Computer name" maxLength={100} value={name} onChange={event => setName(event.target.value)} required /></label>
-			<button disabled={busy}>Save name</button>
-		</form>
-		<button disabled={busy} onClick={() => {
-			void confirmation.request({ title: "Remove computer?", context: computer.name, accept: "Remove computer",
-				body: <p>Remove this computer from the workspace on every device. Existing connections lose access within one minute.
-					Running Pi sessions remain on the computer. Sign in there again to enrol it again.</p>,
-			}).then(accepted => { if (accepted) run(() => removeComputer(computer.id)); });
-		}}>Remove computer</button>
+		<details className="computer-more"><summary>Connection details</summary>
+			<dl className="computer-facts">
+				<dt>Computer ID</dt><dd>{computer.id}</dd>
+				{computer.release && <><dt>Versions</dt><dd>Desk {computer.release.version} · API {computer.release.api} · Pi {computer.release.engine}</dd></>}
+				<dt>Browser link</dt><dd>{connectionLabel(computer)}; switching away pauses this app's connection, not Pi.</dd>
+				{computer.presence && <><dt>Last contact</dt><dd>{new Date(computer.presence.seen).toLocaleString()}</dd></>}
+				<dt>Interruptions</dt><dd>{computer.diagnostics?.interruptions ?? 0} since this app opened
+					{computer.diagnostics?.last && <>; last: {computer.diagnostics.last.reason}{computer.diagnostics.last.code === undefined ? "" : ` (code ${computer.diagnostics.last.code})`},
+						{" "}{new Date(computer.diagnostics.last.at).toLocaleString()}</>}</dd>
+			</dl>
+		</details>
 		{error && <p role="alert" className="error-text">{error}</p>}
 		{confirmation.dialog}
 	</details>;
 }
+/** "2 min ago", "3 h ago", or a date for older checks. */
+function ago(at: number): string {
+	const minutes = Math.round((Date.now() - at) / 60_000);
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${minutes} min ago`;
+	if (minutes < 24 * 60) return `${Math.round(minutes / 60)} h ago`;
+	return new Date(at).toLocaleDateString([], { day: "numeric", month: "short" });
+}
 export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" | "connected" | "updates"> & { id?: string } }) {
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false), [restarted, setRestarted] = useState("");
+	// A check runs in the background; Update now checks first so it never offers a release that has since been replaced.
+	const [awaiting, setAwaiting] = useState<{ since: number; then: "update" | "check"; deadline: number }>();
 	const confirmation = useConfirmation(`${computer.id ?? "local"}:update`);
 	const updates = computer.updates;
-	if (!updates) return null;
 	const run = (path: string, body = {}) => {
 		setBusy(true); setError("");
-		void api(path, body, computer.id).catch(error => setError(String(error))).finally(() => setBusy(false));
+		return api(path, body, computer.id).catch(error => { setError(String(error)); throw error; }).finally(() => setBusy(false));
 	};
+	const confirmUpdate = () => {
+		if (!updates) return;
+		const prepared = updates.pendingId, version = updates.available;
+		if (!prepared && !version) return;
+		void confirmation.request({ title: `Update ${computer.name} to Desk ${prepared ? updates.pending : version}?`, context: `Now on ${updates.current}`, accept: "Update now",
+			body: <p>Desk restarts on this computer and restores its conversations; this browser reconnects by itself.
+				Running tools are interrupted; agents that were working carry on once, and idle conversations stay idle.
+				Messages still being sent must finish first.</p>,
+		}).then(accepted => { if (accepted) void run(prepared ? "/runtime/apply" : "/runtime/update-now", prepared ? { prepared } : { version }).catch(() => {}); });
+	};
+	const check = (then: "update" | "check") => {
+		if (!updates) return;
+		setAwaiting({ since: updates.checkedAt ?? 0, then, deadline: Date.now() + 90_000 });
+		void run("/runtime/check").catch(() => setAwaiting(undefined));
+	};
+	useEffect(() => {
+		if (!awaiting || !updates) return;
+		if (Date.now() > awaiting.deadline) { setAwaiting(undefined); setError("The update check did not finish. Try again."); return; }
+		if (updates.checking || (updates.checkedAt ?? 0) <= awaiting.since) {
+			const timer = setTimeout(() => setAwaiting(current => current && { ...current }), 2000);
+			return () => clearTimeout(timer);
+		}
+		setAwaiting(undefined);
+		if (awaiting.then === "update") confirmUpdate();
+	}, [awaiting, updates?.checking, updates?.checkedAt]);
+	if (!updates) return null;
+	const working = ["preparing", "applying"].includes(updates.phase), checking = !!awaiting || !!updates.checking;
+	const offer = updates.pendingId ? updates.pending : updates.available;
 	return <section className="computer-update" aria-label="Software update">
-		{updates.available && !updates.pending && <p role="status">Desk {updates.available} is available.</p>}
-		<button disabled={busy || !computer.connected || updates.checking || ["preparing", "applying"].includes(updates.phase)}
-			onClick={() => {
-				const prepared = updates.pendingId, version = updates.available;
-				if (!prepared && !version) { run("/runtime/check"); return; }
-				void confirmation.request({ title: `Update ${computer.name}?`, context: `Desk ${prepared ? updates.pending : version}`, accept: "Update now",
-					body: <p>Checkpoint and restart Pi on this computer. Running tools are interrupted;
-						previously running agents continue once after reconnecting, and idle conversations stay idle.
-						Pending input must finish before its conversation can be checkpointed.</p>,
-				}).then(accepted => { if (accepted) run(prepared ? "/runtime/apply" : "/runtime/update-now", prepared ? { prepared } : { version }); });
-			}}>
-			{updates.phase === "preparing" ? "Preparing update…" : updates.phase === "applying" ? "Updating…"
-				: updates.checking ? "Checking for updates…" : updates.pendingId || updates.available ? "Update now" : "Check for updates"}
-		</button>
-		{updates.phase === "waiting"
-			? <p role="status">Waiting for {updates.activeSessions ?? 0} open Pi sessions to close.
-				{updates.pending && <> Version {updates.pending} is ready.</>}</p>
-			: updates.message && <p role={updates.phase === "failed" ? "alert" : "status"}>{updates.message}</p>}
-
+		<div className="update-line">
+			{working ? <span role="status">{updates.phase === "preparing" ? "Preparing" : "Applying"} Desk {offer ?? "update"}…</span>
+				: updates.phase === "waiting" ? <span role="status">Waiting for {updates.activeSessions ?? 0} open Pi sessions to close{updates.pending ? `; Desk ${updates.pending} is ready` : ""}.</span>
+				: offer ? <span role="status"><strong>Desk {offer} is available</strong></span>
+				: <span className="muted">{updates.checkedAt && !updates.checkError ? `Up to date · checked ${ago(updates.checkedAt)}` : `Desk ${updates.current}`}</span>}
+			{!working && updates.phase !== "waiting" && (offer
+				? <button className="primary" disabled={busy || checking || !computer.connected} onClick={() => check("update")}>{checking ? "Checking…" : "Update now"}</button>
+				: <button className="quiet-action" disabled={busy || checking || !computer.connected} onClick={() => check("check")}>{checking ? "Checking…" : "Check now"}</button>)}
+		</div>
+		{updates.phase === "failed" && updates.message && <p role="alert" className="error-text">{/published release changed/i.test(updates.message)
+			? "A newer release replaced the one offered. Update now checks again and offers the latest." : updates.message}</p>}
+		{updates.checkError && <p className="error-text">Couldn't check for updates: {updates.checkError}</p>}
 		{updates.automatic && <div className="automatic-updates">
 			<label className="setting-control"><span>Update Desk automatically<small>When every conversation has been idle for 10 minutes. Running conversations are never interrupted.</small></span>
 				<input type="checkbox" role="switch" checked={updates.automatic.host} disabled={busy || !computer.connected}
-					onChange={event => run("/runtime/automatic", { host: event.target.checked })} /></label>
+					onChange={event => void run("/runtime/automatic", { host: event.target.checked }).catch(() => {})} /></label>
 			<label className="setting-control"><span>Move idle conversations to the new version<small>Each restarts once it has been idle for 10 minutes, with no agents, plans or commands still running. History is kept, and messages sent meanwhile wait for it.</small></span>
 				<input type="checkbox" role="switch" checked={updates.automatic.conversations} disabled={busy || !computer.connected}
-					onChange={event => run("/runtime/automatic", { conversations: event.target.checked })} /></label>
+					onChange={event => void run("/runtime/automatic", { conversations: event.target.checked }).catch(() => {})} /></label>
 		</div>}
 		{!!updates.outdated && <div className="outdated-conversations">
-			<p role="status">{updates.outdated === 1 ? "1 conversation is" : `${updates.outdated} conversations are`} on an older version of Desk.</p>
-			<button disabled={busy || !computer.connected} onClick={() => {
+			<span>{updates.outdated === 1 ? "1 conversation is" : `${updates.outdated} conversations are`} on an older Desk.</span>
+			<button className="quiet-action" disabled={busy || !computer.connected} onClick={() => {
 				setBusy(true); setError(""); setRestarted("");
 				void api<{ restarting: number; skipped: { title: string; reason: string }[] }>("/runtime/restart-idle", {}, computer.id).then(result => {
 					setRestarted([result.restarting ? `Restarting ${result.restarting} idle conversation${result.restarting === 1 ? "" : "s"}.` : "No conversation can be restarted right now.",
 						...result.skipped.map(item => `${item.title || "A conversation"} ${item.reason}.`)].join(" "));
 				}).catch(error => setError(String(error))).finally(() => setBusy(false));
-			}}>Update idle conversations now</button>
+			}}>Restart idle ones now</button>
 			{restarted && <p className="muted">{restarted}</p>}
 		</div>}
-		{updates.checkError && <p className="muted">Update check: {updates.checkError}</p>}
-		{updates.checkedAt && !updates.checking && <p className="muted">{!updates.available && !updates.checkError ? "Up to date · " : ""}
-			Checked {new Date(updates.checkedAt).toLocaleString()}</p>}
-		<p className="muted">Update now restarts this computer and restores its conversations. This browser reconnects automatically.</p>
 		{error && <p role="alert" className="error-text">{error}</p>}
 		{confirmation.dialog}
 	</section>;
