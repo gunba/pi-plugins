@@ -16,6 +16,11 @@ const FILE = "automatic-updates.json";
 export const QUIET_MS = 10 * 60_000;
 /** Children a worker starts this soon after itself are its MCP servers and helpers, not running commands. */
 const STARTUP_CHILD_MS = 60_000;
+/**
+ * Long-lived helpers a tool starts on first use, whenever that is: the Chrome DevTools tools' own Chrome, with a
+ * temporary profile. A restart closes it like any idle helper; counting it as a command blocked restarts for good.
+ */
+const HELPER = /pi-chrome-devtools-profile-/;
 
 export function readAutomatic(directory: string): AutomaticUpdates {
 	try {
@@ -61,23 +66,28 @@ export async function workerHasRunningCommands(pid: number): Promise<boolean> {
 				catch { return []; }
 			});
 			const self = started(pid);
-			return children.some(child => { try { return started(child) - self > STARTUP_CHILD_MS; } catch { return false; } });
+			const command = (target: number) => readFileSync(`/proc/${target}/cmdline`, "utf8").replaceAll("\0", " ");
+			return children.some(child => { try { return started(child) - self > STARTUP_CHILD_MS && !HELPER.test(command(child)); } catch { return false; } });
 		}
 		if (process.platform === "win32") {
 			const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if (-not $p) { exit 2 }
-				Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}" | ForEach-Object { [int64](($_.CreationDate - $p.CreationDate).TotalMilliseconds) }`;
+				Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}" | ForEach-Object { "$([int64](($_.CreationDate - $p.CreationDate).TotalMilliseconds))\`t$($_.CommandLine)" }`;
 			const { stdout } = await run(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 				["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 20_000 });
-			return stdout.split(/\s+/).filter(Boolean).some(value => Number(value) > STARTUP_CHILD_MS);
+			return stdout.split(/\r?\n/).filter(Boolean).some(line => {
+				const tab = line.indexOf("\t");
+				return Number(line.slice(0, tab)) > STARTUP_CHILD_MS && !HELPER.test(line.slice(tab + 1));
+			});
 		}
-		const { stdout } = await run("ps", ["-A", "-o", "pid=,ppid=,etime="], { timeout: 10_000 });
+		const { stdout } = await run("ps", ["-A", "-o", "pid=,ppid=,etime=,command="], { timeout: 10_000 });
 		const seconds = (etime: string) => {
 			const [days, clock] = etime.includes("-") ? etime.split("-") as [string, string] : ["0", etime];
 			return clock.split(":").map(Number).reduce((total, part) => total * 60 + part, 0) + Number(days) * 86_400;
 		};
-		const rows = stdout.trim().split("\n").map(line => line.trim().split(/\s+/)).map(([id, parent, age]) => ({ id: Number(id), parent: Number(parent), age: seconds(age!) }));
+		const rows = stdout.trim().split("\n").map(line => line.trim().split(/\s+/)).map(([id, parent, age, ...command]) =>
+			({ id: Number(id), parent: Number(parent), age: seconds(age!), command: command.join(" ") }));
 		const self = rows.find(row => row.id === pid);
-		return !self || rows.some(row => row.parent === pid && (self.age - row.age) * 1000 > STARTUP_CHILD_MS);
+		return !self || rows.some(row => row.parent === pid && (self.age - row.age) * 1000 > STARTUP_CHILD_MS && !HELPER.test(row.command));
 	} catch {
 		// Unknown is treated as busy: skipping a restart is harmless, interrupting work is not.
 		return true;

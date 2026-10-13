@@ -804,7 +804,8 @@ export class DeskHost {
 				for (const { managed, blockers } of this.outdated()) {
 					const key = managed.view.key;
 					if (only && key !== only) continue;
-					if (blockers.length || this.restartAttempts.get(key) === RELEASE.version) continue;
+					// An explicit request retries a restart that failed earlier.
+					if (blockers.length || !force && this.restartAttempts.get(key) === RELEASE.version) continue;
 					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
 					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid)) continue;
 					await this.restartForUpdate(managed);
@@ -1287,9 +1288,16 @@ export class DeskHost {
 			if (url.pathname === "/api/runtime/restart-idle" && request.method === "POST") {
 				const only = data.key === undefined ? undefined : string(data.key, 100);
 				const outdated = this.outdated().filter(item => !only || item.managed.view.key === only);
+				const title = (item: typeof outdated[number]) => item.managed.view.title ?? item.managed.view.name ?? "";
+				const skipped = outdated.filter(item => item.blockers.length).map(item => ({ title: title(item), reason: item.blockers.join(", ") }));
+				let restarting = 0;
+				// The same check the restart makes, so the reply says what will actually happen.
+				for (const item of outdated.filter(item => !item.blockers.length)) {
+					if (item.managed.worker?.pid && !await workerHasRunningCommands(item.managed.worker.pid)) restarting++;
+					else skipped.push({ title: title(item), reason: "a command it started is still running" });
+				}
 				void this.maintain(true, only);
-				return reply({ restarting: outdated.filter(item => !item.blockers.length).length,
-					skipped: outdated.filter(item => item.blockers.length).map(item => ({ title: item.managed.view.title ?? item.managed.view.name ?? "", reason: item.blockers.join(", ") })) }, 202);
+				return reply({ restarting, skipped }, 202);
 			}
 			if (url.pathname === "/api/runtime/check" && request.method === "POST") {
 				if (!this.runtimeHome) return reply({ error: "This host is not a managed installation." }, 409);
