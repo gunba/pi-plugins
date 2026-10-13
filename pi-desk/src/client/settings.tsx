@@ -14,11 +14,12 @@ import { ContextPanel } from "./context-panel.tsx";
 import { toolAvailability } from "./tool-availability.ts";
 import { ProviderAccountsPanel } from "./provider-accounts.tsx";
 import { Disclosure } from "./disclosure.tsx";
+import { DictationSettingsPanel } from "./dictation.tsx";
 
 /** Desk's own pages, addressable with /settings <id>. Extension pages come from the conversation's views. */
 export const settingsSections = [
 	{ id: "conversation", title: "Overview" }, { id: "context", title: "Context" }, { id: "tools", title: "Tools & commands" }, { id: "activity", title: "Activity" },
-	{ id: "accounts", title: "Model accounts" }, { id: "availability", title: "Availability" },
+	{ id: "accounts", title: "Model accounts" }, { id: "dictation", title: "Dictation" }, { id: "availability", title: "Availability" },
 	{ id: "general", title: "General" }, { id: "computers", title: "Computers & devices" },
 ];
 const page = (id: string) => settingsSections.find(section => section.id === id)!;
@@ -33,7 +34,7 @@ export function settingsGroups({ session, computer, views }: { session?: string;
 	const pages = views.filter(view => !MERGED_VIEWS.has(view.id)).map(view => ({ id: view.id, title: VIEW_TITLES[view.id] ?? view.title }));
 	return [
 		...(session ? [{ label: "This conversation", detail: session, items: [page("conversation"), page("context"), ...pages.filter(view => CONVERSATION_VIEWS.has(view.id)), page("tools"), page("activity")] }] : []),
-		{ label: computer, detail: "Shared by conversations on this computer", items: [...pages.filter(view => !CONVERSATION_VIEWS.has(view.id)), page("accounts"), page("availability")] },
+		{ label: computer, detail: "Shared by conversations on this computer", items: [...pages.filter(view => !CONVERSATION_VIEWS.has(view.id)), page("accounts"), page("dictation"), page("availability")] },
 		{ label: "Pi Desk", detail: "This app, on every computer", items: [page("general"), page("computers")] },
 	];
 }
@@ -104,6 +105,7 @@ export function SettingsContent({ section, host, account, session, computer, con
 			</section>
 		</>}
 		{section === "accounts" && <ProviderAccountsPanel host={host} computer={computer} session={session} connected={connected} busy={settingBusy} invoke={invoke} providerHint={providerHint} />}
+		{section === "dictation" && <DictationSettingsPanel host={host} computer={computer} connected={connected} />}
 		{section === "computers" && (account ? <Computers computers={host.computers ?? []} account={account} /> : <>
 			{host.updates && <section className="panel-card"><h3>Software updates</h3>
 				<SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></section>}

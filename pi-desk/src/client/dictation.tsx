@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
-import type { Computer } from "./workspace.ts";
+import type { Computer, WorkspaceState } from "./workspace.ts";
+import type { DictationSettings } from "../shared/protocol.ts";
 
 /** Recordings stay within one request: five minutes of speech at 16 kbit/s. */
 const MAX_SECONDS = 5 * 60;
@@ -25,7 +26,7 @@ const blobBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
 });
 
 /**
- * Dictate into a composer: record while the button is on, then the whole clip is transcribed with Whisper and
+ * Dictate into a composer: record while the button is on, then the whole clip is transcribed by ElevenLabs and
  * added to the draft. Nothing appears while speaking, and nothing is sent.
  */
 export function DictationButton({ append, disabled, report, computer }: {
@@ -84,9 +85,71 @@ export function DictationButton({ append, disabled, report, computer }: {
 		<button type="button" className={`icon-button dictation-button${phase === "recording" ? " listening" : ""}`}
 			disabled={phase === "transcribing" || (disabled || unavailable) && phase !== "recording"} aria-pressed={phase === "recording"}
 			aria-label={phase === "recording" ? "Stop and transcribe" : "Dictate"}
-			title={unavailable ? "Dictation needs a computer with Whisper, such as Fedora, to be connected" : phase === "recording" ? "Stop and transcribe" : "Dictate"}
+			title={unavailable ? "Dictation needs an ElevenLabs API key: add one in Settings & tools → Dictation" : phase === "recording" ? "Stop and transcribe" : "Dictate"}
 			onClick={() => phase === "recording" ? recorder.current?.stop() : void start()}><Icon name="mic" /></button>
 	</span>;
+}
+
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** Settings & tools → Dictation: the ElevenLabs key and the terms to recognise, kept on one computer. */
+export function DictationSettingsPanel({ host, computer, connected }: { host: WorkspaceState; computer?: Computer; connected: boolean }) {
+	const [chosen, setChosen] = useState("");
+	const computers = host.computers;
+	const id = chosen || computer?.id || computers?.find(item => item.connected)?.id || computers?.[0]?.id;
+	const target = computers?.find(item => item.id === id);
+	return <>
+		{computers && <label className="setting-control">Computer<select aria-label="Dictation computer" value={id ?? ""} onChange={event => setChosen(event.target.value)}>
+			{!computers.length && <option value="">No computers</option>}
+			{computers.map(item => <option key={item.id} value={item.id}>{item.name}{item.connected ? "" : " — disconnected"}</option>)}
+		</select></label>}
+		{(!computers || id) && <DictationKey key={id ?? "local"} computer={id} name={target?.name ?? host.name}
+			connected={computers ? !!target?.connected : connected} />}
+	</>;
+}
+
+function DictationKey({ computer, name, connected }: { computer?: string; name: string; connected: boolean }) {
+	const [settings, setSettings] = useState<DictationSettings>();
+	const [key, setKey] = useState(""), [terms, setTerms] = useState("");
+	const [error, setError] = useState(""), [notice, setNotice] = useState(""), [working, setWorking] = useState(false);
+	const show = (value: DictationSettings) => { setSettings(value); setTerms(value.keyterms.join("\n")); };
+	useEffect(() => {
+		if (!connected) return;
+		let live = true;
+		api<DictationSettings>("/dictation/settings", undefined, computer).then(value => { if (live) show(value); }, error => { if (live) setError(message(error)); });
+		return () => { live = false; };
+	}, [computer, connected]);
+	const save = (body: Record<string, unknown>, done: string) => {
+		setWorking(true); setError(""); setNotice("");
+		api<DictationSettings>("/dictation/settings", body, computer)
+			.then(value => { show(value); setKey(""); setNotice(done); }, error => setError(message(error)))
+			.finally(() => setWorking(false));
+	};
+	const disabled = !connected || working || !settings;
+	return <>
+		<section className="panel-card"><h3><Icon name="mic" />ElevenLabs</h3>
+			<p className="muted">Dictation records the whole clip, then {name} sends it to ElevenLabs Scribe to transcribe. Browsers use the
+				conversation's computer when it has a key, otherwise any connected computer that does.</p>
+			{!connected && <p className="muted">This computer is disconnected.</p>}
+			{error && <p className="error-text" role="alert">{error}</p>}
+			{notice && <p className="muted" role="status">{notice}</p>}
+			{settings && <p className="muted">{settings.configured ? `${name} has a key; dictation is on.` : `${name} has no key yet.`}</p>}
+			<form className="provider-account-add" onSubmit={event => { event.preventDefault(); save({ key }, `Key saved on ${name}.`); }}>
+				<label>{settings?.configured ? "Replace API key" : "API key"}<input type="password" autoComplete="off" spellCheck={false} maxLength={200}
+					value={key} placeholder="sk_…" disabled={disabled} onChange={event => setKey(event.target.value)} /></label>
+				<button type="submit" disabled={disabled || !key.trim()}>Save key</button>
+			</form>
+			<p className="muted">Create one under <a href="https://elevenlabs.io/app/developers/api-keys" target="_blank" rel="noopener noreferrer">ElevenLabs API keys ↗</a>.
+				It only needs speech-to-text access.</p>
+			{settings?.configured && <button className="quiet-action" disabled={disabled}
+				onClick={() => save({ key: null }, `Key removed; dictation is off on ${name}.`)}>Remove key</button>}
+		</section>
+		{settings?.configured && <section className="panel-card"><h3>Terms to recognise</h3>
+			<p className="muted">One per line: names, products and jargon to spell your way, up to 100. Any terms add about 20% to the cost.</p>
+			<textarea aria-label="Terms to recognise" rows={6} spellCheck={false} value={terms} disabled={disabled} onChange={event => setTerms(event.target.value)} />
+			<button disabled={disabled || terms === settings.keyterms.join("\n")} onClick={() => save({ keyterms: terms.split("\n") }, "Terms saved.")}>Save terms</button>
+		</section>}
+	</>;
 }
 
 /** Join dictated text onto a draft with sensible spacing. */

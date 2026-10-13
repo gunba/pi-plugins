@@ -265,7 +265,7 @@ export class DeskHost {
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.dictation?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
@@ -1260,6 +1260,14 @@ export class DeskHost {
 				const language = typeof data.language === "string" && /^[a-z]{2}$/.test(data.language) ? data.language : undefined;
 				return reply(await this.dictation.transcribe(audio, typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", language));
 			}
+			if (url.pathname === "/api/dictation/settings") {
+				if (request.method === "GET") return reply(this.dictation!.settings());
+				if (request.method === "POST") {
+					const value = this.dictation!.configure(data);
+					this.emit({ type: "state", state: this.state() });
+					return reply(value);
+				}
+			}
 			if (url.pathname === "/api/quests" && this.quests) {
 				if (request.method === "POST") {
 					const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
@@ -1501,7 +1509,7 @@ export class DeskHost {
 		clearTimeout(this.accountRetry); this.accountRevision++;
 		this.relay?.close(); this.partyNetwork?.close();
 		this.accountIdentity?.close();
-		try { this.dictation?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		for (const client of this.clients) client.response.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));
