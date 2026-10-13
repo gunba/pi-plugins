@@ -1,5 +1,5 @@
 import type { PartyStore } from "../../../pi-party/store.ts";
-import { record, uuid, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
+import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
 import type { PartyOperations } from "../../../pi-party/operations.ts";
 
 type Send = (payload: PartyPacket) => Promise<void>;
@@ -15,10 +15,21 @@ export class PartyNetwork {
 	private timer: ReturnType<typeof setInterval>;
 	private closed = false;
 	private lifecycle?: { operations: PartyOperations; execute(computer: string, request: PartyOperation): Promise<OperationResult["result"]> };
-	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"]) {
-		this.store = store; this.changed = changed;
+	/** This computer, as announced with its directory, and what each peer announced (older hosts announce nothing). */
+	private self?: PartyComputer;
+	private announced = new Map<string, PartyComputer>();
+	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer) {
+		this.store = store; this.changed = changed; this.self = self;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
+	}
+	/** Other computers in this workspace, with what they announced; an empty operations list means an older Desk. */
+	computers(): { id: string; online: boolean; name?: string; platform?: string; version?: string; operations: string[] }[] {
+		return this.store.computers().map(({ id, state }) => {
+			const announced = this.announced.get(id);
+			return { id, online: state === "connected", ...(announced ? { name: announced.name, platform: announced.platform, version: announced.version } : {}),
+				operations: announced?.operations ?? [] };
+		});
 	}
 	connected(id: string, send: Send, close: () => void): () => void {
 		if (this.closed) throw Error("Party network is closed.");
@@ -44,7 +55,7 @@ export class PartyNetwork {
 		try {
 			const agents = this.store.networkDirectory(), signature = JSON.stringify(agents);
 			if (this.directories.get(id) === signature) await send({ type: "presence" });
-			else { await send({ type: "directory", agents }); this.directories.set(id, signature); }
+			else { await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, signature); }
 			if (this.closed || this.peers.get(id) !== send) return;
 			const messages = this.store.outgoing(id);
 			if (messages.length) await send({ type: "messages", messages });
@@ -62,7 +73,7 @@ export class PartyNetwork {
 				.then(async result => {
 					if (!result || this.closed || this.peers.get(id) !== send) return;
 					const agents = this.store.networkDirectory();
-					await send({ type: "directory", agents }); this.directories.set(id, JSON.stringify(agents));
+					await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, JSON.stringify(agents));
 					await send({ type: "operation-results", results: [result] });
 				})
 				.catch(() => { if (this.peers.get(id) === send) this.closers.get(id)?.(); });
@@ -75,6 +86,8 @@ export class PartyNetwork {
 		}
 		if (packet.type === "presence") { this.store.touchComputer(id); return; }
 		if (packet.type === "directory") {
+			const computer = partyComputer(packet.computer);
+			if (computer) this.announced.set(id, computer);
 			this.store.cacheDirectory(id, packet.agents); this.changed(); return;
 		}
 		if (packet.type === "messages") {

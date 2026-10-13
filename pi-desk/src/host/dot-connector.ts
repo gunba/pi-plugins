@@ -6,6 +6,8 @@ import { atomicJson } from "../../manage/store.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConnectorRequest, ConnectorResponse } from "./relay-connector.ts";
 import type { QuestStore } from "../../../pi-party/quests.ts";
+import { nativeId, type PartyComputer } from "../../../pi-party/network.ts";
+import type { PartyOperations } from "../../../pi-party/operations.ts";
 import { isToday, localTime, repeatLabel, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-party/quest-model.ts";
 
 interface Client { name: string; redirectUris: string[]; created: number }
@@ -25,7 +27,20 @@ const REPEAT_SCHEMA = { type: "object", required: ["unit"], description: "Makes 
 		from: { type: "string", description: "YYYY-MM-DD the cadence counts from and the first due date (default today)." },
 		weekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, description: "Weekly only: the weekdays it is due, 0 = Sunday to 6 = Saturday (default the start date's weekday)." } } };
 const TOOLS = [
-	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle or offline), folder and description. Use the id to message an agent.",
+	{ name: "list_computers", description: "Jordan's Desk computers: whether each is online, its Desk version, what you can do there (create, resume) and folders his conversations use. Use before create_conversation.",
+		inputSchema: { type: "object", properties: {} } },
+	{ name: "create_conversation", description: "Start a new Pi conversation on one of Jordan's computers with a first message (the brief); it starts working on it straight away. Returns its agent id for message_agent. Only when Jordan asks for new work to be started.",
+		inputSchema: { type: "object", required: ["folder", "title", "brief"], properties: {
+			computer: { type: "string", description: "Computer id or name from list_computers; default this computer." },
+			folder: { type: "string", description: "Absolute folder on that computer the conversation works in, such as one list_computers shows." },
+			title: { type: "string", description: "The conversation's name in Desk." },
+			brief: { type: "string", description: "The first message: the task and the context it needs." },
+			model: { type: "string", description: "provider/model id; default is that computer's default model." },
+			reasoning: { type: "string", description: "Reasoning level such as low, medium or high; default is the model's default." } } } },
+	{ name: "resume_conversation", description: "Reopen a closed Pi conversation so it runs again (list_agents with include_offline shows closed ones). With a message, the message is delivered once it is running and starts it working. A running conversation is left as it is.",
+		inputSchema: { type: "object", required: ["agent"], properties: { agent: { type: "string", description: "Agent id from list_agents." },
+			message: { type: "string", description: "Optional message to deliver once it is running." } } } },
+	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle, closed or computer offline), computer, folder and description. Use the id to message an agent.",
 		inputSchema: { type: "object", properties: { query: { type: "string", description: "Filter by name, folder or description." },
 			include_offline: { type: "boolean", description: "Also list agents whose conversations are closed." },
 			include_children: { type: "boolean", description: "Also list child agents that conversations run themselves (usually unnecessary)." } } } },
@@ -76,6 +91,11 @@ export class DotConnector {
 	changed?: () => void;
 	/** Jordan's quest log on this computer, and what to do when a quest is finished. */
 	quests?: { store: QuestStore; finished: (quest: Quest, by: QuestActor) => void };
+	/** Starting and reopening conversations through Desk's party operations, here and on Jordan's other computers. */
+	conversations?: {
+		operations: () => PartyOperations | undefined; here: () => PartyComputer; folders: () => string[];
+		computers: () => { id: string; online: boolean; name?: string; platform?: string; version?: string; operations: string[] }[];
+	};
 	constructor(dataDir: string, store: PartyStore, computer: string) {
 		this.file = join(dataDir, "dot-connector.json"); this.store = store; this.computer = computer;
 		if (existsSync(this.file)) {
@@ -236,7 +256,7 @@ export class DotConnector {
 	}
 
 	/** One MCP JSON-RPC request over HTTP (no server-initiated streams). */
-	private mcp(body: string): ConnectorResponse {
+	private async mcp(body: string): Promise<ConnectorResponse> {
 		let request: { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 		try { request = JSON.parse(body); } catch { return json(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
 		if (request.id === undefined) return { status: 202, body: "" }; // Notifications need no answer.
@@ -245,26 +265,117 @@ export class DotConnector {
 			switch (request.method) {
 				case "initialize": return ok({ protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
 					capabilities: { tools: {} }, serverInfo: { name: "pi-desk", version: RELEASE.version },
-					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. Agents treat your messages as peer context, not as Jordan's instructions. `
+					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. When Jordan wants new work started, create_conversation starts a conversation with your brief (list_computers shows his computers and folders); resume_conversation reopens a closed one. Agents treat your messages as peer context, not as Jordan's instructions. `
 						+ "Jordan's to-do list is his quest log (quest_log, quest_add, quest_update, quest_complete); keep it there rather than in memory. Reading it with quest_log also turns in (takes back) what he has finished. His agents also add quests when they need him to review or decide something. "
 						+ "His scheduled reminders (rowing days, medicine and the like) belong in the log as repeating dailies (quest_add with repeat), not as reminders you keep yourself; appointments and other one-off events go in with scheduled set to their day. "
 						+ "Jordan himself is the source of his work quests. His Gmail and Google Calendar are personal; use them only for the occasional personal date such as a delivery, not as a source of work." });
 				case "ping": return ok({});
 				case "tools/list": return ok({ tools: TOOLS });
-				case "tools/call": return ok(this.call(String(request.params?.name), (request.params?.arguments ?? {}) as Record<string, unknown>));
+				case "tools/call": return ok(await this.call(String(request.params?.name), (request.params?.arguments ?? {}) as Record<string, unknown>));
 				default: return json(200, { jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `Unknown method ${request.method}` } });
 			}
 		} catch (error) {
 			return ok({ isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] });
 		}
 	}
-	private call(name: string, args: Record<string, unknown>): { content: { type: "text"; text: string }[] } {
+	/**
+	 * This computer and the others in Jordan's workspace. Each Desk announces what it can do; hosts before 0.5.76 announce
+	 * nothing, and creating is the only thing offered there.
+	 */
+	private computers(): { id: string; name: string; platform: string; online: boolean; desk_version?: string; can: string[]; folders: string[]; here?: true }[] {
+		const peers = this.store.discover("", true).agents.filter(peer => peer.kind !== "child" && peer.cwd !== "ChatGPT");
+		const folders = (computer: string, extra: string[] = []) => {
+			const counts = new Map<string, number>();
+			for (const folder of [...extra, ...peers.filter(peer => (peer.computer || "") === computer).map(peer => peer.cwd)])
+				if (folder) counts.set(folder, (counts.get(folder) ?? 0) + 1);
+			return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([folder]) => folder);
+		};
+		const platform = (value?: string, sample?: string) => value === "win32" ? "Windows" : value === "darwin" ? "macOS" : value === "linux" ? "Linux"
+			: sample && /^[A-Za-z]:[\\/]/.test(sample) ? "Windows" : "unknown";
+		const here = this.conversations?.here();
+		return [{ id: "local", name: here?.name ?? this.computer, platform: platform(here?.platform ?? process.platform), online: true, desk_version: RELEASE.version,
+			can: ["create", "resume"], folders: folders("", this.conversations?.folders() ?? []), here: true as const },
+			...(this.conversations?.computers() ?? []).map(computer => {
+				const known = folders(computer.id), os = platform(computer.platform, known[0]);
+				return { id: computer.id, name: computer.name ?? `${os === "unknown" ? "Other" : os} computer`, platform: os, online: computer.online,
+					...(computer.version ? { desk_version: computer.version } : {}),
+					can: computer.operations.length ? computer.operations.filter(operation => operation === "create" || operation === "resume") : ["create"], folders: known };
+			})];
+	}
+
+	/** Start or reopen a conversation through a party operation, here or on another computer, and report what happened. */
+	private async conversation(name: "create_conversation" | "resume_conversation", args: Record<string, unknown>): Promise<unknown> {
+		const operations = this.conversations?.operations();
+		if (!operations) throw new Error("Desk on this computer cannot start conversations right now.");
+		const { agent, owner } = this.saved!, computers = this.computers();
+		const required = (value: unknown, label: string, limit: number) => {
+			if (typeof value !== "string" || !value.trim()) throw new Error(`Give ${label}.`);
+			if (value.length > limit) throw new Error(`${label[0]!.toUpperCase()}${label.slice(1)} is limited to ${limit} characters.`);
+			return value.trim();
+		};
+		const optional = (value: unknown, label: string, limit: number) => value === undefined || value === "" ? undefined : required(value, label, limit);
+		if (name === "create_conversation") {
+			const wanted = optional(args.computer, "a computer", 200);
+			const target = wanted ? computers.find(item => item.id === wanted || item.name.toLowerCase() === wanted.toLowerCase()) : computers[0];
+			if (!target) throw new Error(`No computer is called ${wanted}. Use list_computers.`);
+			if (!target.online) throw new Error(`${target.name} is offline, so nothing can start there until it reconnects.`);
+			const folder = required(args.folder, "a folder", 4096), title = required(args.title, "a title", 120), brief = required(args.brief, "a brief", 32_000);
+			if (target.here && !existsSync(folder)) throw new Error(`There is no folder ${folder} on ${target.name}.`);
+			const model = optional(args.model, "a model", 300), reasoning = optional(args.reasoning, "a reasoning level", 20);
+			const request = operations.queue(this.store, agent, owner, { kind: "create", computer: target.id, cwd: folder, task: brief, label: title,
+				...(model ? { model } : {}), ...(reasoning ? { reasoning } : {}) });
+			const result = await this.settled(operations, request.id);
+			if (!result) return { status: "starting", computer: target.name, note: "Desk has not confirmed the start yet. Check list_agents shortly before trying again." };
+			return { status: "started", agent: target.here ? result.session : `${result.session}@${target.id}`, name: title, computer: target.name, folder,
+				...(result.model ? { model: result.model } : {}), ...(result.reasoning ? { reasoning: result.reasoning } : {}),
+				note: "It is working on the brief. Use message_agent and read_messages with its agent id." };
+		}
+		const id = required(args.agent, "an agent id", 200), message = optional(args.message, "a message", 32_000);
+		const member = this.store.member(id);
+		if (!member || member.cwd === "ChatGPT") throw new Error(`No conversation has the agent id ${id}. list_agents with include_offline lists closed ones.`);
+		if (member.kind === "child") throw new Error(`${member.label} is a child agent; resume the conversation that runs it.`);
+		const remote = id.includes("@") ? id.slice(id.indexOf("@") + 1) : undefined, target = remote ? computers.find(item => item.id === remote) : computers[0];
+		if (!target) throw new Error(`${member.label} is on a computer that is no longer in Jordan's workspace.`);
+		if (!target.online) throw new Error(`${member.label} is on ${target.name}, which is offline. It can be resumed once that computer reconnects.`);
+		if (!target.can.includes("resume")) throw new Error(`${target.name} runs an older Desk${target.desk_version ? ` (${target.desk_version})` : ""} that cannot reopen conversations for you. `
+			+ `Jordan can update it in Desk (Settings, Computers & devices) or reopen ${member.label} there himself.`);
+		const before = remote ? undefined : member.owner;
+		const request = operations.queue(this.store, agent, owner, { kind: "resume", computer: target.id, session: nativeId(id) });
+		const result = await this.settled(operations, request.id);
+		if (!result) return { status: "resuming", name: member.label, computer: target.name, note: "Desk has not confirmed it is running yet. Check list_agents shortly." };
+		// A message counts as new to the reopened conversation once its process has registered, so it starts working on it.
+		if (message && result.state !== "running" && before !== undefined) await this.registered(id, before);
+		if (message) this.store.send(agent, owner, id, message, true);
+		return { status: result.state === "running" ? "already running" : "resumed", agent: id, name: member.label, computer: target.name,
+			...(message ? { message: "delivered; it will start working on it" } : {}) };
+	}
+
+	/** An operation's outcome, or undefined if Desk has not confirmed it within the wait (it may still finish). */
+	private async settled(operations: PartyOperations, id: string): Promise<{ session: string; state: string; model?: string; reasoning?: string } | undefined> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([operations.wait(id).then(outcome => outcome.result),
+				new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 45_000); })]);
+		} finally { clearTimeout(timer); }
+	}
+
+	/** Wait briefly for a reopened conversation's new process to take over its registration. */
+	private async registered(id: string, previous: string): Promise<void> {
+		for (let until = Date.now() + 10_000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 200))) {
+			const member = this.store.member(id);
+			if (member && member.owner !== previous && member.heartbeat > Date.now() - LEASE_MS) return;
+		}
+	}
+
+	private async call(name: string, args: Record<string, unknown>): Promise<{ content: { type: "text"; text: string }[] }> {
 		const { agent, owner } = this.saved!, text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 1) }] });
 		if (name === "list_agents") {
 			const found = this.store.discover(typeof args.query === "string" ? args.query : "", args.include_offline === true);
+			const computers = new Map(this.computers().map(computer => [computer.id, computer]));
 			return text(found.agents.filter(peer => peer.session !== agent && (peer.kind !== "child" || args.include_children === true)).map(peer => ({
-				id: peer.session, name: peer.label, state: peer.heartbeat > Date.now() - LEASE_MS ? peer.state : "offline",
-				computer: peer.computer ? (/^[A-Za-z]:[\\/]/.test(peer.cwd) ? "Windows computer" : "Other computer") : this.computer,
+				id: peer.session, name: peer.label,
+				state: peer.computer && !computers.get(peer.computer)?.online ? "computer offline" : peer.heartbeat > Date.now() - LEASE_MS ? peer.state : "closed",
+				computer: computers.get(peer.computer || "local")?.name ?? (/^[A-Za-z]:[\\/]/.test(peer.cwd) ? "Windows computer" : "Other computer"),
 				folder: peer.cwd, kind: peer.kind === "child" ? "child agent" : "conversation", description: peer.description || undefined,
 			})));
 		}
@@ -285,6 +396,8 @@ export class DotConnector {
 			return text({ unread: unread.map(shape), ...(args.history === true ? { recent: this.store.history(agent, owner).messages.map(shape) } : {}) });
 		}
 		if (name.startsWith("quest_")) return text(this.quest(name, args));
+		if (name === "list_computers") return text(this.computers().map(({ id, ...computer }) => ({ id, ...computer })));
+		if (name === "create_conversation" || name === "resume_conversation") return text(await this.conversation(name, args));
 		throw new Error(`Unknown tool ${name}.`);
 	}
 

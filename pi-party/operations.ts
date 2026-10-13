@@ -6,7 +6,9 @@ import { agentId, operationResult, partyOperation, type OperationResult, type Pa
 import { LEASE_MS, type PartyStore } from "./store.ts";
 
 type OperationInput = { kind: "create"; computer?: string; cwd: string; task: string; label: string; model?: string; reasoning?: string }
-	| { kind: "fork"; cwd: string; task: string; label: string; call: string };
+	| { kind: "fork"; cwd: string; task: string; label: string; call: string }
+	/** Reopen a closed conversation; only for computers that announce "resume". */
+	| { kind: "resume"; computer?: string; session: string };
 interface Outgoing { id: string; computer: string; request: string; status: string; response: string | null }
 interface Incoming { request: string; status: string; response: string | null }
 
@@ -63,9 +65,10 @@ export class PartyOperations {
 	queue(store: PartyStore, session: string, owner: string, input: OperationInput): PartyOperation {
 		const self = store.member(session);
 		if (!self || self.owner !== owner) throw Error("Agent registration is no longer owned by this session process.");
-		const computer = input.kind === "create" ? input.computer ?? "local" : "local";
+		const computer = input.kind === "fork" ? "local" : input.computer ?? "local";
 		const now = Date.now(), operation: PartyOperation = { id: randomUUID(), sender: session, sender_epoch: self.agent_epoch,
-			kind: input.kind, created: now, expires: now + 300_000, cwd: input.cwd, task: input.task, label: input.label,
+			kind: input.kind, created: now, expires: now + 300_000,
+			...(input.kind === "resume" ? { cwd: "", task: "", label: "", session: input.session } : { cwd: input.cwd, task: input.task, label: input.label }),
 			...(input.kind === "fork" ? { call: input.call } : {}),
 			...(input.kind === "create" && input.model ? { model: input.model } : {}),
 			...(input.kind === "create" && input.reasoning ? { reasoning: input.reasoning } : {}) };

@@ -55,6 +55,8 @@ export default function party(pi: ExtensionAPI): void {
 	let stopped = false;
 	let armed = false;
 	let paused = false;
+	// Messages that arrived before this process opened the conversation wait for its next turn; later ones may wake it.
+	let wakeAfter = 0;
 	let preparingPrompt = false;
 	let chat: PartyChat | undefined;
 	let remote: PartyPresentation | undefined;
@@ -122,7 +124,7 @@ export default function party(pi: ExtensionAPI): void {
 		pumping = true;
 		try {
 			syncFlight();
-			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id));
+			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id) && (starting || message.seq > wakeAfter));
 			let pending = queued.slice(0, 8);
 			let wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
 			// Hold autonomous starts, not silent context behind the held batch.
@@ -183,12 +185,17 @@ export default function party(pi: ExtensionAPI): void {
 		ctx = context; session = ctx.sessionManager.getSessionId(); stopped = false; armed = false; paused = false; preparingPrompt = false; signature = "";
 		source = ui.source("messages");
 		safely(() => {
+			// Desk restarting a conversation onto a new version hands over its delivery, including messages sent meanwhile.
+			const before = database().member(session), handoff = before?.state === "restarting" && !!before.delivery;
 			const self = database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
 			paused = !!self.muted;
+			// An open conversation answers new messages straight away; what queued while it was closed waits for its next turn.
+			wakeAfter = handoff ? 0 : database().messageMark();
+			if (!child) { armed = !paused; database().setDelivery(session, owner, armed); }
 			database().admit(session, owner, deliveredPartyIds(ctx!.sessionManager.getBranch()));
 			bindRemote();
 			startTransport(); publish();
-			// Reconnecting advertises presence but never starts inference.
+			// Reconnecting itself never starts inference; only messages that arrive afterwards can.
 		});
 	});
 	pi.on("session_tree", (_event, context) => {
@@ -208,6 +215,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
+			wakeAfter = 0;
 			store.resetWakes(session, owner);
 			armed = !paused; store.setDelivery(session, owner, armed);
 		}
@@ -247,6 +255,7 @@ export default function party(pi: ExtensionAPI): void {
 	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} });
 	const delivery = (enabled: boolean) => {
 		paused = !enabled; armed = enabled;
+		if (enabled) wakeAfter = 0;
 		database().setPaused(session, owner, paused);
 		database().setDelivery(session, owner, enabled);
 		if (enabled) database().resetWakes(session, owner);

@@ -113,6 +113,26 @@ test("reload reconnects without waking inference until work resumes", async t =>
 	assert.equal(resumed.sent.length, 1);
 });
 
+test("an open conversation wakes for messages sent after it starts, while older ones wait for its next turn", async t => {
+	// A new conversation, or one restored after a crash, stayed asleep for Steve's messages until Jordan typed in it.
+	environment(t);
+	const a = harness(t, "sender"), old = harness(t, "restored");
+	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
+	await a.call("agent_send", { to: "restored", message: "Sent while it was closed", wake: true });
+	const b = harness(t, "restored");
+	await b.emit("session_start");
+	t.mock.timers.tick(10_000);
+	assert.equal(b.sent.length, 0, "the backlog does not start a turn by itself");
+	await a.call("agent_send", { to: "restored", message: "Sent after it opened", wake: true });
+	t.mock.timers.tick(10_000);
+	assert.equal(b.sent.length, 1);
+	assert.match(b.sent[0].message.content, /Sent after it opened/);
+	assert.equal(b.sent[0].options.triggerTurn, true);
+	await b.emit("context", { messages: b.branch.map(x => x.message) });
+	await b.emit("before_agent_start");
+	assert.match(b.sent.at(-1).message.content, /Sent while it was closed/, "the backlog joins the next turn");
+});
+
 test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant session", async t => {
 	environment(t);
 	initTheme("dark", false);
@@ -279,7 +299,7 @@ test("agents discover, describe and message each other entirely through tools", 
 	const found = JSON.parse((await a.call("agent_discover", { query: "decoding" })).content[0].text).agents;
 	assert.deepEqual(found.map(x => x.id), ["decoder"]);
 	assert.equal(found[0].cwd, "C:/work/decoder");
-	assert.equal(found[0].delivery, "paused");
+	assert.equal(found[0].delivery, "ready", "an open conversation accepts messages");
 	assert.equal("owner" in found[0], false);
 	assert.equal("epoch" in found[0], false);
 	assert.equal("party" in found[0], false);
@@ -330,6 +350,8 @@ test("the inbox shows only this agent's messages and does not deliver them", asy
 	initTheme("dark", false);
 	const a = harness(t, "a"), b = harness(t, "b"), c = harness(t, "c");
 	for (const h of [a, b, c]) await h.emit("session_start");
+	// Paused, so only the inbox could deliver the message.
+	await b.call("agent_delivery", { enabled: false });
 	await a.call("agent_send", { to: "b", message: "Private direct findings", wake: false });
 	for (const [h, expected] of [[b, true], [c, false]]) {
 		h.ctx.mode = "tui";

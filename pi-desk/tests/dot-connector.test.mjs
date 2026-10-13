@@ -70,7 +70,7 @@ test("ChatGPT reaches agents only through an OAuth grant approved in Desk", asyn
 	};
 	const tool = async (name, args = {}) => JSON.parse((await rpc("tools/call", { name, arguments: args })).result.content[0].text);
 	assert.equal((await rpc("initialize", { protocolVersion: "2025-06-18" })).result.serverInfo.name, "pi-desk");
-	assert.deepEqual((await rpc("tools/list")).result.tools.map(item => item.name), ["list_agents", "message_agent", "read_messages", "quest_log", "quest_add", "quest_update", "quest_complete"]);
+	assert.deepEqual((await rpc("tools/list")).result.tools.map(item => item.name), ["list_computers", "create_conversation", "resume_conversation", "list_agents", "message_agent", "read_messages", "quest_log", "quest_add", "quest_update", "quest_complete"]);
 	assert.equal((await rpc("tools/list", {}, tokens.refresh_token)).status, 401, "a refresh token is not an access token");
 
 	store.register("worker", "worker-owner", "BD Workbook", "C:\\obsidian");

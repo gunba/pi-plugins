@@ -318,9 +318,15 @@ export class PartyStore {
 	private validMessages = `SELECT m.* FROM messages m JOIN party_agents sender ON sender.session=m.sender
 		JOIN party_agents recipient ON recipient.session=m.recipient
 		WHERE m.recipient=? AND (${CURRENT_MESSAGE_SQL})`;
-	pending(session: string, owner: string): PartyMessage[] {
+	/** Unadmitted messages for an agent, oldest first; seq is the local arrival order, independent of any sender's clock. */
+	pending(session: string, owner: string): (PartyMessage & { seq: number })[] {
 		this.owned(session, owner);
-		return this.db.prepare(`${this.validMessages} AND m.admitted=0 ORDER BY m.created,m.id LIMIT 64`).all(session) as unknown as PartyMessage[];
+		return this.db.prepare(`${this.validMessages.replace("SELECT m.*", "SELECT m.*, m.rowid AS seq")} AND m.admitted=0 ORDER BY m.created,m.id LIMIT 64`)
+			.all(session) as unknown as (PartyMessage & { seq: number })[];
+	}
+	/** The arrival position of the newest stored message; later messages have a higher seq. */
+	messageMark(): number {
+		return Number((this.db.prepare("SELECT COALESCE(MAX(rowid),0) AS n FROM messages").get() as { n: number }).n);
 	}
 	isCurrent(session: string, owner: string, id: string): boolean {
 		this.owned(session, owner);

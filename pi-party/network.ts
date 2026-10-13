@@ -10,14 +10,18 @@ export interface DeliveryReceipt { id: string; accepted: boolean; error?: string
 /** User-approved agent creation over the computer channel; not a general remote command. */
 export interface PartyOperation {
 	id: string; sender: string; sender_epoch: string; created: number; expires: number;
-	kind: "create" | "fork"; cwd: string; task: string; label: string; call?: string;
+	kind: "create" | "fork" | "resume"; cwd: string; task: string; label: string; call?: string;
 	/** provider/id or a bare model id; omitted uses the target computer's default. */
 	model?: string; reasoning?: string;
+	/** resume: the native session id of the conversation to reopen. Only sent to computers that list "resume". */
+	session?: string;
 }
+/** What a computer announces about itself with its agent directory; hosts before 0.5.76 send nothing. */
+export interface PartyComputer { name: string; platform: string; version: string; operations: string[] }
 /** model and reasoning report what was applied; hosts before 0.5.45 ignore a requested model. */
 export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string }; error?: string }
 export type PartyPacket =
-	| { type: "directory"; agents: NetworkMember[] }
+	| { type: "directory"; agents: NetworkMember[]; computer?: PartyComputer }
 	| { type: "presence" }
 	| { type: "messages"; messages: PartyMessage[] }
 	| { type: "receipts"; receipts: DeliveryReceipt[] }
@@ -61,7 +65,7 @@ export function remoteMessage(value: unknown): PartyMessage {
 }
 export function partyOperation(value: unknown): PartyOperation {
 	const input = record(value), kind = text(input.kind, 20);
-	if (kind !== "create" && kind !== "fork") throw Error("Invalid agent operation.");
+	if (kind !== "create" && kind !== "fork" && kind !== "resume") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
 		kind, created: integer(input.created), expires: integer(input.expires),
 		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
@@ -74,8 +78,19 @@ export function partyOperation(value: unknown): PartyOperation {
 		operation.call = text(input.call, 512);
 		if (!operation.call) throw Error("Specify the executing fork call.");
 	}
+	if (kind === "resume") {
+		operation.session = id(input.session);
+		return operation;
+	}
 	if (!operation.cwd.trim() || !operation.task.trim() || !operation.label.trim()) throw Error("Specify a directory, task and name for the new agent.");
 	return operation;
+}
+export function partyComputer(value: unknown): PartyComputer | undefined {
+	if (value === undefined) return undefined;
+	const input = record(value);
+	if (!Array.isArray(input.operations) || input.operations.length > 16) throw Error("Invalid party computer.");
+	return { name: text(input.name, 200), platform: text(input.platform, 40), version: text(input.version, 40),
+		operations: input.operations.map(item => text(item, 40)) };
 }
 export function operationResult(value: unknown): OperationResult {
 	const input = record(value), result: OperationResult = { id: id(input.id) };

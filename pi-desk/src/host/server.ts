@@ -47,7 +47,7 @@ import { workspaceIdentity } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
 import { QuestStore } from "../../../pi-party/quests.ts";
 import type { Quest, QuestActor, QuestCommand, QuestView } from "../shared/quests.ts";
-import type { PartyOperation, OperationResult } from "../../../pi-party/network.ts";
+import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { DotConnection } from "./dot.ts";
 
@@ -189,6 +189,8 @@ export class DeskHost {
 			this.refreshQuests();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
 			this.dotConnector.quests = { store: this.quests, finished: (quest, by) => this.questFinished(quest, by) };
+			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.partyComputer(),
+				computers: () => this.partyNetwork?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };
 			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
@@ -453,7 +455,7 @@ export class DeskHost {
 			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {
 				if (this.closing || revision !== this.accountRevision) return;
 				this.parties!.networkChanged(); this.refreshParties();
-			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) });
+			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer());
 			this.partyNetwork = network;
 			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy,
 				request: (access, request) => this.api(access, request),
@@ -826,6 +828,7 @@ export class DeskHost {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw Error("Desk is updating or shutting down.");
 		const store = this.parties!.store;
 		this.partyOperations!.validate(store, computer, request);
+		if (request.kind === "resume") return this.resumeAgent(request.session!);
 		let fork: { cwd: string; file: string } | undefined;
 		if (request.kind === "fork") {
 			const member = store.member(request.sender)!;
@@ -854,6 +857,26 @@ export class DeskHost {
 			}
 			throw error;
 		}
+	}
+
+	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
+	private partyComputer(): PartyComputer {
+		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume"] };
+	}
+
+	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
+	private async resumeAgent(session: string): Promise<NonNullable<OperationResult["result"]>> {
+		const store = this.parties!.store, managed = [...this.sessions.values()].find(item => item.view.agentId === session);
+		if (managed?.worker && (managed.view.state === "ready" || managed.view.state === "starting")) return { session, state: "running", key: managed.view.key };
+		if (managed?.worker) throw Error("This conversation is still stopping. Try again in a moment.");
+		const member = store.member(session);
+		const file = managed?.view.file ?? store.sessionFile(session)
+			?? (member ? SessionManager.findById(member.cwd, session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir)) : undefined);
+		if (!file) throw Error("This conversation's saved history is not on this computer.");
+		const key = managed ? this.createSession(managed.view.cwd, managed.view.file ?? file, managed, true) : this.createSession(member?.cwd ?? "", file, undefined, true);
+		await this.waitForSession(key);
+		this.refreshParties(); this.partyNetwork?.flush();
+		return { session, state: "resumed", key };
 	}
 
 	/** Set a new agent's requested model and reasoning before its task is admitted. */
