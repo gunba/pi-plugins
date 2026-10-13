@@ -61,8 +61,9 @@ export default function compactionPolicy(pi: ExtensionAPI): void {
 		const sessionId = ctx.sessionManager.getSessionId(), key = attempt;
 		attempt = undefined;
 		const recorded = failures.get(sessionId);
+		// A manual compaction that never started ("Nothing to compact") reports to whoever asked for it.
 		const failure = recorded && !recorded.reported ? recorded
-			: event.aborted || !event.errorMessage ? undefined
+			: event.aborted || !event.errorMessage || key === undefined && event.reason === "manual" ? undefined
 			: key !== undefined ? recordCompactionFailure(sessionId, key, event.errorMessage)
 			: { message: event.errorMessage };
 		if (!failure) return;

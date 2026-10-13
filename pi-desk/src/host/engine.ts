@@ -423,7 +423,7 @@ export class DeskEngine {
 		const inventory = toolInventory(session, this.contexts.get(session)?.toolChoices());
 		const ui = this.presentation.snapshot();
 		const usage = session.getContextUsage(), measured = usage?.tokens == null ? undefined : this.measuredContext(session);
-		const context = usage && (usage.tokens == null ? usage : measured === undefined ? { ...usage, estimated: true }
+		const context = usage && (usage.tokens == null ? usage : measured === undefined ? usage.tokens > 0 ? { ...usage, estimated: true } : usage
 			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
 		const defaults = session.settingsManager.getGlobalSettings();
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
