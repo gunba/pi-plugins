@@ -57,7 +57,7 @@ export function checkpointUsage(checkpoint: Checkpoint, model: Model<Api>): Usag
 	return usage;
 }
 
-function carrier(value: unknown, timestamp: number): Carrier {
+export function carrier(value: unknown, timestamp: number): Carrier {
 	// Validation occurs at the provider boundary: Pi catches context-hook errors.
 	return { role: "user", content: `codex-checkpoint:${randomUUID()}`, timestamp,
 		[CHECKPOINT]: structuredClone(value) as Checkpoint };

@@ -60,3 +60,18 @@ test("the deadline cancels a stalled response reader", async t => {
 	await assert.rejects(pending, /timed out/);
 	assert.equal(cancelled, true);
 });
+
+test("a revoked sign-in is refreshed once and the request repeated", async () => {
+	// web_search failed with "authentication token has expired" days before the token's stated expiry.
+	let stored = { type: "oauth", access: "revoked", expires: Date.now() + 86_400_000 };
+	const ctx = { modelRegistry: {
+		async getApiKeyAndHeaders() {
+			const token = stored.expires > Date.now() ? stored.access : "refreshed";
+			return { ok: true, apiKey: token, headers: { Authorization: `Bearer ${token}`, "ChatGPT-Account-ID": "account" } };
+		},
+		runtime: { credentials: { async modify(_provider, change) { stored = await change(stored) ?? stored; } } },
+	} };
+	const text = await requestService(ctx, model, request, undefined, async (_url, init) =>
+		init.headers.get("authorization") === "Bearer refreshed" ? new Response("ok") : new Response("expired", { status: 401 }));
+	assert.equal(text, "ok");
+});

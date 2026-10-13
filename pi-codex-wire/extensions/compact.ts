@@ -96,7 +96,8 @@ function responseError(error: JsonObject): Error {
 	if (["insufficient_quota", "usage_limit_reached", "usage_not_included", "billing_hard_limit_reached"].some(code => error.code === code || error.type === code)) {
 		return new Error("Codex compaction failed: quota exceeded.");
 	}
-	if (error.code === "context_length_exceeded") return new Error("Codex compaction failed: context window exceeded.");
+	// Worded so Pi recognises an overflow, which splits the compaction.
+	if (error.code === "context_length_exceeded") return new Error("Codex compaction failed: the input exceeds the context window.");
 	if (["server_error", "internal_error"].includes(String(error.code))) return new Error("Codex compaction server error.");
 	if (["rate_limit_exceeded", "rate_limit_error"].includes(String(error.code))) return new Error("Codex compaction rate limit exceeded.");
 	return new Error("Codex compaction response failed.");

@@ -5,6 +5,7 @@ import {
 	EXTENDED_CHECKPOINT, EXTENDED_RESERVE, EXTENDED_WINDOW, allowsExtendedWindow,
 	configuredReserve, configuredWindow, readWindowFiles, writeWindowPreset, modelCapacity,
 } from "./config.ts";
+import compactionPolicy from "./compaction.ts";
 
 function tokens(value: number): string { return value.toLocaleString("en-US"); }
 
@@ -68,8 +69,27 @@ function contextSettings(ctx: ExtensionContext) {
 	return { model, provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines, effectiveReserve };
 }
 
+/** A saved budget above what the model accepts is lowered to its limit and applied to this conversation. */
+async function enforceCapacity(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	const model = ctx.model;
+	if (!model || model.contextWindow <= modelCapacity(model)) return;
+	const { provider, id } = model, limit = modelCapacity(model), files = readWindowFiles();
+	await writeWindowPreset({ provider, modelId: id, window: limit, reserve: configuredReserve(files.settings, provider, id) });
+	await ctx.modelRegistry.refresh({ providers: [provider], allowNetwork: false });
+	const current = ctx.modelRegistry.find(provider, id);
+	if (!current || current.contextWindow > limit)
+		throw new Error(`${provider}/${id} accepts at most ${tokens(limit)} tokens, but its context budget of ${tokens(model.contextWindow)} could not be lowered. Check models.json.`);
+	if (ctx.model?.provider === provider && ctx.model.id === id) await pi.setModel(current);
+	ctx.ui.notify(`${provider}/${id} accepts at most ${tokens(limit)} tokens, so its context budget was lowered from ${tokens(model.contextWindow)}.`, "warning");
+}
+
 export default function contextWindow(pi: ExtensionAPI): void {
-	let revision = 0;
+	compactionPolicy(pi);
+	let revision = 0, enforcing: Promise<void> | undefined;
+	const enforce = (ctx: ExtensionContext) => {
+		enforcing ??= enforceCapacity(pi, ctx).catch(error => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"))
+			.finally(() => { enforcing = undefined; });
+	};
 	const publish = (ctx: ExtensionContext) => {
 		const remote = getPresentation(pi);
 		if (!remote?.runCommand) return;
@@ -94,12 +114,13 @@ export default function contextWindow(pi: ExtensionAPI): void {
 				return remote.runCommand!("context-window", String(value));
 			} });
 	};
-	pi.on("session_start", (_event, ctx) => { revision++; publish(ctx); });
+	pi.on("session_start", (_event, ctx) => { revision++; enforce(ctx); publish(ctx); });
 	pi.on("session_tree", (_event, ctx) => { revision++; publish(ctx); });
 	pi.on("session_shutdown", () => { revision++; });
-	pi.on("model_select", (_event, ctx) => publish(ctx));
+	pi.on("model_select", (_event, ctx) => { enforce(ctx); publish(ctx); });
 	pi.on("session_compact", (_event, ctx) => publish(ctx));
-	pi.on("agent_settled", (_event, ctx) => publish(ctx));
+	// Codex Wire learns each model's limit from the live catalog on its first request.
+	pi.on("agent_settled", (_event, ctx) => { enforce(ctx); publish(ctx); });
 	pi.registerCommand("context-window", {
 		description: "Choose the active model's context window and automatic checkpoint threshold.",
 		handler: async (args, ctx) => {

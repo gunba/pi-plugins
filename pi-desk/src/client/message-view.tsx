@@ -202,8 +202,8 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 	if (message.notice || message.role === "note" && !message.blocks.some(block => block?.type === "ledger")) {
 		const notice = message.notice;
 		return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-received${faded}`}>
-			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule"}
-				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : "info"} />
+			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule" || notice.kind === "compaction"}
+				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : notice?.kind === "compaction" ? "layers" : "info"} />
 					<strong>{notice?.title ?? "Notification"}</strong>{time}</>}>
 				{notice?.kind === "schedule" && <div className="notice-metadata">
 					<span title={new Date(notice.queuedAt!).toLocaleString()}>Queued {timeLabel(notice.queuedAt!)}</span>

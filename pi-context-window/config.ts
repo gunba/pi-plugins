@@ -14,9 +14,20 @@ const LONG_CONTEXT_MODELS = new Set([
 	"gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
 ]);
 
-// Codex 0.159.1 authenticated model catalog: max_context_window, not the
-// default 272k working budget. This model does not offer the 1M preset.
-const CODEX_CAPACITIES: Record<string, number> = { "gpt-6.1-sol": 872_000 };
+// The authenticated Codex model catalog's max_context_window (client 0.159.1, 13 October 2026), not its default
+// 272k working budget. Codex Wire records the live value for each model it uses, which takes precedence.
+const CODEX_CAPACITIES: Record<string, number> = {
+	"gpt-5.5": 272_000, "gpt-5.6-sol": 872_000, "gpt-5.6-terra": 872_000, "gpt-5.6-luna": 872_000,
+	"gpt-6-astra": 872_000, "gpt-6-sol": 872_000, "gpt-6-luna": 872_000, "gpt-6.1-sol": 872_000,
+};
+const liveKey = Symbol.for("pi.codex.max-context-window.v1");
+const shared = globalThis as typeof globalThis & { [liveKey]?: Map<string, number> };
+// Shared by every extension loader in this process.
+const liveCapacities = shared[liveKey] ??= new Map();
+
+export function recordCodexCapacity(modelId: string, capacity: unknown): void {
+	if (Number.isSafeInteger(capacity) && (capacity as number) > 0) liveCapacities.set(modelId, capacity as number);
+}
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,13 +51,20 @@ function cleanEmpty(parent: JsonObject, key: string): void {
 	if (parent[key] && Object.keys(object(parent[key], key)).length === 0) delete parent[key];
 }
 
+/** The 1M preset. Codex models stop at their catalog limit (872,000), below it. */
 export function allowsExtendedWindow(provider: string, modelId: string): boolean {
-	return (provider === "openai-codex" || provider === "openai") && LONG_CONTEXT_MODELS.has(modelId);
+	return provider === "openai" && LONG_CONTEXT_MODELS.has(modelId);
 }
+/**
+ * The most context a model accepts. For Codex this is the catalog's max_context_window, whatever budget is saved:
+ * a gpt-6-astra budget of 922,000 let conversations grow past 872,000, so Pi never reached its checkpoint before
+ * Codex rejected requests and compactions as too large.
+ */
 export function modelCapacity(model: { provider: string; id: string; contextWindow: number }): number {
+	const codex = model.provider === "openai-codex" ? liveCapacities.get(model.id) ?? CODEX_CAPACITIES[model.id] : undefined;
+	if (codex) return codex;
 	const catalog = getBuiltinModels(model.provider as BuiltinProvider).find(item => item.id === model.id)?.contextWindow ?? 0;
-	return Math.max(catalog, model.contextWindow, allowsExtendedWindow(model.provider, model.id) ? EXTENDED_CAPACITY : 0,
-		model.provider === "openai-codex" ? CODEX_CAPACITIES[model.id] ?? 0 : 0);
+	return Math.max(catalog, model.contextWindow, allowsExtendedWindow(model.provider, model.id) ? EXTENDED_CAPACITY : 0);
 }
 
 export function configuredWindow(text: string | undefined, provider: string, modelId: string): number | undefined {

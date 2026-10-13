@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
+import { COMPACTION_FAILURE_ENTRY } from "../../../pi-context-window/compaction-state.ts";
 import { readSkills } from "../shared/skill-activity.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ChatBlock, ChatMessage, HistoryPage } from "../shared/protocol.ts";
@@ -240,6 +241,12 @@ export class Transcript {
 					generation: typeof data.generation === "string" ? data.generation : "" },
 				blocks: [{ type: "text", text: data.text.slice(0, 12_000) }] };
 		}
+		if (entry.type === "custom" && entry.customType === COMPACTION_FAILURE_ENTRY) {
+			const text = record(entry.data).text;
+			if (typeof text !== "string" || !text) return;
+			return { id: `entry:${entry.id}`, entryId: entry.id, revision: 0, order, role: "note", timestamp: Date.parse(entry.timestamp), complete: true,
+				notice: { kind: "compaction", title: "Compaction failed" }, blocks: [{ type: "text", text: text.slice(0, 12_000) }] };
+		}
 		if (entry.type !== "custom" || entry.customType !== LEDGER_ENTRY) return;
 		const ledger = readLedger(entry.data);
 		return { id: `entry:${entry.id}`, entryId: entry.id, revision: 0, order, role: "note",
@@ -251,7 +258,7 @@ export class Transcript {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
-			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY].includes(entry.customType)
+			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY, COMPACTION_FAILURE_ENTRY].includes(entry.customType)
 			|| entry.type === "compaction" || entry.type === "branch_summary";
 		const anchor = position.before ?? position.after ?? position.from;
 		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;

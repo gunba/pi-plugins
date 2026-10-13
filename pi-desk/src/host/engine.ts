@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
 import { AccountBinding, accountSelection, initializeAccountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
 import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
+import { compactionFailure, compactionHeld, compactionKey, measuredContextTokens } from "../../../pi-context-window/compaction-state.ts";
 import { dirname, join } from "node:path";
 import {
 	createAgentSessionServices,
@@ -103,6 +104,8 @@ export class DeskEngine {
 	private branch?: { manager: SessionManager; read: () => ReturnType<SessionManager["getBranch"]> };
 	private compacting?: SessionSnapshot["compacting"];
 	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
+	private measured?: { manager: SessionManager; leaf: string | null; revision: number; value?: number };
+	private automaticCompaction = false;
 
 	constructor(send: (message: WorkerMessage) => void) {
 		this.send = send;
@@ -364,7 +367,8 @@ export class DeskEngine {
 		const feed = this.openTranscript(session.sessionManager);
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
-			if (event.type === "compaction_start") this.compacting = { reason: event.reason, started: Date.now() };
+			if (event.type === "compaction_start") this.compacting = { reason: this.automaticCompaction ? "threshold" : event.reason, started: Date.now() };
+			if (event.type === "agent_settled") setImmediate(() => void this.compactMeasuredContext(session));
 			if (event.type === "compaction_end") {
 				this.compacting = undefined;
 				// A manual compaction reports its failure to the caller.
@@ -418,7 +422,9 @@ export class DeskEngine {
 		const loaded = this.runtime.services.resourceLoader.getExtensions();
 		const inventory = toolInventory(session, this.contexts.get(session)?.toolChoices());
 		const ui = this.presentation.snapshot();
-		const context = session.getContextUsage();
+		const usage = session.getContextUsage(), measured = usage?.tokens == null ? undefined : this.measuredContext(session);
+		const context = usage && (usage.tokens == null ? usage : measured === undefined ? { ...usage, estimated: true }
+			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
 		const defaults = session.settingsManager.getGlobalSettings();
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
@@ -453,7 +459,8 @@ export class DeskEngine {
 				accountName: this.accountBindings.get(this.runtime!.services.modelRuntime)?.name(model.provider),
 			})),
 			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
-			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent } : undefined,
+			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent,
+				...("estimated" in context ? { estimated: true } : {}) } : undefined,
 			usage: this.usageCache.value,
 			contextFrom: this.contextFrom(manager, leaf),
 			compacting: this.compacting,
@@ -531,7 +538,11 @@ export class DeskEngine {
 				return result;
 			});
 			case "compact": return this.change(async () => {
-				const result = await session.compact(command.instructions);
+				const started = Date.now();
+				const result = await session.compact(command.instructions).catch(error => {
+					// An extension that refuses a compaction can only cancel it; report its reason instead.
+					throw new Error(compactionFailure(session.sessionId, started) ?? (error instanceof Error ? error.message : String(error)));
+				});
 				this.presentation.advance();
 				this.scheduleSnapshot();
 				return { tokensBefore: result.tokensBefore };
@@ -733,6 +744,32 @@ export class DeskEngine {
 		this.transitionJob = job;
 		try { return await job; }
 		finally { this.transitionJob = undefined; }
+	}
+
+	private measuredContext(session: AgentSession): number | undefined {
+		const manager = session.sessionManager, leaf = manager.getLeafId();
+		if (this.measured?.manager !== manager || this.measured.leaf !== leaf || this.measured.revision !== this.usageRevision)
+			this.measured = { manager, leaf, revision: this.usageRevision, value: measuredContextTokens(manager.buildSessionProjection(), manager.getBranch()) };
+		return this.measured.value;
+	}
+
+	/**
+	 * Once a failed reply is omitted, Pi decides whether to compact from a character estimate that can fall far
+	 * short (615,034 for a 920,000-token conversation), so the next request goes out uncompacted and fails.
+	 * Compact when the measured context has passed the checkpoint and Pi's estimate has not, unless a failed
+	 * compaction holds it back.
+	 */
+	private async compactMeasuredContext(session: AgentSession): Promise<void> {
+		const model = session.model, settings = model && session.settingsManager.getCompactionSettings(model);
+		if (!model || !settings?.enabled || this.closed || this.transition || this.runtime?.session !== session || !session.isIdle) return;
+		const checkpoint = model.contextWindow - settings.reserveTokens, estimate = session.getContextUsage()?.tokens, measured = this.measuredContext(session);
+		if (measured === undefined || measured <= checkpoint || estimate == null || estimate > checkpoint) return;
+		if (compactionHeld(session.sessionId, compactionKey(model, settings, session.thinkingLevel))) return;
+		this.automaticCompaction = true;
+		try { await session.compact(); } catch {} // The failure is recorded in the conversation.
+		finally { this.automaticCompaction = false; }
+		this.presentation.advance();
+		this.scheduleSnapshot();
 	}
 
 	private async change<T>(operation: () => Promise<T>, interrupt = false): Promise<T> {

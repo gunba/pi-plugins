@@ -54,7 +54,8 @@ export interface SessionSnapshot {
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string; accountName?: string }[];
 	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
-	context?: { tokens: number | null; contextWindow: number; percent: number | null };
+	/** `estimated` when no provider-reported usage applies and the tokens are counted from characters. */
+	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
 	contextFrom?: number;
 	compacting?: { reason: "manual" | "threshold" | "overflow"; started: number };
@@ -85,7 +86,7 @@ export interface ChatMessage {
 	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number; skills?: string[] }[] };
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
-	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule"; title: string; queuedAt?: number; dueAt?: number };
+	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction"; title: string; queuedAt?: number; dueAt?: number };
 	/** A saved summary that replaced earlier context: compaction, an encrypted Codex checkpoint, a model handoff or an abandoned branch. */
 	summary?: { kind: "compaction" | "checkpoint" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }

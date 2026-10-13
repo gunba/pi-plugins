@@ -83,6 +83,27 @@ async function readResponse(response: Response, maxBytes: number, label: string,
 }
 
 /** The endpoint owns its payload and identity; the registry owns request auth. */
+class ServiceAuthExpired extends Error {}
+
+/**
+ * Mark a provider's stored OAuth token expired so the next request refreshes it. ChatGPT can revoke a token
+ * before its stated expiry (for example after signing in elsewhere); Pi only refreshes once that expiry has
+ * passed, so without this a revoked token fails until then. Uses Pi's locked credential write; returns false
+ * when this Pi does not expose its credential store.
+ */
+async function expireStoredToken(ctx: ExtensionContext, provider: string): Promise<boolean> {
+	const store = (ctx.modelRegistry as unknown as { runtime?: { credentials?: { modify?: (id: string, fn: (current: any) => Promise<any>) => Promise<unknown> } } })
+		.runtime?.credentials;
+	if (typeof store?.modify !== "function") return false;
+	let changed = false;
+	await store.modify(provider, async current => {
+		if (current?.type !== "oauth") return undefined;
+		changed = true;
+		return { ...current, expires: Date.now() - 1000 };
+	});
+	return changed;
+}
+
 export async function requestService(
 	ctx: ExtensionContext,
 	model: Model,
@@ -116,6 +137,7 @@ export async function requestService(
 		});
 		const text = await readResponse(response, request.maxResponseBytes, request.label, deadline.signal);
 		deadline.signal.throwIfAborted();
+		if (response.status === 401) throw new ServiceAuthExpired(`${request.label} request failed (401): the ${model.provider} sign-in has expired or was revoked.`);
 		if (!response.ok) {
 			let message = text.trim() || response.statusText || "request failed";
 			try {
@@ -126,8 +148,20 @@ export async function requestService(
 		}
 		return text;
 	};
+	// A revoked sign-in is refreshed once and the request repeated.
+	const attempt = async () => {
+		try { return await perform(); }
+		catch (error) {
+			if (!(error instanceof ServiceAuthExpired)) throw error;
+			if (!await expireStoredToken(ctx, model.provider).catch(() => false)) throw new Error(`${error.message} Sign in again in Desk Settings, Provider accounts.`);
+			try { return await perform(); }
+			catch (retry) {
+				throw retry instanceof ServiceAuthExpired ? new Error(`${retry.message} Refreshing it did not help; sign in again in Desk Settings, Provider accounts.`) : retry;
+			}
+		}
+	};
 	try {
-		return await Promise.race([perform(), aborted]);
+		return await Promise.race([attempt(), aborted]);
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);

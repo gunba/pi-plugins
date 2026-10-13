@@ -1,6 +1,7 @@
 import { object, type JsonObject } from "./diagnostics.ts";
 import { createHash } from "node:crypto";
 import type { Identity } from "./identity.ts";
+import { recordCodexCapacity } from "../../pi-context-window/config.ts";
 
 const fields = ["slug", "use_responses_lite", "supports_reasoning_summaries", "supports_reasoning_summary_parameter",
   "default_reasoning_summary", "default_reasoning_level", "supported_reasoning_levels", "support_verbosity", "default_verbosity",
@@ -64,6 +65,8 @@ export class Catalog {
       const fetched = payload.models.map(value => {
         const model = object(value);
         if (typeof model.slug !== "string" || !model.slug) throw new Error("Invalid Codex model catalog; no inference was sent");
+        // Context settings cap each model's budget at the most Codex accepts.
+        recordCodexCapacity(model.slug, model.max_context_window);
         return Object.fromEntries(fields.filter(key => key in model).map(key => [key, model[key]]));
       });
       // Concurrent requests have independent cancellation. First successful completion

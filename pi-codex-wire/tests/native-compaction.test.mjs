@@ -423,3 +423,31 @@ test("native compaction retry cancellation stops before another attempt", async 
 		{ enabled: true, maxRetries: 3, baseDelayMs: 1 }, controller.signal, () => controller.abort()), /abort/i);
 	assert.equal(attempts, 1);
 });
+
+test("compaction too large for the model compacts the older half first and carries its checkpoint", async () => {
+	// WoW Addons reached about 920,000 tokens; one compaction request for its whole history overflowed every time.
+	const { compactFitting } = await import("../extensions/native-compaction.ts");
+	const turn = index => [
+		{ role: "user", content: `request ${index}`, timestamp: index * 10 },
+		{ role: "assistant", content: [{ type: "toolCall", id: `call-${index}`, name: "read", arguments: {} }], timestamp: index * 10 + 1 },
+		{ role: "toolResult", toolCallId: `call-${index}`, toolName: "read", content: [{ type: "text", text: "x" }], isError: false, timestamp: index * 10 + 2 },
+	];
+	const messages = Array.from({ length: 12 }, (_, index) => turn(index)).flat();
+	const accepted = [];
+	const compact = async batch => {
+		if (batch.length > 10) throw new Error("Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.");
+		accepted.push(batch);
+		for (let index = 0; index < batch.length; index++) {
+			// No cut separates a tool call from its result.
+			if (batch[index].role === "toolResult") assert.equal(batch[index - 1]?.role, "assistant");
+		}
+		return { type: "compaction", encrypted_content: `checkpoint of ${batch.length}` };
+	};
+	const checkpoint = await compactFitting(compact, messages, new AbortController().signal);
+	assert.equal(checkpoint.type, "compaction");
+	assert.ok(accepted.length >= 2, "the history was compacted in stages");
+	assert.match(String(accepted.at(-1)[0].content), /^codex-checkpoint:/, "the last stage starts from the earlier stages' checkpoint");
+	assert.equal(accepted.at(-1).at(-1), messages.at(-1), "and ends with the newest messages");
+	await assert.rejects(compactFitting(async () => { throw new Error("Codex WebSocket closed before completion"); }, messages, new AbortController().signal),
+		/WebSocket closed/, "other errors are not split");
+});

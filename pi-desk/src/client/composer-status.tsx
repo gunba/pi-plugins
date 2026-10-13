@@ -29,7 +29,8 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	const contextControl = <button type="button" className="composer-context" disabled={!contextView || disabled || !connected} title={contextTitle}
 		onClick={() => { if (contextView) { menu.close(); open(contextView); } }}>
 		{capacity && limit ? <><ContextMeter capacity={capacity} limit={limit} used={context?.tokens} />
-			<span>{context?.tokens == null ? "—" : tokens(context.tokens)} / {tokens(limit)}</span></> : "Context not measured"}
+			<span title={context?.estimated ? "Estimated from message lengths; no provider-reported usage applies." : undefined}>
+				{context?.tokens == null ? "—" : `${context.estimated ? "~" : ""}${tokens(context.tokens)}`} / {tokens(limit)}</span></> : "Context not measured"}
 	</button>;
 	// Reset countdowns tick once a minute.
 	const [now, setNow] = useState(Date.now());

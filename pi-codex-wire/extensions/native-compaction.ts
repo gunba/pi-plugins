@@ -2,12 +2,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
-import { SettingsManager, convertToLlm, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT_CAPTION, assertCheckpointContext, checkpointMessages, checkpointUsage, compactionPrefix, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
+import { isContextOverflow, isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
+import { SettingsManager, convertToLlm, type AgentSession, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
+import { CHECKPOINT_CAPTION, assertCheckpointContext, carrier, checkpointMessages, checkpointUsage, compactionPrefix, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
 import { CHECKPOINT, entryCheckpoint, registerPortableSummary } from "./checkpoint-state.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
+import { compactionHeld, compactionKey, recordCompactionFailure } from "../../pi-context-window/compaction.ts";
 
+type AgentMessage = AgentSession["messages"][number];
 type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySettings" | "getHttpIdleTimeoutMs">;
 export interface CompactOperation {
 	ctx: ExtensionContext;
@@ -31,6 +33,35 @@ export function inheritCompactor(source: object | undefined, target: object): vo
 }
 export function guardCheckpointContext(context: Context, provider: string, sessionId: string): void {
 	assertCheckpointContext(context, provider, sources.get(sessionId)?.());
+}
+
+/**
+ * Compact messages in one request or, when they are too large for the model, compact the older half first and
+ * carry its checkpoint into a request with the newer half. A conversation pushed past the model's input limit
+ * can then still be compacted, rather than failing on every attempt and staying stuck.
+ */
+export async function compactFitting(compact: (messages: AgentMessage[]) => Promise<Checkpoint>, messages: AgentMessage[],
+	signal: AbortSignal, depth = 0): Promise<Checkpoint> {
+	try { return await compact(messages); }
+	catch (error) {
+		signal.throwIfAborted();
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		if (depth >= 6 || !isContextOverflow({ stopReason: "error", errorMessage } as AssistantMessage)) throw error;
+		const split = splitPoint(messages);
+		if (split === undefined) throw error;
+		const older = await compactFitting(compact, messages.slice(0, split), signal, depth + 1);
+		return compactFitting(compact, [carrier(older, messages[split - 1]!.timestamp) as AgentMessage, ...messages.slice(split)], signal, depth + 1);
+	}
+}
+/** The cut nearest half the size that keeps every tool call with its result: just before a user or assistant message. */
+function splitPoint(messages: AgentMessage[]): number | undefined {
+	const sizes = messages.map(message => JSON.stringify(message)?.length ?? 0), half = sizes.reduce((sum, size) => sum + size, 0) / 2;
+	let best: number | undefined, distance = Infinity, before = sizes[0] ?? 0;
+	for (let index = 1; index < messages.length; before += sizes[index++]!) {
+		if (messages[index]!.role !== "user" && messages[index]!.role !== "assistant") continue;
+		if (Math.abs(before - half) < distance) { best = index; distance = Math.abs(before - half); }
+	}
+	return best;
 }
 
 export async function retryCompaction<T>(produce: () => Promise<T>, settings: ReturnType<Settings["getRetrySettings"]>, signal: AbortSignal,
@@ -126,39 +157,43 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 		return settings;
 	};
 	pi.on("session_before_compact", async (event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const key = compactionKey(ctx.model, event.preparation.settings, ctx.thinkingLevel ?? pi.getThinkingLevel());
+		// Pi catches hook errors. Explicit cancellation prevents an unintended prose fallback; the recorded
+		// failure gives the reason to the transcript and to whoever asked for the compaction.
+		const fail = (message: string) => {
+			recordCompactionFailure(sessionId, key, message);
+			ctx.ui.notify(message, "error");
+			return { cancel: true };
+		};
 		try {
 			const model = ctx.model;
 			const endpoint = model?.provider === "openai-codex" ? new URL(model.baseUrl) : undefined;
-			if (!model || model.provider !== "openai-codex" || endpoint?.protocol !== "https:" || endpoint.hostname !== "chatgpt.com") {
-				if (ctx.sessionManager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)) {
-					ctx.ui.notify("This checkpoint requires a Codex model for compaction.", "error");
-					return { cancel: true };
-				}
-				return;
-			}
+			const codex = model?.provider === "openai-codex" && endpoint?.protocol === "https:" && endpoint.hostname === "chatgpt.com";
+			if (!codex && !ctx.sessionManager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry) !== undefined)) return;
+			// A compaction that failed is not repeated automatically until something it depends on changes.
+			if (event.reason !== "manual" && compactionHeld(sessionId, key)) return { cancel: true };
+			if (!model || !codex) return fail("This checkpoint requires a Codex model for compaction.");
 			const provider = ctx.modelRegistry.getRegisteredNativeProvider(model.provider);
 			const compact = provider && compactors.get(provider);
 			if (!compact) throw new Error("Native Codex compaction is unavailable in this session.");
 			const settings = settingsFor(ctx);
 			const entries = compactionPrefix(event.branchEntries, event.preparation.firstKeptEntryId);
 			const active = new Set(pi.getActiveTools());
-			const context: Context = {
-				systemPrompt: ctx.getSystemPrompt() + (event.customInstructions ? `\n\nCompaction instructions:\n${event.customInstructions}` : ""),
-				messages: convertToLlm(checkpointMessages(entries)),
-				tools: pi.getAllTools().filter(tool => active.has(tool.name)),
-			};
+			const systemPrompt = ctx.getSystemPrompt() + (event.customInstructions ? `\n\nCompaction instructions:\n${event.customInstructions}` : "");
+			const tools = pi.getAllTools().filter(tool => active.has(tool.name));
 			const timeout = settings.getProviderRetrySettings().timeoutMs ?? settings.getHttpIdleTimeoutMs();
-			const checkpoint = await retryCompaction(() => compact({ ctx, context, signal: event.signal, reason: event.reason,
-				thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), timeoutMs: timeout === 0 ? 2_147_483_647 : timeout }),
+			const once = (messages: AgentMessage[]) => retryCompaction(() => compact({ ctx, context: { systemPrompt, messages: convertToLlm(messages), tools } satisfies Context,
+				signal: event.signal, reason: event.reason, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), timeoutMs: timeout === 0 ? 2_147_483_647 : timeout }),
 				settings.getRetrySettings(), event.signal,
 				(attempt, maximum, ms) => ctx.ui.notify(`Retrying Codex compaction ${attempt}/${maximum} in ${ms}ms.`, "warning"));
+			const checkpoint = await compactFitting(once, checkpointMessages(entries), event.signal);
 			event.signal.throwIfAborted();
 			return { compaction: { summary: `${CHECKPOINT_CAPTION}\nCheckpoint: ${randomUUID()}`, details: { [CHECKPOINT]: checkpoint }, usage: checkpointUsage(checkpoint, model),
 				firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } };
 		} catch (error) {
-			if (!event.signal.aborted) ctx.ui.notify(error instanceof Error ? error.message : "Codex compaction failed.", "error");
-			// Pi catches hook errors. Explicit cancellation prevents an unintended prose fallback.
-			return { cancel: true };
+			if (event.signal.aborted) return { cancel: true };
+			return fail(error instanceof Error ? error.message : "Codex compaction failed.");
 		}
 	});
 	pi.on("session_before_tree", async (event, ctx) => {
