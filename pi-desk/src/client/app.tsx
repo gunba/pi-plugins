@@ -923,7 +923,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   open={view => { setPanel("view"); setFocusedView(view.id); }}
                   invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
                 <div className="send-controls">
-                  <DictationButton disabled={!connected} report={setError} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
+                  <DictationButton disabled={!connected} report={setError} submit={() => void send()} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
                     const next = withDictation(current, text); localStorage.setItem(draftKey(selected), next); return next;
                   })} />
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"

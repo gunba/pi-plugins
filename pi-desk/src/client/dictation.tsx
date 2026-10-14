@@ -25,18 +25,74 @@ const blobBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
 	reader.readAsDataURL(blob);
 });
 
+/** Holding the shortcut at least this long records only while it is held. */
+const HOLD_MS = 400;
+type Finish = "insert" | "send" | "discard";
+type Phase = "idle" | "starting" | "recording" | "transcribing";
+
 /**
- * Dictate into a composer: record while the button is on, then the whole clip is transcribed by ElevenLabs and
- * added to the draft. Nothing appears while speaking, and nothing is sent.
+ * Dictate into a composer. The whole clip is transcribed by ElevenLabs when recording stops, so pauses to think
+ * cost nothing. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
+ * adds it and sends, and Esc discards the clip. Holding Ctrl+Space records only while it is held.
  */
-export function DictationButton({ append, disabled, report, computer }: {
+export function DictationButton({ append, submit, disabled, report, computer }: {
 	append: (text: string) => void; disabled?: boolean; report: (error: string) => void;
+	/** Sends the draft; called after Enter's dictated text has been added. */
+	submit?: () => void;
 	/** From dictationComputer: the computer that transcribes, undefined for this host, null when none can. */
 	computer: string | undefined | null;
 }) {
-	const [phase, setPhase] = useState<"idle" | "recording" | "transcribing">("idle"), [seconds, setSeconds] = useState(0);
-	const recorder = useRef<MediaRecorder | undefined>(undefined), discard = useRef(false);
-	useEffect(() => () => { discard.current = true; recorder.current?.stop(); }, []);
+	const [phase, setPhaseState] = useState<Phase>("idle"), [seconds, setSeconds] = useState(0), [sent, setSent] = useState(0);
+	const recorder = useRef<MediaRecorder | undefined>(undefined), phaseRef = useRef<Phase>("idle"), finish = useRef<Finish>("insert");
+	const held = useRef<number | undefined>(undefined), pending = useRef(false), button = useRef<HTMLButtonElement>(null);
+	// The shortcut listener is registered once; it reads the current props from here.
+	const latest = useRef({ append, submit, disabled, report, computer });
+	latest.current = { append, submit, disabled, report, computer };
+	const setPhase = (next: Phase) => { phaseRef.current = next; setPhaseState(next); };
+	const stop = (how: Finish) => {
+		finish.current = how;
+		if (recorder.current?.state === "recording") recorder.current.stop();
+		// The microphone is still opening: stop as soon as it records.
+		else if (phaseRef.current === "starting") pending.current = true;
+	};
+	const start = async () => {
+		if (phaseRef.current !== "idle") return;
+		setPhase("starting"); finish.current = "insert"; pending.current = false;
+		let stream: MediaStream;
+		try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+		catch (error) {
+			setPhase("idle");
+			latest.current.report(error instanceof DOMException && error.name === "NotAllowedError" ? "Allow microphone access for this site to dictate." : "No microphone is available.");
+			return;
+		}
+		const chunks: Blob[] = [], media = new MediaRecorder(stream, { mimeType: MIME, audioBitsPerSecond: 16_000 });
+		media.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+		media.onstop = async () => {
+			stream.getTracks().forEach(track => track.stop());
+			recorder.current = undefined;
+			const how = finish.current;
+			if (how === "discard" || !chunks.length) { setPhase("idle"); return; }
+			setPhase("transcribing");
+			try {
+				const clip = new Blob(chunks, { type: MIME });
+				const language = navigator.language?.slice(0, 2).toLowerCase();
+				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}) }, latest.current.computer ?? undefined);
+				if (!text.trim()) latest.current.report("No speech was heard in that recording.");
+				else {
+					latest.current.append(text.trim());
+					// Sent after the draft holding this text has rendered.
+					if (how === "send") setSent(count => count + 1);
+				}
+			} catch (error) { latest.current.report(error instanceof Error ? error.message : String(error)); }
+			finally { setPhase("idle"); }
+		};
+		recorder.current = media;
+		media.start(1000);
+		setSeconds(0); setPhase("recording");
+		if (pending.current) media.stop();
+	};
+	useEffect(() => { if (sent) latest.current.submit?.(); }, [sent]);
+	useEffect(() => () => { finish.current = "discard"; recorder.current?.stop(); }, []);
 	useEffect(() => {
 		if (phase !== "recording") return;
 		const started = Date.now();
@@ -47,46 +103,51 @@ export function DictationButton({ append, disabled, report, computer }: {
 		}, 250);
 		return () => clearInterval(timer);
 	}, [phase]);
-	if (!MIME || !navigator.mediaDevices?.getUserMedia) return null;
-	const unavailable = computer === null;
-
-	const start = async () => {
-		let stream: MediaStream;
-		try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-		catch (error) { report(error instanceof DOMException && error.name === "NotAllowedError" ? "Allow microphone access for this site to dictate." : "No microphone is available."); return; }
-		const chunks: Blob[] = [], media = new MediaRecorder(stream, { mimeType: MIME, audioBitsPerSecond: 16_000 });
-		discard.current = false;
-		media.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-		media.onstop = async () => {
-			stream.getTracks().forEach(track => track.stop());
-			recorder.current = undefined;
-			if (discard.current || !chunks.length) { setPhase("idle"); return; }
-			setPhase("transcribing");
-			try {
-				const clip = new Blob(chunks, { type: MIME });
-				const language = navigator.language?.slice(0, 2).toLowerCase();
-				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}) }, computer ?? undefined);
-				if (text.trim()) append(text.trim());
-				else report("No speech was heard in that recording.");
-			} catch (error) { report(error instanceof Error ? error.message : String(error)); }
-			finally { setPhase("idle"); }
+	useEffect(() => {
+		if (!MIME || !navigator.mediaDevices?.getUserMedia) return;
+		// Only the composer on screen answers the shortcut.
+		const shown = () => !!button.current?.isConnected && button.current.offsetParent !== null;
+		const active = () => phaseRef.current === "starting" || phaseRef.current === "recording";
+		const consume = (event: KeyboardEvent) => { event.preventDefault(); event.stopPropagation(); };
+		const down = (event: KeyboardEvent) => {
+			if (!shown()) return;
+			if (event.code === "Space" && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+				consume(event);
+				if (event.repeat) return;
+				if (active()) { held.current = undefined; stop("insert"); }
+				else if (phaseRef.current === "idle" && !latest.current.disabled && latest.current.computer !== null) { held.current = Date.now(); void start(); }
+				return;
+			}
+			if (!active() || event.isComposing) return;
+			// Captured before the composer's own Enter handler, which would send the draft without this clip.
+			if (event.key === "Enter" && !event.shiftKey) { consume(event); held.current = undefined; stop(latest.current.submit ? "send" : "insert"); }
+			else if (event.key === "Escape") { consume(event); held.current = undefined; stop("discard"); }
 		};
-		recorder.current = media;
-		media.start(1000);
-		setSeconds(0); setPhase("recording");
-	};
+		const up = (event: KeyboardEvent) => {
+			if (held.current === undefined || event.code !== "Space" && event.key !== "Control") return;
+			const since = held.current;
+			held.current = undefined;
+			if (Date.now() - since >= HOLD_MS) stop("insert");
+		};
+		addEventListener("keydown", down, true); addEventListener("keyup", up, true);
+		return () => { removeEventListener("keydown", down, true); removeEventListener("keyup", up, true); };
+	}, []);
+	if (!MIME || !navigator.mediaDevices?.getUserMedia) return null;
+	const unavailable = computer === null, recording = phase === "recording" || phase === "starting";
 	const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 	return <span className="dictation">
-		{phase === "recording" && <span className="dictation-status" role="status">
+		{recording && <span className="dictation-status" role="status">
 			<span className="dictation-dot" aria-hidden="true" />{clock}
-			<button type="button" className="quiet-action" onClick={() => { discard.current = true; recorder.current?.stop(); }}>Cancel</button>
+			<span className="dictation-keys">Enter sends · Esc cancels</span>
+			<button type="button" className="quiet-action" onClick={() => stop("discard")}>Cancel</button>
 		</span>}
 		{phase === "transcribing" && <span className="dictation-status" role="status">Transcribing…</span>}
-		<button type="button" className={`icon-button dictation-button${phase === "recording" ? " listening" : ""}`}
-			disabled={phase === "transcribing" || (disabled || unavailable) && phase !== "recording"} aria-pressed={phase === "recording"}
-			aria-label={phase === "recording" ? "Stop and transcribe" : "Dictate"}
-			title={unavailable ? "Dictation needs an ElevenLabs API key: add one in Settings & tools → Dictation" : phase === "recording" ? "Stop and transcribe" : "Dictate"}
-			onClick={() => phase === "recording" ? recorder.current?.stop() : void start()}><Icon name="mic" /></button>
+		<button ref={button} type="button" className={`icon-button dictation-button${recording ? " listening" : ""}`}
+			disabled={phase === "transcribing" || (disabled || unavailable) && !recording} aria-pressed={recording}
+			aria-label={recording ? "Stop and transcribe" : "Dictate"} aria-keyshortcuts="Control+Space"
+			title={unavailable ? "Dictation needs an ElevenLabs API key: add one in Settings & tools → Dictation"
+				: recording ? "Stop and add the text (Ctrl+Space)" : "Dictate (Ctrl+Space; hold to talk)"}
+			onClick={() => recording ? stop("insert") : void start()}><Icon name="mic" /></button>
 	</span>;
 }
 
