@@ -227,6 +227,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	};
 	const attach = async (chosen: File[]) => {
 		if (!supported || busy || !view.id || !view.connection) return;
+		if (files.length + chosen.length > DOT_FILE_COUNT) { setError(`Attach up to ${DOT_FILE_COUNT} files to a message.`); return; }
 		const epoch = generation.current; setBusy(true); setError("");
 		try { await stageDotFiles(chosen, view.id, view.connection, id, file => {
 			if (epoch === generation.current) setView(previous => ({ ...previous, uploads: [...(previous.uploads ?? []).filter(item => item.id !== file.id), file] }));
@@ -432,11 +433,15 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				<button aria-label={`Discard staged ${file.name}`} disabled={busy || file.state === "uploading"} onClick={() => ["ready", "staging"].includes(file.state) ? void dot.discard(file) : setDiscarding(file)}>×</button>
 			</div>)}</div>}
 			<input ref={picker} type="file" multiple hidden onChange={event => { const files = [...(event.currentTarget.files ?? [])]; event.currentTarget.value = ""; if (files.length) void dot.attach(files); }} />
-			<form className="dot-compose-form" onSubmit={event => { event.preventDefault(); atBottom.current = true; dot.send(); }}>
+			<form className="dot-compose-form" onSubmit={event => { event.preventDefault(); atBottom.current = true; dot.send(); }}
+				onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+				onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); if (ready && !busy && !opening) void dot.attach([...event.dataTransfer.files]); }}>
 				<div className="dot-compose-row">
 					<button type="button" className="icon-button dot-attach-button" aria-label="Attach files to Dot" title="Attach files" disabled={!ready || busy || opening || dot.files.length >= DOT_FILE_COUNT} onClick={() => picker.current?.click()}><Icon name="plus" /></button>
 					<div className="composer dot-composer"><textarea ref={editor} aria-label="Message Dot" placeholder={`Message ${name}`} rows={1} value={dot.draft} maxLength={32_000}
-						onChange={event => dot.saveDraft(event.target.value)} onKeyDown={event => {
+						onChange={event => dot.saveDraft(event.target.value)}
+						onPaste={event => { if (!event.clipboardData.files.length) return; event.preventDefault(); if (ready && !busy && !opening) void dot.attach([...event.clipboardData.files]); }}
+						onKeyDown={event => {
 							if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); atBottom.current = true; dot.send(); }
 						}} /></div>
 					<DictationButton append={dot.dictate} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
