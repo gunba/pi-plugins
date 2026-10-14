@@ -9,11 +9,11 @@ A driver script repeats rounds. Each round the task model does the bulk of the w
 
 ## A round
 
-1. **Trials.** Run every training case several times with the candidate skill. After a run is scored, copy its output so it stays as scored, then send the same agent session a follow-up with the reference. It knows why it made each choice. Ask it to compare its output with the reference item by item, trace each difference to the evidence, and classify each cause: skill missing, wrong or unclear; skill ignored; slip; evidence ambiguous or a legitimate judgement; reference error. It should quote the files, rows and skill passages that show it, in under 600 words.
+1. **Trials.** Run every training case once with the candidate skill. After a run is scored, copy its output so it stays as scored, then send the same agent session a follow-up with the reference. It knows why it made each choice. Ask it to compare its output with the reference item by item, trace each difference to the evidence, and classify each cause: skill missing, wrong or unclear; skill ignored; slip; evidence ambiguous or a legitimate judgement; reference error. It should quote the files, rows and skill passages that show it, in under 600 words.
 2. **Review.** Start a new reviewer session. It reads `notes.md`, the round's scores beside the best version's, and the agents' findings, investigates, writes its verdict, edits the skill and adds to `notes.md`. See [the reviewer's steps](#reviewing-a-round).
 3. **Holdout.** When the verdict is "improved", run the held-out cases and compare their aggregate scores with the best version's. Not worse: the candidate becomes the best version. Worse: return to the best version and record that in `notes.md`.
 
-With no run record yet, the first round runs the unchanged skill to obtain one, and runs the holdout once. The reviewer decides when to stop: when `notes.md` shows the remaining ideas are spent and nothing more is worth trying.
+With no run record yet, the first round runs the unchanged skill to obtain one, and runs the holdout once. Whoever starts the run sets when it stops, for example after a number of kept improvements, in the brief the reviewers read. A reviewer can stop earlier when `notes.md` shows nothing more is worth trying.
 
 ## Setting up the driver
 
@@ -31,7 +31,7 @@ These are the usual ways a fresh setup goes wrong.
 You are a fresh reviewer. Work from the files, not from memory of earlier rounds.
 
 1. Read `notes.md`: what has been tried, the evidence, the results, and ideas judged not worth trying.
-2. Compare this round's scores with the best version's, case by case, against each case's run-to-run spread. Write the verdict to `review.json`: `improved`, `not improved` or `baseline`, with reasons. A difference smaller than a case's spread is not evidence. Count a change as improved only when the cases it targeted improve and no variant of the skill gets worse.
+2. Compare this round's scores with the best version's, case by case. Each case ran once, and a single run can differ from the last by chance, so judge by mechanism as well as score: did the decisions the change targeted actually change, for the reason intended, and did anything else change? The agents' findings show this. Write the verdict to `review.json`: `improved`, `not improved` or `baseline`, with reasons. Count a change as improved only when the targeted decisions improve and no variant of the skill gets worse.
 3. Read the agents' findings. Check against the files any finding that will drive a change; an agent can rationalise its own choices.
 4. Look for patterns across cases and runs. A cause seen once is an anecdote; one seen in several cases, or in most runs of one case, is worth a change. Note what the agent already gets right, so a change does not disturb it.
 5. Choose one change and its form: guidance text, a worked example, a script or check the agent runs, or a template fix. Prefer the form that removes the error mechanically. Scope a rule to the facts that decide it and say what it does not cover; a broad rule drawn from one case is the usual way a fix breaks other cases. Do not retry an idea `notes.md` records as failed unless you change what made it fail.
