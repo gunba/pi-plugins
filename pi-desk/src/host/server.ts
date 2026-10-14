@@ -790,15 +790,17 @@ export class DeskHost {
 		this.maintaining = true;
 		try {
 			const now = Date.now();
-			let allQuiet = now - this.started > QUIET_MS;
+			// Updating the host leaves conversations running: workers outlive it. It waits only for what the host
+			// itself carries, messages being delivered and settings being applied. Waiting for every conversation
+			// to fall quiet kept a computer with one long-running conversation on an old version for days.
+			let hostQuiet = now - this.started > QUIET_MS;
 			for (const managed of this.sessions.values()) {
 				if (!managed.worker || managed.view.state === "closed") continue;
-				const key = managed.view.key;
-				const busy = restartBlockers(managed.view, this.inputs!.pending(key).some(input => input.state === "queued" || input.state === "sending"))
-					.some(reason => reason !== "its folder is missing");
-				if (busy) { this.quietSince.delete(key); allQuiet = false; continue; }
+				const key = managed.view.key, delivering = this.inputs!.pending(key).some(input => input.state === "queued" || input.state === "sending");
+				if (delivering || managed.view.controls?.some(control => control.state === "running")) hostQuiet = false;
+				const busy = restartBlockers(managed.view, delivering).some(reason => reason !== "its folder is missing");
+				if (busy) { this.quietSince.delete(key); continue; }
 				if (!this.quietSince.has(key)) this.quietSince.set(key, now);
-				if (now - this.quietSince.get(key)! < QUIET_MS) allQuiet = false;
 			}
 			if (force || this.automatic.conversations) {
 				for (const { managed, blockers } of this.outdated()) {
@@ -813,7 +815,7 @@ export class DeskHost {
 				}
 			}
 			const available = this.updates?.available;
-			if (!force && !only && this.automatic.host && allQuiet && available && this.updates?.phase === "idle" && this.hostUpdateAttempted !== available
+			if (!force && !only && this.automatic.host && hostQuiet && available && this.updates?.phase === "idle" && this.hostUpdateAttempted !== available
 				&& this.runtimeHome && !this.dot?.busy && !this.providerAccounts?.signingIn) {
 				// Workers outlive the host; their conversations move onto the new version here once they are idle.
 				this.hostUpdateAttempted = available;

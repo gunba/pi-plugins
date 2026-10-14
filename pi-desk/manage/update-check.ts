@@ -4,7 +4,7 @@ import { readInstallation } from "./installation.ts";
 import { personalPackageSource, releaseSourceSupported } from "./release-source.ts";
 import { atomicJson, readControllerRelease, readState } from "./store.ts";
 
-export const updateCheckInterval = 6 * 60 * 60_000;
+export const updateCheckInterval = 60 * 60_000;
 interface UpdateCheck { format: 1; runtime: string; checkedAt: number; available?: string; error?: string }
 export function readUpdateCheck(home: string, runtime: string): UpdateCheck | undefined {
 	try {

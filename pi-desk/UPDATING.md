@@ -52,7 +52,10 @@ version or prepared runtime. Desk prepares verified code before replacing the
 host; a changed published version needs a new selection. No maintenance
 conversation, service reinstall or administrator access is needed.
 
-Desk checks for updates at startup and every six hours, using a local cache.
+Desk checks for updates at startup and every hour, using a local cache. With
+automatic updates on, a computer installs a new release itself once no message is
+being delivered and no setting is being applied; working conversations carry on,
+and each moves onto the new version after ten idle minutes.
 **Check for updates** refreshes availability; detection alone installs nothing.
 `/desk update` retains the quieter path: download while conversations continue,
 then apply automatically when no Pi workers remain, including idle workers.
