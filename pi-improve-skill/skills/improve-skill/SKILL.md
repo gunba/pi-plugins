@@ -1,50 +1,43 @@
 ---
 name: improve-skill
-description: "Improve an agent skill against benchmark cases. One session on the strongest model runs trials of the task model, has each trial agent reconcile its own output against the reference, edits the skill (text, scripts, templates) and confirms gains on held-out cases. Use when a skill's results on known cases should get better, especially when runs are slow, noisy or need expert judgement to assess."
+description: "Improve an agent skill against benchmark cases in stateless rounds. The task model runs the cases and then reconciles its own output against the reference; a fresh session on the strongest model reviews those findings, investigates, edits the skill and leaves notes for the next round; held-out cases are run when a round improves. Use when a skill's results on known cases should get better, especially when runs are slow or noisy or need expert judgement to assess."
 ---
 
 # Improve a skill
 
-You run the improvement loop yourself. The task model does the bulk of the work: it runs the trials, and afterwards each trial agent explains its own mistakes. You spend your effort on causes, changes and decisions.
+A driver script repeats rounds. Each round the task model does the bulk of the work, running the cases and explaining its own mistakes. Then a new reviewer session on the strongest model decides whether the last change helped and makes the next one. Reviewer sessions do not carry context from round to round; `notes.md` does.
 
-## Before you start
+## A round
 
-You need:
+1. **Trials.** Run every training case several times with the candidate skill. After a run is scored, copy its output so it stays as scored, then send the same agent session a follow-up with the reference. It knows why it made each choice. Ask it to compare its output with the reference item by item, trace each difference to the evidence, and classify each cause: skill missing, wrong or unclear; skill ignored; slip; evidence ambiguous or a legitimate judgement; reference error. It should quote the files, rows and skill passages that show it, in under 600 words.
+2. **Review.** Start a new reviewer session. It reads `notes.md`, the round's scores beside the best version's, and the agents' findings, investigates, writes its verdict, edits the skill and adds to `notes.md`. See [the reviewer's steps](#reviewing-a-round).
+3. **Holdout.** When the verdict is "improved", run the held-out cases and compare their aggregate scores with the best version's. Not worse: the candidate becomes the best version. Worse: return to the best version and record that in `notes.md`.
 
-- **Cases**: inputs a practitioner had and the reference result they produced, with the evidence to reach it. A difference caused by missing evidence cannot be fixed by the skill.
-- **A trial command** that runs chosen cases N times with a given skill folder and returns each run's score and output folder (outputs, steps, final message), and a way to send a finished trial agent a follow-up message in its own session.
-- **A holdout command** that runs held-out cases with a skill folder and prints only aggregate scores. Never open holdout inputs, outputs or per-case results; they exist to tell you whether a change generalises.
-- **A working copy** of the whole skill (instructions, references, scripts, templates) and a way to validate it (its tests, linters, template checks). Make sure scripts are current before you begin.
-- **A score that counts decisions, not closeness.** An output is right or wrong on each point the evidence decides; points of genuine judgement accept any defensible treatment. A figure that is nearly right usually hides one wrong decision.
+With no run record yet, the first round runs the unchanged skill to obtain one, and runs the holdout once. Stop when the reviewer finds nothing more worth trying, after a set number of rounds, or after several rounds in a row without an improvement.
 
-Run unattended: trial and follow-up sessions are ordinary headless sessions with their normal tools and internet access, and nothing should wait for a person's approval. Each trial sees only its own case inputs and the skill, never the reference. Ask for any of these that is missing rather than improvising it.
+## Setting up the driver
 
-## Baseline
+These are the usual ways a fresh setup goes wrong.
 
-Run every training case several times with the unchanged skill to see each case's spread, and run the holdout once. A difference smaller than a case's run-to-run spread is not evidence. Record the baseline in `journal.md`.
+- **Models.** Name the exact provider/model and effort for each role in the driver's configuration, and pass them when each session is created: for example the task model `openai-codex/gpt-6.1-sol` at `xhigh` and the reviewer a Claude Opus model at `xhigh`. Create sessions directly, with the agent SDK or headless `pi` and its model and thinking options. Do not rely on a session spawning subagents with a model override, which asks a person for approval. Check that both providers are authenticated before the first round.
+- **Unattended.** Nothing may wait for a person. Before the first round, run one short session of each role headless and confirm it finishes on its own.
+- **No artificial limits on the agents.** A trial agent gets what a user's session would: its normal tools and extensions, internet access and web search, and the usual time and output limits. Removing these measures a different agent from the one you are improving. The one restriction is what it can read. A trial sees its own case inputs and the skill, never the reference or another case's files. The reference reaches it only in the follow-up, after its output has been copied.
+- **The reviewer has broad access.** It can read all training cases, references, run folders and the agents' findings, open and recalculate workbooks, run scripts and use the internet. Held-out cases are off limits. The driver gives it holdout aggregates only, and it must never open holdout inputs, outputs or per-case results.
+- **Scores count decisions, not closeness.** An output is right or wrong on each point the evidence decides; points of genuine judgement accept any defensible treatment. A figure that is nearly right usually hides one wrong decision.
+- **Records.** Keep every skill version (with a hash), its runs and scores. Resume interrupted trials instead of rerunning them. Run trials and follow-ups in parallel up to the machine's and provider's limits.
 
-## Loop
+## Reviewing a round
 
-1. **Investigate.** After a run's output is saved and scored, send the trial agent a follow-up in its own session with the reference. It knows why it made each choice, which a fresh reader would have to reconstruct. Ask it to:
-   - compare its output with the reference item by item and trace each difference to the evidence;
-   - classify each cause: skill missing, wrong or unclear; skill ignored; slip; evidence ambiguous or a legitimate judgement; reference error;
-   - quote the files, rows and skill passages that show it, and report in under 600 words.
-   Ask further questions the same way. The follow-up cannot change the scored output. An agent can rationalise its own choices, so check the findings that will drive a change against the files yourself. Where a session cannot be resumed, have the trial command start a fresh task-model session with the run folder, the reference and the inputs.
-2. **Find patterns.** Look across cases and runs. A cause seen once is an anecdote; a cause seen in several cases, or in most runs of one case, is worth a change. Note what the agent already gets right, so a change does not disturb it.
-3. **Choose one change and its form.** Guidance text, a worked example, a script or check the agent runs, or a template fix. Prefer the form that removes the error mechanically. Scope a rule to the facts that decide it and say what it does not cover. A broad rule drawn from one case is the usual way a fix breaks other cases. Write down which results should change.
-4. **Edit the working copy** and validate it.
-5. **Test.** Re-run the cases the change targets, plus a regression set that covers every variant the changed file serves. Shared method files reach every variant; a variant-specific guide reaches only its own. Run variants side by side so one change is tested everywhere in the same round. Have the trial agents explain any result that moved, in either direction.
-6. **Keep or revert.** Keep the change when the targeted results improve beyond noise and nothing else gets worse. Otherwise revert it and record why.
-7. **Check the holdout** after a few kept changes and before finishing. Steady or better: the changes stand. Worse: revert to the last version whose holdout held, and look again at the changes since.
+You are a fresh reviewer. Work from the files, not from memory of earlier rounds.
 
-## Journal
-
-Keep `journal.md` beside the working copy: baseline, then for each change the evidence behind it, the prediction, the runs, the result and the decision. Read it before each new change, and do not retry a failed idea unchanged.
-
-## Compute
-
-Run trials and follow-ups in parallel up to the machine's and provider's limits. Read the agents' reconciliations rather than raw outputs, except to verify a finding. Resume interrupted runs rather than restarting them.
+1. Read `notes.md`: what has been tried, the evidence, the results, and ideas judged not worth trying.
+2. Compare this round's scores with the best version's, case by case, against each case's run-to-run spread. Write the verdict to `review.json`: `improved`, `not improved` or `baseline`, with reasons. A difference smaller than a case's spread is not evidence. Count a change as improved only when the cases it targeted improve and no variant of the skill gets worse.
+3. Read the agents' findings. Check against the files any finding that will drive a change; an agent can rationalise its own choices.
+4. Look for patterns across cases and runs. A cause seen once is an anecdote; one seen in several cases, or in most runs of one case, is worth a change. Note what the agent already gets right, so a change does not disturb it.
+5. Choose one change and its form: guidance text, a worked example, a script or check the agent runs, or a template fix. Prefer the form that removes the error mechanically. Scope a rule to the facts that decide it and say what it does not cover; a broad rule drawn from one case is the usual way a fix breaks other cases. Do not retry an idea `notes.md` records as failed unless you change what made it fail.
+6. Edit the skill copy the driver gives you (the candidate if your verdict is "improved", otherwise the best version) and validate it with the skill's tests and checks.
+7. Add to `notes.md`: the verdict, the evidence for your change, the change, and which results it should move. Keep entries short; later reviewers read the whole file. Set `stop` in `review.json` if nothing more is worth trying.
 
 ## Finish
 
-Report the changes kept, with per-case results before and after, the holdout aggregates, what was tried and failed, and the next most promising ideas. Hand the diff to the skill's owner for release.
+Report the changes kept, per-case results before and after, the holdout aggregates, what was tried and failed, and the next most promising ideas. Hand the diff to the skill's owner for release.
