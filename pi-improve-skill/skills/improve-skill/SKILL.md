@@ -13,7 +13,7 @@ A driver script repeats rounds. Each round the task model does the bulk of the w
 2. **Review.** Start a new reviewer session. It reads `notes.md`, the round's scores beside the best version's, and the agents' findings, investigates, writes its verdict, edits the skill and adds to `notes.md`. See [the reviewer's steps](#reviewing-a-round).
 3. **Holdout.** When the verdict is "improved", run the held-out cases and compare their aggregate scores with the best version's. Not worse: the candidate becomes the best version. Worse: return to the best version and record that in `notes.md`.
 
-With no run record yet, the first round runs the unchanged skill to obtain one, and runs the holdout once. Stop when the reviewer finds nothing more worth trying, after a set number of rounds, or after several rounds in a row without an improvement.
+With no run record yet, the first round runs the unchanged skill to obtain one, and runs the holdout once. The reviewer decides when to stop: when `notes.md` shows the remaining ideas are spent and nothing more is worth trying.
 
 ## Setting up the driver
 
