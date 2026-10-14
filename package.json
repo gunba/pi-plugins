@@ -46,7 +46,7 @@
     ],
     "skills": [
       "./pi-browser/skills/browse",
-      "./pi-gepa/skills/gepa-optimize"
+      "./pi-improve-skill/skills/improve-skill"
     ]
   },
   "peerDependencies": {

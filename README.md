@@ -75,9 +75,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   an opt-in 1M/900K preset for supported OpenAI models.
 - [`pi-party`](pi-party/README.md) — agent discovery and direct messages between
   Pi agents on this and connected Desk computers, with an `/inbox` viewer.
-- [`pi-gepa`](pi-gepa/skills/gepa-optimize/SKILL.md) — bounded GEPA optimisation
-  of prompts and other text artifacts, with task evaluators, held-out checks and
-  native Pi model authentication. Python experiments run in a private environment.
+- [`pi-improve-skill`](pi-improve-skill/skills/improve-skill/SKILL.md) — improves a skill
+  against benchmark cases: one strong-model session runs task-model trials, has task-model
+  investigators explain each run, edits the skill and checks held-out cases.
 - [`pi-system-one`](pi-system-one/README.md) — one system-prompt paragraph on
   when to use System One classifier models such as TypeSafe's Jev through
   codemode's `models.classify`.
