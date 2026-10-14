@@ -17,7 +17,7 @@ You need:
 - **A working copy** of the whole skill (instructions, references, scripts, templates) and a way to validate it (its tests, linters, template checks). Make sure scripts are current before you begin.
 - **A score that counts decisions, not closeness.** An output is right or wrong on each point the evidence decides; points of genuine judgement accept any defensible treatment. A figure that is nearly right usually hides one wrong decision.
 
-Ask for any of these that is missing rather than improvising it.
+Run unattended: trial and follow-up sessions are ordinary headless sessions with their normal tools and internet access, and nothing should wait for a person's approval. Each trial sees only its own case inputs and the skill, never the reference. Ask for any of these that is missing rather than improvising it.
 
 ## Baseline
 
@@ -29,7 +29,7 @@ Run every training case several times with the unchanged skill to see each case'
    - compare its output with the reference item by item and trace each difference to the evidence;
    - classify each cause: skill missing, wrong or unclear; skill ignored; slip; evidence ambiguous or a legitimate judgement; reference error;
    - quote the files, rows and skill passages that show it, and report in under 600 words.
-   Ask further questions the same way. The follow-up cannot change the scored output. An agent can rationalise its own choices, so check the findings that will drive a change against the files yourself. Where a session cannot be resumed, start a fresh investigator with `spawn_agent` on the task model (the first model override needs the user's approval once).
+   Ask further questions the same way. The follow-up cannot change the scored output. An agent can rationalise its own choices, so check the findings that will drive a change against the files yourself. Where a session cannot be resumed, have the trial command start a fresh task-model session with the run folder, the reference and the inputs.
 2. **Find patterns.** Look across cases and runs. A cause seen once is an anecdote; a cause seen in several cases, or in most runs of one case, is worth a change. Note what the agent already gets right, so a change does not disturb it.
 3. **Choose one change and its form.** Guidance text, a worked example, a script or check the agent runs, or a template fix. Prefer the form that removes the error mechanically. Scope a rule to the facts that decide it and say what it does not cover. A broad rule drawn from one case is the usual way a fix breaks other cases. Write down which results should change.
 4. **Edit the working copy** and validate it.
