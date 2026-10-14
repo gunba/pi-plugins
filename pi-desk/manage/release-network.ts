@@ -60,6 +60,23 @@ export class ReleaseNetwork {
 		}
 		return response;
 	}
+	/** Where a GitHub page redirects, without following it. */
+	async location(address: string): Promise<string> {
+		const url = githubURL(address);
+		const response = await new Promise<IncomingMessage>((accept, reject) => {
+			const req = request(url, { agent: this.agent, signal: this.deadline(30_000), method: "HEAD", headers: { "User-Agent": "Pi-Desk" } }, accept);
+			req.once("error", error => {
+				const code = (error as NodeJS.ErrnoException).code;
+				reject(new Error(`GitHub connection failed${code && /^[A-Z0-9_]+$/.test(code) ? ` (${code})` : ""}. Check TLS trust, proxy and network access.`));
+			});
+			req.end();
+		});
+		response.destroy();
+		const location = response.headers.location;
+		if (![301, 302, 303, 307, 308].includes(response.statusCode!) || !location)
+			throw new Error(`GitHub returned HTTP ${response.statusCode} for the latest release. The running release is unchanged.`);
+		return new URL(location, url).href;
+	}
 	async json(address: string): Promise<unknown> {
 		const response = await this.response(address, this.deadline(30_000));
 		const chunks: Buffer[] = []; let bytes = 0;
