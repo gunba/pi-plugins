@@ -444,7 +444,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 						onKeyDown={event => {
 							if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); atBottom.current = true; dot.send(); }
 						}} /></div>
-					<DictationButton append={dot.dictate} submit={dot.send} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
+					<DictationButton append={dot.dictate} submit={text => { dot.dictate(text); dot.send(); }} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
 					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!dot.supported || !view.connection || !view.id || busy || opening || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
 				</div>
 				<div className="dot-composer-hint">{view.paused ? "Dot is paused. Resume it from Manage Dot to send queued messages." : "Shift+Enter for a new line"}</div>

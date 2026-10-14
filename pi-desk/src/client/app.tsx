@@ -415,14 +415,14 @@ export function App({ account }: { account?: BrowserAccount }) {
   async function readInput(id: string): Promise<InputStatus> {
     return (await api<{ status: InputStatus }>(`/sessions/${selected}/inputs/${id}`)).status;
   }
-  async function finishSubmission(receipt: SubmissionReceipt, text: string, fileIds: string[]) {
+  async function finishSubmission(receipt: SubmissionReceipt, text: string, fileIds: string[], shown = text) {
     if (JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null")?.id !== receipt.id) return;
     try { if (fileIds.length) await attachments.clear(fileIds); }
     catch { throw new Error("Message queued on the computer, but its attachment draft could not be cleared. The receipt is retained to prevent a duplicate."); }
     if (!clearSubmission(localStorage, selected, receipt.id)) return;
-    if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
+    if (localStorage.getItem(draftKey(selected)) === shown) localStorage.removeItem(draftKey(selected));
     if (selectedRef.current === selected) {
-      setDraft(current => current === text ? "" : current); setLatestRequest(value => value + 1);
+      setDraft(current => current === shown ? "" : current); setLatestRequest(value => value + 1);
     }
   }
   async function command<T = unknown>(command: WorkerCommand, id: string = crypto.randomUUID()) {
@@ -477,13 +477,20 @@ export function App({ account }: { account?: BrowserAccount }) {
     setCreate(true);
   }
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
-  async function send(delivery: Delivery = deliveryMode) {
-    if ((!draft.trim() && !attachments.files.length) || !attachments.ready || sendingRef.current || controlBusy || !connected
-      || extensionErrors.length || !session?.activation || !["starting", "ready"].includes(session.state)) return;
+  /** Sends the draft; `dictated` text is sent with it without passing through the composer. */
+  async function send(delivery: Delivery = deliveryMode, dictated?: string) {
+    const shown = draft, text = dictated === undefined ? draft : withDictation(draft, dictated);
+    // Dictated words that can't be sent now stay in the draft rather than being lost.
+    const keep = () => {
+      if (dictated === undefined || selectedRef.current !== selected) return;
+      setDraft(current => current === shown ? text : current); localStorage.setItem(draftKey(selected), text);
+    };
+    if (!text.trim() && !attachments.files.length) return;
+    if (!attachments.ready || sendingRef.current || controlBusy || !connected
+      || extensionErrors.length || !session?.activation || !["starting", "ready"].includes(session.state)) { keep(); return; }
     if (delivery === "now" && !session.workerRuntime?.sendNow) {
-      setError("This worker does not support Send now. Restart this conversation when idle to enable it."); return;
+      keep(); setError("This worker does not support Send now. Restart this conversation when idle to enable it."); return;
     }
-    const text = draft;
     const fileIds = attachments.files.map(file => file.id);
     sendingRef.current = true; setSending(true);
     try {
@@ -510,7 +517,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         // Check cached upload IDs before touching files that may already have been consumed.
         const cached = uploadedPrompt(text, attachments.files, session.key);
         if (cached && submissionDecision(previous, session.activation, await submissionFingerprint(cached), status) === "confirmed") {
-          await finishSubmission(previous, text, fileIds); return;
+          await finishSubmission(previous, text, fileIds, shown); return;
         }
         clearSubmission(localStorage, selected, previous.id);
         previous = null;
@@ -554,8 +561,9 @@ export function App({ account }: { account?: BrowserAccount }) {
         }
         throw error;
       }
-      await finishSubmission(receipt, text, fileIds);
+      await finishSubmission(receipt, text, fileIds, shown);
     } catch (error) {
+      keep();
       setError(`${errorText(error)} Your draft has been kept.`);
     } finally {
       sendingRef.current = false; setSending(false);
@@ -923,7 +931,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   open={view => { setPanel("view"); setFocusedView(view.id); }}
                   invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
                 <div className="send-controls">
-                  <DictationButton disabled={!connected} report={setError} submit={() => void send()} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
+                  <DictationButton disabled={!connected} report={setError} submit={text => void send(deliveryMode, text)} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
                     const next = withDictation(current, text); localStorage.setItem(draftKey(selected), next); return next;
                   })} />
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"

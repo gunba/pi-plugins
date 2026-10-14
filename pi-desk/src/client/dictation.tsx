@@ -33,16 +33,16 @@ type Phase = "idle" | "starting" | "recording" | "transcribing";
 /**
  * Dictate into a composer. The whole clip is transcribed by ElevenLabs when recording stops, so pauses to think
  * cost nothing. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
- * adds it and sends, and Esc discards the clip. Holding Ctrl+Space records only while it is held.
+ * sends the draft with it, and Esc discards the clip. Holding Ctrl+Space records only while it is held.
  */
 export function DictationButton({ append, submit, disabled, report, computer }: {
 	append: (text: string) => void; disabled?: boolean; report: (error: string) => void;
-	/** Sends the draft; called after Enter's dictated text has been added. */
-	submit?: () => void;
+	/** Sends the draft with the dictated text, which never appears in the composer. */
+	submit?: (text: string) => void;
 	/** From dictationComputer: the computer that transcribes, undefined for this host, null when none can. */
 	computer: string | undefined | null;
 }) {
-	const [phase, setPhaseState] = useState<Phase>("idle"), [seconds, setSeconds] = useState(0), [sent, setSent] = useState(0);
+	const [phase, setPhaseState] = useState<Phase>("idle"), [seconds, setSeconds] = useState(0);
 	const recorder = useRef<MediaRecorder | undefined>(undefined), phaseRef = useRef<Phase>("idle"), finish = useRef<Finish>("insert");
 	const held = useRef<number | undefined>(undefined), pending = useRef(false), button = useRef<HTMLButtonElement>(null);
 	// The shortcut listener is registered once; it reads the current props from here.
@@ -78,11 +78,8 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 				const language = navigator.language?.slice(0, 2).toLowerCase();
 				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}) }, latest.current.computer ?? undefined);
 				if (!text.trim()) latest.current.report("No speech was heard in that recording.");
-				else {
-					latest.current.append(text.trim());
-					// Sent after the draft holding this text has rendered.
-					if (how === "send") setSent(count => count + 1);
-				}
+				else if (how === "send" && latest.current.submit) latest.current.submit(text.trim());
+				else latest.current.append(text.trim());
 			} catch (error) { latest.current.report(error instanceof Error ? error.message : String(error)); }
 			finally { setPhase("idle"); }
 		};
@@ -91,7 +88,6 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 		setSeconds(0); setPhase("recording");
 		if (pending.current) media.stop();
 	};
-	useEffect(() => { if (sent) latest.current.submit?.(); }, [sent]);
 	useEffect(() => () => { finish.current = "discard"; recorder.current?.stop(); }, []);
 	useEffect(() => {
 		if (phase !== "recording") return;
