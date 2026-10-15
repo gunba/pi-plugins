@@ -19,6 +19,15 @@ export class RemoteError extends Error {
 }
 interface Pending { resolve: (value: ApiResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 
+/** Whether this browser may be on a computer of this platform, so worth trying its host's loopback port. */
+function samePlatform(platform: unknown): boolean {
+	const agent = typeof navigator.userAgent === "string" ? navigator.userAgent : "";
+	if (/Android|iPhone|iPad|iPod|Mobile|CrOS/.test(agent)) return false;
+	return platform === "linux" ? /Linux|X11/.test(agent) : platform === "win32" ? /Windows/.test(agent) : platform === "darwin" && /Macintosh/.test(agent);
+}
+/** After a direct connection fails, use the relay for this long before switching again. */
+const DIRECT_RETRY_MS = 10 * 60_000;
+
 export class RemoteClient {
 	private account: RemoteAccount;
 	private host: MembershipPeer;
@@ -51,6 +60,14 @@ export class RemoteClient {
 	private acknowledged = 0;
 	private ackScheduled = false;
 	private renewing = false;
+	/**
+	 * A browser on the host's own computer connects to its loopback port instead of through the relay: no round trip
+	 * to the relay, and no relay traffic. The host offers the port over the relay; a failed attempt falls back to it.
+	 */
+	private preferDirect = true;
+	private directFailedAt = 0;
+	private via: "direct" | "relay" = "relay";
+	private reached = false;
 	private onlineListener = () => { clearTimeout(this.timer); void this.connect(); };
 	private visibilityListener = () => document.hidden ? this.disconnect("App paused; delivery of pending commands is uncertain.", "paused") : void this.connect();
 	private pageHideListener = () => this.disconnect("App closed; delivery of pending commands is uncertain.", "paused");
@@ -117,7 +134,7 @@ export class RemoteClient {
 			if (this.closed || generation !== this.generation || document.hidden) { handshake.close(); return; }
 			if (until <= performance.now()) throw new Error("Account authorization expired.");
 			this.leaseUntil = until;
-			this.open(handshake);
+			this.open(handshake, this.preferDirect ? this.directPort() : undefined);
 		} catch (error) {
 			handshake?.close();
 			if (this.closed || generation !== this.generation) return;
@@ -128,10 +145,19 @@ export class RemoteClient {
 			}
 		} finally { if (generation === this.generation) this.starting = false; }
 	}
-	private open(handshake: ClientHandshake): void {
+	private directKey(): string { return `pi-desk-direct:${this.host.id}`; }
+	private directPort(): number | undefined {
+		try {
+			const port = Number(localStorage.getItem(this.directKey()));
+			return Number.isInteger(port) && port > 0 && port < 65536 ? port : undefined;
+		} catch { return undefined; }
+	}
+	private open(handshake: ClientHandshake, direct?: number): void {
 		this.channel?.close(); this.channel = undefined; this.peer = undefined; this.own = undefined;
 		this.received = 0; this.acknowledged = 0; this.renewing = false;
-		const socket = new WebSocket(socketUrl(this.account.config.relayOrigin, "/connect", this.host.id));
+		this.via = direct ? "direct" : "relay"; this.reached = false;
+		const socket = new WebSocket(direct ? `ws://127.0.0.1:${direct}/direct?host=${encodeURIComponent(this.host.id)}`
+			: socketUrl(this.account.config.relayOrigin, "/connect", this.host.id));
 		this.socket = socket;
 		let processing = Promise.resolve(), handshakes = 0, maintaining = false;
 		const maintain = () => {
@@ -192,6 +218,13 @@ export class RemoteClient {
 			this.setPhase("reconnecting");
 			this.rejectPending("Connection lost; delivery is uncertain. Check the conversation before sending it again.");
 			if (this.closed || this.failure) return;
+			if (direct && !this.reached) {
+				// Not reachable directly (another computer, or the browser declined local access): use the relay now.
+				this.preferDirect = false; this.directFailedAt = Date.now();
+				void this.connect(); return;
+			}
+			// After a relay failure, try the host directly first again, as when it restarts.
+			if (!direct) this.preferDirect = true;
 			this.retry();
 		};
 	}
@@ -222,7 +255,12 @@ export class RemoteClient {
 			if (!apiMatches((message.release as { api?: unknown } | undefined)?.api)) {
 				this.deny(426, upgradeMessage("This computer", (message.release as { api?: unknown } | undefined)?.api)); return;
 			}
-			clearTimeout(this.deadline); this.backoff = 1000; this.setPhase("connected"); return;
+			const direct = (message as { direct?: { port?: unknown; platform?: unknown } }).direct;
+			if (this.via === "relay" && Number.isInteger(direct?.port) && samePlatform(direct?.platform)) {
+				try { localStorage.setItem(this.directKey(), String(direct!.port)); } catch { /* the relay still works */ }
+				if (Date.now() - this.directFailedAt > DIRECT_RETRY_MS) { this.preferDirect = true; this.reconnect(); return; }
+			}
+			clearTimeout(this.deadline); this.backoff = 1000; this.reached = true; this.setPhase("connected"); return;
 		}
 		if (message.type === "authorize") {
 			if (this.renewing || typeof message.credential !== "string") throw new Error("Invalid credential renewal.");

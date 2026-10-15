@@ -14,7 +14,9 @@ export function securityHeaders(response: ServerResponse): void {
 }
 export function contentSecurityPolicy(options: { socketOrigin?: string; accountOrigin?: string; authCallback?: boolean } = {}): string {
 	const microsoft = options.accountOrigin ? " https://login.microsoftonline.com https://login.live.com" : "";
-	const connections = [options.socketOrigin, options.accountOrigin].filter(Boolean).map(origin => ` ${new URL(origin!).origin}`).join("");
+	// The website also connects to a host on the browser's own computer directly (RemoteClient).
+	const connections = [options.socketOrigin, options.accountOrigin].filter(Boolean).map(origin => ` ${new URL(origin!).origin}`).join("")
+		+ (options.socketOrigin ? " ws://127.0.0.1:*" : "");
 	return `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'${connections}${microsoft}; frame-src 'self'${microsoft}; object-src 'none'; frame-ancestors ${options.authCallback ? "'self'" : "'none'"}; base-uri 'none'; form-action 'self'${microsoft}`;
 }
 export async function serveClient(directory: string, pathname: string, response: ServerResponse): Promise<void> {

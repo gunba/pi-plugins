@@ -395,12 +395,12 @@ export class DeskPresentation implements Presentation {
 			editor: (title, value) => text({ kind: "editor", ...heading(title), value }),
 			notify: (message, level) => { if (live()) this.notify(message, level); },
 			setStatus: (key, value) => {
-				if (!live()) return;
+				if (!live() || (value === undefined ? !(key in this.statuses) : this.statuses[key] === plain(value))) return;
 				if (value === undefined) delete this.statuses[key];
 				else this.statuses[key] = plain(value);
 				this.update();
 			},
-			setTitle: title => { if (live()) { this.title = plain(title); this.update(); } },
+			setTitle: title => { if (live() && this.title !== plain(title)) { this.title = plain(title); this.update(); } },
 			setEditorText: value => { if (live()) { this.editorText = value; this.editorId = randomUUID(); this.update(); } },
 			pasteToEditor: value => { if (live()) { this.editorText += value; this.editorId = randomUUID(); this.update(); } },
 			getEditorText: () => live() ? this.editorText : "",

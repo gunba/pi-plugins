@@ -71,10 +71,13 @@ test("allowance badges distinguish weekly quota from the actual reset countdown"
 		"x-codex-secondary-used-percent": "60", "x-codex-secondary-window-minutes": "10080",
 		"x-codex-secondary-reset-after-seconds": "93600",
 	});
-	assert.deepEqual(publications.at(-1).badges.map(({ label, value }) => ({ label, value })),
-		[{ label: "Weekly", value: "40% left · resets in 1d2h" }]);
+	const reset = now + 93_600_000;
+	assert.deepEqual(publications.at(-1).badges.map(({ label, value, meter }) => ({ label, value, resetsAt: meter.resetsAt })),
+		[{ label: "Weekly", value: "40% left", resetsAt: reset }]);
+	// Desk counts down from the reset time, so the published view does not change as time passes.
+	const before = JSON.stringify(publications.at(-1));
 	now += 60 * 60_000; for (const tick of h.timers.values()) tick();
-	assert.equal(publications.at(-1).badges[0].value, "40% left · resets in 1d1h");
+	assert.equal(JSON.stringify(publications.at(-1)), before);
 	now += 26 * 60 * 60_000; for (const tick of h.timers.values()) tick();
 	assert.deepEqual(publications.at(-1).badges, [], "expired percentages are not a fresh allowance");
 });
@@ -107,7 +110,8 @@ test("Claude allowance uses normal response headers and stays within its saved a
     "anthropic-ratelimit-unified-5h-reset": String(Math.floor(Date.now() / 1000) + 3600),
   } });
   await instance.runner.emit({ type: "before_provider_request", payload: {} }); await response("0.25");
-  assert.match(publications.at(-1).badges[0].value, /75% left.*resets in/);
+  assert.equal(publications.at(-1).badges[0].value, "75% left");
+  assert.ok(publications.at(-1).badges[0].meter.resetsAt > Date.now());
   assert.match(publications.at(-1).badges[0].description, /Claude/);
   assert.equal(readFileSync(join(h.directory, "usage.json"), "utf8"), codexBefore);
   selected = ids[1]; h.bus.emit("pi:model-account-changed", {});

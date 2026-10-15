@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { ProxyAgent } from "proxy-agent";
 import { object, string } from "./commands.ts";
@@ -17,6 +18,8 @@ interface Peer {
 	id: string; purpose: ChannelPurpose; initiator?: boolean; handshake?: ClientHandshake; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;
 	timer: ReturnType<typeof setTimeout>; unwatch?: () => void; pending: number; events: EventWindow; delivery?: EventDelivery;
 	leaseUntil: number; ownExpires: number; sentCredential?: string; handshaking: boolean; renewing: boolean;
+	/** A browser on this computer connected straight to the host; otherwise frames go through the relay. */
+	local?: WebSocket;
 }
 export interface RemoteAccess { id: string; authorized: () => boolean }
 export interface HostAccount extends ChannelIdentity {
@@ -39,6 +42,8 @@ interface Options {
 	};
 	/** Dot connector: the relay forwards HTTP requests for this host's connector path; the host authenticates them. */
 	connector?: { enabled: () => boolean; handle: (request: ConnectorRequest) => Promise<ConnectorResponse> };
+	/** The loopback port where a browser on this computer can connect directly (see {@link RelayConnector.direct}). */
+	direct?: number;
 }
 
 export class RelayConnector {
@@ -182,21 +187,7 @@ export class RelayConnector {
 				} else if (message.type === "closed") this.drop(id);
 				else if (message.type === "frame") {
 					const peer = this.peers.get(id);
-					if (!peer) return;
-					const frame = string(message.frame, MAX_WIRE);
-					if (peer.channel) peer.channel.receive(frame);
-					else {
-						if (peer.handshaking) { this.drop(id, true); return; }
-						peer.handshaking = true;
-						void (peer.handshake ? this.finishParty(peer, frame) : this.identify(peer, frame)).catch(error => {
-							if (this.peers.get(id) !== peer) return;
-							if (error instanceof ChannelVersionError) {
-								socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-frame" : "frame", peer: id,
-									frame: JSON.stringify({ type: "upgrade-required", api: API_VERSION }) }));
-								this.drop(id, true, 4003);
-							} else this.drop(id, true, error instanceof MembershipDenied ? 4001 : 1013);
-						});
-					}
+					if (peer && !peer.local) this.frame(peer, string(message.frame, MAX_WIRE));
 				} else throw new Error("Invalid relay event.");
 			} catch { socket.close(1008, "Invalid relay protocol"); }
 		});
@@ -207,11 +198,49 @@ export class RelayConnector {
 			if (this.socket !== socket) return;
 			this.socket = undefined; this.admitted = false; this.computers = [];
 			clearTimeout(this.heartbeat); clearInterval(this.refresh); clearInterval(this.expiry);
-			for (const id of this.peers.keys()) this.drop(id);
+			for (const id of this.peers.keys()) this.drop(id, false, 1013);
 			if (this.stopped) return;
 			this.update("offline", this.status.error ?? "Relay disconnected. Retrying.");
 			this.retry();
 		});
+	}
+	private frame(peer: Peer, frame: string): void {
+		if (peer.channel) { peer.channel.receive(frame); return; }
+		if (peer.handshaking) { this.drop(peer.id, true); return; }
+		peer.handshaking = true;
+		void (peer.handshake ? this.finishParty(peer, frame) : this.identify(peer, frame)).catch(error => {
+			if (this.peers.get(peer.id) !== peer) return;
+			if (error instanceof ChannelVersionError) {
+				this.send(peer, JSON.stringify({ type: "upgrade-required", api: API_VERSION }));
+				this.drop(peer.id, true, 4003);
+			} else this.drop(peer.id, true, error instanceof MembershipDenied ? 4001 : 1013);
+		});
+	}
+	/** Send a frame without the channel checks, for refusals before the channel exists. */
+	private send(peer: Peer, frame: string): void {
+		if (peer.local) { if (peer.local.readyState === WebSocket.OPEN) peer.local.send(frame); return; }
+		if (this.socket?.readyState === WebSocket.OPEN)
+			this.socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-frame" : "frame", peer: peer.id, frame }));
+	}
+	/**
+	 * A browser on this computer, connected to the host's loopback port instead of the relay. It is otherwise a relay
+	 * browser: the same end-to-end channel, device credentials and account leases, while the host is online with its
+	 * account. It saves the round trip to the relay and the relay's outbound traffic, which Azure bills.
+	 */
+	direct(socket: WebSocket): void {
+		if (this.stopped || !this.admitted || this.peers.size >= 32) { socket.close(1013, "The computer is not connected to its account."); return; }
+		const id = randomUUID();
+		const peer: Peer = { id, purpose: "control", local: socket, ready: false, pending: 0, events: new EventWindow(),
+			leaseUntil: 0, ownExpires: 0, handshaking: false, renewing: false, timer: setTimeout(() => this.drop(id, true, 1013), 30_000) };
+		this.peers.set(id, peer);
+		socket.on("message", (raw, binary) => {
+			if (this.peers.get(id) !== peer) return;
+			const frame = raw.toString();
+			if (binary || Buffer.byteLength(frame) > MAX_WIRE) { this.drop(id, true, 1009); return; }
+			this.frame(peer, frame);
+		});
+		socket.on("close", () => { if (this.peers.get(id) === peer) this.drop(id); });
+		socket.on("error", () => {});
 	}
 	private async maintain(socket: WebSocket): Promise<void> {
 		const peers = [...this.peers.values()].filter(peer => peer.device);
@@ -252,11 +281,12 @@ export class RelayConnector {
 		}
 	}
 	private async wire(peer: Peer, frame: string): Promise<void> {
-		const socket = this.socket;
+		const socket = peer.local ?? this.socket;
 		if (this.stopped || !this.admitted || this.peers.get(peer.id) !== peer || socket?.readyState !== WebSocket.OPEN
 			|| performance.now() >= this.hostLeaseUntil || socket.bufferedAmount > 2 * 1024 * 1024 || Buffer.byteLength(frame) > MAX_WIRE) {
 			throw new Error("Connection unavailable.");
 		}
+		if (peer.local) { await new Promise<void>((yes, no) => socket.send(frame, error => error ? no(error) : yes())); return; }
 		await new Promise<void>((yes, no) => socket.send(JSON.stringify({
 			type: peer.purpose === "party" ? "party-frame" : "frame", peer: peer.id, frame,
 		}), error => error ? no(error) : yes()));
@@ -287,7 +317,7 @@ export class RelayConnector {
 		} catch (error) { session.channel.close(); throw error; }
 	}
 	private async output(peer: Peer, frame: string): Promise<void> {
-		const socket = this.socket;
+		const socket = peer.local ?? this.socket;
 		if (!this.valid(peer) || !socket || socket.bufferedAmount > 2 * 1024 * 1024) throw new Error("Connection authorization or capacity unavailable.");
 		await this.wire(peer, frame);
 	}
@@ -317,7 +347,8 @@ export class RelayConnector {
 				this.drop(peer.id, true, 4003); return;
 			}
 			peer.ready = true; clearTimeout(peer.timer);
-			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE } satisfies RemotePayload);
+			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE,
+				...(this.options.direct && !peer.local ? { direct: { port: this.options.direct, platform: process.platform } } : {}) } satisfies RemotePayload);
 			if (!this.valid(peer)) return;
 			if (peer.purpose === "party") {
 				peer.unwatch = this.options.party!.connected(device.id, payload => {
@@ -369,10 +400,13 @@ export class RelayConnector {
 		const peer = this.peers.get(id);
 		if (!peer) return;
 		this.peers.delete(id); clearTimeout(peer.timer); peer.delivery?.close(); peer.handshake?.close(); peer.channel?.close(); peer.unwatch?.();
+		if (peer.local) { if (peer.local.readyState === WebSocket.OPEN || peer.local.readyState === WebSocket.CONNECTING) peer.local.close(code); return; }
 		if (notify && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: peer.purpose === "party" ? "party-close" : "close", peer: id, code }));
 	}
 	close(): void {
 		this.stopped = true; clearTimeout(this.timer); clearTimeout(this.heartbeat); clearInterval(this.refresh); clearInterval(this.expiry);
+		// Direct browsers would keep the host's HTTP server open until they answered a close.
+		for (const peer of this.peers.values()) peer.local?.terminate();
 		for (const id of this.peers.keys()) this.drop(id);
 		this.socket?.terminate(); this.agent.destroy();
 	}

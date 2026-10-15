@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
+import { WebSocketServer } from "ws";
+import { MAX_WIRE } from "../shared/secure-channel.ts";
 import { mkdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
@@ -92,10 +95,16 @@ export class DeskHost {
 	private partyOperations?: PartyOperations;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private server = createServer((request, response) => { void this.handle(request, response); });
+	private directSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_WIRE * 2, perMessageDeflate: false });
 	private sessions = new Map<string, ManagedSession>();
 	private startupWaits = new Set<() => void>();
 	private clients = new Set<EventClient>();
 	private watchers = new Set<(event: HostEvent) => void>();
+	/** What browsers last received: each conversation, and the host state apart from its conversations. */
+	private sentSessions = new Map<string, string>();
+	/** Remote browsers, through the relay or directly; they receive what local browsers do. */
+	private browsers = new Set<(event: HostEvent) => void>();
+	private sentHost?: string;
 	private relay?: RelayConnector;
 	private relayStatus?: RelayStatus;
 	private dotConnector?: DotConnector;
@@ -215,6 +224,7 @@ export class DeskHost {
 				directories: () => [...new Set([...this.sessions.values()].flatMap(({ view }) =>
 					view.file ? [dirname(view.file)] : []))],
 			});
+			this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket as Socket, head));
 			await new Promise<void>((resolve, reject) => {
 				this.server.once("error", reject);
 				this.server.listen(this.options.port ?? 8910, "127.0.0.1", () => {
@@ -475,11 +485,11 @@ export class DeskHost {
 				this.parties!.networkChanged(); this.refreshParties();
 			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer());
 			this.partyNetwork = network;
-			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy,
+			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy, direct: Number(new URL(this.origin).port),
 				request: (access, request) => this.api(access, request),
 				watch: handler => {
-					this.watchers.add(handler); handler({ type: "state", state: this.state() });
-					return () => this.watchers.delete(handler);
+					this.browsers.add(handler); handler({ type: "state", state: this.state() });
+					return () => this.browsers.delete(handler);
 				}, status: update, party: {
 					connected: (id, send, close) => network.connected(id, send, close),
 					receive: (id, packet) => network.receive(id, packet),
@@ -497,6 +507,19 @@ export class DeskHost {
 		}
 	}
 
+	/**
+	 * A browser on this computer connecting to the host directly rather than through the relay. Only this computer's
+	 * Desk website may connect, for this computer; the relay connector then checks the browser as it would through the relay.
+	 */
+	private upgrade(request: IncomingMessage, socket: Socket, head: Buffer): void {
+		const url = new URL(request.url ?? "/", this.origin), relay = this.relay, appOrigin = this.relayStatus?.appOrigin;
+		if (url.pathname !== "/direct" || !relay || !appOrigin || request.headers.origin !== appOrigin
+			|| request.headers.host !== new URL(this.origin).host || url.searchParams.get("host") !== this.accountIdentity?.device.id) {
+			socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
+		}
+		this.directSockets.handleUpgrade(request, socket, head, ws => relay === this.relay ? relay.direct(ws) : ws.close(1013));
+	}
+
 	private write(response: ServerResponse, frame: string): void {
 		if (response.destroyed) return;
 		if (response.writableLength > 1024 * 1024) { response.destroy(); return; }
@@ -504,6 +527,32 @@ export class DeskHost {
 	}
 
 	private emit(event: HostEvent): void {
+		for (const next of this.unsent(event)) this.deliver(next);
+		// Internal waits see every event: they check state outside the views, which can change without the views changing.
+		for (const handler of this.watchers) handler(event);
+	}
+
+	/**
+	 * Every change sends the whole conversation, or for host state every conversation, to every browser: most of the
+	 * relay's traffic. An unchanged conversation is not sent again, and host state whose only changes are in
+	 * conversations is sent as those conversations.
+	 */
+	private unsent(event: HostEvent): HostEvent[] {
+		if (event.type === "session") {
+			const sent = JSON.stringify(event.session);
+			if (this.sentSessions.get(event.session.key) === sent) return [];
+			this.sentSessions.set(event.session.key, sent);
+			return [event];
+		}
+		if (event.type !== "state") return [event];
+		const host = JSON.stringify({ ...event.state, sessions: event.state.sessions.map(session => session.key) });
+		if (host === this.sentHost) return event.state.sessions.flatMap(session => this.unsent({ type: "session", session }));
+		this.sentHost = host;
+		this.sentSessions = new Map(event.state.sessions.map(session => [session.key, JSON.stringify(session)]));
+		return [event];
+	}
+
+	private deliver(event: HostEvent): void {
 		const id = ++this.sequence;
 		const frame = `id: ${id}\ndata: ${JSON.stringify(event)}\n\n`;
 		this.history.push({ id, frame });
@@ -512,7 +561,7 @@ export class DeskHost {
 			this.historyBytes -= Buffer.byteLength(this.history.shift()!.frame);
 		}
 		for (const client of this.clients) this.write(client.response, frame);
-		for (const handler of this.watchers) handler(event);
+		for (const handler of this.browsers) handler(event);
 	}
 
 	private workerEvent(key: string, message: WorkerMessage): void {

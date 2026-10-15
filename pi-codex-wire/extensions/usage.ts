@@ -266,7 +266,7 @@ function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): 
   return `${minutes}m`;
 }
 
-function styleUsageWindow(window: UsageWindow | undefined, theme: ExtensionContext["ui"]["theme"], nowMs: number): string | undefined {
+function styleUsageWindow(window: UsageWindow | undefined, theme: ExtensionContext["ui"]["theme"], nowMs: number, relative = true): string | undefined {
   if (!window) return undefined;
   const remaining = window.usedPercent === undefined ? undefined : Math.max(0, 100 - window.usedPercent);
   // Dim by default; escalate only when the remaining budget is genuinely low.
@@ -274,14 +274,14 @@ function styleUsageWindow(window: UsageWindow | undefined, theme: ExtensionConte
   if (remaining !== undefined && remaining <= 10) pctColor = "error";
   else if (remaining !== undefined && remaining <= 25) pctColor = "warning";
   const head = theme.fg("dim", `${window.label}:`) + theme.fg(pctColor, `${remaining ?? "?"}%`);
-  const reset = formatDurationUntil(window.resetAtMs, nowMs);
+  const reset = relative ? formatDurationUntil(window.resetAtMs, nowMs) : undefined;
   return reset ? `${head} ${theme.fg("dim", reset)}` : head;
 }
 
-function formatUsageStatus(state: UsageState, theme: ExtensionContext["ui"]["theme"], source: UsageSource | undefined, nowMs = Date.now()): string | undefined {
+function formatUsageStatus(state: UsageState, theme: ExtensionContext["ui"]["theme"], source: UsageSource | undefined, nowMs = Date.now(), relative = true): string | undefined {
   const snapshot = snapshotForSource(state, source, nowMs);
   if (!snapshot) return undefined;
-  const windows = [styleUsageWindow(snapshot.primary, theme, nowMs), styleUsageWindow(snapshot.secondary, theme, nowMs)].filter(
+  const windows = [styleUsageWindow(snapshot.primary, theme, nowMs, relative), styleUsageWindow(snapshot.secondary, theme, nowMs, relative)].filter(
     (part): part is string => Boolean(part),
   );
   if (windows.length === 0) return undefined;
@@ -385,8 +385,10 @@ function formatSessionCostDetails(ctx: ExtensionContext, state: UsageState): str
 function updateUsageStatus(ctx: ExtensionContext, state: UsageState): void {
   if (state.disposed) return;
   const ui = ctx.ui;
+  // Desk counts down to the reset itself, from the published reset time. Relative times would change the status and
+  // view every minute, and each change sends the whole conversation to every connected browser.
   const status = state.enabled
-    ? formatUsageStatus(state, ui.theme, contextUsageSource(ctx))
+    ? formatUsageStatus(state, ui.theme, contextUsageSource(ctx), Date.now(), !state.presentation)
     : undefined;
   ui.setStatus(STATUS_KEY, status);
   statusOwners.set(state.events, state);
@@ -423,7 +425,7 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
       const remaining = window.usedPercent === undefined ? undefined : 100 - window.usedPercent;
       return [{ id: `window-${index}`, title: `${window.label} ${SOURCE_LABELS[allowance!.source]} allowance`,
         subtitle: remaining === undefined ? "Remaining amount unknown" : `${remaining}% remaining`,
-        body: window.resetAtMs ? `Resets ${new Date(window.resetAtMs).toISOString()} (in ${formatDurationUntil(window.resetAtMs)})` : "Reset time unknown",
+        body: window.resetAtMs ? `Resets ${new Date(window.resetAtMs).toISOString()}` : "Reset time unknown",
         ...(remaining === undefined ? {} : { meter: { value: remaining, max: 100, label: `${window.label} allowance remaining` } }) }];
     }),
   };
@@ -433,10 +435,9 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
     badges: state.enabled && source ? [allowance?.primary, allowance?.secondary].flatMap(window => {
       if (!window || window.usedPercent === undefined) return [];
-      const reset = formatDurationUntil(window.resetAtMs);
       return [{
         label: window.label === "7d" ? "Weekly" : window.label,
-        value: `${100 - window.usedPercent}% left${reset ? ` · resets in ${reset}` : ""}`,
+        value: `${100 - window.usedPercent}% left`,
         meter: { value: 100 - window.usedPercent, max: 100, ...(window.resetAtMs ? { resetsAt: window.resetAtMs } : {}) },
         description: `Reported ${SOURCE_LABELS[source]} allowance${allowance ? ` · ${new Date(allowance.updatedAtMs).toLocaleString()}` : ""}${window.resetAtMs ? ` · resets ${new Date(window.resetAtMs).toLocaleString()}` : " · reset time unknown"}`,
       }];
