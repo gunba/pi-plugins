@@ -1,13 +1,14 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { ProxyAgent } from "proxy-agent";
-import type { INetworkModule, NetworkRequestOptions, NetworkResponse } from "@azure/msal-node";
+export interface NetworkRequestOptions { headers?: Record<string, string>; body?: string }
+export interface NetworkResponse<T> { headers: Record<string, string>; body: T; status: number }
 import { createRemoteJWKSet, customFetch } from "jose";
 import type { AccountConfiguration } from "../shared/account.ts";
 import { CredentialVerifier } from "../shared/device-credential.ts";
 
 /** Uses normal Node TLS trust and the same proxy policy as the outbound relay. */
-export class AccountNetwork implements INetworkModule {
+export class AccountNetwork {
 	private agent: ProxyAgent;
 	constructor(proxy?: string) {
 		this.agent = proxy ? new ProxyAgent({ getProxyForUrl: () => proxy }) : new ProxyAgent();
@@ -53,12 +54,6 @@ export class AccountNetwork implements INetworkModule {
 			request.on("error", () => reject(new Error("Account connection failed. Check TLS trust, proxy and network policy.")));
 			request.end(contents);
 		});
-	}
-	sendGetRequestAsync<T>(url: string, options?: NetworkRequestOptions, timeout?: number): Promise<NetworkResponse<T>> {
-		return this.request<T>("GET", url, options, timeout);
-	}
-	sendPostRequestAsync<T>(url: string, options?: NetworkRequestOptions): Promise<NetworkResponse<T>> {
-		return this.request<T>("POST", url, options);
 	}
 	verifier(config: AccountConfiguration): CredentialVerifier {
 		return new CredentialVerifier(config, createRemoteJWKSet(new URL("/.well-known/jwks.json", config.origin), {

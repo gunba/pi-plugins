@@ -6,7 +6,6 @@ export default defineConfig({
 		rollupOptions: {
 			input: {
 				app: fileURLToPath(new URL("./index.html", import.meta.url)),
-				redirect: fileURLToPath(new URL("./auth/redirect.html", import.meta.url)),
 			},
 		},
 	},

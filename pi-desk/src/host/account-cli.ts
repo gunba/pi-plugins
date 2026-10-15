@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { discoverAccount, readAccount, saveAccount } from "./account-config.ts";
-import { NativeAccountIdentity } from "./account-identity.ts";
+import { NativeAccountIdentity, type EnrolmentApproval } from "./account-identity.ts";
 import { openBrowser, controlRequest } from "./lifecycle.ts";
 import { readHostRecord } from "./host-control.ts";
 
@@ -19,29 +19,31 @@ export async function runAccountCommand(command: "signin" | "signout", args: str
 	const chosen = command === "signin" && (values.workspace || values.account)
 		? await discoverAccount({ workspace: values.workspace, account: values.account, proxy: values.proxy }) : saved;
 	if (!chosen) throw new Error("Use pi-desk signin --workspace https://desk.example with this data directory.");
-	if (saved && (saved.config.origin !== chosen.config.origin || saved.config.tenantId !== chosen.config.tenantId
-		|| saved.config.ownerObjectId !== chosen.config.ownerObjectId || saved.config.clientId !== chosen.config.clientId)) {
+	if (saved && (saved.config.origin !== chosen.config.origin || saved.config.workspace !== chosen.config.workspace)) {
 		throw new Error("This computer is configured for another workspace. Use a separate data directory.");
 	}
-	let identity = await NativeAccountIdentity.open(directory, chosen.config, { create: command === "signin", proxy: values.proxy });
+	const identityOrigin = saved?.identityOrigin;
+	let identity = await NativeAccountIdentity.open(directory, chosen.config, { create: command === "signin", proxy: values.proxy, identityOrigin });
 	try {
 		if (command === "signout") {
 			await identity.signOut();
 			console.log("Computer enrolment revoked. Native conversations are retained.");
 		} else {
-			// Save public configuration before opening OAuth so a cancelled attempt can be retried.
-			await saveAccount(directory, chosen);
-			console.log("Signing in to enrol this computer. Existing Microsoft authorization will be reused where possible.");
-			await identity.signIn(openBrowser);
-			try { await identity.enrol(values.name ?? hostname()); }
+			// Save public configuration first so a cancelled approval can be retried.
+			await saveAccount(directory, { ...chosen, ...(identityOrigin ? { identityOrigin } : {}) });
+			const show = async (approval: EnrolmentApproval) => {
+				console.log(`To approve this computer, open this link in any browser and sign in with the workspace owner's Google account:\n\n  ${approval.url}\n\nCheck that the page shows the code ${approval.code}. Waiting for approval…`);
+				await openBrowser(approval.url).catch(() => {});
+			};
+			try { await identity.signIn(values.name ?? hostname(), show); }
 			catch (error) {
 				if (!(error instanceof Error) || error.message !== "device_revoked") throw error;
 				const previous = identity.device.id;
 				identity.close();
 				identity = await NativeAccountIdentity.open(directory, chosen.config, {
-					create: true, proxy: values.proxy, replaceRevokedId: previous,
+					create: true, proxy: values.proxy, replaceRevokedId: previous, identityOrigin,
 				});
-				await identity.enrol(values.name ?? hostname());
+				await identity.signIn(values.name ?? hostname(), show);
 			}
 			console.log("Signed in. This computer is enrolled in your Pi Desk workspace.");
 		}

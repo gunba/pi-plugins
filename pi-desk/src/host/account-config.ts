@@ -3,14 +3,15 @@ import { join } from "node:path";
 import { accountConfiguration, accountOrigin, type AccountConfiguration } from "../shared/account.ts";
 import { AccountNetwork } from "./account-network.ts";
 
-export interface SavedAccount { version: 1; appOrigin: string; config: AccountConfiguration }
+/** `identityOrigin`: the account service this computer enrolled with, when the service has since moved (NativeAccountIdentity.open). */
+export interface SavedAccount { version: 1; appOrigin: string; config: AccountConfiguration; identityOrigin?: string }
 export async function readAccount(directory: string): Promise<SavedAccount | undefined> {
 	try {
 		const value = JSON.parse(await readFile(join(directory, "account.json"), "utf8")) as SavedAccount;
 		if (value.version !== 1) throw new Error("Invalid saved account.");
 		const config = accountConfiguration(value.config), appOrigin = accountOrigin(value.appOrigin);
 		if (!config.appOrigins.includes(appOrigin)) throw new Error("Account does not authorize this app.");
-		return { version: 1, appOrigin, config };
+		return { version: 1, appOrigin, config, ...(value.identityOrigin ? { identityOrigin: accountOrigin(value.identityOrigin) } : {}) };
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
 		throw new Error("Cannot read the saved Pi Desk account configuration.");

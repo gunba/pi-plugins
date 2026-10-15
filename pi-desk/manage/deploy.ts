@@ -1,15 +1,13 @@
 // Release deployment, one command per target.
 //   node pi-desk/manage/deploy.ts host <version>     Update this computer's Desk host and wait for the outcome.
-//   node pi-desk/manage/deploy.ts website [--dry-run] Publish the website from this computer's active runtime.
-//   node pi-desk/manage/deploy.ts relay [--dry-run]   Deploy the routing relay from the active runtime (browsers reconnect).
-//                                                     A relay on its own server updates itself with that server's Desk; this checks it.
+//   node pi-desk/manage/deploy.ts website            Wait until the workspace server serves this computer's Desk version.
+//   node pi-desk/manage/deploy.ts relay              Report the relay's version.
 //   node pi-desk/manage/deploy.ts prune [--keep id]   Remove runtime versions nothing can use (updates also do this).
 //                                                     --keep adds a version id/prefix to <runtime>/keep permanently.
-// The website mode requires `az login` with access to the Static Web App serving account.json's appOrigin.
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+// The workspace server (the Perth server) publishes the website and installs the relay and account service from the Desk
+// version it runs, so they update when its Desk does (pi-desk-services-update on that server).
+import { appendFile, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,44 +17,15 @@ const runtime = join(agentDir, "desk", "runtime");
 const read = async (file: string) => JSON.parse(await readFile(file, "utf8"));
 
 if (mode === "host" && /^\d+\.\d+\.\d+$/.test(argument ?? "")) await host(argument!);
-else if (mode === "website") await website(argument === "--dry-run");
-else if (mode === "relay") await relayDeploy(argument === "--dry-run");
+else if (mode === "website") await website();
+else if (mode === "relay") await relayDeploy();
 else if (mode === "prune") await prune(process.argv.slice(3));
-else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website [--dry-run] | relay [--dry-run] | prune [--keep id]...");
+else throw new Error("Usage: node pi-desk/manage/deploy.ts host <version> | website | relay | prune [--keep id]...");
 
-async function relayDeploy(dryRun: boolean): Promise<void> {
-	const { active } = await read(join(runtime, "state.json"));
-	const { desk: version } = await read(join(runtime, "versions", active, "runtime.json"));
-	const bundle = join(runtime, "versions", active, "source", "pi-desk", "dist", "relay", "pi-desk-relay.js");
+async function relayDeploy(): Promise<void> {
 	const { config } = await read(join(agentDir, "desk", "account.json"));
-	const az = (...args: string[]) => execFileSync("az", [...args, "--only-show-errors", "-o", "tsv"], { encoding: "utf8", shell: process.platform === "win32" }).trim();
-	const hostname = new URL(config.relayOrigin).host;
-	if (!hostname.endsWith(".azurewebsites.net")) {
-		// The Perth server installs the relay from each Desk version it updates to (pi-desk-relay-update.path).
-		const health = await fetch(`${config.relayOrigin}/health`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
-		console.log(`The relay at ${config.relayOrigin} updates itself with its server's Desk; it reports ${health?.version ?? "no version"}.`);
-		return;
-	}
-	const [name, group] = az("webapp", "list", "--query", `[?defaultHostName=='${hostname}'].[name,resourceGroup] | [0]`).split(/\s+/);
-	if (!name || !group) throw new Error(`No App Service serves ${hostname} in the signed-in Azure subscription.`);
-	const temporary = await mkdtemp(join(tmpdir(), "pi-desk-relay-"));
-	try {
-		const { copyFile, writeFile } = await import("node:fs/promises");
-		await copyFile(bundle, join(temporary, "pi-desk-relay.js"));
-		await writeFile(join(temporary, "package.json"), JSON.stringify({ type: "module" }) + "\n");
-		const zip = join(temporary, "relay.zip");
-		execFileSync(process.platform === "win32" ? "tar" : "zip", process.platform === "win32" ? ["-a", "-cf", zip, "pi-desk-relay.js", "package.json"] : ["-q", zip, "pi-desk-relay.js", "package.json"], { cwd: temporary });
-		console.log(`Relay ${version} prepared for ${config.relayOrigin} (${group}/${name}).`);
-		if (dryRun) return;
-		az("webapp", "deploy", "-g", group, "-n", name, "--type", "zip", "--src-path", zip);
-		for (let attempt = 0; ; attempt++) {
-			const health = await fetch(`${config.relayOrigin}/health`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
-			if (health?.version === version) break;
-			if (attempt === 24) throw new Error(`The relay still reports ${health?.version ?? "no version"}.`);
-			await delay(5000);
-		}
-		console.log(`Relay ${version} is live at ${config.relayOrigin}. Browsers and computers reconnect on their own.`);
-	} finally { await rm(temporary, { recursive: true, force: true }); }
+	const health = await fetch(`${config.relayOrigin}/health`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
+	console.log(`The relay at ${config.relayOrigin} updates itself with its server's Desk; it reports ${health?.version ?? "no version"}.`);
 }
 
 async function prune(args: string[]): Promise<void> {
@@ -98,33 +67,17 @@ async function host(version: string): Promise<void> {
 	throw new Error("Host update still running after 30 minutes; it continues in the background. Check /desk status.");
 }
 
-async function website(dryRun: boolean): Promise<void> {
-	// The active runtime ships with its dependencies; source checkouts may not have them installed.
+async function website(): Promise<void> {
 	const { active } = await read(join(runtime, "state.json"));
 	const { desk: version } = await read(join(runtime, "versions", active, "runtime.json"));
-	const cli = join(runtime, "versions", active, "source", "pi-desk", "dist", "host", "cli.js");
-	const { appOrigin, config } = await read(join(agentDir, "desk", "account.json"));
-	const az = (...args: string[]) => execFileSync("az", [...args, "--only-show-errors", "-o", "tsv"],
-		{ encoding: "utf8", shell: process.platform === "win32" }).trim();
-	const hostname = new URL(appOrigin).host;
-	const [name, group] = az("staticwebapp", "list", "--query", `[?defaultHostname=='${hostname}'].[name,resourceGroup] | [0]`).split(/\s+/);
-	if (!name || !group) throw new Error(`No Static Web App serves ${hostname} in the signed-in Azure subscription.`);
-	const temporary = await mkdtemp(join(tmpdir(), "pi-desk-app-")), output = join(temporary, "app");
-	try {
-		execFileSync(process.execPath, [cli, "publish-app", "--account", config.origin, "--app-origin", appOrigin, "--output", output], { stdio: ["ignore", "ignore", "inherit"] });
-		const index = createHash("sha256").update(await readFile(join(output, "index.html"))).digest("hex");
-		console.log(`Website ${version} prepared for ${appOrigin} (${group}/${name}).`);
-		if (dryRun) return;
-		const token = az("staticwebapp", "secrets", "list", "--name", name, "--resource-group", group, "--query", "properties.apiKey");
-		execFileSync("npx", ["-y", "@azure/static-web-apps-cli@2.0.10", "deploy", output, "--env", "production"],
-			{ stdio: "inherit", shell: process.platform === "win32", env: { ...process.env, SWA_CLI_DEPLOYMENT_TOKEN: token } });
-		for (let attempt = 0; ; attempt++) {
-			const served = await fetch(`${appOrigin}/desk-account.json`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
-			const page = await fetch(`${appOrigin}/index.html`, { cache: "no-store" }).then(r => r.arrayBuffer()).catch(() => undefined);
-			if (served?.version === version && page && createHash("sha256").update(Buffer.from(page)).digest("hex") === index) break;
-			if (attempt === 12) throw new Error(`The website still serves ${served?.version ?? "an unreadable version"}.`);
-			await delay(5000);
-		}
-		console.log(`Website ${version} is live at ${appOrigin}.`);
-	} finally { await rm(temporary, { recursive: true, force: true }); }
+	const { appOrigin } = await read(join(agentDir, "desk", "account.json"));
+	// The server publishes each Desk version it updates to; it checks for updates hourly.
+	for (let attempt = 0; ; attempt++) {
+		const served = await fetch(`${appOrigin}/desk-account.json`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
+		if (served?.version === version) break;
+		if (attempt === 0) console.log(`Waiting for ${appOrigin} to serve ${version} (now ${served?.version ?? "unreadable"}); the workspace server publishes it after updating its Desk.`);
+		if (attempt === 120) throw new Error(`The website still serves ${served?.version ?? "an unreadable version"}.`);
+		await delay(30_000);
+	}
+	console.log(`Website ${version} is live at ${appOrigin}.`);
 }

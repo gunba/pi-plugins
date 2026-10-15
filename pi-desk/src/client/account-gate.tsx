@@ -43,7 +43,7 @@ export function AccountGate({ origin, children }: { origin: string; children: (a
 		{phase === "signin" && client && <button className="primary" disabled={busy} onClick={() => {
 			setBusy(true); setError("");
 			void client.signIn().catch(error => { setBusy(false); setError(error instanceof Error ? error.message : "Sign-in did not complete."); });
-		}}>Continue with Microsoft</button>}
+		}}>Continue with Google</button>}
 		{phase === "error" && <button onClick={() => setAttempt(value => value + 1)}>Try again</button>}
 		{error && <p role="alert" className="error-text">{error}</p>}
 	</main>;

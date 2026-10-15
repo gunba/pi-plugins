@@ -4,7 +4,8 @@ import lockfile from "proper-lockfile";
 import { deviceKey, identifier, workspaceIdentity, type AccountConfiguration, type DeviceKind, type WorkspaceDevice } from "../shared/account.ts";
 import { AccountError } from "./identity.ts";
 
-interface AccountState { version: 1; account: string; revision: number; devices: WorkspaceDevice[] }
+/** `owner`: the owner's Google account ID, pinned at the first approval; later approvals must be by the same account. */
+interface AccountState { version: 1; account: string; revision: number; devices: WorkspaceDevice[]; owner?: string }
 
 /** One writer owns the durable account directory; no transcript or token store. */
 export class AccountStore {
@@ -42,7 +43,8 @@ export class AccountStore {
 		const state = value as AccountState;
 		if (!state || state.version !== 1 || state.account !== workspaceIdentity(this.config)
 			|| !Number.isSafeInteger(state.revision) || state.revision < 0
-			|| !Array.isArray(state.devices) || state.devices.length > 1000) {
+			|| !Array.isArray(state.devices) || state.devices.length > 1000
+			|| state.owner !== undefined && (typeof state.owner !== "string" || !state.owner || state.owner.length > 255)) {
 			throw new Error("Invalid account directory or account mismatch.");
 		}
 		const ids = new Set<string>();
@@ -94,6 +96,13 @@ export class AccountStore {
 				created: now, seen: now, connected: false };
 			state.devices.push(device);
 			return device;
+		});
+	}
+	/** Pin the owner's Google account on first approval; afterwards only that account may approve devices. */
+	async owner(subject: string): Promise<void> {
+		await this.change(state => {
+			if (state.owner !== undefined && state.owner !== subject) throw new AccountError(403, "workspace_access_denied");
+			state.owner = subject;
 		});
 	}
 	async touch(id: string, connected: boolean): Promise<void> {

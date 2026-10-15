@@ -10,7 +10,7 @@ pi install git:github.com/gunba/pi-plugins
 
 Restart Pi to load its new commands. Run `/desk setup`, then `/desk signin` with
 your workspace's HTTPS address. `/desk open` starts the host and opens that
-workspace. Sign into the same Microsoft account on each computer and browser.
+workspace. Approve each computer and browser with the workspace owner's Google account.
 See [remote access](RELAY.md) if the shared services are not deployed yet.
 
 ## Setup
@@ -254,13 +254,13 @@ by saved conversations. Other Pi plugins need not be removed.
 
 Browser-app removal is separate. Sign out or revoke the browser first; clearing
 site data alone is not account-wide revocation. It deletes local drafts, not
-host conversations. Microsoft sign-in sessions are managed separately.
+host conversations. Google sign-in sessions are managed separately.
 
 ## Release checks
 
 `doctor` reports app/SDK versions, assets, directories, login-start, host API
 and remote connectivity without printing secrets. It does not start workers,
-verify Microsoft login or test model accounts. A deliberately stopped host is
+verify Google sign-in or test model accounts. A deliberately stopped host is
 a warning; failed checks return status 1.
 
 Linux and Windows CI cover routine changes. Check a real Windows login-start

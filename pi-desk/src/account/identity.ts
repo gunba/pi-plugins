@@ -3,7 +3,7 @@ import {
 	type JWK, type JWTVerifyGetKey,
 } from "jose";
 import {
-	DEVICE_AUDIENCE, DEVICE_LIFETIME, DEVICE_TOKEN_TYPE, microsoftIssuer, deviceKey,
+	DEVICE_AUDIENCE, DEVICE_LIFETIME, DEVICE_TOKEN_TYPE, deviceKey, workspaceIdentity,
 	type AccountConfiguration, type WorkspaceDevice,
 } from "../shared/account.ts";
 
@@ -12,44 +12,67 @@ export class AccountError extends Error {
 	readonly code: string;
 	constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
 }
-export interface MicrosoftIdentity { objectId: string; tenantId: string; expires: number }
+export interface OwnerSettings { clientId: string; clientSecret: string; email: string }
+export function ownerSettings(value: unknown): OwnerSettings {
+	const input = value as Partial<OwnerSettings> | undefined;
+	if (!input || typeof input.clientId !== "string" || !/^[\w.-]+\.apps\.googleusercontent\.com$/.test(input.clientId)
+		|| typeof input.clientSecret !== "string" || !input.clientSecret || input.clientSecret.length > 200
+		|| typeof input.email !== "string" || !/^[^@\s]+@[^@\s]+$/.test(input.email)) throw new Error("Invalid owner sign-in settings.");
+	return { clientId: input.clientId, clientSecret: input.clientSecret, email: input.email.toLowerCase() };
+}
+const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
+const base64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+export const randomToken = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
 
-/** The resource accepts its delegated access token, never a Graph or ID token. */
-export class MicrosoftAccess {
+/**
+ * The owner proves themselves with Google only to approve a new device; enrolled devices then use their own keys.
+ * The service exchanges the code with its client secret, so the browser never handles a token.
+ */
+export class GoogleOwner {
+	private settings: OwnerSettings;
 	private keys: JWTVerifyGetKey;
-	private config: AccountConfiguration;
-	constructor(config: AccountConfiguration, keys?: JWTVerifyGetKey) {
-		this.config = config;
-		this.keys = keys ?? createRemoteJWKSet(
-			new URL(`https://login.microsoftonline.com/${config.tenantId}/discovery/v2.0/keys`),
-			{ timeoutDuration: 10_000, cooldownDuration: 30_000, cacheMaxAge: 60 * 60_000 },
-		);
+	private exchange: (form: URLSearchParams) => Promise<Response>;
+	constructor(settings: OwnerSettings, options: { keys?: JWTVerifyGetKey; exchange?: (form: URLSearchParams) => Promise<Response> } = {}) {
+		this.settings = settings;
+		this.keys = options.keys ?? createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"),
+			{ timeoutDuration: 10_000, cooldownDuration: 30_000, cacheMaxAge: 60 * 60_000 });
+		this.exchange = options.exchange ?? (form => fetch("https://oauth2.googleapis.com/token", {
+			method: "POST", body: form, signal: AbortSignal.timeout(15_000),
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		}));
 	}
-	async authenticate(authorization: string | undefined): Promise<MicrosoftIdentity> {
-		const match = /^Bearer ([^\s]+)$/.exec(authorization ?? "");
-		if (!match || match[1].length > 24_000) throw new AccountError(401, "sign_in_required");
+	async start(redirectUri: string): Promise<{ url: string; state: string; nonce: string; verifier: string }> {
+		const state = randomToken(), nonce = randomToken(), verifier = randomToken();
+		const challenge = base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+		const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+		for (const [key, value] of Object.entries({ client_id: this.settings.clientId, redirect_uri: redirectUri, response_type: "code",
+			scope: "openid email", state, nonce, code_challenge: challenge, code_challenge_method: "S256",
+			login_hint: this.settings.email, prompt: "select_account" })) url.searchParams.set(key, value);
+		return { url: url.href, state, nonce, verifier };
+	}
+	/** The Google account that completed sign-in: it must be the owner's, by verified email and pinned subject. */
+	async finish(code: string, attempt: { nonce: string; verifier: string }, redirectUri: string): Promise<{ subject: string; email: string }> {
+		const form = new URLSearchParams({ code, client_id: this.settings.clientId, client_secret: this.settings.clientSecret,
+			redirect_uri: redirectUri, grant_type: "authorization_code", code_verifier: attempt.verifier });
+		let response: Response;
+		try { response = await this.exchange(form); } catch { throw new AccountError(503, "identity_verification_unavailable"); }
+		const value = await response.json().catch(() => ({})) as { id_token?: unknown };
+		if (!response.ok || typeof value.id_token !== "string") throw new AccountError(401, "sign_in_failed");
 		let payload;
 		try {
-			({ payload } = await jwtVerify(match[1], this.keys, {
-				issuer: microsoftIssuer(this.config), audience: this.config.clientId,
-				algorithms: ["RS256"], clockTolerance: 30,
-				requiredClaims: ["exp", "iat", "sub", "oid", "tid", "scp", "azp"],
+			({ payload } = await jwtVerify(value.id_token, this.keys, {
+				issuer: GOOGLE_ISSUERS, audience: this.settings.clientId, algorithms: ["RS256"], clockTolerance: 30,
+				requiredClaims: ["exp", "iat", "sub", "email", "nonce"],
 			}));
 		} catch (error) {
-			if (error instanceof errors.JOSEError && !(error instanceof errors.JWKSTimeout)) {
-				throw new AccountError(401, "invalid_access_token");
-			}
+			if (error instanceof errors.JOSEError && !(error instanceof errors.JWKSTimeout)) throw new AccountError(401, "invalid_identity_token");
 			throw new AccountError(503, "identity_verification_unavailable");
 		}
-		if (payload.tid !== this.config.tenantId || payload.oid !== this.config.ownerObjectId
-			|| payload.azp !== this.config.clientId || typeof payload.scp !== "string"
-			|| !payload.scp.split(" ").includes("Workspace.Access")) {
+		if (payload.nonce !== attempt.nonce || payload.email_verified !== true || typeof payload.sub !== "string"
+			|| typeof payload.email !== "string" || payload.email.toLowerCase() !== this.settings.email) {
 			throw new AccountError(403, "workspace_access_denied");
 		}
-		if (typeof payload.exp !== "number" || payload.exp <= Math.floor(Date.now() / 1000)) {
-			throw new AccountError(401, "access_token_expired");
-		}
-		return { tenantId: this.config.tenantId, objectId: this.config.ownerObjectId, expires: payload.exp };
+		return { subject: payload.sub, email: payload.email.toLowerCase() };
 	}
 }
 
@@ -73,16 +96,11 @@ export class DeviceAuthority {
 		publicKey.alg = "ES256"; publicKey.use = "sig";
 		return new DeviceAuthority(config, privateKey, publicKey);
 	}
-	async credential(device: WorkspaceDevice, identity: MicrosoftIdentity): Promise<{ token: string; expires: number }> {
+	async credential(device: WorkspaceDevice): Promise<{ token: string; expires: number }> {
 		if (device.revoked !== undefined) throw new AccountError(403, "device_revoked");
-		if (identity.objectId !== this.config.ownerObjectId || identity.tenantId !== this.config.tenantId) {
-			throw new AccountError(403, "workspace_access_denied");
-		}
-		const now = Math.floor(Date.now() / 1000);
-		const expires = Math.min(now + DEVICE_LIFETIME, identity.expires);
-		if (expires - now < 60) throw new AccountError(401, "refresh_access_token");
+		const now = Math.floor(Date.now() / 1000), expires = now + DEVICE_LIFETIME;
 		const token = await new SignJWT({
-			version: 1, tid: identity.tenantId, oid: identity.objectId,
+			version: 2, wsp: workspaceIdentity(this.config),
 			role: device.kind, cnf: { jwk: device.key },
 		}).setProtectedHeader({ alg: "ES256", kid: this.publicKey.kid, typ: DEVICE_TOKEN_TYPE })
 			.setIssuer(this.config.origin).setAudience(DEVICE_AUDIENCE).setSubject(device.id)

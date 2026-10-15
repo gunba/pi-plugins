@@ -48,7 +48,7 @@ import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
 import { DotConnector } from "./dot-connector.ts";
-import { accountConfiguration, workspaceIdentity, type AccountConfiguration } from "../shared/account.ts";
+import { accountConfiguration, accountOrigin, workspaceIdentity, type AccountConfiguration } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
 import { QuestStore } from "../../../pi-party/quests.ts";
 import { Dictation, MAX_DICTATION_BYTES } from "./dictation.ts";
@@ -470,25 +470,35 @@ export class DeskHost {
 	}
 
 	/**
-	 * The account service publishes where the relay is. Browsers read it on every load; hosts saved it when they signed in,
-	 * so they check it here and follow a moved relay or website. The workspace, the service and its sign-in stay fixed:
-	 * device identities belong to them.
+	 * Hosts follow the workspace when its services move, as browsers do on each load. The website names the account
+	 * service (desk-account.json) and the account service names the relay and website (/config); hosts saved both when
+	 * they signed in, so they check here. The workspace itself never changes: device identities belong to it, and a
+	 * moved account service keeps this computer's identity (`identityOrigin`).
 	 */
 	private async followAccount(): Promise<void> {
 		if (this.closing) return;
+		const network = new AccountNetwork(this.options.proxy);
 		try {
 			const saved = await readAccount(this.directory);
 			if (!saved) return;
-			const response = await new AccountNetwork(this.options.proxy).request<AccountConfiguration>("GET", `${saved.config.origin}/config`, undefined, 10_000);
+			let origin = saved.config.origin;
+			const pointer = await network.request<{ accountOrigin?: unknown }>("GET", `${saved.appOrigin}/desk-account.json`, undefined, 10_000).catch(() => undefined);
+			if (pointer?.status === 200 && typeof pointer.body.accountOrigin === "string") origin = accountOrigin(pointer.body.accountOrigin);
+			const response = await network.request<AccountConfiguration>("GET", `${origin}/config`, undefined, 10_000);
 			if (response.status !== 200 || this.closing) return;
 			const config = accountConfiguration(response.body);
-			if (config.origin !== saved.config.origin || config.clientId !== saved.config.clientId || workspaceIdentity(config) !== workspaceIdentity(saved.config)) return;
-			if (config.relayOrigin === saved.config.relayOrigin && config.appOrigins.join() === saved.config.appOrigins.join()) return;
-			const next: SavedAccount = { version: 1, appOrigin: config.appOrigins.includes(saved.appOrigin) ? saved.appOrigin : config.appOrigins[0]!, config };
+			if (config.origin !== origin || workspaceIdentity(config) !== workspaceIdentity(saved.config)) return;
+			const moved = config.origin !== saved.config.origin;
+			if (!moved && config.relayOrigin === saved.config.relayOrigin && config.appOrigins.join() === saved.config.appOrigins.join()) return;
+			const identityOrigin = moved ? saved.identityOrigin ?? saved.config.origin : saved.identityOrigin;
+			const next: SavedAccount = { version: 1, appOrigin: config.appOrigins.includes(saved.appOrigin) ? saved.appOrigin : config.appOrigins[0]!,
+				config, ...(identityOrigin ? { identityOrigin } : {}) };
 			await saveAccount(this.directory, next);
-			console.error(`The account service moved the relay to ${config.relayOrigin}; reconnecting.`);
+			console.error(moved ? `The workspace's account service moved to ${config.origin}; reconnecting.`
+				: `The account service moved the relay or website; reconnecting.`);
 			await this.connectAccount();
-		} catch { /* The saved configuration stays in use until the account service answers. */ }
+		} catch { /* The saved configuration stays in use until the services answer. */ }
+		finally { network.close(); }
 	}
 
 	private async connectAccount(): Promise<void> {
@@ -506,7 +516,7 @@ export class DeskHost {
 		update({ origin: saved.config.relayOrigin, appOrigin: saved.appOrigin, state: "connecting" });
 		try {
 			const { NativeAccountIdentity } = await import("./account-identity.ts");
-			const identity = await NativeAccountIdentity.open(this.directory, saved.config, { proxy: this.options.proxy });
+			const identity = await NativeAccountIdentity.open(this.directory, saved.config, { proxy: this.options.proxy, identityOrigin: saved.identityOrigin });
 			if (this.closing || revision !== this.accountRevision) { identity.close(); return; }
 			this.accountIdentity = identity;
 			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {

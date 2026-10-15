@@ -21,27 +21,30 @@ export interface AccountConfiguration {
 	origin: string;
 	relayOrigin: string;
 	appOrigins: string[];
-	tenantId: string;
-	clientId: string;
-	ownerObjectId: string;
+	/**
+	 * The workspace's permanent identity. Device identities, the device directory and party networking belong to it,
+	 * so it stays the same when the account service, website or sign-in provider changes. Workspaces created with
+	 * Microsoft sign-in keep their original "<tenant>:<owner>" value.
+	 */
+	workspace: string;
 }
 export interface MembershipPeer { id: string; thumbprint: string }
 export interface MembershipLease { allowed: string[]; expires: number }
 export function accountConfiguration(value: unknown): AccountConfiguration {
 	if (!value || typeof value !== "object") throw new Error("Invalid account configuration.");
-	const input = value as AccountConfiguration;
+	const input = value as AccountConfiguration & { tenantId?: unknown; ownerObjectId?: unknown };
 	if (!Array.isArray(input.appOrigins) || !input.appOrigins.length || input.appOrigins.length > 8
 		|| !input.appOrigins.every(origin => typeof origin === "string")) throw new Error("Invalid app origins.");
+	// Configurations saved before 0.5.115 named the workspace by its Microsoft tenant and owner.
+	const workspace = input.workspace ?? (input.tenantId !== undefined && input.ownerObjectId !== undefined
+		? `${identifier(input.tenantId)}:${identifier(input.ownerObjectId)}` : undefined);
+	if (typeof workspace !== "string" || !/^[A-Za-z0-9:._-]{1,200}$/.test(workspace)) throw new Error("Invalid workspace.");
 	return {
 		origin: accountOrigin(input.origin), relayOrigin: accountOrigin(input.relayOrigin),
-		appOrigins: [...new Set(input.appOrigins.map(accountOrigin))],
-		tenantId: identifier(input.tenantId), clientId: identifier(input.clientId), ownerObjectId: identifier(input.ownerObjectId),
+		appOrigins: [...new Set(input.appOrigins.map(accountOrigin))], workspace,
 	};
 }
-export const workspaceIdentity = (config: AccountConfiguration) => `${config.tenantId}:${config.ownerObjectId}`;
-export const microsoftIssuer = (config: AccountConfiguration) => `https://login.microsoftonline.com/${config.tenantId}/v2.0`;
-// Entra requires the GUID resource identifier when a public client calls its own API.
-export const workspaceScope = (config: AccountConfiguration) => `${config.clientId}/Workspace.Access`;
+export const workspaceIdentity = (config: AccountConfiguration) => config.workspace;
 
 export function identifier(value: unknown): string {
 	if (typeof value !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) {

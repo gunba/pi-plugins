@@ -21,22 +21,20 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 	await cp(directory, output, { recursive: true, force: false, errorOnExist: true });
 	await writeFile(join(output, "desk-account.json"), JSON.stringify({ kind: "account", accountOrigin: account.origin, appOrigin, ...RELEASE }) + "\n");
 	const socket = new URL(origin); socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
-	await writeFile(join(output, "staticwebapp.config.json"), JSON.stringify({
-		mimeTypes: { ".webmanifest": "application/manifest+json" },
-		globalHeaders: {
-			"Content-Security-Policy": contentSecurityPolicy({ socketOrigin: socket.origin, accountOrigin: account.origin }),
-			"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
-			"Cross-Origin-Resource-Policy": "same-origin",
-			"Strict-Transport-Security": "max-age=31536000",
-			"Cache-Control": "no-cache",
-		},
-		routes: [
-			{ route: "/auth/redirect.html", headers: { "Cache-Control": "no-store",
-				"Content-Security-Policy": contentSecurityPolicy({ authCallback: true }) } },
-			{ route: "/desk-account.json", headers: { "Cache-Control": "no-store" } },
-			{ route: "/assets/*", headers: { "Cache-Control": "public, max-age=31536000, immutable" } },
-		],
-	}, null, 2) + "\n");
+	// Response headers for the Caddy site that serves this directory (`import site.caddy`).
+	const quote = (value: string) => `"${value.replace(/["\\]/g, "\\$&")}"`;
+	await writeFile(join(output, "site.caddy"), [
+		"header {",
+		`\tContent-Security-Policy ${quote(contentSecurityPolicy({ socketOrigin: socket.origin, accountOrigin: account.origin }))}`,
+		"\tX-Content-Type-Options nosniff", "\tReferrer-Policy no-referrer", "\tCross-Origin-Resource-Policy same-origin",
+		`\tStrict-Transport-Security ${quote("max-age=31536000")}`,
+		"}",
+		"@config path /desk-account.json", "header @config Cache-Control no-store",
+		"@assets path /assets/*", `header @assets Cache-Control ${quote("public, max-age=31536000, immutable")}`,
+		"@pages not path /desk-account.json /assets/*", "header @pages Cache-Control no-cache",
+		"@manifest path *.webmanifest", "header @manifest Content-Type application/manifest+json",
+		"",
+	].join("\n"));
 }
 
 export async function runPublishApp(args: string[]): Promise<void> {
@@ -46,5 +44,5 @@ export async function runPublishApp(args: string[]): Promise<void> {
 	if (!values.account || !values["app-origin"] || !values.output) throw new Error("Usage: pi-desk publish-app --account URL --app-origin URL --output new-directory");
 	const configuration = await discoverAccount({ account: values.account, proxy: values.proxy });
 	await publishApp({ account: configuration.config, appOrigin: values["app-origin"], output: values.output });
-	console.log(`Static app prepared in ${resolve(values.output)}. Deploy it separately; do not copy it to the relay.`);
+	console.log(`Static app prepared in ${resolve(values.output)}. Serve it with its site.caddy headers; do not copy it to the relay.`);
 }

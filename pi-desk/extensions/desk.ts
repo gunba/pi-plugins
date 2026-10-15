@@ -70,7 +70,7 @@ export default function desk(pi: ExtensionAPI) {
 					if (parameters.length > 1) throw new Error("Use /desk signin with one workspace address.");
 					const url = new URL(workspace);
 					if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("Enter the HTTPS workspace address.");
-					notify("Microsoft sign-in opens on this computer.");
+					notify("An approval link opens in this computer's browser; it is also in host.log. Approve it with the workspace owner's Google account.");
 					await runLauncher(location.home, ["signin", "--workspace", url.origin]);
 					notify("This computer is signed in."); return;
 				}

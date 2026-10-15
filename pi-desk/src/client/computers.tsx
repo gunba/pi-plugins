@@ -9,7 +9,7 @@ export function Computers({ computers, account }: { computers: Computer[]; accou
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
 	return <>
 		<section className="panel-card computers">
-			<h3>Account workspace</h3><p>{account.account()?.username}</p>
+			<h3>Account workspace</h3><p>{new URL(account.config.origin).host}</p>
 			<p className="muted">Sessions stay on their computer. Closing this app does not stop their work.</p>
 			<button disabled={busy} onClick={() => {
 				setBusy(true); setError("");
@@ -22,7 +22,7 @@ export function Computers({ computers, account }: { computers: Computer[]; accou
 			{computers.map(computer => <ComputerCard key={computer.id} computer={computer} />)}
 			{!computers.length && <p>No computers are enrolled yet.</p>}
 			<details><summary>Add a computer</summary>
-				<p>Run this on the computer, sign in with the same account, then start Pi Desk:</p>
+				<p>Run this on the computer, open the approval link it shows, sign in with your Google account and approve it, then start Pi Desk:</p>
 				<pre><code>pi-desk signin --workspace {location.origin}{"\n"}pi-desk start</code></pre>
 				<p className="muted">It will appear automatically on every signed-in device.</p>
 			</details>

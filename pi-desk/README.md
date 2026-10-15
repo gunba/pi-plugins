@@ -9,7 +9,7 @@ A desktop and mobile client for Pi. The local host runs Pi's normal SDK and
 extensions in session workers; browser connections do not own agent lifetimes.
 
 The shared website supports conversations, streaming, tool output, model
-controls, questions and Work summaries. Sign into the same Microsoft-owned
+controls, questions and Work summaries. Sign into the same Google-owned
 workspace on each computer and browser; enrolled computers appear automatically.
 An encrypted outbound connection provides remote access without inbound PC
 ports or a VPN. Saved-session resume, branch navigation,
@@ -305,7 +305,7 @@ pi-desk status
 pi-desk stop
 ```
 
-`signin` reuses saved authorization or opens Microsoft sign-in, then saves this
+`signin` shows an approval link to open in any browser and approve with the owner's Google account, then saves this
 computer's workspace. It does not force the account picker unless a different
 account was selected. `open`
 starts the host if needed and opens the shared website, where each browser signs

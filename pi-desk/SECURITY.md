@@ -13,11 +13,11 @@ trusted owner, not mutually untrusted users or project-level access roles.
 There are three separate services:
 
 - **Static app:** delivers the browser code. Its publisher is trusted.
-- **Account authority:** validates Microsoft sign-in, owns the device directory,
+- **Account authority:** approves new devices after the owner's Google sign-in, owns the device directory,
   issues short-lived device credentials and answers membership checks. It is
   trusted to authorize access to the computers.
 - **Routing broker:** connects browsers to computers and forwards ciphertext.
-  It does not receive Microsoft tokens, account signing keys, Pi credentials
+  It does not receive Google sign-ins, account signing keys, Pi credentials
   or native conversations.
 
 Compromising only the broker must not grant PC access. Compromising the account
@@ -32,18 +32,19 @@ hosting administrator or underlying platform.
 
 ## Authentication and access
 
-The browser and each computer use Microsoft's authorization-code/PKCE flow
-through MSAL. The account service accepts only delegated **access tokens** for
-its configured application and `Workspace.Access` scope. It validates signature,
-tenant issuer, audience, authorized client, expiry and the immutable owner
-object ID. An ID token, Microsoft Graph token or matching email address is not
-authorization.
+Each computer and browser has a P-256 signing key, and every account request
+proves possession of it, binding the method, URL, body, timestamp and replay
+identifier. A new device asks to join with that proof and receives a single-use
+approval link and code. The owner opens the link, signs in with Google and
+approves the device after matching the code. The authority exchanges Google's
+code itself, with its client secret and PKCE, and accepts only an ID token signed
+by Google for its client, with the request's nonce, the owner's verified email
+and, after the first approval, the pinned Google account ID. Approval enrols the
+key; Google is not used again until another device joins.
 
-Each enrolment creates a P-256 signing key. Account requests that change device
-state prove possession of that key, binding the method, URL, body, access token,
-timestamp and replay identifier. The authority issues ES256 device credentials
-lasting at most ten minutes, bound to the owner, device ID, role and public key.
-A public device credential alone is not a bearer key for opening a channel.
+The authority issues ES256 device credentials lasting ten minutes, bound to the
+workspace, device ID, role and public key. A public device credential alone is
+not a bearer key for opening a channel.
 
 Every signed-in browser discovers the same account directory. Access covers
 each enrolled computer's Pi host, not a single conversation or a read-only role.
@@ -57,10 +58,10 @@ outage is not permission to extend a lease: expired or revoked peers lose new
 command and event access. Already admitted work and bytes already sent cannot
 be recalled. Revocation does not stop that work or reverse its effects.
 
-Removing an enrolment is **not** revoking the owner's Microsoft credentials.
-Maintained clients require explicit sign-in to enrol again after removal.
-Someone who still has valid owner tokens or can sign in as the owner can enrol
-a new identity. Address Microsoft account compromise at Microsoft as well.
+Removing an enrolment revokes that device's key. Maintained clients require a new
+approval to enrol again. Anyone who can sign in to the owner's Google account can
+approve a new device: protect that account with MFA, and address its compromise
+at Google as well.
 
 Folder browsing uses that same host-wide authorization. It accepts directory
 paths for navigation, lists folder names and samples native session headers for
@@ -110,20 +111,19 @@ credentials, the authority's signing key, or access to its private directory.
 
 ## Storage and local recovery
 
-Native signing keys and Microsoft caches use MSAL's platform-protected
-persistence: current-user DPAPI on Windows and Secret Service on Linux. Linux
+Native signing keys use platform-protected persistence
+(msal-node-extensions): current-user DPAPI on Windows and Secret Service on Linux. Linux
 requires an available, unlocked Secret Service; there is no plaintext fallback.
 Do not copy these stores to another computer or assume Unix file modes create
 Windows ACLs. Keep the data directory in the user's private profile.
 
-The browser stores a non-extractable signing key in IndexedDB and uses MSAL's
-supported cache. Non-extractable does not prevent malicious same-origin code
-from using the key. The browser profile, privileged browser extensions, OS
-account and Microsoft account remain trusted. Use OS screen locks and MFA.
+The browser stores a non-extractable signing key in IndexedDB. Non-extractable
+does not prevent malicious same-origin code from using the key. The browser
+profile, privileged browser extensions, OS account and owner's Google account
+remain trusted. Use OS screen locks and MFA.
 Desk has no separate app-unlock or per-command reauthentication.
 
-Sign-out revokes that browser's enrolment before clearing its local identity
-and MSAL cache. It is not a global Microsoft logout. Unsent text and attachments
+Sign-out revokes that browser's enrolment before clearing its local identity. Unsent text and attachments
 remain on that browser until removed or site data is cleared; they are not
 synced through the directory.
 
@@ -159,7 +159,7 @@ a second security boundary: the same account already has access to process
 tools. Native commands call local lifecycle controls; those management HTTP
 routes are not exposed by the relay.
 
-- Protect Microsoft, hosting, source and deployment accounts with MFA and
+- Protect Google, hosting, source and deployment accounts with MFA and
   limited privileges. Disable unused publishing passwords, FTP and debugging.
 - Keep deployment metadata and secrets outside the source repository. Public
   bootstrap/configuration and JWKS endpoints intentionally expose origins,
@@ -180,7 +180,7 @@ and exposed credentials if its access may have been used.
 If the authority or app publisher may be compromised, do not trust the website
 for recovery. `pi-desk stop` from trusted local code stops that computer's host
 and workers. Stopping only the broker interrupts remote connections but leaves
-native work running. Restore trusted deployments and review Microsoft sessions,
+native work running. Restore trusted deployments and review Google sessions,
 enrolments, browser service workers/site storage and PC credentials before
 reconnecting. Revoking one key alone does not prove an attacker has been removed.
 

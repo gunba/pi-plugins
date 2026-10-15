@@ -26,8 +26,6 @@
     "start": "node dist/host/cli.js serve"
   },
   "dependencies": {
-    "@azure/msal-browser": "5.23.0",
-    "@azure/msal-node": "7.0.0",
     "@azure/msal-node-extensions": "5.5.1",
     "@earendil-works/pi-coding-agent": "1.2.0",
     "@earendil-works/pi-tui": "1.2.0",

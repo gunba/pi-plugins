@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, importJWK, jwtVerify, type JWTVerifyGetKey } from "jose";
 import {
-	DEVICE_AUDIENCE, DEVICE_LIFETIME, DEVICE_TOKEN_TYPE, deviceKey, identifier,
+	DEVICE_AUDIENCE, DEVICE_LIFETIME, DEVICE_TOKEN_TYPE, deviceKey, identifier, workspaceIdentity,
 	type AccountConfiguration, type DeviceKey, type DeviceKind,
 } from "./account.ts";
 
@@ -28,10 +28,10 @@ export class CredentialVerifier {
 		const { payload } = await jwtVerify(token, this.keys, {
 			issuer: this.config.origin, audience: DEVICE_AUDIENCE, algorithms: ["ES256"],
 			typ: DEVICE_TOKEN_TYPE, clockTolerance: 5,
-			requiredClaims: ["exp", "iat", "nbf", "sub", "jti", "tid", "oid", "role", "cnf", "version"],
+			requiredClaims: ["exp", "iat", "nbf", "sub", "jti", "wsp", "role", "cnf", "version"],
 		});
 		const now = Math.floor(Date.now() / 1000);
-		if (payload.version !== 1 || payload.tid !== this.config.tenantId || payload.oid !== this.config.ownerObjectId
+		if (payload.version !== 2 || payload.wsp !== workspaceIdentity(this.config)
 			|| payload.role !== kind || expectedId !== undefined && payload.sub !== expectedId
 			|| typeof payload.exp !== "number" || typeof payload.iat !== "number"
 			|| !Number.isSafeInteger(payload.exp) || !Number.isSafeInteger(payload.iat)
