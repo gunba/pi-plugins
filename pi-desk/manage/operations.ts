@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { activatePreparedRuntime, activateRuntime, configureRuntime } from "./activate.ts";
@@ -25,6 +26,8 @@ export type DeskOperation = "setup" | "stage" | "update" | "update-now" | "apply
 export interface Operation {
 	id: string; action: DeskOperation; phase: "running" | "waiting" | "complete" | "failed" | "interrupted";
 	started: string; updated: string; message: string;
+	/** The prepared runtime whose own controller applies this update. */
+	handoff?: string;
 }
 export interface OperationOptions {
 	home: string; source: string; agentDir: string; cwd: string; directory: string;
@@ -156,7 +159,25 @@ async function installationOptions(options: OperationOptions): Promise<Omit<Runt
 	if (current.state !== "stopped") throw new Error("The existing host cannot be identified. Resolve its status before setup.");
 	return { directory: options.directory, agentDir: options.agentDir, cwd: options.cwd, port: 8910, ...options.startup };
 }
+/** The runtime this controller's code belongs to, when it runs from an installed release. */
+function controllerRuntime(): string | undefined {
+	return /[\\/]versions[\\/]([a-f0-9]{64})[\\/]source[\\/]/.exec(fileURLToPath(import.meta.url))?.[1];
+}
+
+/**
+ * Run a Desk operation. An update is applied by the new release's own controller, not by the code it replaces:
+ * otherwise a fix to updating only works one release later, and a bug in the old code can stop the very update that
+ * fixes it, as on the Work PC on 15 October. The installed controller downloads and verifies the release, then
+ * hands over; if that controller cannot be started, it applies the update itself as before.
+ */
 export async function runOperation(options: OperationOptions): Promise<Operation> {
+	const value = await operate(options);
+	if (!value.handoff) return value;
+	try { await launchOperation(options.home, "apply-now", value.handoff, value.handoff); return value; }
+	catch { return operate({ ...options, action: "apply-now", prepared: value.handoff, expected: undefined }); }
+}
+
+async function operate(options: OperationOptions): Promise<Operation> {
 	const { home } = options;
 	if (options.action === "update-now" && !/^\d+\.\d+\.\d+$/.test(options.expected ?? ""))
 		throw new Error("Select the published update before stopping conversations.");
@@ -205,6 +226,12 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 			if (release.id === readState(home)?.active) { publish("Desk is up to date.", "complete"); return value; }
 			armUpdate(home, release.id);
 			if (options.action === "update-now") options.prepared = release.id;
+			const own = controllerRuntime();
+			if (options.action === "update-now" && own && own !== release.id) {
+				value = { ...value, handoff: release.id };
+				publish(`Desk ${release.desk} is ready; its own controller applies it`, "complete");
+				return value;
+			}
 		}
 		if (["update", "update-now", "apply", "apply-now"].includes(options.action)) {
 			const forced = options.action === "apply-now" || options.action === "update-now";
@@ -281,11 +308,12 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 	} finally { lock.close(); }
 }
 /** A restart controller must outlive the conversation worker it is stopping. */
-export async function launchOperation(home: string, action: Exclude<DeskOperation, "setup">, target?: string): Promise<void> {
+export async function launchOperation(home: string, action: Exclude<DeskOperation, "setup">, target?: string, runtime?: string): Promise<void> {
 	const state = readState(home);
 	if (!state?.active) throw new Error("Run /desk setup first.");
-	readControllerRelease(home, state.active);
-	const file = join(versionDirectory(home, state.active), "source", "pi-desk", "dist", "host", "manage-cli.js");
+	const code = runtime ?? state.active;
+	readControllerRelease(home, code);
+	const file = join(versionDirectory(home, code), "source", "pi-desk", "dist", "host", "manage-cli.js");
 	const node = ["update", "update-now", "apply", "apply-now"].includes(action) ? configuredNode(home) : process.execPath;
 	if (process.platform === "win32") {
 		await launchWindowsController({ home, cwd: readInstallation(home).cwd, node, entry: file,
