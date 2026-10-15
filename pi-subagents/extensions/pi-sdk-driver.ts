@@ -37,6 +37,9 @@ import type { PresentationScope } from "../../pi-ui/index.ts";
 type AgentMessage = AgentSession["messages"][number];
 
 /** Summarizer requests may omit sessionId; never fall back to the root thread. */
+const MCP_WAIT_MS = 15_000;
+const isMcpTool = (name: string) => name.startsWith("mcp__");
+
 export function bindChildProvider(provider: Provider, sessionId: string): Provider {
 	const bound: Provider = {
 		...provider,
@@ -457,9 +460,23 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			} });
 			checkProvider();
 			if (extensionErrors.length) throw new Error(`Child extension lifecycle failed: ${extensionErrors.join("; ")}`);
-			const available = new Set(session.getAllTools().map((tool) => tool.name));
-			const missing = enabledTools().filter((name) => !available.has(name));
-			if (missing.length) throw new Error(`Parent tools could not be recreated in the child: ${missing.join(", ")}`);
+			const missingTools = () => {
+				const available = new Set(session.getAllTools().map((tool) => tool.name));
+				return enabledTools().filter((name) => !available.has(name));
+			};
+			// MCP servers connect in the background once the child starts, and register their tools only then.
+			// Wait for them; one that never connects leaves its tools out, still loadable later through tool_search.
+			let missing = missingTools();
+			if (missing.some(isMcpTool)) {
+				for (const deadline = Date.now() + MCP_WAIT_MS; missing.some(isMcpTool) && Date.now() < deadline;) {
+					await new Promise((resolve) => setTimeout(resolve, 200));
+					input.signal.throwIfAborted();
+					missing = missingTools();
+				}
+				session.setActiveToolsByName(enabledTools().filter((name) => !missing.includes(name)));
+			}
+			const unavailable = missing.filter((name) => !isMcpTool(name));
+			if (unavailable.length) throw new Error(`Parent tools could not be recreated in the child: ${unavailable.join(", ")}`);
 		} catch (error) {
 			await driver.dispose();
 			throw error;
