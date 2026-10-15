@@ -30,6 +30,8 @@ interface PendingInteraction {
 interface PublishedView {
 	snapshot: ViewSnapshot;
 	actions: Record<string, (value: UiValue) => unknown | Promise<unknown>>;
+	/** The view as published, to recognise an unchanged republish. */
+	source: string;
 }
 const plain = (text: string) => stripVTControlCharacters(text);
 
@@ -218,10 +220,14 @@ export class DeskPresentation implements Presentation {
 
 	publish(id: string, view: UiView | undefined, actions: PublishedView["actions"] = {}): void {
 		if (this.retired) return;
+		const source = view && JSON.stringify(view), current = this.views.get(id);
+		// Extensions republish on every status refresh. An unchanged view keeps its revision and sends nothing, since
+		// each update sends the whole session to every connected browser.
+		if (view ? current?.source === source : !current) { if (current) current.actions = actions; return; }
 		if (!view) { this.views.delete(id); this.actionErrors.delete(id); }
 		else this.views.set(id, {
 			snapshot: { ...structuredClone(view), id, revision: this.nextRevision() },
-			actions,
+			actions, source: source!,
 		});
 		this.update();
 	}
