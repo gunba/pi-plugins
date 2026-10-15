@@ -2,6 +2,7 @@
 //   node pi-desk/manage/deploy.ts host <version>     Update this computer's Desk host and wait for the outcome.
 //   node pi-desk/manage/deploy.ts website [--dry-run] Publish the website from this computer's active runtime.
 //   node pi-desk/manage/deploy.ts relay [--dry-run]   Deploy the routing relay from the active runtime (browsers reconnect).
+//                                                     A relay on its own server updates itself with that server's Desk; this checks it.
 //   node pi-desk/manage/deploy.ts prune [--keep id]   Remove runtime versions nothing can use (updates also do this).
 //                                                     --keep adds a version id/prefix to <runtime>/keep permanently.
 // The website mode requires `az login` with access to the Static Web App serving account.json's appOrigin.
@@ -30,6 +31,12 @@ async function relayDeploy(dryRun: boolean): Promise<void> {
 	const { config } = await read(join(agentDir, "desk", "account.json"));
 	const az = (...args: string[]) => execFileSync("az", [...args, "--only-show-errors", "-o", "tsv"], { encoding: "utf8", shell: process.platform === "win32" }).trim();
 	const hostname = new URL(config.relayOrigin).host;
+	if (!hostname.endsWith(".azurewebsites.net")) {
+		// The Perth server installs the relay from each Desk version it updates to (pi-desk-relay-update.path).
+		const health = await fetch(`${config.relayOrigin}/health`, { cache: "no-store" }).then(r => r.json()).catch(() => undefined);
+		console.log(`The relay at ${config.relayOrigin} updates itself with its server's Desk; it reports ${health?.version ?? "no version"}.`);
+		return;
+	}
 	const [name, group] = az("webapp", "list", "--query", `[?defaultHostName=='${hostname}'].[name,resourceGroup] | [0]`).split(/\s+/);
 	if (!name || !group) throw new Error(`No App Service serves ${hostname} in the signed-in Azure subscription.`);
 	const temporary = await mkdtemp(join(tmpdir(), "pi-desk-relay-"));

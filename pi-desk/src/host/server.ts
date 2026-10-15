@@ -18,7 +18,8 @@ import { sessionDisplay } from "./session-display.ts";
 import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
-import { readAccount } from "./account-config.ts";
+import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
+import { AccountNetwork } from "./account-network.ts";
 import type { NativeAccountIdentity } from "./account-identity.ts";
 import { securityHeaders, serveClient } from "./static.ts";
 import { readSessionHeader, SessionCatalog } from "./session-files.ts";
@@ -47,7 +48,7 @@ import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
 import { DotConnector } from "./dot-connector.ts";
-import { workspaceIdentity } from "../shared/account.ts";
+import { accountConfiguration, workspaceIdentity, type AccountConfiguration } from "../shared/account.ts";
 import { PartyOperations } from "../../../pi-party/operations.ts";
 import { QuestStore } from "../../../pi-party/quests.ts";
 import { Dictation, MAX_DICTATION_BYTES } from "./dictation.ts";
@@ -76,6 +77,9 @@ const cookie = (request: IncomingMessage) => /(?:^|;\s*)pi_desk=([^;]+)/.exec(re
 const STUCK_MS = 60 * 60_000;
 /** A failed automatic update is tried again after this long. */
 const RETRY_MS = 60 * 60_000;
+
+/** How often a host checks the account service for a moved relay. */
+const ACCOUNT_FOLLOW_MS = 10 * 60_000;
 
 export class DeskHost {
 	private options: Options;
@@ -114,6 +118,7 @@ export class DeskHost {
 	private accountIdentity?: NativeAccountIdentity;
 	private accountRevision = 0;
 	private accountRetry?: ReturnType<typeof setTimeout>;
+	private accountFollow?: ReturnType<typeof setInterval>;
 	private sequence = 0;
 	private history: { id: number; frame: string }[] = [];
 	private historyBytes = 0;
@@ -244,6 +249,8 @@ export class DeskHost {
 			}, 20_000);
 			this.heartbeat.unref();
 			await this.connectAccount();
+			void this.followAccount();
+			this.accountFollow = setInterval(() => { void this.followAccount(); }, ACCOUNT_FOLLOW_MS); this.accountFollow.unref();
 			this.control.publish(directory);
 			if (this.runtimeHome) {
 				try {
@@ -287,7 +294,7 @@ export class DeskHost {
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
-			clearTimeout(this.accountRetry); this.accountRevision++; this.accountIdentity?.close();
+			clearTimeout(this.accountRetry); clearInterval(this.accountFollow); this.accountRevision++; this.accountIdentity?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -460,6 +467,28 @@ export class DeskHost {
 					|| view.controls?.some(control => control.state === "running")).length,
 				questions: active.reduce((sum, { view }) => sum + (view.ui?.interactions.length ?? 0), 0) },
 		};
+	}
+
+	/**
+	 * The account service publishes where the relay is. Browsers read it on every load; hosts saved it when they signed in,
+	 * so they check it here and follow a moved relay or website. The workspace, the service and its sign-in stay fixed:
+	 * device identities belong to them.
+	 */
+	private async followAccount(): Promise<void> {
+		if (this.closing) return;
+		try {
+			const saved = await readAccount(this.directory);
+			if (!saved) return;
+			const response = await new AccountNetwork(this.options.proxy).request<AccountConfiguration>("GET", `${saved.config.origin}/config`, undefined, 10_000);
+			if (response.status !== 200 || this.closing) return;
+			const config = accountConfiguration(response.body);
+			if (config.origin !== saved.config.origin || config.clientId !== saved.config.clientId || workspaceIdentity(config) !== workspaceIdentity(saved.config)) return;
+			if (config.relayOrigin === saved.config.relayOrigin && config.appOrigins.join() === saved.config.appOrigins.join()) return;
+			const next: SavedAccount = { version: 1, appOrigin: config.appOrigins.includes(saved.appOrigin) ? saved.appOrigin : config.appOrigins[0]!, config };
+			await saveAccount(this.directory, next);
+			console.error(`The account service moved the relay to ${config.relayOrigin}; reconnecting.`);
+			await this.connectAccount();
+		} catch { /* The saved configuration stays in use until the account service answers. */ }
 	}
 
 	private async connectAccount(): Promise<void> {
@@ -1619,7 +1648,7 @@ export class DeskHost {
 		clearInterval(this.heartbeat);
 		this.updateWatch?.close(); clearTimeout(this.updateTimer);
 		clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
-		clearTimeout(this.accountRetry); this.accountRevision++;
+		clearTimeout(this.accountRetry); clearInterval(this.accountFollow); this.accountRevision++;
 		this.relay?.close(); this.partyNetwork?.close();
 		this.accountIdentity?.close();
 		try { this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
