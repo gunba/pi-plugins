@@ -328,3 +328,21 @@ test("agent_fork finds its checkpoint under the renamed tool", async () => {
 	assert.equal(partyForkPoint(branch, "fork-1"), "before");
 	assert.throws(() => partyForkPoint(branch, "other"), /no saved context checkpoint/);
 });
+
+test("a delivered message stays in the recipient's context after its sender closes", async t => {
+	// Work PC, 15 October: an improve-skill runner sent its result and finished. The recipient's next request left
+	// the message out, ended with the agent's own reply, and Claude rejected it as prefill.
+	environment(t);
+	const a = harness(t, "runner"), b = harness(t, "coordinator");
+	await a.emit("session_start"); await b.emit("session_start");
+	await a.call("agent_send", { to: "coordinator", message: "Round 3 kept; finished.", wake: true });
+	await b.command("resume");
+	assert.equal(b.sent.length, 1);
+	await a.emit("session_shutdown");
+	const store = new PartyStore(join(process.env.PI_CODING_AGENT_DIR, "party"));
+	try { store.db.prepare("DELETE FROM members WHERE session=?").run("runner"); } finally { store.close(); }
+	const result = await b.emit("context", { messages: b.branch.map(x => x.message) });
+	const messages = result?.messages ?? b.branch.map(x => x.message);
+	assert.equal(messages.length, 1, "the runner's message is still sent to the model");
+	assert.match(String(messages[0].content), /Round 3 kept/);
+});

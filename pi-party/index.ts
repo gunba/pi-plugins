@@ -77,7 +77,7 @@ export default function party(pi: ExtensionAPI): void {
 	const member = () => store?.member(session);
 	const syncFlight = () => {
 		if (!store || member()?.owner !== owner) return;
-		for (const id of inFlight) if (!store.isCurrent(session, owner, id)) {
+		for (const id of inFlight) if (!store.isDelivered(session, owner, id)) {
 			revoked.add(id); inFlight.delete(id);
 		}
 	};

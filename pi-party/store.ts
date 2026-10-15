@@ -384,14 +384,20 @@ export class PartyStore {
 	messageMark(): number {
 		return Number((this.db.prepare("SELECT COALESCE(MAX(rowid),0) AS n FROM messages").get() as { n: number }).n);
 	}
-	isCurrent(session: string, owner: string, id: string): boolean {
+	/**
+	 * Whether a message delivered to this agent still belongs in its context. Only the recipient's side counts: a
+	 * sender that has since closed or restarted does not withdraw what was already delivered. Removing such a
+	 * message left a request ending with the agent's own reply, which Claude rejects as prefill.
+	 */
+	isDelivered(session: string, owner: string, id: string): boolean {
 		this.owned(session, owner);
-		return !!this.db.prepare(`${this.validMessages} AND m.id=?`).get(session, id);
+		return !!this.db.prepare(`SELECT 1 FROM messages m JOIN party_agents recipient ON recipient.session=m.recipient
+			WHERE m.recipient=? AND m.id=? AND m.room='' AND recipient.agent_epoch=m.recipient_epoch`).get(session, id);
 	}
 	admit(session: string, owner: string, ids: string[]): void {
 		this.tx(() => {
 			this.owned(session, owner);
-			for (const id of ids) if (this.isCurrent(session, owner, id)) {
+			for (const id of ids) if (this.isDelivered(session, owner, id)) {
 				this.db.prepare("UPDATE messages SET admitted=1 WHERE id=? AND recipient=?").run(id, session);
 				// Its files were saved to the recipient's disk when it was delivered.
 				this.db.prepare("DELETE FROM message_files WHERE message=?").run(id);
