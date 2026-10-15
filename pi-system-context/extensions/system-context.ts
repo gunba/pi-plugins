@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, type BeforeAgentStartEvent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import { delimiter, extname, join } from "node:path";
@@ -195,6 +195,40 @@ function eventCwd(event: BeforeAgentStartEvent): string {
   return typeof cwd === "string" && cwd.trim() ? cwd : process.cwd();
 }
 
+/** Rules from other packages that tell the model nothing it needs: the tool descriptions already say it. */
+const DROPPED_RULES = new Set([
+  "You can inspect PI_* environment variables for current model and session details.",
+  "Use chrome_devtools_load when a task requires inspecting or controlling a Chrome browser and the needed chrome_devtools_* capability is not active.",
+]);
+
+/** Pi's documentation section, as one pointer instead of eight lines that each repeat the package path. */
+export function piDocs(root: string): string {
+  return `Pi's own documentation is in ${root.replace(/\\/g, "/")}: README.md, docs/ (one .md per topic, such as extensions, sdk, skills, themes, tui, models, packages, mcp, codemode, settings) and examples/. Read it only when asked about pi itself; read the relevant .md completely and follow its links.`;
+}
+
+/**
+ * Pi ends the description of every tool scripts can call with how codemode calls it. For a tool that resolves to
+ * a string that adds nothing, because the codemode tool says calls resolve to a string unless the declaration says
+ * otherwise. Dropping it saves ~20 tokens a tool on every request; notes for object results stay. It is the same on
+ * every request, so the prompt cache is unaffected.
+ */
+const STRING_CALL_NOTE = /\n\nCodemode: `tools\.[^`]+\(args\)` resolves to a string\.$/;
+
+export function withoutStringCallNotes(payload: unknown): unknown {
+  const tools = (payload as { tools?: unknown } | undefined)?.tools;
+  if (!Array.isArray(tools)) return undefined;
+  let changed = false;
+  const next = tools.map((tool) => {
+    // Chat Completions nests the declaration under `function`; Messages and Responses do not.
+    const declaration = tool?.function ?? tool;
+    if (typeof declaration?.description !== "string" || !STRING_CALL_NOTE.test(declaration.description)) return tool;
+    changed = true;
+    const trimmed = { ...declaration, description: declaration.description.replace(STRING_CALL_NOTE, "") };
+    return tool.function ? { ...tool, function: trimmed } : trimmed;
+  });
+  return changed ? { ...(payload as object), tools: next } : undefined;
+}
+
 export default function (pi: ExtensionAPI) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ;
   const shell = envFirst("SHELL", "ComSpec", "COMSPEC") ?? "unknown";
@@ -217,11 +251,17 @@ export default function (pi: ExtensionAPI) {
       `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 
+    const options = event.systemPromptOptions;
+    options.sections = { ...options.sections, docs: piDocs(getPackageDir()) };
+    options.toolGuidelines = Object.fromEntries(Object.entries(options.toolGuidelines ?? {})
+      .map(([name, rules]) => [name, rules.filter((rule) => !DROPPED_RULES.has(rule.trim()))]));
+
     const loadable = loadableTools(pi);
     const sections = loadable ? `${context}\n\n${loadable}` : context;
     const appended = event.systemPromptOptions.appendSystemPrompt;
     event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${sections}` : sections;
   });
+  pi.on("before_provider_request", (event) => withoutStringCallNotes(event.payload));
 }
 
 /**

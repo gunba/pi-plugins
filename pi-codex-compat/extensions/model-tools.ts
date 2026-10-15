@@ -119,7 +119,8 @@ export function toolsForModel(
 	capabilities: ToolActivationCapabilities = {},
 ): string[] {
 	if (!model) return [];
-	const tools = ["exec_command", "write_stdin"];
+	// Other models can load the process tools with tool_search.
+	const tools = isCodexLikeModel(model) ? ["exec_command", "write_stdin"] : [];
 	const canGenerateImages = capabilities.imageGenerationAuthenticated === true;
 	// A text-only model views images through its own provider, so that still needs an image-generation model here.
 	if (model?.input?.includes("image") || canGenerateImages && isImageGenerationModel(model)) {
@@ -137,9 +138,10 @@ export function syncCodexCompatTools(
 	const activeOwnedTools = activeTools.filter((name) =>
 		CODEX_COMPAT_TOOL_NAMES.includes(name),
 	);
+	// The process tools are deferred, so they start inactive; they are eligible unless a later sync finds them switched off.
 	let eligibleToolNames = state.eligibleToolNames
 		? [...state.eligibleToolNames]
-		: [...activeOwnedTools];
+		: mergeToolNames(activeOwnedTools, ["exec_command", "write_stdin"]);
 
 	if (state.enabled) {
 		const manuallyDisabled = new Set(

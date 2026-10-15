@@ -142,9 +142,6 @@ export function registerImageTools(pi: ExtensionAPI): void {
 		label: "view_image",
 		description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
 		promptSnippet: "Inspect a local PNG/JPEG/GIF/WebP/BMP image",
-		promptGuidelines: [
-			"On a text-only Codex model, view_image delegates visual inspection to an authenticated image-capable model and returns its concise description.",
-		],
 		parameters: Type.Object({ path: Type.String({ description: "Path to a local image file." }) }, { additionalProperties: false }),
 		prepareArguments: prepareViewImageArguments,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

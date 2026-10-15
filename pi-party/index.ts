@@ -352,7 +352,7 @@ export default function party(pi: ExtensionAPI): void {
 	};
 	// Rarely used tools are loaded with tool_search when needed rather than declared in every request.
 	const AGENTS = { exposure: "deferred" as const, namespace: { name: "agents", description: "Create or fork agent conversations on Jordan's computers, and manage this agent's message delivery, profile and inbox." } };
-	const QUESTS = { exposure: "deferred" as const, namespace: { name: "quests", description: "Read Jordan's quest log, or change quests you added." } };
+	const QUESTS = { exposure: "deferred" as const, namespace: { name: "quests", description: "Add to Jordan's quest log things he must do himself, read it, or change quests you added." } };
 	pi.registerTool({
 		name: "agent_discover", label: "Discover agents",
 		description: "Find Pi agents on Jordan's computers by name, folder or description; active ones unless includeOffline. One shown as restarting is back within a minute, and messages wait for it.",
@@ -418,7 +418,7 @@ export default function party(pi: ExtensionAPI): void {
 		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
 		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
 	pi.registerTool({
-		name: "quest_add", label: "Add to Jordan's quest log",
+		name: "quest_add", label: "Add to Jordan's quest log", ...QUESTS,
 		description: "Add something Jordan must do himself, such as a review, decision or test you are waiting on, to his quest log. Short actionable title; context in notes. You are messaged when he finishes or drops it. Not for your own work.",
 		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }), notes: Type.Optional(Type.String({ maxLength: 4000 })),
 			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main: important; daily: today only; side: default." })),

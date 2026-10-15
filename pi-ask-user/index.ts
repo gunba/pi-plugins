@@ -1495,9 +1495,6 @@ export default function(pi: ExtensionAPI) {
          "Ask the user for a decision, missing information, or approval.",
       promptSnippet:
          "Collect a user decision or approval",
-      promptGuidelines: [
-         "Other tool calls wait until the user answers.",
-      ],
       // Block other tool calls in the same assistant turn until the user answers,
       // so the model can't batch ask_user with bash/edit/write and let those run
       // (potentially with side effects) before the user sees the prompt.

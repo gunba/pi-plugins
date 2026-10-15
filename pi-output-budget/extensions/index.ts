@@ -159,6 +159,8 @@ export default function outputBudget(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "inspect_files", label: "inspect_files",
+    // read covers single files and codemode batches reads, so this is loaded with tool_search when needed.
+    exposure: "deferred", namespace: { name: "files", description: "Read or search up to 20 files in one call." },
     description: "Inspect up to 20 explicit files in one read-only call. Each request reads a line range or searches that range for a literal string. Results preserve request order and per-file errors; large results are archived. Images must use read.",
     parameters: Type.Object({
       requests: Type.Array(Type.Object({

@@ -35,10 +35,15 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	return ownerFor;
 }
 
+// Codex models are trained on these tools, so they are declared for them; other models use bash and load these with
+// tool_search when a command should keep running in the background.
+const PROCESSES = { exposure: "deferred" as const, namespace: { name: "processes", description: "Run a command in the background and wait on or interrupt it." } };
+
 export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwnerFor): void {
 	pi.registerTool({
 		name: "exec_command",
 		label: "exec_command",
+		...PROCESSES,
 		description: "Run a shell command and return its output, or a session_id if it is still running after yield_time_ms; continue it with write_stdin. No interactive terminal.",
 		promptSnippet: "Run a command, keeping it if it is still running",
 		promptGuidelines: [
@@ -71,6 +76,7 @@ export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwne
 	pi.registerTool({
 		name: "write_stdin",
 		label: "write_stdin",
+		...PROCESSES,
 		description: "Read more output from a running exec_command session, or send exactly \"\\u0003\" to interrupt it (Ctrl-C to its process group; on Windows its process tree is ended). Other input is rejected.",
 		promptSnippet: "Wait on or interrupt a running command",
 		promptGuidelines: [

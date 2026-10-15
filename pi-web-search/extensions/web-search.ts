@@ -17,127 +17,24 @@ import { renderSearchResult } from "./render.ts";
 import { requestService } from "../../pi-codex-service/index.ts";
 import { describePage, fetchPages, type PageResult } from "./page-fetch.ts";
 
-const searchQuery = Type.Object(
-	{
-		q: Type.String({ description: "Search query." }),
-		recency: Type.Optional(
-			Type.Integer({
-				description: "Only include results from this many recent days.",
-				minimum: 0,
-			}),
-		),
-		domains: Type.Optional(
-			Type.Array(Type.String(), {
-				description: "Only include results from these domains.",
-			}),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const openOperation = Type.Object(
-	{
-		ref_id: Type.String({ description: "Search reference ID or URL to open." }),
-		lineno: Type.Optional(
-			Type.Integer({ description: "Line number to position the page at.", minimum: 0 }),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const clickOperation = Type.Object(
-	{
-		ref_id: Type.String({ description: "Reference ID containing the numbered link." }),
-		id: Type.Integer({ description: "Numbered link ID to open.", minimum: 0 }),
-	},
-	{ additionalProperties: false },
-);
-
-const findOperation = Type.Object(
-	{
-		ref_id: Type.String({ description: "Search reference ID or URL to search within." }),
-		pattern: Type.String({ description: "Text pattern to find." }),
-	},
-	{ additionalProperties: false },
-);
-
-const screenshotOperation = Type.Object(
-	{
-		ref_id: Type.String({ description: "PDF reference ID or URL." }),
-		pageno: Type.Integer({ description: "Zero-indexed PDF page number.", minimum: 0 }),
-	},
-	{ additionalProperties: false },
-);
-
-const financeOperation = Type.Object(
-	{
-		ticker: Type.String({ description: "Ticker symbol." }),
-		type: StringEnum(["equity", "fund", "crypto", "index"] as const),
-		market: Type.Optional(
-			Type.String({
-				description:
-					'ISO 3166-1 alpha-3 country code, "OTC", or an empty string for cryptocurrency.',
-			}),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const weatherOperation = Type.Object(
-	{
-		location: Type.String({ description: 'Location in "Country, Area, City" format.' }),
-		start: Type.Optional(
-			Type.String({ description: "Start date in YYYY-MM-DD format. Defaults to today." }),
-		),
-		duration: Type.Optional(
-			Type.Integer({ description: "Number of days to return. Defaults to 7.", minimum: 1 }),
-		),
-	},
-	{ additionalProperties: false },
-);
-
-const sportsOperation = Type.Object(
-	{
-		tool: Type.Optional(StringEnum(["sports"] as const)),
-		fn: StringEnum(["schedule", "standings"] as const),
-		league: StringEnum(
-			["nba", "wnba", "nfl", "nhl", "mlb", "epl", "ncaamb", "ncaawb", "ipl"] as const,
-		),
-		team: Type.Optional(
-			Type.String({ description: "Common three- or four-letter broadcast team alias." }),
-		),
-		opponent: Type.Optional(Type.String()),
-		date_from: Type.Optional(Type.String({ description: "Start date in YYYY-MM-DD format." })),
-		date_to: Type.Optional(Type.String({ description: "End date in YYYY-MM-DD format." })),
-		num_games: Type.Optional(Type.Integer({ minimum: 1 })),
-		locale: Type.Optional(Type.String()),
-	},
-	{ additionalProperties: false },
-);
-
-const timeOperation = Type.Object(
-	{
-		utc_offset: Type.String({ description: 'UTC offset such as "+03:00".' }),
-	},
-	{ additionalProperties: false },
-);
+const referenced = (description: string) => Type.String({ description });
 
 // Only the operations conversations use. Codex web search also offers sports, finance, weather, time,
 // PDF screenshots and image search; none were used in 90 days, so they are not declared to the model.
 export const WEB_SEARCH_PARAMETERS = Type.Object(
 	{
-		search_query: Type.Optional(
-			Type.Array(searchQuery, { description: "Up to four web searches.", maxItems: 4 }),
-		),
-		open: Type.Optional(Type.Array(openOperation, { description: "Open pages by reference ID or URL." })),
-		click: Type.Optional(Type.Array(clickOperation, { description: "Follow numbered links in opened pages." })),
-		find: Type.Optional(Type.Array(findOperation, { description: "Find text in opened pages." })),
-		check: Type.Optional(
-			Type.Array(Type.String({ minLength: 1, maxLength: 4000 }), {
-				description: "Check up to 50 URLs load, without reading them: ok, not_found, blocked, http_error or network_error.",
-				maxItems: 50,
-			}),
-		),
+		search_query: Type.Optional(Type.Array(Type.Object({
+			q: Type.String(),
+			recency: Type.Optional(Type.Integer({ description: "Only the last this many days." })),
+			domains: Type.Optional(Type.Array(Type.String())),
+		}), { maxItems: 4 })),
+		open: Type.Optional(Type.Array(Type.Object({
+			ref_id: referenced("Result ID or URL."),
+			lineno: Type.Optional(Type.Integer({ description: "Line to start at." })),
+		}))),
+		click: Type.Optional(Type.Array(Type.Object({ ref_id: referenced("Opened page's ID."), id: Type.Integer({ description: "Link number." }) }))),
+		find: Type.Optional(Type.Array(Type.Object({ ref_id: referenced("Opened page's ID or URL."), pattern: Type.String() }))),
+		check: Type.Optional(Type.Array(Type.String(), { description: "URLs to check load, without reading them.", maxItems: 50 })),
 		response_length: Type.Optional(StringEnum(["short", "medium", "long"] as const)),
 	},
 	{ additionalProperties: false },
@@ -315,8 +212,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 			"Search the web, open pages, follow links, find text and check URLs, through the ChatGPT login whatever model this conversation uses. Sites that refuse automated clients are opened in Chrome. For sign-ins or forms use the browser tools.",
 		promptSnippet: "Search the web, open pages and check links",
 		promptGuidelines: [
-			"Use web_search when asked to search or to verify current facts; batch independent searches in one call, and cite sources with Markdown links.",
-			"Open or check URLs with web_search, not curl or scripts. \"blocked\" means the site refused automated access, not that the page is missing.",
+			"Use web_search to search, verify current facts, and open or check URLs (not curl or scripts); batch independent searches and cite sources with Markdown links. \"blocked\" means the site refused automated access, not that the page is missing.",
 		],
 		parameters: WEB_SEARCH_PARAMETERS,
 		renderResult: renderSearchResult,

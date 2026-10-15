@@ -10,7 +10,7 @@ test('version probes are asynchronous, bounded and tolerate unavailable commands
 });
 test('environment uses native prompt sections instead of overriding the full prompt', async () => {
  let hook;
- extension({on: (_name, fn) => hook = fn});
+ extension({on: (name, fn) => { if (name === 'before_agent_start') hook = fn; }});
  const ctx = {isProjectTrusted: () => false};
  const first = {systemPrompt: 'Original', systemPromptOptions: {cwd: '/tmp/one\ncontrol\u0007', appendSystemPrompt: 'Existing rule'}};
  assert.equal(await hook(first, ctx), undefined, 'no forced full-prompt override');
