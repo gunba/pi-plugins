@@ -130,7 +130,9 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 		const build = async () => {
 			await run(app, [npm, "run", "build"]);
 			progress("Precompiling extensions");
-			await bundleExtensions(copy, createRequire(join(app, "package.json"))("esbuild").build);
+			const esbuild = createRequire(join(app, "package.json"))("esbuild");
+			// esbuild keeps a helper process running, and Windows cannot delete a running program.
+			try { await bundleExtensions(copy, esbuild.build); } finally { await esbuild.stop(); }
 		};
 		if (options.dependencies) {
 			progress("Restoring verified production dependencies");
