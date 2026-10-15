@@ -45,7 +45,6 @@ import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from 
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
 import { PendingInputs } from "./pending-inputs.tsx";
-import { AgentWakeMarker } from "./agent-wake.tsx";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
 import { DetailsView } from "./details-view.tsx";
@@ -679,14 +678,13 @@ export function App({ account }: { account?: BrowserAccount }) {
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
             .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map(item => {
-            const agent = computer.parties?.agents.find(peer => peer.id === (item.snapshot?.id ?? item.agentId));
             return <div className="session-row" key={item.key}>
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
               }}>
                 <span className={`status-dot ${sessionActivity(item)}`} role="img"
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
-                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong><AgentWakeMarker agent={agent} /></span>
+                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong></span>
                   <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
                     <VersionTag session={item} computer={computer} />
                     {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>

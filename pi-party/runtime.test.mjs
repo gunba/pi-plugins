@@ -204,66 +204,6 @@ test("silent messages do not wake idle peers and compact delivery IDs suppress r
 	assert.equal(reopened.sent.length, 0);
 });
 
-test("working delivery does not exhaust idle wakes; actual idle wakes stay bounded", async t => {
-	environment(t);
-	const a = harness(t, "first"), b = harness(t, "second");
-	await a.emit("session_start"); await b.emit("session_start");
-	await b.command("resume"); b.setBusy(true);
-	for (let i = 0; i < 10; i++) {
-		await a.call("agent_send", { to: "second", message: `Coordination ${i}` });
-		t.mock.timers.tick(10_000);
-		await b.emit("context", { messages: b.branch.map(x => x.message) });
-	}
-	assert.equal(b.sent.length, 10, "working coordination must not wait for another human message");
-	assert.ok(b.sent.every(item => !item.options.triggerTurn), "steering must not start another run");
-	b.setBusy(false);
-	for (let i = 10; i < 19; i++) {
-		await a.call("agent_send", { to: "second", message: `Idle coordination ${i}` });
-		t.mock.timers.tick(10_000);
-		await b.emit("context", { messages: b.branch.map(x => x.message) });
-	}
-	assert.equal(b.sent.length, 18);
-	const self = async () => JSON.parse((await b.call("agent_discover", { query: "second" })).content[0].text).agents.find(peer => peer.self);
-	assert.equal((await self()).delivery, "limited");
-	assert.match((await self()).deliveryReason, /wake limit/i);
-	await b.emit("session_start");
-	assert.equal((await self()).delivery, "limited",
-		"a wake limit must not be hidden by dormant startup delivery");
-	await b.emit("input", { source: "extension" });
-	t.mock.timers.tick(10_000);
-	assert.equal(b.sent.length, 18);
-	await b.emit("input", { source: "terminal" });
-	t.mock.timers.tick(10_000);
-	assert.equal(b.sent.length, 19);
-});
-
-test("held wake requests do not block silent messages behind the delivery batch", async t => {
-	environment(t);
-	const a = harness(t, "sender"), b = harness(t, "recipient");
-	await a.emit("session_start"); await b.emit("session_start");
-	await b.command("resume");
-	for (let i = 0; i < 8; i++) {
-		await a.call("agent_send", { to: "recipient", message: `Wake ${i}` });
-		t.mock.timers.tick(10_000);
-		await b.emit("context", { messages: b.branch.map(x => x.message) });
-	}
-	assert.equal(b.sent.length, 8);
-	for (let i = 0; i < 9; i++) await a.call("agent_send", { to: "recipient", message: `Held ${i}` });
-	await a.call("agent_send", { to: "recipient", message: "Silent update", wake: false });
-	t.mock.timers.tick(20_000);
-	assert.equal(b.sent.length, 9);
-	assert.match(b.sent.at(-1).message.content, /Silent update/);
-	assert.equal(b.sent.at(-1).options.triggerTurn, false);
-	await b.emit("context", { messages: b.branch.map(x => x.message) });
-	const db = new PartyStore(join(process.env.PI_CODING_AGENT_DIR, "party"));
-	try {
-		assert.equal(db.member("recipient").wakes, 8);
-		const pending = db.pending("recipient", db.member("recipient").owner);
-		assert.equal(pending.length, 9);
-		assert.ok(pending.every(message => message.wake === 1));
-	} finally { db.close(); }
-});
-
 test("native session entries retain party receipt IDs through compaction and reopening without rewriting JSONL", t => {
 	const root = mkdtempSync(join(tmpdir(), "pi-party-pruning-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

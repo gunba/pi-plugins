@@ -101,8 +101,7 @@ party messages and membership/lifecycle operations, not transcripts or a browser
 API tunnel. Receiving computers validate local membership epochs and own their
 sessions and child drivers. Resuming an existing party member does not require a
 new human approval; creating an agent requires the native approval dialog.
-Discovery and invitations cannot start it. Paused delivery and wake budgets
-remain in force. This shares agent-written context across trusted computers;
+Discovery and invitations cannot start it. Paused delivery remains in force. This shares agent-written context across trusted computers;
 it does not make peer text trusted human instructions.
 
 The broker can observe connection metadata, withhold traffic, disconnect peers

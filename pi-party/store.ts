@@ -398,10 +398,6 @@ export class PartyStore {
 			}
 		});
 	}
-	resetWakes(session: string, owner: string): void {
-		this.owned(session, owner);
-		this.db.prepare("UPDATE members SET wakes=0 WHERE session=? AND owner=?").run(session, owner);
-	}
 	setDelivery(session: string, owner: string, enabled: boolean): void {
 		this.owned(session, owner);
 		this.db.prepare("UPDATE members SET delivery=? WHERE session=? AND owner=?").run(enabled ? 1 : 0, session, owner);
@@ -409,8 +405,5 @@ export class PartyStore {
 	setPaused(session: string, owner: string, paused: boolean): void {
 		this.owned(session, owner);
 		this.db.prepare("UPDATE members SET muted=? WHERE session=? AND owner=?").run(paused ? 1 : 0, session, owner);
-	}
-	reserveWake(session: string, owner: string): boolean {
-		return this.db.prepare("UPDATE members SET wakes=wakes+1 WHERE session=? AND owner=? AND wakes<8").run(session, owner).changes === 1;
 	}
 }

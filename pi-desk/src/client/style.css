@@ -426,8 +426,6 @@ details[open] > summary:before {
   min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .session-label-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .session-label-line > strong { flex:1; min-width:0; }
-.party-wake-held { display:inline-flex; align-items:center; gap:3px; flex:none; font-size:10px; line-height:1; color:var(--accent); background:var(--accent-soft); padding:3px 4px; border-radius:4px; }
-.party-wake-held svg { width:12px; height:12px; flex:none; }
 .session-row { position:relative; }
 .session-row:hover .session-item:not(.selected) { background:var(--hover); }
 .session-close {

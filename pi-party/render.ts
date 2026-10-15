@@ -36,7 +36,7 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 		const wake = (context.args as { wake?: boolean })?.wake !== false ? "reply requested" : "FYI · no wake";
 		lines = [`Queued · ${wake}`];
 		for (const receipt of value.queued) {
-			const held = receipt.recipient?.deliveryReason && (receipt.recipient.delivery !== "limited" || receipt.wakeRequested);
+			const held = receipt.recipient?.deliveryReason;
 			if (held || options.expanded) lines.push(`→ ${label(String(receipt.to))}${held ? ` · ${receipt.recipient.deliveryReason}` : ""}`);
 		}
 	} else if (kind === "read" && Array.isArray(value)) {

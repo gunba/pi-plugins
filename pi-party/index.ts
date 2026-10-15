@@ -99,10 +99,8 @@ export default function party(pi: ExtensionAPI): void {
 		remote?.refresh();
 		const pending = store.pending(session, owner).length;
 		if (!pending) { source?.set(undefined); signature = ""; return; }
-		const wakeHeld = self.wakes >= 8 && !!ctx?.isIdle();
-		const status = `${pending} unread${wakeHeld ? " · Wake limit" : ""}`;
-		const detail = [...(self.wakes >= 8 ? ["Automatic idle-wake limit reached; working delivery continues. agent_delivery or /inbox resume resets the budget.", ""] : []),
-			...(!armed ? [paused ? "Delivery paused. agent_delivery or /inbox resume can resume it." : "Delivery paused until work resumes, or use agent_delivery.", ""] : []),
+		const status = `${pending} unread`;
+		const detail = [...(!armed ? [paused ? "Delivery paused. agent_delivery or /inbox resume can resume it." : "Delivery paused until work resumes, or use agent_delivery.", ""] : []),
 			"/inbox opens message history."].join("\n");
 		const next = JSON.stringify([status, detail]);
 		if (next === signature) return;
@@ -125,14 +123,9 @@ export default function party(pi: ExtensionAPI): void {
 		try {
 			syncFlight();
 			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id) && (starting || message.seq > wakeAfter));
-			let pending = queued.slice(0, 8);
-			let wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
-			// Hold autonomous starts, not silent context behind the held batch.
+			const pending = queued.slice(0, 8);
 			// Managed child starts are accounted by their owning driver.
-			if (wake && !store.reserveWake(session, owner)) {
-				pending = queued.filter(message => message.wake === 0).slice(0, 8);
-				wake = false;
-			}
+			const wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
 			for (let index = 0; index < pending.length; index++) {
 				const message = pending[index];
 				inFlight.add(message.id);
@@ -223,7 +216,6 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
 			wakeAfter = 0;
-			store.resetWakes(session, owner);
 			armed = !paused; store.setDelivery(session, owner, armed);
 		}
 	});
@@ -265,7 +257,6 @@ export default function party(pi: ExtensionAPI): void {
 		if (enabled) wakeAfter = 0;
 		database().setPaused(session, owner, paused);
 		database().setDelivery(session, owner, enabled);
-		if (enabled) database().resetWakes(session, owner);
 		pump(); publish(); signal();
 		return publicAgent(member()!);
 	};
@@ -471,7 +462,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "agent_delivery", label: "Message delivery", ...AGENTS,
-		description: "Pause or resume automatic delivery of agent messages to this conversation. Resuming resets its limit of 8 automatic wake-ups.",
+		description: "Pause or resume automatic delivery of agent messages to this conversation.",
 		parameters: Type.Object({ enabled: Type.Boolean() }),
 		async execute(_id, params) { return result(delivery(params.enabled)); },
 	});
@@ -493,7 +484,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "agent_inbox", label: "Read agent messages", ...AGENTS,
-		description: "Read queued agent messages, including any held back by the wake-up limit, and recent delivery receipts.",
+		description: "Read queued agent messages and recent delivery receipts.",
 		parameters: Type.Object({}),
 		renderCall: (args, theme, context) => renderPartyCall("read", args, theme, context, peerLabel),
 		renderResult: (result, options, theme, context) => renderPartyResult("read", result, options, theme, context, peerLabel),

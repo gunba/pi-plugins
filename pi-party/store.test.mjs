@@ -85,18 +85,6 @@ test("a conversation Desk restarts re-registers while marked restarting and rece
 	assert.equal(b.member("target").state, "idle", "a stale keep-alive does not mark the new process restarting");
 });
 
-test("automatic wake budget is bounded across database connections and reconnects", t => {
-	const { a, b } = fixture(t);
-	a.register("first", "owner", "First");
-	for (let i = 0; i < 8; i++) assert.equal(a.reserveWake("first", "owner"), true);
-	assert.equal(b.reserveWake("first", "owner"), false);
-	a.release("first", "owner");
-	b.register("first", "new", "First");
-	assert.equal(b.reserveWake("first", "new"), false);
-	b.resetWakes("first", "new");
-	assert.equal(b.reserveWake("first", "new"), true);
-});
-
 test("message validation, ambiguity, full inboxes and receipt ownership", t => {
 	const { a } = fixture(t);
 	for (const id of ["first", "peer-a", "peer-b"]) a.register(id, id, id);
