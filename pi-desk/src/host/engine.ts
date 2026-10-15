@@ -73,6 +73,27 @@ async function checkModelChange(runtime: AgentSessionRuntime, model: { provider:
 }
 
 /** The only app module that owns Pi engine/session lifecycle. */
+/**
+ * When the current context's prompt cache was last used, and how long the provider keeps it: a model reply or one
+ * of Pi's cache-warming refreshes for the current model, after the latest compaction. The lifetime comes from the
+ * model's catalog for the retention in use (Desk asks for long retention: one hour on Claude); a model without one,
+ * such as Codex's, has no timer.
+ */
+export function promptCache(session: AgentSession): SessionSnapshot["cache"] {
+	const model = session.model;
+	const seconds = model?.promptCache?.[process.env.PI_CACHE_RETENTION === "long" ? "long" : "short"];
+	if (!model || !seconds) return;
+	const branch = session.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.type === "compaction") return;
+		const used = entry.type === "usage" && entry.kind === "cache_warm" ? { provider: entry.provider, at: Date.parse(entry.timestamp) }
+			: entry.type === "message" && entry.message.role === "assistant" && entry.message.usage
+				&& entry.message.usage.cacheRead + entry.message.usage.cacheWrite > 0 ? { provider: entry.message.provider, at: entry.message.timestamp } : undefined;
+		if (used) return used.provider === model.provider && Number.isFinite(used.at) ? { usedAt: used.at, ttlMs: seconds * 1000 } : undefined;
+	}
+}
+
 /** The conversation ends with your messages followed by a reply that was stopped or failed before answering them. */
 export function unansweredMessages(branch: readonly SessionEntry[]): boolean {
 	const messages = branch.flatMap(entry => entry.type === "message" ? [entry.message] : []);
@@ -113,7 +134,8 @@ export class DeskEngine {
 	private compacting?: SessionSnapshot["compacting"];
 	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
 	private measured?: { manager: SessionManager; leaf: string | null; revision: number; value?: number };
-	private automaticCompaction = false;
+	/** Why Desk itself started the current compaction; Pi reports those as manual. */
+	private automaticCompaction?: "threshold" | "cache";
 
 	constructor(send: (message: WorkerMessage) => void) {
 		this.send = send;
@@ -375,7 +397,7 @@ export class DeskEngine {
 		const feed = this.openTranscript(session.sessionManager);
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
-			if (event.type === "compaction_start") this.compacting = { reason: this.automaticCompaction ? "threshold" : event.reason, started: Date.now() };
+			if (event.type === "compaction_start") this.compacting = { reason: this.automaticCompaction ?? event.reason, started: Date.now() };
 			if (event.type === "agent_settled") setImmediate(() => void this.compactMeasuredContext(session));
 			if (event.type === "compaction_end") {
 				this.compacting = undefined;
@@ -433,6 +455,7 @@ export class DeskEngine {
 		const usage = session.getContextUsage(), measured = usage?.tokens == null ? undefined : this.measuredContext(session);
 		const context = usage && (usage.tokens == null ? usage : measured === undefined ? usage.tokens > 0 ? { ...usage, estimated: true } : usage
 			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
+		const cache = promptCache(session);
 		const defaults = session.settingsManager.getGlobalSettings();
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
@@ -467,6 +490,7 @@ export class DeskEngine {
 				accountName: this.accountBindings.get(this.runtime!.services.modelRuntime)?.name(model.provider),
 			})),
 			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
+			...(cache ? { cache } : {}),
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent,
 				...("estimated" in context ? { estimated: true } : {}) } : undefined,
 			usage: this.usageCache.value,
@@ -548,7 +572,8 @@ export class DeskEngine {
 			});
 			case "compact": return this.change(async () => {
 				const started = Date.now();
-				const result = await session.compact(command.instructions).catch(error => {
+				this.automaticCompaction = command.reason;
+				const result = await session.compact(command.instructions).finally(() => { this.automaticCompaction = undefined; }).catch(error => {
 					// An extension that refuses a compaction can only cancel it; report its reason instead.
 					throw new Error(compactionFailure(session.sessionId, started) ?? (error instanceof Error ? error.message : String(error)));
 				});
@@ -778,9 +803,9 @@ export class DeskEngine {
 		const checkpoint = model.contextWindow - settings.reserveTokens, estimate = session.getContextUsage()?.tokens, measured = this.measuredContext(session);
 		if (measured === undefined || measured <= checkpoint || estimate == null || estimate > checkpoint) return;
 		if (compactionHeld(session.sessionId, compactionKey(model, settings, session.thinkingLevel))) return;
-		this.automaticCompaction = true;
+		this.automaticCompaction = "threshold";
 		try { await session.compact(); } catch {} // The failure is recorded in the conversation.
-		finally { this.automaticCompaction = false; }
+		finally { this.automaticCompaction = undefined; }
 		this.presentation.advance();
 		this.scheduleSnapshot();
 	}

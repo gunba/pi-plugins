@@ -24,7 +24,8 @@ import { isControl } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
-import { QUIET_MS, mcpServerCommands, readAutomatic, restartBlockers, workerHasRunningCommands, writeAutomatic, type AutomaticUpdates } from "./automatic-updates.ts";
+import { CACHE_COMPACTION_LEAD_MS, QUIET_MS, mcpServerCommands, readAutomatic, readCacheCompaction, restartBlockers, workerHasRunningCommands, writeAutomatic,
+	writeCacheCompaction, type AutomaticUpdates } from "./automatic-updates.ts";
 import { InputLedger } from "./inputs.ts";
 import { ProviderAccounts } from "./provider-accounts.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
@@ -122,6 +123,9 @@ export class DeskHost {
 	private updateTimer?: ReturnType<typeof setTimeout>;
 	private applyingUpdate = false;
 	private automatic: AutomaticUpdates = { host: true, conversations: true };
+	private cacheCompaction?: number;
+	/** The cache use each conversation was last compacted ahead of, so one cache period gets one attempt. */
+	private cacheCompacted = new Map<string, number>();
 	/** When each open conversation was last seen busy; it qualifies for an automatic restart after QUIET_MS. */
 	private quietSince = new Map<string, number>();
 	/** The version each conversation was last restarted for, so a failed restart is not repeated. */
@@ -154,6 +158,7 @@ export class DeskHost {
 		this.directory = directory;
 		this.dictation = new Dictation(directory);
 		this.automatic = readAutomatic(directory);
+		this.cacheCompaction = readCacheCompaction(directory);
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
@@ -353,7 +358,8 @@ export class DeskHost {
 		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
 			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView,
-			...(this.dictation?.available ? { dictation: true } : {}) };
+			...(this.dictation?.available ? { dictation: true } : {}),
+			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}) };
 	}
 
 	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
@@ -816,6 +822,7 @@ export class DeskHost {
 				if (busy) { this.quietSince.delete(key); continue; }
 				if (!this.quietSince.has(key)) this.quietSince.set(key, now);
 			}
+			if (this.cacheCompaction) this.compactBeforeCacheExpiry(now);
 			// The host first: it interrupts nothing, and a conversation restart below ends this pass.
 			const available = this.updates?.available, attempt = this.hostUpdateAttempt;
 			const waiting = !available || !this.automatic.host || !this.runtimeHome ? undefined
@@ -849,6 +856,24 @@ export class DeskHost {
 			// A request made during a background pass runs once that pass ends.
 			const queued = this.forcedMaintenance; this.forcedMaintenance = undefined;
 			if (queued) void this.maintain(true, queued.only);
+		}
+	}
+
+	/**
+	 * Compact each idle conversation in the last few minutes before its prompt cache expires, when its context is above
+	 * the chosen share of its budget: afterwards the next message would pay to cache the whole context again.
+	 */
+	private compactBeforeCacheExpiry(now: number): void {
+		for (const managed of this.sessions.values()) {
+			const view = managed.view, snapshot = view.snapshot, cache = snapshot?.cache, worker = managed.worker;
+			if (!worker || !cache || view.state !== "ready" || snapshot.activity !== "idle" || snapshot.compacting) continue;
+			const left = cache.usedAt + cache.ttlMs - now;
+			if (left <= 0 || left > CACHE_COMPACTION_LEAD_MS || (snapshot.context?.percent ?? 0) < this.cacheCompaction!) continue;
+			if (this.cacheCompacted.get(view.key) === cache.usedAt || view.ui?.interactions.length || view.controls?.some(control => control.state === "running")
+				|| this.inputs!.pending(view.key).some(input => input.state === "queued" || input.state === "sending")) continue;
+			this.cacheCompacted.set(view.key, cache.usedAt);
+			void worker.submitControl({ kind: "compact", reason: "cache" }, worker.generation, randomUUID())
+				.catch(error => console.error(`Desk could not compact ${view.title ?? view.key} before its cache expired: ${error instanceof Error ? error.message : String(error)}`));
 		}
 	}
 
@@ -1302,6 +1327,12 @@ export class DeskHost {
 					return reply({ quest: quest ?? null, quests: this.questView });
 				}
 				return reply(this.quests.view());
+			}
+			if (url.pathname === "/api/cache-compaction" && request.method === "POST") {
+				const threshold = data.threshold === null || data.threshold === undefined ? undefined : Number(data.threshold);
+				writeCacheCompaction(this.directory, threshold); this.cacheCompaction = threshold;
+				this.emit({ type: "state", state: this.state() });
+				return reply({ threshold: threshold ?? null });
 			}
 			if (url.pathname === "/api/runtime/automatic" && request.method === "POST") {
 				const next = { host: typeof data.host === "boolean" ? data.host : this.automatic.host,

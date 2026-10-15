@@ -8,6 +8,7 @@ const REASONS = {
 	manual: "You asked Pi to compact this conversation.",
 	threshold: "The conversation is close to the model's context limit.",
 	overflow: "The last request did not fit in the model's context. Pi will retry it once compacting finishes.",
+	cache: "The prompt cache is about to expire. Compacting now keeps your next message from paying to cache the whole conversation again.",
 };
 
 /** Compaction stops the conversation, so it takes over the pane rather than appearing as a status line. */

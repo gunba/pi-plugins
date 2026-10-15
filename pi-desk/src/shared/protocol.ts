@@ -58,7 +58,9 @@ export interface SessionSnapshot {
 	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
 	contextFrom?: number;
-	compacting?: { reason: "manual" | "threshold" | "overflow"; started: number };
+	compacting?: { reason: "manual" | "threshold" | "overflow" | "cache"; started: number };
+	/** When the conversation's prompt cache was last used, and how long the provider keeps it after a use. */
+	cache?: { usedAt: number; ttlMs: number };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 	ui: PresentationSnapshot;
 }
@@ -137,6 +139,8 @@ export interface HostState { release: ReleaseInfo; operatorAvailability?: import
 	updates?: import("./updates.ts").RuntimeUpdateState;
 	/** This computer's quest log. Omitted by hosts before 0.5.62. */
 	quests?: import("./quests.ts").QuestView;
+	/** Compact idle conversations before their prompt cache expires, above this percent of the context budget. */
+	cacheCompaction?: number;
 	/** This computer has an ElevenLabs key for dictation; browsers send recordings to a computer that does. */
 	dictation?: boolean;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
@@ -170,7 +174,7 @@ export type WorkerCommand =
 	| { kind: "fork"; entry: string; position: "before" | "at" }
 	/** Switch this conversation's Pi process to another saved session, as Pi's /resume does. */
 	| { kind: "switch"; file: string }
-	| { kind: "compact"; instructions?: string }
+	| { kind: "compact"; instructions?: string; reason?: "cache" }
 	| { kind: "asset"; id: string; origin: ReferenceOrigin }
 	| { kind: "artifact"; id: string; offset: number; query?: string; origin: ReferenceOrigin }
 	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" | "now" }

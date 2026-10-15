@@ -13,6 +13,7 @@ export interface Computer {
 	parties?: HostState["parties"];
 	quests?: HostState["quests"];
 	dictation?: boolean;
+	cacheCompaction?: number;
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }

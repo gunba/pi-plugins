@@ -66,7 +66,8 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 		case "fork":
 			if (data.position !== "before" && data.position !== "at") throw new Error("Invalid fork position.");
 			return { kind: data.kind, entry: string(data.entry, 100), position: data.position };
-		case "compact": return { kind: data.kind, instructions: data.instructions === undefined ? undefined : string(data.instructions, 10_000) };
+		case "compact": return { kind: data.kind, instructions: data.instructions === undefined ? undefined : string(data.instructions, 10_000),
+			...(data.reason === "cache" ? { reason: "cache" as const } : {}) };
 		case "asset": return { kind: data.kind, id: string(data.id, 100), origin: origin() };
 		case "artifact":
 			if (!Number.isSafeInteger(data.offset) || Number(data.offset) < 0) throw new Error("Invalid artifact position.");

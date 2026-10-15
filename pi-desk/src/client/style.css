@@ -1126,6 +1126,11 @@ details[open] > summary:before {
 .usage-gauge-value { color:var(--text); font-variant-numeric:tabular-nums; min-width:3ch; }
 .usage-gauge-reset { font-variant-numeric:tabular-nums; }
 .usage-gauge-reset::before { content:"· "; }
+/* Each gauge has its own colour, so they can be told apart at a glance; low and critical override them. */
+.usage-gauge-session .usage-gauge-track > span { background:#4f9dff; }
+.usage-gauge-week .usage-gauge-track > span { background:#45bf86; }
+.usage-gauge-cache .usage-gauge-track > span { background:#ec6aa0; transition:width 1s linear; }
+.usage-gauge-cache.expired .usage-gauge-value { color:var(--muted); }
 .usage-gauge.low .usage-gauge-track > span { background:#d08a2c; }
 .usage-gauge.critical .usage-gauge-track > span { background:var(--danger); }
 .usage-gauge.critical .usage-gauge-value { color:var(--danger); }

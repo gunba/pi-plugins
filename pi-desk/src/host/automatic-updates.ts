@@ -113,3 +113,21 @@ export async function workerHasRunningCommands(pid: number, helpers: readonly st
 		return true;
 	}
 }
+
+/**
+ * Compact an idle conversation shortly before its prompt cache expires, when its context is at least this percent
+ * of its budget. After expiry the next message pays to write the whole context to the cache again; compacting first
+ * leaves a small context instead. Undefined is off.
+ */
+export function readCacheCompaction(directory: string): number | undefined {
+	try {
+		const value = JSON.parse(readFileSync(join(directory, "cache-compaction.json"), "utf8"))?.threshold;
+		return Number.isInteger(value) && value >= 10 && value <= 95 ? value : undefined;
+	} catch { return undefined; }
+}
+export function writeCacheCompaction(directory: string, threshold: number | undefined): void {
+	if (threshold !== undefined && (!Number.isInteger(threshold) || threshold < 10 || threshold > 95)) throw new Error("Choose a threshold from 10% to 95%.");
+	atomicJson(join(directory, "cache-compaction.json"), { threshold: threshold ?? null });
+}
+/** Compaction starts this long before the cache would expire: enough for a slow summary to finish in time. */
+export const CACHE_COMPACTION_LEAD_MS = 3 * 60_000;

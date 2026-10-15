@@ -32,9 +32,24 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 			<span title={context?.estimated ? "Estimated from message lengths; no provider-reported usage applies." : undefined}>
 				{context?.tokens == null ? "—" : `${context.estimated ? "~" : ""}${tokens(context.tokens)}`} / {tokens(limit)}</span></> : "Context not measured"}
 	</button>;
-	// Reset countdowns tick once a minute.
+	// Countdowns tick every 15 seconds while visible.
 	const [now, setNow] = useState(Date.now());
-	useEffect(() => { const timer = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 60_000); return () => clearInterval(timer); }, []);
+	useEffect(() => { const timer = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 15_000); return () => clearInterval(timer); }, []);
+	/** Time left before the provider drops this conversation's prompt cache; a running turn keeps it fresh. */
+	const cacheGauge = () => {
+		const cache = snapshot?.cache;
+		if (!cache) return null;
+		const live = snapshot?.activity === "running", left = live ? cache.ttlMs : Math.max(0, cache.usedAt + cache.ttlMs - now);
+		const percent = left / cache.ttlMs * 100, expires = new Date(cache.usedAt + cache.ttlMs);
+		const title = live ? "Prompt cache: kept warm while Pi works."
+			: left ? `Prompt cache: expires at ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} unless a message is sent.\nAfter that, the next message pays to cache the whole conversation again.`
+			: "Prompt cache: expired. The next message pays to cache the whole conversation again.";
+		return <span className={`usage-gauge usage-gauge-cache${left ? "" : " expired"}`} title={title}>
+			<span className="usage-gauge-label">Cache</span>
+			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
+			<span className="usage-gauge-value">{live ? "live" : left ? countdown(left) : "expired"}</span>
+		</span>;
+	};
 	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
 	const gauge = (badge: typeof badges[number]) => {
 		if (badge.meter) return badge.meter;
@@ -46,7 +61,8 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		const reset = meter.resetsAt ? new Date(meter.resetsAt) : undefined, until = reset ? countdown(reset.getTime() - now) : /· resets in (.+)$/.exec(badge.value)?.[1];
 		const resetText = reset ? ` · resets ${reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 			: reset.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : (/· (resets in .+)$/.exec(badge.value)?.[1] ? ` · ${/· (resets in .+)$/.exec(badge.value)![1]}` : "");
-		return <span className={`usage-gauge${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
+		const kind = badge.label === "5h" ? " usage-gauge-session" : /^week/i.test(badge.label) ? " usage-gauge-week" : "";
+		return <span className={`usage-gauge${kind}${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
 			title={`${badge.label === "Weekly" ? "Weekly" : `${badge.label}`} allowance: ${Math.round(percent)}% left${resetText}${badge.description ? `\n${badge.description}` : ""}`}>
 			<span className="usage-gauge-label">{badge.label === "Weekly" ? "Week" : badge.label}</span>
 			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
@@ -70,7 +86,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	};
 	return <div className="composer-status">
 		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
-			<div className="composer-facts-inline">{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
+			<div className="composer-facts-inline">{cacheGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
 			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
 		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}

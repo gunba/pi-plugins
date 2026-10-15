@@ -132,6 +132,16 @@ export function SettingsContent({ section, host, account, session, computer, con
 		{section === "context" && (session?.state === "ready" ? <>
 			{renderView("context-window")}
 			<div className="panel-card"><ContextPanel key={session.key} session={session} disabled={settingBusy || !connected} invoke={invoke} /></div>
+			<section className="panel-card"><h3>Prompt cache</h3>
+				<label className="setting-control"><span>Compact before the cache expires<small>{computer?.name ?? host.name}: when an idle conversation's
+					cache is about to expire and its context is above this share of its budget, compact it first, so your next message does not pay to
+					cache the whole conversation again. A Claude summary reads the conversation once at the normal input price.</small></span>
+					<select value={String((computer ? computer.cacheCompaction : host.cacheCompaction) ?? "")} disabled={busy || !connected}
+						onChange={event => run(api("/cache-compaction", { threshold: event.target.value ? Number(event.target.value) : null }, computer?.id))}>
+						<option value="">Off</option>
+						{[30, 40, 50, 60, 70, 80].map(value => <option key={value} value={value}>Above {value}%</option>)}
+					</select></label>
+			</section>
 			{renderView("pi-context-ledger")}
 		</> : <p className="muted">Open a conversation to inspect its context.</p>)}
 		{section === "tools" && (snapshot ? <>
