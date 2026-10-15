@@ -52,8 +52,28 @@ export function restartBlockers(view: SessionView, pendingInputs: boolean): stri
 	return reasons;
 }
 
+/**
+ * The command lines of the MCP servers a conversation may start on first use. They are long-lived helpers, like
+ * the browser tool's Chrome, not commands: counting them blocked restarts for good once a conversation used one.
+ */
+export function mcpServerCommands(agentDir: string, cwd: string): string[] {
+	const commands: string[] = [];
+	for (const file of [join(agentDir, "mcp.json"), join(cwd, ".pi", "mcp.json")]) {
+		try {
+			const servers = JSON.parse(readFileSync(file, "utf8"))?.mcpServers ?? {};
+			for (const server of Object.values(servers) as { command?: unknown; args?: unknown }[]) {
+				const args = Array.isArray(server?.args) ? server.args.filter(arg => typeof arg === "string") : [];
+				const command = args.length ? args.join(" ") : typeof server?.command === "string" ? server.command : "";
+				if (command.length >= 4) commands.push(command);
+			}
+		} catch { /* No configuration, or none readable. */ }
+	}
+	return commands;
+}
+
 /** Whether a worker has child processes it started after its own start: commands still running, which a restart would end. */
-export async function workerHasRunningCommands(pid: number): Promise<boolean> {
+export async function workerHasRunningCommands(pid: number, helpers: readonly string[] = []): Promise<boolean> {
+	const helper = (command: string) => HELPER.test(command) || helpers.some(fragment => command.includes(fragment));
 	try {
 		if (process.platform === "linux") {
 			const started = (target: number) => {
@@ -67,7 +87,7 @@ export async function workerHasRunningCommands(pid: number): Promise<boolean> {
 			});
 			const self = started(pid);
 			const command = (target: number) => readFileSync(`/proc/${target}/cmdline`, "utf8").replaceAll("\0", " ");
-			return children.some(child => { try { return started(child) - self > STARTUP_CHILD_MS && !HELPER.test(command(child)); } catch { return false; } });
+			return children.some(child => { try { return started(child) - self > STARTUP_CHILD_MS && !helper(command(child)); } catch { return false; } });
 		}
 		if (process.platform === "win32") {
 			const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if (-not $p) { exit 2 }
@@ -76,7 +96,7 @@ export async function workerHasRunningCommands(pid: number): Promise<boolean> {
 				["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 20_000 });
 			return stdout.split(/\r?\n/).filter(Boolean).some(line => {
 				const tab = line.indexOf("\t");
-				return Number(line.slice(0, tab)) > STARTUP_CHILD_MS && !HELPER.test(line.slice(tab + 1));
+				return Number(line.slice(0, tab)) > STARTUP_CHILD_MS && !helper(line.slice(tab + 1));
 			});
 		}
 		const { stdout } = await run("ps", ["-A", "-o", "pid=,ppid=,etime=,command="], { timeout: 10_000 });
@@ -87,7 +107,7 @@ export async function workerHasRunningCommands(pid: number): Promise<boolean> {
 		const rows = stdout.trim().split("\n").map(line => line.trim().split(/\s+/)).map(([id, parent, age, ...command]) =>
 			({ id: Number(id), parent: Number(parent), age: seconds(age!), command: command.join(" ") }));
 		const self = rows.find(row => row.id === pid);
-		return !self || rows.some(row => row.parent === pid && (self.age - row.age) * 1000 > STARTUP_CHILD_MS && !HELPER.test(row.command));
+		return !self || rows.some(row => row.parent === pid && (self.age - row.age) * 1000 > STARTUP_CHILD_MS && !helper(row.command));
 	} catch {
 		// Unknown is treated as busy: skipping a restart is harmless, interrupting work is not.
 		return true;

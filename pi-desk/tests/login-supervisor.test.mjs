@@ -55,16 +55,44 @@ test("the same login supervisor restarts only the host through its stable entry 
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("a supervisor restart cannot infer successful selection; source recovery requires a controller marker", async () => {
+test("a handoff whose controller failed after the commit is finished from durable state, keeping actors and accepted work", async () => {
+	// Work PC, 15 October: the controller's stop-for-update reply timed out after the host committed its checkpoint and
+	// stopped. The controller gave up, the supervisor waited 60 s and exited, and no host started.
 	const directory = root(), home = join(directory, "runtime"); mkdirSync(home);
-	const source = "a".repeat(64), target = "b".repeat(64);
-	atomicJson(join(home, "state.json"), { format: 1, source: directory, active: source });
-	const ticket = { id: "handoff", source, target, state: "committed", created: 1, workers: [], sessions: [] };
-	const ledger = new InputLedger(directory); ledger.writeCheckpoint(ticket); ledger.close();
+	const source = "a".repeat(64), digest = "c".repeat(64), target = runtimeIdentity(digest, process.platform, process.arch, process.versions.modules);
+	const release = versionDirectory(home, target), entries = join(release, "source", "pi-desk", "dist", "host");
+	mkdirSync(entries, { recursive: true });
+	for (const name of ["cli.js", "managed.js", "manage-cli.js"]) writeFileSync(join(entries, name), "");
+	atomicJson(join(release, "runtime.json"), { format: 1, id: target, digest, platform: process.platform, arch: process.arch, node: process.versions.modules,
+		source: directory, readyAt: new Date().toISOString(), plugins: "1.0.0", desk: "1.0.1", engine: "1.2.0" });
+	const workers = [{ key: "conversation", instance: randomUUID() }];
+	const ticket = { id: "handoff", source, target, state: "committed", created: 1, workers, sessions: [] };
+	const ledger = new InputLedger(directory);
+	ledger.writeCheckpoint(ticket);
+	const accepted = ledger.admit("conversation", { id: randomUUID(), activation: "activation", generation: "generation", command: { kind: "prompt", text: "Accepted before the update" } });
+	ledger.close();
+	const unchanged = () => {
+		const after = new InputLedger(directory);
+		try { assert.deepEqual(after.checkpoint().workers, workers, "the saved actors keep their identities"); assert.deepEqual(after.pending("conversation"), [accepted], "accepted work is neither lost nor queued twice"); }
+		finally { after.close(); }
+	};
 	try {
-		await assert.rejects(waitHandoffSelection(home, directory, ticket, new AbortController().signal, 0), /selection is unconfirmed/);
-		const marked = new InputLedger(directory); marked.writeCheckpoint({ ...ticket, resumeSource: true }); marked.close();
-		assert.equal(await waitHandoffSelection(home, directory, ticket, new AbortController().signal, 0), source);
+		atomicJson(join(home, "state.json"), { format: 1, source: directory, active: source, pending: target, autoApply: target });
+		const controller = new SessionLease(join(home, "operation"));
+		try {
+			await assert.rejects(waitHandoffSelection(home, directory, ticket, new AbortController().signal, 0), /selection is unconfirmed/,
+				"a running controller still owns the selection");
+		} finally { controller.close(); }
+		assert.equal(readState(home).active, source);
+		assert.equal(await waitHandoffSelection(home, directory, ticket, new AbortController().signal, 0), target, "the verified update goes ahead");
+		assert.equal(readState(home).active, target); assert.equal(readState(home).previous, source);
+		unchanged();
+
+		atomicJson(join(home, "state.json"), { format: 1, source: directory, active: source });
+		assert.equal(await waitHandoffSelection(home, directory, ticket, new AbortController().signal, 0), source, "with the update withdrawn, the previous runtime resumes");
+		const marked = new InputLedger(directory);
+		try { assert.equal(marked.checkpoint().resumeSource, true); } finally { marked.close(); }
+		unchanged();
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

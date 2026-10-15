@@ -8,9 +8,9 @@ import { readHostRecord, removeHostRecord, type HostRecord, type HostStatus } fr
 
 export interface HostProbe { state: "running" | "stopping" | "stopped" | "unresponsive"; host?: HostStatus; stale?: boolean; error?: string }
 
-export async function controlRequest<T extends { instance: string }>(record: HostRecord, operation: string, body?: object): Promise<T> {
+export async function controlRequest<T extends { instance: string }>(record: HostRecord, operation: string, body?: object, timeout = 15_000): Promise<T> {
 	const response = await fetch(`${record.origin}/api/host/${operation}`, {
-		method: body ? "POST" : "GET", redirect: "error", signal: AbortSignal.timeout(15_000), // A busy host on a slow PC is not unresponsive.
+		method: body ? "POST" : "GET", redirect: "error", signal: AbortSignal.timeout(timeout), // A busy host on a slow PC is not unresponsive.
 		headers: { Authorization: `Bearer ${record.secret}`, "Content-Type": "application/json" },
 		...(body ? { body: JSON.stringify({ ...body, instance: record.instance }) } : {}),
 	});
@@ -149,9 +149,12 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 			if (preparation.checkpoint.state !== "ready" || preparation.checkpoint.id !== id || preparation.checkpoint.target !== target)
 				throw new Error(preparation.checkpoint.error ?? "The host handoff is not ready. The host was not stopped.");
 		}
+		// Committing waits for every conversation's worker to confirm its identity, which takes a while on a busy
+		// Windows PC. The caller still settles from the durable checkpoint if this reply is late or lost.
 		result = await controlRequest<{ instance: string; deferred?: number }>(record,
 			options?.checkpoint ? "stop-for-update" : options?.idleOnly ? "stop-if-idle" : "stop",
-			options ? { runtime: options.runtime, ...(options.checkpoint ? { checkpoint: options.checkpoint.id, target: options.checkpoint.target } : {}) } : {});
+			options ? { runtime: options.runtime, ...(options.checkpoint ? { checkpoint: options.checkpoint.id, target: options.checkpoint.target } : {}) } : {},
+			options?.checkpoint ? 120_000 : undefined);
 	} catch (error) {
 		if (options?.checkpoint) await controlRequest(record, "cancel-update", { checkpoint: options.checkpoint.id }).catch(() => {});
 		throw error;

@@ -24,7 +24,7 @@ import { isControl } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
-import { QUIET_MS, readAutomatic, restartBlockers, workerHasRunningCommands, writeAutomatic, type AutomaticUpdates } from "./automatic-updates.ts";
+import { QUIET_MS, mcpServerCommands, readAutomatic, restartBlockers, workerHasRunningCommands, writeAutomatic, type AutomaticUpdates } from "./automatic-updates.ts";
 import { InputLedger } from "./inputs.ts";
 import { ProviderAccounts } from "./provider-accounts.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
@@ -837,7 +837,7 @@ export class DeskHost {
 					// An explicit request retries a restart that failed earlier.
 					if (blockers.length || !force && this.restartAttempts.get(key) === RELEASE.version) continue;
 					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
-					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid)) continue;
+					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid, mcpServerCommands(this.options.agentDir!, managed.view.cwd))) continue;
 					await this.restartForUpdate(managed);
 					if (!force) return;
 				}
@@ -1317,7 +1317,7 @@ export class DeskHost {
 				let restarting = 0;
 				// The same check the restart makes, so the reply says what will actually happen.
 				for (const item of outdated.filter(item => !item.blockers.length)) {
-					if (item.managed.worker?.pid && !await workerHasRunningCommands(item.managed.worker.pid)) restarting++;
+					if (item.managed.worker?.pid && !await workerHasRunningCommands(item.managed.worker.pid, mcpServerCommands(this.options.agentDir!, item.managed.view.cwd))) restarting++;
 					else skipped.push({ title: title(item), reason: "a command it started is still running" });
 				}
 				void this.maintain(true, only);

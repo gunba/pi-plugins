@@ -6,6 +6,7 @@ import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/l
 import { atomicJson, readState } from "../../manage/store.ts";
 import { InputLedger } from "./inputs.ts";
 import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
+import { settleHandoff } from "../../manage/handoff.ts";
 
 export interface SupervisorRecord {
 	version: 1; instance: string; owner: string; pid: number; node: string; entry: string;
@@ -51,9 +52,13 @@ export function handoffTicket(directory: string, source: string | undefined): Up
 	} finally { ledger.close(); }
 }
 
-/** Wait only for controller selection; restarting the host never restarts its actors. */
+/**
+ * Wait for the controller to select the next runtime; restarting the host never restarts its actors. Once no
+ * controller owns the operation, the handoff is settled from its durable state instead (settleHandoff), so a
+ * controller that failed after the commit no longer leaves the computer without a host.
+ */
 export async function waitHandoffSelection(home: string, directory: string, ticket: UpdateCheckpoint,
-	signal: AbortSignal, timeout = 60_000): Promise<string> {
+	signal: AbortSignal, timeout = 60 * 60_000): Promise<string> {
 	const until = Date.now() + timeout;
 	for (;;) {
 		signal.throwIfAborted();
@@ -63,7 +68,9 @@ export async function waitHandoffSelection(home: string, directory: string, tick
 		const current = handoffTicket(directory, ticket.source);
 		if (!current || current.id !== ticket.id) throw new Error("The host handoff changed before selection.");
 		if (current.resumeSource) return ticket.source;
+		const settled = settleHandoff(home, directory, current);
+		if (settled) return settled;
 		if (Date.now() >= until) throw new Error("Runtime selection is unconfirmed; actors were left running. Inspect the update operation before starting the host.");
-		await delay(150, undefined, { signal });
+		await delay(500, undefined, { signal });
 	}
 }

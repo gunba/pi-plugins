@@ -9,7 +9,7 @@ import { activatePreparedRuntime, activateRuntime, configureRuntime } from "./ac
 import { canonicalPath, launcherPath, readInstallation, type RuntimeInstallation } from "./installation.ts";
 import { atomicJson, readControllerRelease, readRelease, readState, versionDirectory } from "./store.ts";
 import { stageRuntime } from "./stage.ts";
-import { probeHost, stopHost } from "../src/host/lifecycle.ts";
+import { probeHost, SHUTDOWN_WAIT_MS, stopHost, type HostProbe } from "../src/host/lifecycle.ts";
 import { migrateLogin, removeLogin, stopLogin } from "../src/host/login.ts";
 import { readLoginConfig } from "../src/host/login-config.ts";
 import { liveSupervisor } from "../src/host/login-supervisor.ts";
@@ -18,6 +18,8 @@ import { personalPackageSource, releaseSourceSupported } from "./release-source.
 import { readUpdateCheck } from "./update-check.ts";
 import { launchWindowsController } from "./windows-controller.ts";
 import { InputLedger } from "../src/host/inputs.ts";
+import type { UpdateCheckpoint } from "../src/shared/checkpoint.ts";
+import { settleHandoff } from "./handoff.ts";
 
 export type DeskOperation = "setup" | "stage" | "update" | "update-now" | "apply" | "apply-now" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
 export interface Operation {
@@ -31,6 +33,19 @@ export interface OperationOptions {
 	startup?: Pick<RuntimeInstallation, "cwd" | "port" | "sessionDir" | "proxy">;
 }
 const operationFile = (home: string) => join(home, "operation.json");
+/** The host's state once it has finished stopping, or as it stands after the usual shutdown allowance. */
+async function settledHost(directory: string): Promise<HostProbe["state"]> {
+	for (const until = Date.now() + SHUTDOWN_WAIT_MS; ;) {
+		const { state } = await probeHost(directory);
+		if (state === "running" || state === "stopped" || Date.now() >= until) return state;
+		await delay(500);
+	}
+}
+function committedHandoff(directory: string): UpdateCheckpoint | undefined {
+	const ledger = new InputLedger(directory);
+	try { const ticket = ledger.checkpoint(); return ticket?.state === "committed" ? ticket : undefined; }
+	finally { ledger.close(); }
+}
 async function waitForRestoration(directory: string, id: string, signal?: AbortSignal): Promise<number> {
 	const until = Date.now() + 150_000;
 	while (Date.now() < until) {
@@ -199,21 +214,25 @@ export async function runOperation(options: OperationOptions): Promise<Operation
 			let result: Awaited<ReturnType<typeof activatePreparedRuntime>>;
 			try { result = await activatePreparedRuntime(home, forced ? options.prepared : undefined, forced ? value.id : undefined); }
 			catch (error) {
-				if (forced && previous && readState(home)?.active === previous && (await probeHost(installation.directory)).state === "stopped") {
-					const ledger = new InputLedger(installation.directory);
-					let committed = false;
-					try {
-						const ticket = ledger.checkpoint();
-						committed = ticket?.id === value.id && ticket.state === "committed" && ticket.source === previous && ticket.target === options.prepared;
-						if (committed && ticket!.workers) { ticket!.resumeSource = true; ledger.writeCheckpoint(ticket!); }
-					} finally { ledger.close(); }
-					if (committed) {
-						publish("The update could not be selected; restoring the previous runtime");
+				// A lost or late reply does not say whether the host committed the handoff and stopped. Its durable
+				// checkpoint does, once the host has finished stopping; the handoff is then finished, not abandoned.
+				const ticket = forced && previous && await settledHost(installation.directory) === "stopped" ? committedHandoff(installation.directory) : undefined;
+				if (ticket && ticket.id === value.id && ticket.source === previous && ticket.target === options.prepared && ticket.workers) {
+					const runtime = settleHandoff(home, installation.directory, ticket, true);
+					if (runtime) {
+						const forward = runtime === ticket.target, desk = readRelease(home, runtime).desk;
+						publish(forward ? `The host stopped without confirming; starting Desk ${desk}` : "The update could not be selected; restoring the previous runtime");
+						let failures: number;
 						try {
 							if (!liveSupervisor(installation.directory)) await runLauncher(home, ["start"]);
-							await waitForRestoration(installation.directory, value.id);
+							failures = await waitForRestoration(installation.directory, value.id);
 						}
-						catch { throw new Error("The update was not selected and restoration is unconfirmed. Saved checkpoints remain; check Desk status before retrying."); }
+						catch { throw new Error("The update was not finished and restoration is unconfirmed. Saved checkpoints remain; check Desk status before retrying."); }
+						if (forward) {
+							publish(failures ? `Desk ${desk} is installed; ${failures} conversations need manual attention.`
+								: `Desk ${desk} is installed. Native history and account access are retained.`, "complete");
+							return value;
+						}
 					}
 				}
 				throw error;
