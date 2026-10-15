@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,9 +38,12 @@ export function writeWorkerFile(directory: string, name: "bootstrap.json" | "wor
 	renameSync(temporary, file);
 }
 function read<T>(directory: string, name: string): T | undefined {
-	const file = join(directory, name);
-	if (!existsSync(file)) return;
-	return JSON.parse(readFileSync(file, "utf8")) as T;
+	// A stopping worker removes its record while the host polls for that, so a check-then-open could fail between
+	// the two and abandon the restart with the old worker already stopped. Absence is the answer, not an error.
+	let text: string;
+	try { text = readFileSync(join(directory, name), "utf8"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+	return JSON.parse(text) as T;
 }
 function identity(value: { version: number; instance: string; secret: string }): void {
 	if (value.version !== 1 || !/^[a-f0-9-]{36}$/.test(value.instance) || !/^[a-f0-9]{64}$/.test(value.secret)) throw new Error("Invalid worker registry identity.");
