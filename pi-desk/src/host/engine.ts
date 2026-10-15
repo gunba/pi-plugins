@@ -540,6 +540,7 @@ export class DeskEngine {
 				}
 				return result;
 			});
+			case "switch": return this.change(() => this.switchSession(command.file));
 			case "fork": return this.change(async () => {
 				const result = await this.runtime!.fork(command.entry, { position: command.position });
 				if (result.selectedText) this.runtime!.session.extensionRunner!.createContext().ui.setEditorText(result.selectedText);

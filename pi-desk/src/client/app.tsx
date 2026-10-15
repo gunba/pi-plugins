@@ -100,7 +100,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   >();
   const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-visible") !== "false");
   const [create, setCreate] = useState(false);
-  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const createRequest = useRef(0);
@@ -227,7 +227,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         return command({ kind: "native", name: "new", args: "" });
       openNewConversation(); if (args) setCwd(args);
     } },
-    resume: { description: "Choose a saved native session.", execute: args => { noArguments("resume", args); setResumeOpen(true); } },
+    resume: { description: "Switch this conversation to a saved session.", execute: args => { noArguments("resume", args); setResumeOpen(session?.state === "ready" ? "switch" : true); } },
     name: { description: "Rename this conversation.", execute: rename },
     rename: { description: "Alias for /name.", execute: rename },
     compact: { description: "Compact native context.", execute: args => command({ kind: "compact", instructions: args || undefined }) },
@@ -1030,7 +1030,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
-        }} />}
+        }} switchTo={resumeOpen === "switch" ? async file => { await command({ kind: "switch", file }); setResumeOpen(false); } : undefined} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}

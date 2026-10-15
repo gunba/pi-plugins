@@ -168,6 +168,8 @@ export type WorkerCommand =
 	| { kind: "tree"; after?: string }
 	| { kind: "navigate"; entry: string; summarize?: boolean }
 	| { kind: "fork"; entry: string; position: "before" | "at" }
+	/** Switch this conversation's Pi process to another saved session, as Pi's /resume does. */
+	| { kind: "switch"; file: string }
 	| { kind: "compact"; instructions?: string }
 	| { kind: "asset"; id: string; origin: ReferenceOrigin }
 	| { kind: "artifact"; id: string; offset: number; query?: string; origin: ReferenceOrigin }

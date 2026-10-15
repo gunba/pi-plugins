@@ -62,6 +62,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 		}
 		case "tree": return { kind: data.kind, after: data.after === undefined ? undefined : string(data.after, 100) };
 		case "navigate": return { kind: data.kind, entry: string(data.entry, 100), summarize: data.summarize === true };
+		case "switch": return { kind: data.kind, file: string(data.file, 8000) };
 		case "fork":
 			if (data.position !== "before" && data.position !== "at") throw new Error("Invalid fork position.");
 			return { kind: data.kind, entry: string(data.entry, 100), position: data.position };

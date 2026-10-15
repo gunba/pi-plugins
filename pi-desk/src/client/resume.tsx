@@ -11,11 +11,13 @@ import { FolderField } from "./folder-picker.tsx";
 export const RESUME_NOTICE = "Resuming can deliver overdue reminders and restart queued child work. Goal continuation needs its own Resume action.";
 const scanning = (page?: SavedPage) => page && ["loading", "queued"].includes(page.progress.state);
 
-export function ResumeConversation({ computers, connected, cwd, current, selected, close }: {
+export function ResumeConversation({ computers, connected, cwd, current, selected, close, switchTo }: {
 	computers?: Computer[]; connected: boolean; cwd: string; current?: { computer?: string; cwd: string };
 	selected: (key: string) => void; close: () => void;
+	/** From /resume: a session on the conversation's computer opens in its running Pi process, as in Pi. */
+	switchTo?: (file: string) => Promise<void>;
 }) {
-	const [computer, setComputer] = useState<string>();
+	const [computer, setComputer] = useState<string | undefined>(switchTo ? current?.computer : undefined);
 	const target = computers?.find(value => value.id === computer);
 	const [project, setProject] = useState(current?.cwd ?? cwd);
 	const [all, setAll] = useState(false);
@@ -48,14 +50,15 @@ export function ResumeConversation({ computers, connected, cwd, current, selecte
 					value={draft} maxLength={200} onChange={event => setDraft(event.target.value)} />
 				{(all || project) && <SessionList key={`${computer ?? "local"}:${all ? "*" : project}:${target?.epoch ?? 0}`}
 					computer={computer} cwd={all ? undefined : project} online={target?.connected ?? connected}
-					query={query} named={named} selected={selected} />}
+					query={query} named={named} selected={selected} switchTo={switchTo && computer === current?.computer ? switchTo : undefined} />}
 			</>}
 		</div>
 	</Modal>;
 }
 
-function SessionList({ computer, cwd, online, query, named, selected }: {
+function SessionList({ computer, cwd, online, query, named, selected, switchTo }: {
 	computer?: string; cwd?: string; online: boolean; query: string; named: boolean; selected: (key: string) => void;
+	switchTo?: (file: string) => Promise<void>;
 }) {
 	const [page, setPage] = useState<SavedPage>(), [items, setItems] = useState<SavedSession[]>([]);
 	const [choice, setChoice] = useState(""), [busy, setBusy] = useState(false), [resuming, setResuming] = useState(false);
@@ -132,6 +135,7 @@ function SessionList({ computer, cwd, online, query, named, selected }: {
 		if (!online || resuming) return;
 		setResuming(true); setError("");
 		try {
+			if (switchTo) { await switchTo(file); return; }
 			const result = await api<{ key: string }>("/resume", { file, takeover: true }, computer);
 			if (mounted.current) selected(result.key);
 		} catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); }

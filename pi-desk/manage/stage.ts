@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { closeSync, existsSync, openSync, realpathSync, statSync, writeSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink } from "node:fs/promises";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
@@ -6,6 +7,7 @@ import { SessionLease } from "../../pi-session-ownership/lease.ts";
 import { captureSource, within, writeSource } from "./source.ts";
 import { reclaimSpace, unpackDependencies, type VerifiedDependencies } from "./artifact.ts";
 import { atomicJson, readRelease, readState, runtimeId, versionDirectory, type RuntimeRelease } from "./store.ts";
+import { bundleExtensions } from "./bundle-extensions.ts";
 
 /** Invoke npm's JS entry with this Node, including on Windows without a cmd shim. */
 export function npmEntry(): string {
@@ -124,18 +126,24 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 		await writeSource(snapshot, copy);
 		if ((await captureSource(source)).digest !== snapshot.digest) throw new Error("The installed package changed during its snapshot. Stage again after the Pi update finishes.");
 		const npm = npmEntry(), app = join(copy, "pi-desk");
+		// Precompiled extensions start conversations without compiling TypeScript; see bundle-extensions.ts.
+		const build = async () => {
+			await run(app, [npm, "run", "build"]);
+			progress("Precompiling extensions");
+			await bundleExtensions(copy, createRequire(join(app, "package.json"))("esbuild").build);
+		};
 		if (options.dependencies) {
 			progress("Restoring verified production dependencies");
 			await unpackDependencies(temporary, options.dependencies);
 			progress("Building Desk with locked checkout build tools");
-			await withBuildDependencies(source, app, temporary, () => run(app, [npm, "run", "build"]));
+			await withBuildDependencies(source, app, temporary, build);
 		} else {
 			progress("Installing locked first-party dependencies");
 			await run(copy, [npm, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
 			progress("Installing locked Desk build dependencies");
 			await run(app, [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
 			progress("Building Desk");
-			await run(app, [npm, "run", "build"]);
+			await build();
 			progress("Removing build-only dependencies");
 			await run(app, [npm, "prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
 			progress("Preparing protected credential storage");
