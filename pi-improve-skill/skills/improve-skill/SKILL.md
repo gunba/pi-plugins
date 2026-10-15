@@ -1,6 +1,6 @@
 ---
 name: improve-skill
-description: "Improve an agent skill against benchmark cases in stateless rounds. The task model runs the cases and then reconciles its own output against the reference; a fresh session on the strongest model reviews those findings, investigates, edits the skill and leaves notes for the next round; held-out cases are run when a round improves. Use when a skill's results on known cases should get better, especially when runs are slow or noisy or need expert judgement to assess."
+description: "Improve a skill's results on benchmark cases in rounds: the task model runs the cases and explains its own errors against the reference, a fresh strongest-model reviewer edits the skill each round, and held-out cases confirm gains. Use when a skill should do better on known cases, especially slow, noisy or expert-judged ones."
 ---
 
 # Improve a skill

@@ -17,6 +17,7 @@ import {
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
 	SessionManager,
+	type SessionEntry,
 	SettingsManager,
 	type AgentSession,
 	type ModelRuntime,
@@ -72,6 +73,13 @@ async function checkModelChange(runtime: AgentSessionRuntime, model: { provider:
 }
 
 /** The only app module that owns Pi engine/session lifecycle. */
+/** The conversation ends with your messages followed by a reply that was stopped or failed before answering them. */
+export function unansweredMessages(branch: readonly SessionEntry[]): boolean {
+	const messages = branch.flatMap(entry => entry.type === "message" ? [entry.message] : []);
+	const last = messages.at(-1), before = messages.at(-2);
+	return last?.role === "assistant" && (last.stopReason === "aborted" || last.stopReason === "error") && before?.role === "user";
+}
+
 export class DeskEngine {
 	readonly presentation: DeskPresentation;
 	private runtime?: AgentSessionRuntime;
@@ -621,10 +629,14 @@ export class DeskEngine {
 			}
 			// falls through: interrupt the turn so steering, including the promoted message, is delivered now.
 			case "abort": {
+				const sendingNow = command.kind === "queue_now";
 				this.handoffAbort?.abort();
 				this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
 				await session.abort();
-				if (!this.closed && !this.replacing && !this.transition && this.runtime?.session === session && session.isIdle && session.getSteeringMessages().length) {
+				// A tool that finishes as the turn stops lets Pi take the waiting messages into that turn, whose next
+				// request then fails as aborted: the queue is empty, but nothing answered them.
+				if (!this.closed && !this.replacing && !this.transition && this.runtime?.session === session && session.isIdle
+					&& (session.getSteeringMessages().length || sendingNow && unansweredMessages(session.sessionManager.getBranch()))) {
 					// Trigger through AgentSession so native retry, settlement, queues and images remain intact.
 					void session.sendCustomMessage({ customType: "desk-steering-resume", content: "Process the pending steering messages.", display: false },
 						{ triggerTurn: true }).catch(error => this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));

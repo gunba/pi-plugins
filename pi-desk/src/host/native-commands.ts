@@ -29,6 +29,11 @@ const controls: Record<string, (session: AgentSession, runtime: AgentSessionRunt
 		const path = pathArgument(args) || undefined;
 		return { path: path?.toLowerCase().endsWith(".jsonl") ? session.exportToJsonl(path) : await session.exportToHtml(path) };
 	},
+	// A fresh session in this process, as in Pi; the previous one stays in history.
+	new: async (_session, runtime, args) => {
+		noArguments("new", args);
+		return runtime.newSession();
+	},
 	clone: async (session, runtime, args) => {
 		noArguments("clone", args);
 		const leaf = session.sessionManager.getLeafId();

@@ -221,7 +221,12 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
       setSettingsSection(section); setPanel("settings");
     } },
-    new: { description: "Open a new conversation.", execute: args => { openNewConversation(); if (args) setCwd(args); } },
+    new: { description: "Start a fresh session in this conversation, or /new <folder> for a new conversation there.", execute: args => {
+      // Like Pi: a new session in the running process, without starting another. Older workers lack the adapter.
+      if (!args && session?.snapshot?.commands.some(item => item.name === "new" && item.execution === "control"))
+        return command({ kind: "native", name: "new", args: "" });
+      openNewConversation(); if (args) setCwd(args);
+    } },
     resume: { description: "Choose a saved native session.", execute: args => { noArguments("resume", args); setResumeOpen(true); } },
     name: { description: "Rename this conversation.", execute: rename },
     rename: { description: "Alias for /name.", execute: rename },
