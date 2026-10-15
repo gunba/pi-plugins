@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundImages, IMAGE_REQUEST_BYTES, OMITTED_IMAGE_NOTE } from "../extensions/image-budget.ts";
+import { capAnthropicImages, OMITTED_IMAGE_NOTE } from "../extensions/image-budget.ts";
 
-test("a request keeps its newest images within the size limit and leaves older ones out", () => {
-	// Work PC, 15 October: 57 images, 67 MB of base64, at 677k tokens; Anthropic refuses requests over 32 MB and
-	// the SDK reported each attempt only as "Connection error."
-	const image = index => ({ role: "toolResult", toolCallId: `call-${index}`, toolName: "view_image", isError: false, timestamp: index,
-		content: [{ type: "text", text: `Viewed image ${index}` }, { type: "image", mimeType: "image/png", data: "x".repeat(1_174_000) }] });
-	const history = Array.from({ length: 57 }, (_, index) => image(index));
-	const bytes = messages => messages.flatMap(message => message.content).filter(part => part.type === "image").reduce((sum, part) => sum + part.data.length, 0);
-	const bounded = boundImages(history);
-	assert.ok(bytes(history) > 60_000_000 && bytes(bounded) <= IMAGE_REQUEST_BYTES);
-	assert.equal(bounded.at(-1), history.at(-1), "the newest image is untouched");
-	assert.equal(bounded[0].content[1].text, OMITTED_IMAGE_NOTE);
-	assert.equal(bounded[0].content[0].text, "Viewed image 0", "the rest of the message stays");
-	// Monotonic, and stable between steps: one more image moves the cut only when a step is due.
-	const grown = boundImages([...history, image(57)]);
-	assert.ok(grown.slice(0, 57).every((message, index) => message.content[1].type !== "image" || bounded[index].content[1].type === "image"));
-	const small = history.slice(0, 10);
-	assert.equal(boundImages(small), small, "an untroubled request is passed through as is");
+test("a Claude request over 32 MB has its oldest images removed from the saved conversation once", async () => {
+	// Work PC, 15 October: 57 images, 67 MB of base64; Anthropic refused every request and the SDK reported
+	// only "Connection error."
+	const entries = Array.from({ length: 57 }, (_, index) => ({ sourceEntry: { id: `entry-${index}` }, messages: [{ role: "toolResult", toolName: "view_image",
+		content: [{ type: "text", text: `Viewed image ${index}` }, { type: "image", mimeType: "image/png", data: `${index}:`.padEnd(1_174_000, "x") }] }] }));
+	const edits = [];
+	const manager = { buildSessionProjection: () => ({ entries }), appendContextEdit: (id, replacement) => edits.push({ id, replacement }) };
+	let handler;
+	capAnthropicImages({ on: (name, fn) => { if (name === "before_provider_request") handler = fn; } });
+	const payload = images => ({ model: "claude-opus-5-5", messages: images.map(entry => ({ role: "user", content: [{ type: "tool_result",
+		content: [{ type: "text", text: "Viewed" }, { type: "image", source: { type: "base64", media_type: "image/png", data: entry.messages[0].content[1].data } }] }] })) });
+	const ctx = { model: { api: "anthropic-messages" }, sessionManager: manager };
+
+	assert.equal(await handler({ payload: payload(entries.slice(0, 10)) }, ctx), undefined, "a request under the limit is untouched");
+	assert.equal(edits.length, 0);
+
+	const sent = await handler({ payload: payload(entries) }, ctx);
+	assert.ok(Buffer.byteLength(JSON.stringify(sent)) < 32 * 1024 * 1024, "this request now fits");
+	assert.ok(edits.length > 30 && edits.every(edit => edit.replacement.content[1].text === OMITTED_IMAGE_NOTE), "the oldest images are edited out");
+	assert.equal(edits[0].id, "entry-0");
+	assert.ok(!edits.some(edit => edit.id === "entry-56"), "the newest image is kept");
+	assert.equal(edits[0].replacement.content[0].text, "Viewed image 0", "the rest of each message stays");
+	assert.equal(await handler({ payload: payload(entries) }, { ...ctx, model: { api: "openai-codex-responses" } }), undefined, "other providers are untouched");
 });
