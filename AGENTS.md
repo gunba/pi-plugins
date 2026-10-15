@@ -36,8 +36,9 @@ broken: stop and tell Jordan what failed in one plain sentence.
    or on that computer, from `~/.pi/agent/git/github.com/gunba/pi-plugins`,
    run `node pi-desk/manage/deploy.ts host <version>`. Host updates do not
    interrupt running conversations; do not wait for them to go idle.
-5. If `pi-desk/src/client`, `src/shared` or `public` changed, run
-   `node pi-desk/manage/deploy.ts website` on Fedora after its host update.
+5. The Perth server (`ssh pi-desk-perth`) publishes the website and installs the
+   relay and account service from the Desk version it runs. After updating its host,
+   `node pi-desk/manage/deploy.ts website` waits until the website serves the release.
 6. Tell Jordan the version, which computers run it, and which open
    conversations still need a restart to pick up plugin changes. Done.
 

@@ -99,7 +99,8 @@ export class AccountServer {
 	}
 	private page(response: ServerResponse, status: number, title: string, body: string, refresh?: string): void {
 		if (response.destroyed || response.writableEnded) return;
-		response.writeHead(status, { "Content-Type": "text/html; charset=utf-8",
+		// The approval form posts back here; under no-referrer, browsers send `Origin: null` with it.
+		response.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "same-origin",
 			"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
 		response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 ${refresh ? `<meta http-equiv="refresh" content="1;url=${escapeHtml(refresh)}">` : ""}<title>${escapeHtml(title)} · Pi Desk</title>

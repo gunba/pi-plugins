@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -17,7 +18,8 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 	if (output === directory || output.startsWith(directory + sep)) throw new Error("Publish outside the installed client directory.");
 	inspectAppAssets(directory);
 	await mkdir(dirname(output), { recursive: true });
-	await mkdir(output); // A deployment is a fresh artifact, never an in-place overwrite.
+	// A deployment is a fresh artifact, never an in-place overwrite. Node 22.23 refuses to copy into an existing directory.
+	if (existsSync(output)) throw new Error("Publish to a new directory.");
 	await cp(directory, output, { recursive: true, force: false, errorOnExist: true });
 	await writeFile(join(output, "desk-account.json"), JSON.stringify({ kind: "account", accountOrigin: account.origin, appOrigin, ...RELEASE }) + "\n");
 	const socket = new URL(origin); socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
