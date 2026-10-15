@@ -687,7 +687,12 @@ export class DeskHost {
 		}).catch(error => { if (!this.closing) console.error("Party operation failed:", error instanceof Error ? error.message : String(error)); });
 	}
 
-	private waitForSession(key: string): Promise<ManagedSession> {
+	/**
+	 * Wait for a conversation's worker to start. The first start after an update compiles every extension again,
+	 * and on Windows Defender scans each new file: the Work PC took over two minutes where it usually takes 20 s.
+	 * Desk used to give up at 120 s and close the half-started worker, so those requests always failed.
+	 */
+	private waitForSession(key: string, timeoutMs = 10 * 60_000): Promise<ManagedSession> {
 		return new Promise((resolve, reject) => {
 			let finished = false;
 			const cancel = () => finish(Error("Desk stopped during agent startup."));
@@ -701,7 +706,7 @@ export class DeskHost {
 				if (!managed || ["closed", "failed"].includes(managed.view.state)) finish(Error(managed?.view.error ?? "The agent stopped during startup."));
 				else if (managed.initialized && managed.worker && managed.view.state === "ready") finish(undefined, managed);
 			};
-			const timer = setTimeout(() => finish(Error("Agent startup timed out. Check its conversation before retrying.")), 120_000);
+			const timer = setTimeout(() => finish(Error("Agent startup timed out. Check its conversation before retrying.")), timeoutMs);
 			this.startupWaits.add(cancel); this.watchers.add(check);
 			if (this.closing) cancel(); else check();
 		});
@@ -861,7 +866,9 @@ export class DeskHost {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw Error("Desk is updating or shutting down.");
 		const store = this.parties!.store;
 		this.partyOperations!.validate(store, computer, request);
-		if (request.kind === "resume") return this.resumeAgent(request.session!);
+		// As long as the requester waits, leaving time for the reply to reach it.
+		const wait = Math.max(30_000, request.expires - Date.now() - 15_000);
+		if (request.kind === "resume") return this.resumeAgent(request.session!, wait);
 		let fork: { cwd: string; file: string } | undefined;
 		if (request.kind === "fork") {
 			const member = store.member(request.sender)!;
@@ -872,7 +879,7 @@ export class DeskHost {
 		}
 		const key = this.createSession(fork?.cwd ?? request.cwd, fork?.file);
 		try {
-			const managed = await this.waitForSession(key), worker = managed.worker!;
+			const managed = await this.waitForSession(key, wait), worker = managed.worker!;
 			this.partyOperations!.validate(store, computer, request);
 			await worker.command({ kind: "name", name: request.label });
 			const setup = await this.applyAgentModel(managed, request);
@@ -898,7 +905,7 @@ export class DeskHost {
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
-	private async resumeAgent(session: string): Promise<NonNullable<OperationResult["result"]>> {
+	private async resumeAgent(session: string, wait?: number): Promise<NonNullable<OperationResult["result"]>> {
 		const store = this.parties!.store, managed = [...this.sessions.values()].find(item => item.view.agentId === session);
 		if (managed?.worker && (managed.view.state === "ready" || managed.view.state === "starting")) return { session, state: "running", key: managed.view.key };
 		if (managed?.worker) throw Error("This conversation is still stopping. Try again in a moment.");
@@ -907,7 +914,7 @@ export class DeskHost {
 			?? (member ? SessionManager.findById(member.cwd, session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir)) : undefined);
 		if (!file) throw Error("This conversation's saved history is not on this computer.");
 		const key = managed ? this.createSession(managed.view.cwd, managed.view.file ?? file, managed, true) : this.createSession(member?.cwd ?? "", file, undefined, true);
-		await this.waitForSession(key);
+		await this.waitForSession(key, wait);
 		this.refreshParties(); this.partyNetwork?.flush();
 		return { session, state: "resumed", key };
 	}
