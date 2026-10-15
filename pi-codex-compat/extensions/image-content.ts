@@ -183,3 +183,20 @@ export async function prepareNativeImageContent(
 	}
 	return createImageContent(converted.data, convertedMimeType);
 }
+
+/**
+ * The picture a conversation model is shown: at most 2048 pixels a side and 1.5 MB, which is more than Claude uses
+ * (it scales images to 1568 pixels) and enough for screenshots. Each request resends every image in the context,
+ * and full-size screenshots and generated images pushed one conversation past Anthropic's 32 MB request limit.
+ * The file on disk is untouched. Returns the image unchanged when it already fits or cannot be resized.
+ */
+export async function fitForConversation(image: NativeImageContent): Promise<{ image: NativeImageContent; note?: string }> {
+	if (!["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)) return { image };
+	try {
+		const { resizeImage, formatDimensionNote } = await import("@earendil-works/pi-coding-agent");
+		const resized = await resizeImage(Buffer.from(image.data, "base64"), image.mimeType,
+			{ maxWidth: 2048, maxHeight: 2048, maxBytes: 1.5 * 1024 * 1024 });
+		if (!resized?.wasResized) return { image };
+		return { image: createImageContent(resized.data, resized.mimeType), note: formatDimensionNote(resized) };
+	} catch { return { image }; }
+}

@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { prepareNativeImageContent } from "./image-content.ts";
+import { fitForConversation, prepareNativeImageContent } from "./image-content.ts";
 import { describeImageForTextModel } from "./image-description.ts";
 import {
 	IMAGE_GENERATION_MODELS, type ImageGenerationDetails, type ImageGenerationParams,
@@ -82,9 +82,10 @@ async function executeViewImage(
 			return viewImageFailure(absolutePath, image.mimeType, bytes.length, error instanceof Error ? error.message : String(error));
 		}
 	}
+	const fitted = await fitForConversation(image);
 	return {
-		content: [{ type: "text", text: `Viewed image: ${displayPath(ctx, absolutePath)}` }, image],
-		details: { path: absolutePath, mediaType: image.mimeType, bytes: bytes.length },
+		content: [{ type: "text", text: `Viewed image: ${displayPath(ctx, absolutePath)}${fitted.note ? ` ${fitted.note}` : ""}` }, fitted.image],
+		details: { path: absolutePath, mediaType: fitted.image.mimeType, bytes: bytes.length },
 	};
 }
 

@@ -9,6 +9,7 @@ import { Type, type Static } from "typebox";
 import { ArtifactStore, boundedText } from "./artifacts.ts";
 import { literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
+import { boundImages } from "./image-budget.ts";
 
 const readSchema = Type.Object({
   path: Type.String(),
@@ -279,10 +280,11 @@ export default function outputBudget(pi: ExtensionAPI): void {
   // system messages stay where they are.
   pi.on("context_with_system", async (event, ctx) => {
     const eligible = replayCandidates.get(ctx.sessionManager.getSessionId());
-    if (!eligible?.size) return;
-    const messages = await slimArchivedResults(
-      event.messages, outputArtifactStore(), checkedReplayArtifacts, eligible, ctx.signal,
-    );
+    const slimmed = eligible?.size
+      ? await slimArchivedResults(event.messages, outputArtifactStore(), checkedReplayArtifacts, eligible, ctx.signal)
+      : event.messages;
+    // Images are the bytes that grow without bound; see image-budget.ts.
+    const messages = boundImages(slimmed);
     if (messages !== event.messages) return { messages };
   });
 }

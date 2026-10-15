@@ -14,6 +14,7 @@ import {
 	type ImageConverter,
 	type NativeImageContent,
 	createImageContent,
+	fitForConversation,
 	prepareNativeImageContent,
 } from "./image-content.ts";
 import {
@@ -491,8 +492,8 @@ export async function executeImageGeneration(
 	const content: Array<NativeImageContent | { type: "text"; text: string }> = [
 		{ type: "text" as const, text: `Saved generated image to ${saved.path}` },
 	];
-	// Show the picture only to a conversation model that can see images.
-	if (ctx.model?.input?.includes("image")) content.unshift(generatedImage);
+	// Show the picture only to a conversation model that can see images; the saved file keeps full size.
+	if (ctx.model?.input?.includes("image")) content.unshift((await fitForConversation(generatedImage)).image);
 	return {
 		content,
 		details: {
