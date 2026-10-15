@@ -58,17 +58,22 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	const pending = client.request({ method: "POST", path: "/api/example", body: { text: "Once" } }).catch(error => error);
 	await admitted.promise;
 	document.hidden = true; document.dispatchEvent(new Event("visibilitychange"));
-	assert.equal(client.state, "paused");
-	assert.equal(connectionLabel({ connection: client.state, presence }), "App paused");
-	assert.equal(client.connected, false);
-	assert.equal(connector.status.state, "online", "the native host stays connected while this browser is paused");
-	assert.match((await pending).message, /uncertain/);
-	assert.equal(client.diagnostics.interruptions, 0, "intentional tab suspension is not an unexplained interruption");
+	assert.equal(client.state, "connected", "switching windows or tabs keeps the connection");
 	release.resolve();
+	assert.equal((await pending).status, 200);
+	// After a longer absence the connection pauses, but the app keeps showing its previous state.
+	const established = client.established;
+	client.pause("App paused; delivery of pending commands is uncertain.");
+	assert.equal(client.state, "connected");
+	assert.equal(connectionLabel({ connection: client.state, presence }), "Connected");
+	assert.equal(connector.status.state, "online", "the native host stays connected while this browser is paused");
+	assert.equal(client.diagnostics.interruptions, 0, "intentional tab suspension is not an unexplained interruption");
 	document.hidden = false; document.dispatchEvent(new Event("visibilitychange"));
-	assert.equal(client.state, "reconnecting");
-	await state(client, "connected");
-	assert.equal(commands, 1, "reconnecting never replays an earlier request");
+	assert.equal(client.state, "connected", "returning shows the previous state while it reconnects");
+	const during = client.request({ method: "POST", path: "/api/example", body: { text: "Twice" } });
+	assert.equal((await during).status, 200, "a request while reconnecting waits for the connection");
+	assert.ok(client.established > established, "the new connection makes views reload what they missed");
+	assert.equal(commands, 2, "reconnecting never replays an earlier request");
 
 	client.backoff = 0;
 	const interrupted = state(client, "reconnecting");
@@ -78,7 +83,7 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	assert.equal(client.diagnostics.interruptions, 1);
 	assert.equal(client.diagnostics.last.code, 1006);
 	await state(client, "connected");
-	assert.equal(commands, 1);
+	assert.equal(commands, 2);
 
 	navigator.onLine = false; window.dispatchEvent(new Event("offline"));
 	assert.equal(client.state, "network-offline");
@@ -88,7 +93,7 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	client.leaseUntil = performance.now() - 1;
 	assert.equal(client.connected, false, "reported PC presence cannot override an expired membership lease");
 	await assert.rejects(client.request({ method: "POST", path: "/api/example" }), /authorization expired/);
-	assert.equal(commands, 1);
+	assert.equal(commands, 2);
 
 	browser.lease = async () => ({ allowed: [], expires: Math.floor(Date.now() / 1000) + 60 });
 	client.reconnect();

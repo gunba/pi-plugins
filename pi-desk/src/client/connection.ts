@@ -74,8 +74,9 @@ function reconcile(devices: AccountDirectory["devices"]): void {
 				] };
 				emit({ type: "session", session: { ...event.session, key: sessionKey(id, event.session.key), computer: id } }, accepted);
 			} else emit({ ...event, key: sessionKey(id, event.key) }, accepted);
-		}, online => {
-			if (online) remote.epoch++;
+		}, () => {
+			// A new connection missed events while it was down, so views reload; the client tells only real ones.
+			remote.epoch = client.established;
 			emitWorkspace();
 		});
 	}
@@ -251,12 +252,14 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 		source.onopen = () => connection(true);
 		source.onerror = () => connection(false);
 	};
+	// Account connections pause themselves (RemoteClient). The local event stream likewise stays open while the app is
+	// briefly hidden, so switching windows or tabs does not reconnect.
+	let pause: ReturnType<typeof setTimeout> | undefined;
 	const visibility = () => {
-		if (document.hidden) {
-			clear(); source?.close(); source = undefined; connection(false);
-			if (mode === "account") events([{ type: "state", state: workspace() }]);
-		}
-		else if (mode === "local") openLocal();
+		if (mode !== "local") return;
+		clearTimeout(pause);
+		if (!document.hidden) openLocal();
+		else pause = setTimeout(() => { if (document.hidden) hide(); }, 4 * 60_000);
 	};
 	const hide = () => { clear(); source?.close(); source = undefined; connection(false); };
 	if (mode === "account") { consumers.add(relayReceive); relayReceive({ type: "state", state: workspace() }); }
@@ -264,7 +267,7 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 	document.addEventListener("visibilitychange", visibility);
 	addEventListener("pagehide", hide); addEventListener("pageshow", visibility);
 	return () => {
-		consumers.delete(relayReceive); source?.close(); clear();
+		consumers.delete(relayReceive); source?.close(); clear(); clearTimeout(pause);
 		document.removeEventListener("visibilitychange", visibility);
 		removeEventListener("pagehide", hide); removeEventListener("pageshow", visibility);
 	};

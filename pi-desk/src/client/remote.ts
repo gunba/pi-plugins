@@ -27,6 +27,13 @@ function samePlatform(platform: unknown): boolean {
 }
 /** After a direct connection fails, use the relay for this long before switching again. */
 const DIRECT_RETRY_MS = 10 * 60_000;
+/**
+ * A hidden app keeps its connection this long, so switching windows or tabs does not reconnect. Chrome slows a hidden
+ * tab's timers to once a minute after five minutes, too slow to renew the one-minute membership lease.
+ */
+const PAUSE_AFTER_MS = 4 * 60_000;
+/** Returning after a pause, the app shows its previous state this long while it reconnects, then the real state. */
+const QUIET_MS = 5_000;
 
 export class RemoteClient {
 	private account: RemoteAccount;
@@ -68,9 +75,22 @@ export class RemoteClient {
 	private directFailedAt = 0;
 	private via: "direct" | "relay" = "relay";
 	private reached = false;
-	private onlineListener = () => { clearTimeout(this.timer); void this.connect(); };
-	private visibilityListener = () => document.hidden ? this.disconnect("App paused; delivery of pending commands is uncertain.", "paused") : void this.connect();
-	private pageHideListener = () => this.disconnect("App closed; delivery of pending commands is uncertain.", "paused");
+	/** Paused while it looked connected: on return it keeps looking connected until {@link quietUntil}. */
+	private resumable = false;
+	private quietUntil = 0;
+	private quietTimer?: ReturnType<typeof setTimeout>;
+	private pauseTimer?: ReturnType<typeof setTimeout>;
+	/** Connections made; a new one means events were missed, so the app reloads what it shows. */
+	established = 0;
+	private shown?: string;
+	private waiters = new Set<() => void>();
+	private onlineListener = () => { clearTimeout(this.timer); this.resume(); };
+	private visibilityListener = () => {
+		clearTimeout(this.pauseTimer);
+		if (!document.hidden) { this.resume(); return; }
+		this.pauseTimer = setTimeout(() => { if (document.hidden) this.pause("App paused; delivery of pending commands is uncertain."); }, PAUSE_AFTER_MS);
+	};
+	private pageHideListener = () => this.pause("App closed; delivery of pending commands is uncertain.");
 	private offlineListener = () => {
 		this.interrupted("This device lost its network connection");
 		this.disconnect("This device is offline; delivery of pending commands is uncertain.", "network-offline");
@@ -85,13 +105,31 @@ export class RemoteClient {
 		addEventListener("pageshow", this.onlineListener);
 		void this.connect();
 	}
-	get connected(): boolean { return this.online && this.valid(); }
+	get connected(): boolean { return this.online && this.valid() || this.looksConnected(); }
 	get state(): ConnectionState {
 		if (this.failure) return this.failure.status === 426 ? "upgrade" : "denied";
+		if (this.looksConnected()) return "connected";
 		return this.phase === "connected" && !this.valid() ? "reconnecting" : this.phase;
+	}
+	/** Paused, or briefly reconnecting after a pause, from a connection: shown as it was. */
+	private looksConnected(): boolean {
+		return this.resumable && !this.failure && !this.closed
+			&& (this.phase === "paused" || (this.phase === "connecting" || this.phase === "reconnecting") && performance.now() < this.quietUntil);
+	}
+	private pause(message: string): void {
+		this.resumable = this.online || this.looksConnected();
+		this.disconnect(message, "paused");
+	}
+	private resume(): void {
+		if (this.resumable && !this.online) {
+			this.quietUntil = performance.now() + QUIET_MS;
+			clearTimeout(this.quietTimer); this.quietTimer = setTimeout(() => this.notify(), QUIET_MS + 50);
+		}
+		void this.connect();
 	}
 	get error(): string | undefined {
 		if (this.failure) return this.failure.message;
+		if (this.looksConnected()) return undefined;
 		if (this.phase === "paused") return "This app is paused. Pausing the browser does not stop Pi sessions.";
 		if (this.phase === "network-offline") return "This device has no network connection.";
 		return this.lastError;
@@ -99,7 +137,15 @@ export class RemoteClient {
 	get diagnostics() { return { interruptions: this.interruptionCount, last: this.lastInterruption }; }
 	private setPhase(value: ConnectionState): void {
 		this.phase = value; this.online = value === "connected";
-		if (this.online) this.lastError = undefined;
+		if (this.online) { this.lastError = undefined; this.established++; this.quietUntil = 0; this.resumable = false; }
+		this.notify();
+	}
+	/** Tell subscribers when what they show changes, or a new connection means they should reload. */
+	private notify(): void {
+		for (const waiter of [...this.waiters]) waiter();
+		const shown = `${this.state}|${this.connected}|${this.established}`;
+		if (shown === this.shown) return;
+		this.shown = shown;
 		for (const handler of this.connections) handler(this.connected);
 	}
 	private interrupted(reason: string, code?: number): void {
@@ -209,18 +255,27 @@ export class RemoteClient {
 		socket.onclose = event => {
 			handshake.close();
 			if (this.socket !== socket) return;
+			const shown = this.online || this.looksConnected();
 			this.interrupted(interruptionReason(event.code), event.code);
 			clearTimeout(this.deadline); clearInterval(this.refresh); clearInterval(this.expiry);
 			this.channel?.close(); this.channel = undefined; this.peer = undefined; this.own = undefined;
 			if (event.code === 4003) this.failure ??= new RemoteError(426, "Update Pi Desk on the computer and reload this app.");
 			this.lastError = event.code === 4001 ? "Computer access could not be authorized. Rechecking the account."
 				: this.online ? "Connection interrupted. Reconnecting." : "Could not establish a connection. Retrying.";
-			this.setPhase("reconnecting");
+			if (document.hidden && !this.closed && !this.failure) {
+				// Lost while hidden, as when a phone freezes the app: a pause, so it reconnects quietly on return.
+				this.resumable = shown;
+				this.rejectPending("App paused; delivery of pending commands is uncertain.");
+				this.setPhase("paused"); return;
+			}
+			const fallback = direct && !this.reached && !this.closed && !this.failure;
+			this.setPhase(fallback && !this.established ? "connecting" : "reconnecting");
 			this.rejectPending("Connection lost; delivery is uncertain. Check the conversation before sending it again.");
 			if (this.closed || this.failure) return;
-			if (direct && !this.reached) {
+			if (fallback) {
 				// Not reachable directly (another computer, or the browser declined local access): use the relay now.
 				this.preferDirect = false; this.directFailedAt = Date.now();
+				if (!this.established) this.attempts = 0;
 				void this.connect(); return;
 			}
 			// After a relay failure, try the host directly first again, as when it restarts.
@@ -286,6 +341,14 @@ export class RemoteClient {
 	}
 	request(request: ApiRequest): Promise<ApiResponse> {
 		if (this.failure) return Promise.reject(this.failure);
+		// Shown as connected while reconnecting after a pause: wait for the connection rather than fail.
+		if (!this.online && this.looksConnected() && this.phase !== "paused") return new Promise<void>((resolve, reject) => {
+			const waiter = () => {
+				if (this.online && this.valid()) { this.waiters.delete(waiter); resolve(); }
+				else if (!this.looksConnected()) { this.waiters.delete(waiter); reject(new RemoteError(503, "The computer is not connected or its authorization expired.")); }
+			};
+			this.waiters.add(waiter);
+		}).then(() => this.request(request));
 		if (!this.online || !this.channel || !this.valid()) return Promise.reject(new RemoteError(503, "The computer is not connected or its authorization expired."));
 		if (this.pending.size >= 32) return Promise.reject(new RemoteError(429, "Too many requests are waiting."));
 		const id = crypto.randomUUID(), socket = this.socket;
@@ -333,7 +396,7 @@ export class RemoteClient {
 		void this.connect();
 	}
 	close(): void {
-		this.closed = true;
+		this.closed = true; clearTimeout(this.pauseTimer); clearTimeout(this.quietTimer);
 		removeEventListener("online", this.onlineListener);
 		removeEventListener("offline", this.offlineListener);
 		document.removeEventListener("visibilitychange", this.visibilityListener);
