@@ -84,7 +84,8 @@ async function host(version: string): Promise<void> {
 		const operation = await read(join(runtime, "operation.json")).catch(() => undefined);
 		if (!operation || operation.id === before.id) continue;
 		if (operation.message !== last) console.log(`  ${operation.phase}: ${last = operation.message}`);
-		if (operation.phase === "complete") return;
+		// A handed-over update completes the download; the new release's own controller then applies it.
+		if (operation.phase === "complete" && !operation.handoff) return;
 		if (operation.phase === "failed") throw new Error("Host update failed; the previous runtime stays active. Check /desk status.");
 	}
 	throw new Error("Host update still running after 30 minutes; it continues in the background. Check /desk status.");
