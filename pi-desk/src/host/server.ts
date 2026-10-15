@@ -68,6 +68,11 @@ const json = (response: ServerResponse, code: number, value: unknown) => {
 };
 const cookie = (request: IncomingMessage) => /(?:^|;\s*)pi_desk=([^;]+)/.exec(request.headers.cookie ?? "")?.[1] ?? "";
 
+/** A delivery or setting change running this long is stuck. */
+const STUCK_MS = 60 * 60_000;
+/** A failed automatic update is tried again after this long. */
+const RETRY_MS = 60 * 60_000;
+
 export class DeskHost {
 	private options: Options;
 	private access: AccessStore;
@@ -123,7 +128,8 @@ export class DeskHost {
 	private restartAttempts = new Map<string, string>();
 	private maintaining = false;
 	private forcedMaintenance?: { only?: string };
-	private hostUpdateAttempted?: string;
+	private hostUpdateAttempt?: { version: string; at: number };
+	private hostUpdateWaiting?: string;
 	private readonly started = Date.now();
 	private updateCheckTimer?: ReturnType<typeof setTimeout>;
 	private updateCheckAbort = new AbortController();
@@ -386,7 +392,7 @@ export class DeskHost {
 			const value = runtimeUpdateState(this.runtimeHome);
 			if (!value) throw new Error("The managed runtime selection is missing.");
 			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError,
-				automatic: this.automatic, outdated: this.outdated().length };
+				automatic: this.automatic, outdated: this.outdated().length, ...(this.hostUpdateWaiting ? { waiting: this.hostUpdateWaiting } : {}) };
 			if (this.restoringUpdate) next = { ...next, phase: "applying", message: "Restoring conversations…" };
 		}
 		catch (error) { next = { current: RELEASE.version, phase: "failed", message: error instanceof Error ? error.message : String(error) }; }
@@ -798,14 +804,31 @@ export class DeskHost {
 			// Updating the host leaves conversations running: workers outlive it. It waits only for what the host
 			// itself carries, messages being delivered and settings being applied. Waiting for every conversation
 			// to fall quiet kept a computer with one long-running conversation on an old version for days.
-			let hostQuiet = now - this.started > QUIET_MS;
+			let hostBusy: string | undefined;
 			for (const managed of this.sessions.values()) {
 				if (!managed.worker || managed.view.state === "closed") continue;
-				const key = managed.view.key, delivering = this.inputs!.pending(key).some(input => input.state === "queued" || input.state === "sending");
-				if (delivering || managed.view.controls?.some(control => control.state === "running")) hostQuiet = false;
-				const busy = restartBlockers(managed.view, delivering).some(reason => reason !== "its folder is missing");
+				const key = managed.view.key, title = managed.view.title ?? managed.view.name ?? "A conversation";
+				const pending = this.inputs!.pending(key).filter(input => input.state === "queued" || input.state === "sending");
+				// Anything older than an hour is stuck, not in progress, and must not hold every update back.
+				if (pending.some(input => now - input.updated < STUCK_MS)) hostBusy ??= `${title} has a message being delivered`;
+				if (managed.view.controls?.some(control => control.state === "running" && now - control.started < STUCK_MS)) hostBusy ??= `${title} is applying a setting`;
+				const busy = restartBlockers(managed.view, pending.length > 0).some(reason => reason !== "its folder is missing");
 				if (busy) { this.quietSince.delete(key); continue; }
 				if (!this.quietSince.has(key)) this.quietSince.set(key, now);
+			}
+			// The host first: it interrupts nothing, and a conversation restart below ends this pass.
+			const available = this.updates?.available, attempt = this.hostUpdateAttempt;
+			const waiting = !available || !this.automatic.host || !this.runtimeHome ? undefined
+				: now - this.started < QUIET_MS ? "Desk started in the last ten minutes"
+				: hostBusy ?? (this.dot?.busy ? "A Dot operation is running" : this.providerAccounts?.signingIn ? "A provider sign-in is in progress"
+				: !["idle", "failed"].includes(this.updates!.phase) ? `Another update is ${this.updates!.phase}`
+				// A failed attempt is retried later, not abandoned: one failure used to stop automatic updates for good.
+				: attempt?.version === available && now - attempt.at < RETRY_MS ? `The last attempt failed; Desk retries ${new Date(attempt.at + RETRY_MS).toLocaleTimeString()}` : undefined);
+			if (this.hostUpdateWaiting !== waiting) { this.hostUpdateWaiting = waiting; this.refreshUpdates(); }
+			if (!force && !only && available && this.automatic.host && this.runtimeHome && !waiting) {
+				this.hostUpdateAttempt = { version: available, at: now };
+				await launchOperation(this.runtimeHome, "update-now", available);
+				this.refreshUpdates();
 			}
 			if (force || this.automatic.conversations) {
 				for (const { managed, blockers } of this.outdated()) {
@@ -818,14 +841,6 @@ export class DeskHost {
 					await this.restartForUpdate(managed);
 					if (!force) return;
 				}
-			}
-			const available = this.updates?.available;
-			if (!force && !only && this.automatic.host && hostQuiet && available && this.updates?.phase === "idle" && this.hostUpdateAttempted !== available
-				&& this.runtimeHome && !this.dot?.busy && !this.providerAccounts?.signingIn) {
-				// Workers outlive the host; their conversations move onto the new version here once they are idle.
-				this.hostUpdateAttempted = available;
-				await launchOperation(this.runtimeHome, "update-now", available);
-				this.refreshUpdates();
 			}
 		} catch (error) {
 			console.error(`Automatic update check failed: ${error instanceof Error ? error.message : String(error)}`);

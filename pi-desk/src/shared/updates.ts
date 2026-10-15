@@ -13,4 +13,6 @@ export interface RuntimeUpdateState {
 	automatic?: { host: boolean; conversations: boolean };
 	/** Open conversations still running an older Desk than this host. */
 	outdated?: number;
+	/** Why an available update has not been installed automatically yet. */
+	waiting?: string;
 }

@@ -1,0 +1,113 @@
+name: Pi update
+
+# Desk follows each Pi release: pin it, pass the same checks as any release, then publish. Hosts with automatic
+# updates install the result within the hour. A failure opens an issue instead of releasing.
+on:
+  schedule:
+    - cron: "23 21 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pi-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Find the latest Pi
+        id: pi
+        shell: bash
+        run: |
+          latest=$(npm view @earendil-works/pi-coding-agent version)
+          current=$(node -p 'require("./pi-desk/package.json").dependencies["@earendil-works/pi-coding-agent"]')
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$latest" != "$current" ]; then echo "update=true" >> "$GITHUB_OUTPUT"; fi
+          echo "Pi in Desk: $current; latest: $latest"
+      - name: Pin the new Pi
+        if: steps.pi.outputs.update == 'true'
+        shell: bash
+        env:
+          PI_VERSION: ${{ steps.pi.outputs.latest }}
+        run: |
+          # pi-ai and pi-tui at the versions that Pi release depends on.
+          npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies --json > /tmp/pi-dependencies.json
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const versions = { "@earendil-works/pi-coding-agent": process.env.PI_VERSION, ...JSON.parse(readFileSync("/tmp/pi-dependencies.json", "utf8")) };
+            for (const [file, field] of [["package.json", "devDependencies"], ["pi-desk/package.json", "dependencies"], ["pi-codex-wire/package.json", "dependencies"]]) {
+              const json = JSON.parse(readFileSync(file, "utf8"));
+              for (const name of Object.keys(json[field] ?? {})) if (name.startsWith("@earendil-works/pi-") && versions[name]) json[field][name] = versions[name];
+              writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
+            }'
+          npm install --no-audit --no-fund --ignore-scripts
+          npm --prefix pi-desk install --no-audit --no-fund --ignore-scripts
+          git diff --stat
+      - name: Check it as CI does
+        if: steps.pi.outputs.update == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-0
+          npm --prefix pi-desk rebuild keytar
+          npm run typecheck
+          npm test -- --test-reporter=tap --test-timeout=120000
+          npm --prefix pi-desk run typecheck
+          npm --prefix pi-desk run build
+      - name: Commit and run the full CI matrix
+        id: commit
+        if: steps.pi.outputs.update == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PI_VERSION: ${{ steps.pi.outputs.latest }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
+          npm version patch --no-git-tag-version --ignore-scripts > /dev/null
+          npm --prefix pi-desk version patch --no-git-tag-version --ignore-scripts > /dev/null
+          desk=$(node -p 'require("./pi-desk/package.json").version')
+          plugins=$(node -p 'require("./package.json").version')
+          git commit -qam "Update Pi to $PI_VERSION; release Desk $desk with plugins $plugins"
+          git push origin HEAD:main
+          sha=$(git rev-parse HEAD)
+          echo "desk=$desk" >> "$GITHUB_OUTPUT"
+          # Pushes made with this token start no workflows, so CI is started explicitly.
+          gh workflow run ci.yml --ref main
+          for _ in $(seq 1 30); do
+            run=$(gh run list --workflow ci.yml --commit "$sha" --json databaseId --jq '.[0].databaseId')
+            [ -n "$run" ] && break
+            sleep 10
+          done
+          gh run watch "$run" --exit-status
+      - name: Publish
+        if: steps.pi.outputs.update == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: pi-desk-v${{ steps.commit.outputs.desk }}
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh workflow run desk-release.yml --ref "$TAG"
+      - name: Report a failure
+        if: failure() && steps.pi.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Pi ${{ steps.pi.outputs.latest }} needs attention before Desk can use it" \
+            --body "The automatic Pi update failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Desk stays on Pi ${{ steps.pi.outputs.current }} until it is fixed."

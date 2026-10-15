@@ -456,7 +456,11 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!autoEnabled || ctx.mode !== "tui" && !getPresentation(pi)) return;
     shownSessions.add(sessionId);
 
-    const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, event.prompt, event.images?.length ?? 0);
+    // From Pi 1.2 a run an extension starts (an agent message, for one) can come first; its message is the one counted.
+    const opening = event.messageType === "user" ? event.prompt
+      : typeof event.message.content === "string" ? event.message.content
+      : event.message.content.map(part => part.type === "text" ? part.text : "").join("");
+    const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, opening, event.messageType === "user" ? event.images?.length ?? 0 : 0);
     pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
     measuring.add(sessionId);
     publish(ctx);

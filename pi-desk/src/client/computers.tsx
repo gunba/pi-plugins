@@ -133,8 +133,9 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 		{updates.phase === "failed" && updates.message && <p role="alert" className="error-text">{/published release changed/i.test(updates.message)
 			? "A newer release replaced the one offered. Update now checks again and offers the latest." : updates.message}</p>}
 		{updates.checkError && <p className="error-text">Couldn't check for updates: {updates.checkError}</p>}
+		{offer && !working && updates.automatic?.host && updates.waiting && <p className="muted">Updating automatically when possible: {updates.waiting.charAt(0).toLowerCase() + updates.waiting.slice(1)}.</p>}
 		{updates.automatic && <div className="automatic-updates">
-			<label className="setting-control"><span>Update Desk automatically<small>When every conversation has been idle for 10 minutes. Running conversations are never interrupted.</small></span>
+			<label className="setting-control"><span>Update Desk automatically<small>Within an hour of each release. Running conversations carry on undisturbed.</small></span>
 				<input type="checkbox" role="switch" checked={updates.automatic.host} disabled={busy || !computer.connected}
 					onChange={event => void run("/runtime/automatic", { host: event.target.checked }).catch(() => {})} /></label>
 			<label className="setting-control"><span>Move idle conversations to the new version<small>Each restarts once it has been idle for 10 minutes, with no agents, plans or commands still running. History is kept, and messages sent meanwhile wait for it.</small></span>

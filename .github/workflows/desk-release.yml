@@ -3,6 +3,8 @@ name: Desk release
 on:
   push:
     tags: ["pi-desk-v*"]
+  # The Pi update workflow starts releases this way: tags it pushes start no workflows.
+  workflow_dispatch:
 
 concurrency:
   group: desk-release-${{ github.ref }}
@@ -32,7 +34,7 @@ jobs:
         run: |
           git merge-base --is-ancestor HEAD origin/main
           node -e 'if ("pi-desk-v" + require("./pi-desk/package.json").version !== process.env.RELEASE_TAG) process.exit(1)'
-          passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch main --event push --json conclusion --jq 'any(.conclusion == "success")')
+          passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch main --json conclusion --jq 'any(.conclusion == "success")')
           test "$passed" = true
 
   build:
