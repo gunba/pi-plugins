@@ -3,6 +3,8 @@ import type { ConnectionInterruption, ConnectionState, HostPresence } from "./co
 
 export interface Computer {
 	id: string; name: string; platform?: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string;
+	/** Round-trip milliseconds over the browser's connection, and whether it is direct rather than through the relay. */
+	latency?: number; direct?: boolean;
 	presence?: HostPresence;
 	diagnostics?: { interruptions: number; last?: ConnectionInterruption };
 	relay?: HostState["relay"];

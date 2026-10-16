@@ -4,8 +4,13 @@ export interface ApiRequest { method: "GET" | "POST"; path: string; body?: Recor
 export interface ApiResponse { status: number; body: unknown; asset?: { mimeType: string; base64: string } }
 export type RemotePayload =
 	| { type: "hello"; api: number }
-	/** `direct`: the host's loopback port, which a browser on the same computer can use instead of the relay. */
-	| { type: "ready"; release: ReleaseInfo; direct?: { port: number; platform: string } }
+	/**
+	 * `direct`: the host's loopback port, which a browser on the same computer can use instead of the relay.
+	 * `ping`: the host answers pings, which browsers use to show the connection's round-trip time.
+	 */
+	| { type: "ready"; release: ReleaseInfo; direct?: { port: number; platform: string }; ping?: true }
+	| { type: "ping"; id: number }
+	| { type: "pong"; id: number }
 	| { type: "authorize"; credential: string }
 	| { type: "upgrade-required"; api: number }
 	| { type: "request"; id: string; request: ApiRequest }

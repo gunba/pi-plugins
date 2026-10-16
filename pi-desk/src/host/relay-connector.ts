@@ -347,7 +347,7 @@ export class RelayConnector {
 				this.drop(peer.id, true, 4003); return;
 			}
 			peer.ready = true; clearTimeout(peer.timer);
-			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE,
+			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE, ping: true,
 				...(this.options.direct && !peer.local ? { direct: { port: this.options.direct, platform: process.platform } } : {}) } satisfies RemotePayload);
 			if (!this.valid(peer)) return;
 			if (peer.purpose === "party") {
@@ -382,6 +382,10 @@ export class RelayConnector {
 			if (message.type === "ready") return;
 			if (message.type !== "party" || Buffer.byteLength(JSON.stringify(message.payload)) > MAX_NETWORK_PACKET) throw new Error("Invalid party payload.");
 			await this.options.party!.receive(device.id, message.payload); return;
+		}
+		if (message.type === "ping") {
+			if (!Number.isSafeInteger(message.id)) throw new Error("Invalid ping.");
+			await peer.channel!.send({ type: "pong", id: message.id as number } satisfies RemotePayload); return;
 		}
 		if (message.type === "events_ack") { peer.events.acknowledge(message.sequence); peer.delivery?.resume(); return; }
 		if (message.type !== "request" || !validId(message.id) || peer.pending >= 32) throw new Error("Invalid remote request.");

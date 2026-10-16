@@ -75,6 +75,12 @@ export class RemoteClient {
 	private directFailedAt = 0;
 	private via: "direct" | "relay" = "relay";
 	private reached = false;
+	/** Round-trip time over this connection, measured with pings every 10 seconds while visible. */
+	private pingable = false;
+	private pingTimer?: ReturnType<typeof setInterval>;
+	private pingSent?: { id: number; at: number };
+	private pingId = 0;
+	private rtt?: number;
 	/** Paused while it looked connected: on return it keeps looking connected until {@link quietUntil}. */
 	private resumable = false;
 	private quietUntil = 0;
@@ -106,6 +112,17 @@ export class RemoteClient {
 		void this.connect();
 	}
 	get connected(): boolean { return this.online && this.valid() || this.looksConnected(); }
+	/** Milliseconds for a message to reach the host and come back; undefined until measured or while disconnected. */
+	get latency(): number | undefined { return this.online && this.valid() ? this.rtt : undefined; }
+	/** Whether this browser reaches the host on its own computer rather than through the relay. */
+	get direct(): boolean { return this.online && this.via === "direct"; }
+	private ping(): void {
+		if (!this.pingable || !this.online || !this.valid() || document.hidden || !this.channel) return;
+		if (this.pingSent && performance.now() - this.pingSent.at < 30_000) return;
+		const id = ++this.pingId, socket = this.socket;
+		this.pingSent = { id, at: performance.now() };
+		void this.channel.send({ type: "ping", id }).catch(() => socket?.close());
+	}
 	get state(): ConnectionState {
 		if (this.failure) return this.failure.status === 426 ? "upgrade" : "denied";
 		if (this.looksConnected()) return "connected";
@@ -138,12 +155,13 @@ export class RemoteClient {
 	private setPhase(value: ConnectionState): void {
 		this.phase = value; this.online = value === "connected";
 		if (this.online) { this.lastError = undefined; this.established++; this.quietUntil = 0; this.resumable = false; }
+		else { clearInterval(this.pingTimer); this.pingTimer = undefined; this.pingSent = undefined; this.rtt = undefined; this.pingable = false; }
 		this.notify();
 	}
 	/** Tell subscribers when what they show changes, or a new connection means they should reload. */
 	private notify(): void {
 		for (const waiter of [...this.waiters]) waiter();
-		const shown = `${this.state}|${this.connected}|${this.established}`;
+		const shown = `${this.state}|${this.connected}|${this.established}|${this.latency}`;
 		if (shown === this.shown) return;
 		this.shown = shown;
 		for (const handler of this.connections) handler(this.connected);
@@ -315,7 +333,16 @@ export class RemoteClient {
 				try { localStorage.setItem(this.directKey(), String(direct!.port)); } catch { /* the relay still works */ }
 				if (Date.now() - this.directFailedAt > DIRECT_RETRY_MS) { this.preferDirect = true; this.reconnect(); return; }
 			}
-			clearTimeout(this.deadline); this.backoff = 1000; this.reached = true; this.setPhase("connected"); return;
+			clearTimeout(this.deadline); this.backoff = 1000; this.reached = true; this.setPhase("connected");
+			this.pingable = (message as { ping?: unknown }).ping === true;
+			if (this.pingable) { this.ping(); this.pingTimer = setInterval(() => this.ping(), 10_000); }
+			return;
+		}
+		if (message.type === "pong") {
+			const sent = this.pingSent;
+			if (!sent || sent.id !== message.id) return;
+			this.rtt = Math.max(1, Math.round(performance.now() - sent.at)); this.pingSent = undefined;
+			this.notify(); return;
 		}
 		if (message.type === "authorize") {
 			if (this.renewing || typeof message.credential !== "string") throw new Error("Invalid credential renewal.");
@@ -396,7 +423,7 @@ export class RemoteClient {
 		void this.connect();
 	}
 	close(): void {
-		this.closed = true; clearTimeout(this.pauseTimer); clearTimeout(this.quietTimer);
+		this.closed = true; clearTimeout(this.pauseTimer); clearTimeout(this.quietTimer); clearInterval(this.pingTimer);
 		removeEventListener("online", this.onlineListener);
 		removeEventListener("offline", this.offlineListener);
 		document.removeEventListener("visibilitychange", this.visibilityListener);

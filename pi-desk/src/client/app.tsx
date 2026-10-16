@@ -667,7 +667,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
-            <small title={connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
+            <small title={"latency" in computer && computer.latency !== undefined ? `Round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
             <button className="icon-button computer-create" aria-label={`New agent on ${computer.name}`} title={`New agent on ${computer.name}`}
               disabled={!computer.connected} onClick={() => openNewConversation(computer.id)}><Icon name="plus" /></button>
           </div>

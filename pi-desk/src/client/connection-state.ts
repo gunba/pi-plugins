@@ -5,11 +5,13 @@ export interface ConnectionInterruption { at: number; code?: number; reason: str
 interface Status {
 	connection: ConnectionState;
 	presence?: HostPresence;
+	latency?: number;
 }
 /** Directory presence is a recent host report, not permission to send commands. */
 export function connectionLabel(value: Status, now = Date.now()): string {
 	if (value.connection === "reconnecting" && value.presence && !value.presence.online
 		&& now - value.presence.checked < 90_000) return "Waiting for computer";
+	if (value.connection === "connected" && value.latency !== undefined) return `Connected · ${value.latency} ms`;
 	return ({
 		connecting: "Connecting", connected: "Connected", reconnecting: "Reconnecting",
 		paused: "App paused", "network-offline": "This device is offline",
