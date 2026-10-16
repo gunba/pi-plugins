@@ -92,6 +92,17 @@ test("ChatGPT reaches agents only through an OAuth grant approved in Desk", asyn
 	assert.deepEqual(JSON.parse(listed[1].text).agent_messages.map(item => item.message), ["Round 24 is done."]);
 	assert.deepEqual((await tool("read_messages")).unread, [], "handed over once");
 	assert.equal((await rpc("tools/call", { name: "list_agents", arguments: {} })).result.content.length, 1);
+	// While Desk can reach the Dot's chat, agents can wake it: one "Pi Desk:" notice there announces what is waiting.
+	const posts = [];
+	connector.notices = { ready: () => true, post: text => { posts.push(text); return true; } };
+	store.send("worker", "worker-owner", received.sender, "Round 25 is done.", false);
+	connector.tick();
+	assert.equal(store.member(received.sender).delivery, 1);
+	assert.deepEqual(posts, [], "no notice without a wake");
+	store.send("worker", "worker-owner", received.sender, "Round 26 is done.", true);
+	connector.tick(); connector.tick();
+	assert.equal(posts.length, 1);
+	assert.match(posts[0], /^Pi Desk: 2 messages from BD Workbook are waiting for you\./);
 
 	const refreshed = parse(await exchange({ grant_type: "refresh_token", client_id: client.client_id, refresh_token: tokens.refresh_token }));
 	assert.ok(refreshed.access_token);

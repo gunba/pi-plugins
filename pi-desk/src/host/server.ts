@@ -219,6 +219,7 @@ export class DeskHost {
 			this.refreshQuests();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
 			this.dotConnector.quests = { store: this.quests, finished: (quest, by) => this.questFinished(quest, by) };
+			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
 			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.partyComputer(),
 				computers: () => this.partyNetwork?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };
 			this.refreshParties();

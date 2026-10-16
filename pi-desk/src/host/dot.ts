@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicJson } from "../../manage/store.ts";
@@ -217,6 +217,13 @@ export class DotConnection {
 		const input: DotInput = { id, dot, text, files, connection, created: new Date().toISOString(), state: "sending" };
 		this.save(input); this.work = this.deliver(input).finally(() => { this.work = undefined; });
 		return structuredClone(input);
+	}
+	/** Whether Desk can post its own notice in the Dot conversation. */
+	get canNotify(): boolean { return !!this.client && !this.stopped && !this.connecting && this.snapshot.state === "ready" && !!this.snapshot.id && !!this.config.connection; }
+	/** Post Desk's own notice in the Dot conversation, as Jordan's account; false when it cannot be sent now. */
+	notify(text: string): boolean {
+		if (!this.canNotify || this.busy) return false;
+		try { this.send(randomUUID(), this.snapshot.id!, text, [], this.config.connection!); return true; } catch { return false; }
 	}
 	private validateIntent(id: string, dot: string, text: string, files: string[]): void {
 		if (!dotUuid(id) || typeof dot !== "string" || !dot || dot.length > 200 || typeof text !== "string" || text.length > 32_000
