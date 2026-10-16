@@ -7,6 +7,7 @@ import test from "node:test";
 import { PartyStore } from "../../pi-party/store.ts";
 import { DotConnector } from "../src/host/dot-connector.ts";
 import { QuestStore } from "../../pi-party/quests.ts";
+import { partyDelivery } from "../../pi-party/availability.ts";
 
 const base = "https://relay.example/connector/11111111-1111-1111-1111-111111111111";
 const callback = "https://chatgpt.com/connector_platform_oauth_redirect";
@@ -82,6 +83,15 @@ test("ChatGPT reaches agents only through an OAuth grant approved in Desk", asyn
 	assert.equal(received.sender_label, "Steve (Dot)");
 	store.send("worker", "worker-owner", received.sender, "Round 23 is done.", false);
 	assert.deepEqual((await tool("read_messages")).unread.map(item => [item.from, item.message]), [["BD Workbook", "Round 23 is done."]]);
+	// The Dot cannot be woken: agents are told when it will see a message, and it arrives with the Dot's next tool call.
+	const status = partyDelivery(store.member(received.sender), false, "idle");
+	assert.equal(status.wakeable, false);
+	assert.match(status.deliveryReason, /next Pi tool call/);
+	store.send("worker", "worker-owner", received.sender, "Round 24 is done.", true);
+	const listed = (await rpc("tools/call", { name: "list_agents", arguments: {} })).result.content;
+	assert.deepEqual(JSON.parse(listed[1].text).agent_messages.map(item => item.message), ["Round 24 is done."]);
+	assert.deepEqual((await tool("read_messages")).unread, [], "handed over once");
+	assert.equal((await rpc("tools/call", { name: "list_agents", arguments: {} })).result.content.length, 1);
 
 	const refreshed = parse(await exchange({ grant_type: "refresh_token", client_id: client.client_id, refresh_token: tokens.refresh_token }));
 	assert.ok(refreshed.access_token);

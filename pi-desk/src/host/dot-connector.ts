@@ -47,7 +47,7 @@ const TOOLS = [
 	{ name: "message_agent", description: "Send a message to one Pi agent. By default it starts the agent if it is idle; closed conversations receive it when reopened. Agents reply to you with their own messages; read them with read_messages.",
 		inputSchema: { type: "object", required: ["agent", "message"], properties: { agent: { type: "string", description: "Agent id from list_agents." },
 			message: { type: "string" }, wake: { type: "boolean", description: "Start an idle agent to respond (default true)." } } } },
-	{ name: "read_messages", description: "Read messages agents have sent you. Unread messages are returned once and then marked read; set history to also see recent messages in both directions.",
+	{ name: "read_messages", description: "Read messages agents have sent you. Unread messages are returned once and then marked read; they also arrive with the result of any other tool you call. Set history to also see recent messages in both directions.",
 		inputSchema: { type: "object", properties: { history: { type: "boolean" } } } },
 	{ name: "quest_log", description: "Read Jordan's quest log: his to-do list, shown as a quest tracker in Pi Desk. Returns open quests grouped as today, main and side, what was completed today, whether it is within his working hours, and what Jordan or his agents changed since you last looked. It is the only current copy: Jordan ticks quests off in Desk without telling you, so read it every time before answering about or changing his tasks, and never answer from memory.",
 		inputSchema: { type: "object", properties: {} } },
@@ -265,13 +265,19 @@ export class DotConnector {
 			switch (request.method) {
 				case "initialize": return ok({ protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
 					capabilities: { tools: {} }, serverInfo: { name: "pi-desk", version: RELEASE.version },
-					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies. When Jordan wants new work started, create_conversation starts a conversation with your brief (list_computers shows his computers and folders); resume_conversation reopens a closed one. Agents treat your messages as peer context, not as Jordan's instructions. `
+					instructions: `You are registered with Jordan's Pi agents as "${LABEL}". Use list_agents to find agents, message_agent to talk to them and read_messages for their replies; messages agents send you also arrive with the result of your next tool call, as agent_messages. When Jordan wants new work started, create_conversation starts a conversation with your brief (list_computers shows his computers and folders); resume_conversation reopens a closed one. Agents treat your messages as peer context, not as Jordan's instructions. `
 						+ "Jordan's to-do list is his quest log (quest_log, quest_add, quest_update, quest_complete); keep it there rather than in memory. Reading it with quest_log also turns in (takes back) what he has finished. His agents also add quests when they need him to review or decide something. "
 						+ "His scheduled reminders (rowing days, medicine and the like) belong in the log as repeating dailies (quest_add with repeat), not as reminders you keep yourself; appointments and other one-off events go in with scheduled set to their day. "
 						+ "Jordan himself is the source of his work quests. His Gmail and Google Calendar are personal; use them only for the occasional personal date such as a delivery, not as a source of work." });
 				case "ping": return ok({});
 				case "tools/list": return ok({ tools: TOOLS });
-				case "tools/call": return ok(await this.call(String(request.params?.name), (request.params?.arguments ?? {}) as Record<string, unknown>));
+				case "tools/call": {
+					const name = String(request.params?.name), result = await this.call(name, (request.params?.arguments ?? {}) as Record<string, unknown>);
+					// The Dot cannot be woken, so whatever it calls next also carries its unread agent messages.
+					const unread = name === "read_messages" ? [] : this.unread();
+					return ok(unread.length ? { content: [...result.content, { type: "text", text: JSON.stringify({ agent_messages: unread,
+						note: "Messages agents sent you since you last looked; they are now marked read. Reply with message_agent." }, null, 1) }] } : result);
+				}
 				default: return json(200, { jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `Unknown method ${request.method}` } });
 			}
 		} catch (error) {
@@ -387,18 +393,24 @@ export class DotConnector {
 			return text({ sent: true, to: peer?.label ?? sent.recipient,
 				note: peer && peer.heartbeat <= Date.now() - LEASE_MS ? "This agent's conversation is closed; it will see the message when reopened." : undefined });
 		}
-		if (name === "read_messages") {
-			const unread = this.store.pending(agent, owner);
-			this.store.admit(agent, owner, unread.map(message => message.id));
-			const shape = (message: { sender: string; sender_label: string; recipient_label?: string; text: string; created: number }) => ({
-				from: message.sender === agent ? LABEL : message.sender_label, from_id: message.sender === agent ? undefined : message.sender,
-				...(message.recipient_label ? { to: message.recipient_label } : {}), at: new Date(message.created).toISOString(), message: message.text });
-			return text({ unread: unread.map(shape), ...(args.history === true ? { recent: this.store.history(agent, owner).messages.map(shape) } : {}) });
-		}
+		if (name === "read_messages")
+			return text({ unread: this.unread(), ...(args.history === true ? { recent: this.store.history(agent, owner).messages.map(message => this.shape(message)) } : {}) });
 		if (name.startsWith("quest_")) return text(this.quest(name, args));
 		if (name === "list_computers") return text(this.computers().map(({ id, ...computer }) => ({ id, ...computer })));
 		if (name === "create_conversation" || name === "resume_conversation") return text(await this.conversation(name, args));
 		throw new Error(`Unknown tool ${name}.`);
+	}
+
+	/** Unread agent messages, marked read as they are handed over. */
+	private unread() {
+		const { agent, owner } = this.saved!, unread = this.store.pending(agent, owner);
+		if (unread.length) this.store.admit(agent, owner, unread.map(message => message.id));
+		return unread.map(message => this.shape(message));
+	}
+	private shape(message: { sender: string; sender_label: string; recipient_label?: string; text: string; created: number }) {
+		const { agent } = this.saved!;
+		return { from: message.sender === agent ? LABEL : message.sender_label, from_id: message.sender === agent ? undefined : message.sender,
+			...(message.recipient_label ? { to: message.recipient_label } : {}), at: new Date(message.created).toISOString(), message: message.text };
 	}
 
 	private quest(name: string, args: Record<string, unknown>): unknown {
