@@ -50,9 +50,10 @@ jobs:
           node --input-type=module -e '
             import { readFileSync, writeFileSync } from "node:fs";
             const versions = { "@earendil-works/pi-coding-agent": process.env.PI_VERSION, ...JSON.parse(readFileSync("/tmp/pi-dependencies.json", "utf8")) };
-            for (const [file, field] of [["package.json", "devDependencies"], ["pi-desk/package.json", "dependencies"], ["pi-codex-wire/package.json", "dependencies"]]) {
+            for (const file of ["package.json", "pi-desk/package.json", "pi-codex-wire/package.json"]) {
               const json = JSON.parse(readFileSync(file, "utf8"));
-              for (const name of Object.keys(json[field] ?? {})) if (name.startsWith("@earendil-works/pi-") && versions[name]) json[field][name] = versions[name];
+              for (const field of ["dependencies", "devDependencies"])
+                for (const name of Object.keys(json[field] ?? {})) if (name.startsWith("@earendil-works/pi-") && versions[name]) json[field][name] = versions[name];
               writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
             }'
           npm install --no-audit --no-fund --ignore-scripts
