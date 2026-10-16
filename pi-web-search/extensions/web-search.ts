@@ -13,7 +13,7 @@ import {
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { renderSearchResult } from "./render.ts";
+import { renderSearchResult, searchDisplayText } from "./render.ts";
 import { requestService } from "../../pi-codex-service/index.ts";
 import { describePage, fetchPages, type PageResult } from "./page-fetch.ts";
 
@@ -111,6 +111,16 @@ function parseSearchResponse(text: string): { output: string; results?: unknown[
 
 const COMMANDS = ["search_query", "image_query", "open", "click", "find", "screenshot", "finance", "weather", "sports", "time"] as const;
 const NOT_ACCESSIBLE = /URL (\S+) is not accessible via this tool\./g;
+// Codex's own fetch failures: "restricted URL", 403s from bot protection, timeouts, content types it does not read.
+const FETCH_FAILED = /Failed to fetch (https?:\/\/\S+?): /g;
+
+/**
+ * Codex search output as plain text. Citation markers become [turn0view0] and [3] Link text, keeping the IDs open,
+ * click and find take; ChatGPT's quoting limits and empty error headers are dropped.
+ */
+export function plainSearchText(output: string): string {
+	return searchDisplayText(output.replace(/^Internal Error \(\)\n?/gm, "").replace(/ ?\[wordlim: \d+\]/g, ""));
+}
 const SEPARATOR = "\n" + "-".repeat(80) + "\n";
 
 /** The Codex model for search: this conversation's, else the computer's default Codex model, else any signed-in one. */
@@ -162,12 +172,13 @@ export async function executeWebSearch(
 			}, signal, dependencies.fetchImpl);
 			const response = parseSearchResponse(text);
 			results = response.results;
-			sections.push(response.output);
+			sections.push(plainSearchText(response.output));
 			// Codex reports bot-protected and missing pages alike, and can skip opens batched with a search.
 			// Fetch those here so the outcome is known.
 			const skipped = (commands.open ?? []).map(item => item.ref_id)
 				.filter(ref => /^https?:\/\//.test(ref) && !response.output.includes(`"ref_id":${JSON.stringify(ref)}`));
-			const refused = [...new Set([...[...response.output.matchAll(NOT_ACCESSIBLE)].map(match => match[1]!.replace(/[.,;]+$/, "")), ...skipped])]
+			const reported = [...response.output.matchAll(NOT_ACCESSIBLE), ...response.output.matchAll(FETCH_FAILED)].map(match => match[1]!.replace(/[.,;]+$/, ""));
+			const refused = [...new Set([...reported, ...skipped])]
 				.filter(url => /^https?:\/\//.test(url));
 			if (refused.length) {
 				const fetched = await fetchPages(refused, { text: true, maxChars: 12_000 }, abort);

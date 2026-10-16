@@ -2,7 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 
-/** Display Codex's content-reference notation without changing tool evidence. */
+/** Codex's content-reference notation as plain text; also displays results saved before the tool converted it. */
 export function searchDisplayText(text: string): string {
 	return stripVTControlCharacters(text)
 		.replace(/\uE200cite\uE202([^\uE200\uE201]*)\uE201/gu, (_marker, payload: string) => {

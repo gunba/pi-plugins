@@ -231,3 +231,22 @@ test("reports endpoint errors without falling back", async () => {
 	);
 	assert.equal(calls, 1);
 });
+
+test("a page Codex failed to fetch is fetched directly, and Codex markup reaches the model as plain text", async () => {
+	const url = "https://github.com/Gethe/wow-ui-source/tree/forever/Interface/AddOns/Blizzard_ActionBar";
+	const output = `Internal Error ()\n\uE200cite\uE202turn9view0\uE201 [wordlim: 200] Source: open({"ref_id":"${url}","lineno":null}); Total lines: 1\nL0: Failed to fetch ${url}: Failed to fetch restricted URL\n`;
+	const original = globalThis.fetch;
+	globalThis.fetch = async () => new Response("<html><title>Blizzard_ActionBar</title><body>Camelot Mainline Blizzard_ActionBar.toc</body></html>",
+		{ status: 200, headers: { "content-type": "text/html" } });
+	try {
+		const result = await executeWebSearch({ open: [{ ref_id: url }] }, undefined,
+			mockContext({ model: CODEX_MODEL, auth: { ok: true, apiKey: jwt("acct-42"), headers: {} } }),
+			{ fetchImpl: async () => new Response(JSON.stringify({ output }), { status: 200 }) });
+		const text = result.content[0].text;
+		assert.match(text, /^\[turn9view0\] Source: open/);
+		assert.doesNotMatch(text, /[\uE200-\uE202]|wordlim|Internal Error/);
+		assert.match(text, /fetched directly/);
+		assert.match(text, /Camelot Mainline/);
+		assert.equal(result.details.pages[0].outcome, "ok");
+	} finally { globalThis.fetch = original; }
+});
