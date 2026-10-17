@@ -9,13 +9,14 @@ import { FileLink, fileBlob } from "./file-view.tsx";
 import { AssetLink } from "./assets.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
 import { SurfaceFrame } from "./surfaces.tsx";
-import { api } from "./connection.ts";
+import { acquireAsset, api } from "./connection.ts";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
 
 type DiffBlock = Extract<ChatBlock, { type: "diff" }>;
 type DocumentBlock = Extract<ChatBlock, { type: "document" }>;
 type ShownBlock = Extract<ChatBlock, { type: "shown" }>;
+type ImageBlock = Extract<ChatBlock, { type: "image" }>;
 
 /** Put a quote of what an agent showed into the composer, so Jordan can reply to it. */
 export function quote(text: string): void {
@@ -124,21 +125,31 @@ function columnName(index: number): string {
 /* ── Work items: changes and shown work, listed in the side pane ─────────────────────────────────────────── */
 
 /** `message` and `source` locate the files it links to: the transcript message, and a sub-agent transcript if any. */
-export type WorkItem = { id: string; at: number; message: string; source?: string; block: DiffBlock | DocumentBlock | ShownBlock };
-/** Changes and shown work in the loaded part of a conversation, oldest first. */
+/** title: for an image, the file it came from. */
+export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock };
+/** Changes, shown work and images the agent viewed, in the loaded part of a conversation, oldest first. */
 export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
-	return messages.flatMap(message => message.blocks.flatMap((block, index) =>
-		block?.type === "diff" || block?.type === "document" || block?.type === "shown" ? [{ id: `${message.id}:${index}`, at: message.timestamp, message: message.id, block }] : []));
+	return messages.flatMap(message => message.blocks.flatMap((block, index): WorkItem[] => {
+		const item = { id: `${message.id}:${index}`, at: message.timestamp, message: message.id };
+		if (block?.type === "diff" || block?.type === "document" || block?.type === "shown") return [{ ...item, block }];
+		// Images a tool returned (view_image, screenshots, image reads); the file block names the file when there is one.
+		if (block?.type === "image" && message.role === "tool") {
+			const file = message.blocks.find(other => other?.type === "file");
+			return [{ ...item, block, title: file?.type === "file" ? file.file.name : message.toolName === "view_image" ? "Image" : "Screenshot" }];
+		}
+		return [];
+	}));
 }
 /** Opens an item: in the side pane when there is room, otherwise in the expanded view. */
 export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined);
-const itemTitle = (item: WorkItem) => item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
+const itemTitle = (item: WorkItem) => item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
 	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title;
-const itemKind = (item: WorkItem) => item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
+const itemKind = (item: WorkItem) => item.block.type === "image" ? "Viewed" : item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
 	: item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
 function itemFacts(item: WorkItem): ReactNode {
 	if (item.block.type === "diff") { const stats = diffStats(item.block); return <Stats added={stats.added} removed={stats.removed} />; }
 	if (item.block.type === "document") return <span className="change-summary">{item.block.change.summary}</span>;
+	if (item.block.type === "image") return null;
 	const unlisted = item.block.shown.items.reduce((sum, entry) => sum + (entry.unlisted?.count ?? 0), 0);
 	return <span className="change-summary">{item.block.shown.items.length ? `${item.block.shown.items.length} item${item.block.shown.items.length === 1 ? "" : "s"}` : ""}
 		{unlisted ? <span className="work-warning"> · {unlisted} change{unlisted === 1 ? "" : "s"} not mentioned</span> : null}</span>;
@@ -220,6 +231,24 @@ function InlineImage({ session, file, zoom }: { session: string; file: FileRefer
 	</div>;
 }
 
+/** An image a tool returned, from the conversation's assets: fitted, or at full size when zoom is allowed. */
+function ViewedImage({ session, asset, name, zoom }: { session: string; asset: string; name: string; zoom?: boolean }) {
+	const origin = useReferenceQuery();
+	const [url, setUrl] = useState(""), [error, setError] = useState(""), [full, setFull] = useState(false);
+	useEffect(() => {
+		setUrl(""); setError("");
+		const lease = acquireAsset(session, asset, origin);
+		let live = true;
+		void lease.loaded.then(value => { if (live) setUrl(value); }, reason => { if (live) setError(String(reason)); });
+		return () => { live = false; lease.release(); };
+	}, [session, asset, origin]);
+	if (!url) return <p className="muted">{error || "Loading image…"}</p>;
+	return <div className={`shown-image-frame${full ? " full" : ""}`}>
+		<img className="shown-image" src={url} alt={name} onClick={zoom ? () => setFull(value => !value) : undefined}
+			title={zoom ? full ? "Fit to the window" : "Show at full size" : undefined} />
+	</div>;
+}
+
 function ShownEntry({ item, file, session, title, large }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean }) {
 	const where = item.path ? name(item.path) : title;
 	return <div className="shown-item">
@@ -249,6 +278,7 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 		{block.truncated && <p className="muted work-note">Diff preview limited to 12,000 characters.</p>}
 		{block.full && <AssetLink session={session} asset={block.full} />}
 	</>;
+	if (block.type === "image") return <ViewedImage session={session} asset={block.asset} name={item.title ?? "Image"} zoom={large} />;
 	if (block.type === "document") return <>
 		{block.change.changes && <DocumentChangesView changes={block.change.changes} where={name(block.change.path)} />}
 		{block.change.preview && <PreviewView preview={block.change.preview} />}
@@ -261,11 +291,11 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 function quoteFor(item: WorkItem): string {
 	const { block } = item;
 	return block.type === "diff" ? `${block.path}\n${block.text.split("\n").filter(line => /^[+-]/.test(line)).slice(0, 12).join("\n")}`
-		: block.type === "document" ? `${name(block.change.path)}: ${block.change.summary}` : block.shown.title;
+		: block.type === "document" ? `${name(block.change.path)}: ${block.change.summary}` : block.type === "image" ? `Image: ${item.title ?? ""}` : block.shown.title;
 }
 function ItemHeader({ item, session, children }: { item: WorkItem; session: string; children?: ReactNode }) {
 	const path = item.block.type === "diff" ? item.block.movePath ?? item.block.path : item.block.type === "document" ? item.block.change.path : undefined;
-	const file = item.block.type === "shown" ? undefined : item.block.file;
+	const file = item.block.type === "diff" || item.block.type === "document" ? item.block.file : undefined;
 	return <header className="work-item-header">
 		<span className="change-kind">{itemKind(item)}</span>
 		{path ? <FileName session={session} path={path} file={file} /> : <strong>{itemTitle(item)}</strong>}
