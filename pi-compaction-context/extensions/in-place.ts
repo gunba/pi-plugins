@@ -57,10 +57,13 @@ export function openingWords(entry: Entry | undefined): string | undefined {
 	return text ? `${message.role === "user" ? "user" : message.role === "assistant" ? "your" : "the"} message beginning «${text.slice(0, 160)}${text.length > 160 ? "…" : ""}»` : undefined;
 }
 
-export function summaryRequest(kept: string, update: boolean, focus?: string): string {
+/** `kept` names the first message that stays when it is in the replayed request; otherwise everything shown is summarized. */
+export function summaryRequest(kept: string | undefined, update: boolean, focus?: string): string {
+	const scope = kept ? `The conversation from the ${kept} onwards stays in context word for word. Summarize everything before it`
+		: "The messages after this point stay in context word for word. Summarize the whole conversation above";
 	return `[Context compaction] Pause the task: instead of continuing, write a context checkpoint summary that another model will use to continue the work. Do not call any tools.
 
-The conversation from the ${kept} onwards stays in context word for word. Summarize everything before it${update ? ", starting from the earlier summary at the beginning of this conversation" : ""}.
+${scope}${update ? ", starting from the earlier summary at the beginning of this conversation" : ""}.
 
 ${update ? `${UPDATE_RULES}\n\n` : ""}Use this EXACT format:
 
@@ -105,9 +108,12 @@ export function inPlaceBlocker(event: SessionBeforeCompactEvent, ctx: Pick<Exten
 }
 
 export async function summarizeInPlace(event: SessionBeforeCompactEvent, ctx: ExtensionContext, sent: SentRequest) {
-	const { preparation } = event;
-	const kept = openingWords(event.branchEntries.find(entry => entry.id === preparation.firstKeptEntryId));
-	if (!kept || !ctx.model) return;
+	const { preparation } = event, ids = event.branchEntries.map(entry => entry.id);
+	if (!ctx.model) return;
+	// The first message that stays may be the reply to the replayed request, which the model cannot see in it.
+	const inRequest = ids.indexOf(preparation.firstKeptEntryId) <= (sent.leaf ? ids.indexOf(sent.leaf) : -1);
+	const kept = inRequest ? openingWords(event.branchEntries.find(entry => entry.id === preparation.firstKeptEntryId)) : undefined;
+	if (inRequest && !kept) return;
 	const payload = withUserMessage(JSON.parse(sent.payload), sent.api, summaryRequest(kept, !!preparation.previousSummary, event.customInstructions));
 	if (!payload) return;
 	// The request built from this placeholder is replaced by the replayed payload, which carries the conversation's

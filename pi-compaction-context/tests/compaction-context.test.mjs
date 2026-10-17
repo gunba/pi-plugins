@@ -95,6 +95,12 @@ test('compaction is the next turn of the same conversation: the last payload is 
  assert.equal(result.compaction.firstKeptEntryId, 'u2');
  assert.equal(result.compaction.usage.cacheRead, 9000);
 
+ // When the first message that stays is the reply to the replayed request, the model is asked for everything it sees.
+ await hooks.session_before_compact({ ...event, branchEntries: [...branch, { id: 'a2', type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Tests added' }] } }],
+  preparation: { ...event.preparation, firstKeptEntryId: 'a2' } }, ctx);
+ assert.match(replayed.messages.at(-1).content[0].text, /Summarize the whole conversation above/);
+ assert.doesNotMatch(replayed.messages.at(-1).content[0].text, /Tests added/);
+
  // A tool call instead of a summary, an overflow, a model switch or an expired cache leaves it to Pi's own summary.
  ctx.modelRegistry.complete = async () => ({ stopReason: 'toolUse', content: [{ type: 'toolCall', name: 'read' }] });
  assert.equal(await hooks.session_before_compact(event, ctx), undefined);
