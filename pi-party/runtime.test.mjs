@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { createEventBus, initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
 import { PartyStore } from "./store.ts";
+import { PartyOperations } from "./operations.ts";
 import party, { deliveredPartyIds, PARTY_MESSAGE } from "./index.ts";
 import { pruneCompactedSession } from "../pi-session-memory/extensions/session-memory.ts";
 
@@ -98,39 +99,54 @@ test("idle peer delivery resumes from persisted state when a network wake signal
 	} finally { db.close(); }
 });
 
-test("reload reconnects without waking inference until work resumes", async t => {
-	environment(t);
-	const a = harness(t, "first"), old = harness(t, "second");
-	await a.emit("session_start"); await old.emit("session_start");
-	await old.emit("session_shutdown");
-	await a.call("agent_send", { to: "second", message: "Waiting after reload" });
-	const resumed = harness(t, "second");
-	await resumed.emit("session_start", { reason: "reload" });
-	t.mock.timers.tick(30_000);
-	assert.equal(resumed.sent.length, 0);
-	await resumed.emit("input", { source: "terminal" });
-	await resumed.emit("before_agent_start");
-	assert.equal(resumed.sent.length, 1);
-});
-
-test("an open conversation wakes for messages sent after it starts, while older ones wait for its next turn", async t => {
-	// A new conversation, or one restored after a crash, stayed asleep for Steve's messages until Jordan typed in it.
+test("a reopened conversation starts on messages that asked to wake it while it was closed", async t => {
+	// The WoW Sim Developer was reopened by hand and received two wake messages, but stayed idle.
 	environment(t);
 	const a = harness(t, "sender"), old = harness(t, "restored");
 	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
-	await a.call("agent_send", { to: "restored", message: "Sent while it was closed", wake: true });
+	const sent = JSON.parse((await a.call("agent_send", { to: "restored", message: "Sent while it was closed", wake: true })).content[0].text).queued[0];
+	assert.equal(sent.reopened, "no");
+	assert.match(sent.note, /could not be reopened: Desk is not running on this computer/);
+	const b = harness(t, "restored");
+	await b.emit("session_start", { reason: "resume" });
+	t.mock.timers.tick(10_000);
+	assert.equal(b.sent.length, 1);
+	assert.match(b.sent[0].message.content, /Sent while it was closed/);
+	assert.equal(b.sent[0].options.triggerTurn, true);
+});
+
+test("a message without wake that queued while closed waits for the next turn", async t => {
+	environment(t);
+	const a = harness(t, "sender"), old = harness(t, "restored");
+	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
+	await a.call("agent_send", { to: "restored", message: "No hurry", wake: false });
 	const b = harness(t, "restored");
 	await b.emit("session_start");
 	t.mock.timers.tick(10_000);
-	assert.equal(b.sent.length, 0, "the backlog does not start a turn by itself");
-	await a.call("agent_send", { to: "restored", message: "Sent after it opened", wake: true });
-	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
-	assert.match(b.sent[0].message.content, /Sent after it opened/);
-	assert.equal(b.sent[0].options.triggerTurn, true);
-	await b.emit("context", { messages: b.branch.map(x => x.message) });
-	await b.emit("before_agent_start");
-	assert.match(b.sent.at(-1).message.content, /Sent while it was closed/, "the backlog joins the next turn");
+	assert.equal(b.sent[0].options.triggerTurn, false);
+});
+
+test("agent_send with wake has Desk reopen a closed conversation and says so", async t => {
+	environment(t);
+	const closed = "01a14825-a8ef-75c7-b0f6-71116b2a7885", a = harness(t, "01a14825-0000-7000-8000-000000000001"), old = harness(t, closed);
+	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
+	const host = new PartyOperations(join(process.env.PI_CODING_AGENT_DIR, "party"));
+	t.after(() => host.close());
+	host.startHost();
+	const discovered = JSON.parse((await a.call("agent_discover", { includeOffline: true })).content[0].text).agents.find(agent => agent.id === closed);
+	assert.equal(discovered.resumable, true);
+	assert.equal(discovered.wakeable, true);
+	const call = a.call("agent_send", { to: closed, message: "Please rerun the sim", wake: true });
+	let request;
+	for (let attempt = 0; attempt < 200 && !request; attempt++) { await new Promise(resolve => setImmediate(resolve)); request = host.outgoing("local")[0]; }
+	assert.equal(request.kind, "resume");
+	assert.equal(request.session, closed);
+	host.settle("local", { id: request.id, result: { session: closed, state: "resumed", key: "01a14825-0000-7000-8000-000000000002" } });
+	t.mock.timers.tick(1_000);
+	const sent = JSON.parse((await call).content[0].text).queued[0];
+	assert.equal(sent.reopened, "yes");
+	assert.match(sent.note, /Desk reopened it/);
 });
 
 test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant session", async t => {
@@ -139,9 +155,10 @@ test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant 
 	const a = harness(t, "first"), old = harness(t, "second");
 	await a.emit("session_start"); await old.emit("session_start");
 	await old.emit("session_shutdown");
-	await a.call("agent_send", { to: "second", message: "**Waiting** for the next task" });
 	const b = harness(t, "second");
 	await b.emit("session_start");
+	await b.call("agent_delivery", { enabled: false });
+	await a.call("agent_send", { to: "second", message: "**Waiting** for the next task" });
 	b.ctx.mode = "tui";
 	let view;
 	b.ctx.ui.custom = (factory, options) => new Promise(resolve => {

@@ -285,6 +285,15 @@ export function App({ account }: { account?: BrowserAccount }) {
   const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {
     setDraft(text); localStorage.setItem(draftKey(selected), text);
   });
+  // Ctrl+T starts a new conversation. Chrome passes it to pages in app windows (--app); in a tab it keeps it for itself.
+  const newConversation = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    const pressed = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") { event.preventDefault(); newConversation.current(); }
+    };
+    window.addEventListener("keydown", pressed);
+    return () => window.removeEventListener("keydown", pressed);
+  }, []);
   // Reply buttons on shown work and changes quote them into the composer.
   useEffect(() => {
     const quoted = (event: Event) => {
@@ -501,6 +510,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     setCwd(session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? state.host?.cwd ?? "");
     setCreate(true);
   }
+  newConversation.current = () => openNewConversation();
   function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
   /** Sends the draft; `dictated` text is sent with it without passing through the composer. */
   async function send(delivery: Delivery = deliveryMode, dictated?: string) {
@@ -665,7 +675,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           <strong>Pi Desk</strong>
         </div>
         <div className="sidebar-actions">
-          <button className="new-chat" aria-label="New conversation" title="New conversation" onClick={() => openNewConversation()}>
+          <button className="new-chat" aria-label="New conversation" title="New conversation (Ctrl+T)" onClick={() => openNewConversation()}>
             <Icon name="plus" /> New chat
           </button>
           <button className="resume-chat" title="Resume conversation" aria-label="Resume conversation" onClick={() => { setResumeOpen(true); setSidebar(false); }}>

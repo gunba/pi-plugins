@@ -88,16 +88,16 @@ export function documentChange(path: string, before: Buffer | null, after: Buffe
 	return changes && { path, kind, summary: changes.summary, changes };
 }
 
+// Declared in every request, so kept short.
 const SHOW_PARAMETERS = Type.Object({
-	title: Type.String({ description: "What this is, in a few words." }),
-	note: Type.Optional(Type.String({ description: "Markdown: what to look at, what it means, what you want from Jordan." })),
+	title: Type.String(),
+	note: Type.Optional(Type.String({ description: "Markdown" })),
 	items: Type.Optional(Type.Array(Type.Object({
-		file: Type.Optional(Type.String({ description: "A file to show: image, spreadsheet, document, slides, text or code." })),
-		focus: Type.Optional(Type.String({ description: "Part to show: sheet or range (Totals!B2:F20), heading or text to start at, or lines (40-80)." })),
-		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }),
-			{ description: "Changes Desk cannot compute itself, or what they mean: where, before, after." })),
-	}), { maxItems: 12 })),
-}, { additionalProperties: false });
+		file: Type.Optional(Type.String()),
+		focus: Type.Optional(Type.String({ description: "Sheet!range, text to start at, or lines 40-80" })),
+		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }))),
+	}))),
+});
 
 export default function show(pi: ExtensionAPI) {
 	const pending = new Map<string, Map<string, Version>>();
@@ -165,15 +165,13 @@ export default function show(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "show",
 		label: "Show",
-		description: "Show Jordan something in Desk at a key moment: a result to check, work worth a look, or what you changed in a file he uses "
-			+ "(spreadsheet, document, slides, image, report, code). Not for routine steps. Files are rendered as images, tables or text, and Desk "
-			+ "shows the real changes to files you changed in this conversation, so use `changes` only for what it cannot see or what a change means. "
-			+ "Jordan can reply to what you show.",
-		promptSnippet: "Show Jordan results, changes and work in Desk",
+		description: "At key moments, show Jordan a result, work to review or what you changed in a file he uses; not routine steps. "
+			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show.",
+		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const base = store(ctx), notes: string[] = [];
-			const items = (params.items ?? []).map((item): ShownItem => {
+			const items = (params.items ?? []).slice(0, 12).map((item): ShownItem => {
 				const shown: ShownItem = {};
 				if (item.changes?.length) shown.described = item.changes.slice(0, 100).map(change => ({ where: clip(change.where, 300),
 					...(change.before !== undefined ? { before: clip(change.before, 2000) } : {}), ...(change.after !== undefined ? { after: clip(change.after, 2000) } : {}) }));

@@ -220,8 +220,8 @@ messages still queued for delivery are discarded; unresolved host admissions
 remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay browser
 prompts. An interrupted session can be resumed or closed; its composer is unavailable
-until Pi starts again. Messages from other agents never reopen a closed or
-interrupted conversation; they wait until it runs again.
+until Pi starts again. A message from another agent with `wake` reopens a closed
+conversation, which then starts on it; other messages wait until it runs again.
 
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
