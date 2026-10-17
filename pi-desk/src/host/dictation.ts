@@ -36,7 +36,7 @@ function failure(status: number, body: unknown): string {
 	const reason = typeof detail === "string" ? detail
 		: Array.isArray(detail) ? detail.map(item => (item as { msg?: unknown })?.msg).filter(item => typeof item === "string").join("; ")
 		: typeof (detail as { message?: unknown } | undefined)?.message === "string" ? (detail as { message: string }).message : "";
-	const advice = status === 401 ? " Check the API key in Settings & tools → Dictation." : "";
+	const advice = status === 401 ? " Check the API key in Settings → Accounts & connections." : "";
 	return `ElevenLabs could not transcribe the recording: ${(reason || `HTTP ${status}`).slice(0, 300)}.${advice}`;
 }
 

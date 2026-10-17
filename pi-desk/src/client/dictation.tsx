@@ -178,7 +178,7 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 		<button ref={button} type="button" className={`icon-button dictation-button${recording ? " listening" : ""}`}
 			disabled={phase === "transcribing" || (disabled || unavailable) && !recording} aria-pressed={recording}
 			aria-label={recording ? "Stop and transcribe" : "Dictate"} aria-keyshortcuts="Control+Space"
-			title={unavailable ? "Dictation needs an ElevenLabs API key: add one in Settings & tools → Dictation"
+			title={unavailable ? "Dictation needs an ElevenLabs API key: add one in Settings → Accounts & connections"
 				: recording ? "Stop and add the text (Ctrl+Space)" : "Dictate (Ctrl+Space; hold to talk)"}
 			onClick={() => recording ? stop("insert") : void start()}><Icon name="mic" /></button>
 	</span>;
@@ -186,7 +186,7 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-/** Settings & tools → Dictation: the ElevenLabs key and the terms to recognise, kept on one computer. */
+/** Settings → Accounts & connections: the ElevenLabs key and the terms to recognise, kept on one computer. */
 export function DictationSettingsPanel({ host, computer, connected }: { host: WorkspaceState; computer?: Computer; connected: boolean }) {
 	const [chosen, setChosen] = useState("");
 	const computers = host.computers;
@@ -202,7 +202,7 @@ export function DictationSettingsPanel({ host, computer, connected }: { host: Wo
 	</>;
 }
 
-function DictationKey({ computer, name, connected }: { computer?: string; name: string; connected: boolean }) {
+export function DictationKey({ computer, name, connected }: { computer?: string; name: string; connected: boolean }) {
 	const [settings, setSettings] = useState<DictationSettings>();
 	const [key, setKey] = useState(""), [terms, setTerms] = useState("");
 	const [error, setError] = useState(""), [notice, setNotice] = useState(""), [working, setWorking] = useState(false);

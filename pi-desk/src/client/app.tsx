@@ -23,7 +23,7 @@ import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
 import type { WorkspaceState as HostState } from "./workspace.ts";
 import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
-import { SettingsLayout, SettingsContent, settingsGroups, settingsSections, MERGED_VIEWS } from "./settings.tsx";
+import { SettingsLayout, SettingsContent, settingsGroups, settingsSections, settingsPage, MERGED_VIEWS } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
 import { sessionTitle } from "../shared/session-title.ts";
 import { ComposerStatus } from "./composer-status.tsx";
@@ -1077,7 +1077,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               ×
             </button>
           </div>
-          <SettingsLayout enabled={settings} active={panel === "view" ? focusedView : settingsSection}
+          <SettingsLayout enabled={settings} active={panel === "view" ? focusedView : settingsPage(settingsSection)}
             groups={settingsGroups({ session: session ? title(session) : undefined, computer: currentComputer?.name ?? host.name,
               views: settingsViews.map(view => ({ id: view.id, title: view.title })) })}
             choose={id => {
