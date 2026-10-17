@@ -107,6 +107,22 @@ export class Transcript {
 				...(path && cwd ? { file: this.files.observePath(path, cwd) } : {}),
 				...(details.diff.length > 12_000 || details.diff.slice(0, 12_000).split("\n").length > 400 ? { full: this.asset(details.diff, "text/plain; charset=utf-8") } : {}) });
 		}
+		// Every other file the call changed, found by snapshots around it (pi-show), however it was written.
+		if (Array.isArray(details.files)) for (const value of details.files.slice(0, 40)) {
+			const change = record(value);
+			if (typeof change.path !== "string") continue;
+			const text = typeof change.diff === "string" ? change.diff : typeof change.note === "string" ? change.note : "Changed.";
+			blocks.push({ type: "diff", path: change.path.slice(0, 4000), action: ["added", "deleted"].includes(String(change.action)) ? String(change.action) : "updated",
+				text: text.slice(0, 12_000), truncated: change.truncated === true || text.length > 12_000,
+				...(typeof change.added === "number" ? { added: change.added } : {}), ...(typeof change.removed === "number" ? { removed: change.removed } : {}),
+				...(change.meanwhile === true ? { meanwhile: true } : {}),
+				...(cwd && change.action !== "deleted" ? { file: this.files.observePath(change.path, cwd) } : {}),
+				...(text.length > 12_000 || text.slice(0, 12_000).split("\n").length > 400 ? { full: this.asset(text, "text/plain; charset=utf-8") } : {}) });
+		}
+		const fromGit = record(details.filesFromGit);
+		if (typeof fromGit.count === "number") blocks.push({ type: "text", text: `${fromGit.count} file${fromGit.count === 1 ? "" : "s"} updated from git (${String(fromGit.from)} → ${String(fromGit.to)}).` });
+		if (Array.isArray(details.filesMore) && details.filesMore.length) blocks.push({ type: "text",
+			text: `${details.filesMore.length} more changed file${details.filesMore.length === 1 ? "" : "s"}: ${details.filesMore.slice(0, 20).map(String).join(", ")}${details.filesMore.length > 20 ? ", …" : ""}` });
 		// Computed changes to Office files the call touched (pi-show).
 		if (Array.isArray(details.documentChanges)) for (const value of details.documentChanges.slice(0, 16)) {
 			const change = record(value);

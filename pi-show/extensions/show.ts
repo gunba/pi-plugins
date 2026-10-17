@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { ChangeTracker, READ_ONLY, type CallChanges } from "./changes.ts";
 import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
 import type { DocumentChange, Shown, ShownItem } from "./types.ts";
@@ -99,8 +100,13 @@ const SHOW_PARAMETERS = Type.Object({
 	}))),
 });
 
+/** Waits for a promise for at most `ms`; the work carries on after that, the caller does not wait for it. */
+const bounded = <T>(promise: Promise<T>, ms: number): Promise<T | undefined> =>
+	Promise.race([promise, new Promise<undefined>(done => { (setTimeout(done, ms) as unknown as { unref?: () => void }).unref?.(); })]);
+
 export default function show(pi: ExtensionAPI) {
 	const pending = new Map<string, Map<string, Version>>();
+	const tracker = new ChangeTracker(join(getAgentDir(), "changes"), getAgentDir()), tracked = new Map<string, Promise<void>>();
 	let baselines: Baselines | undefined, session = "";
 	const store = (ctx: ExtensionContext) => {
 		const id = ctx.sessionManager.getSessionId();
@@ -117,11 +123,21 @@ export default function show(pi: ExtensionAPI) {
 				if (Date.now() - statSync(path).mtimeMs > 30 * 86_400_000) rmSync(path, { recursive: true, force: true });
 			}
 		} catch { /* Nothing kept yet. */ }
+		tracker.prune();
 	});
 
-	pi.on("tool_call", (event, ctx) => {
+	pi.on("tool_call", async (event, ctx) => {
 		if (event.parentToolCallId) return;
 		const input = event.input as Record<string, unknown>, paths: string[] = [];
+		// Every call that may write is bracketed by snapshots of the folders the conversation works in.
+		if (!READ_ONLY.has(event.toolName)) {
+			const text = [input.command, input.cmd, input.code, input.input, input.chars, input.patch, input.path].filter(value => typeof value === "string").join("\n");
+			const workdir = [input.workdir, input.cwd].find(value => typeof value === "string") as string | undefined;
+			const started = tracker.start(event.toolCallId, text, ctx.cwd, ctx.sessionManager.getSessionId(), workdir).catch(() => undefined);
+			tracked.set(event.toolCallId, started);
+			// A first snapshot of a large folder may take a while; the call does not wait for it.
+			await bounded(started, 3000);
+		}
 		if ((event.toolName === "write" || event.toolName === "edit") && typeof input.path === "string") paths.push(resolve(ctx.cwd, expand(input.path)));
 		else if (COMMAND_TOOLS.has(event.toolName)) {
 			const text = [input.command, input.cmd, input.code, input.input].filter(value => typeof value === "string").join("\n");
@@ -138,9 +154,20 @@ export default function show(pi: ExtensionAPI) {
 		if (before.size) pending.set(event.toolCallId, before);
 	});
 
-	pi.on("tool_result", (event) => {
-		const before = pending.get(event.toolCallId);
-		if (!before) return;
+	pi.on("tool_result", async (event, ctx) => {
+		const started = tracked.get(event.toolCallId);
+		tracked.delete(event.toolCallId);
+		let changes: CallChanges | undefined;
+		if (started) {
+			const input = event.input ?? {};
+			// Edits and writes report their own file; the snapshot reports anything else the call changed.
+			const own = ["edit", "write"].includes(event.toolName) && typeof input.path === "string" ? [resolve(ctx.cwd, expand(input.path))]
+				: Array.isArray((event.details as { changes?: unknown } | undefined)?.changes) ? ((event.details as { changes: { path?: unknown }[] }).changes)
+					.flatMap(change => typeof change.path === "string" ? [resolve(ctx.cwd, change.path)] : []) : [];
+			await bounded(started, 3000);
+			changes = await bounded(tracker.finish(event.toolCallId, own).catch(() => undefined), 10_000);
+		}
+		const before = pending.get(event.toolCallId) ?? new Map<string, Version>();
 		pending.delete(event.toolCallId);
 		const documentChanges: DocumentChange[] = [];
 		let written: { path: string; diff: NonNullable<ShownItem["diff"]>; created: boolean } | undefined;
@@ -156,9 +183,15 @@ export default function show(pi: ExtensionAPI) {
 				}
 			} catch { /* A file that cannot be read as its type is left to the agent to describe. */ }
 		}
-		if (!documentChanges.length && !written) return;
+		for (const document of changes?.documents ?? []) {
+			if (documentChanges.some(change => change.path === document.path)) continue;
+			try { const change = documentChange(document.path, document.before, document.after); if (change) documentChanges.push(change); } catch { /* Left to the agent to describe. */ }
+		}
+		const files = changes?.files.filter(file => file.path !== written?.path) ?? [];
+		if (!documentChanges.length && !written && !files.length && !changes?.fromGit && !changes?.more) return;
 		const details = event.details && typeof event.details === "object" ? event.details as Record<string, unknown> : {};
 		return { details: { ...details, ...(documentChanges.length ? { documentChanges } : {}),
+			...(files.length ? { files } : {}), ...(changes?.fromGit ? { filesFromGit: changes.fromGit } : {}), ...(changes?.more ? { filesMore: changes.more.slice(0, 200) } : {}),
 			...(written ? { diff: written.diff.text, path: written.path, added: written.diff.added, removed: written.diff.removed, ...(written.created ? { created: true } : {}) } : {}) } };
 	});
 

@@ -145,7 +145,7 @@ export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined
 const itemTitle = (item: WorkItem) => item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
 	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title;
 const itemKind = (item: WorkItem) => item.block.type === "image" ? "Viewed" : item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
-	: item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
+	: item.block.meanwhile ? "Meanwhile" : item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
 function itemFacts(item: WorkItem): ReactNode {
 	if (item.block.type === "diff") { const stats = diffStats(item.block); return <Stats added={stats.added} removed={stats.removed} />; }
 	if (item.block.type === "document") return <span className="change-summary">{item.block.change.summary}</span>;
