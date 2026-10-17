@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { officeKind } from "./documents.ts";
@@ -43,7 +43,14 @@ const ROOT_FILES = 20_000, ROOT_BYTES = 1024 ** 3, BIG_FILE = 32 * 1024 * 1024, 
 /** Tools that never write files; every other call is watched. */
 export const READ_ONLY = new Set(["read", "grep", "find", "ls", "web_search", "read_artifact", "view_image", "get_plan", "inspect_files",
 	"agent_discover", "list_agents", "quest_list", "ask_user", "tool_search", "chrome_devtools_load"]);
-const DEFAULT_EXCLUDES = ["node_modules/", ".venv/", "venv/", "__pycache__/", "*.pyc", ".cache/", ".pytest_cache/", ".mypy_cache/", ".DS_Store", ".git/"];
+/** Dependencies, caches, and the lock files Office and LibreOffice keep beside an open document. */
+const DEFAULT_EXCLUDES = ["node_modules/", ".venv/", "venv/", "__pycache__/", "*.pyc", ".cache/", ".pytest_cache/", ".mypy_cache/", ".DS_Store", ".git/", "~$*", ".~lock.*#", "*.tmp"];
+/** Change notices for these paths never mean a followed file changed. */
+const UNWATCHED = /(^|[\\/])(\.git|node_modules|__pycache__|\.venv)([\\/]|$)|(^|[\\/])~\$[^\\/]*$/;
+let launched = 0;
+/** Git processes started so far, to keep the cost per call visible. */
+export const gitProcesses = () => launched;
+const commonDir = (gitDir: string) => { try { return resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()); } catch { return gitDir; } };
 const ZERO = /^0+$/;
 
 const home = homedir();
@@ -118,6 +125,9 @@ function small(folder: string): boolean {
 class Root {
 	last?: string;
 	broken = false;
+	/** Something under the folder may have changed since the last snapshot. Always true without a watcher. */
+	dirty = true;
+	private watcher?: FSWatcher;
 	private queue: Promise<unknown> = Promise.resolve();
 	readonly path: string;
 	readonly gitDir: string;
@@ -129,16 +139,43 @@ class Root {
 		this.index = join(this.gitDir, `index-${session}`);
 		this.repository = gitDirOf(path);
 	}
-	git(args: string[], options: { work?: boolean; repository?: boolean } = {}): Promise<Buffer> {
+	private env(options: { work?: boolean; repository?: boolean }): NodeJS.ProcessEnv {
 		const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 		for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES"]) delete env[name];
 		if (options.repository) env.GIT_DIR = this.repository;
 		else { env.GIT_DIR = this.gitDir; env.GIT_INDEX_FILE = this.index; if (options.work !== false) env.GIT_WORK_TREE = this.path; }
-		return new Promise((done, fail) => execFile("git", ["-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-c", "gc.auto=0",
-			"-c", "maintenance.auto=false", "-c", "advice.addEmbeddedRepo=false", ...args],
-			{ env, cwd: this.path, encoding: "buffer", maxBuffer: 256 * 1024 * 1024, timeout: 60_000, windowsHide: true },
+		return env;
+	}
+	private static readonly CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "advice.addEmbeddedRepo=false"];
+	git(args: string[], options: { work?: boolean; repository?: boolean } = {}): Promise<Buffer> {
+		launched++;
+		return new Promise((done, fail) => execFile("git", [...Root.CONFIG, ...args],
+			{ env: this.env(options), cwd: this.path, encoding: "buffer", maxBuffer: 256 * 1024 * 1024, timeout: 60_000, windowsHide: true },
 			(error, stdout) => error ? fail(error) : done(stdout)));
 	}
+	/** Runs git with `input` on standard input, for the batch modes that read many objects in one process. */
+	private gitInput(args: string[], input: string): Promise<Buffer> {
+		launched++;
+		return new Promise((done, fail) => {
+			const child = spawn("git", [...Root.CONFIG, ...args], { env: this.env({ work: false }), cwd: this.path, windowsHide: true });
+			const chunks: Buffer[] = [];
+			child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+			child.on("error", fail);
+			child.on("close", code => code === 0 ? done(Buffer.concat(chunks)) : fail(new Error(`git ${args[0]} exited with ${code}`)));
+			child.stdin.end(input);
+		});
+	}
+	/** Where the system reports changes under a folder, a call that changed nothing needs no git at all. */
+	watch(): void {
+		try {
+			this.watcher = watch(this.path, { recursive: true, persistent: false }, (_event, name) => {
+				if (!name || !UNWATCHED.test(String(name))) this.dirty = true;
+			});
+			this.watcher.on("error", () => this.close());
+		} catch { this.watcher = undefined; }
+	}
+	get watching(): boolean { return !!this.watcher; }
+	close(): void { this.watcher?.close(); this.watcher = undefined; this.dirty = true; }
 	/** Runs one git operation on this folder at a time; the private index allows no more. */
 	serial<T>(task: () => Promise<T>): Promise<T> {
 		const next = this.queue.then(task, task);
@@ -153,17 +190,13 @@ class Root {
 			await new Promise<void>((done, fail) => execFile("git", ["init", "-q", "--bare", this.gitDir], { windowsHide: true }, error => error ? fail(error) : done()));
 			await this.git(["config", "core.bare", "false"], { work: false });
 			const own = this.repository && /objectformat\s*=\s*sha256/i.test((() => { try { return readFileSync(join(this.repository!, "config"), "utf8"); } catch { return ""; } })()) ? undefined : this.repository;
-			if (own) {
-				let objects = join(own, "objects");
-				try { objects = join(resolve(own, readFileSync(join(own, "commondir"), "utf8").trim()), "objects"); } catch { /* Not a linked worktree. */ }
-				writeFileSync(join(this.gitDir, "objects", "info", "alternates"), `${objects}\n`);
-			}
-			let excludes = DEFAULT_EXCLUDES.join("\n");
-			try { if (this.repository) excludes += `\n${readFileSync(join(this.repository, "info", "exclude"), "utf8")}`; } catch { /* None. */ }
-			writeFileSync(join(this.gitDir, "info", "exclude"), `${excludes}\n`);
+			if (own) writeFileSync(join(this.gitDir, "objects", "info", "alternates"), `${join(commonDir(own), "objects")}\n`);
 			writeFileSync(join(this.gitDir, "root"), this.path);
 		}
 		if (!existsSync(this.index)) {
+			let excludes = DEFAULT_EXCLUDES.join("\n");
+			try { if (this.repository) excludes += `\n${readFileSync(join(commonDir(this.repository), "info", "exclude"), "utf8")}`; } catch { /* None. */ }
+			writeFileSync(join(this.gitDir, "info", "exclude"), `${excludes}\n`);
 			// The repository's own index is a warm stat cache: only files that differ from it are hashed.
 			if (this.repository) try { copyFileSync(join(this.repository, "index"), this.index); } catch { /* A repository without commits. */ }
 			const untracked = (await this.git(["ls-files", "-o", "-z", "--exclude-standard"])).toString("utf8").split("\0").filter(Boolean);
@@ -193,14 +226,38 @@ class Root {
 		}
 		return result;
 	}
-	async blob(id: string | null, limit: number): Promise<Buffer | null | "large"> {
-		if (!id) return null;
-		const size = Number((await this.git(["cat-file", "-s", id], { work: false })).toString().trim());
-		return size > limit ? "large" : await this.git(["cat-file", "blob", id], { work: false });
+	/** Contents of objects, in two git processes however many there are; "large" above the object's limit. */
+	async contents(limits: Map<string, number>): Promise<Map<string, Buffer | "large">> {
+		const result = new Map<string, Buffer | "large">(), wanted: string[] = [];
+		if (!limits.size) return result;
+		for (const line of (await this.gitInput(["cat-file", "--batch-check=%(objectname) %(objectsize)"], `${[...limits.keys()].join("\n")}\n`)).toString().split("\n")) {
+			const [id, size] = line.split(" ");
+			if (!id || !size || !limits.has(id)) continue;
+			if (Number(size) > limits.get(id)!) result.set(id, "large"); else wanted.push(id);
+		}
+		if (!wanted.length) return result;
+		const output = await this.gitInput(["cat-file", "--batch"], `${wanted.join("\n")}\n`);
+		for (let at = 0; at < output.length;) {
+			const end = output.indexOf(10, at);
+			if (end < 0) break;
+			const [id, , size] = output.subarray(at, end).toString().split(" "), length = Number(size);
+			if (!Number.isFinite(length)) break;
+			result.set(id!, output.subarray(end + 1, end + 1 + length));
+			at = end + 1 + length + 1;
+		}
+		return result;
 	}
-	async head(): Promise<string | undefined> {
+	/** The repository's current commit, read from its files rather than a git process. */
+	head(): string | undefined {
 		if (!this.repository) return;
-		try { return (await this.git(["rev-parse", "-q", "--verify", "HEAD"], { repository: true })).toString().trim() || undefined; } catch { return; }
+		try {
+			const value = readFileSync(join(this.repository, "HEAD"), "utf8").trim(), ref = /^ref:\s*(.+)$/.exec(value)?.[1];
+			if (!ref) return /^[0-9a-f]{40,64}$/.test(value) ? value : undefined;
+			const common = commonDir(this.repository);
+			for (const folder of [this.repository, common]) try { return readFileSync(join(folder, ref), "utf8").trim(); } catch { /* Packed. */ }
+			const line = readFileSync(join(common, "packed-refs"), "utf8").split("\n").find(entry => entry.endsWith(` ${ref}`));
+			return line?.split(" ")[0];
+		} catch { return; }
 	}
 }
 
@@ -213,8 +270,14 @@ export class ChangeTracker {
 	private readonly store: string;
 	private readonly agentDir: string;
 	private readonly temporary: string[];
-	constructor(store: string, agentDir: string, temporary = SCRATCH) {
+	private readonly watching: boolean;
+	/**
+	 * watch: follow folders with the system's change notices. On by default on Windows and macOS, where they are native
+	 * and where starting a process costs most; Linux starts git in a couple of milliseconds.
+	 */
+	constructor(store: string, agentDir: string, temporary = SCRATCH, options: { watch?: boolean } = {}) {
 		this.store = store; this.agentDir = agentDir; this.temporary = temporary;
+		this.watching = options.watch ?? (process.platform === "win32" || process.platform === "darwin");
 	}
 
 	/** Removes Desk's stores for folders no conversation has used for a month. */
@@ -237,11 +300,16 @@ export class ChangeTracker {
 		const root = new Root(top, this.store, this.session);
 		this.roots.set(top, root);
 		try { if (!await root.serial(() => root.prepare(this.agentDir, this.temporary))) root.broken = true; } catch { root.broken = true; }
-		return root.broken ? undefined : root;
+		if (root.broken) return;
+		if (this.watching) root.watch();
+		return root;
 	}
 	/** Snapshot every followed folder; whatever changed since the last snapshot goes to the calls running now. */
 	private async advance(running: Call[]): Promise<void> {
 		await Promise.all([...this.roots.values()].filter(root => !root.broken).map(root => root.serial(async () => {
+			// A watched folder that reported nothing is as it was at the last snapshot.
+			if (root.watching && !root.dirty && root.last) return;
+			root.dirty = false;
 			try {
 				const tree = await root.snapshot();
 				if (root.last && tree !== root.last) {
@@ -256,12 +324,15 @@ export class ChangeTracker {
 					}
 				}
 				root.last = tree;
-			} catch { root.last = undefined; }
+			} catch { root.last = undefined; root.dirty = true; }
 		})));
 	}
 
 	async start(id: string, text: string, cwd: string, session: string, workdir?: string): Promise<void> {
-		if (session !== this.session) { this.session = session; this.roots.clear(); this.calls.clear(); this.meanwhile = new Map(); }
+		if (session !== this.session) {
+			for (const root of this.roots.values()) root.close();
+			this.session = session; this.roots.clear(); this.calls.clear(); this.meanwhile = new Map();
+		}
 		const folder = workdir ? resolve(cwd, workdir) : cwd, named = mentioned(text, folder);
 		// Folders a call works in are followed even without git; folders it only names are followed when they are repositories.
 		for (const path of [cwd, folder, ...named.entered]) await this.root(path, !hidden(path));
@@ -284,6 +355,8 @@ export class ChangeTracker {
 	async finish(id: string, own: string[] = []): Promise<CallChanges | undefined> {
 		const call = this.calls.get(id);
 		if (!call) return;
+		// Change notices arrive a moment after the write; give the last ones time to land.
+		if ([...this.roots.values()].some(root => root.watching)) await new Promise(done => setTimeout(done, 40));
 		await this.advance([...this.calls.values()]);
 		this.calls.delete(id);
 		for (const [file, before] of call.loose) {
@@ -296,9 +369,17 @@ export class ChangeTracker {
 		const result: CallChanges = { files: [], documents: [] };
 		const entries = [...call.seen].filter(([path, change]) => !skip.has(path) && (change.loose || change.before !== change.after));
 		await this.separateGit(call, entries, result);
-		for (const [path, change] of entries) {
-			if (result.files.length + result.documents.length >= MAX_FILES) { (result.more ??= []).push(path); continue; }
-			try { await this.describe(path, change, result); } catch { result.files.push({ path, action: "updated", note: "Changed; its contents could not be read." }); }
+		const shown = entries.slice(0, MAX_FILES);
+		if (entries.length > MAX_FILES) result.more = entries.slice(MAX_FILES).map(([path]) => path);
+		// All the versions a call needs from one folder are read together.
+		const contents = new Map<string, Buffer | "large">();
+		for (const root of new Set(shown.flatMap(([, change]) => change.root ? [change.root] : []))) {
+			const limits = new Map<string, number>();
+			for (const [path, change] of shown) if (change.root === root) for (const id of [change.before, change.after]) if (id) limits.set(id, officeKind(path) ? OFFICE_LIMIT : TEXT_LIMIT);
+			try { for (const [id, value] of await root.serial(() => root.contents(limits))) contents.set(id, value); } catch { /* Described as unreadable below. */ }
+		}
+		for (const [path, change] of shown) {
+			try { this.describe(path, change, contents, result); } catch { result.files.push({ path, action: "updated", note: "Changed; its contents could not be read." }); }
 		}
 		return result.files.length || result.documents.length || result.fromGit || result.more ? result : undefined;
 	}
@@ -335,10 +416,11 @@ export class ChangeTracker {
 		}
 	}
 
-	private async describe(path: string, change: Change, result: CallChanges): Promise<void> {
-		const office = !!officeKind(path), limit = office ? OFFICE_LIMIT : TEXT_LIMIT;
-		const before = change.loose ? change.loose.before : await change.root!.blob(change.before, limit);
-		const after = change.loose ? change.loose.after : await change.root!.blob(change.after, limit);
+	private describe(path: string, change: Change, contents: Map<string, Buffer | "large">, result: CallChanges): void {
+		const office = !!officeKind(path);
+		const version = (id: string | null) => { if (!id) return null; const value = contents.get(id); if (value === undefined) throw new Error("Unreadable."); return value; };
+		const before = change.loose ? change.loose.before : version(change.before);
+		const after = change.loose ? change.loose.after : version(change.after);
 		const action = before === null ? "added" : after === null ? "deleted" : "updated";
 		const base = { path, action, ...(change.meanwhile ? { meanwhile: true as const } : {}) } satisfies Partial<FileChange>;
 		if (action === "deleted" && before === "large") { result.files.push({ ...base, note: "Large file deleted." }); return; }

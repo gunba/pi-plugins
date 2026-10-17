@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ChangeTracker } from "../extensions/changes.ts";
+import { ChangeTracker, gitProcesses } from "../extensions/changes.ts";
 
 const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "pipe" }).toString();
 function repository(folder) {
@@ -16,11 +16,11 @@ function repository(folder) {
 	git(folder, "add", "-A"); git(folder, "commit", "-q", "-m", "start");
 	return folder;
 }
-function setup(t) {
+function setup(t, options) {
 	const base = mkdtempSync(join(tmpdir(), "changes-"));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
 	// The temporary folder is scratch space in real use; here it holds the folders under test.
-	return { base, tracker: new ChangeTracker(join(base, "agent", "changes"), join(base, "agent"), []) };
+	return { base, tracker: new ChangeTracker(join(base, "agent", "changes"), join(base, "agent"), [], options) };
 }
 const byPath = changes => Object.fromEntries((changes?.files ?? []).map(file => [file.path.split(/[\\/]/).pop(), file]));
 
@@ -64,6 +64,20 @@ test("files a pull brings are counted, while a commit made in the same command k
 	const changes = await tracker.finish("1");
 	assert.equal(changes.fromGit?.count, 1);
 	assert.deepEqual(Object.keys(byPath(changes)), ["b.txt"]);
+});
+
+test("with change notices, a call that changes nothing starts no git process, and one that does is still seen", async t => {
+	// Starting git costs tens of milliseconds on Windows, so most calls must not need it.
+	const { base, tracker } = setup(t, { watch: true }), repo = repository(join(base, "project"));
+	await tracker.start("1", "ls", repo, "s");
+	await tracker.finish("1");
+	const launched = gitProcesses();
+	await tracker.start("2", "ls", repo, "s");
+	assert.equal(await tracker.finish("2"), undefined);
+	assert.equal(gitProcesses() - launched, 0);
+	await tracker.start("3", "python3 edit.py", repo, "s");
+	writeFileSync(join(repo, "a.txt"), "one\ntwo\nthree\nfour\n");
+	assert.match(byPath(await tracker.finish("3"))["a.txt"].diff, /\+\s*4 four/);
 });
 
 test("a file a command names outside any followed folder is compared directly", async t => {
