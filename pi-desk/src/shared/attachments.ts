@@ -6,5 +6,6 @@ export interface Attachment { id: string; name: string; size: number; mimeType: 
 export type UploadCommand =
 	| { kind: "upload_begin"; name: string; size: number }
 	| { kind: "upload_chunk"; id: string; offset: number; base64: string }
-	| { kind: "upload_finish"; id: string }
+	/** sha256: hex digest of the whole file as the browser had it, checked against what the host wrote. */
+	| { kind: "upload_finish"; id: string; sha256?: string }
 	| { kind: "upload_discard"; id: string };

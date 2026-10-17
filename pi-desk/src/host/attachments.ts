@@ -4,6 +4,7 @@ import {
 	readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync,
 } from "node:fs";
 import { extname, join } from "node:path";
+import { imageDamage } from "../../../pi-output-budget/extensions/image-check.ts";
 import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT, type Attachment, type UploadCommand } from "../shared/attachments.ts";
 
 interface Stored extends Attachment { created: number; ready: boolean; used: boolean }
@@ -111,8 +112,16 @@ export class Attachments {
 				return { offset: command.offset + chunk.length };
 			}
 			if (size !== data.size) throw new Error("Upload is incomplete.");
-			const head = Buffer.alloc(Math.min(16, size)); readSync(descriptor, head, 0, head.length, 0);
-			data.mimeType = imageType(head); data.ready = true; this.save(data);
+			const whole = Buffer.alloc(size);
+			for (let read = 0; read < size;) read += readSync(descriptor, whole, read, size - read, read);
+			// The browser's own digest: a mismatch means bytes changed between its copy and this one.
+			if (command.sha256 && createHash("sha256").update(whole).digest("hex") !== command.sha256)
+				throw new Error("The upload arrived different from the file. Attach it again.");
+			const mimeType = imageType(whole.subarray(0, 16));
+			// A damaged image would make every later request in the conversation fail at the provider.
+			const damage = mimeType.startsWith("image/") ? imageDamage(whole) : undefined;
+			if (damage) throw new Error(`This image is damaged (${damage}). Take or copy it again, then attach it.`);
+			data.mimeType = mimeType; data.ready = true; this.save(data);
 			return { id: data.id, name: data.name, size: data.size, mimeType: data.mimeType } satisfies Attachment;
 		} finally { closeSync(descriptor); }
 	}

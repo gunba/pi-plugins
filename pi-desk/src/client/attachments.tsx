@@ -119,10 +119,13 @@ export function useAttachments(key: string, report: (text: string) => void) {
 							setProgress(`${file.name} · ${Math.round(offset / file.blob.size * 100)}%`);
 							await command({ kind: "upload_chunk", id, offset, base64: await encoded(file.blob.slice(offset, offset + CHUNK_BYTES)) });
 						}
-						await command({ kind: "upload_finish", id });
+						// crypto.subtle exists only on secure origins; without it the host still checks the image itself.
+						const sha256 = globalThis.crypto?.subtle ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", await file.blob.arrayBuffer()))]
+							.map(byte => byte.toString(16).padStart(2, "0")).join("") : undefined;
+						await command({ kind: "upload_finish", id, ...(sha256 ? { sha256 } : {}) });
 					} catch (error) {
 						// Keep uncertain network deliveries retryable; expired uploads need a fresh slot.
-						if (/ENOENT|Attachment.*unavailable|Upload contents changed/.test(String(error))) {
+						if (/ENOENT|Attachment.*unavailable|Upload contents changed|arrived different/.test(String(error))) {
 							await mutate(files => files.map(item => item.id === file.id ? { ...item, uploaded: undefined } : item));
 						}
 						throw error;

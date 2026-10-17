@@ -10,6 +10,7 @@ import { ArtifactStore, boundedText } from "./artifacts.ts";
 import { literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
+import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
 import { editHint, gitRoot, missingPath, missingPathHint } from "./repair.ts";
 
 const readSchema = Type.Object({
@@ -228,6 +229,11 @@ export default function outputBudget(pi: ExtensionAPI): void {
       : { content: result.content };
   });
 
+  // context_with_system: only message content changes, so prompt and tool changes stay where they are.
+  pi.on("context_with_system", (event, ctx) => {
+    const messages = withoutUnreadableImages(event.messages, imageRejections(ctx.sessionManager.getBranch()));
+    if (messages) return { messages };
+  });
   // Budgets apply only when a result is created. Earlier results are never rewritten later: replacing them
   // mid-conversation changed the prompt prefix and broke warm caches (first-turn misses rose from ~2% to 6–10%).
   capAnthropicImages(pi);
