@@ -2219,6 +2219,10 @@ details[open] > summary:before {
 .message-copy .ui-icon { width:14px; height:14px; }
 .message:hover .message-copy, .message-copy:focus-visible, .message-copy:has(span) { opacity:1; }
 @media (hover:none) { .message-copy { opacity:.7; } }
+/* Disabled buttons are otherwise always visible; rewind is disabled while Pi works. */
+.message-copy:disabled { opacity:0; }
+.message:hover .message-copy:disabled { opacity:.4; }
+@media (hover:none) { .message-copy:disabled { opacity:0; } }
 .message-summarised { opacity:.55; transition:opacity .15s; }
 .message-summarised:hover, .message-summarised:focus-within { opacity:1; }
 .message-summary { margin:16px 0 20px 34px; }
