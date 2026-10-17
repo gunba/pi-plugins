@@ -171,6 +171,8 @@ class Root {
 			this.watcher = watch(this.path, { recursive: true, persistent: false }, (_event, name) => {
 				if (!name || !UNWATCHED.test(String(name))) this.dirty = true;
 			});
+			// Never what keeps a process alive, on any platform.
+			this.watcher.unref();
 			this.watcher.on("error", () => this.close());
 		} catch { this.watcher = undefined; }
 	}
@@ -280,6 +282,11 @@ export class ChangeTracker {
 		this.watching = options.watch ?? (process.platform === "win32" || process.platform === "darwin");
 	}
 
+	/** Stops following folders; an open watch would keep a folder from being deleted on Windows. */
+	close(): void {
+		for (const root of this.roots.values()) root.close();
+		this.roots.clear(); this.calls.clear(); this.meanwhile = new Map(); this.session = "";
+	}
 	/** Removes Desk's stores for folders no conversation has used for a month. */
 	prune(): void {
 		try {

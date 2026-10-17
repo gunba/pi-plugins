@@ -18,13 +18,17 @@ function repository(folder) {
 }
 function setup(t, options) {
 	const base = mkdtempSync(join(tmpdir(), "changes-"));
-	t.after(() => rmSync(base, { recursive: true, force: true }));
 	// The temporary folder is scratch space in real use; here it holds the folders under test.
-	return { base, tracker: new ChangeTracker(join(base, "agent", "changes"), join(base, "agent"), [], options) };
+	const tracker = new ChangeTracker(join(base, "agent", "changes"), join(base, "agent"), [], options);
+	// Watches are closed first: Windows cannot delete a folder that is being watched.
+	t.after(() => { tracker.close(); rmSync(base, { recursive: true, force: true, maxRetries: 5 }); });
+	return { base, tracker };
 }
+// A stuck git process fails its test by name instead of stalling the whole run.
+const limit = { timeout: 60_000 };
 const byPath = changes => Object.fromEntries((changes?.files ?? []).map(file => [file.path.split(/[\\/]/).pop(), file]));
 
-test("changes a command makes by any means are reported as diffs, and the repository is left alone", async t => {
+test("changes a command makes by any means are reported as diffs, and the repository is left alone", limit, async t => {
 	// Agents edit files with scripts and shell tools, not only the edit tool; those changes were invisible.
 	const { base, tracker } = setup(t), repo = repository(join(base, "project"));
 	const index = readFileSync(join(repo, ".git", "index"));
@@ -44,6 +48,8 @@ test("changes a command makes by any means are reported as diffs, and the reposi
 
 	// Changes made while no call was running are reported with the next call, marked as made meanwhile.
 	writeFileSync(join(repo, "c.txt"), "new file\nchanged by a background process\n");
+	// Calls are seconds apart while the model works; change notices take a moment to arrive.
+	await new Promise(done => setTimeout(done, 200));
 	await tracker.start("2", "ls", repo, "s");
 	writeFileSync(join(repo, "a.txt"), "one\nTWO\nthree\nfour\n");
 	const next = byPath(await tracker.finish("2"));
@@ -51,7 +57,7 @@ test("changes a command makes by any means are reported as diffs, and the reposi
 	assert.equal(next["a.txt"].meanwhile, undefined);
 });
 
-test("files a pull brings are counted, while a commit made in the same command keeps its diff", async t => {
+test("files a pull brings are counted, while a commit made in the same command keeps its diff", limit, async t => {
 	const { base, tracker } = setup(t), upstream = repository(join(base, "upstream"));
 	const clone = join(base, "clone");
 	git(base, "clone", "-q", upstream, clone);
@@ -66,7 +72,7 @@ test("files a pull brings are counted, while a commit made in the same command k
 	assert.deepEqual(Object.keys(byPath(changes)), ["b.txt"]);
 });
 
-test("with change notices, a call that changes nothing starts no git process, and one that does is still seen", async t => {
+test("with change notices, a call that changes nothing starts no git process, and one that does is still seen", limit, async t => {
 	// Starting git costs tens of milliseconds on Windows, so most calls must not need it.
 	const { base, tracker } = setup(t, { watch: true }), repo = repository(join(base, "project"));
 	await tracker.start("1", "ls", repo, "s");
@@ -80,7 +86,7 @@ test("with change notices, a call that changes nothing starts no git process, an
 	assert.match(byPath(await tracker.finish("3"))["a.txt"].diff, /\+\s*4 four/);
 });
 
-test("a file a command names outside any followed folder is compared directly", async t => {
+test("a file a command names outside any followed folder is compared directly", limit, async t => {
 	const { base, tracker } = setup(t), repo = repository(join(base, "project"));
 	const outside = join(base, "settings", "app.desktop");
 	mkdirSync(join(base, "settings")); writeFileSync(outside, "Exec=old\n");

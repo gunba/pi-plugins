@@ -125,6 +125,7 @@ export default function show(pi: ExtensionAPI) {
 		} catch { /* Nothing kept yet. */ }
 		tracker.prune();
 	});
+	pi.on("session_shutdown", () => tracker.close());
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.parentToolCallId) return;
