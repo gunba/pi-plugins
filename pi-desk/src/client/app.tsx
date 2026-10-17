@@ -34,6 +34,7 @@ import { WorkRail } from "./work-rail.tsx";
 import { WorkspaceActions } from "./workspace-actions.tsx";
 import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
 import { PlanView } from "./plan-view.tsx";
+import { PlanHeader } from "./plan-header.tsx";
 import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
@@ -95,10 +96,13 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
   const wideWorkspace = useMedia("(min-width: 1280px)");
+  // Below this width the sidebar is a drawer, so the header names the conversation and closes it.
+  const phone = useMedia("(max-width: 760px)");
   const [panel, setPanel] = useState<
     "workspace" | "settings" | "view" | "agents" | undefined
   >();
-  const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-visible") !== "false");
+  // Agents and messages open on demand; the plan lives in the header.
+  const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-shown") === "true");
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
   const [creating, setCreating] = useState(false);
@@ -165,6 +169,9 @@ export function App({ account }: { account?: BrowserAccount }) {
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
   const showWorkRail = !dotSelected && !questsSelected && wideWorkspace && (workspaceVisible || panel === "workspace") && (!panel || settings || panel === "workspace");
+  const planView = (ui?.views ?? []).find(view => view.id === "plan" && view.kind === "details" && !view.scope);
+  const headerPlan = !phone && !!planView && !!(planView.data as UiDetails).items?.length ? planView : undefined;
+  const railSections = (ui?.views ?? []).some(view => !view.scope && view.surface !== "settings" && !["work", "conversation"].includes(view.kind) && view.id !== "plan");
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -278,6 +285,20 @@ export function App({ account }: { account?: BrowserAccount }) {
   const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {
     setDraft(text); localStorage.setItem(draftKey(selected), text);
   });
+  // Reply buttons on shown work and changes quote them into the composer.
+  useEffect(() => {
+    const quoted = (event: Event) => {
+      const text = (event as CustomEvent<string>).detail;
+      if (typeof text !== "string" || !selected) return;
+      setDraft(current => {
+        const next = current.trim() ? `${current.replace(/\s+$/, "")}\n\n${text}` : text;
+        localStorage.setItem(draftKey(selected), next); return next;
+      });
+      requestAnimationFrame(() => { const input = composerInput.current; if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); } });
+    };
+    window.addEventListener("pi-desk:quote", quoted);
+    return () => window.removeEventListener("pi-desk:quote", quoted);
+  }, [selected]);
   const messages = state.messages[selected] ?? emptyMessages;
   const storeHistory = useCallback((source: string | undefined, page: HistoryPage) => {
     setState(previous => {
@@ -743,23 +764,28 @@ export function App({ account }: { account?: BrowserAccount }) {
           >
             ☰
           </button>
-          <div className="conversation-heading">
-            <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${basename(session.cwd)}` : "Your workspace"}</span>
-            {session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
+          {(() => {
+            const name = session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
               disabled={!connected || session.state !== "ready" || closing}
-              control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>}
-          </div>
+              control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>;
+            return headerPlan ? <PlanHeader view={headerPlan} title={name} disabled={!connected || closing}
+              invoke={action => run({ kind: "action", view: headerPlan.id, revision: headerPlan.revision, action: action.id })} />
+              : <div className="conversation-heading">
+                {phone && <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${basename(session.cwd)}` : "Your workspace"}</span>}
+                {name}
+              </div>;
+          })()}
           <div className="top-actions">
             {!!settingsForms.length && <button className="quiet-action" onClick={openSettingsForm}>Finish Settings</button>}
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {(() => {
+            {(railSections || panel === "workspace") && (() => {
               const shown = showWorkRail || panel === "workspace";
-              return <button type="button" className="icon-button" title={shown ? "Hide plan, agents and messages" : "Show plan, agents and messages"}
+              return <button type="button" className="icon-button" title={shown ? "Hide agents and messages" : "Show agents and messages"}
                 aria-label="Work panel" aria-pressed={shown}
                 onClick={() => {
-                  if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-visible", String(visible)); setPanel(undefined); }
+                  if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-shown", String(visible)); setPanel(undefined); }
                   else setPanel(panel === "workspace" ? undefined : "workspace");
                 }}><Icon name="panel-right" /></button>;
             })()}
@@ -769,7 +795,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 if (session && !["conversation", "context", "tools", "activity"].includes(settingsSection)) setSettingsSection("conversation");
                 setPanel("settings");
               }}><Icon name="settings" /></button>
-            {session?.activation && <CloseConversationButton icon session={session} name={title(session)}
+            {phone && session?.activation && <CloseConversationButton icon session={session} name={title(session)}
               computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
               confirmed={() => setPanel(undefined)} />}
           </div>
@@ -784,7 +810,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
-        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (!showWorkRail || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
+        <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (phone || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
         {!showWorkRail && totalAgents > 0 && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>

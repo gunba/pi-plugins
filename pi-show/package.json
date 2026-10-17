@@ -1,0 +1,13 @@
+{
+  "name": "pi-show",
+  "version": "0.1.0",
+  "description": "Agents show their work and changes in Pi Desk: computed diffs for text and Office files, and a show tool.",
+  "private": true,
+  "type": "module",
+  "pi": { "extensions": ["./extensions/show.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "license": "MIT"
+}

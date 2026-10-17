@@ -67,7 +67,11 @@ export interface SessionSnapshot {
 export type ChatBlock =
 	| { type: "file"; file: FileReference }
 	| { type: "artifact"; id: string; label: string }
-	| { type: "diff"; path: string; action: string; movePath?: string; text: string; full?: string; truncated: boolean; file?: FileReference }
+	| { type: "diff"; path: string; action: string; movePath?: string; text: string; full?: string; truncated: boolean; file?: FileReference; added?: number; removed?: number }
+	/** Computed changes to a spreadsheet, document or deck, or a summary of a new one. */
+	| { type: "document"; change: import("../../../pi-show/extensions/types.ts").DocumentChange; file?: FileReference }
+	/** Work an agent showed with the show tool; `files` lines up with `shown.items`. */
+	| { type: "shown"; shown: import("../../../pi-show/extensions/types.ts").Shown; files: (FileReference | null)[] }
 	| { type: "ledger"; ledger: Ledger }
 	| { type: "text" | "thinking"; text: string; full?: string; truncated?: boolean }
 	| { type: "image"; asset: string; mimeType: string }

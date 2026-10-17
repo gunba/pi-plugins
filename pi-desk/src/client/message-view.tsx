@@ -5,7 +5,8 @@ import { FileLink } from "./file-view.tsx";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { acquireAsset } from "./connection.ts";
 import { AssetImage, AssetLink } from "./assets.tsx";
-import { ArtifactLink, DiffCard } from "./artifact-view.tsx";
+import { ArtifactLink } from "./artifact-view.tsx";
+import { ChangeCard, DocumentCard, ShownCard, diffStats } from "./change-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
@@ -69,16 +70,22 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 		? result?.blocks.find(block => block?.type === "file") : undefined;
 	const file = resultFile?.type === "file" ? resultFile.file : call?.file;
 	const fileMessage = resultFile ? result!.id : owner.id;
-	return <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
+	// What the call changed, and what an agent chose to show, stay visible instead of inside the collapsed call.
+	const shown = result?.blocks.find(block => block?.type === "shown");
+	if (shown?.type === "shown") return <ReferenceContext value={{ message: result!.id, source }}><ShownCard block={shown} session={sessionKey} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
+	const changes = result?.blocks.filter(block => block?.type === "diff" || block?.type === "document") ?? [];
+	const totals = changes.reduce((sum, block) => block.type === "diff" ? { added: sum.added + diffStats(block).added, removed: sum.removed + diffStats(block).removed } : sum, { added: 0, removed: 0 });
+	const pill = <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
 		summary={<><span className="tool-icon">{skills.length || nestedSkills.length ? <Icon name="context" /> : "⌘"}</span><strong>{skills.length ? skills.length === 1 ? "Read skill" : "Read skills" : name}</strong>
 			<span className="tool-argument-preview">{skills.length ? `${skills.join(", ")} · ` : ""}{file
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
 				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(name, call?.arguments)}</span>
+			{(totals.added > 0 || totals.removed > 0) && <span className="change-stats">{totals.added > 0 && <span className="change-added">+{totals.added}</span>}{totals.removed > 0 && <span className="change-removed">−{totals.removed}</span>}</span>}
 			<ToolStatus message={result} />
 			{!result?.tool && <Time timestamp={owner.timestamp} />}
 		</>}>
 		{result && <ReferenceContext value={{ message: result.id, source }}>
-			<div className="tool-output"><MessageBody message={result} sessionKey={sessionKey} source={source} omitFile={resultFile?.type === "file" ? resultFile.file.id : undefined} />
+			<div className="tool-output"><MessageBody message={result} sessionKey={sessionKey} source={source} omitFile={resultFile?.type === "file" ? resultFile.file.id : undefined} omitChanges />
 				{result.tool?.processRunning && <p className="muted">Process{result.tool.processId ? ` #${result.tool.processId}` : ""} was running when this result was returned.</p>}
 			</div>
 		</ReferenceContext>}
@@ -87,6 +94,8 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 			{call.truncated && !call.full && <p className="muted">Preview only. Complete arguments exceed the viewer's asset limit.</p>}
 		</Disclosure>}
 	</Disclosure>;
+	return changes.length ? <>{pill}<ReferenceContext value={{ message: result!.id, source }}><div className="tool-changes">{changes.map((block, index) =>
+		block.type === "diff" ? <ChangeCard key={index} block={block} session={sessionKey} /> : block.type === "document" ? <DocumentCard key={index} block={block} session={sessionKey} /> : null)}</div></ReferenceContext></> : pill;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
@@ -136,8 +145,10 @@ function ThinkingGroup({ parts, sessionKey, source }: {
 function thinkingParts(messages: ChatMessage[]) {
 	return messages.flatMap(message => message.blocks.flatMap((block, index) => block?.type === "thinking" ? [{ message, block, index }] : []));
 }
-function MessageBody({ message, sessionKey, source, results, omitFile }: {
+function MessageBody({ message, sessionKey, source, results, omitFile, omitChanges }: {
 	message: ChatMessage; sessionKey: string; source?: string; results?: Record<string, ChatMessage>; omitFile?: string;
+	/** Changes shown beside the tool call rather than in its output. */
+	omitChanges?: boolean;
 }) {
 	return <div className="message-body">
 		{message.nested && <Disclosure id={`nested:${message.id}`} className="tool-card nested-tools"
@@ -148,7 +159,9 @@ function MessageBody({ message, sessionKey, source, results, omitFile }: {
 			if (!block || isEmptyText(block)) return null;
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
 			if (block.type === "artifact") return <ArtifactLink key={index} session={sessionKey} id={block.id} label={block.label} />;
-			if (block.type === "diff") return <DiffCard key={index} session={sessionKey} block={block} />;
+			if (block.type === "diff") return omitChanges ? null : <ChangeCard key={index} session={sessionKey} block={block} />;
+			if (block.type === "document") return omitChanges ? null : <DocumentCard key={index} session={sessionKey} block={block} />;
+			if (block.type === "shown") return omitChanges ? null : <ShownCard key={index} session={sessionKey} block={block} />;
 			if (block.type === "text" && message.tool?.state === "running") return <LiveOutput key={index} text={block.text} />;
 			if (block.type === "ledger") return <LedgerCard key={index} ledger={block.ledger} />;
 			if (block.type === "image") return <AssetImage key={index} session={sessionKey} asset={block.asset} />;

@@ -39,6 +39,7 @@
       "./pi-context-window/index.ts",
       "./pi-party/index.ts",
       "./pi-plan/extensions/plan.ts",
+      "./pi-show/extensions/show.ts",
       "./pi-subagents/extensions/subagents.ts",
       "./pi-output-budget/extensions/index.ts",
       "./pi-system-one/index.ts",

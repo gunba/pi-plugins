@@ -65,6 +65,10 @@ export class Transcript {
 	}
 
 	private resultDetails(message: RecordValue, blocks: ChatBlock[], cwd?: string): ChatMessage["tool"] {
+		/** Structured results stay in history; ones too large to send are reduced to their summaries. */
+		const bounded = (value: RecordValue): RecordValue => JSON.stringify(value).length <= 256_000 ? value
+			: Array.isArray(value.items) ? { ...value, items: (value.items as RecordValue[]).map(item => ({ path: item.path, kind: item.kind, missing: item.missing })), note: `${value.note ?? ""}\n\n(Too large to show here.)` }
+			: { ...value, changes: undefined, preview: undefined, summary: `${value.summary} (too large to show here)` };
 		const details = record(message.details);
 		if (cwd) {
 			const path = message.toolName === "read" ? details.sourcePath
@@ -94,10 +98,25 @@ export class Transcript {
 				blocks.push({ type: "text", text: `${changes.length - 32} more changed files.`, full: this.asset(JSON.stringify(changes, null, 2), "text/plain; charset=utf-8") });
 			}
 		}
-		if (message.toolName === "edit" && typeof details.diff === "string") {
-			blocks.push({ type: "diff", path: "Edited file", action: "updated", text: details.diff.slice(0, 12_000),
-				truncated: details.diff.length > 12_000,
+		// Pi's edit tool, and Desk's change tracking for write (pi-show), report a numbered line diff.
+		if ((message.toolName === "edit" || message.toolName === "write") && typeof details.diff === "string") {
+			const path = typeof details.path === "string" ? details.path : typeof details.patch === "string" ? /^--- (.+)$/m.exec(details.patch)?.[1] : undefined;
+			const diff = details.diff as string, count = (sign: string) => diff.split("\n").filter((line: string) => line.startsWith(sign) && /^[+-]\s*\d/.test(line)).length;
+			blocks.push({ type: "diff", path: path?.slice(0, 4000) ?? "Edited file", action: details.created === true ? "added" : "updated", text: details.diff.slice(0, 12_000),
+				truncated: details.diff.length > 12_000, added: typeof details.added === "number" ? details.added : count("+"), removed: typeof details.removed === "number" ? details.removed : count("-"),
+				...(path && cwd ? { file: this.files.observePath(path, cwd) } : {}),
 				...(details.diff.length > 12_000 || details.diff.slice(0, 12_000).split("\n").length > 400 ? { full: this.asset(details.diff, "text/plain; charset=utf-8") } : {}) });
+		}
+		// Computed changes to Office files the call touched (pi-show).
+		if (Array.isArray(details.documentChanges)) for (const value of details.documentChanges.slice(0, 16)) {
+			const change = record(value);
+			if (typeof change.path !== "string" || typeof change.summary !== "string" || !["xlsx", "docx", "pptx"].includes(String(change.kind))) continue;
+			blocks.push({ type: "document", change: bounded(change) as Extract<ChatBlock, { type: "document" }>["change"], ...(cwd ? { file: this.files.observePath(change.path, cwd) } : {}) });
+		}
+		if (message.toolName === "show" && details.show && typeof details.show === "object") {
+			const shown = bounded(record(details.show)) as Extract<ChatBlock, { type: "shown" }>["shown"];
+			if (typeof shown.title === "string" && Array.isArray(shown.items))
+				blocks.push({ type: "shown", shown, files: shown.items.map(item => item.path && cwd ? this.files.observePath(item.path, cwd) ?? null : null) });
 		}
 		for (const [id, label] of [[details.outputArtifact, "Complete captured output"], [details.full_output_artifact, "Complete process output"],
 			[details.artifact, "Captured output"], [details.search_artifact, "Captured search results"]] as const) {

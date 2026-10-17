@@ -25,7 +25,8 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, focus
 	useEffect(() => { localStorage.setItem("pi-desk:workspace-hidden", JSON.stringify(hidden)); }, [hidden]);
 	useEffect(() => { localStorage.setItem("pi-desk:workspace-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
 	useEffect(() => { if (focused) { setHidden(current => current.filter(id => id !== focused)); setCollapsed(current => current.filter(id => id !== focused)); } }, [focused]);
-	const sections = views.filter(view => (!view.scope || view.id === focused) && view.surface !== "settings" && !["work", "conversation"].includes(view.kind));
+	// The plan is shown in the conversation header.
+	const sections = views.filter(view => (!view.scope || view.id === focused) && view.surface !== "settings" && !["work", "conversation"].includes(view.kind) && view.id !== "plan");
 	const order = ["plan", "subagents", "messages"];
 	sections.sort((a, b) => (order.indexOf(a.id) < 0 ? 99 : order.indexOf(a.id)) - (order.indexOf(b.id) < 0 ? 99 : order.indexOf(b.id)));
 	const inventory = agentInventory(views);
@@ -69,7 +70,7 @@ export function WorkRail({ views, connected, invoke, openAgents, openView, focus
 					</div>}
 				</section>;
 			})}
-			{!sections.length && <div className="work-rail-empty"><Icon name="layers" /><p>A conversation's plan, agents and messages appear here.</p></div>}
+			{!sections.length && <div className="work-rail-empty"><Icon name="layers" /><p>A conversation's agents and messages appear here.</p></div>}
 			{!!sections.length && sections.every(view => hidden.includes(view.id)) && <p className="workspace-empty">All sections hidden. Use Customize workspace to show them.</p>}
 		</div>
 	</aside>;

@@ -88,6 +88,11 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   with optional bounded automatic continuation. `/plan`, `get_plan`,
   `create_plan` and `update_plan` share the same revision-fenced native state.
   Manual plans never start extra model rounds.
+- [`pi-show`](pi-show/README.md) — agents show their work in Pi Desk. Files a
+  call changes get computed diffs: lines for text, cells for spreadsheets,
+  paragraphs for Word documents and slides for decks, from the files
+  themselves. The `show` tool presents results, previews and changes at key
+  moments, and flags changed cells the agent did not mention.
 - [`pi-subagents`](pi-subagents/README.md) — native Pi SDK children with Codex
   V2-style `spawn_agent`, same-tree `send_message` and `followup_task`, mailbox
   `wait_agent`, current-turn interruption and task-path discovery. Creation supports

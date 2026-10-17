@@ -76,16 +76,3 @@ function ArtifactViewer({ session, id, label, close }: { session: string; id: st
 		<pre ref={content} className="artifact-text" tabIndex={0} aria-label="Captured output">{page?.text || (!loading && !error ? "No matching text." : "")}</pre>
 	</SurfaceFrame>;
 }
-
-export function DiffCard({ block, session }: { block: Extract<ChatBlock, { type: "diff" }>; session: string }) {
-	const lines = block.text.split("\n"), visible = lines.slice(0, 400);
-	return <details className="tool-card diff-card"><summary><span className="diff-action">{block.action}</span>
-		<strong>{block.path}{block.movePath ? ` → ${block.movePath}` : ""}</strong></summary>
-		<CopyButton text={() => block.text} label="Copy diff preview" />
-		{block.file && <FileLink session={session} file={block.file}>Open file</FileLink>}
-		<pre>{visible.map((line, index) => <span key={index} className={line.startsWith("+") ? "diff-add"
-			: line.startsWith("-") ? "diff-remove" : "diff-context"}>{line}</span>)}</pre>
-		{(block.truncated || lines.length > visible.length) && <p className="muted">Diff preview limited to 12,000 characters / 400 lines.</p>}
-		{block.full && <AssetLink session={session} asset={block.full} />}
-	</details>;
-}

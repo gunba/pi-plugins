@@ -66,6 +66,7 @@ const READERS: Record<string, (args: Args) => string> = {
 	},
 	mcp: args => [str(args.server), str(args.tool) || str(args.search)].filter(Boolean).join(" · "),
 	update_plan: args => [str(args.action), str(args.objective)].filter(Boolean).join(": "),
+	show: args => str(args.title),
 	update_goal: args => [str(args.action), str(args.objective) || str(args.blocked_reason)].filter(Boolean).join(": "),
 	wait_agent: args => Array.isArray(args.ids) ? list(args.ids.map(String)) : "",
 	wait_for_work: args => Array.isArray(args.targets) ? list(args.targets.map(String)) : "",

@@ -9,7 +9,9 @@ type Node = { type: string; url?: string; identifier?: string; children?: Node[]
 export function projectFileLinks(message: ChatMessage, files: LocalFiles, cwd: string): ChatMessage {
 	const links: NonNullable<ChatMessage["links"]> = [];
 	const blocks = message.blocks.map(block => {
-		if (block.type === "diff") return { ...block, file: block.action === "deleted" || message.toolName === "edit" ? undefined : files.observePath(block.movePath ?? block.path, cwd) };
+		if (block.type === "diff") return { ...block, file: block.action === "deleted" || block.path === "Edited file" ? undefined : files.observePath(block.movePath ?? block.path, cwd) };
+		if (block.type === "document") return { ...block, file: files.observePath(block.change.path, cwd) };
+		if (block.type === "shown") return { ...block, files: block.shown.items.map(item => item.path ? files.observePath(item.path, cwd) ?? null : null) };
 		if (block.type !== "text" && block.type !== "thinking") return block;
 		let text = block.text;
 		if (message.role === "user" && text.includes("Attached files on the host:")) {

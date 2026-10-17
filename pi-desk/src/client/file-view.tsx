@@ -7,7 +7,7 @@ import { useReferenceQuery } from "./reference-origin.tsx";
 import { decodeBase64 } from "./blob-pool.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, FILE_IMAGE_LIMIT, type FileChunk, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
-async function fileBlob(session: string, file: FileInfo, origin: string, signal: AbortSignal, progress: (bytes: number) => void): Promise<Blob> {
+export async function fileBlob(session: string, file: FileInfo, origin: string, signal: AbortSignal, progress: (bytes: number) => void): Promise<Blob> {
 	if (file.size > FILE_DOWNLOAD_LIMIT) throw new Error("Downloads are limited to 128 MiB.");
 	const pieces: Uint8Array<ArrayBuffer>[] = [];
 	for (let offset = 0; offset < file.size; offset += FILE_CHUNK_BYTES * 4) {
