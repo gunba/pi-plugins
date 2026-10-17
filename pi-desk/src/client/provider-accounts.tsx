@@ -104,20 +104,20 @@ function AccountStore({ computer, name: computerName, connected, session, busy, 
 			<button className="icon-button" aria-label="Refresh accounts" title="Refresh accounts" disabled={!connected || working} onClick={() => void refresh()}><Icon name="refresh" /></button>
 		</Row>}
 		{(readError || error || !connected) && <Row label=""><span className={readError || error ? "error-text" : "muted"} role="alert">{error || readError || `${computerName} is disconnected.`}</span></Row>}
+		{session && <Row label="This conversation" hint={idle ? "Each conversation keeps its own account; its subagents use the same one." : "You can change the account when the conversation and its queued work are idle."}>
+			<select aria-label="Conversation provider account" value={changing ? "" : selected ?? ""}
+				disabled={!connected || !snapshot || selected === undefined || !idle || busy || working || changing} onChange={event => {
+					const id = event.target.value; setSelecting(true);
+					void run(() => invoke({ kind: "account", provider: providerId, id })).finally(() => { if (alive.current) setSelecting(false); });
+				}}>
+				{(changing || selected === undefined) && <option value="">{changing ? "Changing account…" : "Account selection unavailable"}</option>}
+				{!accounts.some(account => account.id === "pi") && <option value="pi">Pi's own sign-in</option>}
+				{selected && selected !== "pi" && !accounts.some(account => account.id === selected) && <option value={selected}>{snapshot ? "Saved account missing" : "Saved account"}</option>}
+				{accounts.map(option)}
+			</select>
+			{!idle && session.state !== "closed" && <span className="muted">change when idle</span>}
+		</Row>}
 		{!snapshot ? <Row label="Accounts"><span className="muted">{connected && !readError ? "Loading…" : "Unavailable"}</span></Row> : <>
-			{session && <Row label="This conversation" hint={idle ? "Each conversation keeps its own account; its subagents use the same one." : "You can change the account when the conversation and its queued work are idle."}>
-				<select aria-label="Conversation provider account" value={changing ? "" : selected ?? ""}
-					disabled={!connected || selected === undefined || !idle || busy || working || changing} onChange={event => {
-						const id = event.target.value; setSelecting(true);
-						void run(() => invoke({ kind: "account", provider: providerId, id })).finally(() => { if (alive.current) setSelecting(false); });
-					}}>
-					{(changing || selected === undefined) && <option value="">{changing ? "Changing account…" : "Unavailable"}</option>}
-					{!accounts.some(account => account.id === "pi") && <option value="pi">Pi's own sign-in</option>}
-					{selected && selected !== "pi" && !accounts.some(account => account.id === selected) && <option value={selected}>Saved account missing</option>}
-					{accounts.map(option)}
-				</select>
-				{!idle && session.state !== "closed" && <span className="muted">change when idle</span>}
-			</Row>}
 			{lastChange && ["failed", "interrupted"].includes(lastChange.state) && <Row label=""><span className="error-text" role="alert">The last account change {lastChange.state}: {lastChange.error ?? "check the selection before trying again."}</span></Row>}
 			<Row label="New conversations" hint={`The account new conversations on ${computerName} start with. Existing conversations keep theirs.`}>
 				<select aria-label="Default provider account" value={snapshot.defaults[providerId] ?? "pi"} disabled={!connected || working} onChange={event => {
