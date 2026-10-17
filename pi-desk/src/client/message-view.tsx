@@ -16,6 +16,18 @@ import { readSkills } from "../shared/skill-activity.ts";
 import { isActivityOnly, isEmptyText } from "./state.ts";
 import { markdownPlugins, markdownFile, markdownUrl } from "./markdown-links.ts";
 import { thinkingPreview, toolArgumentPreview } from "./tool-preview.ts";
+import { splitDictationNote } from "../shared/dictation-note.ts";
+
+/** A user message without Desk's dictation note, when it has one; the note becomes a badge. */
+function withoutDictationNote(message: ChatMessage): ChatMessage | undefined {
+	if (message.role !== "user") return;
+	for (let index = message.blocks.length - 1; index >= 0; index--) {
+		const block = message.blocks[index];
+		if (block?.type !== "text") continue;
+		const split = splitDictationNote(block.text);
+		return split.dictated ? { ...message, blocks: message.blocks.map((item, at) => at === index ? { ...block, text: split.text } : item) } : undefined;
+	}
+}
 
 const tokenFormat = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 async function assetText(session: string, asset: string, origin: string): Promise<string> {
@@ -227,11 +239,14 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 		</article></ReferenceContext>;
 	}
 	const activityOnly = message.role === "tool" || isActivityOnly(message);
+	const dictated = withoutDictationNote(message);
+	if (dictated) message = dictated;
 	return <ReferenceContext value={{ message: message.id, source }}>
 		<article className={`message message-${message.role}${activityOnly ? " message-activity" : ""}${traceContinues ? " message-trace-tail" : ""}${faded}`}>
 			{!activityOnly && <div className="message-heading"><span className={message.role === "assistant" ? "assistant-avatar" : "message-label"}>
 				{message.role === "assistant" ? "π" : message.role === "user" ? source ? "Input" : "You" : "Note"}</span>
-				{message.role === "assistant" && <strong>Pi</strong>}{time}</div>}
+				{message.role === "assistant" && <strong>Pi</strong>}{time}
+				{dictated && <span className="dictated-badge" title="Dictated. The agent was told speech recognition may have misheard some words."><Icon name="mic" />Dictated</span>}</div>}
 			{thinking ? <div className="message-body"><ThinkingGroup parts={thinkingParts(thinking)} sessionKey={sessionKey} source={source} /></div>
 				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}

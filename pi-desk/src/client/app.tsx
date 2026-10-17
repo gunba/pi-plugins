@@ -57,6 +57,7 @@ import { VersionBanner, VersionTag } from "./conversation-version.tsx";
 import { NewConversationModel, rememberModel, rememberedModel, type ModelChoice } from "./new-model.tsx";
 import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
 import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
+import { withDictationNote } from "../shared/dictation-note.ts";
 import { LedgerCard } from "./ledger-card.tsx";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
@@ -77,6 +78,8 @@ const title = (session: SessionView) =>
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const draftKey = (key: string) => `pi-desk:draft:${key}`;
+/** Set while a conversation's draft holds dictated text, so the message tells the agent it was dictated. */
+const dictatedKey = (key: string) => `pi-desk:dictated:${key}`;
 const emptyMessages: NonNullable<ClientState["messages"][string]> = [];
 function uploadedPrompt(text: string, files: DraftFile[], session: string): PromptCommand | undefined {
   if (files.some(file => file.uploaded?.session !== session)) return;
@@ -454,7 +457,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     try { if (fileIds.length) await attachments.clear(fileIds); }
     catch { throw new Error("Message queued on the computer, but its attachment draft could not be cleared. The receipt is retained to prevent a duplicate."); }
     if (!clearSubmission(localStorage, selected, receipt.id)) return;
-    if (localStorage.getItem(draftKey(selected)) === shown) localStorage.removeItem(draftKey(selected));
+    if (localStorage.getItem(draftKey(selected)) === shown) { localStorage.removeItem(draftKey(selected)); localStorage.removeItem(dictatedKey(selected)); }
     if (selectedRef.current === selected) {
       setDraft(current => current === shown ? "" : current); setLatestRequest(value => value + 1);
     }
@@ -515,10 +518,12 @@ export function App({ account }: { account?: BrowserAccount }) {
   /** Sends the draft; `dictated` text is sent with it without passing through the composer. */
   async function send(delivery: Delivery = deliveryMode, dictated?: string) {
     const shown = draft, text = dictated === undefined ? draft : withDictation(draft, dictated);
+    // The agent is told the message was dictated, so it reads past misheard words.
+    const modelText = text.trim() && (dictated !== undefined || localStorage.getItem(dictatedKey(selected)) === "1") ? withDictationNote(text) : text;
     // Dictated words that can't be sent now stay in the draft rather than being lost.
     const keep = () => {
       if (dictated === undefined || selectedRef.current !== selected) return;
-      setDraft(current => current === shown ? text : current); localStorage.setItem(draftKey(selected), text);
+      setDraft(current => current === shown ? text : current); localStorage.setItem(draftKey(selected), text); localStorage.setItem(dictatedKey(selected), "1");
     };
     if (!text.trim() && !attachments.files.length) return;
     if (!attachments.ready || sendingRef.current || controlBusy || !connected
@@ -550,7 +555,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       const status = previous ? await readSubmission(previous, readInput) : undefined;
       if (previous && admittedInput(status)) {
         // Check cached upload IDs before touching files that may already have been consumed.
-        const cached = uploadedPrompt(text, attachments.files, session.key);
+        const cached = uploadedPrompt(modelText, attachments.files, session.key);
         if (cached && submissionDecision(previous, session.activation, await submissionFingerprint(cached), status) === "confirmed") {
           await finishSubmission(previous, text, fileIds, shown); return;
         }
@@ -561,7 +566,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         activation: session.activation, command: value,
       }));
       const prompt: PromptCommand = {
-        kind: "prompt", text, ...(uploaded.length ? { attachments: uploaded } : {}),
+        kind: "prompt", text: modelText, ...(uploaded.length ? { attachments: uploaded } : {}),
       };
       const fingerprint = await submissionFingerprint(prompt);
       const decision = submissionDecision(previous, session.activation, fingerprint, status);
@@ -938,6 +943,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 onChange={(event) => {
                   setDraft(event.target.value);
                   localStorage.setItem(draftKey(selected), event.target.value);
+                  if (!event.target.value.trim()) localStorage.removeItem(dictatedKey(selected));
                 }}
                 onKeyDown={(event) => {
                   if (completion.keyDown(event)) return;
@@ -971,7 +977,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                   invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
                 <div className="send-controls">
                   <DictationButton disabled={!connected} report={setError} submit={text => void send(deliveryMode, text)} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
-                    const next = withDictation(current, text); localStorage.setItem(draftKey(selected), next); return next;
+                    const next = withDictation(current, text); localStorage.setItem(draftKey(selected), next); localStorage.setItem(dictatedKey(selected), "1"); return next;
                   })} />
                   <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
                     disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>

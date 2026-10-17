@@ -2503,3 +2503,7 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 /* How loudly the microphone hears you while dictating. */
 .dictation-level { width:44px; height:5px; border-radius:3px; background:var(--hover); overflow:hidden; }
 .dictation-level > span { display:block; height:100%; background:var(--accent); transform-origin:left; transition:transform .1s linear; }
+
+/* A message written by voice: the agent was told to expect misheard words. */
+.dictated-badge { display:inline-flex; align-items:center; gap:4px; padding:1px 6px; border-radius:5px; background:var(--hover); color:var(--muted); font-size:10.5px; font-weight:500; }
+.dictated-badge .ui-icon { width:12px; height:12px; }

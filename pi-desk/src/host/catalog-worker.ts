@@ -4,6 +4,7 @@ import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agen
 import type { SavedSession } from "../shared/protocol.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { catalogPath } from "./catalog-path.ts";
+import { splitDictationNote } from "../shared/dictation-note.ts";
 
 const options = workerData as { cwd?: string; baseCwd: string; agentDir: string; sessionDir?: string; directories: string[] };
 const custom = configuredSessionDirectory(options.cwd ?? options.baseCwd, options.agentDir, options.sessionDir);
@@ -13,7 +14,7 @@ let completed = 0, total = 0;
 const preview = (value: unknown, limit: number) => typeof value === "string" ? value.slice(0, limit) : "";
 const project = (info: SessionInfo): SavedSession => ({
 	id: preview(info.id, 200), file: info.path, cwd: preview(info.cwd, 32768), name: preview(info.name, 300) || undefined,
-	firstMessage: preview(info.firstMessage, 200), messageCount: info.messageCount,
+	firstMessage: preview(splitDictationNote(info.firstMessage).text, 200), messageCount: info.messageCount,
 	modified: Number.isFinite(info.modified.getTime()) ? info.modified.toISOString() : new Date(0).toISOString(),
 });
 const progress = (loaded: number, count: number, partial?: readonly SessionInfo[]) => {

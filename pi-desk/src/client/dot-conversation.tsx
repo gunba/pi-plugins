@@ -12,6 +12,7 @@ import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
 import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
+import { splitDictationNote, withDictationNote } from "../shared/dictation-note.ts";
 import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, removableDotInput, removeDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
 import { dotReadKey, markDotRead, mergeDotReadStates, readDotReadState, unreadDotMessages, type DotReadState } from "./dot-unread.ts";
 
@@ -48,6 +49,8 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const [before, setBefore] = useState<string>();
 	const [outbox, setOutbox] = useState<DotOutbox>({ draft: "", inputs: [] });
 	const outboxRef = useRef(outbox); outboxRef.current = outbox;
+	/** Whether the draft holds dictated text. */
+	const dictated = useRef(false);
 	const outboxLoaded = useRef(false), posting = useRef(new Set<string>());
 	const draft = outbox.draft;
 	const pending = outbox.inputs.find(input => input.dot === view.id && input.state !== "accepted" && !input.ignored);
@@ -165,7 +168,9 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const send = () => {
 		if (!supported || !view.id || !view.connection || busy || !filesReady || !outboxLoaded.current) return;
 		const held = dotReservedFiles(outboxRef.current, view.inputs);
-		try { if (commit(enqueueDot(outboxRef.current, view.id, view.connection, files.filter(file => !held.has(file.id))))) setError(""); }
+		// Steve is told when the message was dictated, so it reads past misheard words.
+		const outbox = dictated.current && outboxRef.current.draft.trim() ? { ...outboxRef.current, draft: withDictationNote(outboxRef.current.draft.trim()) } : outboxRef.current;
+		try { if (commit(enqueueDot(outbox, view.id, view.connection, files.filter(file => !held.has(file.id))))) { setError(""); dictated.current = false; } }
 		catch (error) { setError(errorText(error)); }
 	};
 	useEffect(() => {
@@ -266,7 +271,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		},
 		skip(input: DotOutboxInput) { amend(input.id, { ignored: true, ...(input.state === "queued" ? { state: "not-sent", error: "Cancelled before sending." } : {}) }); },
 		/** Add dictated text to the draft as it stands now, not as it was when dictation started. */
-		dictate(text: string) { saveDraft(withDictation(outboxRef.current.draft, text)); },
+		dictate(text: string) { dictated.current = true; saveDraft(withDictation(outboxRef.current.draft, text)); },
 		/** Queue a message to the Dot without touching the draft, for actions elsewhere in Desk. */
 		queue(text: string) {
 			if (!supported || !view.id || !view.connection || !outboxLoaded.current) { setError("Connect your Dot first."); return; }
@@ -376,6 +381,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				{messages.map((message, index) => {
 					const day = new Date(message.created), previous = messages[index - 1];
 					const showDay = !previous || new Date(previous.created).toDateString() !== day.toDateString();
+					const said = message.author === "owner" ? splitDictationNote(message.text) : { text: message.text, dictated: false };
 					return <div key={message.id}>
 						{showDay && <div className="dot-date"><time dateTime={message.created}>{day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</time></div>}
 						<article className={`message ${message.author === "owner" ? "message-user" : "message-assistant"}`}>
@@ -383,9 +389,10 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 								{message.author !== "owner" && <DotAvatar image={message.author === "dot" ? view.avatar : undefined} />}
 								<strong>{message.author === "dot" ? name : message.author === "owner" ? "You" : message.name ?? "Message"}</strong>
 								<time dateTime={message.created}>{day.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+								{said.dictated && <span className="dictated-badge" title="Dictated. Steve was told speech recognition may have misheard some words."><Icon name="mic" />Dictated</span>}
 							</div>
 							<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}
-								components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{message.text}</Markdown></div>
+								components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{said.text}</Markdown></div>
 								{message.attachments.map((attachment, index) => <button type="button" className="dot-attachment" key={attachment.id ?? index} disabled={!ready || busy || opening}
 									onClick={() => attachment.downloadable ? void dot.download(message.id, attachment.id) : void openNative("conversation")}>
 									{attachment.name}{attachment.downloadable ? " ↓" : " ↗"}
@@ -396,7 +403,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				})}
 				{dot.optimistic.map(input => <article className="message message-user dot-local-message" key={input.id}>
 					<div className="message-heading"><strong>You</strong><time dateTime={input.created}>{new Date(input.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
-					<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{input.text}</Markdown></div>
+					<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{splitDictationNote(input.text).text}</Markdown></div>
 						{input.attachments.map(file => <span className="dot-attachment" key={file.id}>{file.name}</span>)}
 					</div>
 					<div className={`dot-delivery ${input.state}`} role="status">
