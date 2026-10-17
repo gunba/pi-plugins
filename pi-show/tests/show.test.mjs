@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { deflateRawSync } from "node:zlib";
 import { diffOffice, previewOffice, readOffice, unlistedCells } from "../extensions/documents.ts";
@@ -83,10 +83,10 @@ test("sequence diffs are minimal", () => {
 });
 
 test("Office files named in commands and in the scripts they run are found", () => {
-	const scripts = { "/work/fix.py": "wb = load_workbook('Budget FY26.xlsx')" };
+	const scripts = { [resolve("/work/fix.py")]: "wb = load_workbook('Budget FY26.xlsx')" };
 	assert.deepEqual(mentionedDocuments(`cd /work && python3 fix.py && libreoffice --convert-to pdf "Report final.docx"`, "/home", path => scripts[path]),
-		["/work/Report final.docx", "/work/Budget FY26.xlsx"]);
-	assert.deepEqual(mentionedDocuments("python3 - <<'EOF'\nload_workbook('/data/a.xlsm')\nEOF", "/home"), ["/data/a.xlsm"]);
+		[resolve("/work/Report final.docx"), resolve("/work/Budget FY26.xlsx")]);
+	assert.deepEqual(mentionedDocuments("python3 - <<'EOF'\nload_workbook('/data/a.xlsm')\nEOF", "/home"), [resolve("/data/a.xlsm")]);
 });
 
 test("tool results gain computed changes, and show reports them with what the agent left out", async t => {
