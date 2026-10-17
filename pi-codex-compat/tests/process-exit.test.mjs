@@ -17,14 +17,14 @@ test("a command left running reports its exit once; a poll that saw it, or an in
 	t.after(async () => { await shutdownExecSessions(owner); await rm(cwd, { recursive: true, force: true }); });
 	onBackgroundExit(owner, exit => exits.push(exit));
 	const node = cmd => `${JSON.stringify(process.execPath)} -e ${JSON.stringify(cmd)}`;
-	const left = await executeManagedExecCommand({ cmd: node("setTimeout(() => { console.log('built ok'); process.exit(3); }, 800)"), yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
+	const left = await executeManagedExecCommand({ cmd: node("setTimeout(() => { console.log('built ok'); process.exit(3); }, 3000)"), yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
 	assert.equal(left.details.running, true);
 	for (let waited = 0; !exits.length && waited < 20_000; waited += 100) await delay(100);
 	assert.equal(exits.length, 1);
 	assert.equal(exits[0].exitCode, 3);
 	assert.match(exitNotice(exits[0]), /^Background command finished: `.+` \(session \d+\) exited with code 3 after \d+s\.\n\nEnd of its output:\n[\s\S]*built ok$/);
 
-	const polled = await executeManagedExecCommand({ cmd: node("setTimeout(() => process.exit(0), 600)"), yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
+	const polled = await executeManagedExecCommand({ cmd: node("setTimeout(() => process.exit(0), 3000)"), yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
 	const result = await executeWriteStdin({ session_id: polled.details.session_id, yield_time_ms: 5000 }, undefined, undefined, owner);
 	assert.equal(result.details.exit_code, 0);
 	const stopped = await executeManagedExecCommand({ cmd: node("setTimeout(() => {}, 60000)"), yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
