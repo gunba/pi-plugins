@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
+import { Row } from "./settings-pages.tsx";
 import type { Computer, WorkspaceState } from "./workspace.ts";
 import type { DictationSettings } from "../shared/protocol.ts";
 
@@ -187,21 +188,6 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** Settings → Accounts & connections: the ElevenLabs key and the terms to recognise, kept on one computer. */
-export function DictationSettingsPanel({ host, computer, connected }: { host: WorkspaceState; computer?: Computer; connected: boolean }) {
-	const [chosen, setChosen] = useState("");
-	const computers = host.computers;
-	const id = chosen || computer?.id || computers?.find(item => item.connected)?.id || computers?.[0]?.id;
-	const target = computers?.find(item => item.id === id);
-	return <>
-		{computers && <label className="setting-control">Computer<select aria-label="Dictation computer" value={id ?? ""} onChange={event => setChosen(event.target.value)}>
-			{!computers.length && <option value="">No computers</option>}
-			{computers.map(item => <option key={item.id} value={item.id}>{item.name}{item.connected ? "" : " — disconnected"}</option>)}
-		</select></label>}
-		{(!computers || id) && <DictationKey key={id ?? "local"} computer={id} name={target?.name ?? host.name}
-			connected={computers ? !!target?.connected : connected} />}
-	</>;
-}
-
 export function DictationKey({ computer, name, connected }: { computer?: string; name: string; connected: boolean }) {
 	const [settings, setSettings] = useState<DictationSettings>();
 	const [key, setKey] = useState(""), [terms, setTerms] = useState("");
@@ -220,30 +206,23 @@ export function DictationKey({ computer, name, connected }: { computer?: string;
 			.finally(() => setWorking(false));
 	};
 	const disabled = !connected || working || !settings;
-	return <>
-		<section className="panel-card"><h3><Icon name="mic" />ElevenLabs</h3>
-			<p className="muted">Dictation records the whole clip, then {name} sends it to ElevenLabs Scribe to transcribe. Browsers use the
-				conversation's computer when it has a key, otherwise any connected computer that does.</p>
-			{!connected && <p className="muted">This computer is disconnected.</p>}
-			{error && <p className="error-text" role="alert">{error}</p>}
-			{notice && <p className="muted" role="status">{notice}</p>}
-			{settings && <p className="muted">{settings.configured ? `${name} has a key; dictation is on.` : `${name} has no key yet.`}</p>}
-			<form className="provider-account-add" onSubmit={event => { event.preventDefault(); save({ key }, `Key saved on ${name}.`); }}>
-				<label>{settings?.configured ? "Replace API key" : "API key"}<input type="password" autoComplete="off" spellCheck={false} maxLength={200}
-					value={key} placeholder="sk_…" disabled={disabled} onChange={event => setKey(event.target.value)} /></label>
-				<button type="submit" disabled={disabled || !key.trim()}>Save key</button>
+	return <section className="settings-group">
+		<Row label="ElevenLabs key" hint={`${name} sends each recorded clip to ElevenLabs Scribe. Browsers use the conversation's computer when it has a key, otherwise any connected computer that does. The key needs only speech-to-text access.`}>
+			<span className="muted">{!connected ? "disconnected" : !settings ? "…" : settings.configured ? "saved · dictation on" : "none · dictation off"}</span>
+			<form className="settings-inline-form" onSubmit={event => { event.preventDefault(); save({ key }, `Key saved on ${name}.`); }}>
+				<input type="password" aria-label={settings?.configured ? "Replace API key" : "API key"} autoComplete="off" spellCheck={false} maxLength={200}
+					value={key} placeholder={settings?.configured ? "Replace key" : "sk_…"} disabled={disabled} onChange={event => setKey(event.target.value)} />
+				<button type="submit" disabled={disabled || !key.trim()}>Save</button>
 			</form>
-			<p className="muted">Create one under <a href="https://elevenlabs.io/app/developers/api-keys" target="_blank" rel="noopener noreferrer">ElevenLabs API keys ↗</a>.
-				It only needs speech-to-text access.</p>
-			{settings?.configured && <button className="quiet-action" disabled={disabled}
-				onClick={() => save({ key: null }, `Key removed; dictation is off on ${name}.`)}>Remove key</button>}
-		</section>
-		{settings?.configured && <section className="panel-card"><h3>Terms to recognise</h3>
-			<p className="muted">One per line: names, products and jargon to spell your way, up to 100. Any terms add about 20% to the cost.</p>
-			<textarea aria-label="Terms to recognise" rows={6} spellCheck={false} value={terms} disabled={disabled} onChange={event => setTerms(event.target.value)} />
-			<button disabled={disabled || terms === settings.keyterms.join("\n")} onClick={() => save({ keyterms: terms.split("\n") }, "Terms saved.")}>Save terms</button>
-		</section>}
-	</>;
+			{settings?.configured ? <button className="quiet-action" disabled={disabled} onClick={() => save({ key: null }, `Key removed; dictation is off on ${name}.`)}>Remove</button>
+				: <a className="quiet-action" href="https://elevenlabs.io/app/developers/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a>}
+		</Row>
+		{(error || notice) && <Row label=""><span className={error ? "error-text" : "muted"} role={error ? "alert" : "status"}>{error || notice}</span></Row>}
+		{settings?.configured && <Row label="Terms to recognise" hint="One per line, up to 100: names, products and jargon spelt your way. Any terms add about 20% to the cost.">
+			<textarea className="grow" aria-label="Terms to recognise" rows={3} spellCheck={false} value={terms} disabled={disabled} placeholder="One per line" onChange={event => setTerms(event.target.value)} />
+			<button disabled={disabled || terms === settings.keyterms.join("\n")} onClick={() => save({ keyterms: terms.split("\n") }, "Terms saved.")}>Save</button>
+		</Row>}
+	</section>;
 }
 
 /** Join dictated text onto a draft with sensible spacing. */

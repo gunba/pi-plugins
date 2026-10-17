@@ -2648,3 +2648,16 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 }
 
 .settings-row-value button .ui-icon { margin-right:6px; }
+.settings-inline-form { display:flex; flex:1; min-width:220px; gap:8px; align-items:center; margin:0; }
+.settings-inline-form input { flex:1; min-width:0; margin:0; }
+.settings-inline-form select { flex:none; margin:0; }
+.settings-row-value > select, .settings-row-value > textarea { margin:0; }
+.settings-row-wide { grid-template-columns:1fr; }
+.settings-row-wide .provider-sign-in-status { margin:0; }
+@media (max-width:600px) {
+  .settings-row-value select { flex:1 1 0; min-width:0; }
+  .settings-row-value select + .muted { flex-basis:100%; }
+  .settings-inline-form { flex:1 1 100%; flex-wrap:wrap; min-width:0; }
+  .settings-inline-form input { flex:1 1 150px; }
+  .settings-inline-form select { flex:1 1 auto; }
+}
