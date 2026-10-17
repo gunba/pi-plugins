@@ -141,8 +141,13 @@ class PlanController {
 		} finally { this.editing--; this.requestDrive(ctx); }
 	}
 	private control(params: UpdateParams): PlanView | undefined {
-		const planRef = { id: params.plan_id, revision: params.revision }, replacements = definition(params);
-		if (params.action !== "edit" && Object.keys(replacements).length) throw new Error("Definition fields are only valid with action edit.");
+		let planRef = { id: params.plan_id, revision: params.revision };
+		const replacements = definition(params);
+		// Completing with the final steps (often all marked completed) applies them first, in one call.
+		if (params.action === "complete" && Object.keys(replacements).length) {
+			const edited = this.store.edit(planRef, replacements);
+			planRef = { id: edited.id, revision: edited.revision };
+		} else if (params.action !== "edit" && Object.keys(replacements).length) throw new Error("Definition fields are only valid with action edit or complete.");
 		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
 		if (params.action === "edit") return this.store.edit(planRef, replacements);
 		if (params.action === "pause") return this.store.pause(planRef);

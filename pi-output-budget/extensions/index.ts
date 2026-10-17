@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   createReadToolDefinition, detectSupportedImageMimeTypeFromFile, getAgentDir, SettingsManager,
   type ExtensionAPI, type ExtensionToolContext,
@@ -10,6 +10,7 @@ import { ArtifactStore, boundedText } from "./artifacts.ts";
 import { literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
+import { editHint, gitRoot, missingPath, missingPathHint } from "./repair.ts";
 
 const readSchema = Type.Object({
   path: Type.String(),
@@ -44,7 +45,15 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
       },
     },
   });
-  const result = await native.execute(id, params, signal, undefined, ctx);
+  let result;
+  try { result = await native.execute(id, params, signal, undefined, ctx); }
+  catch (error) {
+    // Reading past the end is an answer, not a failure: there is nothing more.
+    const past = /Offset (\d+) is beyond end of file \((\d+) lines? total\)/.exec(error instanceof Error ? error.message : String(error));
+    if (!past) throw error;
+    return { content: [{ type: "text" as const, text: `[The file has ${past[2]} lines; offset ${past[1]} is past the end. Nothing more to read.]` }],
+      details: { sourcePath: params.path, firstLine: Number(past[1]), lastLine: Number(past[2]), capturedChars: 0 } };
+  }
   signal?.throwIfAborted();
   if (image || snapshot === undefined) return result;
   const lines = snapshot.toString("utf8").split("\n");
@@ -59,6 +68,26 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
 /** Safe to install explicitly in SDK children; does not discover unrelated extensions. */
 export default function outputBudget(pi: ExtensionAPI): void {
   pi.on("session_start", async () => { await acquireArtifactAccess(outputArtifactStore().directory); });
+  // Folders the conversation works in, from files it read or changed: where a mistyped relative path is likely to be.
+  const roots: string[] = [];
+  pi.on("tool_result", (event, ctx) => {
+    const input = event.input as Record<string, unknown>;
+    if (!event.isError) {
+      if (["read", "edit", "write"].includes(event.toolName) && typeof input.path === "string") {
+        const folder = dirname(resolve(ctx.cwd, input.path)), root = gitRoot(folder) ?? folder;
+        if (!roots.includes(root)) { roots.unshift(root); roots.length = Math.min(roots.length, 12); }
+      }
+      return;
+    }
+    const error = event.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+    let hint: string | undefined;
+    try {
+      const path = ["read", "grep", "ls", "find", "edit", "write", "apply_patch"].includes(event.toolName) ? missingPath(event.toolName, error, input) : undefined;
+      hint = path ? missingPathHint(path, ctx.cwd, roots) : undefined;
+      if (!hint && (event.toolName === "edit" || event.toolName === "apply_patch")) hint = editHint(error, input, ctx.cwd);
+    } catch { hint = undefined; }
+    if (hint) return { content: [...event.content, { type: "text" as const, text: `\n${hint}` }] };
+  });
   pi.registerTool({
     name: "read", label: "read", parameters: readSchema,
     description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,

@@ -109,3 +109,16 @@ test("tool argument preparation rejects coercion and invalid conditional fields"
 	await assert.rejects(update(h, { action: "edit", blocked_reason: "not editing" }), /only valid with action blocked/);
 	await h.emit("session_shutdown");
 });
+
+test("complete accepts the final steps in the same call; open steps still block it", async () => {
+	// 54 update_plan calls failed with "Definition fields are only valid with action edit".
+	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
+	await executeTool(h, "create_plan", { objective: "Ship", steps: [{ content: "Build", status: "in_progress" }] });
+	await assert.rejects(update(h, { action: "complete", steps: [{ content: "Build", status: "in_progress" }] }), /complete the remaining steps/);
+	await update(h, { action: "complete", steps: [{ content: "Build", status: "completed" }] });
+	const plan = await read(h);
+	assert.equal(plan.phase, "complete");
+	assert.deepEqual(plan.steps.map(step => step.status), ["completed"]);
+	await assert.rejects(update(h, { action: "pause", steps: [] }), /only valid with action edit or complete/);
+	await h.emit("session_shutdown");
+});
