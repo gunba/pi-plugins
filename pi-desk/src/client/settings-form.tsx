@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot } from "../shared/protocol.ts";
-import { Icon } from "./icons.tsx";
 
 export type SettingsDraft = { choices: string[]; text: string; freeform: boolean };
-/** Native settings interactions are controls, not agent questions. */
+/** Native settings interactions are controls, not agent questions; shown in their own dialog, whose title is the form's. */
 export function SettingsForm({ interaction, disabled, draftKey, drafts, answer }: {
 	interaction: InteractionSnapshot; disabled: boolean; draftKey: string; drafts: Map<string, SettingsDraft>;
 	answer: (answer: UiAnswer | null) => Promise<unknown>;
@@ -22,8 +21,7 @@ export function SettingsForm({ interaction, disabled, draftKey, drafts, answer }
 	};
 	const context = form.kind === "confirm" ? form.message : form.context;
 	const blocked = disabled || busy;
-	return <section className="panel-card settings-form" data-settings-form={interaction.id}>
-		<h3><Icon name="settings" />{form.title}</h3>
+	return <div className="settings-form" data-settings-form={interaction.id}>
 		{interaction.scope && <p className="muted">{interaction.scope.label}</p>}
 		{context && <p className="detail-copy">{context}</p>}
 		{"links" in form && form.links?.map(link => <a className="quiet-action" key={link.url} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a>)}
@@ -53,5 +51,5 @@ export function SettingsForm({ interaction, disabled, draftKey, drafts, answer }
 				<button type="submit" disabled={blocked || form.kind === "question" && (freeform ? !text.trim() : !choices.length)}>{form.kind === "confirm" ? "Confirm" : "Apply"}</button>
 			</div>
 		</form>
-	</section>;
+	</div>;
 }

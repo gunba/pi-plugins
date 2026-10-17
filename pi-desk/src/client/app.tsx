@@ -201,13 +201,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, activeAgents, selected, session?.activation, ui, wideWorkspace]);
   const settingsForms = (ui?.interactions ?? []).filter(interaction => interaction.settings);
   const questions = (ui?.interactions ?? []).filter(interaction => !interaction.settings);
-  const openSettingsForm = () => {
-    const origin = settingsForms[0]?.settings;
-    if (origin && ui?.views.some(view => view.id === origin.id && view.surface === "settings")) {
-      setFocusedView(origin.id); setPanel("view");
-    } else { setSettingsSection("activity"); setPanel("settings"); }
-  };
-  useEffect(() => { if (settingsForms.length) openSettingsForm(); }, [selected, settingsForms[0]?.id]);
+  const settingsForm = settingsForms[0];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
   const compactQuestion = useMedia("(max-width:760px), (max-height:600px)");
   const inlineQuestion = !settings && !compactQuestion && (question?.form.kind === "question" || question?.form.kind === "confirm");
@@ -836,7 +830,6 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>;
           })()}
           <div className="top-actions">
-            {!!settingsForms.length && <button className="quiet-action" onClick={openSettingsForm}>Finish Settings</button>}
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
@@ -1084,9 +1077,6 @@ export function App({ account }: { account?: BrowserAccount }) {
               if (settingsViews.some(view => view.id === id && !MERGED_VIEWS.has(view.id))) { setFocusedView(id); setPanel("view"); }
               else { setSettingsSection(id); setPanel("settings"); }
             }}>
-          {settings && settingsForms.map(interaction => <SettingsForm key={`${selected}/${interaction.id}`} interaction={interaction}
-            draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
-            answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
 
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
@@ -1116,6 +1106,12 @@ export function App({ account }: { account?: BrowserAccount }) {
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
         }} switchTo={resumeOpen === "switch" ? async file => { await command({ kind: "switch", file }); setResumeOpen(false); } : undefined} />}
+      {/* A settings control's follow-up form (an extension's menu or prompt). Pi waits for it, so closing the dialog cancels it. */}
+      {settingsForm && <Modal key={`${selected}/${settingsForm.id}`} title={settingsForm.form.title || "Settings"} className="settings-form-modal"
+        close={() => { void command({ kind: "answer", id: settingsForm.id, answer: null }).catch(() => undefined); }}>
+        <SettingsForm interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
+          answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />
+      </Modal>}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}
