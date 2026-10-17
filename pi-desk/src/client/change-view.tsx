@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
-import type { ChatBlock } from "../shared/protocol.ts";
+import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
 import type { FileInfo, FileReference } from "../shared/files.ts";
 import type { CellChange, DocumentChanges, DocumentPreview, ParagraphOp } from "../../../pi-show/extensions/documents.ts";
 import type { ShownItem } from "../../../pi-show/extensions/types.ts";
@@ -8,8 +8,9 @@ import { diffSequences } from "../../../pi-show/extensions/sequence-diff.ts";
 import { FileLink, fileBlob } from "./file-view.tsx";
 import { AssetLink } from "./assets.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
+import { SurfaceFrame } from "./surfaces.tsx";
 import { api } from "./connection.ts";
-import { useReferenceQuery } from "./reference-origin.tsx";
+import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
 
 type DiffBlock = Extract<ChatBlock, { type: "diff" }>;
@@ -37,29 +38,10 @@ function FileName({ session, path, file }: { session: string; path: string; file
 	return file ? <FileLink session={session} file={file}>{name(path)}</FileLink> : <strong title={path}>{name(path)}</strong>;
 }
 
-function DiffLines({ text, limit = 14 }: { text: string; limit?: number }) {
-	const lines = text.split("\n");
-	return <pre className="change-diff"><Capped items={lines} limit={limit} unit="line" render={(line, index) =>
-		<span key={index} className={line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : line.trim() === "..." ? "diff-gap" : "diff-context"}>{line}</span>} /></pre>;
-}
 export const diffStats = (block: DiffBlock) => {
-	const lines = block.text.split("\n");
-	return { added: block.added ?? lines.filter(line => /^\+\s*\d/.test(line)).length, removed: block.removed ?? lines.filter(line => /^-\s*\d/.test(line)).length };
+	const rows = diffRows(block.text);
+	return { added: block.added ?? rows.filter(row => row.kind === "add").length, removed: block.removed ?? rows.filter(row => row.kind === "remove").length };
 };
-
-/** A text file change, visible in the conversation rather than inside the tool call. */
-export function ChangeCard({ block, session }: { block: DiffBlock; session: string }) {
-	const { added, removed } = diffStats(block);
-	return <section className="change-card">
-		<header><span className="change-kind">{block.action === "added" ? "New" : block.action === "deleted" ? "Deleted" : block.action === "moved" ? "Moved" : "Edited"}</span>
-			<FileName session={session} path={block.movePath ?? block.path} file={block.file} /><Stats added={added} removed={removed} />
-			<span className="change-actions"><CopyButton text={() => block.text} label="Copy diff" />
-				<Reply text={() => `${block.path}\n${block.text.split("\n").filter(line => /^[+-]/.test(line)).slice(0, 12).join("\n")}`} /></span></header>
-		<DiffLines text={block.text} />
-		{block.truncated && <p className="muted">Diff preview limited to 12,000 characters.</p>}
-		{block.full && <AssetLink session={session} asset={block.full} />}
-	</section>;
-}
 
 /** Old and new paragraph text with the changed words marked. */
 function WordDiff({ before, after }: { before: string; after: string }) {
@@ -138,23 +120,86 @@ function columnName(index: number): string {
 	return label;
 }
 
-const KIND_ICON: Record<string, string> = { xlsx: "layers", docx: "edit", pptx: "preview" };
-/** Changes to a spreadsheet, document or deck that Desk computed from the file itself. */
-export function DocumentCard({ block, session }: { block: DocumentBlock; session: string }) {
-	const { change } = block;
-	return <section className="change-card document-card">
-		<header><span className="change-kind"><Icon name={KIND_ICON[change.kind] ?? "edit"} />{change.created ? "New" : "Changed"}</span>
-			<FileName session={session} path={change.path} file={block.file} /><span className="change-summary">{change.summary}</span>
-			<span className="change-actions"><Reply text={() => `${name(change.path)}: ${change.summary}`} /></span></header>
-		{change.changes && <DocumentChangesView changes={change.changes} where={name(change.path)} />}
-		{change.preview && <PreviewView preview={change.preview} />}
+
+/* ── Work items: changes and shown work, listed in the side pane ─────────────────────────────────────────── */
+
+/** `message` and `source` locate the files it links to: the transcript message, and a sub-agent transcript if any. */
+export type WorkItem = { id: string; at: number; message: string; source?: string; block: DiffBlock | DocumentBlock | ShownBlock };
+/** Changes and shown work in the loaded part of a conversation, oldest first. */
+export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
+	return messages.flatMap(message => message.blocks.flatMap((block, index) =>
+		block?.type === "diff" || block?.type === "document" || block?.type === "shown" ? [{ id: `${message.id}:${index}`, at: message.timestamp, message: message.id, block }] : []));
+}
+/** Opens an item: in the side pane when there is room, otherwise in the expanded view. */
+export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined);
+const itemTitle = (item: WorkItem) => item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
+	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title;
+const itemKind = (item: WorkItem) => item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
+	: item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
+function itemFacts(item: WorkItem): ReactNode {
+	if (item.block.type === "diff") { const stats = diffStats(item.block); return <Stats added={stats.added} removed={stats.removed} />; }
+	if (item.block.type === "document") return <span className="change-summary">{item.block.change.summary}</span>;
+	const unlisted = item.block.shown.items.reduce((sum, entry) => sum + (entry.unlisted?.count ?? 0), 0);
+	return <span className="change-summary">{item.block.shown.items.length ? `${item.block.shown.items.length} item${item.block.shown.items.length === 1 ? "" : "s"}` : ""}
+		{unlisted ? <span className="work-warning"> · {unlisted} change{unlisted === 1 ? "" : "s"} not mentioned</span> : null}</span>;
+}
+
+/** One line in the conversation for a change; it opens in the side pane. */
+export function WorkChip({ item, status }: { item: WorkItem; status?: ReactNode }) {
+	const open = useContext(WorkFocus);
+	return <button type="button" className={`work-chip work-chip-${item.block.type}`} onClick={() => open(item)} title="Open beside the conversation">
+		<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}{status}<span className="work-chip-open" aria-hidden="true">›</span>
+	</button>;
+}
+/** Work an agent showed: its title and note stay in the conversation; the files open in the side pane. */
+export function ShownSummary({ item, session, time }: { item: WorkItem & { block: ShownBlock }; session: string; time?: ReactNode }) {
+	const open = useContext(WorkFocus), { shown } = item.block;
+	return <section className="shown-card">
+		<header><span className="shown-badge"><Icon name="preview" />Shown</span><strong>{shown.title}</strong>{time}
+			<span className="change-actions"><Reply text={() => shown.title} /></span></header>
+		{shown.note && <div className="markdown shown-note"><Markdown>{shown.note}</Markdown></div>}
+		{shown.items.length > 0 && <button type="button" className="work-chip shown-open" onClick={() => open(item)}>
+			<Icon name="layers" /><span>{shown.items.map(entry => entry.path ? name(entry.path) : entry.described ? "Described changes" : "").filter(Boolean).join(", ") || "Details"}</span>
+			{itemFacts(item)}<span className="work-chip-open" aria-hidden="true">›</span></button>}
 	</section>;
 }
 
-/** An image file shown inline, loaded from the agent's computer. */
-function InlineImage({ session, file }: { session: string; file: FileReference }) {
+let highlighter: Promise<typeof import("./code-highlight.ts")> | undefined;
+function useHighlighter() {
+	const [module, setModule] = useState<typeof import("./code-highlight.ts")>();
+	useEffect(() => { let live = true; void (highlighter ??= import("./code-highlight.ts")).then(value => { if (live) setModule(value); }); return () => { live = false; }; }, []);
+	return module;
+}
+type DiffRow = { kind: "add" | "remove" | "same" | "gap" | "hunk"; number?: string; code: string };
+/** Pi's numbered edit diff ("+12 text") or a unified diff ("+text", "@@ … @@"). */
+export function diffRows(text: string): DiffRow[] {
+	return text.split("\n").map((line): DiffRow => {
+		if (/^@@/.test(line)) return { kind: "hunk", code: line };
+		if (/^\s+\.\.\.$/.test(line)) return { kind: "gap", code: "…" };
+		const numbered = /^([+\- ])(\s*\d+) (.*)$/s.exec(line);
+		const sign = numbered?.[1] ?? line[0], code = numbered ? numbered[3]! : line.slice(1);
+		return { kind: sign === "+" ? "add" : sign === "-" ? "remove" : "same", number: numbered?.[2]?.trim(), code };
+	});
+}
+function CodeDiff({ text, path, limit }: { text: string; path?: string; limit?: number }) {
+	const highlight = useHighlighter(), language = highlight?.languageFor(path);
+	const rows = diffRows(text), shown = limit ? rows.slice(0, limit) : rows;
+	return <div className="code-diff" role="table" aria-label={`Changes to ${path ? name(path) : "the file"}`}>
+		{shown.map((row, index) => <div key={index} role="row" className={`code-row code-${row.kind}`}>
+			<span className="code-number">{row.number}</span><span className="code-sign">{row.kind === "add" ? "+" : row.kind === "remove" ? "−" : ""}</span>
+			{highlight && row.kind !== "gap" && row.kind !== "hunk" ? <code dangerouslySetInnerHTML={{ __html: highlight.highlightLine(row.code, language) || " " }} /> : <code>{row.code || " "}</code>}
+		</div>)}
+		{limit && rows.length > limit && <div className="code-row code-gap"><span className="code-number" /><span className="code-sign" /><code>… {rows.length - limit} more lines in the expanded view</code></div>}
+	</div>;
+}
+function CodeExcerpt({ text, firstLine, path }: { text: string; firstLine: number; path?: string }) {
+	return <CodeDiff path={path} text={text.split("\n").map((line, index) => ` ${firstLine + index} ${line}`).join("\n")} />;
+}
+
+/** An image from the agent's computer: fitted, or at full size to inspect, when zoom is allowed. */
+function InlineImage({ session, file, zoom }: { session: string; file: FileReference; zoom?: boolean }) {
 	const origin = useReferenceQuery();
-	const [url, setUrl] = useState(""), [error, setError] = useState("");
+	const [url, setUrl] = useState(""), [error, setError] = useState(""), [full, setFull] = useState(false);
 	useEffect(() => {
 		const controller = new AbortController();
 		let created = "";
@@ -168,10 +213,14 @@ function InlineImage({ session, file }: { session: string; file: FileReference }
 		})();
 		return () => { controller.abort(); if (created) URL.revokeObjectURL(created); };
 	}, [session, file.id, origin]);
-	return url ? <img className="shown-image" src={url} alt={file.name} /> : <p className="muted">{error || "Loading image…"}</p>;
+	if (!url) return <p className="muted">{error || "Loading image…"}</p>;
+	return <div className={`shown-image-frame${full ? " full" : ""}`}>
+		<img className="shown-image" src={url} alt={file.name} onClick={zoom ? () => setFull(value => !value) : undefined}
+			title={zoom ? full ? "Fit to the window" : "Show at full size" : undefined} />
+	</div>;
 }
 
-function ShownEntry({ item, file, session, title }: { item: ShownItem; file: FileReference | null; session: string; title: string }) {
+function ShownEntry({ item, file, session, title, large }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean }) {
 	const where = item.path ? name(item.path) : title;
 	return <div className="shown-item">
 		{item.path && <div className="shown-item-heading"><FileName session={session} path={item.path} file={file} />
@@ -179,11 +228,11 @@ function ShownEntry({ item, file, session, title }: { item: ShownItem; file: Fil
 			{item.changes && <span className="change-summary">{item.changes.summary}</span>}
 			{item.diff && <Stats added={item.diff.added} removed={item.diff.removed} />}</div>}
 		{item.unlisted && <p className="shown-warning" role="note"><Icon name="warning" />Desk found {item.unlisted.count} changed cell{item.unlisted.count === 1 ? "" : "s"} the agent did not mention: {item.unlisted.examples.join(", ")}{item.unlisted.count > item.unlisted.examples.length ? ", …" : ""}</p>}
-		{item.kind === "image" && file && <InlineImage session={session} file={file} />}
+		{item.kind === "image" && file && <InlineImage session={session} file={file} zoom={large} />}
 		{item.changes && <DocumentChangesView changes={item.changes} where={where} />}
-		{item.diff && <DiffLines text={item.diff.text} />}
+		{item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
 		{item.preview && <PreviewView preview={item.preview} />}
-		{item.excerpt && <pre className="change-diff shown-excerpt">{item.excerpt.text.split("\n").map((line, index) => <span key={index} className="diff-context">{String(item.excerpt!.firstLine + index).padStart(4)} {line}</span>)}</pre>}
+		{item.excerpt && <CodeExcerpt text={item.excerpt.text} firstLine={item.excerpt.firstLine} path={item.path} />}
 		{item.described && <p className="change-source">Described by the agent</p>}
 		{item.described && <ul className="shown-described">{item.described.map((change, index) => <li key={index}>
 			<code>{change.where}</code>{change.before !== undefined && <del>{change.before}</del>}{change.before !== undefined && change.after !== undefined && <span aria-hidden="true">→</span>}{change.after !== undefined && <ins>{change.after}</ins>}
@@ -191,13 +240,78 @@ function ShownEntry({ item, file, session, title }: { item: ShownItem; file: Fil
 		</li>)}</ul>}
 	</div>;
 }
-/** Work an agent chose to show Jordan, drawn as a card in the conversation. */
-export function ShownCard({ block, session, time }: { block: ShownBlock; session: string; time?: ReactNode }) {
-	const { shown } = block;
-	return <section className="shown-card">
-		<header><span className="shown-badge"><Icon name="preview" />Shown</span><strong>{shown.title}</strong>{time}
-			<span className="change-actions"><Reply text={() => shown.title} /></span></header>
-		{shown.note && <div className="markdown shown-note"><Markdown>{shown.note}</Markdown></div>}
-		{shown.items.map((item, index) => <ShownEntry key={index} item={item} file={block.files[index] ?? null} session={session} title={shown.title} />)}
-	</section>;
+
+/** What an item contains, at pane or expanded size. */
+export function WorkBody({ item, session, large }: { item: WorkItem; session: string; large?: boolean }) {
+	const { block } = item;
+	if (block.type === "diff") return <>
+		<CodeDiff text={block.text} path={block.movePath ?? block.path} limit={large ? undefined : 120} />
+		{block.truncated && <p className="muted work-note">Diff preview limited to 12,000 characters.</p>}
+		{block.full && <AssetLink session={session} asset={block.full} />}
+	</>;
+	if (block.type === "document") return <>
+		{block.change.changes && <DocumentChangesView changes={block.change.changes} where={name(block.change.path)} />}
+		{block.change.preview && <PreviewView preview={block.change.preview} />}
+	</>;
+	return <>
+		{large && block.shown.note && <div className="markdown shown-note"><Markdown>{block.shown.note}</Markdown></div>}
+		{block.shown.items.map((entry, index) => <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} />)}
+	</>;
+}
+function quoteFor(item: WorkItem): string {
+	const { block } = item;
+	return block.type === "diff" ? `${block.path}\n${block.text.split("\n").filter(line => /^[+-]/.test(line)).slice(0, 12).join("\n")}`
+		: block.type === "document" ? `${name(block.change.path)}: ${block.change.summary}` : block.shown.title;
+}
+function ItemHeader({ item, session, children }: { item: WorkItem; session: string; children?: ReactNode }) {
+	const path = item.block.type === "diff" ? item.block.movePath ?? item.block.path : item.block.type === "document" ? item.block.change.path : undefined;
+	const file = item.block.type === "shown" ? undefined : item.block.file;
+	return <header className="work-item-header">
+		<span className="change-kind">{itemKind(item)}</span>
+		{path ? <FileName session={session} path={path} file={file} /> : <strong>{itemTitle(item)}</strong>}
+		{itemFacts(item)}
+		<span className="change-actions">{item.block.type === "diff" && <CopyButton text={() => (item.block as DiffBlock).text} label="Copy" />}
+			<Reply text={() => quoteFor(item)} />{children}</span>
+	</header>;
+}
+
+/** Beside the conversation: what the agent changed and showed, newest first, with the selected one open. */
+export function WorkPane({ items, selected, select, expand, close, session }: {
+	items: WorkItem[]; selected?: string; select: (id: string) => void; expand: (item: WorkItem) => void; close: () => void; session: string;
+}) {
+	const newest = [...items].reverse(), current = newest.find(item => item.id === selected) ?? newest[0];
+	const width = useRef<HTMLElement>(null);
+	const resize = (event: React.PointerEvent) => {
+		const pane = width.current; if (!pane) return;
+		const startX = event.clientX, startWidth = pane.getBoundingClientRect().width;
+		const move = (moved: PointerEvent) => {
+			const next = Math.min(Math.max(320, startWidth + startX - moved.clientX), window.innerWidth * 0.7);
+			document.documentElement.style.setProperty("--work-pane", `${Math.round(next)}px`);
+		};
+		const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up);
+			localStorage.setItem("pi-desk:work-pane-width", getComputedStyle(document.documentElement).getPropertyValue("--work-pane").trim()); };
+		addEventListener("pointermove", move); addEventListener("pointerup", up);
+	};
+	return <aside className="work-pane" aria-label="Changes and shown work" ref={width}>
+		<div className="work-pane-resize" onPointerDown={resize} aria-hidden="true" />
+		<div className="work-pane-heading"><strong>Changes</strong><small>{items.length}</small>
+			<button type="button" className="icon-button" title="Hide" aria-label="Hide changes" onClick={close}><Icon name="close" /></button></div>
+		{current && <ReferenceContext value={{ message: current.message, source: current.source }}><section className="work-current">
+			<ItemHeader item={current} session={session}><button type="button" className="icon-button" title="Expand" aria-label="Expand" onClick={() => expand(current)}><Icon name="expand" /></button></ItemHeader>
+			<div className="work-current-body"><WorkBody item={current} session={session} /></div>
+		</section></ReferenceContext>}
+		{newest.length > 1 && <ol className="work-list">{newest.filter(item => item !== current).map(item => <li key={item.id}>
+			<button type="button" className="work-list-item" onClick={() => select(item.id)}>
+				<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}
+				<time>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+			</button></li>)}</ol>}
+	</aside>;
+}
+
+/** The expanded view: the whole item at full size, images zoomable. */
+export function WorkModal({ item, session, close }: { item: WorkItem; session: string; close: () => void }) {
+	return <SurfaceFrame className="work-modal" label={itemTitle(item)} close={close} portal><ReferenceContext value={{ message: item.message, source: item.source }}>
+		<ItemHeader item={item} session={session}><button type="button" className="icon-button" aria-label="Close" onClick={close}><Icon name="close" /></button></ItemHeader>
+		<div className="work-modal-body"><WorkBody item={item} session={session} large /></div>
+	</ReferenceContext></SurfaceFrame>;
 }

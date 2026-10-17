@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -30,11 +31,13 @@ import { ModelPicker } from "./model-picker.tsx";
 import { DeliveryControl, deliveryModes } from "./delivery-control.tsx";
 import { NativeQueue } from "./native-queue.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
-import { WorkRail } from "./work-rail.tsx";
 import { WorkspaceActions } from "./workspace-actions.tsx";
 import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
 import { PlanView } from "./plan-view.tsx";
 import { PlanHeader } from "./plan-header.tsx";
+import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
+import { RewindContext } from "./message-view.tsx";
+import { splitDictationNote } from "../shared/dictation-note.ts";
 import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
@@ -63,6 +66,7 @@ import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
 import type {
+  ChatMessage,
   HistoryPage,
   InteractionSnapshot,
   SessionView,
@@ -104,8 +108,12 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [panel, setPanel] = useState<
     "workspace" | "settings" | "view" | "agents" | undefined
   >();
-  // Agents and messages open on demand; the plan lives in the header.
-  const [workspaceVisible, setWorkspaceVisible] = useState(() => localStorage.getItem("pi-desk:workspace-shown") === "true");
+  // Changes and shown work open beside the conversation; hidden stays hidden until the agent shows something new.
+  const [workHidden, setWorkHidden] = useState(() => localStorage.getItem("pi-desk:work-pane-hidden") === "true");
+  const [workSelected, setWorkSelected] = useState<string>();
+  const [workExtra, setWorkExtra] = useState<WorkItem>();
+  const [workModal, setWorkModal] = useState<WorkItem>();
+  useEffect(() => { const width = localStorage.getItem("pi-desk:work-pane-width"); if (width) document.documentElement.style.setProperty("--work-pane", width); }, []);
   const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
   const [creating, setCreating] = useState(false);
@@ -171,10 +179,9 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
-  const showWorkRail = !dotSelected && !questsSelected && wideWorkspace && (workspaceVisible || panel === "workspace") && (!panel || settings || panel === "workspace");
   const planView = (ui?.views ?? []).find(view => view.id === "plan" && view.kind === "details" && !view.scope);
   const headerPlan = !phone && !!planView && !!(planView.data as UiDetails).items?.length ? planView : undefined;
-  const railSections = (ui?.views ?? []).some(view => !view.scope && view.surface !== "settings" && !["work", "conversation"].includes(view.kind) && view.id !== "plan");
+  const messagesView = (ui?.views ?? []).find(view => view.id === "messages" && !view.scope && (view.data as UiDetails | null)?.items?.length);
   const settingsViews = (ui?.views ?? []).filter(view => view.surface === "settings" && !view.scope);
   const agentViews = (ui?.views ?? []).filter(view => view.kind === "conversation");
   const activeAgents = agentViews.filter(view => (view.data as UiConversation).active).length;
@@ -312,6 +319,27 @@ export function App({ account }: { account?: BrowserAccount }) {
     return () => window.removeEventListener("pi-desk:quote", quoted);
   }, [selected]);
   const messages = state.messages[selected] ?? emptyMessages;
+  const loadedWork = useMemo(() => workItems(messages), [messages]);
+  const paneItems = workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork;
+  const newestWork = loadedWork.at(-1);
+  const workSeen = useRef<{ session: string; newest?: string }>({ session: "" });
+  useEffect(() => {
+    // Each conversation opens on its newest item; a newly shown result reopens a hidden pane.
+    const seen = workSeen.current;
+    if (seen.session !== selected) { workSeen.current = { session: selected, newest: newestWork?.id }; setWorkSelected(undefined); setWorkExtra(undefined); return; }
+    if (newestWork && newestWork.id !== seen.newest) {
+      seen.newest = newestWork.id; setWorkSelected(newestWork.id);
+      if (newestWork.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
+    }
+  }, [selected, newestWork]);
+  const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length > 0 && (!panel || settings);
+  const openWork = (item: WorkItem) => {
+    if (wideWorkspace && !dotSelected && !questsSelected) {
+      if (!loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
+      setWorkSelected(item.id); setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false");
+      if (panel && !settings) setPanel(undefined);
+    } else setWorkModal(item);
+  };
   const storeHistory = useCallback((source: string | undefined, page: HistoryPage) => {
     setState(previous => {
       if (previous.host?.sessions.find(session => session.key === selected)?.ui?.generation !== page.generation) return previous;
@@ -479,6 +507,23 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) {
       setError(`${errorText(error)}${isControl(value) ? " Check Recent operations in Settings before trying again." : ""}`);
     }
+  }
+  /** Rewind to a message in place: before your message (back in the composer to edit), or to a reply. History is kept as a branch. */
+  async function rewind(message: ChatMessage) {
+    if (!message.entryId) return;
+    const user = message.role === "user";
+    const text = user && !message.blocks.some(block => block?.type === "text" && block.truncated)
+      ? splitDictationNote(message.blocks.flatMap(block => block?.type === "text" ? [block.text] : []).join("\n\n")).text.trim() : undefined;
+    if (!await confirmation.request({
+      title: user ? "Rewind to before this message?" : "Rewind to this reply?", context: confirmationContext, accept: "Rewind", cancel: "Cancel",
+      body: <><p>{user ? "The conversation goes back to just before this message, and the message returns to the composer to edit or send again."
+        : "The conversation continues from this reply."} Everything after it stays in the conversation's history as another branch.</p>
+        {user && draft.trim() && <p>Your unsent draft is replaced.</p>}</>,
+    })) return;
+    try {
+      await command({ kind: "navigate", entry: message.entryId, summarize: false });
+      if (text !== undefined && selectedRef.current === selected) { setDraft(text); localStorage.setItem(draftKey(selected), text); composerInput.current?.focus({ preventScroll: true }); }
+    } catch (error) { setError(errorText(error)); }
   }
   async function newSession(event: FormEvent) {
     event.preventDefault();
@@ -672,7 +717,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     </select>
   </>;
   return (
-    <div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">
@@ -795,15 +840,16 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {(railSections || panel === "workspace") && (() => {
-              const shown = showWorkRail || panel === "workspace";
-              return <button type="button" className="icon-button" title={shown ? "Hide agents and messages" : "Show agents and messages"}
-                aria-label="Work panel" aria-pressed={shown}
-                onClick={() => {
-                  if (wideWorkspace) { const visible = !showWorkRail; setWorkspaceVisible(visible); localStorage.setItem("pi-desk:workspace-shown", String(visible)); setPanel(undefined); }
-                  else setPanel(panel === "workspace" ? undefined : "workspace");
-                }}><Icon name="panel-right" /></button>;
-            })()}
+            {totalAgents > 0 && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
+              title={`${activeAgents} active · ${totalAgents} total`} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
+              <span className={`status-dot ${activeAgents ? "running" : "idle"}`} />Agents <b>{totalAgents}</b></button>}
+            {messagesView && <button type="button" className={`header-chip${panel === "view" && focusedView === "messages" ? " selected" : ""}`}
+              title={(messagesView.data as UiDetails).summary ?? "Agent messages"} onClick={() => { setFocusedView("messages"); setPanel(panel === "view" && focusedView === "messages" ? undefined : "view"); }}>
+              <Icon name="party" />Messages <b>{(messagesView.data as UiDetails).items!.length}</b></button>}
+            {wideWorkspace && paneItems.length > 0 && !dotSelected && !questsSelected && <button type="button" className="icon-button"
+              title={showWorkPane ? "Hide changes" : `Show changes (${paneItems.length})`} aria-label="Changes" aria-pressed={showWorkPane}
+              onClick={() => { const hidden = showWorkPane; setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
+              <Icon name="panel-right" /></button>}
             <button type="button" className="icon-button" title="Conversation settings" aria-label="Conversation settings" aria-pressed={settings}
               onClick={() => {
                 if (settings) { setPanel(undefined); return; }
@@ -826,7 +872,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
         <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (phone || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
-        {!showWorkRail && totalAgents > 0 && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+        {phone && totalAgents > 0 && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}
@@ -1010,9 +1056,8 @@ export function App({ account }: { account?: BrowserAccount }) {
         </>}
       </main>
       {dotSelected && wideWorkspace && questLogs.length > 0 && <div className="quest-rail">{questTracker}</div>}
-      {showWorkRail && <WorkRail views={ui?.views ?? []} connected={connected && !closing}
-        invoke={run} openAgents={openAgentPane} focused={panel === "workspace" ? focusedView : undefined}
-        openView={id => { setFocusedView(id); setPanel("view"); }} />}
+      {showWorkPane && <WorkPane items={paneItems} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
+        close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
       {panel && !(panel === "workspace" && wideWorkspace) && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)} back={panel !== "workspace" && !settings ? () => setPanel("workspace") : undefined}>
@@ -1042,9 +1087,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {settings && settingsForms.map(interaction => <SettingsForm key={`${selected}/${interaction.id}`} interaction={interaction}
             draftKey={`${selected}/${interaction.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
             answer={answer => command({ kind: "answer", id: interaction.id, answer })} />)}
-          {panel === "workspace" && <WorkRail embedded views={ui?.views ?? []} connected={connected && !closing}
-            invoke={run} openAgents={openAgentPane} focused={focusedView}
-            openView={id => { setFocusedView(id); setPanel("view"); }} />}
+
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
             context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
@@ -1108,6 +1151,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </Modal>
       )}
       {confirmation.dialog}
+      {workModal && <WorkModal item={workModal} session={selected} close={() => setWorkModal(undefined)} />}
       {question && !inlineQuestion && `${selected}/${question.id}` !== dismissedQuestion && (
         <Question
           key={`${selected}/${question.id}`}
@@ -1121,7 +1165,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }}
         />
       )}
-    </div>
+    </div></RewindContext.Provider></WorkFocus.Provider>
   );
 }
 

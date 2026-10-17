@@ -47,7 +47,8 @@ export function EditorSuggestion({ session, id, text, draft, context, edit }: {
 	const [dismissed, setDismissed] = useState(() => localStorage.getItem(key));
 	const confirmation = useConfirmation(`${session}:${id}`);
 	const dismiss = () => { setDismissed(id); localStorage.setItem(key, id); };
-	if (!text || dismissed === id) return null;
+	// A rewind puts the same text in the composer itself.
+	if (!text || dismissed === id || text.trim() === draft.trim()) return null;
 	return <div className="editor-suggestion">
 		<span>Pi has a draft ready.</span>
 		<button type="button" onClick={() => {

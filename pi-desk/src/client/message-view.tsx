@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { createContext, memo, useContext, useState } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
@@ -6,7 +6,7 @@ import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { acquireAsset } from "./connection.ts";
 import { AssetImage, AssetLink } from "./assets.tsx";
 import { ArtifactLink } from "./artifact-view.tsx";
-import { ChangeCard, DocumentCard, ShownCard, diffStats } from "./change-view.tsx";
+import { ShownSummary, WorkChip, diffStats, type WorkItem } from "./change-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
@@ -53,6 +53,14 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 	return <button type="button" className="message-copy" title="Copy as Markdown" aria-label="Copy as Markdown" onClick={copy}>
 		{status ? <span>{status}</span> : <Icon name="copy" />}</button>;
 }
+/** Rewinds the conversation to a message; unavailable (undefined) while Pi is working. */
+export const RewindContext = createContext<{ rewind?: (message: ChatMessage) => void }>({});
+function RewindButton({ message }: { message: ChatMessage }) {
+	const { rewind } = useContext(RewindContext);
+	return <button type="button" className="message-copy" disabled={!rewind} onClick={() => rewind?.(message)}
+		title={!rewind ? "Rewind is available when Pi is idle" : message.role === "user" ? "Rewind to before this message, and edit it" : "Rewind to this reply"}
+		aria-label={message.role === "user" ? "Rewind to before this message" : "Rewind to this reply"}><Icon name="rewind" /></button>;
+}
 /** Time of day, with the date when it is not today. */
 function timeLabel(timestamp: number): string {
 	if (!timestamp) return "";
@@ -83,9 +91,11 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	const file = resultFile?.type === "file" ? resultFile.file : call?.file;
 	const fileMessage = resultFile ? result!.id : owner.id;
 	// What the call changed, and what an agent chose to show, stay visible instead of inside the collapsed call.
-	const shown = result?.blocks.find(block => block?.type === "shown");
-	if (shown?.type === "shown") return <ReferenceContext value={{ message: result!.id, source }}><ShownCard block={shown} session={sessionKey} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
-	const changes = result?.blocks.filter(block => block?.type === "diff" || block?.type === "document") ?? [];
+	const items = (result?.blocks ?? []).flatMap((block, index): WorkItem[] => block?.type === "diff" || block?.type === "document" || block?.type === "shown"
+		? [{ id: `${result!.id}:${index}`, at: result!.timestamp, message: result!.id, source, block }] : []);
+	const shown = items.find(item => item.block.type === "shown");
+	if (shown) return <ReferenceContext value={{ message: result!.id, source }}><ShownSummary item={shown as WorkItem & { block: Extract<ChatBlock, { type: "shown" }> }} session={sessionKey} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
+	const changes = items.map(item => item.block);
 	const totals = changes.reduce((sum, block) => block.type === "diff" ? { added: sum.added + diffStats(block).added, removed: sum.removed + diffStats(block).removed } : sum, { added: 0, removed: 0 });
 	const pill = <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
 		summary={<><span className="tool-icon">{skills.length || nestedSkills.length ? <Icon name="context" /> : "⌘"}</span><strong>{skills.length ? skills.length === 1 ? "Read skill" : "Read skills" : name}</strong>
@@ -106,8 +116,10 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 			{call.truncated && !call.full && <p className="muted">Preview only. Complete arguments exceed the viewer's asset limit.</p>}
 		</Disclosure>}
 	</Disclosure>;
-	return changes.length ? <>{pill}<ReferenceContext value={{ message: result!.id, source }}><div className="tool-changes">{changes.map((block, index) =>
-		block.type === "diff" ? <ChangeCard key={index} block={block} session={sessionKey} /> : block.type === "document" ? <DocumentCard key={index} block={block} session={sessionKey} /> : null)}</div></ReferenceContext></> : pill;
+	// A file edit's result is its change: one row that opens it. Other tools keep their own row too.
+	if (items.length && !result?.isError && ["edit", "write", "apply_patch"].includes(name))
+		return <div className="tool-changes">{items.map((item, index) => <WorkChip key={item.id} item={item} status={index === items.length - 1 ? <ToolStatus message={result} /> : undefined} />)}</div>;
+	return items.length ? <>{pill}<div className="tool-changes">{items.map(item => <WorkChip key={item.id} item={item} />)}</div></> : pill;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
@@ -171,9 +183,8 @@ function MessageBody({ message, sessionKey, source, results, omitFile, omitChang
 			if (!block || isEmptyText(block)) return null;
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
 			if (block.type === "artifact") return <ArtifactLink key={index} session={sessionKey} id={block.id} label={block.label} />;
-			if (block.type === "diff") return omitChanges ? null : <ChangeCard key={index} session={sessionKey} block={block} />;
-			if (block.type === "document") return omitChanges ? null : <DocumentCard key={index} session={sessionKey} block={block} />;
-			if (block.type === "shown") return omitChanges ? null : <ShownCard key={index} session={sessionKey} block={block} />;
+			if (block.type === "diff" || block.type === "document" || block.type === "shown")
+				return omitChanges ? null : <WorkChip key={index} item={{ id: `${message.id}:${index}`, at: message.timestamp, message: message.id, source, block }} />;
 			if (block.type === "text" && message.tool?.state === "running") return <LiveOutput key={index} text={block.text} />;
 			if (block.type === "ledger") return <LedgerCard key={index} ledger={block.ledger} />;
 			if (block.type === "image") return <AssetImage key={index} session={sessionKey} asset={block.asset} />;
@@ -250,7 +261,8 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 			{thinking ? <div className="message-body"><ThinkingGroup parts={thinkingParts(thinking)} sessionKey={sessionKey} source={source} /></div>
 				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
-			{!activityOnly && !thinking && <div className="message-actions"><CopyMarkdown message={message} sessionKey={sessionKey} /></div>}
+			{!activityOnly && !thinking && <div className="message-actions"><CopyMarkdown message={message} sessionKey={sessionKey} />
+				{!source && message.entryId && (message.role === "user" || message.role === "assistant") && message.complete !== false && <RewindButton message={message} />}</div>}
 		</article>
 	</ReferenceContext>;
 }
