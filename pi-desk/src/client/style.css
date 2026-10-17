@@ -434,6 +434,7 @@ details[open] > summary:before {
   min-width:32px; min-height:32px; padding:6px; border-radius:7px; color:var(--muted);
   opacity:0; pointer-events:none;
 }
+.session-row:hover .session-close, .session-row:focus-within .session-close { opacity:1; pointer-events:auto; }
 .session-close:hover:not(:disabled) { color:var(--danger); background:var(--surface); }
 @media (hover:none), (pointer:coarse) {
   .session-close { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:2px; }
