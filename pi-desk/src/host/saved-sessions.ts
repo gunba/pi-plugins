@@ -33,6 +33,7 @@ export class SavedSessionIndex {
 		this.db = new DatabaseSync(file);
 		try {
 			chmodSync(file, 0o600);
+			this.db.exec("PRAGMA busy_timeout=5000;");
 			if (Number(this.db.prepare("PRAGMA user_version").get()!.user_version) !== 2) {
 				this.db.exec("DROP TABLE IF EXISTS saved; PRAGMA user_version=2;");
 			}

@@ -25,7 +25,8 @@ export class InputLedger {
 		const file = join(directory, "inputs.sqlite");
 		this.db = new DatabaseSync(file);
 		chmodSync(file, 0o600);
-		this.db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
+		// Two hosts share this file during a handoff; wait for the other one instead of failing with "database is locked".
+		this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
 			CREATE TABLE IF NOT EXISTS inputs (
 				session TEXT NOT NULL, id TEXT NOT NULL, activation TEXT NOT NULL, generation TEXT,
 				fingerprint TEXT NOT NULL, payload TEXT, state TEXT NOT NULL,
