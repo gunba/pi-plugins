@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { inPlaceBlocker, summarizeInPlace, type SentRequest } from "./in-place.ts";
 
 type ContextFile = { path: string; content: string };
 type Snapshot = Pick<BeforeAgentStartEvent["systemPromptOptions"], "contextFiles" | "customPrompt" | "appendSystemPrompt">;
@@ -81,6 +82,9 @@ export default function compactionContext(pi: ExtensionAPI): void {
   let summary: { signal: AbortSignal; injection?: string; snapshot: Snapshot } | undefined;
   let requestsPatched = 0;
   let lastContextBytes = 0;
+  // The payload each conversation last sent for a turn, as sent: this extension loads last, after every payload handler.
+  const sent = new Map<string, SentRequest>();
+  let turnRequest = false, lastInPlace = "not tried yet";
   const prepare = (signal: AbortSignal, ctx: ExtensionContext) => {
     const context = snapshot ?? fallbackSnapshot(ctx);
     summary = { signal, injection: enabled ? buildInjection(context) : undefined, snapshot: context };
@@ -92,7 +96,23 @@ export default function compactionContext(pi: ExtensionAPI): void {
     const { contextFiles, customPrompt, appendSystemPrompt } = event.systemPromptOptions;
     snapshot = { contextFiles: contextFiles?.map((file) => ({ ...file })), customPrompt, appendSystemPrompt };
   });
-  pi.on("session_before_compact", (event, ctx) => { prepare(event.signal, ctx); });
+  pi.on("context_with_system", () => { turnRequest = true; });
+  pi.on("session_before_compact", async (event, ctx) => {
+    const request = ctx.model && ctx.model.provider !== "openai-codex" ? sent.get(ctx.sessionManager.getSessionId()) : undefined;
+    const blocker = inPlaceBlocker(event, ctx, request);
+    if (!blocker && request) {
+      try {
+        const compaction = await summarizeInPlace(event, ctx, request);
+        if (compaction) { lastInPlace = "used"; return { compaction }; }
+        lastInPlace = "fell back: the model did not return a summary";
+      } catch (error) {
+        if (event.signal.aborted) return;
+        lastInPlace = `fell back: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+      }
+    } else lastInPlace = `not used: ${blocker}`;
+    // Pi's own summary request gets the project rules it otherwise lacks.
+    prepare(event.signal, ctx);
+  });
   pi.on("session_before_tree", (event, ctx) => {
     clear();
     if (event.preparation.userWantsSummary) prepare(event.signal, ctx);
@@ -101,8 +121,16 @@ export default function compactionContext(pi: ExtensionAPI): void {
   pi.on("session_compact_failed", clear);
   pi.on("session_tree", clear);
   pi.on("context", clear);
-  pi.on("session_shutdown", clear);
-  pi.on("before_provider_request", (event) => {
+  pi.on("session_shutdown", (_event, ctx) => { clear(); sent.delete(ctx.sessionManager.getSessionId()); });
+  pi.on("before_provider_request", (event, ctx) => {
+    if (turnRequest) {
+      turnRequest = false;
+      const model = ctx.model;
+      if (model) try {
+        sent.set(ctx.sessionManager.getSessionId(), { payload: JSON.stringify(event.payload), model: `${model.provider}/${model.id}`, api: model.api, leaf: ctx.sessionManager.getLeafId() });
+      } catch { /* A payload that cannot be copied is not replayed. */ }
+      return;
+    }
     if (!enabled || !summary?.injection || summary.signal.aborted) return;
     const patched = patchSummaryPayload(event.payload, summary.injection, summary.snapshot);
     if (patched !== undefined && patched !== event.payload) {
@@ -120,7 +148,7 @@ export default function compactionContext(pi: ExtensionAPI): void {
         ctx.ui.notify(`Compaction context ${enabled ? "enabled" : "disabled"}`, "info");
         return;
       }
-      pi.sendMessage({ customType: "pi-compaction-context-status", content: `# Compaction context\n\nStatus: ${enabled ? "on" : "off"}\nPatched requests: ${requestsPatched}\nLast context bytes: ${lastContextBytes}\n\n## Active Markdown context\n${(snapshot ?? fallbackSnapshot(ctx)).contextFiles?.map((file) => `- ${file.path}`).join("\n") || "- none captured yet"}`, display: true }, { triggerTurn: false });
+      pi.sendMessage({ customType: "pi-compaction-context-status", content: `# Compaction context\n\nStatus: ${enabled ? "on" : "off"}\nSummary in the conversation's own cache: ${lastInPlace}\nPatched requests: ${requestsPatched}\nLast context bytes: ${lastContextBytes}\n\n## Active Markdown context\n${(snapshot ?? fallbackSnapshot(ctx)).contextFiles?.map((file) => `- ${file.path}`).join("\n") || "- none captured yet"}`, display: true }, { triggerTurn: false });
     },
   });
 }

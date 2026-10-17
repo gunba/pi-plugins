@@ -5,6 +5,7 @@ import { StaleGeneration } from "./worker-errors.ts";
 import { AccountBinding, accountSelection, initializeAccountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
 import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
 import { compactionFailure, compactionHeld, compactionKey, measuredContextTokens } from "../../../pi-context-window/compaction-state.ts";
+import { promptCacheState } from "../../../pi-context-window/prompt-cache.ts";
 import { dirname, join } from "node:path";
 import {
 	createAgentSessionServices,
@@ -80,18 +81,7 @@ async function checkModelChange(runtime: AgentSessionRuntime, model: { provider:
  * such as Codex's, has no timer.
  */
 export function promptCache(session: AgentSession): SessionSnapshot["cache"] {
-	const model = session.model;
-	const seconds = model?.promptCache?.[process.env.PI_CACHE_RETENTION === "long" ? "long" : "short"];
-	if (!model || !seconds) return;
-	const branch = session.sessionManager.getBranch();
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index]!;
-		if (entry.type === "compaction") return;
-		const used = entry.type === "usage" && entry.kind === "cache_warm" ? { provider: entry.provider, at: Date.parse(entry.timestamp) }
-			: entry.type === "message" && entry.message.role === "assistant" && entry.message.usage
-				&& entry.message.usage.cacheRead + entry.message.usage.cacheWrite > 0 ? { provider: entry.message.provider, at: entry.message.timestamp } : undefined;
-		if (used) return used.provider === model.provider && Number.isFinite(used.at) ? { usedAt: used.at, ttlMs: seconds * 1000 } : undefined;
-	}
+	return promptCacheState(session.model, session.sessionManager.getBranch() as Parameters<typeof promptCacheState>[1]);
 }
 
 /** The conversation ends with your messages followed by a reply that was stopped or failed before answering them. */
