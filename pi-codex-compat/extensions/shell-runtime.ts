@@ -1,3 +1,4 @@
+import { recordRun, runDuration, runHistory } from "./run-times.ts";
 import {
 	type ChildProcessWithoutNullStreams,
 	spawn,
@@ -101,10 +102,37 @@ type ExecSession = {
 	lastUsed: number;
 	/** Wall-clock time just before the shell was spawned. */
 	launchedAt: number;
+	/** A result returned while it was still running, so the agent moved on without its outcome. */
+	backgrounded?: boolean;
+	/** A result has reported how it ended, or the agent interrupted it. */
+	exitReported?: boolean;
 	outputArtifact?: string;
 	outputArtifactDirectory?: string;
 	artifactError?: string;
 };
+
+/** A backgrounded command that has finished without any result reporting it. */
+export type BackgroundExit = { id: number; cmd: string; workdir: string; exitCode?: number | null; signal?: NodeJS.Signals | null; seconds: number; tail: string };
+const exitListeners = new Map<ExecRuntimeOwner, (exit: BackgroundExit) => void>();
+const slowListeners = new Map<ExecRuntimeOwner, (slow: { id: number; cmd: string; seconds: number; median: number; runs: number }) => void>();
+/** Called once when a command left running takes over twice its usual 95th-percentile time. It is never stopped for it. */
+export function onSlowCommand(owner: ExecRuntimeOwner, listener: ((slow: { id: number; cmd: string; seconds: number; median: number; runs: number }) => void) | undefined): void {
+	if (listener) slowListeners.set(owner, listener); else slowListeners.delete(owner);
+}
+/** Called when a command the agent left running finishes, unless a result reports it first. */
+export function onBackgroundExit(owner: ExecRuntimeOwner, listener: ((exit: BackgroundExit) => void) | undefined): void {
+	if (listener) exitListeners.set(owner, listener); else exitListeners.delete(owner);
+}
+function announceExit(session: ExecSession): void {
+	// A poll in progress, or one that already reported the exit or an interrupt, tells the agent itself.
+	if (!session.backgrounded || session.exitReported || session.activeCalls > 0 || session.terminationReason || session.aborted || session.shutdownRequested) return;
+	const listener = exitListeners.get(session.owner);
+	if (!listener) return;
+	session.exitReported = true;
+	const snapshot = session.pendingOutput.snapshot(), text = Buffer.concat([snapshot.head, snapshot.tail]).toString("utf8");
+	listener({ id: session.id, cmd: session.cmd, workdir: session.workdir, exitCode: session.exitCode, signal: session.exitSignal,
+		seconds: Math.max(0, (Date.now() - session.launchedAt) / 1000), tail: text.length > 3000 ? `…${text.slice(-3000)}` : text });
+}
 
 type ExecCall = {
 	chunkId: string;
@@ -1046,8 +1074,22 @@ function buildSessionResult(
 		`Chunk ID: ${call.chunkId}`,
 		`Wall time: ${wallTime.toFixed(4)} seconds`,
 	];
+	if (running && !session.backgrounded) {
+		session.backgrounded = true;
+		const usual = runHistory(session.workdir, session.cmd);
+		if (usual && usual.p95 >= 5) {
+			const warnAfter = usual.p95 * 2 * 1000 - (Date.now() - session.launchedAt);
+			setTimeout(() => {
+				if (isSessionRunning(session) && !session.exitReported) slowListeners.get(session.owner)?.({ id: session.id, cmd: session.cmd,
+					seconds: (Date.now() - session.launchedAt) / 1000, median: usual.median, runs: usual.runs });
+			}, Math.max(0, warnAfter)).unref();
+		}
+	}
+	if (!running) session.exitReported = true;
 	if (running) {
 		sections.push(`Process running with session ID ${session.id}`);
+		const usual = runHistory(session.workdir, session.cmd);
+		if (usual) sections.push(`Usually takes ${runDuration(usual.median)} here (${usual.runs} runs); it reports itself when it finishes.`);
 	} else if (session.exitSignal) {
 		sections.push(`Process exited with signal ${session.exitSignal}`);
 	} else if (session.aborted) {
@@ -1321,6 +1363,9 @@ async function createExecSession(
 			session.closed = true;
 			session.exitCode = code;
 			session.exitSignal = exitSignal;
+			if (code === 0) recordRun(session.workdir, session.cmd, (Date.now() - session.launchedAt) / 1000);
+			// Shortly after, so a poll that is about to read the exit reports it instead.
+			setTimeout(() => announceExit(session), 300).unref();
 			if (session.forceKillTimeout) clearTimeout(session.forceKillTimeout);
 			if (session.stdioDrainTimeout) clearTimeout(session.stdioDrainTimeout);
 			void closeSessionLog(session).then(async () => {
@@ -1404,9 +1449,10 @@ export async function executeManagedExecCommand(
 			releaseCursor = await acquireOutputCursor(session.id, signal);
 			const updater = createOutputUpdater(session, call, onUpdate);
 			try {
-				const waitMs = effectiveExecCommandYieldMilliseconds(
-					params.yield_time_ms,
-				);
+				// A command that usually finishes within five minutes is simply waited for: no session, no polling.
+				const usual = params.yield_time_ms === undefined ? runHistory(session.workdir, session.cmd) : undefined;
+				const waitMs = usual && usual.p95 <= 300 ? Math.min(300_000, Math.max(effectiveExecCommandYieldMilliseconds(undefined), usual.p95 * 1500 + 2000))
+					: effectiveExecCommandYieldMilliseconds(params.yield_time_ms);
 				await settleSession(session, waitMs, signal);
 				updater.flush();
 				if (session.error) {
@@ -1487,7 +1533,7 @@ export async function executeWriteStdin(
 			const updater = createOutputUpdater(session, call, onUpdate);
 			try {
 				onUpdate?.({ content: [], details: undefined });
-				if (params.chars === "\u0003") requestInterrupt(session);
+				if (params.chars === "\u0003") { session.exitReported = true; requestInterrupt(session); }
 				const waitMs = effectiveWriteStdinYieldMilliseconds(params);
 				await settleSession(session, waitMs, signal);
 				updater.flush();

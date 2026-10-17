@@ -55,7 +55,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
   pi.on("context", (event) => {
     if (!coordinator?.hasUnread) return;
     for (const message of event.messages) {
-      if (message.role !== "custom" || !["pi-subagents/notice", "pi-subagents/followup"].includes(message.customType)) continue;
+      if (message.role !== "custom" || !["pi-subagents/notice", "pi-subagents/followup", "pi-codex-compat/process-exit"].includes(message.customType)) continue;
       const ids = (message.details as { messageIds?: unknown })?.messageIds;
       if (Array.isArray(ids)) coordinator.consume(ids.filter((id): id is string => typeof id === "string"));
     }
@@ -72,7 +72,7 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
     name: "wait_agent", label: "Wait for agents",
     // Loaded with tool_search alongside the other subagent tools; see pi-subagents.
     exposure: "deferred", namespace: { name: "subagents", description: "Start subagents and message, follow up, wait for, list or interrupt them." },
-    description: "Wait for a subagent's message or completion (or Jordan's next input). timeout_ms: 10000 to 3600000, default 30000. For a running command use write_stdin instead.",
+    description: "Wait for a subagent's message or completion, a background command finishing, or Jordan's next input. timeout_ms: 10000 to 3600000, default 30000.",
     parameters: Type.Object({ timeout_ms: Type.Optional(Type.Integer({ maximum: 3_600_000 })) }, { additionalProperties: false }),
     outputSchema: Type.Object({ message: Type.String(), timed_out: Type.Boolean() }),
     executionMode: "sequential",

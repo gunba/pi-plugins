@@ -10,7 +10,7 @@ the maximum is one hour, matching Codex V2's default limits. A timeout returns
 and branch replacement release the wait. Native SDK, RPC and terminal sessions
 share the same implementation.
 
-Use `write_stdin` for a running process.
+A background command left running by `exec_command` also ends the wait when it finishes, with a notice giving its exit code and the end of its output.
 
 ## Integration
 
