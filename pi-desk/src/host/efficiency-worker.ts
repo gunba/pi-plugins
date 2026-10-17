@@ -6,11 +6,12 @@ import { addText, buildReport, emptyFile, type FileState } from "./efficiency.ts
 
 /** Reads new session data into the efficiency cache and posts the report. Runs off the host's main thread. */
 const { directories, cachePath } = (workerData ?? JSON.parse(process.env.EFFICIENCY_INPUT ?? "{}")) as { directories: string[]; cachePath: string };
-const VERSION = 1;
+const VERSION = 2;
 
 /** Cache lifetimes from the model catalog, as Desk's cache timer reads them (pi-context-window/prompt-cache.ts). */
 function lifetimes(): Map<string, number> {
-	const ttl = new Map<string, number>(), retention = process.env.PI_CACHE_RETENTION === "long" ? "long" : "short";
+	// Conversations run with long retention unless the login environment says otherwise (worker-registry.ts).
+	const ttl = new Map<string, number>(), retention = (process.env.PI_CACHE_RETENTION ?? "long") === "long" ? "long" : "short";
 	try {
 		const data = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))), "providers", "data");
 		for (const file of readdirSync(data).filter(name => name.endsWith(".json"))) {
