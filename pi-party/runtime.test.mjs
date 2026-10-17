@@ -131,8 +131,9 @@ test("agent_send with wake has Desk reopen a closed conversation and says so", a
 	environment(t);
 	const closed = "01a14825-a8ef-75c7-b0f6-71116b2a7885", a = harness(t, "01a14825-0000-7000-8000-000000000001"), old = harness(t, closed);
 	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
+	// Closed in the test rather than after it: Windows cannot delete the folder while its database is open.
 	const host = new PartyOperations(join(process.env.PI_CODING_AGENT_DIR, "party"));
-	t.after(() => host.close());
+	try {
 	host.startHost();
 	const discovered = JSON.parse((await a.call("agent_discover", { includeOffline: true })).content[0].text).agents.find(agent => agent.id === closed);
 	assert.equal(discovered.resumable, true);
@@ -147,6 +148,7 @@ test("agent_send with wake has Desk reopen a closed conversation and says so", a
 	const sent = JSON.parse((await call).content[0].text).queued[0];
 	assert.equal(sent.reopened, "yes");
 	assert.match(sent.note, /Desk reopened it/);
+	} finally { host.close(); }
 });
 
 test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant session", async t => {
