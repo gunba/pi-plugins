@@ -1397,7 +1397,10 @@ export class DeskHost {
 				if (!this.dictation?.available) return reply({ error: "Dictation is not set up on this computer." }, 409);
 				const audio = Buffer.from(string(data.audio, Math.ceil(MAX_DICTATION_BYTES * 4 / 3) + 4), "base64");
 				const language = typeof data.language === "string" && /^[a-z]{2}$/.test(data.language) ? data.language : undefined;
-				return reply(await this.dictation.transcribe(audio, typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", language));
+				const mime = typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", result = await this.dictation.transcribe(audio, mime, language);
+				// Sizes only, never the words: enough to tell a silent or truncated clip from a transcription problem.
+				console.error(`Dictation: ${audio.length} bytes of ${mime}${typeof data.peak === "number" ? `, peak level ${data.peak.toFixed(3)}` : ""} → ${result.text.length} characters.`);
+				return reply(result);
 			}
 			if (url.pathname === "/api/dictation/settings") {
 				if (request.method === "GET") return reply(this.dictation!.settings());

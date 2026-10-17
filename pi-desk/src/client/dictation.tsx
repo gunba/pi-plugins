@@ -25,6 +25,32 @@ const blobBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
 	reader.readAsDataURL(blob);
 });
 
+/** Below this peak level a whole clip is silence: the microphone gave nothing to transcribe. */
+const SILENCE = 0.01;
+/**
+ * The microphone's level while recording. Created within the click or key press, so browsers let it run.
+ * `peak` is undefined when the level could not be measured, so a clip is never refused on a guess.
+ */
+function levelMeter(show: (level: number) => void) {
+	let context: AudioContext | undefined, timer: ReturnType<typeof setInterval> | undefined, peak = 0;
+	try { context = new AudioContext(); void context.resume(); } catch { context = undefined; }
+	return {
+		listen(stream: MediaStream) {
+			if (!context) return;
+			const analyser = context.createAnalyser(), data = new Float32Array(1024);
+			analyser.fftSize = 1024; context.createMediaStreamSource(stream).connect(analyser);
+			timer = setInterval(() => {
+				analyser.getFloatTimeDomainData(data);
+				let level = 0;
+				for (const value of data) level = Math.max(level, Math.abs(value));
+				peak = Math.max(peak, level); show(level);
+			}, 100);
+		},
+		peak: () => context?.state === "running" && timer ? peak : undefined,
+		close() { clearInterval(timer); timer = undefined; void context?.close().catch(() => {}); context = undefined; },
+	};
+}
+
 /** Holding the shortcut at least this long records only while it is held. */
 const HOLD_MS = 400;
 type Finish = "insert" | "send" | "discard";
@@ -42,7 +68,7 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 	/** From dictationComputer: the computer that transcribes, undefined for this host, null when none can. */
 	computer: string | undefined | null;
 }) {
-	const [phase, setPhaseState] = useState<Phase>("idle"), [seconds, setSeconds] = useState(0);
+	const [phase, setPhaseState] = useState<Phase>("idle"), [seconds, setSeconds] = useState(0), [level, setLevel] = useState(0);
 	const recorder = useRef<MediaRecorder | undefined>(undefined), phaseRef = useRef<Phase>("idle"), finish = useRef<Finish>("insert");
 	const held = useRef<number | undefined>(undefined), pending = useRef(false), button = useRef<HTMLButtonElement>(null);
 	// The shortcut listener is registered once; it reads the current props from here.
@@ -57,26 +83,36 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 	};
 	const start = async () => {
 		if (phaseRef.current !== "idle") return;
-		setPhase("starting"); finish.current = "insert"; pending.current = false;
+		setPhase("starting"); finish.current = "insert"; pending.current = false; setLevel(0);
+		const meter = levelMeter(setLevel);
 		let stream: MediaStream;
-		try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+		// No echo cancellation: nothing plays while dictating, and asking for it makes Android record through its
+		// voice-call path, which can pick another microphone (such as earbuds) or give silence.
+		try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } }); }
 		catch (error) {
-			setPhase("idle");
+			meter.close(); setPhase("idle");
 			latest.current.report(error instanceof DOMException && error.name === "NotAllowedError" ? "Allow microphone access for this site to dictate." : "No microphone is available.");
 			return;
 		}
+		meter.listen(stream);
 		const chunks: Blob[] = [], media = new MediaRecorder(stream, { mimeType: MIME, audioBitsPerSecond: 16_000 });
 		media.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
 		media.onstop = async () => {
 			stream.getTracks().forEach(track => track.stop());
 			recorder.current = undefined;
-			const how = finish.current;
+			const how = finish.current, peak = meter.peak();
+			meter.close();
 			if (how === "discard" || !chunks.length) { setPhase("idle"); return; }
+			if (peak !== undefined && peak < SILENCE) {
+				setPhase("idle");
+				latest.current.report("The microphone recorded only silence. Check the browser is using the right microphone; on Android, another app such as voice typing or the Assistant may be holding it.");
+				return;
+			}
 			setPhase("transcribing");
 			try {
 				const clip = new Blob(chunks, { type: MIME });
 				const language = navigator.language?.slice(0, 2).toLowerCase();
-				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}) }, latest.current.computer ?? undefined);
+				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}), ...(peak !== undefined ? { peak } : {}) }, latest.current.computer ?? undefined);
 				if (!text.trim()) latest.current.report("No speech was heard in that recording.");
 				else if (how === "send" && latest.current.submit) latest.current.submit(text.trim());
 				else latest.current.append(text.trim());
@@ -134,6 +170,7 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 	return <span className="dictation">
 		{recording && <span className="dictation-status" role="status">
 			<span className="dictation-dot" aria-hidden="true" />{clock}
+			<span className="dictation-level" aria-hidden="true"><span style={{ transform: `scaleX(${Math.min(1, Math.sqrt(level) * 1.6)})` }} /></span>
 			<span className="dictation-keys">Enter sends · Esc cancels</span>
 			<button type="button" className="quiet-action" onClick={() => stop("discard")}>Cancel</button>
 		</span>}

@@ -2499,3 +2499,7 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .shown-described li { position:relative; display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; padding:4px 40px 4px 14px; }
 .shown-described .change-reply { position:absolute; right:6px; top:2px; }
 .shown-excerpt { max-height:420px; }
+
+/* How loudly the microphone hears you while dictating. */
+.dictation-level { width:44px; height:5px; border-radius:3px; background:var(--hover); overflow:hidden; }
+.dictation-level > span { display:block; height:100%; background:var(--accent); transform-origin:left; transition:transform .1s linear; }
