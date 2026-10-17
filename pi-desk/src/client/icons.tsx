@@ -53,7 +53,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 		fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name] ?? paths.settings}</svg>;
 }
 const sections: Record<string, string> = {
-	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity", availability: "clock", dictation: "mic",
+	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity", availability: "clock", dictation: "mic", efficiency: "usage",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
 	"pi-context-ledger": "layers", "context-window": "context", "desk-browser": "globe", plan: "plan", "pi-party": "chat", messages: "chat", subagents: "layers",
 };

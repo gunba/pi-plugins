@@ -41,7 +41,7 @@ import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
-import { reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
+import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin } from "./runtime-resources.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
@@ -452,9 +452,13 @@ export class DeskEngine {
 		if (this.opening?.manager !== manager || !this.opening.text)
 			this.opening = { manager, text: openingMessage(manager.getEntries()) };
 		if (!this.usageCache || this.usageCache.manager !== manager || this.usageCache.leaf !== leaf || this.usageCache.revision !== this.usageRevision) {
-			const { usage } = reduceSessionUsage(manager.getEntries());
+			const entries = manager.getEntries(), { usage } = reduceSessionUsage(entries);
+			const modelRuntime = this.runtime.services.modelRuntime;
+			const misses = usage ? cacheMisses(entries, (provider, id) => modelRuntime.getModel(provider, id)?.cost.cacheRead) : [];
 			this.usageCache = { manager, leaf, revision: this.usageRevision, value: usage ? {
 				input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost.total,
+				costs: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite },
+				missed: { tokens: misses.reduce((sum, miss) => sum + miss.missedTokens, 0), cost: misses.reduce((sum, miss) => sum + miss.missedCost, 0), count: misses.length },
 			} : undefined };
 		}
 		return {

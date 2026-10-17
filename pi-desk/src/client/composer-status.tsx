@@ -40,14 +40,27 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		const cache = snapshot?.cache;
 		if (!cache) return null;
 		const live = snapshot?.activity === "running", left = live ? cache.ttlMs : Math.max(0, cache.usedAt + cache.ttlMs - now);
-		const percent = left / cache.ttlMs * 100, expires = new Date(cache.usedAt + cache.ttlMs);
+		const expires = new Date(cache.usedAt + cache.ttlMs);
 		const title = live ? "Prompt cache: kept warm while Pi works."
 			: left ? `Prompt cache: expires at ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} unless a message is sent.\nAfter that, the next message pays to cache the whole conversation again.`
 			: "Prompt cache: expired. The next message pays to cache the whole conversation again.";
 		return <span className={`usage-gauge usage-gauge-cache${left ? "" : " expired"}`} title={title}>
 			<span className="usage-gauge-label">Cache</span>
-			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
 			<span className="usage-gauge-value">{live ? "live" : left ? countdown(left) : "expired"}</span>
+		</span>;
+	};
+	/** How much of this conversation's spend went on reading its cache: the cost the 97% hit rate hides. */
+	const spendGauge = () => {
+		const costs = usage?.costs, total = usage?.cost ?? 0;
+		if (!costs || total <= 0) return null;
+		const share = (value: number) => `${Math.round(value / total * 100)}%`, money = (value: number) => `$${value.toFixed(value < 10 ? 2 : 0)}`;
+		const title = [`This conversation's spend at API prices: ${money(total)}, including compaction and child agents.`,
+			`Cache reads ${money(costs.cacheRead)} (${share(costs.cacheRead)})`, `Uncached input ${money(costs.input)} (${share(costs.input)})`,
+			`Cache writes ${money(costs.cacheWrite)} (${share(costs.cacheWrite)})`, `Output ${money(costs.output)} (${share(costs.output)})`,
+			usage?.missed?.count ? `Lost to ${usage.missed.count} cache miss${usage.missed.count === 1 ? "" : "es"}: ${money(usage.missed.cost)} (${tokens(usage.missed.tokens)} tokens billed again)` : "No cache misses."].join("\n");
+		return <span className="usage-gauge usage-gauge-spend" title={title}>
+			<span className="usage-gauge-label">Cache spend</span>
+			<span className="usage-gauge-value">{share(costs.cacheRead)}</span>
 		</span>;
 	};
 	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
@@ -65,7 +78,6 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		return <span className={`usage-gauge${kind}${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
 			title={`${badge.label === "Weekly" ? "Weekly" : `${badge.label}`} allowance: ${Math.round(percent)}% left${resetText}${badge.description ? `\n${badge.description}` : ""}`}>
 			<span className="usage-gauge-label">{badge.label === "Weekly" ? "Week" : badge.label}</span>
-			<span className="usage-gauge-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>
 			<span className="usage-gauge-value">{Math.round(percent)}%</span>
 			{until && <span className="usage-gauge-reset">{until}</span>}
 		</span>;
@@ -86,7 +98,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	};
 	return <div className="composer-status">
 		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
-			<div className="composer-facts-inline">{cacheGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
+			<div className="composer-facts-inline">{cacheGauge()}{spendGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
 			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
 		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}

@@ -1129,12 +1129,12 @@ details[open] > summary:before {
 .usage-gauge-reset { font-variant-numeric:tabular-nums; }
 .usage-gauge-reset::before { content:"· "; }
 /* Each gauge has its own colour, so they can be told apart at a glance; low and critical override them. */
-.usage-gauge-session .usage-gauge-track > span { background:#4f9dff; }
-.usage-gauge-week .usage-gauge-track > span { background:#45bf86; }
-.usage-gauge-cache .usage-gauge-track > span { background:#ec6aa0; transition:width 1s linear; }
+.usage-gauge-session .usage-gauge-value { color:#6aaeff; }
+.usage-gauge-week .usage-gauge-value { color:#45bf86; }
+.usage-gauge-cache .usage-gauge-value { color:#ec6aa0; }
+.usage-gauge-spend .usage-gauge-value { color:#c49cff; }
 .usage-gauge-cache.expired .usage-gauge-value { color:var(--muted); }
-.usage-gauge.low .usage-gauge-track > span { background:#d08a2c; }
-.usage-gauge.critical .usage-gauge-track > span { background:var(--danger); }
+.usage-gauge.low .usage-gauge-value { color:#d08a2c; }
 .usage-gauge.critical .usage-gauge-value { color:var(--danger); }
 .composer-badges-inline > span { max-width:230px; overflow:hidden; text-overflow:ellipsis; }
 .composer-toggle { padding:3px 6px; min-height:28px; border-color:transparent; background:transparent; }
@@ -2507,3 +2507,12 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 /* A message written by voice: the agent was told to expect misheard words. */
 .dictated-badge { display:inline-flex; align-items:center; gap:4px; padding:1px 6px; border-radius:5px; background:var(--hover); color:var(--muted); font-size:10.5px; font-weight:500; }
 .dictated-badge .ui-icon { width:12px; height:12px; }
+
+/* Settings → Efficiency */
+.efficiency-table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+.efficiency-table th, .efficiency-table td { padding:6px 8px; text-align:right; border-bottom:1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.efficiency-table th[scope="row"], .efficiency-table thead th:first-child { text-align:left; font-weight:500; }
+.efficiency-table thead th { font-size:11px; font-weight:600; color:var(--muted); }
+.efficiency-errors { margin:8px 0 0; padding-left:20px; font-size:13px; }
+.efficiency-errors li { margin-bottom:10px; }
+.efficiency-errors code { display:block; margin-top:3px; font-size:11.5px; overflow-wrap:anywhere; color:var(--muted); }

@@ -138,7 +138,7 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 			<label className="setting-control"><span>Update Desk automatically<small>Within an hour of each release. Running conversations carry on undisturbed.</small></span>
 				<input type="checkbox" role="switch" checked={updates.automatic.host} disabled={busy || !computer.connected}
 					onChange={event => void run("/runtime/automatic", { host: event.target.checked }).catch(() => {})} /></label>
-			<label className="setting-control"><span>Move idle conversations to the new version<small>Each restarts once it has been idle for 10 minutes, with no agents, plans or commands still running. History is kept, and messages sent meanwhile wait for it.</small></span>
+			<label className="setting-control"><span>Move idle conversations to the new version<small>Each restarts once it has been idle for 10 minutes and its prompt cache has expired, so the move costs no cache, with no agents, plans or commands still running. History is kept, and messages sent meanwhile wait for it.</small></span>
 				<input type="checkbox" role="switch" checked={updates.automatic.conversations} disabled={busy || !computer.connected}
 					onChange={event => void run("/runtime/automatic", { conversations: event.target.checked }).catch(() => {})} /></label>
 		</div>}

@@ -61,7 +61,11 @@ export interface SessionSnapshot {
 	compacting?: { reason: "manual" | "threshold" | "overflow" | "cache"; started: number };
 	/** When the conversation's prompt cache was last used, and how long the provider keeps it after a use. */
 	cache?: { usedAt: number; ttlMs: number };
-	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
+		/** Spend by kind at API prices, including compaction, cache warming and child agents. */
+		costs?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		/** Prompt tokens billed again because the cache missed, and what that cost over cache reads. */
+		missed?: { tokens: number; cost: number; count: number } };
 	ui: PresentationSnapshot;
 }
 export type ChatBlock =

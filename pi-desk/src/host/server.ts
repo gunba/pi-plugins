@@ -1,9 +1,10 @@
+import { Worker as ThreadWorker } from "node:worker_threads";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
 import { MAX_WIRE } from "../shared/secure-channel.ts";
-import { mkdirSync, realpathSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, type FSWatcher, watch } from "node:fs";
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,6 +131,9 @@ export class DeskHost {
 	private preserveWorkers = false;
 	private control?: HostControl;
 	private directory = "";
+	/** The efficiency report, refreshed in a worker thread when it is older than ten minutes and someone asks. */
+	private efficiency?: { report: unknown; at: number };
+	private efficiencyRun?: Promise<void>;
 	private runtime?: string;
 	private runtimeHome?: string;
 	private updates?: RuntimeUpdateState;
@@ -933,6 +937,10 @@ export class DeskHost {
 					// An explicit request retries a restart that failed earlier.
 					if (blockers.length || !force && this.restartAttempts.get(key) === RELEASE.version) continue;
 					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
+					// The new version's prompt and tools cost the conversation its prompt cache, so an automatic move waits for
+					// the cache to expire. Codex declares no cache lifetime; it moves after the quiet period alone.
+					const cache = managed.view.snapshot?.cache;
+					if (!force && cache && cache.usedAt + cache.ttlMs > now) continue;
 					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid, mcpServerCommands(this.options.agentDir!, managed.view.cwd))) continue;
 					await this.restartForUpdate(managed);
 					if (!force) return;
@@ -1026,6 +1034,19 @@ export class DeskHost {
 			}
 			throw error;
 		}
+	}
+
+	private refreshEfficiency(): void {
+		if (this.efficiencyRun || this.closing) return;
+		const built = new URL("./efficiency-worker.js", import.meta.url);
+		const directories = [join(this.options.agentDir!, "sessions"), ...(this.options.sessionDir ? [this.options.sessionDir] : [])];
+		const worker = new ThreadWorker(existsSync(built) ? built : new URL("./efficiency-worker.ts", import.meta.url), {
+			workerData: { directories, cachePath: join(this.directory, "efficiency.json") }, resourceLimits: { maxOldGenerationSizeMb: 1024 } });
+		this.efficiencyRun = new Promise(resolve => {
+			worker.once("message", report => { this.efficiency = { report, at: Date.now() }; });
+			worker.once("error", error => console.error(`The efficiency report could not be built: ${error instanceof Error ? error.message : String(error)}`));
+			worker.once("exit", () => { this.efficiencyRun = undefined; resolve(); });
+		});
 	}
 
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
@@ -1401,6 +1422,10 @@ export class DeskHost {
 				// Sizes only, never the words: enough to tell a silent or truncated clip from a transcription problem.
 				console.error(`Dictation: ${audio.length} bytes of ${mime}${typeof data.peak === "number" ? `, peak level ${data.peak.toFixed(3)}` : ""} → ${result.text.length} characters.`);
 				return reply(result);
+			}
+			if (url.pathname === "/api/efficiency" && request.method === "GET") {
+				if (!this.efficiency || Date.now() - this.efficiency.at > 600_000) this.refreshEfficiency();
+				return reply({ report: this.efficiency?.report ?? null, refreshing: !!this.efficiencyRun });
 			}
 			if (url.pathname === "/api/dictation/settings") {
 				if (request.method === "GET") return reply(this.dictation!.settings());
