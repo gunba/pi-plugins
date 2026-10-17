@@ -330,8 +330,8 @@ export function WorkPane({ items, selected, select, expand, close, session }: {
 			<ItemHeader item={current} session={session}><button type="button" className="icon-button" title="Expand" aria-label="Expand" onClick={() => expand(current)}><Icon name="expand" /></button></ItemHeader>
 			<div className="work-current-body"><WorkBody item={current} session={session} /></div>
 		</section></ReferenceContext>}
-		{newest.length > 1 && <ol className="work-list">{newest.filter(item => item !== current).map(item => <li key={item.id}>
-			<button type="button" className="work-list-item" onClick={() => select(item.id)}>
+		{newest.length > 1 && <ol className="work-list">{newest.map(item => <li key={item.id}>
+			<button type="button" className="work-list-item" aria-current={item === current ? "true" : undefined} onClick={() => select(item.id)}>
 				<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}
 				<time>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
 			</button></li>)}</ol>}
