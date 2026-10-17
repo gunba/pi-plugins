@@ -1,9 +1,9 @@
 import { constants } from "node:fs";
-import { access, lstat, readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createReadToolDefinition, detectSupportedImageMimeTypeFromFile, getAgentDir, SettingsManager,
-  type ExtensionAPI, type ExtensionContext, type ExtensionToolContext,
+  type ExtensionAPI, type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { ArtifactStore, boundedText } from "./artifacts.ts";
@@ -17,71 +17,6 @@ const readSchema = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1 })),
   full: Type.Optional(Type.Boolean({ description: `Request a larger preview, up to ${MAX_CHARS} characters; excess remains retrievable.` })),
 }, { additionalProperties: false });
-
-const ARTIFACT_ID = /^sha256-[a-f0-9]{64}$/;
-const FULL_REPLAYS = 2;
-type MessageEntry = Extract<ReturnType<ExtensionContext["sessionManager"]["getEntries"]>[number], { type: "message" }>;
-type AgentMessage = MessageEntry["message"];
-
-function archivedResultId(message: AgentMessage): string | undefined {
-  if (message.role !== "toolResult" || message.isError ||
-    message.content.length === 0 || message.content.some(block => block.type !== "text")) return;
-  const details = message.details;
-  if (!details || typeof details !== "object" || !("outputBudgeted" in details) ||
-    details.outputBudgeted !== true || !("outputArtifact" in details)) return;
-  const id = details.outputArtifact;
-  return typeof id === "string" && ARTIFACT_ID.test(id) ? id : undefined;
-}
-
-function replayKey(toolCallId: string, id: string): string {
-  return `${toolCallId}\0${id}`;
-}
-
-export function archivedReplayCandidates(messages: AgentMessage[]): Set<string> {
-  const eligible = new Set<string>();
-  let assistantsAfter = 0;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if (message.role === "assistant") { assistantsAfter++; continue; }
-    if (assistantsAfter < FULL_REPLAYS || message.role !== "toolResult") continue;
-    const id = archivedResultId(message);
-    if (id) eligible.add(replayKey(message.toolCallId, id));
-  }
-  return eligible;
-}
-
-export async function slimArchivedResults(
-  messages: AgentMessage[],
-  store: ArtifactStore,
-  checked: Set<string>,
-  eligible: Set<string>,
-  signal?: AbortSignal,
-): Promise<AgentMessage[]> {
-  let projected: AgentMessage[] | undefined;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if (message.role !== "toolResult") continue;
-    const id = archivedResultId(message);
-    if (!id || !eligible.has(replayKey(message.toolCallId, id))) continue;
-    if (!checked.has(id)) {
-      signal?.throwIfAborted();
-      try {
-        const entry = await lstat(store.path(id));
-        if (!entry.isFile() || entry.isSymbolicLink()) continue;
-      } catch { continue; }
-      checked.add(id);
-    }
-    projected ??= [...messages];
-    projected[index] = {
-      ...message,
-      content: [{
-        type: "text",
-        text: `[Earlier tool result archived as ${id}. Use read_artifact({artifact:"${id}",offset:0}) to retrieve the captured text; follow next_offset for the rest.]`,
-      }],
-    };
-  }
-  return projected ?? messages;
-}
 
 export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
@@ -123,8 +58,6 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
 
 /** Safe to install explicitly in SDK children; does not discover unrelated extensions. */
 export default function outputBudget(pi: ExtensionAPI): void {
-  const checkedReplayArtifacts = new Set<string>();
-  const replayCandidates = new Map<string, Set<string>>();
   pi.on("session_start", async () => { await acquireArtifactAccess(outputArtifactStore().directory); });
   pi.registerTool({
     name: "read", label: "read", parameters: readSchema,
@@ -266,27 +199,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
       : { content: result.content };
   });
 
-  // Freeze the selection at the start of a turn. Changing old tool results
-  // during a tool-call chain would invalidate Codex Wire's incremental prefix.
-  pi.on("before_agent_start", (_event, ctx) => {
-    const branch = ctx.sessionManager.getBranch();
-    const messages = branch.flatMap(entry => entry.type === "message" ? [entry.message] : []);
-    replayCandidates.set(ctx.sessionManager.getSessionId(), archivedReplayCandidates(messages));
-  });
-  pi.on("session_shutdown", (_event, ctx) => {
-    replayCandidates.delete(ctx.sessionManager.getSessionId());
-  });
-  // context_with_system, not context: a changed list from a context handler makes Pi fold every
-  // mid-conversation prompt and tool change back into the request head, so each later tool load or
-  // prompt change rewrites the whole provider cache. Only tool results are replaced here, so the
-  // system messages stay where they are.
-  pi.on("context_with_system", async (event, ctx) => {
-    const eligible = replayCandidates.get(ctx.sessionManager.getSessionId());
-    if (!eligible?.size) return;
-    const messages = await slimArchivedResults(
-      event.messages, outputArtifactStore(), checkedReplayArtifacts, eligible, ctx.signal,
-    );
-    if (messages !== event.messages) return { messages };
-  });
+  // Budgets apply only when a result is created. Earlier results are never rewritten later: replacing them
+  // mid-conversation changed the prompt prefix and broke warm caches (first-turn misses rose from ~2% to 6–10%).
   capAnthropicImages(pi);
 }

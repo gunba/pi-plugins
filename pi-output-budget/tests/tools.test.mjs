@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import extension, { readSnapshot, slimArchivedResults } from "../extensions/index.ts";
+import extension, { readSnapshot } from "../extensions/index.ts";
 import { ArtifactStore } from "../extensions/artifacts.ts";
 
 async function fixture(t) {
@@ -65,7 +65,7 @@ test("cancelled file reads stop before returning evidence", async t => {
   await assert.rejects(readSnapshot("id", { path: "none" }, controller.signal, f.ctx, f.store), /abort/i);
 });
 
-test("MCP originals survive temporary-file removal and later replay compaction", async t => {
+test("MCP originals survive temporary-file removal", async t => {
   const f = await fixture(t);
   const file = join(f.cwd, "mcp-output.txt");
   const original = "complete\n".repeat(10000) + "tail evidence";
@@ -77,9 +77,6 @@ test("MCP originals survive temporary-file removal and later replay compaction",
   await rm(file);
   assert.equal(await f.store.get(result.details.full_output_artifact), original);
   assert.equal(result.details.outputArtifact, result.details.full_output_artifact);
-  const message = { role: "toolResult", toolCallId: "mcp-call", toolName: "mcp", isError: false, content: result.content, details: result.details };
-  const slimmed = await slimArchivedResults([message], f.store, new Set(), new Set([`mcp-call\0${result.details.outputArtifact}`]));
-  assert.match(slimmed[0].content[0].text, new RegExp(result.details.full_output_artifact));
   const read = await f.tools.get("read_artifact").execute("read", { artifact: result.details.outputArtifact, offset: original.length - 13 });
   assert.match(read.content[0].text, /tail evidence/);
 });
