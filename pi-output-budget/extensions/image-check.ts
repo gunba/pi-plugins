@@ -35,7 +35,15 @@ type Content = { type: string; data?: string; mimeType?: string; text?: string }
 type Message = { role: string; content?: unknown; timestamp?: number; stopReason?: string; errorMessage?: string };
 const REJECTED = /could not process image|invalid[_ ]image|image (?:is )?(?:invalid|corrupt|unsupported|could not be (?:processed|decoded))|unsupported image/i;
 const checked = new Map<string, string | undefined>();
+// The same image is the same object in every request of a conversation: looked up without hashing it again.
+const verdicts = new WeakMap<Content, string | undefined>();
 function damageOf(image: Content): string | undefined {
+	if (verdicts.has(image)) return verdicts.get(image);
+	const damage = damageByContent(image);
+	verdicts.set(image, damage);
+	return damage;
+}
+function damageByContent(image: Content): string | undefined {
 	const data = image.data ?? "", key = createHash("sha1").update(data).digest("hex");
 	if (!checked.has(key)) {
 		let damage: string | undefined;

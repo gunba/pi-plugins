@@ -1,12 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getWorkCoordinator } from "../../pi-work-coordination/index.ts";
-import { recordRun, runDuration } from "./run-times.ts";
+import { recordRun } from "./run-times.ts";
+import { promptCacheState } from "../../pi-context-window/prompt-cache.ts";
+import { WARM_EVENT, type WarmProbe } from "../../pi-compaction-context/extensions/warm.ts";
+
+/** How long an idle conversation's cache is kept for a command it left running: at most this many hours of renewals. */
+const WARM_HOURS = 6;
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { resolveToolPath } from "./paths.ts";
 import {
 	type ExecRuntimeOwner, type ExecRuntimeOwnerFor, createExecRuntimeOwner,
-	executeManagedExecCommand, executeWriteStdin, onBackgroundExit, onSlowCommand, prepareExecCommandArguments, prepareWriteStdinArguments,
+	executeManagedExecCommand, executeWriteStdin, hasBackgroundCommand, onBackgroundExit, prepareExecCommandArguments, prepareWriteStdinArguments,
 	shutdownExecSessions, startExecSessionRuntime, type BackgroundExit,
 } from "./shell-runtime.ts";
 import { formatExecCommandCall, formatWriteStdinCall, renderExecResult } from "./tool-rendering.ts";
@@ -38,26 +43,50 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 					{ deliverAs: "steer", triggerTurn: context?.isIdle() ?? false });
 				getWorkCoordinator(sessionId)?.notify([id]);
 			});
-			onSlowCommand(owner, slow => {
-				const id = `process-slow:${sessionId}:${slow.id}`, context = contexts.get(sessionId);
-				pi.sendMessage({ customType: PROCESS_EXIT, display: true, details: { messageIds: [id], ...slow },
-					content: `Background command still running: \`${slow.cmd.length > 200 ? `${slow.cmd.slice(0, 200)}…` : slow.cmd}\` (session ${slow.id}) has run ${runDuration(slow.seconds)}; it usually takes ${runDuration(slow.median)} here (${slow.runs} runs). It may be stuck. It has not been stopped.` },
-					{ deliverAs: "steer", triggerTurn: context?.isIdle() ?? false });
-				getWorkCoordinator(sessionId)?.notify([id]);
-			});
 		}
 		return owner;
 	};
+	// While the agent waits for a command it left running, its cache is renewed before it expires (warm.ts): the
+	// command's exit wakes the agent, and a wake after expiry pays for the whole context again.
+	const warming = new Map<string, { since: number; warmed?: boolean; timer?: ReturnType<typeof setTimeout> }>();
+	const stopWarming = (id: string) => { const run = warming.get(id); if (run?.timer) clearTimeout(run.timer); warming.delete(id); };
+	const scheduleWarm = (id: string, owner: ExecRuntimeOwner, ctx: ExtensionContext) => {
+		const run = warming.get(id), state = promptCacheState(ctx.model, ctx.sessionManager.getBranch() as never);
+		if (!run || !state || !hasBackgroundCommand(owner)) return stopWarming(id);
+		const at = state.usedAt + Math.min(state.ttlMs * 0.9, state.ttlMs - 10_000);
+		// After a warm the cache's time has moved on; if it has not, warming again would only repeat (never loop).
+		if (at - run.since > WARM_HOURS * 3_600_000 || run.warmed && at - Date.now() < 60_000) return stopWarming(id);
+		run.timer = setTimeout(async () => {
+			run.timer = undefined;
+			if (warming.get(id) !== run || !ctx.isIdle() || !hasBackgroundCommand(owner)) return stopWarming(id);
+			const probe: WarmProbe = { session: id };
+			pi.events.emit(WARM_EVENT, probe);
+			if (!await probe.result) return stopWarming(id);
+			run.warmed = true;
+			if (warming.get(id) === run) scheduleWarm(id, owner, ctx);
+		}, Math.max(0, at - Date.now()));
+		run.timer.unref?.();
+	};
+	pi.on("agent_settled", (_event, ctx) => {
+		const id = ctx.sessionManager.getSessionId(), owner = owners.get(id);
+		stopWarming(id);
+		if (!owner || !hasBackgroundCommand(owner)) return;
+		warming.set(id, { since: Date.now() });
+		scheduleWarm(id, owner, ctx);
+	});
+	// A turn renews the cache itself.
+	pi.on("agent_start", (_event, ctx) => stopWarming(ctx.sessionManager.getSessionId()));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();
+		stopWarming(id);
 		const owner = owners.get(id);
 		contexts.delete(id);
 		if (!owner) return;
-		onBackgroundExit(owner, undefined); onSlowCommand(owner, undefined);
+		onBackgroundExit(owner, undefined);
 		await shutdownExecSessions(owner);
 		owners.delete(id);
 	});
-	// bash runs are timed too, so exec_command knows how long a command usually takes in this folder.
+	// bash runs are timed too, so exec_command can say how long commands like it took in this folder.
 	const started = new Map<string, { cwd: string; cmd: string; at: number }>();
 	pi.on("tool_call", (event, ctx) => {
 		const command = (event.input as { command?: unknown }).command;
@@ -69,6 +98,8 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 		started.delete(event.toolCallId);
 		if (!event.isError) recordRun(run.cwd, run.cmd, (Date.now() - run.at) / 1000);
 	});
+	// A call blocked before it ran has no tool_result.
+	pi.on("tool_execution_end", event => { started.delete(event.toolCallId); });
 	pi.on("session_start", async (_event, ctx) => {
 		contexts.set(ctx.sessionManager.getSessionId(), ctx);
 		await startExecSessionRuntime(ownerFor(ctx));

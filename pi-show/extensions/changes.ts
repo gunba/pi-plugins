@@ -384,6 +384,8 @@ export class ChangeTracker {
 				const folder = join(this.store, name);
 				const indexes = readdirSync(folder).filter(file => file.startsWith("index-"));
 				const used = Math.max(statSync(folder).mtimeMs, ...indexes.map(file => statSync(join(folder, file)).mtimeMs));
+				// A store whose setup never finished holds nothing.
+				if (!existsSync(join(folder, "root")) && !indexes.length && Date.now() - used > 3_600_000) { rmSync(folder, { recursive: true, force: true }); continue; }
 				if (Date.now() - used > 30 * 86_400_000) { rmSync(folder, { recursive: true, force: true }); continue; }
 				for (const index of indexes) {
 					if (index === "index-last" || Date.now() - statSync(join(folder, index)).mtimeMs < 7 * 86_400_000) continue;
@@ -395,6 +397,9 @@ export class ChangeTracker {
 	private async root(path: string, explicit: boolean): Promise<Root | undefined> {
 		const repository = repositoryOf(path);
 		const top = repository ?? (explicit ? path : undefined);
+		// A folder that does not exist yet (a command about to create it, or an unexpanded variable) is followed by a
+		// later call, once it does; it is not remembered as unusable.
+		if (top && !existsSync(top)) return;
 		// A folder holding Pi's own state (conversations, caches) is never followed as a whole.
 		if (!top || scratch(top, this.agentDir, this.temporary) || within(this.agentDir, top) || (!repository && broad(top, this.agentDir, this.temporary))) return;
 		const known = this.roots.get(top);
@@ -460,6 +465,21 @@ export class ChangeTracker {
 			catch { call.loose.set(file, null); }
 		}
 		this.calls.set(id, call);
+	}
+
+	/**
+	 * A call that never ran: Pi sends no tool_result for a call blocked before it started (by the command guard, say).
+	 * What it collected goes back to the changes made meanwhile, and cleanup resumes once no call is running.
+	 */
+	abandon(id: string): void {
+		const call = this.calls.get(id);
+		if (!call) return;
+		this.calls.delete(id);
+		for (const [path, change] of call.seen) if (!this.meanwhile.has(path)) this.meanwhile.set(path, { ...change, meanwhile: true });
+		if (!this.calls.size) for (const root of this.roots.values()) {
+			root.letGo();
+			if (root.pending > CLEANUP_BYTES) void root.prune(this.grace);
+		}
 	}
 
 	async finish(id: string, own: string[] = []): Promise<CallChanges | undefined> {

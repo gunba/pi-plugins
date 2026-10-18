@@ -41,7 +41,7 @@ import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "..
 import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
-import { resourceSettings, runtimePin } from "./runtime-resources.ts";
+import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
@@ -223,7 +223,12 @@ export class DeskEngine {
 						this.events = pi.events;
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);
-						pi.on("before_agent_start", () => { context?.apply(); });
+						pi.on("before_agent_start", event => {
+							context?.apply();
+							// Skill locations through runtime/current (runtime-resources.ts), the same in every Desk version.
+							const options = event.systemPromptOptions;
+							if (pin && options?.skills) options.skills = options.skills.map(skill => ({ ...skill, filePath: stablePath(pin, skill.filePath), baseDir: stablePath(pin, skill.baseDir) }));
+						});
 						pi.on("session_tree", () => {
 							context?.apply();
 							this.feed?.reset();

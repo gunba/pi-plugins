@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { createExecRuntimeOwner, executeManagedExecCommand, executeWriteStdin, onBackgroundExit, shutdownExecSessions } from "../extensions/shell-runtime.ts";
 import { exitNotice } from "../extensions/process-tools.ts";
-import { recordRun, runHistory } from "../extensions/run-times.ts";
+import { recordRun, similarRuns } from "../extensions/run-times.ts";
 
 // Run times go to a scratch agent folder, not the real one.
 process.env.PI_CODING_AGENT_DIR = await mkdtemp(join(tmpdir(), "run-times-"));
@@ -33,18 +33,16 @@ test("a command left running reports its exit once; a poll that saw it, or an in
 	assert.equal(exits.length, 1, "the poll and the interrupt reported their own outcomes");
 });
 
-test("a command that usually finishes quickly is waited for; one left running says how long it usually takes", { timeout: 30_000 }, async t => {
+test("a command left running says how long commands like it took here, even when it is not the same command", { timeout: 30_000 }, async t => {
+	// Agents rarely repeat a command exactly (3,194 distinct among 3,211 runs in a week), so exact matches never had an answer.
 	const cwd = await mkdtemp(join(tmpdir(), "run-times-cwd-")), owner = createExecRuntimeOwner();
 	t.after(async () => { await shutdownExecSessions(owner); await rm(cwd, { recursive: true, force: true }); });
-	const quick = `${JSON.stringify(process.execPath)} -e "setTimeout(() => console.log('done'), 1500)"`;
-	for (const seconds of [1.4, 1.5, 1.6]) recordRun(cwd, quick, seconds);
-	assert.deepEqual(runHistory(cwd, quick), { runs: 3, median: 1.5, p95: 1.6 });
-	const waited = await executeManagedExecCommand({ cmd: quick }, undefined, { cwd }, undefined, owner);
-	assert.equal(waited.details.running, false, "no session and no poll");
-	assert.equal(runHistory(cwd, quick).runs, 4, "the run itself is recorded");
-	const slow = `${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 4000)"`;
-	for (const seconds of [3, 3, 3]) recordRun(cwd, slow, seconds);
-	const left = await executeManagedExecCommand({ cmd: slow, yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
-	assert.equal(left.details.running, true);
-	assert.match(left.content[0].text, /Usually takes 3s here \(3 runs\); it reports itself when it finishes\./);
+	for (const [file, seconds] of [["tests/alpha.test.mjs", 20], ["tests/beta.test.mjs", 41], ["tests/gamma.test.mjs", 33]])
+		recordRun(cwd, `cd ${cwd} && node --test --test-timeout=120000 ${file}`, seconds);
+	recordRun(cwd, `git status --short`, 2);
+	const node = JSON.stringify(process.execPath);
+	const left = await executeManagedExecCommand({ cmd: `cd ${cwd} && node --test --test-timeout=120000 tests/delta.test.mjs || ${node} -e "setTimeout(() => {}, 4000)"`, yield_time_ms: 250 }, undefined, { cwd }, undefined, owner);
+	assert.equal(left.details.running, true, "nothing waits on the agent's behalf");
+	assert.match(left.content[0].text, /Similar commands here took 20s–41s \(median 33s, 3 runs\)\. It reports itself when it finishes\./);
+	assert.equal(similarRuns(cwd, "npm run build"), undefined, "an unrelated command has no estimate");
 });

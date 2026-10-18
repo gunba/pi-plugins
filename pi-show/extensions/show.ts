@@ -135,6 +135,13 @@ export default function show(pi: ExtensionAPI) {
 		tracker.prune();
 	});
 	pi.on("session_shutdown", () => tracker.close());
+	// A call blocked before it ran has no tool_result; this event comes for it all the same.
+	pi.on("tool_execution_end", event => {
+		const started = tracked.get(event.toolCallId);
+		if (!started) return;
+		tracked.delete(event.toolCallId); pending.delete(event.toolCallId);
+		void started.then(() => tracker.abandon(event.toolCallId));
+	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.parentToolCallId) return;

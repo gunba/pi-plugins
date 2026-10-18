@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { atomicJson } from "../../manage/store.ts";
 
@@ -32,6 +32,10 @@ export class SettingsSync {
 	private readonly home: string;
 	private readonly computer: string;
 	private scanned = 0;
+	/** Each file's hash with the size and time it was read at: a file is hashed again only when either changes. */
+	private hashes = new Map<string, { size: number; mtime: number; hash: string }>();
+	/** Items that exist here but were left out of the last look (unreadable, too large, past the item limit): not deletions. */
+	private skipped = new Set<string>();
 	/** The last change that arrived from another computer, for Settings. */
 	last?: { key: string; from: string; at: number };
 	/** computer: this computer's name, recorded with the changes made here. */
@@ -59,13 +63,18 @@ export class SettingsSync {
 	}
 	/** What is here now, with when it changed: a file's modification time, settings by settings.json's. */
 	private current(): Map<string, { hash: string; time: number }> {
-		const found = new Map<string, { hash: string; time: number }>();
+		const found = new Map<string, { hash: string; time: number }>(), skipped = new Set<string>(), hashes = new Map<string, { size: number; mtime: number; hash: string }>();
 		const add = (key: string, path: string) => {
+			let stat;
+			try { stat = statSync(path); } catch { return; /* Gone. */ }
+			if (!stat.isFile()) return;
+			if (stat.size > MAX_FILE || found.size >= MAX_ITEMS) { skipped.add(key); return; }
+			const known = this.hashes.get(key);
 			try {
-				const stat = statSync(path);
-				if (!stat.isFile() || stat.size > MAX_FILE || found.size >= MAX_ITEMS) return;
-				found.set(key, { hash: sha(readFileSync(path)), time: Math.floor(stat.mtimeMs) });
-			} catch { /* Gone or unreadable. */ }
+				const hash = known && known.size === stat.size && known.mtime === stat.mtimeMs ? known.hash : sha(readFileSync(path));
+				hashes.set(key, { size: stat.size, mtime: stat.mtimeMs, hash });
+				found.set(key, { hash, time: Math.floor(stat.mtimeMs) });
+			} catch { skipped.add(key); /* Unreadable for now (locked, say): not a deletion. */ }
 		};
 		const walk = (prefix: string, folder: string) => {
 			let entries; try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return; }
@@ -79,6 +88,9 @@ export class SettingsSync {
 		for (const folder of FOLDERS) walk(`agent:${folder}/`, join(this.agentDir, folder));
 		for (const folder of HOME_FOLDERS) walk(`home:${folder}/`, join(this.home, ...folder.split("/")));
 		const settings = this.settings();
+		// settings.json caught mid-write (unparseable) says nothing about which settings exist.
+		if (!settings && existsSync(join(this.agentDir, "settings.json"))) for (const key of Object.keys(this.state)) if (key.startsWith("setting:")) skipped.add(key);
+		this.hashes = hashes; this.skipped = skipped;
 		if (settings) {
 			const time = Math.floor(statSync(join(this.agentDir, "settings.json")).mtimeMs);
 			for (const [key, value] of Object.entries(settings)) if (!LOCAL_SETTINGS.has(key)) found.set(`setting:${key}`, { hash: sha(JSON.stringify(value)), time });
@@ -105,7 +117,7 @@ export class SettingsSync {
 				if (Date.now() - known.time > TOMBSTONE_DAYS * 86_400_000) { delete this.state[key]; changed = true; }
 				continue;
 			}
-			if (!now.has(key) && this.allowed(key)) { this.state[key] = { hash: "", time: Date.now(), from: this.computer, deleted: true }; changed = true; }
+			if (!now.has(key) && !this.skipped.has(key) && this.allowed(key)) { this.state[key] = { hash: "", time: Date.now(), from: this.computer, deleted: true }; changed = true; }
 		}
 		if (changed) this.save();
 		return this.state;
@@ -170,7 +182,15 @@ export class SettingsSync {
 			} else {
 				const path = this.path(key)!;
 				if (data) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(`${path}.sync`, data); renameSync(`${path}.sync`, path); }
-				else if (existsSync(path)) rmSync(path, { force: true });
+				else if (existsSync(path)) {
+					rmSync(path, { force: true });
+					// Folders the deletion leaves empty go too, up to the mirrored folder itself.
+					const top = key.startsWith("home:") ? join(this.home, ...HOME_FOLDERS.find(folder => key.slice(5).startsWith(`${folder}/`))!.split("/"))
+						: join(this.agentDir, key.slice(6).split("/")[0]!);
+					for (let folder = dirname(path); folder !== top && folder.startsWith(top + sep); folder = dirname(folder)) {
+						try { if (readdirSync(folder).length) break; rmdirSync(folder); } catch { break; }
+					}
+				}
 			}
 			this.state[key] = version; this.save();
 			// The write itself is not a change made here.

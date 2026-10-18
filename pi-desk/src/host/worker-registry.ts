@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/l
 import type { WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { WorkerChannel, type WorkerEndpointAddress } from "./worker-channel.ts";
 import { WorkerConnectionError } from "./worker-errors.ts";
+import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./runtime-resources.ts";
 
 export interface WorkerBootstrap {
 	version: 1;
@@ -131,6 +132,11 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 			options: { ...options, runtimeDirectory: settings.runtimeDirectory } };
 		writeWorkerFile(directory, "bootstrap.json", bootstrap);
 		const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("PI_DESK_")));
+		// Pi's documentation through runtime/current, so codemode's description and the prompt read the same in every version.
+		try {
+			const pin = runtimePin(settings.runtimeDirectory), pi = piPackageDir();
+			if (pin && pi) { pointStableRuntime(pin); environment.PI_PACKAGE_DIR = stablePath(pin, realpathSync(pi)); }
+		} catch { /* The version's own path, as before. */ }
 		const child = spawn(process.execPath, ["--report-on-fatalerror", "--report-uncaught-exception",
 			"--report-exclude-env", "--report-exclude-network", `--report-filename=${join(directory, "failure.json")}`,
 			settings.module ?? fileURLToPath(new URL("./worker.js", import.meta.url)), directory], {

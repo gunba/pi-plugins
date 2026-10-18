@@ -72,7 +72,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
   pi.on("session_start", async () => { await acquireArtifactAccess(outputArtifactStore().directory); });
   // Folders the conversation works in, from files it read or changed: where a mistyped relative path is likely to be.
   const roots: string[] = [];
-  pi.on("tool_result", (event, ctx) => {
+  pi.on("tool_result", async (event, ctx) => {
     const input = event.input as Record<string, unknown>;
     if (!event.isError) {
       if (["read", "edit", "write"].includes(event.toolName) && typeof input.path === "string") {
@@ -85,7 +85,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
     let hint: string | undefined;
     try {
       const path = ["read", "grep", "ls", "find", "edit", "write", "apply_patch"].includes(event.toolName) ? missingPath(event.toolName, error, input) : undefined;
-      hint = path ? missingPathHint(path, ctx.cwd, roots) : undefined;
+      hint = path ? await missingPathHint(path, ctx.cwd, roots) : undefined;
       if (!hint && (event.toolName === "edit" || event.toolName === "apply_patch")) hint = editHint(error, input, ctx.cwd);
     } catch { hint = undefined; }
     if (hint) return { content: [...event.content, { type: "text" as const, text: `\n${hint}` }] };

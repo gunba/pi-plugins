@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -18,15 +18,13 @@ function nearestExisting(path: string): string {
 	while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
 	return folder;
 }
-const tracked = (root: string, name: string): string[] => {
-	try {
-		return execFileSync("git", ["-C", root, "ls-files", "--", `*/${name}`, name], { encoding: "utf8", timeout: 2000, maxBuffer: 1 << 20 })
-			.split("\n").filter(Boolean).slice(0, 5).map(file => join(root, file));
-	} catch { return []; }
-};
+// Asynchronous: a large repository must not stall the conversation's process while git lists it.
+const tracked = (root: string, name: string): Promise<string[]> => new Promise(done =>
+	execFile("git", ["-C", root, "ls-files", "--", `*/${name}`, name], { encoding: "utf8", timeout: 2000, maxBuffer: 1 << 20 },
+		(error, stdout) => done(error ? [] : stdout.split("\n").filter(Boolean).slice(0, 5).map(file => join(root, file)))));
 
 /** "Not found at X; it exists at Y": the same relative path under the folders the conversation uses, or files of that name. */
-export function missingPathHint(path: string, cwd: string, roots: readonly string[]): string | undefined {
+export async function missingPathHint(path: string, cwd: string, roots: readonly string[]): Promise<string | undefined> {
 	if (!path || /[\0\n]/.test(path)) return;
 	const wanted = resolve(cwd, path), anchor = gitRoot(nearestExisting(wanted)) ?? cwd;
 	const rel = isAbsolute(path) ? relative(anchor, wanted) : path;
@@ -37,7 +35,7 @@ export function missingPathHint(path: string, cwd: string, roots: readonly strin
 		if (candidate !== wanted && existsSync(candidate)) return `Not found at ${wanted}; it exists at ${candidate}.`;
 	}
 	const root = gitRoot(cwd) ?? gitRoot(nearestExisting(wanted));
-	const named = root && basename(wanted) ? tracked(root, basename(wanted)).filter(file => file !== wanted) : [];
+	const named = root && basename(wanted) ? (await tracked(root, basename(wanted))).filter(file => file !== wanted) : [];
 	return named.length ? `Not found at ${wanted}. Files named ${basename(wanted)} in ${root}: ${named.map(file => relative(root!, file)).join(", ")}.` : undefined;
 }
 

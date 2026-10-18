@@ -10,9 +10,10 @@ export function useQuestionAlerts(sessions: readonly SessionView[] | undefined, 
 	open: (key: string) => void, name: (session: SessionView) => string): void {
 	const pending = (sessions ?? []).flatMap(session => (session.ui?.interactions ?? [])
 		.filter(item => !item.settings).map(item => ({ session, item })));
-	const seen = useRef(new Set<string>());
+	const seen = useRef(new Set<string>()), shown = useRef(new Map<string, Notification>());
 	const openRef = useRef(open); openRef.current = open;
 	const ids = pending.map(({ session, item }) => `${session.key}/${item.id}`).join("\n");
+	useEffect(() => () => { for (const notice of shown.current.values()) notice.close(); }, []);
 	useEffect(() => {
 		if (!pending.length) return;
 		const previous = document.title;
@@ -22,6 +23,8 @@ export function useQuestionAlerts(sessions: readonly SessionView[] | undefined, 
 	useEffect(() => {
 		const live = new Set(ids ? ids.split("\n") : []);
 		for (const id of seen.current) if (!live.has(id)) seen.current.delete(id);
+		// A question answered, cancelled or timed out takes its notification with it.
+		for (const [id, notice] of shown.current) if (!live.has(id)) { notice.close(); shown.current.delete(id); }
 		if (typeof Notification === "undefined") return;
 		for (const { session, item } of pending) {
 			const id = `${session.key}/${item.id}`;
@@ -32,8 +35,11 @@ export function useQuestionAlerts(sessions: readonly SessionView[] | undefined, 
 				const minutes = item.deadline ? Math.max(1, Math.round((item.deadline - Date.now()) / 60_000)) : undefined;
 				const body = [item.form.kind === "confirm" ? item.form.message.split("\n")[0] : "",
 					minutes ? `No answer within ${minutes} minute${minutes === 1 ? "" : "s"} counts as no.` : ""].filter(Boolean).join("\n");
+				if (!seen.current.has(id)) return;
 				const notice = new Notification(`${name(session)}: ${item.form.title}`, { body, tag: id, requireInteraction: true });
 				notice.onclick = () => { window.focus(); openRef.current(session.key); notice.close(); };
+				notice.onclose = () => { shown.current.delete(id); };
+				shown.current.set(id, notice);
 			};
 			if (Notification.permission === "granted") show();
 			else if (Notification.permission === "default") void Notification.requestPermission().then(result => { if (result === "granted") show(); });

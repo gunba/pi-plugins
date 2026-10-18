@@ -92,3 +92,24 @@ test("native discovery pins first-party paths for late children and reloads with
 	assert.deepEqual(JSON.parse(await readFile(settingsPath, "utf8")).packages, config.packages);
 	assert.equal(settings.isProjectTrusted(), false);
 });
+
+test("the model sees Desk's files under one path in every version, so moving to a new version keeps the prompt", async t => {
+	const { pointStableRuntime, stablePath } = await import("../src/host/runtime-resources.ts");
+	const { realpathSync, readFileSync } = await import("node:fs");
+	const base = await mkdtemp(join(tmpdir(), "desk-stable-runtime-"));
+	t.after(() => rm(base, { recursive: true, force: true }));
+	const version = async name => {
+		const root = join(base, "runtime", "versions", name, "source");
+		await mkdir(join(root, "pi-browser", "skills", "browse"), { recursive: true });
+		await writeFile(join(root, "pi-browser", "skills", "browse", "SKILL.md"), name);
+		return { source: join(base, "checkout"), root: realpathSync(root), stable: join(base, "runtime", "current") };
+	};
+	const first = await version("aaa"), second = await version("bbb");
+	const skill = pin => stablePath(pin, join(pin.root, "pi-browser", "skills", "browse", "SKILL.md"));
+	assert.equal(skill(first), skill(second), "the same skill has the same path in both versions");
+	pointStableRuntime(first);
+	assert.equal(readFileSync(skill(first), "utf8"), "aaa");
+	pointStableRuntime(second);
+	assert.equal(readFileSync(skill(second), "utf8"), "bbb", "the link follows the newest version");
+	assert.equal(stablePath(second, join(base, "elsewhere", "x.md")), join(base, "elsewhere", "x.md"));
+});

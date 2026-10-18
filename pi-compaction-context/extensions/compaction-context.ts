@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { inPlaceBlocker, summarizeInPlace, type SentRequest } from "./in-place.ts";
 import { BRIEF_ENTRY, BRIEF_EVENT, writeBrief, type BriefProbe } from "./brief.ts";
+import { WARM_EVENT, warmCache, type WarmProbe } from "./warm.ts";
 
 type ContextFile = { path: string; content: string };
 type Snapshot = Pick<BeforeAgentStartEvent["systemPromptOptions"], "contextFiles" | "customPrompt" | "appendSystemPrompt">;
@@ -96,6 +97,12 @@ export default function compactionContext(pi: ExtensionAPI): void {
     if (!ctx) return;
     probe.result = writeBrief(ctx, sent.get(probe.session), brief => pi.appendEntry(BRIEF_ENTRY, brief), { refresh: probe.refresh, signal: probe.signal });
   });
+  // pi-codex-compat asks for this while a command the agent left running is still going (warm.ts).
+  const releaseWarm = pi.events?.on(WARM_EVENT, raw => {
+    const probe = raw as WarmProbe;
+    const ctx = probe && typeof probe === "object" ? contexts.get(probe.session) : undefined;
+    if (ctx) probe.result = warmCache(ctx, sent.get(probe.session)).catch(() => false);
+  });
   let turnRequest = false, lastInPlace = "not tried yet";
   const prepare = (signal: AbortSignal, ctx: ExtensionContext) => {
     const context = snapshot ?? fallbackSnapshot(ctx);
@@ -133,7 +140,7 @@ export default function compactionContext(pi: ExtensionAPI): void {
   pi.on("session_compact_failed", clear);
   pi.on("session_tree", clear);
   pi.on("context", clear);
-  pi.on("session_shutdown", (_event, ctx) => { clear(); sent.delete(ctx.sessionManager.getSessionId()); contexts.delete(ctx.sessionManager.getSessionId()); releaseBrief?.(); });
+  pi.on("session_shutdown", (_event, ctx) => { clear(); sent.delete(ctx.sessionManager.getSessionId()); contexts.delete(ctx.sessionManager.getSessionId()); releaseBrief?.(); releaseWarm?.(); });
   pi.on("before_provider_request", (event, ctx) => {
     remember(ctx);
     if (turnRequest) {

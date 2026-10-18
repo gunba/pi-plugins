@@ -16,13 +16,13 @@ function repository(t) {
 	return root;
 }
 
-test("a path from the wrong folder gets the place it exists, and a wrong folder gets files of that name", t => {
+test("a path from the wrong folder gets the place it exists, and a wrong folder gets files of that name", async t => {
 	const root = repository(t);
 	// 170 read/grep/ls failures since 26 Sep were mostly a relative path resolved from the wrong folder.
-	assert.equal(missingPathHint("pi-party/store.ts", join(root, "pi-desk"), []), `Not found at ${join(root, "pi-desk", "pi-party", "store.ts")}; it exists at ${join(root, "pi-party", "store.ts")}.`);
-	assert.equal(missingPathHint(join(root, "pi-output-budget", "extensions", "store.ts"), root, []),
+	assert.equal(await missingPathHint("pi-party/store.ts", join(root, "pi-desk"), []), `Not found at ${join(root, "pi-desk", "pi-party", "store.ts")}; it exists at ${join(root, "pi-party", "store.ts")}.`);
+	assert.equal(await missingPathHint(join(root, "pi-output-budget", "extensions", "store.ts"), root, []),
 		`Not found at ${join(root, "pi-output-budget", "extensions", "store.ts")}. Files named store.ts in ${root}: ${join("pi-party", "store.ts")}.`);
-	assert.equal(missingPathHint("nothing-like-it.ts", root, []), undefined);
+	assert.equal(await missingPathHint("nothing-like-it.ts", root, []), undefined);
 	assert.equal(missingPath("read", "ENOENT: no such file or directory, access '/x/y.ts'", {}), "/x/y.ts");
 	assert.equal(missingPath("grep", "Path not found: /x/z", {}), "/x/z");
 });

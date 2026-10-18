@@ -1,4 +1,4 @@
-import { recordRun, runDuration, runHistory } from "./run-times.ts";
+import { describeRuns, recordRun, similarRuns } from "./run-times.ts";
 import {
 	type ChildProcessWithoutNullStreams,
 	spawn,
@@ -114,14 +114,14 @@ type ExecSession = {
 /** A backgrounded command that has finished without any result reporting it. */
 export type BackgroundExit = { id: number; cmd: string; workdir: string; exitCode?: number | null; signal?: NodeJS.Signals | null; seconds: number; tail: string };
 const exitListeners = new Map<ExecRuntimeOwner, (exit: BackgroundExit) => void>();
-const slowListeners = new Map<ExecRuntimeOwner, (slow: { id: number; cmd: string; seconds: number; median: number; runs: number }) => void>();
-/** Called once when a command left running takes over twice its usual 95th-percentile time. It is never stopped for it. */
-export function onSlowCommand(owner: ExecRuntimeOwner, listener: ((slow: { id: number; cmd: string; seconds: number; median: number; runs: number }) => void) | undefined): void {
-	if (listener) slowListeners.set(owner, listener); else slowListeners.delete(owner);
-}
 /** Called when a command the agent left running finishes, unless a result reports it first. */
 export function onBackgroundExit(owner: ExecRuntimeOwner, listener: ((exit: BackgroundExit) => void) | undefined): void {
 	if (listener) exitListeners.set(owner, listener); else exitListeners.delete(owner);
+}
+/** Whether a command the agent left running is still going, so its exit will wake the agent. */
+export function hasBackgroundCommand(owner: ExecRuntimeOwner): boolean {
+	return [...managedSessions].some(session => session.owner === owner && session.backgrounded && !session.exitReported
+		&& !session.shutdownRequested && !session.terminationReason && isSessionRunning(session));
 }
 function announceExit(session: ExecSession): void {
 	// A poll in progress, or one that already reported the exit or an interrupt, tells the agent itself.
@@ -1074,22 +1074,13 @@ function buildSessionResult(
 		`Chunk ID: ${call.chunkId}`,
 		`Wall time: ${wallTime.toFixed(4)} seconds`,
 	];
-	if (running && !session.backgrounded) {
-		session.backgrounded = true;
-		const usual = runHistory(session.workdir, session.cmd);
-		if (usual && usual.p95 >= 5) {
-			const warnAfter = usual.p95 * 2 * 1000 - (Date.now() - session.launchedAt);
-			setTimeout(() => {
-				if (isSessionRunning(session) && !session.exitReported) slowListeners.get(session.owner)?.({ id: session.id, cmd: session.cmd,
-					seconds: (Date.now() - session.launchedAt) / 1000, median: usual.median, runs: usual.runs });
-			}, Math.max(0, warnAfter)).unref();
-		}
-	}
+	if (running) session.backgrounded = true;
 	if (!running) session.exitReported = true;
 	if (running) {
 		sections.push(`Process running with session ID ${session.id}`);
-		const usual = runHistory(session.workdir, session.cmd);
-		if (usual) sections.push(`Usually takes ${runDuration(usual.median)} here (${usual.runs} runs); it reports itself when it finishes.`);
+		// How long commands like it took here; the agent judges how long to wait.
+		const similar = similarRuns(session.workdir, session.cmd);
+		sections.push(`${similar ? `${describeRuns(similar)} ` : ""}It reports itself when it finishes.`);
 	} else if (session.exitSignal) {
 		sections.push(`Process exited with signal ${session.exitSignal}`);
 	} else if (session.aborted) {
@@ -1449,11 +1440,7 @@ export async function executeManagedExecCommand(
 			releaseCursor = await acquireOutputCursor(session.id, signal);
 			const updater = createOutputUpdater(session, call, onUpdate);
 			try {
-				// A command that usually finishes within five minutes is simply waited for: no session, no polling.
-				const usual = params.yield_time_ms === undefined ? runHistory(session.workdir, session.cmd) : undefined;
-				const waitMs = usual && usual.p95 <= 300 ? Math.min(300_000, Math.max(effectiveExecCommandYieldMilliseconds(undefined), usual.p95 * 1500 + 2000))
-					: effectiveExecCommandYieldMilliseconds(params.yield_time_ms);
-				await settleSession(session, waitMs, signal);
+				await settleSession(session, effectiveExecCommandYieldMilliseconds(params.yield_time_ms), signal);
 				updater.flush();
 				if (session.error) {
 					throw new Error(`exec_command failed to launch: ${session.error}`);

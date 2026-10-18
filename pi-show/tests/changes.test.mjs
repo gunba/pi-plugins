@@ -159,3 +159,31 @@ test("a file a command names outside any followed folder is compared directly", 
 	const files = byPath(await tracker.finish("1"));
 	assert.match(files["app.desktop"].diff, /\+\s*1 Exec=new/);
 });
+
+test("a folder a command creates and enters is followed by the calls after it", limit, async t => {
+	const { base, tracker } = setup(t), project = join(base, "proj");
+	// Started from a folder that is not followed itself, as a conversation in the home folder is.
+	await tracker.start("c1", `mkdir -p ${project} && cd ${project} && echo hi > notes.txt`, "/", "s1");
+	mkdirSync(project); writeFileSync(join(project, "notes.txt"), "hi\n");
+	await tracker.finish("c1");
+	await tracker.start("c2", `cd ${project} && echo more >> notes.txt`, "/", "s1");
+	writeFileSync(join(project, "notes.txt"), "hi\nmore\n");
+	assert.equal(byPath(await tracker.finish("c2"))["notes.txt"]?.action, "updated");
+});
+
+test("a call blocked before it ran does not stop cleanup or the changes made meanwhile", limit, async t => {
+	const { base, tracker } = setup(t), folder = repository(join(base, "repo"));
+	await tracker.start("blocked", "git checkout -- .", folder, "s1");
+	// The command guard refused it: Pi sends no tool_result, so it is abandoned.
+	tracker.abandon("blocked");
+	await tracker.start("c1", "edit", folder, "s1");
+	writeFileSync(join(folder, "a.txt"), "one\n");
+	await tracker.finish("c1");
+	// Another program changes a file while no call runs; the next call reports it as made meanwhile.
+	writeFileSync(join(folder, "b.txt"), "changed elsewhere\n");
+	await tracker.start("c2", "true", folder, "s1");
+	const changes = await tracker.finish("c2");
+	assert.equal(byPath(changes)["b.txt"]?.meanwhile, true);
+	const refs = join(base, "agent", "changes", readdirSync(join(base, "agent", "changes"))[0], "refs", "desk");
+	assert.deepEqual(readdirSync(refs).filter(name => name.includes("-held-")), [], "superseded snapshots are released once no call runs");
+});
