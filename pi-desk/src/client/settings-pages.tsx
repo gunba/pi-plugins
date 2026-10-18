@@ -165,6 +165,13 @@ export function ComputerPage({ host, computer, connected, children, views, act, 
 				{view.working && <span className="muted">{view.working}…</span>}
 			</Row>)}
 			{children.updates}
+			<Row label="Pi setup" hint="AGENTS.md, Pi settings, keybindings, models, prompts, skills and themes are mirrored with your other computers; the newest version of each wins. Logins, MCP servers, local extensions and paths stay on each computer.">
+				<span className="muted">{(() => {
+					const last = computer ? computer.settingsSync : host.settingsSync;
+					return last ? `Mirrored · last: ${last.key.replace(/^(agent|home|setting):/, "")} from ${last.from}, ${new Date(last.at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}`
+						: "Mirrored with your other computers";
+				})()}</span>
+			</Row>
 		</section>
 		<h3 className="settings-subheading">Logins</h3>
 		{children.accounts}

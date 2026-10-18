@@ -1,6 +1,7 @@
 import type { PartyStore } from "../../../pi-party/store.ts";
 import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
 import type { PartyOperations } from "../../../pi-party/operations.ts";
+import type { SettingsSync } from "./settings-sync.ts";
 
 type Send = (payload: PartyPacket) => Promise<void>;
 
@@ -18,8 +19,11 @@ export class PartyNetwork {
 	/** This computer, as announced with its directory, and what each peer announced (older hosts announce nothing). */
 	private self?: PartyComputer;
 	private announced = new Map<string, PartyComputer>();
-	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer) {
-		this.store = store; this.changed = changed; this.self = self;
+	private sync?: SettingsSync;
+	/** The settings manifest last sent to each computer. */
+	private manifests = new Map<string, string>();
+	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync) {
+		this.store = store; this.changed = changed; this.self = self; this.sync = sync;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
 	}
@@ -39,7 +43,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id);
+		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -61,6 +65,11 @@ export class PartyNetwork {
 			if (messages.length) await send({ type: "messages", messages });
 			const operations = this.lifecycle?.operations.outgoing(id);
 			if (operations?.length) await send({ type: "operations", operations });
+			// Pi settings go only to computers that say they mirror them; older ones would refuse the packet.
+			if (this.sync && this.announced.get(id)?.operations.includes("settings")) {
+				const manifest = this.sync.manifest(), signature = JSON.stringify(manifest);
+				if (this.manifests.get(id) !== signature) { await send({ type: "settings", manifest }); this.manifests.set(id, signature); }
+			}
 		} finally { this.flushing.delete(id); }
 	}
 	async receive(id: string, raw: unknown): Promise<void> {
@@ -97,6 +106,25 @@ export class PartyNetwork {
 			await this.peers.get(id)!({ type: "receipts", receipts }); return;
 		}
 		if (packet.type === "receipts") { this.store.recordReceipts(id, packet.receipts); this.changed(); return; }
+		if (packet.type === "settings" && this.sync) {
+			const keys = this.sync.compare(packet.manifest);
+			if (keys.length) await this.peers.get(id)?.({ type: "settings-request", keys });
+			return;
+		}
+		if (packet.type === "settings-request" && this.sync) {
+			let batch: unknown[] = [], size = 0;
+			for (const file of this.sync.serve(packet.keys)) {
+				if (size && size + (file.data?.length ?? 0) > 1024 * 1024) { await this.peers.get(id)?.({ type: "settings-files", files: batch }); batch = []; size = 0; }
+				batch.push(file); size += file.data?.length ?? 0;
+			}
+			if (batch.length) await this.peers.get(id)?.({ type: "settings-files", files: batch });
+			return;
+		}
+		if (packet.type === "settings-files" && this.sync) {
+			const from = this.announced.get(id)?.name ?? id;
+			if (this.sync.apply(packet.files, from)) { this.manifests.clear(); this.changed(); }
+			return;
+		}
 		throw Error("Unknown party packet.");
 	}
 	close(): void {

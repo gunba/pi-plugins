@@ -39,7 +39,7 @@ function workspace(): WorkspaceState {
 			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state,
 			latency: remote.client.latency, direct: remote.client.direct,
 			platform: remote.state?.platform, epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
-			release: remote.state?.release, operatorAvailability: remote.state?.operatorAvailability, updates: remote.state?.updates, storageError: remote.state?.storageError, parties: remote.state?.parties, quests: remote.state?.quests, dictation: remote.state?.dictation, cacheCompaction: remote.state?.cacheCompaction, diagnostics: remote.client.diagnostics,
+			release: remote.state?.release, operatorAvailability: remote.state?.operatorAvailability, updates: remote.state?.updates, storageError: remote.state?.storageError, parties: remote.state?.parties, quests: remote.state?.quests, dictation: remote.state?.dictation, cacheCompaction: remote.state?.cacheCompaction, settingsSync: remote.state?.settingsSync, diagnostics: remote.client.diagnostics,
 			presence: { online: remote.device.online, seen: remote.device.seen, checked: remote.checked },
 		})).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 	};

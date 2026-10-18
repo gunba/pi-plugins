@@ -26,7 +26,11 @@ export type PartyPacket =
 	| { type: "messages"; messages: PartyMessage[] }
 	| { type: "receipts"; receipts: DeliveryReceipt[] }
 	| { type: "operations"; operations: PartyOperation[] }
-	| { type: "operation-results"; results: OperationResult[] };
+	| { type: "operation-results"; results: OperationResult[] }
+	/** Pi settings mirroring (Desk settings-sync.ts), sent only to computers that announce "settings". */
+	| { type: "settings"; manifest: unknown }
+	| { type: "settings-request"; keys: unknown }
+	| { type: "settings-files"; files: unknown };
 
 export function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("Invalid party packet.");

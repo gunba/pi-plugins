@@ -149,6 +149,8 @@ export interface HostState { release: ReleaseInfo; operatorAvailability?: import
 	quests?: import("./quests.ts").QuestView;
 	/** Compact idle conversations before their prompt cache expires, above this percent of the context budget. */
 	cacheCompaction?: number;
+	/** The last Pi setting or file that arrived from another computer (settings sync). */
+	settingsSync?: { key: string; from: string; at: number };
 	/** This computer has an ElevenLabs key for dictation; browsers send recordings to a computer that does. */
 	dictation?: boolean;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }

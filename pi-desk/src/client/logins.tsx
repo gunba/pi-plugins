@@ -45,7 +45,7 @@ export function LoginsPanel({ computer, connected, provider: hint }: { computer?
 		{!snapshot ? <Row label="Logins"><span className="muted">{!connected ? "Disconnected" : error || "Loading…"}</span></Row> : <>
 			{signedIn.map(provider => <Row key={provider.id} label={provider.name}
 				hint="Every conversation on this computer, and terminal Pi, uses this login.">
-				<span className="grow">{provider.signedIn!.identity ?? (provider.signedIn!.type === "api_key" ? "API key" : "Signed in")}</span>
+				<span className="grow">{provider.signedIn!.identity?.replace(/ · Account [0-9a-f-]{36}$/, "") ?? (provider.signedIn!.type === "api_key" ? "API key" : "Signed in")}</span>
 				{provider.types.includes(provider.signedIn!.type) && <button className="quiet-action" disabled={locked} onClick={() => void signIn(provider.id, provider.signedIn!.type)}>Sign in again</button>}
 				<button className="quiet-action" disabled={locked} onClick={() => void run(() => api("/logins/sign-out", { provider: provider.id }, computer))}>Sign out</button>
 			</Row>)}

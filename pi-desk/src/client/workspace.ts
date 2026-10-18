@@ -16,6 +16,7 @@ export interface Computer {
 	quests?: HostState["quests"];
 	dictation?: boolean;
 	cacheCompaction?: number;
+	settingsSync?: HostState["settingsSync"];
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }

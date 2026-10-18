@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, realpathSync, type FSWatcher, watch } from "node
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
 import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
@@ -33,6 +33,7 @@ import { CACHE_COMPACTION_LEAD_MS, QUIET_MS, mcpServerCommands, readAutomatic, r
 	writeCacheCompaction, type AutomaticUpdates } from "./automatic-updates.ts";
 import { InputLedger } from "./inputs.ts";
 import { Logins, adoptSavedLogins, retireSavedLogins } from "./logins.ts";
+import { SettingsSync } from "./settings-sync.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
 import { liveSupervisor } from "./login-supervisor.ts";
 import { operatorAvailability, setOperatorAvailability } from "./operator.ts";
@@ -92,6 +93,8 @@ export class DeskHost {
 	private inputs?: InputLedger;
 	private dot?: DotConnection;
 	private logins?: Logins;
+	/** Pi's general setup, mirrored with the workspace's other computers. */
+	private settingsSync?: SettingsSync;
 	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
 	private adoption?: Promise<unknown>;
 	private checkpoints?: UpdateCheckpoints;
@@ -188,6 +191,7 @@ export class DeskHost {
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
 			this.logins = new Logins(this.options.agentDir!);
+			this.settingsSync = new SettingsSync(this.options.agentDir!, homedir(), directory, hostname());
 			this.adoption = adoptSavedLogins(directory, this.options.agentDir!)
 				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
 				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
@@ -383,7 +387,8 @@ export class DeskHost {
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
 			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView,
 			...(this.dictation?.available ? { dictation: true } : {}),
-			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}) };
+			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}),
+			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}) };
 	}
 
 	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
@@ -529,7 +534,7 @@ export class DeskHost {
 			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {
 				if (this.closing || revision !== this.accountRevision) return;
 				this.parties!.networkChanged(); this.refreshParties();
-			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer());
+			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer(), this.settingsSync);
 			this.partyNetwork = network;
 			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy, direct: Number(new URL(this.origin).port),
 				request: (access, request) => this.api(access, request),
@@ -1061,7 +1066,7 @@ export class DeskHost {
 
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
 	private partyComputer(): PartyComputer {
-		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files"] };
+		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files", "settings"] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
