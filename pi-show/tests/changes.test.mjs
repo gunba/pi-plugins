@@ -172,7 +172,8 @@ test("a folder a command creates and enters is followed by the calls after it", 
 });
 
 test("a call blocked before it ran does not stop cleanup or the changes made meanwhile", limit, async t => {
-	const { base, tracker } = setup(t), folder = repository(join(base, "repo"));
+	// Snapshots on every platform: the bookkeeping under test does not depend on change notices, whose timing varies.
+	const { base, tracker } = setup(t, { watch: false }), folder = repository(join(base, "repo"));
 	await tracker.start("blocked", "git checkout -- .", folder, "s1");
 	// The command guard refused it: Pi sends no tool_result, so it is abandoned.
 	tracker.abandon("blocked");
