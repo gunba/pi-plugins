@@ -434,10 +434,18 @@ details[open] > summary:before {
   min-width:32px; min-height:32px; padding:6px; border-radius:7px; color:var(--muted);
   opacity:0; pointer-events:none;
 }
-.session-row:hover .session-close, .session-row:focus-within .session-close { opacity:1; pointer-events:auto; }
+.session-row:hover :is(.session-close, .session-rename), .session-row:focus-within :is(.session-close, .session-rename) { opacity:1; pointer-events:auto; }
+.session-rename { position:absolute; right:36px; top:50%; transform:translateY(-50%); display:grid; place-items:center; min-width:30px; min-height:30px; padding:6px; border-radius:7px; color:var(--muted); opacity:0; pointer-events:none; }
+.session-rename .ui-icon { width:14px; height:14px; }
+.session-rename:hover:not(:disabled) { color:var(--accent); background:var(--surface); }
+.session-row:has(.session-rename) .session-item { padding-right:64px; }
+.session-rename-form { display:grid; gap:4px; padding:6px 8px; }
+.session-rename-form input { width:100%; margin:0; padding:7px 9px; font-size:13px; }
 .session-close:hover:not(:disabled) { color:var(--danger); background:var(--surface); }
 @media (hover:none), (pointer:coarse) {
   .session-close { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:2px; }
+  .session-rename { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:44px; }
+  .session-row:has(.session-rename) .session-item { padding-right:88px; }
 }
 .session-item {
   display: flex;
@@ -1964,13 +1972,6 @@ details[open] > summary:before {
 .dot-connection p, .dot-connection small { line-height:1.6; }
 .dot-connection-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16px; margin-top:16px; }
 .dot-connection-actions small { color:var(--muted); }
-.dot-account-settings > p { margin:10px 0; }
-.dot-account-settings > details { margin-top:18px; }
-.dot-account-settings .provider-account-add { align-items:end; }
-.dot-account-settings .provider-account-add label { flex:1; min-width:150px; }
-.dot-account-settings .provider-account-add input { display:block; width:100%; margin-top:8px; }
-.dot-account-settings .provider-sign-in-status { margin-top:18px; }
-.dot-account-settings .provider-sign-in-status a { overflow-wrap:anywhere; }
 .dot-actions { gap:8px; flex-wrap:wrap; }
 .dot-draft-files { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
 .dot-draft-file { display:flex; align-items:center; gap:8px; max-width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:12px; }
@@ -2167,14 +2168,6 @@ details[open] > summary:before {
 .computer-storage-error p { color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }
 .computer-storage-error button { padding:5px 9px; font-size:12px; }
 
-.provider-account-list { list-style: none; padding: 0; margin: 12px 0; }
-.provider-account-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
-.provider-account-list li > div { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
-.provider-account-list small { color: var(--muted); }
-.provider-account-list li > span { flex-shrink: 0; font-size: 12px; }
-.provider-account-add { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
-.provider-account-add label { flex: 1 1 220px; min-width: 0; display: grid; gap: 6px; }
-.provider-account-add input, .provider-account-add select { width: 100%; min-width: 0; }
 .provider-sign-in-status { display: grid; justify-items: start; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
 .provider-sign-in-status p { margin: 0; }
 .provider-sign-in-status form { width: 100%; }
@@ -2430,7 +2423,8 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 
 
 /* Changes and shown work: visible in the conversation, not folded into tool calls. */
-.tool-changes { display:grid; gap:8px; margin:6px 0 10px; }
+/* Change rows sit in the message's own grid, spaced exactly like tool rows. */
+.tool-changes { display:contents; }
 .change-card, .shown-card { border:1px solid var(--border); border-radius:10px; background:var(--surface); overflow:hidden; }
 .change-card > header, .shown-card > header { display:flex; align-items:center; gap:10px; min-width:0; padding:7px 12px; border-bottom:1px solid var(--border); font-size:12.5px; }
 .change-card > header .file-link, .change-card > header strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
@@ -2528,12 +2522,16 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .header-chip:hover, .header-chip.selected { background:var(--hover); color:var(--text); }
 
 /* Changes in the conversation: one line each, opening beside it. */
-.work-chip { display:flex; align-items:center; gap:10px; width:100%; min-width:0; padding:6px 12px; border:1px solid var(--border); border-radius:9px; background:var(--surface); text-align:left; font-size:12.5px; }
+.work-chip { display:flex; align-items:center; gap:8px; width:100%; min-width:0; margin:0; padding:8px 10px; text-align:left; color:var(--text); }
 .work-chip:hover { border-color:var(--focus-border); background:var(--hover); }
-.work-chip strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-.work-chip > .ui-icon { flex:none; width:14px; height:14px; color:var(--accent); }
+.work-chip > strong { flex:none; font-weight:500; }
+.work-chip-name { color:var(--text); }
+.work-chip .tool-icon { display:inline-flex; flex:none; }
+.work-chip .tool-icon .ui-icon { width:14px; height:14px; }
+.shown-open { border:1px solid var(--border); border-radius:9px; background:var(--surface); }
+.shown-open > .ui-icon { flex:none; width:14px; height:14px; color:var(--accent); }
 .work-chip > span:not([class]) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.work-chip-open { margin-left:auto; flex:none; color:var(--muted); font-size:15px; }
+.work-chip-open { margin-left:auto; flex:none; color:var(--muted); font-size:15px; line-height:1; }
 .shown-card .work-chip { margin:4px 12px 12px; width:calc(100% - 24px); }
 .work-warning { color:#d08a2c; }
 

@@ -158,9 +158,20 @@ function itemFacts(item: WorkItem): ReactNode {
 /** One line in the conversation for a change; it opens in the side pane. */
 export function WorkChip({ item, status }: { item: WorkItem; status?: ReactNode }) {
 	const open = useContext(WorkFocus);
-	return <button type="button" className={`work-chip work-chip-${item.block.type}`} onClick={() => open(item)} title="Open beside the conversation">
-		<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}{status}<span className="work-chip-open" aria-hidden="true">›</span>
+	return <button type="button" className={`tool-card work-chip work-chip-${item.block.type}`} onClick={() => open(item)} title="Open beside the conversation">
+		<span className="tool-icon"><Icon name={itemIcon(item)} /></span><strong>{itemKind(item)}</strong>
+		<span className="tool-argument-preview"><span className="work-chip-name">{itemTitle(item)}</span>{itemPreview(item) && <> · {itemPreview(item)}</>}</span>
+		{item.block.type === "diff" && itemFacts(item)}{status}<span className="work-chip-open" aria-hidden="true">›</span>
 	</button>;
+}
+const itemIcon = (item: WorkItem) => item.block.type === "image" ? "preview" : item.block.type === "document" ? "layers"
+	: item.block.type === "diff" && item.block.action === "deleted" ? "trash" : item.block.type === "diff" && item.block.action === "added" ? "plus" : "edit";
+/** A taste of the change, as tool rows show their arguments: the first changed line, or a document's summary. */
+function itemPreview(item: WorkItem): string {
+	if (item.block.type === "document") return item.block.change.summary;
+	if (item.block.type !== "diff") return "";
+	const lines = item.block.text.split("\n"), changed = lines.find(line => /^\+\s*\d+ \S/.test(line)) ?? lines.find(line => /^-\s*\d+ \S/.test(line));
+	return changed ? changed.replace(/^[+-]\s*\d+ /, "").trim().slice(0, 160) : item.block.text.split("\n")[0]!.slice(0, 160);
 }
 /** Work an agent showed: its title and note stay in the conversation; the files open in the side pane. */
 export function ShownSummary({ item, session, time }: { item: WorkItem & { block: ShownBlock }; session: string; time?: ReactNode }) {

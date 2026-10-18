@@ -89,6 +89,24 @@ function uploadedPrompt(text: string, files: DraftFile[], session: string): Prom
   if (files.some(file => file.uploaded?.session !== session)) return;
   return { kind: "prompt", text, ...(files.length ? { attachments: files.map(file => file.uploaded!.id) } : {}) };
 }
+/** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
+function SidebarRename({ title, rename, close }: { title: string; rename: (name: string) => Promise<unknown>; close: () => void }) {
+  const [draft, setDraft] = useState(title), [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const save = async () => {
+    if (saving) return;
+    if (!draft.trim() || draft.trim() === title) { close(); return; }
+    setSaving(true); setError("");
+    try { await rename(draft.trim()); close(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); setSaving(false); }
+  };
+  return <form className="session-rename-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+    <input autoFocus aria-label="Conversation name" maxLength={300} value={draft} disabled={saving} onFocus={event => event.currentTarget.select()}
+      onChange={event => setDraft(event.target.value)} onBlur={() => { if (!saving && !error) close(); }}
+      onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }} />
+    {error && <small className="error-text" role="alert">{error}</small>}
+  </form>;
+}
+
 export function App({ account }: { account?: BrowserAccount }) {
   const [state, setState] = useState<ClientState>({ messages: {} });
   const [authorized, setAuthorized] = useState<boolean | undefined>();
@@ -102,6 +120,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [transportConnected, setConnected] = useState(false);
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
+  /** The conversation being renamed in the sidebar. */
+  const [renaming, setRenaming] = useState("");
   const wideWorkspace = useMedia("(min-width: 1280px)");
   // Below this width the sidebar is a drawer, so the header names the conversation and closes it.
   const phone = useMedia("(max-width: 760px)");
@@ -262,8 +282,8 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (!args) { openPicker("Reasoning level"); return; }
       return command({ kind: "thinking", level: args.toLowerCase() });
     } },
-    login: { description: "Manage provider sign-in in Settings.", argumentHint: "<provider>", execute: accountPanel },
-    logout: { description: "Manage saved accounts and sign-out in Settings.", execute: args => { noArguments("logout", args); accountPanel(""); } },
+    login: { description: "Sign Pi in to a provider (Settings → Accounts & connections).", argumentHint: "<provider>", execute: accountPanel },
+    logout: { description: "Sign Pi out of a provider (Settings → Accounts & connections).", execute: args => { noArguments("logout", args); accountPanel(""); } },
     copy: { description: "Copy the latest assistant text.", execute: async args => {
       noArguments("copy", args);
       if (!session?.snapshot?.commands.some(item => item.name === "copy" && item.execution === "read")) throw Error("This worker has no native clipboard-text adapter.");
@@ -758,10 +778,15 @@ export function App({ account }: { account?: BrowserAccount }) {
             <button onClick={() => location.reload()}>Reload app</button></div>}
           {host.sessions.filter(item => item.computer === computer.id)
             .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map(item => {
+            const renamable = computer.connected && item.state === "ready" && !!item.ui;
+            if (renaming === item.key && renamable) return <div className="session-row" key={item.key}>
+              <SidebarRename title={title(item)} close={() => setRenaming("")}
+                rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
+            </div>;
             return <div className="session-row" key={item.key}>
               <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
                 setSelected(item.key); setSidebar(false); setPanel(undefined);
-              }}>
+              }} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
                 <span className={`status-dot ${sessionActivity(item)}`} role="img"
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong></span>
@@ -771,6 +796,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                       <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
                       <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</small></span>
               </button>
+              {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${title(item)}`} title="Rename (or double-click the name)"
+                onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}
               <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
                  disabled={selected === item.key && sending} report={text => setError(text, item.key)}
                 confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
