@@ -78,6 +78,10 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-improve-skill`](pi-improve-skill/skills/improve-skill/SKILL.md) — improves a skill
   against benchmark cases: one strong-model session runs task-model trials, has task-model
   investigators explain each run, edits the skill and checks held-out cases.
+- [`pi-code-review`](pi-code-review/README.md) — a code-review skill built from
+  34,871 review comments in 35 top-tier projects (GitHub, kernel mailing lists,
+  Go Gerrit), labelled with Jev, plus the mining pipeline and a held-out
+  benchmark.
 - [`pi-system-one`](pi-system-one/README.md) — one system-prompt paragraph on
   when to use System One classifier models such as TypeSafe's Jev through
   codemode's `models.classify`.

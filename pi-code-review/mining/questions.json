@@ -1,0 +1,89 @@
+{
+  "speaker": {
+    "type": "choice",
+    "instructions": "Who wrote reviewer_comment? Judge from its content together with commenter_is_change_author and commenter_account. Code review bots and AI review assistants count as automation even when they write like a person.",
+    "criteria": {
+      "reviewer": "A person reviewing someone else's change and giving feedback on it",
+      "author": "The change's own author or co-author annotating, explaining or asking about their own change",
+      "automation": "Output of a bot, CI system, linter or AI review assistant, or a person only typing a bot command such as /lgtm, @bors r+, /test, please test"
+    }
+  },
+  "kind": {
+    "type": "choice",
+    "instructions": "What does reviewer_comment mainly do?",
+    "criteria": {
+      "finding": "States that something in the change is wrong, broken, missing or risky and should be fixed",
+      "suggestion": "Proposes a better alternative or improvement without claiming the current code is wrong",
+      "question": "Asks for clarification, rationale or information without asserting a problem",
+      "nit": "Trivial: typo, formatting, whitespace, wording or minor naming preference",
+      "ack": "Approval, thanks, LGTM, Reviewed-by or agreement with no request",
+      "process": "CI, test runs, labels, merging, backports, scheduling or other discussion not about the code itself"
+    }
+  },
+  "topic": {
+    "type": "choice",
+    "instructions": "Which aspect of the code does reviewer_comment concern? Pick the most specific one.",
+    "criteria": {
+      "logic": "Incorrect logic or result: wrong condition, off-by-one, wrong value, missed case in control flow",
+      "error_handling": "Failure paths, error propagation, input validation, edge or boundary inputs, null or empty cases",
+      "concurrency": "Races, locking, atomics, memory ordering, async, cancellation, reentrancy, thread safety",
+      "memory_resources": "Object lifetime, ownership, leaks, use-after-free, buffer or integer overflow, unsafe code, resource cleanup",
+      "security": "Trust boundaries, untrusted input, injection, crypto misuse, privilege, denial of service, information leaks",
+      "performance": "Complexity, allocations, hot paths, caching, unnecessary work, memory footprint",
+      "api_compat": "Public interface or behaviour visible to users or callers, semantics, backward or ABI compatibility, deprecation",
+      "design": "Architecture, abstraction, where code belongs, layering, duplication, or a simpler overall approach",
+      "tests": "Missing, weak or incorrect tests, coverage of cases, test reliability",
+      "readability": "Clarity, naming, needed code comments, structure, dead code, simplifying code without changing behaviour",
+      "docs": "Documentation, commit message, changelog, user-facing messages",
+      "build_platform": "Build system, portability, platform or architecture differences, configuration, dependencies",
+      "style": "Formatting and coding conventions",
+      "none": "Not about the code (thanks, process, CI)"
+    }
+  },
+  "depth": {
+    "type": "score",
+    "instructions": "How much understanding did writing reviewer_comment require?",
+    "criteria": [
+      "Surface: visible at a glance, such as typos, formatting or naming taste",
+      "Local: requires careful reading of the changed lines themselves",
+      "Contextual: requires knowledge of surrounding code, callers, project conventions or history beyond the shown lines",
+      "Deep: requires system-level knowledge such as invariants, concurrency or memory models, hardware, specifications, or consequences far from the change"
+    ]
+  },
+  "severity": {
+    "type": "score",
+    "instructions": "If reviewer_comment is right and the code had shipped unchanged, how bad would the consequence be?",
+    "criteria": [
+      "None or cosmetic",
+      "Maintainability cost: harder to read, change or debug later",
+      "Wrong behaviour in some cases, a performance regression, or a misleading interface",
+      "Crash, data loss or corruption, security hole, or widespread breakage"
+    ]
+  },
+  "outcome": {
+    "type": "choice",
+    "instructions": "What happened to the point raised in reviewer_comment? Use replies (each tagged with the speaker's role) and signals: outdated means the commented code changed after the comment; resolved means the thread was marked resolved; later_version means the author posted a new version of the patch.",
+    "criteria": {
+      "accepted": "The author agreed and changed the code or committed to change it",
+      "explained": "The author or others answered or explained, and the point was settled without a change",
+      "rejected": "The author disagreed or declined and the code stayed as it was",
+      "deferred": "Agreed but left for a follow-up change",
+      "unknown": "No reply and no signal that decides it"
+    }
+  },
+  "concrete": {
+    "type": "bool",
+    "instructions": "Does reviewer_comment name a concrete mechanism, scenario, input, sequence of events or counterexample, rather than a vague concern or preference?",
+    "criteria": { "true": "Concrete and checkable", "false": "Vague, general or a matter of preference" }
+  },
+  "proposes_fix": {
+    "type": "bool",
+    "instructions": "Does reviewer_comment propose a specific fix, code or alternative?",
+    "criteria": { "true": "Gives a specific fix, code suggestion or alternative", "false": "Only raises the point" }
+  },
+  "beyond_diff": {
+    "type": "bool",
+    "instructions": "Does reviewer_comment rely on code, callers, history, specifications or behaviour outside the code shown in code_context?",
+    "criteria": { "true": "Draws on knowledge beyond the shown code", "false": "Based only on the shown code" }
+  }
+}

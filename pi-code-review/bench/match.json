@@ -1,0 +1,10 @@
+{
+  "same_issue": {
+    "type": "bool",
+    "instructions": "A maintainer wrote reviewer_comment on this change; an automated reviewer wrote agent_finding about the same change. Does agent_finding raise the same underlying problem or request as reviewer_comment: the same defect, risk or needed change, at the same place or through the same mechanism? Wording may differ. A finding that only touches the same code but raises a different concern does not match; neither does a vague finding that merely mentions the topic.",
+    "criteria": {
+      "true": "Same problem or request; acting on agent_finding would address reviewer_comment",
+      "false": "Different problem, or too vague to address reviewer_comment"
+    }
+  }
+}

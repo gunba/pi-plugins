@@ -1,0 +1,10 @@
+{
+  "findable": {
+    "type": "bool",
+    "instructions": "Could a careful reviewer who has the repository at this commit, the diff and the pull request description find the problem raised in reviewer_comment? Problems that depend on private conversations, CI or test results not yet run, benchmarks, later commits, or the reviewer's personal preference are not findable.",
+    "criteria": {
+      "true": "Findable by reading and reasoning about the code, its callers, specifications or documentation",
+      "false": "Depends on information outside the code, or is a matter of taste"
+    }
+  }
+}

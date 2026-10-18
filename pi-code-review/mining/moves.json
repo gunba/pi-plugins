@@ -1,0 +1,36 @@
+{
+  "move": {
+    "type": "choice",
+    "instructions": "Which review move does reviewer_comment make? Pick the one that best describes the problem it raises or the improvement it asks for.",
+    "criteria": {
+      "missed_case": "A specific input, state, variant or configuration the code does not handle",
+      "wrong_condition_or_value": "A wrong condition, constant, offset, index, variable or off-by-one",
+      "state_update_error": "State updated twice, not updated, not reset, or shared where it should be per request or per call",
+      "hidden_control_flow": "An implicit return, exception, early exit, callback or alternate path the change does not account for",
+      "not_behaviour_preserving": "A refactor or rewrite that silently changes the old behaviour",
+      "partial_failure_consistency": "Operations not undone on rollback, abort or partial failure, leaving inconsistent state",
+      "error_path_cleanup": "A leak, double free or use-after-free on an error, cancellation or shutdown path, or ownership transfer not reflected",
+      "error_lost_or_unchecked": "An error code clobbered, swallowed, unchecked or wrongly propagated, or a null or failure result not checked",
+      "arithmetic_bounds": "Integer overflow, truncation, signedness, missing bounds check or out-of-range access",
+      "blocking_under_lock": "Blocking, waiting, I/O, callbacks or expensive work while holding a lock",
+      "race_condition": "Unsynchronised shared state, check-then-act, or concurrent operations interfering",
+      "ordering_staleness": "Stale data, wrong ordering of operations, memory ordering, or inconsistent snapshots",
+      "lifetime_ownership": "Object lifetime, dangling references, ownership, reference counting or GC roots",
+      "security_boundary": "Untrusted input, authorisation, information leaks, secret handling or security decisions",
+      "hot_path_cost": "Unnecessary cost on a hot path, a cheaper primitive or algorithm, or a compile-time or runtime blow-up",
+      "compat_break": "Breaks existing users, callers, ABI, wire or file formats, persisted data or defaults",
+      "spec_contract_mismatch": "Disagrees with a specification, standard, RFC, accepted proposal or documented contract",
+      "api_misuse": "Uses an existing API, helper or framework facility incorrectly or not as intended",
+      "reuse_existing": "Duplicates an existing helper or mechanism, or ignores the project's established pattern for this",
+      "wrong_place": "Logic or state lives in the wrong layer, module or object, or works by action at a distance",
+      "simpler_design": "A simpler or more robust overall approach to the same goal",
+      "rollout_gating": "Feature flags, gates, fallbacks, rollback safety or configuration defaults",
+      "platform_assumption": "Endianness, alignment, architecture, OS, compiler or toolchain assumptions",
+      "missing_test": "Asks for a test of a specific case, path or regression",
+      "test_quality": "A test that is flaky, non-deterministic, does not test what it claims, or depends on its environment",
+      "explain_document": "Asks to explain, comment or document an invariant, rationale or non-obvious behaviour",
+      "naming_readability": "Naming, clarity or structure of the code without a behavioural problem",
+      "other": "None of the above"
+    }
+  }
+}
