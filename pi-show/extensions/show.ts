@@ -5,7 +5,8 @@ import { basename, extname, join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ChangeTracker, READ_ONLY, type CallChanges } from "./changes.ts";
-import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells } from "./documents.ts";
+import { encodeContent, filtered, readVersion } from "./content.ts";
+import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells, type OfficeDocument } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
 import type { DocumentChange, Shown, ShownItem } from "./types.ts";
 
@@ -61,7 +62,9 @@ class Baselines {
 	remember(path: string, before: Version): void {
 		if (path in this.index || before.exists && !before.data) return;
 		mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-		if (before.data) { const id = sha(before.data); writeFileSync(join(this.directory, id), before.data, { mode: 0o600 }); this.index[path] = id; }
+		// Office files are kept as their content and other binary files as a fingerprint, never whole.
+		const data = before.data && filtered(path) ? encodeContent(path, before.data) : before.data;
+		if (data) { const id = sha(data); writeFileSync(join(this.directory, id), data, { mode: 0o600 }); this.index[path] = id; }
 		else this.index[path] = null;
 		writeFileSync(join(this.directory, "index.json"), JSON.stringify(this.index), { mode: 0o600 });
 	}
@@ -74,18 +77,24 @@ class Baselines {
 	}
 }
 
+/** A remembered or stored version of an Office file, whether kept as content or as the file itself. */
+const documentOf = (data: Buffer, path: string): OfficeDocument | undefined => { const version = readVersion(data, path); return version.type === "office" ? version.document : undefined; };
+
 /** Changes between two versions of an Office file, or a summary of a new one. */
 export function documentChange(path: string, before: Buffer | null, after: Buffer): DocumentChange | undefined {
 	const kind = officeKind(path);
 	if (!kind) return;
-	const now = readOffice(after, kind);
+	return documentDiff(path, before && readOffice(before, kind), readOffice(after, kind));
+}
+export function documentDiff(path: string, before: OfficeDocument | null, now: OfficeDocument): DocumentChange | undefined {
+	const kind = now.kind;
 	if (!before) {
 		const preview = previewOffice(now);
 		const summary = now.kind === "xlsx" ? `New workbook: ${now.sheets.length} sheet${now.sheets.length === 1 ? "" : "s"}`
 			: now.kind === "docx" ? `New document: ${now.paragraphs.filter(text => text.trim()).length} paragraphs` : `New deck: ${now.slides.length} slides`;
 		return { path, kind, created: true, summary, preview };
 	}
-	const changes = diffOffice(readOffice(before, kind), now);
+	const changes = diffOffice(before, now);
 	return changes && { path, kind, summary: changes.summary, changes };
 }
 
@@ -186,7 +195,7 @@ export default function show(pi: ExtensionAPI) {
 		}
 		for (const document of changes?.documents ?? []) {
 			if (documentChanges.some(change => change.path === document.path)) continue;
-			try { const change = documentChange(document.path, document.before, document.after); if (change) documentChanges.push(change); } catch { /* Left to the agent to describe. */ }
+			try { const change = documentDiff(document.path, document.before, document.after); if (change) documentChanges.push(change); } catch { /* Left to the agent to describe. */ }
 		}
 		const files = changes?.files.filter(file => file.path !== written?.path) ?? [];
 		if (!documentChanges.length && !written && !files.length && !changes?.fromGit && !changes?.more) return;
@@ -219,7 +228,8 @@ export default function show(pi: ExtensionAPI) {
 					else if (kind && current.data) {
 						shown.kind = "office";
 						const first = base.first(path);
-						if (first !== undefined) shown.changes = (first === null ? undefined : diffOffice(readOffice(first, kind), readOffice(current.data, kind)));
+						const earlier = first ? documentOf(first, path) : undefined;
+						if (earlier) shown.changes = diffOffice(earlier, readOffice(current.data, kind));
 						if (!shown.changes || item.focus) shown.preview = previewOffice(readOffice(current.data, kind), item.focus);
 						if (shown.changes?.kind === "xlsx" && shown.described) {
 							const missed = unlistedCells(shown.changes, shown.described.map(change => change.where));

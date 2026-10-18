@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ChangeTracker, gitProcesses } from "../extensions/changes.ts";
+import { workbook } from "./fixtures.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "pipe" }).toString();
 function repository(folder) {
@@ -26,6 +28,14 @@ function setup(t, options) {
 }
 // A stuck git process fails its test by name instead of stalling the whole run.
 const limit = { timeout: 60_000 };
+/** Desk's store for a folder: its object bytes, its own objects only (not the repository's). */
+function stored(base) {
+	const store = join(base, "agent", "changes"), [folder] = readdirSync(store);
+	const count = Object.fromEntries(execFileSync("git", ["--git-dir", join(store, folder), "count-objects", "-v"]).toString().trim().split("\n").map(line => line.split(": ")));
+	const blobs = execFileSync("git", ["--git-dir", join(store, folder), "cat-file", "--batch-all-objects", "--batch-check=%(objecttype) %(objectsize)"])
+		.toString().trim().split("\n").filter(line => line.startsWith("blob")).map(line => Number(line.split(" ")[1]));
+	return { kilobytes: Number(count.size) + Number(count["size-pack"]), largestBlob: Math.max(0, ...blobs) };
+}
 const byPath = changes => Object.fromEntries((changes?.files ?? []).map(file => [file.path.split(/[\\/]/).pop(), file]));
 
 test("changes a command makes by any means are reported as diffs, and the repository is left alone", limit, async t => {
@@ -84,6 +94,42 @@ test("with change notices, a call that changes nothing starts no git process, an
 	await tracker.start("3", "python3 edit.py", repo, "s");
 	writeFileSync(join(repo, "a.txt"), "one\ntwo\nthree\nfour\n");
 	assert.match(byPath(await tracker.finish("3"))["a.txt"].diff, /\+\s*4 four/);
+});
+
+test("an Office file is kept as its content and a binary file as a fingerprint, and both changes are still reported", limit, async t => {
+	// Desk once kept every saved version of a changed file whole.
+	const { base, tracker } = setup(t), repo = repository(join(base, "project"));
+	const sheet = (amount, formula) => workbook([{ name: "Totals", cells: `<c r="A1" t="s"><v>0</v></c><c r="B2"><v>${amount}</v></c><c r="B3"><f>${formula}</f><v>1</v></c>` }], ["Client"]);
+	writeFileSync(join(repo, "Budget.xlsx"), sheet(1200, "B2*2"));
+	writeFileSync(join(repo, "logo.png"), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), randomBytes(60_000)]));
+	await tracker.start("1", "python3 update.py", repo, "s");
+	writeFileSync(join(repo, "Budget.xlsx"), sheet(1350, "B2*3"));
+	writeFileSync(join(repo, "logo.png"), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), randomBytes(60_000)]));
+	const changes = await tracker.finish("1");
+	const [budget] = changes.documents;
+	assert.equal(budget.before.sheets[0].cells.get("B2").value, "1200");
+	assert.equal(budget.after.sheets[0].cells.get("B2").value, "1350");
+	assert.equal(budget.after.sheets[0].cells.get("B3").formula, "B2*3");
+	assert.match(byPath(changes)["logo.png"].note, /^Binary file updated \(60,004 bytes\)/);
+	assert.ok(stored(base).largestBlob < 2000, "neither file is stored whole");
+});
+
+test("only the newest version of each file is kept: superseded versions are collected", limit, async t => {
+	const { base, tracker } = setup(t, { grace: "now" }), repo = repository(join(base, "project"));
+	const data = () => randomBytes(150_000).toString("hex");
+	writeFileSync(join(repo, "export.csv"), data());
+	for (let call = 1; call <= 5; call++) {
+		await tracker.start(String(call), "python3 export.py", repo, "s");
+		writeFileSync(join(repo, "export.csv"), data());
+		await tracker.finish(String(call));
+	}
+	await tracker.collect();
+	// One version of 300 KB of hex is about 150 KB compressed; six would be 900 KB.
+	assert.ok(stored(base).kilobytes < 250, `${stored(base).kilobytes} KB kept`);
+	await tracker.start("6", "python3 export.py", repo, "s");
+	writeFileSync(join(repo, "export.csv"), "short");
+	const last = byPath(await tracker.finish("6"))["export.csv"];
+	assert.deepEqual([last.added, last.removed], [1, 1], "the kept version still diffs");
 });
 
 test("a file a command names outside any followed folder is compared directly", limit, async t => {

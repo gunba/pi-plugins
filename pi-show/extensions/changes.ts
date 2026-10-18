@@ -1,9 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { officeKind } from "./documents.ts";
+import { fileURLToPath } from "node:url";
+import { FILTERED, filtered, readVersion, type Version } from "./content.ts";
+import type { OfficeDocument } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
 
 /**
@@ -14,6 +16,10 @@ import { lineDiff } from "./sequence-diff.ts";
  * repository, index and branches are never written; its objects are shared read-only through alternates, so a
  * snapshot stores only files that differ from it. Snapshots are chained, so changes made while no call was running
  * are reported with the next call as made meanwhile. Files a call names outside those folders are compared directly.
+ *
+ * Storage holds one version of each file, never a history: the newest snapshot of each conversation is the only thing
+ * kept reachable, and superseded versions are deleted by git's own collection shortly after. Office documents are
+ * kept as their content and other binary files as a fingerprint (content.ts, applied by git's clean filter).
  */
 export type FileChange = {
 	path: string; action: "added" | "updated" | "deleted";
@@ -25,8 +31,8 @@ export type FileChange = {
 };
 export type CallChanges = {
 	files: FileChange[];
-	/** Office files, as raw contents for the document diff. */
-	documents: { path: string; before: Buffer | null; after: Buffer }[];
+	/** Office files, as their documents for the document diff; before is null for a new file. */
+	documents: { path: string; before: OfficeDocument | null; after: OfficeDocument }[];
 	/** Files a git pull, checkout, rebase or reset brought, summarised instead of shown. */
 	fromGit?: { root: string; count: number; from: string; to: string };
 	/** Changed files beyond the shown limit. */
@@ -39,7 +45,7 @@ type Seen = Map<string, Change>;
 type Call = { seen: Seen; heads: Map<Root, string | undefined>; loose: Map<string, Buffer | null> };
 
 const MAX_FILES = 40, TEXT_LIMIT = 2 * 1024 * 1024, DIFF_CHARS = 64_000, OFFICE_LIMIT = 64 * 1024 * 1024;
-const ROOT_FILES = 20_000, ROOT_BYTES = 1024 ** 3, BIG_FILE = 32 * 1024 * 1024, ROOTS = 12, LOOSE = 32;
+const ROOT_FILES = 20_000, ROOT_BYTES = 256 * 1024 ** 2, BIG_FILE = 32 * 1024 * 1024, ROOTS = 12, LOOSE = 32;
 /** Tools that never write files; every other call is watched. */
 export const READ_ONLY = new Set(["read", "grep", "find", "ls", "web_search", "read_artifact", "view_image", "get_plan", "inspect_files",
 	"agent_discover", "list_agents", "quest_list", "ask_user", "tool_search", "chrome_devtools_load"]);
@@ -50,6 +56,19 @@ const UNWATCHED = /(^|[\\/])(\.git|node_modules|__pycache__|\.venv)([\\/]|$)|(^|
 let launched = 0;
 /** Git processes started so far, to keep the cost per call visible. */
 export const gitProcesses = () => launched;
+/**
+ * Superseded versions are deleted once this old. Snapshots this conversation still reads are held explicitly; the
+ * margin covers another conversation storing a snapshot in the same folder at that moment.
+ */
+const GRACE = "1.minute.ago";
+/** New versions stored since the last cleanup that make one worthwhile, in bytes. */
+const CLEANUP_BYTES = 1024 * 1024;
+/** Git runs the content filter with the Node running Pi, quoted for the shell git uses (on Windows too). */
+const shellQuote = (path: string) => `'${path.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
+const FILTER = `${shellQuote(process.execPath)} --no-warnings ${shellQuote(fileURLToPath(new URL("./content-filter.ts", import.meta.url)))}`;
+/** Highest-precedence attributes: no filter of the repository's own (such as Git LFS) runs on Desk's copy. */
+const ATTRIBUTES = `* !filter\n${FILTERED.flatMap(pattern => [pattern, pattern.toUpperCase()]).map(pattern => `${pattern} filter=desk`).join("\n")}\n`;
+const safeName = (session: string) => session.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100) || "session";
 const commonDir = (gitDir: string) => { try { return resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()); } catch { return gitDir; } };
 const ZERO = /^0+$/;
 
@@ -129,15 +148,60 @@ class Root {
 	dirty = true;
 	private watcher?: FSWatcher;
 	private queue: Promise<unknown> = Promise.resolve();
+	/** Snapshots that stored something new since this conversation started following the folder. */
+	writes = 0;
+	/** Bytes of versions stored since the last cleanup. */
+	pending = 0;
+	/** Superseded snapshots running calls may still read from. */
+	private held = new Set<string>();
 	readonly path: string;
 	readonly gitDir: string;
 	readonly index: string;
 	readonly repository?: string;
+	private readonly name: string;
 	constructor(path: string, store: string, session: string) {
 		this.path = path;
+		this.name = safeName(session);
 		this.gitDir = join(store, createHash("sha256").update(path).digest("hex").slice(0, 24));
-		this.index = join(this.gitDir, `index-${session}`);
+		this.index = join(this.gitDir, `index-${this.name}`);
 		this.repository = gitDirOf(path);
+	}
+	private ref(name: string): string { return join(this.gitDir, "refs", "desk", name); }
+	private setRef(name: string, tree: string): void {
+		mkdirSync(join(this.gitDir, "refs", "desk"), { recursive: true });
+		writeFileSync(`${this.ref(name)}.tmp`, `${tree}\n`);
+		renameSync(`${this.ref(name)}.tmp`, this.ref(name));
+	}
+	/** The newest snapshot is what keeps its versions; anything older is left for collection. */
+	pin(tree: string): void { try { this.setRef(this.name, tree); } catch { /* Kept for the grace period only. */ } }
+	/** Keeps a superseded snapshot while calls that began before it was replaced may still read from it. */
+	hold(tree: string): void { if (!this.held.has(tree)) try { this.setRef(`${this.name}-held-${tree}`, tree); this.held.add(tree); } catch { /* Grace period only. */ } }
+	/** No call is running: superseded snapshots are no longer needed. */
+	letGo(): void { for (const tree of this.held) rmSync(this.ref(`${this.name}-held-${tree}`), { force: true }); this.held.clear(); }
+	/** Counts the bytes of newly stored versions, from git's own files, without starting git. */
+	note(ids: (string | null)[]): void {
+		for (const id of ids) if (id) try { this.pending += statSync(join(this.gitDir, "objects", id.slice(0, 2), id.slice(2))).size; } catch { /* Not stored here: unchanged or in the repository. */ }
+	}
+	/** At the end of a conversation its snapshot and index become the starting point for the next one in this folder. */
+	release(): void {
+		try {
+			this.letGo();
+			if (this.last && existsSync(this.index)) { this.setRef("last", this.last); renameSync(this.index, join(this.gitDir, "index-last")); }
+			rmSync(this.ref(this.name), { force: true }); rmSync(this.index, { force: true });
+		} catch { /* Collected as stale later. */ }
+	}
+	/** Deletes superseded versions, queued with this folder's snapshots. */
+	prune(grace = GRACE): Promise<void> {
+		this.pending = 0;
+		return this.serial(() => this.git(["prune", `--expire=${grace}`], { work: false })).then(() => undefined, () => undefined);
+	}
+	/**
+	 * Deletes versions nothing refers to any more. Queued with this folder's snapshots, so it never races them; the grace
+	 * period protects snapshots other conversations are writing at the same moment.
+	 */
+	collect(grace = GRACE): Promise<void> {
+		return this.serial(() => this.git(["-c", "gc.packRefs=false", "-c", "gc.writeCommitGraph=false", "gc", "--quiet", `--prune=${grace}`], { work: false }))
+			.then(() => undefined, () => undefined);
 	}
 	private env(options: { work?: boolean; repository?: boolean }): NodeJS.ProcessEnv {
 		const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
@@ -146,7 +210,8 @@ class Root {
 		else { env.GIT_DIR = this.gitDir; env.GIT_INDEX_FILE = this.index; if (options.work !== false) env.GIT_WORK_TREE = this.path; }
 		return env;
 	}
-	private static readonly CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "advice.addEmbeddedRepo=false"];
+	private static readonly CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "advice.addEmbeddedRepo=false",
+		"-c", `filter.desk.process=${FILTER}`, "-c", "filter.desk.required=true"];
 	git(args: string[], options: { work?: boolean; repository?: boolean } = {}): Promise<Buffer> {
 		launched++;
 		return new Promise((done, fail) => execFile("git", [...Root.CONFIG, ...args],
@@ -199,16 +264,23 @@ class Root {
 			let excludes = DEFAULT_EXCLUDES.join("\n");
 			try { if (this.repository) excludes += `\n${readFileSync(join(commonDir(this.repository), "info", "exclude"), "utf8")}`; } catch { /* None. */ }
 			writeFileSync(join(this.gitDir, "info", "exclude"), `${excludes}\n`);
-			// The repository's own index is a warm stat cache: only files that differ from it are hashed.
-			if (this.repository) try { copyFileSync(join(this.repository, "index"), this.index); } catch { /* A repository without commits. */ }
+			writeFileSync(join(this.gitDir, "info", "attributes"), ATTRIBUTES);
+			// A warm stat cache, so only files that differ from it are read: the last conversation's here, else the repository's.
+			const previous = join(this.gitDir, "index-last");
+			if (existsSync(previous) && existsSync(this.ref("last"))) copyFileSync(previous, this.index);
+			else if (this.repository) try { copyFileSync(join(this.repository, "index"), this.index); } catch { /* A repository without commits. */ }
 			const untracked = (await this.git(["ls-files", "-o", "-z", "--exclude-standard"])).toString("utf8").split("\0").filter(Boolean);
 			if (untracked.length > ROOT_FILES) return false;
+			// Office and binary files cost a few bytes each; only files kept as they are count towards the limit.
 			let bytes = 0;
 			const big: string[] = [];
 			for (const name of untracked) {
-				try { const size = statSync(join(this.path, name)).size; bytes += size; if (size > BIG_FILE) big.push(`/${name.replace(/([*?[\\])/g, "\\$1")}`); } catch { /* Gone. */ }
+				try {
+					const size = statSync(join(this.path, name)).size;
+					if (size > BIG_FILE) big.push(`/${name.replace(/([*?[\\])/g, "\\$1")}`); else if (!filtered(name)) bytes += size;
+				} catch { /* Gone. */ }
 			}
-			if (bytes - big.length * BIG_FILE > ROOT_BYTES) return false;
+			if (bytes > ROOT_BYTES) return false;
 			if (big.length) writeFileSync(join(this.gitDir, "info", "exclude"), `${readFileSync(join(this.gitDir, "info", "exclude"), "utf8")}${big.join("\n")}\n`);
 		}
 		return true;
@@ -273,34 +345,51 @@ export class ChangeTracker {
 	private readonly agentDir: string;
 	private readonly temporary: string[];
 	private readonly watching: boolean;
+	private readonly grace: string;
 	/**
 	 * watch: follow folders with the system's change notices. On by default on Windows and macOS, where they are native
 	 * and where starting a process costs most; Linux starts git in a couple of milliseconds.
+	 * grace: how long superseded versions survive before collection (git's --prune date).
 	 */
-	constructor(store: string, agentDir: string, temporary = SCRATCH, options: { watch?: boolean } = {}) {
+	constructor(store: string, agentDir: string, temporary = SCRATCH, options: { watch?: boolean; grace?: string } = {}) {
 		this.store = store; this.agentDir = agentDir; this.temporary = temporary;
 		this.watching = options.watch ?? (process.platform === "win32" || process.platform === "darwin");
+		this.grace = options.grace ?? GRACE;
 	}
 
 	/** Stops following folders; an open watch would keep a folder from being deleted on Windows. */
 	close(): void {
-		for (const root of this.roots.values()) root.close();
+		for (const root of this.roots.values()) { root.close(); root.release(); }
 		this.roots.clear(); this.calls.clear(); this.meanwhile = new Map(); this.session = "";
 	}
-	/** Removes Desk's stores for folders no conversation has used for a month. */
+	/** Deletes superseded versions in every folder followed now and packs the rest; returns when done. */
+	async collect(): Promise<void> {
+		if (!this.calls.size) for (const root of this.roots.values()) root.letGo();
+		await Promise.all([...this.roots.values()].filter(root => !root.broken).map(root => root.collect(this.grace)));
+	}
+	/**
+	 * Removes Desk's stores for folders no conversation has used for a month, and the snapshots of conversations that
+	 * ended without closing (a crash) a week ago.
+	 */
 	prune(): void {
 		try {
 			for (const name of readdirSync(this.store)) {
 				const folder = join(this.store, name);
-				const used = Math.max(statSync(folder).mtimeMs, ...readdirSync(folder).filter(file => file.startsWith("index-")).map(file => statSync(join(folder, file)).mtimeMs));
-				if (Date.now() - used > 30 * 86_400_000) rmSync(folder, { recursive: true, force: true });
+				const indexes = readdirSync(folder).filter(file => file.startsWith("index-"));
+				const used = Math.max(statSync(folder).mtimeMs, ...indexes.map(file => statSync(join(folder, file)).mtimeMs));
+				if (Date.now() - used > 30 * 86_400_000) { rmSync(folder, { recursive: true, force: true }); continue; }
+				for (const index of indexes) {
+					if (index === "index-last" || Date.now() - statSync(join(folder, index)).mtimeMs < 7 * 86_400_000) continue;
+					rmSync(join(folder, index), { force: true }); rmSync(join(folder, "refs", "desk", index.slice(6)), { force: true });
+				}
 			}
 		} catch { /* Nothing kept yet. */ }
 	}
 	private async root(path: string, explicit: boolean): Promise<Root | undefined> {
 		const repository = repositoryOf(path);
 		const top = repository ?? (explicit ? path : undefined);
-		if (!top || scratch(top, this.agentDir, this.temporary) || (!repository && broad(top, this.agentDir, this.temporary))) return;
+		// A folder holding Pi's own state (conversations, caches) is never followed as a whole.
+		if (!top || scratch(top, this.agentDir, this.temporary) || within(this.agentDir, top) || (!repository && broad(top, this.agentDir, this.temporary))) return;
 		const known = this.roots.get(top);
 		if (known) return known.broken ? undefined : known;
 		if (this.roots.size >= ROOTS) return;
@@ -319,16 +408,22 @@ export class ChangeTracker {
 			root.dirty = false;
 			try {
 				const tree = await root.snapshot();
-				if (root.last && tree !== root.last) {
-					const delta = await root.delta(root.last, tree);
-					for (const [name, change] of delta) {
-						const path = join(root.path, name);
-						for (const seen of running.length ? running.map(call => call.seen) : [this.meanwhile]) {
-							const known = seen.get(path);
-							if (known) known.after = change.after;
-							else seen.set(path, { ...change, root, ...(running.length ? {} : { meanwhile: true as const }) });
-						}
+				const delta = root.last && tree !== root.last ? await root.delta(root.last, tree) : new Map<string, Delta>();
+				for (const [name, change] of delta) {
+					const path = join(root.path, name);
+					for (const seen of running.length ? running.map(call => call.seen) : [this.meanwhile]) {
+						const known = seen.get(path);
+						if (known) known.after = change.after;
+						else seen.set(path, { ...change, root, ...(running.length ? {} : { meanwhile: true as const }) });
 					}
+				}
+				if (tree !== root.last) {
+					// The replaced snapshot holds the earlier versions the calls running now will show.
+					if (root.last) root.hold(root.last);
+					root.pin(tree);
+					root.note([...delta.values()].map(change => change.after));
+					// Leftovers from earlier conversations are collected, and stored versions packed, when one starts here.
+					if (root.writes++ === 0) void root.collect(this.grace);
 				}
 				root.last = tree;
 			} catch { root.last = undefined; root.dirty = true; }
@@ -337,7 +432,7 @@ export class ChangeTracker {
 
 	async start(id: string, text: string, cwd: string, session: string, workdir?: string): Promise<void> {
 		if (session !== this.session) {
-			for (const root of this.roots.values()) root.close();
+			for (const root of this.roots.values()) { root.close(); root.release(); }
 			this.session = session; this.roots.clear(); this.calls.clear(); this.meanwhile = new Map();
 		}
 		const folder = workdir ? resolve(cwd, workdir) : cwd, named = mentioned(text, folder);
@@ -353,7 +448,7 @@ export class ChangeTracker {
 		for (const root of this.roots.values()) if (!root.broken && root.repository) call.heads.set(root, await root.head());
 		for (const file of named.files) {
 			if (scratch(file, this.agentDir, this.temporary) || [...this.roots.values()].some(root => !root.broken && within(file, root.path))) continue;
-			try { const stat = statSync(file); if (stat.isFile() && stat.size <= (officeKind(file) ? OFFICE_LIMIT : TEXT_LIMIT)) call.loose.set(file, readFileSync(file)); }
+			try { const stat = statSync(file); if (stat.isFile() && stat.size <= (filtered(file) ? OFFICE_LIMIT : TEXT_LIMIT)) call.loose.set(file, readFileSync(file)); }
 			catch { call.loose.set(file, null); }
 		}
 		this.calls.set(id, call);
@@ -382,11 +477,16 @@ export class ChangeTracker {
 		const contents = new Map<string, Buffer | "large">();
 		for (const root of new Set(shown.flatMap(([, change]) => change.root ? [change.root] : []))) {
 			const limits = new Map<string, number>();
-			for (const [path, change] of shown) if (change.root === root) for (const id of [change.before, change.after]) if (id) limits.set(id, officeKind(path) ? OFFICE_LIMIT : TEXT_LIMIT);
+			for (const [path, change] of shown) if (change.root === root) for (const id of [change.before, change.after]) if (id) limits.set(id, filtered(path) ? OFFICE_LIMIT : TEXT_LIMIT);
 			try { for (const [id, value] of await root.serial(() => root.contents(limits))) contents.set(id, value); } catch { /* Described as unreadable below. */ }
 		}
 		for (const [path, change] of shown) {
 			try { this.describe(path, change, contents, result); } catch { result.files.push({ path, action: "updated", note: "Changed; its contents could not be read." }); }
+		}
+		// With no call running, only the newest snapshot is needed: superseded versions go once they amount to something.
+		if (!this.calls.size) for (const root of this.roots.values()) {
+			root.letGo();
+			if (root.pending > CLEANUP_BYTES) void root.prune(this.grace);
 		}
 		return result.files.length || result.documents.length || result.fromGit || result.more ? result : undefined;
 	}
@@ -424,20 +524,25 @@ export class ChangeTracker {
 	}
 
 	private describe(path: string, change: Change, contents: Map<string, Buffer | "large">, result: CallChanges): void {
-		const office = !!officeKind(path);
-		const version = (id: string | null) => { if (!id) return null; const value = contents.get(id); if (value === undefined) throw new Error("Unreadable."); return value; };
-		const before = change.loose ? change.loose.before : version(change.before);
-		const after = change.loose ? change.loose.after : version(change.after);
+		const stored = (id: string | null) => { if (!id) return null; const value = contents.get(id); if (value === undefined) throw new Error("Unreadable."); return value; };
+		const before = change.loose ? change.loose.before : stored(change.before);
+		const after = change.loose ? change.loose.after : stored(change.after);
 		const action = before === null ? "added" : after === null ? "deleted" : "updated";
 		const base = { path, action, ...(change.meanwhile ? { meanwhile: true as const } : {}) } satisfies Partial<FileChange>;
 		if (action === "deleted" && before === "large") { result.files.push({ ...base, note: "Large file deleted." }); return; }
 		if (before === "large" || after === "large") { result.files.push({ ...base, note: "Large file changed; too big to compare." }); return; }
-		if (office && after) { result.documents.push({ path, before, after }); return; }
-		if (before && !textual(before) || after && !textual(after)) {
-			result.files.push({ ...base, note: `Binary file ${action === "added" ? "created" : action}${after ? ` (${after.length.toLocaleString("en")} bytes)` : ""}.` });
+		// Stored versions are content or fingerprints; a repository's own versions and named files are the files themselves.
+		const old: Version | null = before && readVersion(before, path), now: Version | null = after && readVersion(after, path);
+		if (now?.type === "office" && (!old || old.type === "office")) { result.documents.push({ path, before: old?.document ?? null, after: now.document }); return; }
+		if (old?.type === "office" && !now) { result.files.push({ ...base, note: "Document deleted." }); return; }
+		if (old?.type !== "text" || now?.type !== "text") {
+			const hash = (version: Version | null) => version?.type === "file" ? version.hash : version?.type === "text" ? createHash("sha256").update(version.data).digest("hex") : undefined;
+			if (old && now && old.type !== "office" && now.type !== "office" && hash(old) === hash(now)) return;
+			const size = now?.type === "file" ? now.size : now?.type === "text" ? now.data.length : undefined;
+			result.files.push({ ...base, note: `${now?.type === "office" || old?.type === "office" ? "Document" : "Binary file"} ${action === "added" ? "created" : action}${size !== undefined ? ` (${size.toLocaleString("en")} bytes)` : ""}.` });
 			return;
 		}
-		const diff = lineDiff(before?.toString("utf8") ?? "", after?.toString("utf8") ?? "");
+		const diff = lineDiff(old?.data.toString("utf8") ?? "", now?.data.toString("utf8") ?? "");
 		if (!diff) { if (action !== "updated") result.files.push({ ...base, note: action === "added" ? "Empty file created." : "Empty file deleted." }); return; }
 		result.files.push({ ...base, diff: diff.text.slice(0, DIFF_CHARS), added: diff.added, removed: diff.removed,
 			...(diff.truncated || diff.text.length > DIFF_CHARS ? { truncated: true } : {}) });
