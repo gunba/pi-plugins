@@ -45,6 +45,9 @@ export function reduceSessionUsage(entries: readonly unknown[]): {
 			if (childCharges.has(key)) continue;
 			childCharges.add(key);
 			usage = entry.data?.usage;
+		} else if (entry.type === "custom" && entry.customType === "pi-brief") {
+			// A brief written for the user (pi-compaction-context brief.ts): spend, never context.
+			usage = (entry.data as { usage?: RecordedUsage } | undefined)?.usage;
 		} else if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") {
 			usage = entry.usage;
 		} else if (entry.type === "message" && (entry.message?.role === "assistant" || entry.message?.role === "toolResult")) {

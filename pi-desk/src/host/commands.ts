@@ -93,6 +93,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (!Number.isSafeInteger(data.revision) || Number(data.revision) < 0) throw new Error("Invalid view revision.");
 			return { kind: data.kind, view: string(data.view, 200), revision: Number(data.revision),
 				action: string(data.action, 200), value: data.value as UiValue | undefined };
+		case "brief": return { kind: "brief", ...(data.refresh === true ? { refresh: true } : {}) };
 		case "native": case "native_read":
 			return { kind: data.kind, name: string(data.name, 100), args: string(data.args, 10_000) };
 		case "prompt":

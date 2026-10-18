@@ -79,7 +79,8 @@ export type ChatBlock =
 	| { type: "ledger"; ledger: Ledger }
 	| { type: "text" | "thinking"; text: string; full?: string; truncated?: boolean }
 	| { type: "image"; asset: string; mimeType: string }
-	| { type: "toolCall"; id: string; name: string; arguments: string; full?: string; truncated?: boolean; file?: FileReference };
+	/** description: the one line the model wrote for the user about this call (pi-ui tool-descriptions.ts). */
+	| { type: "toolCall"; id: string; name: string; arguments: string; full?: string; truncated?: boolean; file?: FileReference; description?: string };
 export interface ChatMessage {
 	id: string;
 	order: number;
@@ -190,6 +191,8 @@ export type WorkerCommand =
 	| { kind: "artifact"; id: string; offset: number; query?: string; origin: ReferenceOrigin }
 	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" | "now" }
 	| { kind: "native_read"; name: string; args: string }
+	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
+	| { kind: "brief"; refresh?: boolean }
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }

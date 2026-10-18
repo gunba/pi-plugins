@@ -36,7 +36,8 @@ import { DotConversation, DotNavigation, useDotConversation } from "./dot-conver
 import { PlanView } from "./plan-view.tsx";
 import { PlanHeader } from "./plan-header.tsx";
 import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
-import { RewindContext } from "./message-view.tsx";
+import { BriefContext, RewindContext } from "./message-view.tsx";
+import { BriefModal, type Brief } from "./brief.tsx";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
@@ -334,6 +335,11 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [selected]);
   const messages = state.messages[selected] ?? emptyMessages;
   const loadedWork = useMemo(() => workItems(messages), [messages]);
+  // The reply "What do I need to know?" covers: the latest one with something written in it.
+  const latestReply = useMemo(() => [...messages].reverse().find(message => message.role === "assistant" && !message.feedback
+    && message.blocks.some(block => block?.type === "text" && !!block.text.trim()))?.id, [messages]);
+  const [briefOpen, setBriefOpen] = useState(false);
+  useEffect(() => { setBriefOpen(false); }, [selected]);
   const paneItems = workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork;
   const newestWork = loadedWork.at(-1);
   const workSeen = useRef<{ session: string; newest?: string }>({ session: "" });
@@ -731,7 +737,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     </select>
   </>;
   return (
-    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: latestReply, open: session?.ui && connected && !closing ? () => setBriefOpen(true) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">
@@ -1139,6 +1145,8 @@ export function App({ account }: { account?: BrowserAccount }) {
         <SettingsForm interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
           answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />
       </Modal>}
+      {briefOpen && session && <BriefModal key={selected} close={() => setBriefOpen(false)}
+        write={async refresh => (await command<{ result: Brief }>({ kind: "brief", ...(refresh ? { refresh: true } : {}) })).result} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}
@@ -1188,7 +1196,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }}
         />
       )}
-    </div></RewindContext.Provider></WorkFocus.Provider>
+    </div></BriefContext.Provider></RewindContext.Provider></WorkFocus.Provider>
   );
 }
 

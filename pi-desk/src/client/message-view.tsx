@@ -55,6 +55,16 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 }
 /** Rewinds the conversation to a message; unavailable (undefined) while Pi is working. */
 export const RewindContext = createContext<{ rewind?: (message: ChatMessage) => void }>({});
+/** The latest reply in the open conversation, which offers "What do I need to know?". */
+export const BriefContext = createContext<{ reply?: string; open?: () => void }>({});
+function LatestBrief({ id }: { id: string }) {
+	return useContext(BriefContext).reply === id ? <BriefButton /> : null;
+}
+function BriefButton() {
+	const { open } = useContext(BriefContext);
+	return <button type="button" className="brief-button" disabled={!open} onClick={() => open?.()} title="A one-page brief on this turn, written outside the conversation">
+		<Icon name="info" />What do I need to know?</button>;
+}
 function RewindButton({ message }: { message: ChatMessage }) {
 	const { rewind } = useContext(RewindContext);
 	return <button type="button" className="message-copy" disabled={!rewind} onClick={() => rewind?.(message)}
@@ -99,9 +109,11 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	const totals = changes.reduce((sum, block) => block.type === "diff" ? { added: sum.added + diffStats(block).added, removed: sum.removed + diffStats(block).removed } : sum, { added: 0, removed: 0 });
 	const pill = <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}
 		summary={<><span className="tool-icon">{skills.length || nestedSkills.length ? <Icon name="context" /> : "⌘"}</span><strong>{skills.length ? skills.length === 1 ? "Read skill" : "Read skills" : name}</strong>
-			<span className="tool-argument-preview">{skills.length ? `${skills.join(", ")} · ` : ""}{file
+			<span className="tool-argument-preview" title={call?.description ? toolArgumentPreview(name, call.arguments) : undefined}>
+				{call?.description && <span className="tool-description">{call.description}{file ? " · " : ""}</span>}
+				{skills.length ? `${skills.join(", ")} · ` : ""}{file
 				? <ReferenceContext value={{ message: fileMessage, source }}><FileLink session={sessionKey} file={file} /></ReferenceContext>
-				: nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(name, call?.arguments)}</span>
+				: call?.description ? null : nestedSkills.length ? `Skills: ${nestedSkills.join(", ")}` : toolArgumentPreview(name, call?.arguments)}</span>
 			{(totals.added > 0 || totals.removed > 0) && <span className="change-stats">{totals.added > 0 && <span className="change-added">+{totals.added}</span>}{totals.removed > 0 && <span className="change-removed">−{totals.removed}</span>}</span>}
 			<ToolStatus message={result} />
 			{!result?.tool && <Time timestamp={owner.timestamp} />}
@@ -262,7 +274,8 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 				: message.role === "tool" ? <ToolPill owner={message} result={message} sessionKey={sessionKey} source={source} />
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
 			{!activityOnly && !thinking && <div className="message-actions"><CopyMarkdown message={message} sessionKey={sessionKey} />
-				{!source && message.entryId && (message.role === "user" || message.role === "assistant") && message.complete !== false && <RewindButton message={message} />}</div>}
+				{!source && message.entryId && (message.role === "user" || message.role === "assistant") && message.complete !== false && <RewindButton message={message} />}
+				{!source && message.role === "assistant" && <LatestBrief id={message.id} />}</div>}
 		</article>
 	</ReferenceContext>;
 }

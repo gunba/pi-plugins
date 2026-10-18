@@ -2667,3 +2667,14 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
   .settings-inline-form input { flex:1 1 150px; }
   .settings-inline-form select { flex:1 1 auto; }
 }
+
+/* "What do I need to know?" */
+.brief-button { display:inline-flex; align-items:center; gap:6px; margin-left:4px; padding:3px 9px; border:1px solid var(--border); border-radius:14px; background:transparent; color:var(--muted); font-size:11.5px; }
+.brief-button .ui-icon { width:13px; height:13px; }
+.brief-button:hover:not(:disabled) { color:var(--accent); border-color:var(--focus-border); background:var(--hover); }
+.brief-modal { width:min(760px, calc(100vw - 24px)); }
+.brief-body { max-height:min(70dvh, 760px); overflow:auto; font-size:14px; line-height:1.6; }
+.brief-body h2 { margin:18px 0 6px; font-size:13px; font-weight:650; letter-spacing:.02em; color:var(--accent); }
+.brief-body h2:first-child { margin-top:0; }
+.brief-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding-top:10px; border-top:1px solid var(--border); font-size:12px; }
+.tool-argument-preview .tool-description { color:var(--text); }

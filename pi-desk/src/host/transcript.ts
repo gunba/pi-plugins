@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { callDescription } from "../../../pi-ui/tool-descriptions.ts";
 import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
 import { COMPACTION_FAILURE_ENTRY } from "../../../pi-context-window/compaction-state.ts";
 import { readSkills } from "../shared/skill-activity.ts";
@@ -49,6 +50,7 @@ export class Transcript {
 		return {
 			type: "toolCall", id: String(block.id), name: String(block.name),
 			arguments: argumentsText.slice(0, 12_000), truncated: argumentsText.length > 12_000, ...(file ? { file } : {}),
+			...(callDescription(args) ? { description: callDescription(args) } : {}),
 			...(complete && argumentsText.length > 12_000 ? { full: this.asset(argumentsText, "text/plain; charset=utf-8") } : {}),
 		};
 	}

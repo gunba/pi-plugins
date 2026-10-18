@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { describeAgentTools } from "../../../pi-ui/tool-descriptions.ts";
 import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
@@ -113,6 +114,8 @@ export class DeskEngine {
 	private checkpointHold?: { id: string; running: boolean };
 	private attachmentScope?: string;
 	private usageRevision = 0;
+	/** The conversation's extension event bus, for requests to its plugins such as briefs. */
+	private events?: { emit(name: string, data: unknown): void };
 	private contexts = new WeakMap<AgentSession, NativeContext>();
 	private queueGuards = new WeakMap<AgentSession, NativeQueueGuard>();
 	private opening?: { manager: SessionManager; text?: string };
@@ -217,6 +220,7 @@ export class DeskEngine {
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);
 						installIntegrations(pi);
+						this.events = pi.events;
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);
 						pi.on("before_agent_start", () => { context?.apply(); });
@@ -244,6 +248,8 @@ export class DeskEngine {
 			});
 			// Batch Desk steering at the native boundary without rewriting terminal preferences.
 			result.session.agent.steeringMode = "all";
+			// Every tool call carries a one-line description for the user (pi-ui tool-descriptions.ts).
+			describeAgentTools(result.session.agent.state as never);
 			context.attach(result.session); this.contexts.set(result.session, context);
 			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
 			const loaded = services.resourceLoader.getExtensions();
@@ -511,7 +517,7 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "native_read", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "native_read", "brief", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
@@ -519,6 +525,15 @@ export class DeskEngine {
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
 			case "native_read": return readNativeCommand(session, command.name, command.args);
+			case "brief": {
+				// Written by pi-compaction-context from the conversation's own cached request; never part of the conversation.
+				const probe: { session: string; refresh?: boolean; result?: Promise<unknown> } = { session: session.sessionId, refresh: command.refresh };
+				this.events?.emit("pi:brief", probe);
+				if (!probe.result) throw Error("Briefs need the pi-compaction-context plugin, which this conversation has not loaded.");
+				const brief = await probe.result;
+				this.usageRevision++; this.scheduleSnapshot();
+				return brief;
+			}
 			case "native": {
 				if (nativeExecution(command.name) !== "control") throw Error(`/${command.name} has no native action adapter.`);
 				const execute = () => runNativeCommand(session, this.runtime!, command.name, command.args);
