@@ -54,7 +54,9 @@ test("sequence diffs are minimal", () => {
 		assert.deepEqual(ops.filter(op => op.op !== "+").map(op => a[op.a]), a);
 		assert.deepEqual(ops.filter(op => op.op !== "-").map(op => b[op.b]), b);
 	}
-	assert.equal(lineDiff("a\nb\nc\n", "a\nB\nc\n").text, " 1 a\n-2 b\n+2 B\n 3 c\n 4 ");
+	assert.equal(lineDiff("a\nb\nc\n", "a\nB\nc\n").text, " 1 a\n-2 b\n+2 B\n 3 c");
+	// A new file adds its lines and removes none (it showed "+1 −1" for a one-line file).
+	assert.deepEqual(lineDiff("", "hello"), { text: "+1 hello", added: 1, removed: 0, truncated: false });
 });
 
 test("Office files named in commands and in the scripts they run are found", () => {
@@ -84,7 +86,7 @@ test("tool results gain computed changes, and show reports them with what the ag
 	await handlers.tool_call({ toolName: "write", toolCallId: "2", input: { path: "notes.md" } }, ctx);
 	writeFileSync(notes, "# Notes\nsecond\n");
 	const written = await handlers.tool_result({ toolName: "write", toolCallId: "2", input: {}, content: [] });
-	assert.equal(written.details.diff, " 1 # Notes\n-2 first\n+2 second\n 3 ");
+	assert.equal(written.details.diff, " 1 # Notes\n-2 first\n+2 second");
 	assert.equal(written.details.path, notes);
 	assert.equal(await handlers.tool_result({ toolName: "bash", toolCallId: "3", input: {}, content: [] }), undefined, "untracked calls are left alone");
 

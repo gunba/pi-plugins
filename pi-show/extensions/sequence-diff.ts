@@ -40,12 +40,19 @@ export function diffSequences<T>(a: readonly T[], b: readonly T[], equal: (x: T,
 		...Array.from({ length: tail }, (_, index): Op => ({ op: "=", a: a.length - tail + index, b: b.length - tail + index }))];
 }
 
+/** A text's lines: none for empty text (a new file adds lines and removes none), and no empty line after a final newline. */
+function textLines(text: string): string[] {
+	if (!text) return [];
+	const lines = text.split(/\r?\n/);
+	if (lines.at(-1) === "") lines.pop();
+	return lines;
+}
 /**
  * A line diff in the format Pi's edit tool uses ("+ 12 text", "- 12 text", "  12 text", "    ..." between hunks),
  * with `context` unchanged lines around each change. Undefined when nothing changed or the change is too large.
  */
 export function lineDiff(before: string, after: string, context = 3, maxLines = 400): { text: string; added: number; removed: number; truncated: boolean } | undefined {
-	const a = before.split(/\r?\n/), b = after.split(/\r?\n/), ops = diffSequences(a, b);
+	const a = textLines(before), b = textLines(after), ops = diffSequences(a, b);
 	if (!ops) return undefined;
 	const added = ops.filter(op => op.op === "+").length, removed = ops.filter(op => op.op === "-").length;
 	if (!added && !removed) return undefined;
