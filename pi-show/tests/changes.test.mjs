@@ -132,6 +132,24 @@ test("only the newest version of each file is kept: superseded versions are coll
 	assert.deepEqual([last.added, last.removed], [1, 1], "the kept version still diffs");
 });
 
+test("two conversations in one folder each show only their own changes", limit, async t => {
+	// One conversation's quick edits showed up in another conversation whose long command was running at the time.
+	const { base, tracker } = setup(t), repo = repository(join(base, "project"));
+	const other = new ChangeTracker(join(base, "agent", "changes"), join(base, "agent"), []);
+	t.after(() => other.close());
+	await tracker.start("long", "npm test", repo, "tester");
+	await new Promise(done => setTimeout(done, 20));
+	await other.start("edit", "python3 fix.py", repo, "editor");
+	writeFileSync(join(repo, "a.txt"), "one\ntwo\nthree\nedited\n");
+	assert.deepEqual(Object.keys(byPath(await other.finish("edit"))), ["a.txt"]);
+	writeFileSync(join(repo, "report.txt"), "tests passed\n");
+	await new Promise(done => setTimeout(done, 20));
+	assert.deepEqual(Object.keys(byPath(await tracker.finish("long"))), ["report.txt"], "the edit belongs to the conversation that made it");
+	// The test run's report, written while the editor was idle, is not shown to the editor either.
+	await other.start("next", "ls", repo, "editor");
+	assert.equal(await other.finish("next"), undefined);
+});
+
 test("a file a command names outside any followed folder is compared directly", limit, async t => {
 	const { base, tracker } = setup(t), repo = repository(join(base, "project"));
 	const outside = join(base, "settings", "app.desktop");

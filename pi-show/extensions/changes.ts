@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +42,14 @@ export type CallChanges = {
 type Delta = { before: string | null; after: string | null };
 type Change = Delta & { root?: Root; loose?: { before: Buffer | null; after: Buffer | null }; meanwhile?: true };
 type Seen = Map<string, Change>;
-type Call = { seen: Seen; heads: Map<Root, string | undefined>; loose: Map<string, Buffer | null> };
+/** opened: when the snapshot before the call was taken. */
+type Call = { seen: Seen; heads: Map<Root, string | undefined>; loose: Map<string, Buffer | null>; opened: number };
+/**
+ * What a conversation's call changed in a folder, as it saw it: who (s), when the call ran (a to b) and each file's
+ * version afterwards (f, null when deleted). Kept in the folder's store, shared by every conversation working there.
+ */
+type Claim = { s: string; a: number; b: number; f: Record<string, string | null> };
+const CLAIMS_KEPT = 60 * 60_000;
 
 const MAX_FILES = 40, TEXT_LIMIT = 2 * 1024 * 1024, DIFF_CHARS = 64_000, OFFICE_LIMIT = 64 * 1024 * 1024;
 const ROOT_FILES = 20_000, ROOT_BYTES = 256 * 1024 ** 2, BIG_FILE = 32 * 1024 * 1024, ROOTS = 12, LOOSE = 32;
@@ -440,8 +447,9 @@ export class ChangeTracker {
 		for (const path of [cwd, folder, ...named.entered]) await this.root(path, !hidden(path));
 		for (const path of [...named.folders, ...named.files.map(file => dirname(file))]) await this.root(path, false);
 		const running = [...this.calls.values()];
+		const opened = Date.now();
 		await this.advance(running);
-		const call: Call = { seen: new Map(), heads: new Map(), loose: new Map() };
+		const call: Call = { seen: new Map(), heads: new Map(), loose: new Map(), opened };
 		// The changes made meanwhile are reported with this call.
 		for (const [path, change] of this.meanwhile) call.seen.set(path, change);
 		this.meanwhile = new Map();
@@ -470,6 +478,7 @@ export class ChangeTracker {
 		const skip = new Set(own);
 		const result: CallChanges = { files: [], documents: [] };
 		const entries = [...call.seen].filter(([path, change]) => !skip.has(path) && (change.loose || change.before !== change.after));
+		this.attribute(call, entries, Date.now());
 		await this.separateGit(call, entries, result);
 		const shown = entries.slice(0, MAX_FILES);
 		if (entries.length > MAX_FILES) result.more = entries.slice(MAX_FILES).map(([path]) => path);
@@ -489,6 +498,42 @@ export class ChangeTracker {
 			if (root.pending > CLEANUP_BYTES) void root.prune(this.grace);
 		}
 		return result.files.length || result.documents.length || result.fromGit || result.more ? result : undefined;
+	}
+
+	/**
+	 * Leaves out what another conversation working in the same folder changed. Every conversation snapshots around its
+	 * own calls, so each change is credited to the narrowest call around it: a quick edit made while another
+	 * conversation's long command ran belongs to the edit, not the command. Changes found between calls belong to
+	 * whichever conversation claimed them. This call's own changes are then claimed for the others to see.
+	 */
+	private attribute(call: Call, entries: [string, Change][], closed: number): void {
+		const me = safeName(this.session), now = Date.now();
+		for (const root of new Set(entries.flatMap(([, change]) => change.root ? [change.root] : []))) {
+			const file = join(root.gitDir, "claims"), name = (path: string) => relative(root.path, path).split(sep).join("/");
+			let claims: Claim[] = [];
+			try {
+				claims = readFileSync(file, "utf8").split("\n").flatMap(line => {
+					try { const claim = JSON.parse(line) as Claim; return claim?.s !== me && claim.b > now - CLAIMS_KEPT && claim.f ? [claim] : []; } catch { return []; }
+				});
+			} catch { /* No other conversation has claimed anything here. */ }
+			const theirs = (path: string, change: Change) => claims.some(claim => Object.hasOwn(claim.f, name(path)) && claim.f[name(path)] === change.after
+				&& (change.meanwhile || claim.a >= call.opened && claim.b <= closed));
+			const own: [string, Change][] = [];
+			for (let index = entries.length - 1; index >= 0; index--) {
+				const [path, change] = entries[index]!;
+				if (change.root !== root) continue;
+				if (theirs(path, change)) entries.splice(index, 1); else if (!change.meanwhile) own.push([path, change]);
+			}
+			if (!own.length) continue;
+			try {
+				// Only the last hour matters; older claims are dropped when the file grows.
+				if (existsSync(file) && statSync(file).size > 256 * 1024) {
+					const recent = readFileSync(file, "utf8").split("\n").filter(line => { try { return (JSON.parse(line) as Claim).b > now - CLAIMS_KEPT; } catch { return false; } });
+					writeFileSync(`${file}.tmp`, recent.map(line => `${line}\n`).join("")); renameSync(`${file}.tmp`, file);
+				}
+				appendFileSync(file, `${JSON.stringify({ s: me, a: call.opened, b: closed, f: Object.fromEntries(own.map(([path, change]) => [name(path), change.after])) } satisfies Claim)}\n`);
+			} catch { /* Other conversations then credit these changes by their own calls only. */ }
+		}
 	}
 
 	/** Files a pull, checkout, rebase or reset brought match the new commit exactly; they are counted, not shown. */
