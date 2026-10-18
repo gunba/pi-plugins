@@ -53,6 +53,9 @@ test("changes a command makes by any means are reported as diffs, and the reposi
 	assert.match(files["a.txt"].diff, /-\s*2 two/); assert.match(files["a.txt"].diff, /\+\s*2 TWO/);
 	assert.equal(files["c.txt"].action, "added");
 	assert.equal(files["b.txt"].action, "deleted");
+	// A text file created or deleted by a command is text, with its lines shown (it was reported as a binary file).
+	assert.match(files["c.txt"].diff ?? files["c.txt"].note, /\+\s*1 new file/);
+	assert.match(files["b.txt"].diff ?? files["b.txt"].note, /-\s*1 remove me/);
 	assert.ok(readFileSync(join(repo, ".git", "index")).equals(index), "the repository's index is untouched");
 	assert.equal(git(repo, "status", "--porcelain").trim().split("\n").length, 3);
 

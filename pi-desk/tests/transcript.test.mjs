@@ -271,3 +271,12 @@ test("history pages cross hidden entries without gaps or false continuation link
 	assert.equal(transcript.history(branch, { from: "m94" }).after, undefined);
 	assert.throws(() => transcript.history(branch, { from: "hidden94" }), /no longer exists/);
 });
+
+test("a change with no diff carries its note as a note, not as diff text", () => {
+	// As diff text, the note's first letter was read as the +/- column: "inary file created".
+	const result = new Transcript().message({ role: "toolResult", toolName: "bash", toolCallId: "c", content: [{ type: "text", text: "done" }],
+		details: { files: [{ path: "/tmp/photo.png", action: "added", note: "Binary file created (31 bytes)." }] } }, "r", undefined, 0, "/tmp");
+	const change = result.blocks.find(block => block.type === "diff");
+	assert.equal(change.note, "Binary file created (31 bytes).");
+	assert.equal(change.text, "");
+});

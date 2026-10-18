@@ -600,14 +600,16 @@ export class ChangeTracker {
 		const old: Version | null = before && readVersion(before, path), now: Version | null = after && readVersion(after, path);
 		if (now?.type === "office" && (!old || old.type === "office")) { result.documents.push({ path, before: old?.document ?? null, after: now.document }); return; }
 		if (old?.type === "office" && !now) { result.files.push({ ...base, note: "Document deleted." }); return; }
-		if (old?.type !== "text" || now?.type !== "text") {
+		// A new or deleted text file has text on one side only; it is still text, not a binary file.
+		const text = (version: Version | null) => version === null || version.type === "text";
+		if (!text(old) || !text(now)) {
 			const hash = (version: Version | null) => version?.type === "file" ? version.hash : version?.type === "text" ? createHash("sha256").update(version.data).digest("hex") : undefined;
 			if (old && now && old.type !== "office" && now.type !== "office" && hash(old) === hash(now)) return;
 			const size = now?.type === "file" ? now.size : now?.type === "text" ? now.data.length : undefined;
 			result.files.push({ ...base, note: `${now?.type === "office" || old?.type === "office" ? "Document" : "Binary file"} ${action === "added" ? "created" : action}${size !== undefined ? ` (${size.toLocaleString("en")} bytes)` : ""}.` });
 			return;
 		}
-		const diff = lineDiff(old?.data.toString("utf8") ?? "", now?.data.toString("utf8") ?? "");
+		const diff = lineDiff(old?.type === "text" ? old.data.toString("utf8") : "", now?.type === "text" ? now.data.toString("utf8") : "");
 		if (!diff) { if (action !== "updated") result.files.push({ ...base, note: action === "added" ? "Empty file created." : "Empty file deleted." }); return; }
 		result.files.push({ ...base, diff: diff.text.slice(0, DIFF_CHARS), added: diff.added, removed: diff.removed,
 			...(diff.truncated || diff.text.length > DIFF_CHARS ? { truncated: true } : {}) });

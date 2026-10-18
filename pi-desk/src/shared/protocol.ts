@@ -71,7 +71,8 @@ export type ChatBlock =
 	| { type: "file"; file: FileReference }
 	| { type: "artifact"; id: string; label: string }
 	/** meanwhile: changed while no tool call was running (a background process, another program). */
-	| { type: "diff"; path: string; action: string; movePath?: string; text: string; full?: string; truncated: boolean; file?: FileReference; added?: number; removed?: number; meanwhile?: boolean }
+	/** note: why there is no diff (a binary or large file); text is then empty. */
+	| { type: "diff"; path: string; action: string; movePath?: string; text: string; full?: string; truncated: boolean; file?: FileReference; added?: number; removed?: number; meanwhile?: boolean; note?: string }
 	/** Computed changes to a spreadsheet, document or deck, or a summary of a new one. */
 	| { type: "document"; change: import("../../../pi-show/extensions/types.ts").DocumentChange; file?: FileReference }
 	/** Work an agent showed with the show tool; `files` lines up with `shown.items`. */

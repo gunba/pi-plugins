@@ -113,11 +113,12 @@ export class Transcript {
 		if (Array.isArray(details.files)) for (const value of details.files.slice(0, 40)) {
 			const change = record(value);
 			if (typeof change.path !== "string") continue;
-			const text = typeof change.diff === "string" ? change.diff : typeof change.note === "string" ? change.note : "Changed.";
+			// A note is text, not a diff: as diff text its first letter was read as the +/- column.
+			const text = typeof change.diff === "string" ? change.diff : "", note = text ? undefined : typeof change.note === "string" ? change.note.slice(0, 500) : "Changed.";
 			blocks.push({ type: "diff", path: change.path.slice(0, 4000), action: ["added", "deleted"].includes(String(change.action)) ? String(change.action) : "updated",
 				text: text.slice(0, 12_000), truncated: change.truncated === true || text.length > 12_000,
 				...(typeof change.added === "number" ? { added: change.added } : {}), ...(typeof change.removed === "number" ? { removed: change.removed } : {}),
-				...(change.meanwhile === true ? { meanwhile: true } : {}),
+				...(change.meanwhile === true ? { meanwhile: true } : {}), ...(note ? { note } : {}),
 				...(cwd && change.action !== "deleted" ? { file: this.files.observePath(change.path, cwd) } : {}),
 				...(text.length > 12_000 || text.slice(0, 12_000).split("\n").length > 400 ? { full: this.asset(text, "text/plain; charset=utf-8") } : {}) });
 		}

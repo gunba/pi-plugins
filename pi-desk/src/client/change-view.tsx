@@ -173,6 +173,7 @@ const itemIcon = (item: WorkItem) => item.block.type === "brief" ? "info" : item
 function itemPreview(item: WorkItem): string {
 	if (item.block.type === "document") return item.block.change.summary;
 	if (item.block.type !== "diff") return "";
+	if (item.block.note) return item.block.note;
 	const lines = item.block.text.split("\n"), changed = lines.find(line => /^\+\s*\d+ \S/.test(line)) ?? lines.find(line => /^-\s*\d+ \S/.test(line));
 	return changed ? changed.replace(/^[+-]\s*\d+ /, "").trim().slice(0, 160) : item.block.text.split("\n")[0]!.slice(0, 160);
 }
@@ -288,7 +289,7 @@ function ShownEntry({ item, file, session, title, large }: { item: ShownItem; fi
 export function WorkBody({ item, session, large }: { item: WorkItem; session: string; large?: boolean }) {
 	const { block } = item;
 	if (block.type === "diff") return <>
-		<CodeDiff text={block.text} path={block.movePath ?? block.path} limit={large ? undefined : 120} />
+		{block.note ? <p className="muted work-note">{block.note}</p> : <CodeDiff text={block.text} path={block.movePath ?? block.path} limit={large ? undefined : 120} />}
 		{block.truncated && <p className="muted work-note">Diff preview limited to 12,000 characters.</p>}
 		{block.full && <AssetLink session={session} asset={block.full} />}
 	</>;
