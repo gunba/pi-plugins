@@ -3,6 +3,9 @@ import type { Usage } from "@earendil-works/pi-ai";
 import { cacheExpired } from "../../pi-context-window/prompt-cache.ts";
 import type { SentRequest } from "./in-place.ts";
 
+/** Marks a request made beside the conversation, not part of it (read and removed by pi-codex-wire). */
+export const SIDE_REQUEST_HEADER = "x-pi-side-request";
+
 /**
  * "What do I need to know?": a one-page brief on the agent's latest turn, written by the same model from its own
  * context, for the user to read. It never enters the conversation: the brief is kept as a custom entry, which is not
@@ -103,17 +106,20 @@ export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | unde
 	const replayable = sent && sent.model === modelKey && !cacheExpired(model, branch as never)
 		&& (!reply || ids.indexOf(reply.id) > (sent.leaf ? ids.indexOf(sent.leaf) : -1));
 	const payload = replayable ? withReplyAndQuestion(JSON.parse(sent!.payload), sent!.api, replyText, BRIEF_PROMPT) : undefined;
+	// A side request: a provider with per-conversation connection state (codex-wire) sends it separately, leaving
+	// that state for the conversation's next turn. Other providers ignore the header's meaning.
+	const headers = { [SIDE_REQUEST_HEADER]: "1" };
 	let result;
 	if (payload) {
 		// The request built from this placeholder is replaced by the copied payload, as in-place compaction does.
 		result = await ctx.modelRegistry.complete(model, { systemPrompt: "", messages: [{ role: "user", content: "Brief.", timestamp: Date.now() }] },
-			{ signal: options.signal, sessionId: ctx.sessionManager.getSessionId(), onPayload: () => payload });
+			{ signal: options.signal, sessionId: ctx.sessionManager.getSessionId(), headers, onPayload: () => payload });
 	} else {
 		const entries = ctx.sessionManager.getEntries() as never;
 		const conversation = serializeConversation(convertToLlm(buildSessionContext(entries, ctx.sessionManager.getLeafId()).messages));
 		result = await ctx.modelRegistry.complete(model, { systemPrompt: BRIEF_SYSTEM,
 			messages: [{ role: "user", content: `<conversation>\n${conversation}\n</conversation>\n\n${BRIEF_PROMPT}`, timestamp: Date.now() }] },
-			{ signal: options.signal });
+			{ signal: options.signal, headers });
 	}
 	if (result.stopReason === "error" || result.stopReason === "aborted") throw Error(result.errorMessage ?? "The brief could not be written.");
 	const markdown = text(result.content);

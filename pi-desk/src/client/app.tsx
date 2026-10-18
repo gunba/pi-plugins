@@ -16,6 +16,7 @@ import { OsIcon } from "./os-icon.tsx";
 import { FolderField } from "./folder-picker.tsx";
 import { connectionLabel, connectionTone } from "./connection-state.ts";
 import { activityLabel, sessionActivity } from "./activity.ts";
+import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
 import { Inspector, Modal, Navigation, useMedia } from "./surfaces.tsx";
 import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
@@ -234,6 +235,8 @@ export function App({ account }: { account?: BrowserAccount }) {
       session.ui?.interactions.map(question => `${session.key}/${question.id}`) ?? []));
     for (const id of questionDrafts.current.keys()) if (!pending.has(id)) questionDrafts.current.delete(id);
   }, [state.host?.sessions]);
+  useEffect(askForNotificationsOnFirstClick, []);
+  useQuestionAlerts(state.host?.sessions, selected, key => { setSelected(key); setSidebar(false); setPanel(undefined); }, title);
   const noArguments = (name: string, args: string) => { if (args) throw Error(`Use /${name} without arguments.`); };
   const openPicker = (label: string) => {
     const picker = label === "Model" ? document.querySelector<HTMLButtonElement>("button.model-picker")
@@ -336,8 +339,11 @@ export function App({ account }: { account?: BrowserAccount }) {
   const messages = state.messages[selected] ?? emptyMessages;
   const loadedWork = useMemo(() => workItems(messages), [messages]);
   // The reply "What do I need to know?" covers: the latest one with something written in it.
-  const latestReply = useMemo(() => [...messages].reverse().find(message => message.role === "assistant" && !message.feedback
-    && message.blocks.some(block => block?.type === "text" && !!block.text.trim()))?.id, [messages]);
+  // The reply that ends the turn: the last message, when it is Pi's and has text (not a stopped turn's tool call).
+  const latestReply = useMemo(() => {
+    const last = [...messages].reverse().find(message => !message.feedback && ["assistant", "tool", "user"].includes(message.role));
+    return last?.role === "assistant" && last.blocks.some(block => block?.type === "text" && !!block.text.trim()) ? last.id : undefined;
+  }, [messages]);
   const [briefOpen, setBriefOpen] = useState(false);
   useEffect(() => { setBriefOpen(false); }, [selected]);
   const paneItems = workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork;
@@ -737,7 +743,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     </select>
   </>;
   return (
-    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: latestReply, open: session?.ui && connected && !closing ? () => setBriefOpen(true) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply, open: session?.ui && connected && !closing ? () => setBriefOpen(true) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">

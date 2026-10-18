@@ -2669,7 +2669,9 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 }
 
 /* "What do I need to know?" */
-.brief-button { display:inline-flex; align-items:center; gap:6px; margin-left:4px; padding:3px 9px; border:1px solid var(--border); border-radius:14px; background:transparent; color:var(--muted); font-size:11.5px; }
+.brief-button { display:inline-flex; align-items:center; gap:6px; margin-left:4px; padding:3px 9px; border:1px solid var(--border); border-radius:14px; background:transparent; color:var(--muted); font-size:11.5px; opacity:0; }
+.message:hover .brief-button, .brief-button:focus-visible { opacity:1; }
+@media (hover:none) { .brief-button { opacity:.7; } }
 .brief-button .ui-icon { width:13px; height:13px; }
 .brief-button:hover:not(:disabled) { color:var(--accent); border-color:var(--focus-border); background:var(--hover); }
 .brief-modal { width:min(760px, calc(100vw - 24px)); }

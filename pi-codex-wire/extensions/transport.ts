@@ -37,6 +37,8 @@ export interface Exchange {
   trace?: RequestTrace;
   inferenceRequestId?: string;
   skipPrewarm?: boolean;
+  /** Made beside the conversation (a brief): sent over HTTPS, never touching the WebSocket, its continuation or the busy state. */
+  side?: boolean;
   onFallback?: (phase: "connect" | "prewarm" | "stream") => void;
 }
 
@@ -421,6 +423,7 @@ export class WireTransport {
   }
 
   async request(exchange: Exchange): Promise<Response> {
+    if (exchange.side) return this.sse(exchange);
     try { return await this.requestAttempt(exchange, 0); }
     catch (error) {
       if (!(error instanceof WebSocketExpired)) throw error;
@@ -488,8 +491,12 @@ export class WireTransport {
     return this.sse(exchange);
   }
 
+  private release(exchange: Exchange): void {
+    if (!exchange.side) { this.activeCancel = undefined; this.busy = false; }
+  }
+
   private async sse(exchange: Exchange): Promise<Response> {
-    this.busy = true;
+    if (!exchange.side) this.busy = true;
     const startedAt = Date.now();
     let receivedBytes = 0, events = 0, terminalSeen = false;
     let lastEventAt = startedAt, maxGapMs = 0;
@@ -509,7 +516,7 @@ export class WireTransport {
         body = new Uint8Array(zlib.zstdCompressSync(json, { params: { [compressionKey]: 3 } }));
         headers.set("content-encoding", "zstd");
       }
-    } catch (error) { this.busy = false; throw error; }
+    } catch (error) { if (!exchange.side) this.busy = false; throw error; }
     const controller = new AbortController();
     const signal = exchange.signal ? AbortSignal.any([exchange.signal, controller.signal]) : controller.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -519,7 +526,7 @@ export class WireTransport {
       timer = setTimeout(() => { timedOut = true; controller.abort(new Error("Codex SSE stream timed out")); }, exchange.timeoutMs);
     };
     resetTimer();
-    this.activeCancel = () => controller.abort();
+    if (!exchange.side) this.activeCancel = () => controller.abort();
     const attemptId = randomUUID();
     this.diagnostics.request(exchange.body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
       inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
@@ -541,8 +548,8 @@ export class WireTransport {
       response = await headerTrace.run(() =>
         (exchange.fetcher ?? this.fetcher)(exchange.url, { method: "POST", headers, body: body as BodyInit, signal }), signal);
       this.recordHeaders(response.headers, response.status, exchange.requestId);
-    } catch (error) { failure("headers", error); clearTimeout(timer); this.activeCancel = undefined; this.busy = false; throw error; }
-    if (!response.ok || !response.body) { clearTimeout(timer); this.activeCancel = undefined; this.busy = false; return response; }
+    } catch (error) { failure("headers", error); clearTimeout(timer); this.release(exchange); throw error; }
+    if (!response.ok || !response.body) { clearTimeout(timer); this.release(exchange); return response; }
     // A network chunk may contain only part of an SSE event. Keep reading until
     // we can emit output; returning an empty pull can strand the consumer.
     const reader = response.body.getReader();
@@ -566,7 +573,7 @@ export class WireTransport {
     };
     const release = () => {
       if (released) return;
-      released = true; clearTimeout(timer); this.busy = false; this.activeCancel = undefined;
+      released = true; clearTimeout(timer); this.release(exchange);
       signal.removeEventListener("abort", abort); reader.releaseLock();
     };
     const fail = (error: unknown) => {

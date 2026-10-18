@@ -43,8 +43,12 @@ export default function commandGuard(pi: ExtensionAPI): void {
 			return createHash("sha256").update(JSON.stringify({ tool: event.toolName, input: event.input, shell: current.shellPath, prefix: current.shellCommandPrefix })).digest("hex");
 		};
 		const original = signature(), epoch = generation, session = ctx.sessionManager.getSessionId(), cwd = ctx.cwd;
-		const approved = await ctx.ui.confirm("Confirm Git wipe", `${assessment.reason}\n\nTool: ${event.toolName}\nDirectory: ${env.cwd}\n\n${review}`, { signal: ctx.signal, timeout: 120_000 });
-		if (approved !== true) return denied("Operator confirmation was not granted.");
+		const asked = Date.now(), timeout = 120_000;
+		const approved = await ctx.ui.confirm("Confirm Git wipe", `${assessment.reason}\n\nTool: ${event.toolName}\nDirectory: ${env.cwd}\n\n${review}`, { signal: ctx.signal, timeout });
+		// confirm() reports a timeout and a refusal alike; say which, so the agent does not tell the user they refused.
+		if (approved !== true) return denied(ctx.signal?.aborted ? "The confirmation was cancelled."
+			: Date.now() - asked >= timeout - 1_000 ? "The user was asked but did not answer within 2 minutes (they may be away); this is not a refusal."
+			: "The user declined.");
 		if (epoch !== generation || session !== ctx.sessionManager.getSessionId() || cwd !== ctx.cwd || ctx.signal?.aborted || original !== signature()) return denied("The operation or session changed while confirmation was open.");
 	});
 }

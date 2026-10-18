@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { SIDE_REQUEST_HEADER } from "../../pi-compaction-context/extensions/brief.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -240,7 +241,9 @@ export default function codexWire(pi: ExtensionAPI): void {
       const currentProtocol = session?.protocol;
       const currentTransport = session?.transport;
       const isPrimary = threadId === primaryThreadId;
-      if (isPrimary && !currentLifetime.signal.aborted) lastRequest = "in progress";
+      // A request beside the conversation (a brief) leaves its turn, connection and continuation alone.
+      const side = !!options?.headers && Object.keys(options.headers).some(key => key.toLowerCase() === SIDE_REQUEST_HEADER);
+      if (isPrimary && !side && !currentLifetime.signal.aborted) lastRequest = "in progress";
       const controller = new AbortController();
       pending.set(controller, threadId);
       trimIdleSessions();
@@ -261,7 +264,9 @@ export default function codexWire(pi: ExtensionAPI): void {
         },
       };
       if (currentTransport && currentProtocol) {
-        if (isPrimary) {
+        if (side) {
+          // Keeps the turn and its routing state, which also keeps the request near the conversation's cache.
+        } else if (isPrimary) {
           if (!beganTurn) { currentProtocol.beginTurn(); beganTurn = true; }
         } else if (session) {
           // SDK children inherit the provider, not the parent's extension lifecycle hooks.
@@ -277,6 +282,7 @@ export default function codexWire(pi: ExtensionAPI): void {
           // Pi's fetch deadline covers catalog lookup and transport setup, not just network headers.
           const fetchSignal = init?.signal ? AbortSignal.any([requestSignal, init.signal]) : requestSignal;
           const headers = new Headers(init?.headers);
+          headers.delete(SIDE_REQUEST_HEADER);
           const metadata = await catalog!.model(model.id, String(url), headers, fetchSignal, options?.fetch);
           metadataForRequest = metadata;
           fetchSignal.throwIfAborted();
@@ -315,7 +321,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             signal: fetchSignal, fetcher: options?.fetch,
             compression: requestCompression(compression === "on", model.provider, String(url), headers),
             normalizeEvent: metadata.use_responses_lite === true ? normalizeLiteEvent : undefined,
-            requestId, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
+            requestId, side, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
             trace,
             onFallback: () => ctx.ui.notify(
               "Codex Wire is using HTTPS temporarily. WebSocket will be retried automatically on a later request.", "info"),
