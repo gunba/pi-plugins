@@ -2547,7 +2547,11 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .work-item-header { display:flex; align-items:center; gap:10px; min-width:0; padding:8px 12px 8px 18px; border-bottom:1px solid var(--border); font-size:12.5px; }
 .work-item-header .file-link, .work-item-header strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .work-item-header .change-actions .copy-button { margin:0; }
-.work-current-body { flex:1; min-height:0; overflow:auto; padding-bottom:12px; }
+.work-current-body { flex:1; min-height:0; overflow:auto; padding-bottom:12px; container-type:size; }
+/* An image uses the pane: as wide as it is, or as tall as it shows, whichever fits first (never enlarged past its own size).
+   Several images each get the whole view, one after another. */
+.work-current-body .shown-image-frame { margin:8px 12px; }
+.work-current-body .shown-image-frame .shown-image { width:auto; height:auto; max-width:100%; max-height:calc(100cqh - 20px); }
 .work-list { flex:none; max-height:34%; overflow:auto; margin:0; padding:4px 0; list-style:none; border-top:1px solid var(--border); }
 .work-list-item { display:flex; align-items:center; gap:9px; width:100%; padding:6px 14px 6px 18px; border:0; border-radius:0; background:transparent; text-align:left; font-size:12px; }
 .work-list-item:hover { background:var(--hover); }

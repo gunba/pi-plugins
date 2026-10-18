@@ -81,6 +81,8 @@ const basename = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const title = (session: SessionView) =>
   sessionTitle(session.snapshot?.name ?? session.name, session.snapshot?.title ?? session.title);
+/** What "Review the changes" sends: a review of the turn's work with the code-review skill, reported before anything changes. */
+const REVIEW_REQUEST = "Use the code-review skill to review the changes you made in your last turn. Check each finding against the code before you report it, and don't change anything yet.";
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const draftKey = (key: string) => `pi-desk:draft:${key}`;
@@ -362,6 +364,20 @@ export function App({ account }: { account?: BrowserAccount }) {
       setBriefs(all => ({ ...all, [key]: { ...all[key], reply, working: false, error: errorText(failure) } }));
       if (selectedRef.current === key) setError(`The brief could not be written: ${errorText(failure)}`);
     });
+  }
+  // "Review the changes": offered when the turn changed files; the request goes in as a message of its own.
+  const turnChangedFiles = useMemo(() => {
+    let start = messages.length - 1;
+    while (start >= 0 && !(messages[start]!.role === "user" && !messages[start]!.feedback)) start--;
+    const after = new Set(messages.slice(start + 1).map(message => message.id));
+    return loadedWork.some(item => (item.block.type === "diff" || item.block.type === "document") && after.has(item.message));
+  }, [messages, loadedWork]);
+  async function requestReview() {
+    if (!session?.activation) return;
+    try {
+      await api(`/sessions/${selected}/inputs`, { id: crypto.randomUUID(), activation: session.activation, generation: session.ui?.generation,
+        command: { kind: "prompt", text: REVIEW_REQUEST } });
+    } catch (error) { setError(errorText(error)); }
   }
   const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItem ? [briefItem] : []];
   const newestWork = loadedWork.at(-1);
@@ -763,7 +779,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   return (
     <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
       open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
-      state: briefState?.working ? "writing" : briefState?.brief ? "ready" : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+      state: briefState?.working ? "writing" : briefState?.brief ? "ready" : undefined,
+      review: turnChangedFiles && session?.activation && connected && !closing ? () => void requestReview() : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">

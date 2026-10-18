@@ -56,11 +56,12 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 /** Rewinds the conversation to a message; unavailable (undefined) while Pi is working. */
 export const RewindContext = createContext<{ rewind?: (message: ChatMessage) => void }>({});
 /** The latest reply in the open conversation, which offers "What do I need to know?". */
-export const BriefContext = createContext<{ reply?: string; open?: () => void; state?: "writing" | "ready" }>({});
+/** review: asks the agent to review the turn's changes with the code-review skill, when the turn changed files. */
+export const BriefContext = createContext<{ reply?: string; open?: () => void; state?: "writing" | "ready"; review?: () => void }>({});
 function LatestBrief({ id }: { id: string }) {
 	// Only conversations whose Desk version writes briefs offer one.
-	const { reply, open } = useContext(BriefContext);
-	return reply === id && open ? <BriefButton /> : null;
+	const { reply, open, review } = useContext(BriefContext);
+	return reply === id ? <>{open && <BriefButton />}{review && <ReviewButton />}</> : null;
 }
 function BriefButton() {
 	const { open, state } = useContext(BriefContext);
@@ -68,6 +69,11 @@ function BriefButton() {
 	return <button type="button" className={`brief-button${state ? ` brief-${state}` : ""}`} disabled={!open || state === "writing"} onClick={() => open?.()}
 		title="A one-page brief on this turn, written outside the conversation">
 		<Icon name="info" />{state === "writing" ? "Writing the brief…" : state === "ready" ? "Read the brief" : "What do I need to know?"}</button>;
+}
+function ReviewButton() {
+	const { review } = useContext(BriefContext);
+	return <button type="button" className="brief-button" onClick={() => review?.()} title="Ask Pi to review this turn's changes with the code-review skill, reporting first">
+		<Icon name="code" />Review the changes</button>;
 }
 function RewindButton({ message }: { message: ChatMessage }) {
 	const { rewind } = useContext(RewindContext);
