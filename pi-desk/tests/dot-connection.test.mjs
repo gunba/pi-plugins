@@ -10,7 +10,8 @@ function fixture(t) {
 	const directory = mkdtempSync(join(tmpdir(), "desk-dot-direct-connection-"));
 	const opened = [], posts = [], callbacks = [], clients = [];
 	let selected, failing = false, uncertain = false;
-	const options = { account(id) { selected = id; return { path: join(directory, id), name: "Fixture account" }; },
+	// Pi's ChatGPT login: which account it is signed into when Dot connects.
+	const options = { authPath: join(directory, "auth.json"),
 		client(_authorize, changed) {
 			const account = selected, read = { dot: "fixture-dot", room: "room", name: "Fixture", path: "/dots/thread", paused: false, entries: [] };
 			const client = { identity: { accountId: account, userId: "owner", accountUserId: "owner" }, connected: true, writing: false, avatarView: {}, closed: false,
@@ -23,16 +24,16 @@ function fixture(t) {
 		} };
 	const dot = new DotConnection(directory, directory, options);
 	t.after(async () => { await dot.close(); rmSync(directory, { recursive: true, force: true }); });
-	return { dot, options, directory, opened, posts, callbacks, clients, fail(value) { failing = value; }, uncertain(value) { uncertain = value; } };
+	return { dot, options, directory, opened, posts, callbacks, clients, signInAs(id) { selected = id; }, fail(value) { failing = value; }, uncertain(value) { uncertain = value; } };
 }
 
 test("a direct connection changes only after candidate confirmation and scopes future inputs to its account", async t => {
 	const f = fixture(t), first = randomUUID(), second = randomUUID();
-	await f.dot.connect(first); const before = await f.dot.view();
-	assert.equal(before.transport, "direct"); assert.equal(before.account, first); assert.match(before.connection, /^[a-f0-9]{64}$/);
-	f.fail(true); await assert.rejects(f.dot.connect(second), /unavailable/);
-	assert.equal((await f.dot.view()).account, first); assert.equal(f.clients[0].closed, false); assert.equal(f.clients[1].closed, true);
-	f.fail(false); await f.dot.connect(second); const after = await f.dot.view();
+	f.signInAs(first); await f.dot.connect(); const before = await f.dot.view();
+	assert.equal(before.transport, "direct"); assert.match(before.connection, /^[a-f0-9]{64}$/);
+	f.signInAs(second); f.fail(true); await assert.rejects(f.dot.connect(), /unavailable/);
+	assert.equal((await f.dot.view()).connection, before.connection); assert.equal(f.clients[0].closed, false); assert.equal(f.clients[1].closed, true);
+	f.fail(false); await f.dot.connect(); const after = await f.dot.view();
 	assert.equal(after.id, before.id); assert.notEqual(after.connection, before.connection); assert.equal(f.clients[0].closed, true);
 	assert.throws(() => f.dot.send(randomUUID(), after.id, "Old account", [], before.connection), /account or conversation changed/);
 	assert.equal(f.posts.length, 0);
@@ -42,10 +43,10 @@ test("a direct connection changes only after candidate confirmation and scopes f
 
 test("unconfirmed direct delivery survives restart and stale account events never accept another connection's input", async t => {
 	const f = fixture(t), first = randomUUID(), second = randomUUID(); f.uncertain(true);
-	await f.dot.connect(first); const before = await f.dot.view(), id = randomUUID();
+	f.signInAs(first); await f.dot.connect(); const before = await f.dot.view(), id = randomUUID();
 	f.dot.send(id, before.id, "One attempt", [], before.connection); await f.dot.work;
 	assert.equal((await f.dot.input(id)).state, "unknown"); assert.equal(f.posts.length, 1);
-	await f.dot.connect(second);
+	f.signInAs(second); await f.dot.connect();
 	f.callbacks[0]({ type: "receipt", request: id, message: "late-old-client" });
 	f.callbacks.at(-1)({ type: "receipt", request: id, message: "wrong-account" });
 	assert.equal((await f.dot.input(id)).state, "unknown");
@@ -58,7 +59,7 @@ test("unconfirmed direct delivery survives restart and stale account events neve
 });
 
 test("uploaded files are bound to the connection and removed only after durable acceptance", async t => {
-	const f = fixture(t); await f.dot.connect(randomUUID()); const view = await f.dot.view(), file = randomUUID();
+	const f = fixture(t); f.signInAs(randomUUID()); await f.dot.connect(); const view = await f.dot.view(), file = randomUUID();
 	assert.throws(() => f.dot.stageFile(file, view.id, "file.txt", "text/plain", 4, "f".repeat(64)), /changed/);
 	f.dot.stageFile(file, view.id, "file.txt", "text/plain", 4, view.connection); f.dot.appendFile(file, 0, Buffer.from("data").toString("base64"));
 	const id = randomUUID(); f.dot.send(id, view.id, "File", [file], view.connection); await f.dot.work;

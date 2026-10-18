@@ -46,7 +46,7 @@ export function NewConversationModel({ sessions, computer, value, change, disabl
 		<div className="new-model-field"><span>Model</span>
 			<ModelPicker disabled={disabled} select={model => change({ ...value, model: `${model.provider}/${model.id}` })}
 				// Nothing to carry over yet, so any model can be chosen without a provider-switch warning.
-				snapshot={{ id: `new:${computer ?? "local"}`, leaf: null, empty: true, activity: "idle", models: source.models, accounts: source.accounts,
+				snapshot={{ id: `new:${computer ?? "local"}`, leaf: null, empty: true, activity: "idle", models: source.models,
 					modelSwitchConstraint: null, model: chosen ? { ...chosen, images: false } : undefined }} />
 		</div>
 		<div className="new-model-field"><span>Reasoning</span>

@@ -31,7 +31,7 @@ export type DotSurfaceInput =
 	| { kind: "key"; key: string; code: string; modifiers: number }
 	| { kind: "text"; text: string };
 export interface DotSnapshot {
-	transport?: "direct"; account?: string; accountName?: string; identity?: string; connection?: string; live?: boolean; avatarError?: string;
+	transport?: "direct"; identity?: string; connection?: string; live?: boolean; avatarError?: string;
 	state: "disconnected" | "connecting" | "ready" | "unavailable";
 	busy?: boolean;
 	id?: string; name?: string; avatar?: string; writing?: boolean; paused?: boolean; error?: string;

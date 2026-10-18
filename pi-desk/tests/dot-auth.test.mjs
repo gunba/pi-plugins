@@ -18,7 +18,7 @@ function fixture(t) {
 	return { directory, path };
 }
 
-test("Dot resolves its selected OAuth login without using agent account defaults", async t => {
+test("Dot reads its ChatGPT login through Pi's credential store, without models or other credential files", async t => {
 	const { directory, path } = fixture(t);
 	const other = join(directory, "auth.json"), original = JSON.stringify({ "openai-codex": { type: "oauth", access: jwt("agent-account", "agent-user", "agent@example.test"), refresh: "other", expires: 0 } });
 	writeFileSync(other, original);
@@ -38,11 +38,11 @@ test("Dot resolves its selected OAuth login without using agent account defaults
 	assert.equal(readFileSync(other, "utf8"), original);
 });
 
-test("Dot does not silently follow a saved login into another account", async t => {
+test("Dot does not silently follow Pi's ChatGPT login into another account", async t => {
 	const { path } = fixture(t);
 	let token = jwt("dot-account", "dot-user", "dot@example.test");
 	const auth = new DotAuth(path, { accountId: "dot-account", userId: "dot-user" }, async () => ({ getAuth: async () => ({ auth: { apiKey: token } }) }));
 	await auth.authorize();
 	token = jwt("agent-account", "agent-user", "agent@example.test");
-	await assert.rejects(auth.authorize(), /saved Dot account changed/);
+	await assert.rejects(auth.authorize(), /different ChatGPT account/);
 });

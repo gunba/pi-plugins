@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { getModelCredentials } from "../model-credentials.ts";
 import { SESSION_USAGE_CHANGED } from "../../pi-session-usage/index.ts";
 import {
 	getAgentDir,
@@ -163,7 +162,6 @@ export async function inheritProviderRuntime(
 	modelRuntime: ModelRuntime,
 	fallback?: CachedProviderAuth,
 	signal?: AbortSignal,
-	ownCredentials = false,
 ): Promise<void> {
 	signal?.throwIfAborted();
 	const model = ctx.modelRegistry.find(ref.provider, ref.id);
@@ -178,11 +176,6 @@ export async function inheritProviderRuntime(
 	const childModel = modelRuntime.getModel(ref.provider, ref.id);
 	if (!childModel)
 		throw new Error(`cannot restore child model ${ref.provider}/${ref.id}`);
-	if (ownCredentials) {
-		const childAuth = await modelRuntime.getAuth(childModel, { signal });
-		if (!childAuth) throw new Error(`cannot resolve selected account for ${ref.provider}`);
-		return;
-	}
 	const modelAuth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	let providerAuth: Awaited<ReturnType<typeof ctx.modelRegistry.getProviderAuth>>;
 	let providerAuthError: string | undefined;
@@ -345,7 +338,6 @@ export default function subagents(pi: ExtensionAPI): void {
 			cwd: ctx.cwd,
 			agentDir: getAgentDir(),
 			activeRootLaunchIds: launches,
-			modelCredentials: getModelCredentials(pi),
 			isProjectTrusted: () => ctx.isProjectTrusted(),
 			getRootStatus: () => ctx.isIdle() ? "idle" : "running",
 			isSuspended: () => !!remote?.suspended,
@@ -393,7 +385,7 @@ export default function subagents(pi: ExtensionAPI): void {
 				return ctx.modelRegistry.find(ref.provider, ref.id);
 			},
 			authorizeModelOverrides: (selection, signal) => permissions.authorize(selection, signal),
-			async prepareModelRuntime(ref, modelRuntime, signal, ownCredentials) {
+			async prepareModelRuntime(ref, modelRuntime, signal) {
 				if (ref.provider === "openai-codex") requireCodexWire(ctx.sessionManager.getSessionId());
 				await inheritProviderRuntime(
 					ctx,
@@ -401,7 +393,6 @@ export default function subagents(pi: ExtensionAPI): void {
 					modelRuntime,
 					providerAuth.get(ref.provider),
 					signal,
-					ownCredentials,
 				);
 			},
 		};

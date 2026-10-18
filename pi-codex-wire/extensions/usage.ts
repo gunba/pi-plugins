@@ -4,7 +4,6 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { computeSessionStats, SESSION_USAGE_CHANGED, type SessionStats } from "../../pi-session-usage/index.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
-import { getModelCredentials, MODEL_ACCOUNT_CHANGED } from "../../pi-subagents/model-credentials.ts";
 import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/index.ts";
 
 type HeaderMap = Record<string, unknown>;
@@ -36,7 +35,6 @@ type SessionStatsCache = {
 const STATUS_KEY = "codex-usage";
 const DISABLE_STATUS_ENV = "PI_CODEX_USAGE_STATUS";
 const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude" };
-const SOURCE_PROVIDERS: Record<UsageSource, string> = { codex: "openai-codex", claude: "anthropic" };
 const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
 
 // Factories can share this module across reloads. Never share captured contexts,
@@ -45,8 +43,6 @@ type UsageState = {
   directory: string;
   snapshotFiles: Partial<Record<UsageSource, string>>;
   snapshots: UsageSnapshots;
-  accountIds: Partial<Record<UsageSource, string>>;
-  claudeRequestAccount?: string;
   events: ExtensionAPI["events"];
   context?: ExtensionContext;
   enabled: boolean;
@@ -493,7 +489,6 @@ export default function codexUsage(pi: ExtensionAPI): void {
     directory,
     snapshotFiles: {},
     snapshots: {},
-    accountIds: {},
     events: pi.events,
     enabled: !/^(0|false|off|no|disabled)$/i.test(process.env[DISABLE_STATUS_ENV] || ""),
     disposed: false,
@@ -505,23 +500,16 @@ export default function codexUsage(pi: ExtensionAPI): void {
     if (snapshot) recordSnapshot(snapshot, state);
   });
   const unsubscribeUsage = pi.events.on(SESSION_USAGE_CHANGED, () => refreshUsageStatus(state));
-  const selectAccount = () => {
-    const credentials = getModelCredentials(pi);
+  // Allowances belong to Pi's one login per provider.
+  const loadSnapshots = () => {
     for (const source of USAGE_SOURCES) {
-      const id = credentials?.accountId?.(SOURCE_PROVIDERS[source]) ?? "pi";
-      if (state.accountIds[source] === id) continue;
-      if (id !== "pi" && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id)) throw Error("Invalid allowance account ID.");
-      state.accountIds[source] = id;
-      if (source === "claude") state.claudeRequestAccount = undefined;
-      const prefix = source === "codex" ? "usage" : "usage-claude";
-      const file = join(directory, `${prefix}${id === "pi" ? "" : `-${id}`}.json`);
+      if (state.snapshotFiles[source]) continue;
+      const file = join(directory, `${source === "codex" ? "usage" : "usage-claude"}.json`);
       state.snapshotFiles[source] = file;
       const snapshot = readPersistedSnapshots(file)[source];
       if (snapshot) state.snapshots[source] = snapshot;
-      else delete state.snapshots[source];
     }
   };
-  const unsubscribeAccount = pi.events.on(MODEL_ACCOUNT_CHANGED, () => { selectAccount(); refreshUsageStatus(state); });
 
   function dispose(): void {
     if (state.disposed) return;
@@ -534,26 +522,23 @@ export default function codexUsage(pi: ExtensionAPI): void {
     if (statusOwners.get(pi.events) === state) statusOwners.delete(pi.events);
     unsubscribeWire();
     unsubscribeUsage();
-    unsubscribeAccount();
     presentation?.publish("pi-usage", undefined);
   }
 
   pi.on("session_start", (_event, ctx) => {
     if (state.disposed) return;
-    selectAccount();
+    loadSnapshots();
     state.presentation = ctx.mode === "rpc" ? getPresentation(pi) : undefined;
     updateUsageStatus(ctx, state);
   });
 
   pi.on("before_provider_request", (_event, ctx) => {
     if (state.disposed) return;
-    state.claudeRequestAccount = contextUsageSource(ctx) === "claude" ? state.accountIds.claude : undefined;
     updateUsageStatus(ctx, state);
   });
 
   pi.on("after_provider_response", (event, ctx) => {
-    if (state.disposed || contextUsageSource(ctx) !== "claude" || !state.claudeRequestAccount
-      || state.claudeRequestAccount !== state.accountIds.claude) return;
+    if (state.disposed || contextUsageSource(ctx) !== "claude") return;
     const snapshot = parseUsageHeaders(event.headers, "claude");
     if (snapshot) recordSnapshot(snapshot, state);
   });

@@ -32,7 +32,7 @@ import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/relea
 import { CACHE_COMPACTION_LEAD_MS, QUIET_MS, mcpServerCommands, readAutomatic, readCacheCompaction, restartBlockers, workerHasRunningCommands, writeAutomatic,
 	writeCacheCompaction, type AutomaticUpdates } from "./automatic-updates.ts";
 import { InputLedger } from "./inputs.ts";
-import { ProviderAccounts } from "./provider-accounts.ts";
+import { Logins, adoptSavedLogins, retireSavedLogins } from "./logins.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
 import { liveSupervisor } from "./login-supervisor.ts";
 import { operatorAvailability, setOperatorAvailability } from "./operator.ts";
@@ -91,7 +91,9 @@ export class DeskHost {
 	private folders?: Folders;
 	private inputs?: InputLedger;
 	private dot?: DotConnection;
-	private providerAccounts?: ProviderAccounts;
+	private logins?: Logins;
+	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
+	private adoption?: Promise<unknown>;
 	private checkpoints?: UpdateCheckpoints;
 	private restoringUpdate = false;
 	private restoreUpdateJob?: Promise<void>;
@@ -185,12 +187,12 @@ export class DeskHost {
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
-			this.providerAccounts = new ProviderAccounts(directory, this.options.agentDir!);
-			this.dot = new DotConnection(directory, this.options.agentDir!, { proxy: this.options.proxy, account: id => {
-				const account = this.providerAccounts!.view().accounts.find(account => account.id === id && account.provider === "openai-codex" && !account.native);
-				if (!account) throw Error("Choose a saved ChatGPT sign-in for Dot.");
-				return { path: this.providerAccounts!.authPath("openai-codex", id), name: account.name };
-			} });
+			this.logins = new Logins(this.options.agentDir!);
+			this.adoption = adoptSavedLogins(directory, this.options.agentDir!)
+				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
+				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
+			// Dot signs into ChatGPT with Pi's own Codex login.
+			this.dot = new DotConnection(directory, this.options.agentDir!, { proxy: this.options.proxy, authPath: join(this.options.agentDir!, "auth.json") });
 			this.dot.start();
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
@@ -248,7 +250,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
-				this.refreshUpdates(); this.refreshParties(); this.refreshQuests(); void this.maintain();
+				this.refreshUpdates(); this.refreshParties(); this.refreshQuests(); void this.maintain(); void this.retireLogins();
 				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -894,6 +896,14 @@ export class DeskHost {
 	 * Keep this computer current without interrupting work: restart one idle conversation at a time onto
 	 * this host's version, and update the host itself when every conversation has been quiet for a while.
 	 */
+	/** The earlier login store goes once no running conversation still uses the code that read it. */
+	private async retireLogins(): Promise<void> {
+		const folder = join(this.directory, "provider-accounts");
+		if (!this.adoption || !existsSync(folder)) return;
+		await this.adoption;
+		const older = [...this.sessions.values()].some(({ view }) => view.state !== "closed" && !!view.snapshot && "accounts" in view.snapshot);
+		if (!older) retireSavedLogins(this.directory);
+	}
 	private async maintain(force = false, only?: string): Promise<void> {
 		if (this.maintaining) { if (force) this.forcedMaintenance = { only }; return; }
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate || this.applyingUpdate) return;
@@ -920,7 +930,7 @@ export class DeskHost {
 			const available = this.updates?.available, attempt = this.hostUpdateAttempt;
 			const waiting = !available || !this.automatic.host || !this.runtimeHome ? undefined
 				: now - this.started < QUIET_MS ? "Desk started in the last ten minutes"
-				: hostBusy ?? (this.dot?.busy ? "A Dot operation is running" : this.providerAccounts?.signingIn ? "A provider sign-in is in progress"
+				: hostBusy ?? (this.dot?.busy ? "A Dot operation is running" : this.logins?.signingIn ? "A sign-in is in progress"
 				: !["idle", "failed"].includes(this.updates!.phase) ? `Another update is ${this.updates!.phase}`
 				// A failed attempt is retried later, not abandoned: one failure used to stop automatic updates for good.
 				: attempt?.version === available && now - attempt.at < RETRY_MS ? `The last attempt failed; Desk retries ${new Date(attempt.at + RETRY_MS).toLocaleTimeString()}` : undefined);
@@ -1106,7 +1116,7 @@ export class DeskHost {
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
-			providerAccountsDirectory: join(this.options.dataDir ?? join(this.options.agentDir!, "desk"), "provider-accounts"),
+			deskDirectory: this.options.dataDir ?? join(this.options.agentDir!, "desk"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined,
@@ -1206,7 +1216,7 @@ export class DeskHost {
 					}
 					if (["/api/host/prepare-update", "/api/host/stop-for-update"].includes(url.pathname)) {
 						if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-						if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
+						if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 						const target = string(data.target, 64), id = string(data.checkpoint, 128);
 						const state = this.runtimeHome ? readState(this.runtimeHome) : undefined;
 						if (this.closing || this.restoringUpdate || !this.runtime || data.runtime !== this.runtime || state?.active !== this.runtime
@@ -1233,7 +1243,7 @@ export class DeskHost {
 					}
 					if (url.pathname === "/api/host/stop-if-idle") {
 						if (this.dot?.busy) throw Error("Dot has an active operation.");
-						if (this.providerAccounts?.signingIn) throw Error("Provider sign-in is active.");
+						if (this.logins?.signingIn) throw Error("A sign-in is in progress.");
 						if (this.closing || !this.runtime || data.runtime !== this.runtime) {
 							json(response, 409, { error: "The host changed or is already stopping." }); return;
 						}
@@ -1332,14 +1342,14 @@ export class DeskHost {
 			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
-			if (url.pathname === "/api/provider-accounts" && request.method === "GET") return reply(await this.providerAccounts!.snapshot());
-			if (url.pathname === "/api/provider-accounts/default" && request.method === "POST") return reply(this.providerAccounts!.setDefault(string(data.provider, 200), string(data.id, 36)));
-			if (url.pathname === "/api/provider-accounts/sign-ins" && request.method === "POST") return reply(this.providerAccounts!.start(
-				string(data.id, 36), string(data.provider, 200), string(data.name, 100), string(data.type, 10) as import("../shared/provider-accounts.ts").ProviderAuthType), 202);
-			const signIn = /^\/api\/provider-accounts\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);
+			if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.logins!.snapshot());
+			if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.logins!.signOut(string(data.provider, 200)));
+			if (url.pathname === "/api/logins/sign-ins" && request.method === "POST") return reply(this.logins!.start(
+				string(data.id, 36), string(data.provider, 200), string(data.type, 10) as import("../shared/logins.ts").ProviderAuthType), 202);
+			const signIn = /^\/api\/logins\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);
 			if (signIn && request.method === "POST") {
-				if (signIn[2] === "cancel") await this.providerAccounts!.cancel(signIn[1]!);
-				else this.providerAccounts!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
+				if (signIn[2] === "cancel") await this.logins!.cancel(signIn[1]!);
+				else this.logins!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
 				return reply({});
 			}
 			if (url.pathname === "/api/dot/connector") {
@@ -1359,7 +1369,7 @@ export class DeskHost {
 			}
 			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
 			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
-				void this.dot!.connect(string(data.account, 36)).catch(() => {}); return reply({ accepted: true }, 202);
+				void this.dot!.connect().catch(() => {}); return reply({ accepted: true }, 202);
 			}
 			if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await this.dot!.disconnect(); return reply({}); }
 			if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await this.dot!.history(string(url.searchParams.get("before"), 1000)));
@@ -1407,7 +1417,7 @@ export class DeskHost {
 			}
 			if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
 				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-				if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
+				if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 				const version = string(data.version, 40);
 				if (!this.runtimeHome || !/^\d+\.\d+\.\d+$/.test(version)) return reply({ error: "Select the published update." }, 409);
 				await launchOperation(this.runtimeHome, "update-now", version);
@@ -1478,7 +1488,7 @@ export class DeskHost {
 			}
 			if (url.pathname === "/api/runtime/apply" && request.method === "POST") {
 				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-				if (this.providerAccounts?.signingIn) throw Error("Finish or cancel provider sign-in before updating.");
+				if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 				const prepared = string(data.prepared, 64);
 				if (!this.runtimeHome || !/^[a-f0-9]{64}$/.test(prepared)) return reply({ error: "Select a prepared update." }, 409);
 				await launchOperation(this.runtimeHome, "apply-now", prepared);
@@ -1681,7 +1691,7 @@ export class DeskHost {
 		this.checkpoints?.dispose();
 		for (const cancel of this.startupWaits) cancel();
 		const errors: unknown[] = [];
-		try { await this.providerAccounts?.close(); } catch (error) { errors.push(error); }
+		try { await this.logins?.close(); } catch (error) { errors.push(error); }
 		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat);

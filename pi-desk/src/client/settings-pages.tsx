@@ -38,8 +38,7 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 	return <div className="settings-page">
 		{error && <p className="error-text" role="alert">{error}</p>}
 		<section className="settings-group">
-			<Row label="Model">{snapshot?.model ? <span>{snapshot.model.name}{snapshot.thinking && snapshot.thinking !== "off" ? ` · ${snapshot.thinking} reasoning` : ""}
-				{snapshot.model.accountName ? <span className="muted"> · {snapshot.model.accountName}</span> : null}</span> : <span className="muted">Not started</span>}</Row>
+			<Row label="Model">{snapshot?.model ? <span>{snapshot.model.name}{snapshot.thinking && snapshot.thinking !== "off" ? ` · ${snapshot.thinking} reasoning` : ""}</span> : <span className="muted">Not started</span>}</Row>
 			{session.workerRuntime && <Row label="Version"><span>Desk {session.workerRuntime.version} · Pi {session.workerRuntime.engine}</span>
 				{outdated && ready && <button className="quiet-action" disabled={locked} onClick={() => run(api(`/sessions/${session.key}/restart`, { replace: true }))}>
 					<Icon name="refresh" />Restart on {computer!.release!.version}</button>}</Row>}
@@ -167,7 +166,7 @@ export function ComputerPage({ host, computer, connected, children, views, act, 
 			</Row>)}
 			{children.updates}
 		</section>
-		<h3 className="settings-subheading">Model accounts</h3>
+		<h3 className="settings-subheading">Logins</h3>
 		{children.accounts}
 		<h3 className="settings-subheading">Dictation</h3>
 		{children.dictation}

@@ -8,7 +8,6 @@ import { DOT_FILE_COUNT, type DotInput, type DotMessage, type DotSnapshot, type 
 import { stageDotFiles, saveDotDownload } from "./dot-files.ts";
 import { DotNativeView } from "./dot-native-view.tsx";
 import { DotAgentAccess } from "./dot-agent-access.tsx";
-import { DotAccounts } from "./dot-accounts.tsx";
 import type { Computer } from "./workspace.ts";
 import { api, ApiError } from "./connection.ts";
 import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
@@ -154,12 +153,11 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const reserved = dotReservedFiles(outbox, view.inputs);
 	const files = (view.uploads ?? []).filter(file => file.state !== "handed-off" && !reserved.has(file.id));
 	const filesReady = !!view.connection && files.every(file => file.connection === view.connection && ["ready", "uploaded"].includes(file.state));
-	const action = async (name: "connect" | "disconnect", account?: string) => {
+	const action = async (name: "connect" | "disconnect") => {
 		if (!supported) { setError("Update Desk on this computer to connect Dot."); return; }
-		if (name === "connect" && !account) { setError("Choose a ChatGPT account for Dot."); return; }
 		const epoch = generation.current; selection.current++; readSequence.current++; setBusy(true); setError("");
 		try {
-			await api(`/dot/${name}`, name === "connect" ? { account } : {}, id);
+			await api(`/dot/${name}`, {}, id);
 			const sequence = ++readSequence.current, next = await api<DotSnapshot>("/dot", undefined, id);
 			if (epoch === generation.current && sequence === readSequence.current) receive(next);
 		} catch (error) { if (epoch === generation.current) setError(errorText(error)); }
@@ -357,8 +355,13 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
 			</select></label>}
 			{dot.supported ? <>
-				<DotAccounts key={dot.id ?? "local"} computer={dot.id} online={dot.online} account={view.account} accountName={view.accountName} identity={view.identity}
-					ready={ready} busy={busy || opening || !!view.busy || view.state === "connecting"} connect={account => dot.action("connect", account)} disconnect={() => dot.action("disconnect")} />
+				<div className="dot-connection-actions">
+					<button className="primary" disabled={!dot.online || busy || opening || !!view.busy || view.state === "connecting"} onClick={() => void dot.action("connect")}>
+						{view.state === "connecting" ? "Connecting…" : ready ? "Reconnect Dot" : "Connect Dot"}</button>
+					{ready && <button disabled={!dot.online || busy || opening || !!view.busy} onClick={() => void dot.action("disconnect")}>Disconnect</button>}
+				</div>
+				{ready && view.identity ? <p>Connected as <strong>{view.identity}</strong>.</p>
+					: <p className="muted">Dot uses Pi's ChatGPT login on this computer (OpenAI Codex under Settings → Accounts &amp; connections).</p>}
 				<p>No ChatGPT window is needed for messages, attachments or live updates. Keep the connection computer online.</p>
 				<p className="muted">Activity, computer and management views open ChatGPT only when you ask. Those views may need a separate browser sign-in to the same account.</p>
 				<DotAgentAccess key={`access:${dot.id ?? "local"}`} computer={dot.id} online={dot.online} />

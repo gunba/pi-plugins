@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { createAgentSession, DefaultPackageManager, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { AccountBinding, accountSelection } from "../src/host/account-binding.ts";
+import { createAgentSession, DefaultPackageManager, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { inheritProviderRuntime } from "../../pi-subagents/extensions/subagents.ts";
 import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
 import nativeCompaction from "../../pi-codex-wire/extensions/native-compaction.ts";
@@ -28,9 +27,9 @@ function response(toolName, model) {
 		{ headers: { "content-type": "text/event-stream" } });
 }
 
-test("packaged Claude OAuth shaping survives tool turns, child account inheritance and native compaction", async () => {
-	const root = mkdtempSync(join(tmpdir(), "desk-claude-oauth-")), profiles = join(root, "profiles");
-	const ids = [randomUUID(), randomUUID()], requests = [], sessions = [];
+test("packaged Claude OAuth shaping survives tool turns, child login inheritance and native compaction", async () => {
+	const root = mkdtempSync(join(tmpdir(), "desk-claude-oauth-"));
+	const id = randomUUID(), requests = [], sessions = [];
 	const oldFetch = globalThis.fetch, oldDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
 	let toolExecutions = 0;
@@ -42,19 +41,15 @@ test("packaged Claude OAuth shaping survives tool turns, child account inheritan
 		return response(requests.length === 1 ? body.tools.find(tool => tool.name === "Read")?.name : undefined, body.model);
 	};
 	try {
-		writeFileSync(join(root, "auth.json"), "{}\n");
-		for (const id of ids) {
-			mkdirSync(join(profiles, id), { recursive: true });
-			writeFileSync(join(profiles, id, "account.json"), JSON.stringify({ id, provider: "anthropic", name: "Fixture" }));
-			writeFileSync(join(profiles, id, "auth.json"), JSON.stringify({ anthropic: { type: "oauth", access: `sk-ant-oat01-fixture-${id}`,
-				refresh: "fixture", expires: Date.now() + 3600000 } }));
-		}
+		const login = JSON.stringify({ anthropic: { type: "oauth", access: `sk-ant-oat01-fixture-${id}`, refresh: "fixture", expires: Date.now() + 3600000 } });
+		writeFileSync(join(root, "auth.json"), login);
+		const piRuntime = () => ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"), allowModelNetwork: false });
 		const settings = SettingsManager.inMemory({ packages: [fileURLToPath(new URL("../..", import.meta.url))],
 			cacheWarming: "off", compaction: { enabled: false, keepRecentTokens: 10 }, retry: { enabled: false } });
 		const resources = await new DefaultPackageManager({ cwd: root, agentDir: root, settingsManager: settings }).resolve(() => "error");
 		const extension = resources.extensions.find(item => item.path.replaceAll("\\", "/").endsWith("/@gotgenes/pi-anthropic-auth/src/index.ts"));
 		assert.ok(extension?.enabled, "the published package manifest must expose the maintained plugin");
-		const binding = new AccountBinding(root, profiles, { anthropic: ids[0] }), runtime = await binding.runtime();
+		const runtime = await piRuntime();
 		const model = runtime.getModel("anthropic", "claude-sonnet-4-5");
 		assert.ok(model);
 		const parentManager = SessionManager.create(root, join(root, "sessions"));
@@ -100,19 +95,14 @@ test("packaged Claude OAuth shaping survives tool turns, child account inheritan
 		assert.ok(second.body.messages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === "tool_result")));
 
 		const childManager = SessionManager.create(root, join(root, "sessions"));
-		const child = await binding.capability().create(childManager, new AbortController().signal);
+		// A child uses Pi's same login as its parent.
+		const childRuntime = await piRuntime();
 		await inheritProviderRuntime(parent.extensionRunner.createContext(), { provider: model.provider, id: model.id },
-			child.runtime, undefined, new AbortController().signal, true);
-		child.runtime.registerNativeProvider(bindChildProvider(child.runtime.getRegisteredNativeProvider("anthropic"), childManager.getSessionId()));
-		binding.select({ anthropic: ids[1] });
-		const childSession = await open(child.runtime, childManager);
+			childRuntime, undefined, new AbortController().signal);
+		childRuntime.registerNativeProvider(bindChildProvider(childRuntime.getRegisteredNativeProvider("anthropic"), childManager.getSessionId()));
+		const childSession = await open(childRuntime, childManager);
 		await childSession.prompt("Report fixture status.");
-		assert.equal(requests.at(-1).headers.get("authorization"), `Bearer sk-ant-oat01-fixture-${ids[0]}`);
-		assert.deepEqual(accountSelection(childManager), { anthropic: ids[0] });
-		const resumed = await binding.capability().create(childManager, new AbortController().signal);
-		assert.equal((await resumed.runtime.getAuth("anthropic")).auth.apiKey, `sk-ant-oat01-fixture-${ids[0]}`);
-		const fresh = await binding.capability().create(SessionManager.inMemory(root), new AbortController().signal);
-		assert.equal((await fresh.runtime.getAuth("anthropic")).auth.apiKey, `sk-ant-oat01-fixture-${ids[1]}`);
+		assert.equal(requests.at(-1).headers.get("authorization"), `Bearer sk-ant-oat01-fixture-${id}`);
 
 		const before = readFileSync(parentManager.getSessionFile());
 		await parent.prompt("Additional fixture context. " + "x".repeat(500));
@@ -120,7 +110,7 @@ test("packaged Claude OAuth shaping survives tool turns, child account inheritan
 		assert.equal(compact.summary, "Completed fixture work.");
 		assert.equal(parent.model.provider, "anthropic");
 		assert.ok(readFileSync(parentManager.getSessionFile()).subarray(0, before.length).equals(before));
-		assert.equal(readFileSync(join(root, "auth.json"), "utf8"), "{}\n");
+		assert.equal(readFileSync(join(root, "auth.json"), "utf8"), login, "the login is used, not rewritten");
 		assert.equal(requests.length, 5);
 		assert.ok(requests.every(request => request.body.system.filter(block => block.text.startsWith("x-anthropic-billing-header:")).length === 1),
 			"root, child without its own plugin load, and compaction each need one OAuth compatibility block");

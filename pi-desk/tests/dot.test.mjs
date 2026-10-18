@@ -34,9 +34,9 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 			} }] });
 		const { html, unsupported } = createRequire(import.meta.url)(outfile);
 		assert.match(html, /aria-label="Dot connection computer"/);
-		assert.match(html, /aria-label="Dot ChatGPT account"/);
+		assert.match(html, />Connect Dot</);
 		assert.match(html, /No ChatGPT window is needed/);
-		assert.match(html, /Add a ChatGPT account/);
+		assert.match(html, /uses Pi(?:'|&#x27;)s ChatGPT login/);
 		assert.doesNotMatch(html, /Chrome’s ChatGPT sign-in|opens a background tab/);
 		assert.match(unsupported, /Update Desk on this computer/);
 		assert.doesNotMatch(unsupported, /Dot ChatGPT account/);

@@ -12,8 +12,8 @@ const providerNames: Record<string, string> = {
 	google: "Google", "google-gemini-cli": "Google Gemini", "github-copilot": "GitHub Copilot",
 };
 export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
-	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "accounts" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
-	/** Omitted where account and history links do not apply, such as a conversation not yet created. */
+	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
+	/** Omitted where the sign-in and history links do not apply, such as a conversation not yet created. */
 	accounts?: (provider: string) => void; history?: () => void;
 }) {
 	const [query, setQuery] = useState(""), [active, setActive] = useState("");
@@ -21,8 +21,6 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 	const popover = useAnchoredPopover(`${snapshot.id}/${selected?.provider}/${selected?.id}`, disabled);
 	const { id: menuId, trigger, panel: menu, open, close } = popover;
 	const contextAware = constraint !== undefined;
-	const accountName = (model: Model) => model.accountName ?? (snapshot.accounts === undefined ? "Account unavailable"
-		: snapshot.accounts[model.provider] && snapshot.accounts[model.provider] !== "pi" ? "Saved account" : "Pi credentials");
 	const provider = selected?.provider ?? "", label = providerNames[provider] ?? provider;
 	const compactName = provider === "anthropic" ? selected?.name.replace(/^Claude\s+/i, "") : selected?.name;
 	const reason = (model: Model): string | undefined => {
@@ -63,8 +61,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 			body: <>
 				<p>{portable ? "Codex will make a plain-text summary using the current account’s allowance. The new model will receive that summary, not the encrypted checkpoint. A summary can omit details."
 					: "Pi will carry the current text, tool results and supported attachments into the new model. Provider-specific reasoning state and cache do not transfer."}</p>
-				<p>The original history stays saved. Tools will not be replayed. Existing subagents keep their own model and account.</p>
-				<p>Destination account: <strong>{accountName(model)}</strong> ({providerNames[model.provider] ?? model.provider}).</p>
+				<p>The original history stays saved. Tools will not be replayed. Existing subagents keep their own model.</p>
 				{!portable && snapshot.activity === "running" && <p>Current work will stop and continue with the new model.</p>}
 			</> });
 		if (accepted) select(model, portable ? { mode: "portable", leaf: snapshot.leaf! } : undefined);
@@ -72,7 +69,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 	return <div className="model-picker-group">
 		<button ref={trigger} type="button" className="model-picker" disabled={disabled} popoverTarget={menuId}
 			aria-label={`Choose model${selected ? `: ${selected.name}` : ""}`} aria-haspopup="dialog" aria-expanded={open}
-			title={selected ? `${label} · ${selected.id} · ${accountName(selected)}` : "Choose a model"}>
+			title={selected ? `${label} · ${selected.id}` : "Choose a model"}>
 			<ProviderIcon id={provider} title={label} /><span>{compactName ?? "Choose model"}</span>
 			<svg className="model-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
 		</button>
@@ -95,7 +92,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 					{models.map(model => <button type="button" role="option" id={optionId(model)} key={model.id} tabIndex={-1}
 						className={`model-menu-option${current && modelKey(current) === modelKey(model) ? " is-active" : ""}`}
 						aria-selected={!!selected && modelKey(model) === modelKey(selected)} aria-disabled={!!reason(model)}
-						title={reason(model) ?? `${model.provider}/${model.id} · ${accountName(model)}`}
+						title={reason(model) ?? `${model.provider}/${model.id}`}
 						onClick={() => void choose(model)} onMouseMove={() => { if (!reason(model)) setActive(modelKey(model)); }}>
 						<span>{model.name}</span>{selected && modelKey(model) === modelKey(selected) && <Icon name="check" />}
 					</button>)}
@@ -103,8 +100,8 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
 				{!filtered.length && <p className="model-menu-empty">No matching models</p>}
 			</div>
 			<div className="model-menu-footer">
-				<div className="model-menu-account"><span title={selected ? `${label} · ${accountName(selected)}` : undefined}>{label}{selected && ` · ${accountName(selected)}`}</span>
-					{accounts && <button type="button" disabled={!selected} onClick={() => { close(); accounts(provider); }}>Accounts</button>}</div>
+				<div className="model-menu-account"><span>{label}</span>
+					{accounts && <button type="button" disabled={!selected} onClick={() => { close(); accounts(provider); }}>Sign-in</button>}</div>
 				{!contextAware && selected && snapshot.models.some(model => model.provider !== provider) && <p>Restart this conversation when idle to switch providers. Current work can keep running.</p>}
 				{constraint && <p>{constraint.portable ? "Encrypted Codex context needs a summary before switching providers. Choose a model when idle to continue." : constraint.reason} {history && <button type="button" onClick={() => { close(); history(); }}>History</button>}</p>}
 			</div></>}

@@ -87,7 +87,6 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 				...(data.makeDefault === true ? { makeDefault: true } : {}),
 				...(context ? { context: { mode: "portable", leaf: string(context.leaf, 100) } as const } : {}) };
 		}
-		case "account": return { kind: data.kind, provider: string(data.provider, 200), id: string(data.id, 36) };
 		case "thinking": return { kind: data.kind, level: string(data.level, 30) };
 		case "answer": return { kind: data.kind, id: string(data.id, 100), answer: data.answer };
 		case "action":

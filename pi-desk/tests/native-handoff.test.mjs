@@ -101,7 +101,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	assert.equal(after.id, snapshot.id); assert.equal(after.file, snapshot.file);
 	assert.equal(adopted.view.activation, activation); assert.equal(adopted.worker.instance, worker.instance);
 	assert.equal(adopted.worker.generation, generation); assert.equal(adopted.worker.runtimeDirectory, pin);
-	assert.deepEqual(after.accounts, queued.accounts); assert.deepEqual(after.model, queued.model); assert.equal(after.thinking, queued.thinking);
+	assert.deepEqual(after.model, queued.model); assert.equal(after.thinking, queued.thinking);
 	assert.deepEqual(after.queue, queued.queue); assert.deepEqual(after.ui.interactions, queued.ui.interactions);
 	assert.deepEqual(readFileSync(snapshot.file).subarray(0, before.length), before);
 	assert.deepEqual(JSON.parse(readFileSync(join(root, "child.json"))), child, "the active native tool was not restarted");
@@ -153,7 +153,6 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	});
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
-	assert.deepEqual(snapshot.accounts, { anthropic: "pi" });
 	first.sessions.set(key, { worker, initialized: true, initialGeneration: snapshot.ui.generation,
 		view: { key, activation, cwd: root, created: Date.now(), state: "ready", file: snapshot.file, agentId: snapshot.id, snapshot, ui: snapshot.ui } });
 	first.persist(true);
@@ -167,7 +166,6 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	await worker.command({ kind: "action", view: view.id, revision: view.revision, action: "followup", value: "QUEUED CHILD FOLLOWUP" });
 	const queued = await waitSnapshot(worker, state => state.ui.views.find(view => view.id === `agent:${child.session}`)?.data.fields.some(field => field.label === "Queued tasks" && field.value === "1"));
 	const entries = () => readFileSync(child.file, "utf8").trim().split("\n").map(line => JSON.parse(line));
-	assert.deepEqual(entries().find(entry => entry.customType === "pi-desk/provider-accounts").data.selection, snapshot.accounts);
 	const childBefore = readFileSync(child.file), rootBefore = readFileSync(snapshot.file);
 	const callsBefore = readFileSync(join(root, "subagent-model-calls.json")), generation = worker.generation;
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "subagent-before");
@@ -183,7 +181,7 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	const after = await adopted.worker.command({ kind: "snapshot" });
 	assert.equal(adopted.worker.instance, worker.instance); assert.equal(adopted.worker.generation, generation);
 	assert.equal(adopted.worker.runtimeDirectory, pin); assert.equal(adopted.view.activation, activation);
-	assert.deepEqual(after.accounts, snapshot.accounts); assert.deepEqual(after.model, snapshot.model); assert.equal(after.thinking, snapshot.thinking);
+	assert.deepEqual(after.model, snapshot.model); assert.equal(after.thinking, snapshot.thinking);
 	assert.deepEqual(after.ui.interactions, queued.ui.interactions);
 	assert.equal(after.ui.views.find(item => item.id === view.id).data.fields.find(field => field.label === "Queued tasks").value, "1");
 	assert.deepEqual(readFileSync(child.file), childBefore); assert.deepEqual(readFileSync(snapshot.file).subarray(0, rootBefore.length), rootBefore);

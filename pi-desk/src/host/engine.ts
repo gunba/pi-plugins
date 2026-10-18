@@ -2,8 +2,6 @@ import { realpathSync } from "node:fs";
 import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
-import { AccountBinding, accountSelection, initializeAccountSelection, ACCOUNT_ENTRY } from "./account-binding.ts";
-import { installModelCredentials } from "../../../pi-subagents/model-credentials.ts";
 import { compactionFailure, compactionHeld, compactionKey, measuredContextTokens } from "../../../pi-context-window/compaction-state.ts";
 import { promptCacheState } from "../../../pi-context-window/prompt-cache.ts";
 import { dirname, join } from "node:path";
@@ -70,7 +68,7 @@ async function checkModelChange(runtime: AgentSessionRuntime, model: { provider:
 	const constraint = modelSwitchConstraint(runtime.session, true);
 	if (constraint && constraint.provider !== model.provider) throw new Error(constraint.reason);
 	// Resolve credentials before interrupting healthy work.
-	if (!(await runtime.services.modelRuntime.checkAuth(model.provider))) throw new Error(`No usable credential for ${model.provider}/${model.id}. Sign in or choose an account in Model accounts.`);
+	if (!(await runtime.services.modelRuntime.checkAuth(model.provider))) throw new Error(`No usable credential for ${model.provider}/${model.id}. Sign in under Settings → Accounts & connections.`);
 }
 
 /** The only app module that owns Pi engine/session lifecycle. */
@@ -113,7 +111,6 @@ export class DeskEngine {
 	private transitionJob?: Promise<unknown>;
 	private handoffAbort?: AbortController;
 	private checkpointHold?: { id: string; running: boolean };
-	private accountBindings = new WeakMap<ModelRuntime, AccountBinding>();
 	private attachmentScope?: string;
 	private usageRevision = 0;
 	private contexts = new WeakMap<AgentSession, NativeContext>();
@@ -176,7 +173,7 @@ export class DeskEngine {
 		this.attachmentScope = options.attachmentScope;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
-		const operatorDirectory = options.providerAccountsDirectory ? dirname(options.providerAccountsDirectory) : join(agentDir, "desk");
+		const operatorDirectory = options.deskDirectory ?? join(agentDir, "desk");
 		this.presentation.setOperatorAvailability(() => operatorAvailability(operatorDirectory).mode === "present");
 		const pin = runtimePin(options.runtimeDirectory);
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
@@ -209,13 +206,9 @@ export class DeskEngine {
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			let context: NativeContext | undefined;
-			const accountsDirectory = options.providerAccountsDirectory ?? join(agentDir, "desk", "provider-accounts");
-			const selected = initializeAccountSelection(sessionManager, accountsDirectory, sessionStartEvent?.reason === "startup" || sessionStartEvent?.reason === "new");
-			const accounts = new AccountBinding(agentDir, accountsDirectory, selected);
-			const modelRuntime = await accounts.runtime(this.starting.signal);
-			this.accountBindings.set(modelRuntime, accounts);
+			// Pi's own model runtime and logins (auth.json).
 			const services = await createAgentSessionServices({
-				cwd, agentDir, modelRuntime, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
+				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
 				resourceLoaderOptions: {
 					extensionFactories: [
 						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
@@ -224,13 +217,10 @@ export class DeskEngine {
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);
 						installIntegrations(pi);
-						installModelCredentials(pi, accounts.capability());
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);
 						pi.on("before_agent_start", () => { context?.apply(); });
-						pi.on("session_tree", async () => {
-							accounts.select(accountSelection(sessionManager) ?? {});
-							await modelRuntime.refresh({ allowNetwork: false });
+						pi.on("session_tree", () => {
 							context?.apply();
 							this.feed?.reset();
 							this.presentation.advance();
@@ -466,8 +456,7 @@ export class DeskEngine {
 			title: sessionTitle(session.sessionName, this.opening.text),
 			leaf: session.sessionManager.getLeafId(),
 			empty: !session.sessionManager.getEntries().some(entry => entry.type === "message"),
-			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image"),
-				accountName: this.accountBindings.get(this.runtime.services.modelRuntime)?.name(session.model.provider) } : undefined,
+			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
 			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: portableSummaryAvailable(session.sessionId) } : null,
@@ -478,11 +467,7 @@ export class DeskEngine {
 				...loaded.errors.map(error => ({ path: error.path, error: error.error })),
 			],
 			commands: promptCommands(session, this.runtime.services.resourceLoader),
-			accounts: { ...this.accountBindings.get(this.runtime.services.modelRuntime)?.selection },
-			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({
-				id: model.id, provider: model.provider, name: model.name,
-				accountName: this.accountBindings.get(this.runtime!.services.modelRuntime)?.name(model.provider),
-			})),
+			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({ id: model.id, provider: model.provider, name: model.name })),
 			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
 			...(cache ? { cache } : {}),
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent,
@@ -591,7 +576,7 @@ export class DeskEngine {
 								throw Error("Finish current work and queued messages before summarizing context.");
 						};
 						guard();
-						if (!(await this.runtime!.services.modelRuntime.checkAuth(model.provider))) throw Error("Sign in or choose an account for the destination model first.");
+						if (!(await this.runtime!.services.modelRuntime.checkAuth(model.provider))) throw Error("Sign in to the destination model's provider first, under Settings → Accounts & connections.");
 						guard();
 						if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed. Review the model switch again.");
 						const abort = this.handoffAbort = new AbortController();
@@ -619,22 +604,6 @@ export class DeskEngine {
 				this.scheduleSnapshot();
 				return;
 			}
-			case "account": return this.change(async () => {
-				if (!this.runtime!.services.modelRuntime.getProvider(command.provider)) throw Error("Account selection is unavailable for this provider.");
-				if (session.getSteeringMessages().length || session.getFollowUpMessages().length) throw Error("Finish queued messages before changing the account.");
-				if (this.presentation.snapshot().views.some(view => view.kind === "conversation" && (view.data as import("../../../pi-ui/index.ts").UiConversation).active)) throw Error("Wait for child work to finish before changing the account.");
-				const models = this.runtime!.services.modelRuntime, binding = this.accountBindings.get(models);
-				if (!binding) throw Error("Account selection is unavailable.");
-				const previous = binding.selection, next = { ...previous, [command.provider]: command.id };
-				binding.select(next);
-				try {
-					const credential = await binding.read(command.provider);
-					if (command.id !== "pi" && !credential) throw Error("Selected account has no credential.");
-					await models.refresh({ allowNetwork: false });
-					session.sessionManager.appendCustomEntry(ACCOUNT_ENTRY, { selection: next });
-				} catch (error) { binding.select(previous); await models.refresh({ allowNetwork: false }); throw error; }
-				this.usageRevision++; this.scheduleSnapshot();
-			});
 			case "thinking": {
 				const level = session.getAvailableThinkingLevels().find(level => level === command.level);
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");

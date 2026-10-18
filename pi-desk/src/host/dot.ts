@@ -14,18 +14,19 @@ import type { DotSnapshot, DotInput, DotUpload, DotSurfaceFrame, DotSurfaceInput
 
 interface Config {
 	enabled: boolean; dot?: string; name?: string; path?: string; room?: string;
-	account?: string; accountName?: string; identity?: DotIdentity; connection?: string;
+	identity?: DotIdentity; connection?: string;
 }
 type Client = Pick<DotApi, "open" | "read" | "history" | "send" | "attach" | "download" | "close" | "identity" | "connected" | "writing" | "avatarView">;
 interface Options {
-	account: (id: string) => { path: string; name: string };
+	/** Pi's auth.json: Dot uses Pi's own ChatGPT (Codex) login. */
+	authPath: string;
 	proxy?: string;
 	client?: (authorize: DotAuthorize, changed: (event: DotApiEvent) => void) => Client;
 }
 const rejected = (error: unknown) => error instanceof DotHttpError && [400, 401, 403, 404, 413, 415, 422, 429].includes(error.status);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-/** Explicitly account-bound chat. Chrome is used only for a user-opened native surface. */
+/** Chat with Jordan's Dot through Pi's ChatGPT login. Chrome is used only for a user-opened native surface. */
 export class DotConnection {
 	private directory: string;
 	private agentDir: string;
@@ -87,32 +88,32 @@ export class DotConnection {
 		}
 	}
 	private receipts(): DotInput[] { return [...this.inputs.values()].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 15); }
-	start(): void { if (this.config.enabled) void this.connect(this.config.account).catch(() => {}); }
-	connect(account?: string): Promise<void> {
+	start(): void { if (this.config.enabled) void this.reconnect(true).catch(() => {}); }
+	/** Connecting by hand accepts whichever ChatGPT account Pi is signed into; reconnecting by itself keeps the same one. */
+	connect(): Promise<void> { return this.reconnect(false); }
+	private reconnect(automatic: boolean): Promise<void> {
 		if (this.loadFailed) return Promise.reject(Error("Dot’s saved connection or delivery receipts could not be read."));
 		if (this.connecting) return Promise.reject(Error("Wait for Dot's current connection attempt."));
 		if (this.busy) return Promise.reject(Error("Finish the Dot message or close its native view before reconnecting."));
 		this.stopped = false;
-		this.connecting = this.open(account).finally(() => { this.connecting = undefined; });
+		this.connecting = this.open(automatic).finally(() => { this.connecting = undefined; });
 		return this.connecting;
 	}
-	private async open(account?: string): Promise<void> {
+	private async open(automatic: boolean): Promise<void> {
 		const previous = this.client;
 		this.snapshot = { ...this.snapshot, state: "connecting", error: undefined };
 		let candidate: Client | undefined;
 		try {
-			if (!account || !dotUuid(account)) throw Error("Choose a saved ChatGPT sign-in for Dot. Its account is separate from your agents.");
-			const saved = this.options.account(account), same = !this.config.account || this.config.account === account;
-			const auth = new DotAuth(saved.path, same ? this.config.identity : undefined);
+			const auth = new DotAuth(this.options.authPath, automatic ? this.config.identity : undefined);
 			const changed = (event: DotApiEvent) => { if (this.client === candidate && !this.stopped) this.changed(event); };
 			candidate = this.options.client?.(auth.authorize, changed) ?? new DotApi(auth.authorize, changed, this.options.proxy);
 			this.candidate = candidate;
-			const initial = await candidate.open(same ? { dot: this.config.dot, path: this.config.path, room: this.config.room } : {});
+			const initial = await candidate.open(this.config.dot ? { dot: this.config.dot, path: this.config.path, room: this.config.room } : {});
 			if (this.stopped) return;
 			const identity = candidate.identity;
 			if (!identity) throw Error("Dot did not confirm its account.");
 			const connection = createHash("sha256").update(JSON.stringify([identity.accountId, identity.userId, initial.dot, initial.room])).digest("hex");
-			const config: Config = { enabled: true, account, accountName: saved.name, identity, connection,
+			const config: Config = { enabled: true, identity, connection,
 				dot: initial.dot, name: initial.name, path: initial.path, room: initial.room };
 			await this.downloads.clear();
 			if (this.stopped) return;
@@ -188,7 +189,7 @@ export class DotConnection {
 			&& (this.revision !== this.seen || Date.now() - this.fetched > (this.client.connected ? 30_000 : 5000))) await this.refresh();
 		return structuredClone({ ...this.snapshot, transport: "direct", busy: this.busy,
 			id: this.snapshot.id ?? this.config.dot, name: this.snapshot.name ?? this.config.name,
-			account: this.config.account, accountName: this.config.accountName, identity: this.config.identity?.email, connection: this.config.connection,
+			identity: this.config.identity?.email, connection: this.config.connection,
 			live: this.client?.connected ?? false, writing: this.client?.writing ?? false, ...this.client?.avatarView,
 			inputs: this.receipts(), uploads: this.files.list(this.snapshot.id ?? this.config.dot) });
 	}

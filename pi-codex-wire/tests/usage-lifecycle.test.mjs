@@ -96,32 +96,22 @@ test("switching to Claude does not show cached Codex allowance as its capacity",
   assert.match(publications.at(-1).badges[0].value, /80%/);
 });
 
-test("Claude allowance uses normal response headers and stays within its saved account", async t => {
+test("Claude allowance uses normal response headers and is kept apart from Codex's", async t => {
   const h = await harness(t), publications = [];
   h.bus.on("pi-ui/discover-v2", probe => { probe.presentation = { publish: (_id, value) => publications.push(value) }; });
-  const ids = ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012"];
-  let selected = ids[0];
-  h.bus.on("pi:model-credentials", probe => { probe.binding = { accountId: provider => provider === "anthropic" ? selected : "pi" }; });
   const instance = await h.load({ mode: "rpc", oauth: true }); await h.start(instance);
   const codexBefore = readFileSync(join(h.directory, "usage.json"), "utf8");
   await instance.select({ id: "claude-fixture", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com" });
-  const response = used => instance.runner.emit({ type: "after_provider_response", status: 200, headers: {
-    "anthropic-ratelimit-unified-5h-utilization": used,
+  await instance.runner.emit({ type: "before_provider_request", payload: {} });
+  await instance.runner.emit({ type: "after_provider_response", status: 200, headers: {
+    "anthropic-ratelimit-unified-5h-utilization": "0.25",
     "anthropic-ratelimit-unified-5h-reset": String(Math.floor(Date.now() / 1000) + 3600),
   } });
-  await instance.runner.emit({ type: "before_provider_request", payload: {} }); await response("0.25");
   assert.equal(publications.at(-1).badges[0].value, "75% left");
   assert.ok(publications.at(-1).badges[0].meter.resetsAt > Date.now());
   assert.match(publications.at(-1).badges[0].description, /Claude/);
   assert.equal(readFileSync(join(h.directory, "usage.json"), "utf8"), codexBefore);
-  selected = ids[1]; h.bus.emit("pi:model-account-changed", {});
-  await response("0.9");
-  assert.deepEqual(publications.at(-1).badges, [], "late old-account headers are discarded");
-  await instance.runner.emit({ type: "before_provider_request", payload: {} }); await response("0.6");
-  assert.match(publications.at(-1).badges[0].value, /40% left/);
-  selected = ids[0]; h.bus.emit("pi:model-account-changed", {});
-  assert.match(publications.at(-1).badges[0].value, /75% left/);
-  const saved = JSON.parse(readFileSync(join(h.directory, `usage-claude-${ids[0]}.json`), "utf8"));
+  const saved = JSON.parse(readFileSync(join(h.directory, "usage-claude.json"), "utf8"));
   assert.equal(saved.claude.primary.usedPercent, 25);
   assert.equal(saved.codex, undefined);
 });
@@ -219,18 +209,3 @@ test("expired allowance windows stop ticking and fresh passive headers restart t
   assert.ok(first.statuses.at(-1).includes("80%"));
 });
 
-test("switching saved accounts isolates passive allowance snapshots", async t => {
-	const h = await harness(t);
-	const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
-	let selected = ids[0];
-	h.bus.on("pi:model-credentials", probe => { probe.binding = { accountId: () => selected }; });
-	const instance = await h.load(); await h.start(instance);
-	selected = ids[1]; h.bus.emit("pi:model-account-changed", {});
-	assert.equal(instance.statuses.at(-1), undefined, "old account allowance must disappear immediately");
-	h.bus.emit("pi-codex-wire:allowance", { ...headers, "x-codex-primary-used-percent": "70" });
-	assert.match(instance.statuses.at(-1), /30%/);
-	selected = ids[0]; h.bus.emit("pi:model-account-changed", {});
-	assert.match(instance.statuses.at(-1), /80%/, "returning to an account restores only its snapshot");
-	selected = "pi"; h.bus.emit("pi:model-account-changed", {});
-	assert.equal(instance.statuses.at(-1), undefined, "named accounts must not overwrite the native Pi snapshot");
-});

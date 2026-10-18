@@ -10,7 +10,7 @@ import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
 import { RELEASE } from "../shared/release.ts";
 import { Icon, SectionIcon } from "./icons.tsx";
 
-import { ProviderAccountsPanel } from "./provider-accounts.tsx";
+import { LoginsPanel } from "./logins.tsx";
 
 import { EfficiencyPanel } from "./efficiency.tsx";
 import { ComputerPage, ConversationPage, Row } from "./settings-pages.tsx";
@@ -87,7 +87,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 			: <p className="muted">Select a conversation to see its settings.</p>)}
 		{section === "computer" && <ComputerPage host={host} computer={computer} connected={connected} views={views} act={act}
 			availabilityRun={mode => run(api("/operator-availability", { mode }, computer?.id))}>
-			{{ accounts: <ProviderAccountsPanel host={host} computer={computer} session={session} connected={connected} busy={settingBusy} invoke={invoke} providerHint={providerHint} />,
+			{{ accounts: <LoginsPanel key={computer?.id ?? "local"} computer={computer?.id} connected={connected} provider={providerHint} />,
 				dictation: <DictationKey key={computer?.id ?? "local"} computer={computer?.id} name={computer?.name ?? host.name} connected={connected} />,
 				updates: !account && host.updates ? <Row label="Updates"><SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></Row> : undefined }}
 		</ComputerPage>}

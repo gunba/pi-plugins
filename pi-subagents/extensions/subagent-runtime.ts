@@ -5,7 +5,6 @@ import { FOLLOWUP_MESSAGE, type FollowupInput } from "./followup-delivery.ts";
 import type { PresentationScope, UiTranscriptSource } from "../../pi-ui/index.ts";
 import { SessionLease, attachOwnership, releaseOwnership, sessionPath } from "../../pi-session-ownership/lease.ts";
 import type { ChildPolicySource } from "./child-policies.ts";
-import type { ModelCredentials } from "../model-credentials.ts";
 import { getWorkCoordinator } from "../../pi-work-coordination/core.ts";
 import {
 	mkdirSync,
@@ -215,8 +214,7 @@ export interface RuntimeHost {
 	recordBackgroundUsage?(childId: string, messageId: string, usage: Usage): void;
 	resolveModel(ref: ModelRef): Model<any> | undefined;
 	authorizeModelOverrides?(selection: ModelSelection, signal?: AbortSignal): Promise<void>;
-	readonly modelCredentials?: ModelCredentials;
-	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime, signal: AbortSignal, ownCredentials?: boolean): Promise<void>;
+	prepareModelRuntime?(ref: ModelRef, runtime: ModelRuntime, signal: AbortSignal): Promise<void>;
 	/** Current root selection is authoritative, including explicit tool revocations. */
 	getActiveToolNames?(): string[];
 	/** Metadata identifies factories to recreate against the child, not parent execution closures. */

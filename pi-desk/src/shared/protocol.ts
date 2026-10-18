@@ -37,11 +37,10 @@ export interface SessionSnapshot {
 	leaf?: string | null;
 	/** No messages yet, so a provider switch carries nothing over. Omitted by older workers. */
 	empty?: boolean;
-	model?: { id: string; provider: string; name: string; images: boolean; accountName?: string };
+	model?: { id: string; provider: string; name: string; images: boolean };
 	defaultModel?: { id: string; provider: string };
 	/** Null means context-aware switching is supported without a current constraint. */
 	modelSwitchConstraint?: { provider: string; reason: string; portable?: boolean } | null;
-	accounts?: Record<string, string>;
 	thinking: string;
 	thinkingLevels: string[];
 	activity: "idle" | "running" | "waiting" | "error";
@@ -52,7 +51,7 @@ export interface SessionSnapshot {
 	toolDefaults?: { computer?: string[]; project?: string[]; resolved?: string[] };
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
-	models: { id: string; provider: string; name: string; accountName?: string }[];
+	models: { id: string; provider: string; name: string }[];
 	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
 	/** `estimated` when no provider-reported usage applies and the tokens are counted from characters. */
 	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
@@ -164,7 +163,8 @@ export interface WorkerInit {
 	leaf?: string | null; attachmentScope?: string;
 	/** Code location pinned in the private worker bootstrap, not its environment. */
 	runtimeDirectory?: string;
-	providerAccountsDirectory?: string;
+	/** Desk's data folder on this computer (operator availability). */
+	deskDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
 	/** Reopen saved native state without autonomous work until restoration finishes. */
@@ -195,7 +195,6 @@ export type WorkerCommand =
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string; makeDefault?: boolean; context?: { mode: "portable"; leaf: string } }
-	| { kind: "account"; provider: string; id: string }
 	| { kind: "thinking"; level: string }
 	| { kind: "reload" };
 export interface WorkerState {
