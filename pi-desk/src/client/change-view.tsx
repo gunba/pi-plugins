@@ -12,6 +12,7 @@ import { SurfaceFrame } from "./surfaces.tsx";
 import { acquireAsset, api } from "./connection.ts";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
+import { BriefView, type Brief } from "./brief.tsx";
 
 type DiffBlock = Extract<ChatBlock, { type: "diff" }>;
 type DocumentBlock = Extract<ChatBlock, { type: "document" }>;
@@ -126,7 +127,9 @@ function columnName(index: number): string {
 
 /** `message` and `source` locate the files it links to: the transcript message, and a sub-agent transcript if any. */
 /** title: for an image, the file it came from. */
-export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock };
+/** "What do I need to know?": written on request, kept in the side pane while the conversation goes on. */
+export type BriefBlock = { type: "brief"; brief: Brief; working?: boolean; rewrite?: () => void };
+export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock | BriefBlock };
 /** Changes, shown work and images the agent viewed, in the loaded part of a conversation, oldest first. */
 export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
 	return messages.flatMap(message => message.blocks.flatMap((block, index): WorkItem[] => {
@@ -142,14 +145,14 @@ export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
 }
 /** Opens an item: in the side pane when there is room, otherwise in the expanded view. */
 export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined);
-const itemTitle = (item: WorkItem) => item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
+const itemTitle = (item: WorkItem) => item.block.type === "brief" ? "What do I need to know?" : item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
 	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title;
-const itemKind = (item: WorkItem) => item.block.type === "image" ? "Viewed" : item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
+const itemKind = (item: WorkItem) => item.block.type === "brief" ? "Brief" : item.block.type === "image" ? "Viewed" : item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
 	: item.block.meanwhile ? "Meanwhile" : item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
 function itemFacts(item: WorkItem): ReactNode {
 	if (item.block.type === "diff") { const stats = diffStats(item.block); return <Stats added={stats.added} removed={stats.removed} />; }
 	if (item.block.type === "document") return <span className="change-summary">{item.block.change.summary}</span>;
-	if (item.block.type === "image") return null;
+	if (item.block.type === "image" || item.block.type === "brief") return null;
 	const unlisted = item.block.shown.items.reduce((sum, entry) => sum + (entry.unlisted?.count ?? 0), 0);
 	return <span className="change-summary">{item.block.shown.items.length ? `${item.block.shown.items.length} item${item.block.shown.items.length === 1 ? "" : "s"}` : ""}
 		{unlisted ? <span className="work-warning"> · {unlisted} change{unlisted === 1 ? "" : "s"} not mentioned</span> : null}</span>;
@@ -164,7 +167,7 @@ export function WorkChip({ item, status }: { item: WorkItem; status?: ReactNode 
 		{item.block.type === "diff" && itemFacts(item)}{status}<span className="work-chip-open" aria-hidden="true">›</span>
 	</button>;
 }
-const itemIcon = (item: WorkItem) => item.block.type === "image" ? "preview" : item.block.type === "document" ? "layers"
+const itemIcon = (item: WorkItem) => item.block.type === "brief" ? "info" : item.block.type === "image" ? "preview" : item.block.type === "document" ? "layers"
 	: item.block.type === "diff" && item.block.action === "deleted" ? "trash" : item.block.type === "diff" && item.block.action === "added" ? "plus" : "edit";
 /** A taste of the change, as tool rows show their arguments: the first changed line, or a document's summary. */
 function itemPreview(item: WorkItem): string {
@@ -290,6 +293,7 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 		{block.full && <AssetLink session={session} asset={block.full} />}
 	</>;
 	if (block.type === "image") return <ViewedImage session={session} asset={block.asset} name={item.title ?? "Image"} zoom={large} />;
+	if (block.type === "brief") return <BriefView brief={block.brief} working={block.working} rewrite={block.rewrite} />;
 	if (block.type === "document") return <>
 		{block.change.changes && <DocumentChangesView changes={block.change.changes} where={name(block.change.path)} />}
 		{block.change.preview && <PreviewView preview={block.change.preview} />}
@@ -302,7 +306,8 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 function quoteFor(item: WorkItem): string {
 	const { block } = item;
 	return block.type === "diff" ? `${block.path}\n${block.text.split("\n").filter(line => /^[+-]/.test(line)).slice(0, 12).join("\n")}`
-		: block.type === "document" ? `${name(block.change.path)}: ${block.change.summary}` : block.type === "image" ? `Image: ${item.title ?? ""}` : block.shown.title;
+		: block.type === "document" ? `${name(block.change.path)}: ${block.change.summary}` : block.type === "image" ? `Image: ${item.title ?? ""}`
+		: block.type === "brief" ? block.brief.markdown.slice(0, 600) : block.shown.title;
 }
 function ItemHeader({ item, session, children }: { item: WorkItem; session: string; children?: ReactNode }) {
 	const path = item.block.type === "diff" ? item.block.movePath ?? item.block.path : item.block.type === "document" ? item.block.change.path : undefined;

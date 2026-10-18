@@ -2674,8 +2674,10 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 @media (hover:none) { .brief-button { opacity:.7; } }
 .brief-button .ui-icon { width:13px; height:13px; }
 .brief-button:hover:not(:disabled) { color:var(--accent); border-color:var(--focus-border); background:var(--hover); }
-.brief-modal { width:min(760px, calc(100vw - 24px)); }
-.brief-body { max-height:min(70dvh, 760px); overflow:auto; font-size:14px; line-height:1.6; }
+/* Being written or ready to read: shown without hovering. */
+.brief-button.brief-writing, .brief-button.brief-ready { opacity:1; }
+.brief-button.brief-writing { cursor:progress; color:var(--accent); }
+.brief-body { font-size:14px; line-height:1.6; }
 .brief-body h2 { margin:18px 0 6px; font-size:13px; font-weight:650; letter-spacing:.02em; color:var(--accent); }
 .brief-body h2:first-child { margin-top:0; }
 .brief-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding-top:10px; border-top:1px solid var(--border); font-size:12px; }

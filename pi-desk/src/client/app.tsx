@@ -38,7 +38,7 @@ import { PlanView } from "./plan-view.tsx";
 import { PlanHeader } from "./plan-header.tsx";
 import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
 import { BriefContext, RewindContext } from "./message-view.tsx";
-import { BriefModal, type Brief } from "./brief.tsx";
+import type { Brief, BriefState } from "./brief.tsx";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
@@ -344,9 +344,26 @@ export function App({ account }: { account?: BrowserAccount }) {
     const last = [...messages].reverse().find(message => !message.feedback && ["assistant", "tool", "user"].includes(message.role));
     return last?.role === "assistant" && last.blocks.some(block => block?.type === "text" && !!block.text.trim()) ? last.id : undefined;
   }, [messages]);
-  const [briefOpen, setBriefOpen] = useState(false);
-  useEffect(() => { setBriefOpen(false); }, [selected]);
-  const paneItems = workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork;
+  // "What do I need to know?": written in the background, so the conversation stays usable; it opens beside the
+  // conversation when it is ready, and stays there for its reply.
+  const [briefs, setBriefs] = useState<Record<string, BriefState>>({});
+  const briefState = latestReply && briefs[selected]?.reply === latestReply ? briefs[selected] : undefined;
+  const briefItem: WorkItem | undefined = briefState?.brief ? { id: `brief:${briefState.reply}`, at: briefState.brief.created, message: briefState.reply,
+    block: { type: "brief", brief: briefState.brief, working: briefState.working, rewrite: () => writeBrief(true) } } : undefined;
+  function writeBrief(refresh = false) {
+    const key = selected, reply = latestReply;
+    if (!reply || briefs[key]?.working && briefs[key]?.reply === reply) return;
+    setBriefs(all => ({ ...all, [key]: { ...(all[key]?.reply === reply ? all[key] : {}), reply, working: true, error: undefined } }));
+    command<{ result?: Brief }>({ kind: "brief", ...(refresh ? { refresh: true } : {}) }).then(({ result }) => {
+      if (!result?.markdown) throw new Error("No brief came back.");
+      setBriefs(all => ({ ...all, [key]: { reply, working: false, brief: result } }));
+      if (selectedRef.current === key) openWork({ id: `brief:${reply}`, at: result.created, message: reply, block: { type: "brief", brief: result } });
+    }).catch(failure => {
+      setBriefs(all => ({ ...all, [key]: { ...all[key], reply, working: false, error: errorText(failure) } }));
+      if (selectedRef.current === key) setError(`The brief could not be written: ${errorText(failure)}`);
+    });
+  }
+  const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItem ? [briefItem] : []];
   const newestWork = loadedWork.at(-1);
   const workSeen = useRef<{ session: string; newest?: string }>({ session: "" });
   useEffect(() => {
@@ -361,7 +378,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length > 0 && (!panel || settings);
   const openWork = (item: WorkItem) => {
     if (wideWorkspace && !dotSelected && !questsSelected) {
-      if (!loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
+      // A brief is listed from its own state, which a copy here would leave behind.
+      if (item.block.type !== "brief" && !loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
       setWorkSelected(item.id); setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false");
       if (panel && !settings) setPanel(undefined);
     } else setWorkModal(item);
@@ -743,7 +761,9 @@ export function App({ account }: { account?: BrowserAccount }) {
     </select>
   </>;
   return (
-    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply, open: session?.ui && connected && !closing ? () => setBriefOpen(true) : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
+      open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
+      state: briefState?.working ? "writing" : briefState?.brief ? "ready" : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Navigation open={sidebar} close={() => setSidebar(false)}>
         <div className="brand">
@@ -1151,8 +1171,6 @@ export function App({ account }: { account?: BrowserAccount }) {
         <SettingsForm interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
           answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />
       </Modal>}
-      {briefOpen && session && <BriefModal key={selected} close={() => setBriefOpen(false)}
-        write={async refresh => (await command<{ result: Brief }>({ kind: "brief", ...(refresh ? { refresh: true } : {}) })).result} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}

@@ -56,14 +56,18 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 /** Rewinds the conversation to a message; unavailable (undefined) while Pi is working. */
 export const RewindContext = createContext<{ rewind?: (message: ChatMessage) => void }>({});
 /** The latest reply in the open conversation, which offers "What do I need to know?". */
-export const BriefContext = createContext<{ reply?: string; open?: () => void }>({});
+export const BriefContext = createContext<{ reply?: string; open?: () => void; state?: "writing" | "ready" }>({});
 function LatestBrief({ id }: { id: string }) {
-	return useContext(BriefContext).reply === id ? <BriefButton /> : null;
+	// Only conversations whose Desk version writes briefs offer one.
+	const { reply, open } = useContext(BriefContext);
+	return reply === id && open ? <BriefButton /> : null;
 }
 function BriefButton() {
-	const { open } = useContext(BriefContext);
-	return <button type="button" className="brief-button" disabled={!open} onClick={() => open?.()} title="A one-page brief on this turn, written outside the conversation">
-		<Icon name="info" />What do I need to know?</button>;
+	const { open, state } = useContext(BriefContext);
+	// Written in the background; the conversation stays usable and the brief opens beside it when it is ready.
+	return <button type="button" className={`brief-button${state ? ` brief-${state}` : ""}`} disabled={!open || state === "writing"} onClick={() => open?.()}
+		title="A one-page brief on this turn, written outside the conversation">
+		<Icon name="info" />{state === "writing" ? "Writing the brief…" : state === "ready" ? "Read the brief" : "What do I need to know?"}</button>;
 }
 function RewindButton({ message }: { message: ChatMessage }) {
 	const { rewind } = useContext(RewindContext);
