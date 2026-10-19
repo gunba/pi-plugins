@@ -10,9 +10,10 @@ export const PLAN_CHECK_EVERY = 25;
 /** The reminder added to a tool result: where the plan stands, and its id and revision, so update_plan needs no get_plan first. */
 export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	const summary = stepSummary(plan.steps), short = (text: string) => JSON.stringify(text.length > 120 ? `${text.slice(0, 117)}…` : text);
-	const where = !summary.total ? `Objective: ${short(plan.objective)}. If it no longer describes the work, update it`
-		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan; if not, add what remains`
-		: `${summary.completed} of ${summary.total} steps are done${summary.current ? `; current: ${short(summary.current)}` : ""}. If that is out of date, update the plan`;
+	// An instruction, not a remark: worded as "if it is out of date", models read it as a reminder and moved on.
+	const where = !summary.total ? `Objective: ${short(plan.objective)}. If it no longer describes the work, update it now`
+		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan now; if not, add what remains`
+		: `${summary.completed} of ${summary.total} steps are marked done${summary.current ? `; current: ${short(summary.current)}` : ""}. Compare that with the work so far and, if it is behind, update the plan now`;
 	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} (update_plan with plan_id ${JSON.stringify(plan.id)}, revision ${plan.revision}).`;
 }
 
