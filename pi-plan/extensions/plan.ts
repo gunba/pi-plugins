@@ -9,13 +9,15 @@ import { PlanStore, PlanStateError } from "../src/store.ts";
 import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
 import { type PlanRef, type PlanRoundIdentity, type PlanView } from "../src/domain.ts";
 import { branchContainsRound, decodePlanRoundDetails } from "../src/replay.ts";
-import { renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup } from "../src/prompt.ts";
+import { PLAN_CHECK_EVERY, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup } from "../src/prompt.ts";
 import { CreateParameters, UpdateParameters, definition, preparePlanArguments, type CreateParams, type UpdateParams } from "../src/tools.ts";
 import { planControls, planPresentation } from "../src/presentation.ts";
 import { STEP_STATUSES, stepSummary } from "../src/steps.ts";
 
 interface Attempt extends PlanRoundIdentity { content: string; admitted: boolean }
 const ref = (plan: PlanView): PlanRef => ({ id: plan.id, revision: plan.revision });
+/** Calling any of these shows or changes the plan, so the count of calls without an update starts again. */
+const PLAN_TOOL_NAMES = new Set(["get_plan", "create_plan", "update_plan"]);
 const result = (plan?: PlanView) => {
 	const value = { plan: plan ?? null };
 	return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
@@ -45,6 +47,9 @@ class PlanController {
 	private driving = false;
 	private requested = false;
 	private editing = 0;
+	/** The model's own tool calls since the active plan last changed, and which plan revision that was ("" when none is active). */
+	private sinceUpdate = 0;
+	private seen = "";
 	constructor(privateApi: ExtensionAPI) {
 		this.pi = privateApi;
 		this.store = new PlanStore(privateApi);
@@ -235,6 +240,7 @@ class PlanController {
 		const restore = (ctx: ExtensionContext) => {
 			this.epoch++; this.ctx = ctx; this.remote = getPresentation(this.pi); this.stopping = false; this.signature = "";
 			this.source = this.work.source("plan"); this.attempt = undefined; this.wrapup = undefined; this.lastStop = undefined;
+			this.sinceUpdate = 0; this.seen = "";
 			this.store.restore(ctx.sessionManager.getBranch()); this.refreshUi();
 		};
 		this.pi.on("session_start", (_event, ctx) => restore(ctx));
@@ -247,6 +253,8 @@ class PlanController {
 		this.pi.on("message_end", async (event, ctx) => {
 			if (event.message.role !== "custom" || event.message.customType !== PLAN_ROUND_MESSAGE) return;
 			const message = event.message;
+			// A round's prompt states the plan, as a check would.
+			this.sinceUpdate = 0;
 			await this.run(ctx, () => {
 				try {
 					const details = decodePlanRoundDetails(message.details), attempt = this.attempt;
@@ -256,6 +264,22 @@ class PlanController {
 					attempt.admitted = true;
 				} catch { this.store.disarm(); }
 			});
+		});
+		// In long conversations the plan falls behind the work: nothing but the model's own earlier plan calls shows it
+		// the plan, and those recede. An active plan untouched for PLAN_CHECK_EVERY of the model's own tool calls gets a
+		// short reminder at the end of the next result, and again every PLAN_CHECK_EVERY calls while it stays untouched.
+		// Only that new result changes, so earlier context and the prompt cache are left as they were.
+		this.pi.on("tool_result", event => {
+			// Calls a script made (codemode) go back to the script, not the model.
+			if (event.parentToolCallId || this.stopping) return;
+			const plan = this.current(), key = plan?.phase === "active" ? `${plan.id}:${plan.revision}` : "";
+			// A plan changed some other way (Desk's plan controls, say) counts from that change; this call is the first since.
+			if (key !== this.seen) { this.seen = key; this.sinceUpdate = 0; }
+			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) { this.sinceUpdate = 0; return; }
+			if (++this.sinceUpdate % PLAN_CHECK_EVERY) return;
+			return { content: [...event.content, { type: "text" as const, text: `\n${renderPlanCheck(plan, this.sinceUpdate)}` }],
+				// Replacing the content alone would drop a result's structured form.
+				...(event.structuredContent !== undefined ? { structuredContent: event.structuredContent } : {}) };
 		});
 		this.pi.on("context", event => this.wrapup === undefined ? undefined : ({
 			messages: [...event.messages, { role: "user" as const, content: [{ type: "text" as const, text: this.wrapup }], timestamp: Date.now() }],

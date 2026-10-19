@@ -122,3 +122,29 @@ test("complete accepts the final steps in the same call; open steps still block 
 	await assert.rejects(update(h, { action: "pause", steps: [] }), /only valid with action edit or complete/);
 	await h.emit("session_shutdown");
 });
+
+test("an active plan untouched for 25 of the model's tool calls is recalled in the next result, and again while it stays untouched", async () => {
+	// Past 300k tokens of context the gap between plan updates doubled: nothing showed the model its plan but its own old calls.
+	const h = createExtensionHarness(); await h.start();
+	await executeTool(h, "create_plan", { objective: "Ship the fix", steps: [{ content: "Write it", status: "completed" }, { content: "Test it", status: "in_progress" }, { content: "Release it", status: "pending" }] });
+	const plan = await read(h);
+	const call = async (extra = {}) => (await h.emit("tool_result", { toolName: "bash", toolCallId: `c${Math.random()}`, content: [{ type: "text", text: "ok" }], isError: false, ...extra }))
+		.find(result => result !== undefined);
+	for (let index = 1; index < 25; index++) assert.equal(await call(), undefined, `no reminder after ${index} calls`);
+	assert.equal(await call({ parentToolCallId: "script" }), undefined, "a script's own calls do not count");
+	const nudged = await call({ structuredContent: { output: "ok" } });
+	assert.equal(nudged.content[0].text, "ok", "the result itself is kept");
+	assert.equal(nudged.content[1].text, `\n[Plan check] 25 tool calls since the plan was last updated. 1 of 3 steps are done; current: "Test it". If that is out of date, update the plan (update_plan with plan_id "${plan.id}", revision ${plan.revision}).`);
+	assert.deepEqual(nudged.structuredContent, { output: "ok" }, "its structured form is kept");
+	// An update starts the count again; a plan left alone is recalled every 25 calls.
+	await update(h, { action: "edit", steps: [{ content: "Test it", status: "completed" }, { content: "Release it", status: "in_progress" }] });
+	await h.emit("tool_result", { toolName: "update_plan", toolCallId: "u", content: [], isError: false });
+	for (let index = 1; index < 25; index++) assert.equal(await call(), undefined);
+	assert.match((await call()).content[1].text, /^\n\[Plan check\] 25 tool calls .* 1 of 2 steps are done; current: "Release it"/);
+	for (let index = 1; index < 25; index++) await call();
+	assert.match((await call()).content[1].text, /^\n\[Plan check\] 50 tool calls/);
+	// A paused plan is not recalled.
+	await update(h, { action: "pause" });
+	for (let index = 0; index < 30; index++) assert.equal(await call(), undefined);
+	await h.emit("session_shutdown");
+});

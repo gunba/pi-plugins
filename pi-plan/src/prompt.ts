@@ -1,4 +1,20 @@
 import type { PlanSnapshot, PlanView } from "./domain.ts";
+import { stepSummary } from "./steps.ts";
+
+/**
+ * The model's own tool calls an active plan may go without an update before it is reminded of the plan: about twice
+ * the usual gap (a median of 13 calls), which more than doubles once a conversation's context passes 300k tokens.
+ */
+export const PLAN_CHECK_EVERY = 25;
+
+/** The reminder added to a tool result: where the plan stands, and its id and revision, so update_plan needs no get_plan first. */
+export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
+	const summary = stepSummary(plan.steps), short = (text: string) => JSON.stringify(text.length > 120 ? `${text.slice(0, 117)}…` : text);
+	const where = !summary.total ? `Objective: ${short(plan.objective)}. If it no longer describes the work, update it`
+		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan; if not, add what remains`
+		: `${summary.completed} of ${summary.total} steps are done${summary.current ? `; current: ${short(summary.current)}` : ""}. If that is out of date, update the plan`;
+	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} (update_plan with plan_id ${JSON.stringify(plan.id)}, revision ${plan.revision}).`;
+}
 
 /** Part of the v1 round ledger; format changes require a replay-version migration. */
 export function renderPlanRoundPrompt(plan: PlanSnapshot, round: number): string {
