@@ -195,23 +195,32 @@ export function sessionFolder(agentDir: string, cwd: string, configured?: string
  */
 export function placeMoved(incoming: string, folder: string, cwd: string, note: string): string {
 	// Read and written in parts: a conversation can be larger than the longest string Node can hold.
-	const source = openSync(incoming, "r"), size = statSync(incoming).size, end = lastLineEnd(incoming);
+	const source = openSync(incoming, "r"), size = statSync(incoming).size;
+	let end = lastLineEnd(incoming);
 	try {
 		const first = Buffer.alloc(Math.min(size, 1024 * 1024)), read = readSync(source, first, 0, first.length, 0), headerEnd = first.subarray(0, read).indexOf(10);
 		if (headerEnd < 0) throw Error("The copy is not a Pi conversation.");
 		const header = JSON.parse(first.subarray(0, headerEnd).toString("utf8"));
 		if (header?.type !== "session" || typeof header.id !== "string") throw Error("The copy is not a Pi conversation.");
-		// The note continues from the conversation's last entry, whose id Pi writes near the start of its line (which
-		// can be megabytes long, a result holding screenshots).
-		let start = end - 1;
-		const step = Buffer.alloc(64 * 1024);
-		while (start > 0) {
-			const from = Math.max(0, start - step.length), read = readSync(source, step, 0, start - from, from), at = step.subarray(0, read).lastIndexOf(10);
-			if (at >= 0) { start = from + at + 1; break; }
-			start = from;
+		// The note continues from the conversation's last entry: its last line, parsed whole (an entry's own id can come
+		// after fields holding other ids). A line is at most tens of megabytes; a damaged one gives way to the line before.
+		const lineStart = (to: number) => {
+			const step = Buffer.alloc(64 * 1024);
+			for (let at = to - 1; at > 0;) {
+				const from = Math.max(0, at - step.length), read = readSync(source, step, 0, at - from, from), found = step.subarray(0, read).lastIndexOf(10);
+				if (found >= 0) return from + found + 1;
+				at = from;
+			}
+			return 0;
+		};
+		let leaf: string | null = null;
+		for (let to = end, tries = 0; to > headerEnd + 1 && leaf === null && tries < 8; tries++) {
+			const from = lineStart(to), line = Buffer.alloc(to - from);
+			readSync(source, line, 0, line.length, from);
+			try { const entry = JSON.parse(line.toString("utf8")); if (typeof entry?.id === "string") leaf = entry.id; }
+			catch { end = from; /* Damaged: left out, and the line before is the last. */ }
+			to = from;
 		}
-		const opening = Buffer.alloc(Math.min(4096, end - start)), openingRead = readSync(source, opening, 0, opening.length, start);
-		const leaf = /"id":"([^"]+)"/.exec(opening.subarray(0, openingRead).toString("utf8"))?.[1] ?? null;
 		const notice = { type: "custom_message", id: randomUUID().slice(0, 8), parentId: leaf, timestamp: new Date().toISOString(),
 			customType: "pi-desk/moved", content: note, display: true };
 		mkdirSync(folder, { recursive: true });
