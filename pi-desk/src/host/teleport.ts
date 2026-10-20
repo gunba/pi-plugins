@@ -15,7 +15,8 @@ import { CopySender, CopyStore, lastLineEnd, type CopyChunk, type CopyInfo } fro
  */
 export const COPIES = "copies";
 export const HOLD = "copies-hold";
-export type Move = { from: string; to: string; at: number };
+/** A move between computers. `file` is kept only by the computer the conversation moved to: where it was placed. */
+export type Move = { from: string; to: string; at: number; file?: string };
 export type Conversation = { session: string; file: string; cwd: string; title?: string };
 export type TeleportPacket =
 	| { type: "copies-status"; copies: Record<string, { size: number; head: string }> }
@@ -82,6 +83,8 @@ export class Teleport {
 	}
 	/** Where a conversation went, if it moved off this computer. */
 	movedAway(session: string): Move | undefined { const move = this.moves[session]; return move && move.to !== this.hooks.self() ? move : undefined; }
+	/** Whether a file of a conversation that moved here is an older one than where it was placed: one that went away and came back. */
+	superseded(session: string, file: string): boolean { const move = this.moves[session]; return !!move?.file && move.to === this.hooks.self() && move.file !== file; }
 	copies(): CopyInfo[] { return this.store?.list() ?? []; }
 	record(session: string, move: Move): void {
 		this.moves[session] = move;
@@ -93,8 +96,9 @@ export class Teleport {
 	/** What to send a peer on this round: moves it has not had, what this holder has of it, and new conversation lines. */
 	outgoing(peer: string, operations: readonly string[]): TeleportPacket[] {
 		if (!operations.includes(COPIES)) return [];
-		const packets: TeleportPacket[] = [], moves = JSON.stringify(this.moves);
-		if (this.sentMoves.get(peer) !== moves) { packets.push({ type: "moves", moves: this.moves }); this.sentMoves.set(peer, moves); }
+		const shared = Object.fromEntries(Object.entries(this.moves).map(([session, { from, to, at }]) => [session, { from, to, at }]));
+		const packets: TeleportPacket[] = [], moves = JSON.stringify(shared);
+		if (this.sentMoves.get(peer) !== moves) { packets.push({ type: "moves", moves: shared }); this.sentMoves.set(peer, moves); }
 		if (this.store && !this.sentStatus.has(peer)) { packets.push({ type: "copies-status", copies: this.store.status(peer) }); this.sentStatus.add(peer); }
 		if (this.settings.send && operations.includes(HOLD)) {
 			const chunks = this.sender.next(peer, this.hooks.conversations().filter(conversation => !this.movedAway(conversation.session)));

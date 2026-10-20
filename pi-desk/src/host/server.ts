@@ -1133,7 +1133,7 @@ export class DeskHost {
 		}
 		const note = `This conversation moved from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
 		const file = placeMoved(fetched.file, sessionFolder(this.options.agentDir!, folder, configuredSessionDirectory(folder, this.options.agentDir!, this.options.sessionDir)), folder, note);
-		teleport.record(session, { from: source, to: self, at: Date.now() });
+		teleport.record(session, { from: source, to: self, at: Date.now(), file: realpathSync(file) });
 		network.flush();
 		return { key: this.createSession(folder, file) };
 	}
@@ -1185,8 +1185,9 @@ export class DeskHost {
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
 			// A conversation that moved to another computer runs there, never again here.
-			const moved = this.teleport?.movedAway(sessionHeaderId(sessionFile) ?? "");
+			const headerId = sessionHeaderId(sessionFile) ?? "", moved = this.teleport?.movedAway(headerId);
 			if (moved) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
+			if (this.teleport?.superseded(headerId, sessionFile)) throw new Error("This conversation went to another computer and came back; it continues in the copy that came back.");
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
 				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
 			if (active) {
