@@ -85,7 +85,8 @@ test("a long message that keeps arriving on a slow link is delivered; one that s
 		for (let turn = 0; turn < 1000 && !taken(index); turn++) await new Promise(resolve => setImmediate(resolve));
 		t.mock.timers.tick(45_000);
 	}
-	for (let index = 0; index < 20 && !link.delivered.length; index++) await new Promise(resolve => setImmediate(resolve));
+	// Until it arrives (the last chunk is decompressed asynchronously) or the channel fails.
+	for (let turn = 0; turn < 100_000 && !link.delivered.length && !link.failure(); turn++) await new Promise(resolve => setImmediate(resolve));
 	assert.equal(link.failure(), undefined);
 	assert.equal(link.delivered[0]?.noise, noise);
 	// A message that stops arriving for over a minute is abandoned.
