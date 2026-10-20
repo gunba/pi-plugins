@@ -128,6 +128,8 @@ export interface SessionView {
 	updating?: boolean;
 	/** Closed to free resources but kept in the sidebar to resume later. */
 	kept?: boolean;
+	/** It moved to another computer (teleport); it does not run here again. */
+	moved?: { to: string; at: number };
 	/** Native state; presentation data is carried once in ui below. */
 	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */
@@ -145,6 +147,8 @@ export interface SessionView {
 	workerRuntime?: WorkerRuntimeInfo;
 	inputs?: InputStatus[];
 }
+/** A conversation's copy kept on another computer (host copies.ts): whose it is, where it ran, how much there is. */
+export type ConversationCopy = { session: string; computer: string; cwd: string; title?: string; size: number; head: string; updated: number; moved?: { to: string; at: number } };
 export interface HostState { release: ReleaseInfo; operatorAvailability?: import("./operator.ts").OperatorAvailability; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
@@ -154,6 +158,8 @@ export interface HostState { release: ReleaseInfo; operatorAvailability?: import
 	cacheCompaction?: number;
 	/** The last Pi setting or file that arrived from another computer (settings sync). */
 	settingsSync?: { key: string; from: string; at: number };
+	/** Conversation copies and moves (host teleport.ts): this computer's switches, and the copies it keeps of other computers' conversations. */
+	teleport?: { hold: boolean; send: boolean; copies: ConversationCopy[] };
 	/** This computer has an ElevenLabs key for dictation; browsers send recordings to a computer that does. */
 	dictation?: boolean;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }

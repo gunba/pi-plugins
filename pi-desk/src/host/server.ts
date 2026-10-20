@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
 import { MAX_WIRE } from "../shared/secure-channel.ts";
-import { existsSync, mkdirSync, realpathSync, type FSWatcher, watch } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readSync, realpathSync, statSync, type FSWatcher, watch } from "node:fs";
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +57,7 @@ import { Dictation, MAX_DICTATION_BYTES } from "./dictation.ts";
 import type { Quest, QuestActor, QuestCommand, QuestView } from "../shared/quests.ts";
 import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi-party/network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
+import { COPIES, HOLD, Teleport, placeMoved, sessionFolder, type Conversation, type Move } from "./teleport.ts";
 import { DotConnection } from "./dot.ts";
 
 interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
@@ -95,6 +96,8 @@ export class DeskHost {
 	private logins?: Logins;
 	/** Pi's general setup, mirrored with the workspace's other computers. */
 	private settingsSync?: SettingsSync;
+	/** Conversation copies kept away from their computer, and moving conversations between computers (teleport.ts). */
+	private teleport?: Teleport;
 	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
 	private adoption?: Promise<unknown>;
 	private checkpoints?: UpdateCheckpoints;
@@ -192,6 +195,12 @@ export class DeskHost {
 			this.inputs = new InputLedger(directory);
 			this.logins = new Logins(this.options.agentDir!);
 			this.settingsSync = new SettingsSync(this.options.agentDir!, homedir(), directory, hostname());
+			this.teleport = new Teleport(join(directory, "teleport"), {
+				self: () => this.accountIdentity?.device.id ?? "",
+				conversations: () => this.copyableConversations(),
+				movedAway: (session, move) => { void this.retireMoved(session, move); },
+				release: session => this.releaseForMove(session),
+			});
 			this.adoption = adoptSavedLogins(directory, this.options.agentDir!)
 				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
 				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
@@ -388,7 +397,8 @@ export class DeskHost {
 			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView,
 			...(this.dictation?.available ? { dictation: true } : {}),
 			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}),
-			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}) };
+			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}),
+			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.teleport.copies().filter(copy => !copy.moved).slice(0, 200) } } : {}) };
 	}
 
 	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
@@ -534,7 +544,7 @@ export class DeskHost {
 			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {
 				if (this.closing || revision !== this.accountRevision) return;
 				this.parties!.networkChanged(); this.refreshParties();
-			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer(), this.settingsSync);
+			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer(), this.settingsSync, this.teleport);
 			this.partyNetwork = network;
 			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy, direct: Number(new URL(this.origin).port),
 				request: (access, request) => this.api(access, request),
@@ -1065,8 +1075,71 @@ export class DeskHost {
 	}
 
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
+	/** This computer's conversations that are copied to the computers that keep copies. */
+	private copyableConversations(): Conversation[] {
+		return [...this.sessions.values()].flatMap(managed => {
+			const session = managed.view.agentId ?? managed.view.snapshot?.id, file = managed.view.snapshot?.file ?? managed.view.file;
+			const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
+			return session && file ? [{ session, file, cwd: managed.view.cwd, ...(title ? { title } : {}) }] : [];
+		});
+	}
+	private conversation(session: string): ManagedSession | undefined {
+		return [...this.sessions.values()].find(managed => (managed.view.agentId ?? managed.view.snapshot?.id) === session);
+	}
+	/** Stops a conversation here for good: it moved, or is moving, to another computer. */
+	private async stopForMove(managed: ManagedSession, moved?: Move): Promise<void> {
+		const worker = managed.worker;
+		if (worker) {
+			managed.keepOnClose = false;
+			await worker.submitControl({ kind: "close" }, worker.generation, randomUUID());
+			for (let wait = 0; wait < 600 && managed.worker === worker; wait++) await new Promise(resolve => setTimeout(resolve, 100));
+			if (managed.worker === worker) throw new Error("The conversation did not stop in time.");
+		}
+		managed.view = { ...managed.view, state: "closed", kept: undefined, ...(moved ? { moved } : {}) };
+		this.persist(true); this.emit({ type: "session", session: managed.view });
+	}
+	private async retireMoved(session: string, move: Move): Promise<void> {
+		const managed = this.conversation(session);
+		if (managed) await this.stopForMove(managed, move).catch(error => console.error(`A moved conversation could not be stopped here: ${error instanceof Error ? error.message : String(error)}`));
+	}
+	/** Gives a conversation up for a move: stopped here, its file handed over. Refused while it is working or asking. */
+	private async releaseForMove(session: string): Promise<{ file: string; cwd: string; title?: string }> {
+		const managed = this.conversation(session), file = managed && (managed.view.snapshot?.file ?? managed.view.file);
+		if (!managed || !file) throw new Error("That conversation is not on this computer.");
+		if (["running", "waiting"].includes(managed.view.snapshot?.activity ?? "")) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
+		const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
+		await this.stopForMove(managed);
+		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
+	}
+	/**
+	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
+	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
+	 */
+	private async moveConversation(source: string, session: string, cwd: string): Promise<{ key: string }> {
+		const teleport = this.teleport, network = this.partyNetwork, self = this.accountIdentity?.device.id;
+		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
+		if (source === self) throw new Error("This conversation is already on this computer.");
+		let folder: string;
+		try { folder = realpathSync(cwd); if (!statSync(folder).isDirectory()) throw new Error(); } catch { throw new Error(`${cwd} is not a folder on this computer.`); }
+		const computers = network.computers(), name = (id: string) => computers.find(computer => computer.id === id)?.name ?? "its computer";
+		const owner = computers.find(computer => computer.id === source && computer.online && computer.operations.includes(COPIES));
+		let fetched = owner ? await teleport.fetch(packet => network.send(source, packet), source, session, true) : teleport.copyLocal(source, session);
+		if (!fetched) {
+			let failure: unknown;
+			for (const holder of computers.filter(computer => computer.online && computer.operations.includes(HOLD))) {
+				try { fetched = await teleport.fetch(packet => network.send(holder.id, packet), source, session, false); break; } catch (error) { failure = error; }
+			}
+			if (!fetched) throw failure instanceof Error ? failure : new Error(`${name(source)} is off, and no computer that is on keeps a copy of this conversation.`);
+		}
+		const note = `This conversation moved from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
+		const file = placeMoved(fetched.file, sessionFolder(this.options.agentDir!, folder, configuredSessionDirectory(folder, this.options.agentDir!, this.options.sessionDir)), folder, note);
+		teleport.record(session, { from: source, to: self, at: Date.now() });
+		network.flush();
+		return { key: this.createSession(folder, file) };
+	}
+
 	private partyComputer(): PartyComputer {
-		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files", "settings"] };
+		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files", "settings", ...this.teleport?.operations() ?? []] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
@@ -1111,6 +1184,9 @@ export class DeskHost {
 		if (this.closing || this.checkpoints?.held) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
+			// A conversation that moved to another computer runs there, never again here.
+			const moved = this.teleport?.movedAway(sessionHeaderId(sessionFile) ?? "");
+			if (moved && !existing) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
 				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
 			if (active) {
@@ -1349,6 +1425,14 @@ export class DeskHost {
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
 			if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.logins!.snapshot());
 			if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.logins!.signOut(string(data.provider, 200)));
+			if (url.pathname === "/api/teleport/move" && request.method === "POST")
+				return reply(await this.moveConversation(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096)));
+			if (url.pathname === "/api/teleport/settings" && request.method === "POST") {
+				if (!this.teleport) throw new Error("Conversation copies need your workspace.");
+				this.teleport.configure({ ...(typeof data.hold === "boolean" ? { hold: data.hold } : {}), ...(typeof data.send === "boolean" ? { send: data.send } : {}) });
+				this.partyNetwork?.reannounce(this.partyComputer());
+				this.refreshParties(); return reply({ ...this.teleport.settings });
+			}
 			if (url.pathname === "/api/logins/sign-ins" && request.method === "POST") return reply(this.logins!.start(
 				string(data.id, 36), string(data.provider, 200), string(data.type, 10) as import("../shared/logins.ts").ProviderAuthType), 202);
 			const signIn = /^\/api\/logins\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);
@@ -1735,4 +1819,15 @@ export class DeskHost {
 		finally { this.hostLease?.close(); }
 		if (errors.length) throw new AggregateError(errors, "Host shutdown encountered errors; check the log.");
 	}
+}
+
+/** The session id in a Pi conversation file's first line. */
+function sessionHeaderId(file: string): string | undefined {
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(file, "r");
+		const buffer = Buffer.alloc(64 * 1024), read = readSync(descriptor, buffer, 0, buffer.length, 0), end = buffer.subarray(0, read).indexOf(10);
+		const header = JSON.parse(buffer.subarray(0, end < 0 ? read : end).toString("utf8"));
+		return header?.type === "session" && typeof header.id === "string" ? header.id : undefined;
+	} catch { return undefined; } finally { if (descriptor !== undefined) closeSync(descriptor); }
 }

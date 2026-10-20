@@ -2,6 +2,7 @@ import type { PartyStore } from "../../../pi-party/store.ts";
 import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
 import type { PartyOperations } from "../../../pi-party/operations.ts";
 import type { SettingsSync } from "./settings-sync.ts";
+import { TELEPORT_PACKETS, type Teleport, type TeleportPacket } from "./teleport.ts";
 
 type Send = (payload: PartyPacket) => Promise<void>;
 
@@ -22,8 +23,9 @@ export class PartyNetwork {
 	private sync?: SettingsSync;
 	/** The settings manifest last sent to each computer. */
 	private manifests = new Map<string, string>();
-	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync) {
-		this.store = store; this.changed = changed; this.self = self; this.sync = sync;
+	private teleport?: Teleport;
+	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport) {
+		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
 	}
@@ -43,7 +45,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id);
+		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -69,6 +71,11 @@ export class PartyNetwork {
 			if (this.sync && this.announced.get(id)?.operations.includes("settings")) {
 				const manifest = this.sync.manifest(), signature = JSON.stringify(manifest);
 				if (this.manifests.get(id) !== signature) { await send({ type: "settings", manifest }); this.manifests.set(id, signature); }
+			}
+			// Conversation copies and moves, to computers that announce them.
+			if (this.teleport) for (const packet of this.teleport.outgoing(id, this.announced.get(id)?.operations ?? [])) {
+				if (this.closed || this.peers.get(id) !== send) return;
+				await send(packet as PartyPacket);
 			}
 		} finally { this.flushing.delete(id); }
 	}
@@ -125,7 +132,18 @@ export class PartyNetwork {
 			if (this.sync.apply(packet.files, from)) { this.manifests.clear(); this.changed(); }
 			return;
 		}
+		if (this.teleport && TELEPORT_PACKETS.has(String(packet.type))) {
+			await this.teleport.receive(id, packet as unknown as TeleportPacket, reply => this.send(id, reply));
+			return;
+		}
 		throw Error("Unknown party packet.");
+	}
+	/** This computer's announcement changed (what it supports): every computer is sent it again. */
+	reannounce(self: PartyComputer): void { this.self = self; this.directories.clear(); this.flush(); }
+	/** One packet to a connected computer. */
+	send(id: string, packet: TeleportPacket): Promise<void> {
+		const send = this.peers.get(id);
+		return send ? send(packet as PartyPacket) : Promise.reject(new Error("That computer is not connected."));
 	}
 	close(): void {
 		if (this.closed) return;

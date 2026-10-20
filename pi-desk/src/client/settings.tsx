@@ -66,12 +66,14 @@ export function SettingsLayout({ active, groups, choose, children, enabled = tru
 		</div>
 	</div>;
 }
-export function SettingsContent({ section: requested, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore, providerHint, renderView }: {
+export function SettingsContent({ section: requested, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore, providerHint, renderView, move }: {
 	section: string; host: WorkspaceState; account?: BrowserAccount; session?: SessionView; computer?: Computer; providerHint?: string;
 	/** Renders a conversation view, by ID, inside a Desk page. */
 	renderView: (id: string) => ReactNode;
 	connected: boolean; busy: boolean; settingBusy: boolean; invoke: (command: WorkerCommand) => Promise<unknown>;
 	compose: (text: string) => void; restore: (target: string, text: string) => void;
+	/** Opens "Move to another computer" for this conversation, where it can move. */
+	move?: () => void;
 }) {
 	const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "dark");
 	const [error, setError] = useState("");
@@ -83,7 +85,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 	return <>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{section === "conversation" && (session ? <ConversationPage session={session} computer={computer} host={host} views={views} connected={connected} busy={busy}
-			settingBusy={settingBusy} invoke={invoke} act={act} available={host.sessions.map(item => item.key)} restore={restore} />
+			settingBusy={settingBusy} invoke={invoke} act={act} available={host.sessions.map(item => item.key)} restore={restore} move={move} />
 			: <p className="muted">Select a conversation to see its settings.</p>)}
 		{section === "computer" && <ComputerPage host={host} computer={computer} connected={connected} views={views} act={act}
 			availabilityRun={mode => run(api("/operator-availability", { mode }, computer?.id))}>

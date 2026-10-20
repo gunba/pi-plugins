@@ -1,4 +1,5 @@
 import { Loading } from "./loading.tsx";
+import { MoveConversation, type MoveRequest } from "./move-conversation.tsx";
 import {
   useCallback,
   useEffect,
@@ -23,7 +24,7 @@ import { useConfirmation } from "./confirmation.tsx";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { isControl } from "../shared/controls.ts";
 import { openView, panelViews } from "./work-views.ts";
-import type { WorkspaceState as HostState } from "./workspace.ts";
+import { sessionKey, type Computer, type WorkspaceState as HostState } from "./workspace.ts";
 import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
 import { SettingsLayout, SettingsContent, settingsGroups, settingsSections, settingsPage, MERGED_VIEWS } from "./settings.tsx";
 import { SettingsForm } from "./settings-form.tsx";
@@ -360,6 +361,16 @@ export function App({ account }: { account?: BrowserAccount }) {
   // "What do I need to know?": written in the background, so the conversation stays usable; it opens beside the
   // conversation when it is ready, and stays there for its reply.
   const [briefs, setBriefs] = useState<Record<string, BriefState>>({});
+  // "Move to another computer" (teleport): the conversation being moved, while its window is open.
+  const [moving, setMoving] = useState<MoveRequest>();
+  /** An off computer's conversations that another computer keeps copies of, to move elsewhere. */
+  const keptFor = (computer: { id?: string; connected?: boolean; loaded?: boolean; presence?: { online: boolean } }) => {
+    if (!computer.id || computer.loaded || computer.connected && computer.presence?.online !== false) return [];
+    const seen = new Set<string>();
+    return (state.host?.computers ?? []).flatMap(holder => holder.teleport?.copies ?? [])
+      .filter(copy => copy.computer === computer.id && !copy.moved && !seen.has(copy.session) && !!seen.add(copy.session))
+      .sort((a, b) => b.updated - a.updated).slice(0, 20);
+  };
   const briefState = latestReply && briefs[selected]?.reply === latestReply ? briefs[selected] : undefined;
   const briefItem: WorkItem | undefined = briefState?.brief ? { id: `brief:${briefState.reply}`, at: briefState.brief.created, message: briefState.reply,
     block: { type: "brief", brief: briefState.brief, working: briefState.working, rewrite: () => writeBrief(true) } } : undefined;
@@ -864,6 +875,11 @@ export function App({ account }: { account?: BrowserAccount }) {
             </div>;
           })}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
+            keptFor(computer).length > 0 ? <>{keptFor(computer).map(copy => <div className="session-row kept-copy" key={copy.session}>
+              <span className="kept-copy-name" title={`${copy.cwd} · last active ${new Date(copy.updated).toLocaleString()}`}>
+                <strong>{copy.title || basename(copy.cwd)}</strong><small>{basename(copy.cwd)} · {new Date(copy.updated).toLocaleDateString([], { day: "numeric", month: "short" })}</small></span>
+              <button type="button" className="quiet-action" onClick={() => setMoving({ source: computer as Computer, session: copy.session, title: copy.title || basename(copy.cwd), cwd: copy.cwd })}>Move…</button>
+            </div>)}</> :
             <p className="sidebar-hint">{"loaded" in computer && computer.loaded === false && computer.presence?.online !== false
               ? <span className="sidebar-loading"><span className="loading-spinner" aria-hidden="true" />Loading conversations…</span>
               : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
@@ -1187,6 +1203,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             renderView={id => { const view = ui?.views.find(item => item.id === id && !item.scope); return view ? viewCard(view) : null; }}
             session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy} providerHint={providerHint}
             invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
+            move={session && currentComputer?.teleport && (session.agentId ?? session.snapshot?.id)
+              ? () => setMoving({ source: currentComputer, session: (session.agentId ?? session.snapshot?.id)!, title: title(session), cwd: session.cwd }) : undefined}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}
           </SettingsLayout>
         </Inspector>
@@ -1201,6 +1219,8 @@ export function App({ account }: { account?: BrowserAccount }) {
         <SettingsForm interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
           answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />
       </Modal>}
+      {moving && <MoveConversation request={moving} computers={state.host?.computers ?? []} close={() => setMoving(undefined)}
+        moved={(computer, key) => { setSelected(sessionKey(computer, key)); setPanel(undefined); setSidebar(false); }} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}

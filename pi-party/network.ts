@@ -30,7 +30,9 @@ export type PartyPacket =
 	/** Pi settings mirroring (Desk settings-sync.ts), sent only to computers that announce "settings". */
 	| { type: "settings"; manifest: unknown }
 	| { type: "settings-request"; keys: unknown }
-	| { type: "settings-files"; files: unknown };
+	| { type: "settings-files"; files: unknown }
+	/** Conversation copies and moves (Desk teleport.ts), sent only to computers that announce "copies". */
+	| { type: "copies-status" | "copies" | "copies-ack" | "moves" | "copy-fetch" | "copy-data"; [key: string]: unknown };
 
 export function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("Invalid party packet.");

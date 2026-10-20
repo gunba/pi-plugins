@@ -4,6 +4,8 @@ import type { ConnectionInterruption, ConnectionState, HostPresence } from "./co
 export interface Computer {
 	/** loaded: its conversations have arrived at least once. */
 	id: string; name: string; platform?: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string; loaded?: boolean;
+	/** Its conversation-copy switches and the copies it keeps (teleport). */
+	teleport?: import("../shared/protocol.ts").HostState["teleport"];
 	/** Round-trip milliseconds over the browser's connection, and whether it is direct rather than through the relay. */
 	latency?: number; direct?: boolean;
 	presence?: HostPresence;

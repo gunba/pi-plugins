@@ -25,9 +25,10 @@ export function Row({ label, children, hint }: { label: string; children: ReactN
 type Act = (view: ViewSnapshot, action: UiAction | string, value?: unknown) => Promise<unknown>;
 
 /** Everything about one conversation on one page: model, context, spend, options. */
-export function ConversationPage({ session, computer, host, views, connected, busy, settingBusy, invoke, act, available, restore }: {
+export function ConversationPage({ session, computer, host, views, connected, busy, settingBusy, invoke, act, available, restore, move }: {
 	session: SessionView; computer?: Computer; host: WorkspaceState; views: ViewSnapshot[]; connected: boolean; busy: boolean; settingBusy: boolean;
 	invoke: (command: WorkerCommand) => Promise<unknown>; act: Act; available: string[]; restore: (target: string, text: string) => void;
+	move?: () => void;
 }) {
 	const [error, setError] = useState("");
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); };
@@ -38,6 +39,8 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 	return <div className="settings-page">
 		{error && <p className="error-text" role="alert">{error}</p>}
 		<section className="settings-group">
+			<Row label="Computer"><span>{computer?.name ?? host.name}</span>
+				{move && <button className="quiet-action" disabled={busy} onClick={move}>Move to another computer…</button>}</Row>
 			<Row label="Model">{snapshot?.model ? <span>{snapshot.model.name}{snapshot.thinking && snapshot.thinking !== "off" ? ` · ${snapshot.thinking} reasoning` : ""}</span> : <span className="muted">Not started</span>}</Row>
 			{session.workerRuntime && <Row label="Version"><span>Desk {session.workerRuntime.version} · Pi {session.workerRuntime.engine}</span>
 				{outdated && ready && <button className="quiet-action" disabled={locked} onClick={() => run(api(`/sessions/${session.key}/restart`, { replace: true }))}>
@@ -148,6 +151,21 @@ function SpendGroup({ usage, allowances }: { usage: NonNullable<NonNullable<Sess
 }
 
 /** One computer's shared settings on one page. */
+/** This computer's conversation-copy switches (teleport): send its conversations, and keep other computers'. */
+function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boolean; send: boolean; copies: unknown[] }; computer?: string; connected: boolean }) {
+	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+	const set = (change: { hold?: boolean; send?: boolean }) => {
+		setBusy(true); setError("");
+		void api("/teleport/settings", change, computer).catch(failure => setError(failure instanceof Error ? failure.message : String(failure))).finally(() => setBusy(false));
+	};
+	return <Row label="Conversation copies" hint="Each conversation is copied, as it is written, to the computers that keep copies, so it can be moved to another computer and resumed there even when this one is off. Copies go 30 days after their conversation was last active.">
+		{teleport ? <>
+			<label className="settings-check"><input type="checkbox" checked={teleport.send} disabled={!connected || busy} onChange={event => set({ send: event.target.checked })} />Send this computer's conversations</label>
+			<label className="settings-check"><input type="checkbox" checked={teleport.hold} disabled={!connected || busy} onChange={event => set({ hold: event.target.checked })} />Keep copies of other computers' conversations{teleport.hold ? ` (${teleport.copies.length} kept)` : ""}</label>
+		</> : <span className="muted">Update Desk on this computer to use conversation copies.</span>}
+		{error && <span className="error-text" role="alert">{error}</span>}
+	</Row>;
+}
 export function ComputerPage({ host, computer, connected, children, views, act, availabilityRun }: {
 	host: WorkspaceState; computer?: Computer; connected: boolean; children: { accounts: ReactNode; dictation: ReactNode; updates?: ReactNode };
 	views: ViewSnapshot[]; act: Act; availabilityRun: (mode: string) => void;
@@ -165,6 +183,7 @@ export function ComputerPage({ host, computer, connected, children, views, act, 
 				{view.working && <span className="muted">{view.working}…</span>}
 			</Row>)}
 			{children.updates}
+			<CopiesRow teleport={computer ? computer.teleport : host.teleport} computer={computer?.id} connected={connected} />
 			<Row label="Pi setup" hint="AGENTS.md, Pi settings, keybindings, models, prompts, skills and themes are mirrored with your other computers; the newest version of each wins. Logins, MCP servers, local extensions and paths stay on each computer.">
 				<span className="muted">{(() => {
 					const last = computer ? computer.settingsSync : host.settingsSync;

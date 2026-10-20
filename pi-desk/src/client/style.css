@@ -2693,3 +2693,14 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .account-page .loading { margin-top:18px; }
 .sidebar-loading { display:inline-flex; align-items:center; gap:7px; }
 .sidebar-loading .loading-spinner { width:12px; height:12px; border-width:1.5px; }
+/* Conversation copies (teleport): an off computer's kept conversations, the move window and the settings switches. */
+.kept-copy { display:flex; align-items:center; gap:8px; padding:4px 10px 4px 14px; }
+.kept-copy-name { display:flex; flex-direction:column; min-width:0; flex:1; opacity:.75; }
+.kept-copy-name strong { font-size:12.5px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kept-copy-name small { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.move-modal { width:min(520px, calc(100vw - 24px)); }
+.move-form { display:flex; flex-direction:column; gap:12px; }
+.move-form label { display:flex; flex-direction:column; gap:5px; font-size:12.5px; color:var(--muted); }
+.move-form select, .move-form input { font:inherit; color:var(--text); }
+.move-actions { display:flex; justify-content:flex-end; gap:8px; }
+.settings-check { display:inline-flex; align-items:center; gap:7px; margin-right:14px; }
