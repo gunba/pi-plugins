@@ -1077,15 +1077,26 @@ export class DeskHost {
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
 	/** This computer's conversations that are copied to the computers that keep copies. */
 	private copyableConversations(): Conversation[] {
-		return [...this.sessions.values()].flatMap(managed => {
-			const session = managed.view.agentId ?? managed.view.snapshot?.id, file = managed.view.snapshot?.file ?? managed.view.file;
+		const seen = new Set<string>();
+		return [...this.sessions.values()].flatMap(entry => {
+			const session = entry.view.agentId ?? entry.view.snapshot?.id;
+			if (!session || seen.has(session)) return [];
+			seen.add(session);
+			const managed = this.conversation(session)!, file = managed.view.snapshot?.file ?? managed.view.file;
 			const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
 			return session && file ? [{ session, file, cwd: managed.view.cwd, ...(title ? { title } : {}) }] : [];
 		});
 	}
-	private conversation(session: string): ManagedSession | undefined {
-		return [...this.sessions.values()].find(managed => (managed.view.agentId ?? managed.view.snapshot?.id) === session);
+	/**
+	 * This computer's entries for a conversation, the current one first. One that went to another computer and came back
+	 * has older entries here too (the file it left from, an earlier return): they must not be moved or copied.
+	 */
+	private conversations(session: string): ManagedSession[] {
+		const current = (managed: ManagedSession) => Number(!managed.view.moved && !this.teleport?.superseded(session, managed.view.snapshot?.file ?? managed.view.file ?? ""));
+		return [...this.sessions.values()].filter(managed => (managed.view.agentId ?? managed.view.snapshot?.id) === session)
+			.sort((a, b) => current(b) - current(a) || Number(!!b.worker) - Number(!!a.worker) || (b.view.created ?? 0) - (a.view.created ?? 0));
 	}
+	private conversation(session: string): ManagedSession | undefined { return this.conversations(session)[0]; }
 	/** Stops a conversation here for good: it moved, or is moving, to another computer. */
 	private async stopForMove(managed: ManagedSession, moved?: Move): Promise<void> {
 		const worker = managed.worker;
@@ -1099,8 +1110,8 @@ export class DeskHost {
 		this.persist(true); this.emit({ type: "session", session: managed.view });
 	}
 	private async retireMoved(session: string, move: Move): Promise<void> {
-		const managed = this.conversation(session);
-		if (managed) await this.stopForMove(managed, move).catch(error => console.error(`A moved conversation could not be stopped here: ${error instanceof Error ? error.message : String(error)}`));
+		for (const managed of this.conversations(session))
+			await this.stopForMove(managed, move).catch(error => console.error(`A moved conversation could not be stopped here: ${error instanceof Error ? error.message : String(error)}`));
 	}
 	/** Gives a conversation up for a move: stopped here, its file handed over. Refused while it is working or asking. */
 	private async releaseForMove(session: string): Promise<{ file: string; cwd: string; title?: string }> {
