@@ -59,7 +59,8 @@ export class PartyNetwork {
 		if (this.closed || this.flushing.has(id) || this.peers.get(id) !== send) return;
 		this.flushing.add(id);
 		try {
-			const agents = this.store.networkDirectory(), signature = JSON.stringify(agents);
+			// What this computer announces is part of it: a changed announcement (keeping copies, say) is sent again.
+			const agents = this.store.networkDirectory(), signature = JSON.stringify([agents, this.self]);
 			if (this.directories.get(id) === signature) await send({ type: "presence" });
 			else { await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, signature); }
 			if (this.closed || this.peers.get(id) !== send) return;
@@ -89,7 +90,7 @@ export class PartyNetwork {
 				.then(async result => {
 					if (!result || this.closed || this.peers.get(id) !== send) return;
 					const agents = this.store.networkDirectory();
-					await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, JSON.stringify(agents));
+					await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, JSON.stringify([agents, this.self]));
 					await send({ type: "operation-results", results: [result] });
 				})
 				.catch(() => { if (this.peers.get(id) === send) this.closers.get(id)?.(); });

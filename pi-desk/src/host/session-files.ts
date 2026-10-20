@@ -45,7 +45,7 @@ export class SessionCatalog {
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
-			pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept,
+			pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}),
 			controls: view.controls, activation: view.activation,
 		}));
 		const temporary = `${this.file}.${randomUUID()}.tmp`;

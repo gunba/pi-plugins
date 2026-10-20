@@ -1186,7 +1186,7 @@ export class DeskHost {
 			sessionFile = realpathSync(sessionFile);
 			// A conversation that moved to another computer runs there, never again here.
 			const moved = this.teleport?.movedAway(sessionHeaderId(sessionFile) ?? "");
-			if (moved && !existing) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
+			if (moved) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
 				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
 			if (active) {
