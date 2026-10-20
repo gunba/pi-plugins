@@ -3,8 +3,9 @@ import { ClientHandshake, ChannelVersionError, type ChannelIdentity } from "../s
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
-import { socketUrl, type ApiRequest, type ApiResponse } from "../shared/relay-protocol.ts";
-import type { HostEvent } from "../shared/protocol.ts";
+import { socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent } from "../shared/relay-protocol.ts";
+import type { HostEvent, SessionView } from "../shared/protocol.ts";
+import { applySessionChanges } from "../shared/session-patch.ts";
 import { API_VERSION, apiMatches, upgradeMessage } from "../shared/release.ts";
 import { interruptionReason, type ConnectionInterruption, type ConnectionState } from "./connection-state.ts";
 
@@ -34,6 +35,8 @@ const DIRECT_RETRY_MS = 10 * 60_000;
 const PAUSE_AFTER_MS = 4 * 60_000;
 /** Returning after a pause, the app shows its previous state this long while it reconnects, then the real state. */
 const QUIET_MS = 5_000;
+/** A request waits as long as the computer keeps sending; it is abandoned after this long with nothing arriving. */
+const REQUEST_QUIET_MS = 60_000;
 
 export class RemoteClient {
 	private account: RemoteAccount;
@@ -63,6 +66,10 @@ export class RemoteClient {
 	private interruptionCount = 0;
 	private lastInterruption?: ConnectionInterruption;
 	private backoff = 1000;
+	/** Each conversation as last received, which its changes apply to. */
+	private sessions = new Map<string, SessionView>();
+	/** When anything last arrived from the computer. */
+	private heard = 0;
 	private received = 0;
 	private acknowledged = 0;
 	private ackScheduled = false;
@@ -240,6 +247,7 @@ export class RemoteClient {
 		};
 		socket.onmessage = event => {
 			if (this.socket !== socket || this.closed) return;
+			this.heard = performance.now();
 			if (typeof event.data !== "string" || event.data.length > MAX_WIRE) { socket.close(4002); return; }
 			if (this.channel) { this.channel.receive(event.data); return; }
 			if (++handshakes > 4) { socket.close(4002); return; }
@@ -263,7 +271,7 @@ export class RemoteClient {
 				this.sentCredential = handshake.offer.credential;
 				this.refresh = setInterval(maintain, 20_000);
 				this.expiry = setInterval(() => { if (!this.valid(socket)) socket.close(4004, "Authorization expired"); }, 1000);
-				await session.channel.send({ type: "hello", api: API_VERSION });
+				await session.channel.send({ type: "hello", api: API_VERSION, features: ["session-patch"] } satisfies RemotePayload);
 			}).catch(error => {
 				if (error instanceof ChannelVersionError) this.deny(426, error.message);
 				else socket.close(4002, "Invalid host response");
@@ -355,10 +363,19 @@ export class RemoteClient {
 		} else if (message.type === "event") {
 			if (message.sequence !== this.received + 1) throw new Error("Unexpected event sequence.");
 			this.received++;
-			const event = message.event as HostEvent;
+			const wire = message.event as HostEvent | SessionPatchEvent;
+			// A conversation this browser already has may come as its changes alone; the app always sees whole conversations.
+			let event: HostEvent;
+			if (wire.type === "session_patch") {
+				const before = this.sessions.get(wire.key);
+				if (!before) throw new Error("A conversation change arrived before the conversation.");
+				event = { type: "session", session: applySessionChanges(before, wire.changes) };
+			} else event = wire;
 			if (event.type === "state" && !apiMatches(event.state.release?.api)) {
 				this.deny(426, upgradeMessage("This computer", event.state.release?.api)); return;
 			}
+			if (event.type === "state") this.sessions = new Map(event.state.sessions.map(session => [session.key, session]));
+			else if (event.type === "session") this.sessions.set(event.session.key, event.session);
 			for (const handler of this.handlers) handler(event, this.received);
 		} else if (message.type === "response" && validId(message.id)) {
 			const pending = this.pending.get(message.id);
@@ -380,10 +397,14 @@ export class RemoteClient {
 		if (this.pending.size >= 32) return Promise.reject(new RemoteError(429, "Too many requests are waiting."));
 		const id = crypto.randomUUID(), socket = this.socket;
 		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => {
+			// Abandoned only after a minute in which nothing at all arrived from the computer: on a slow link a large
+			// reply takes longer than that to arrive, but it keeps arriving.
+			const expire = () => {
+				const quiet = performance.now() - this.heard;
+				if (quiet < REQUEST_QUIET_MS) { const pending = this.pending.get(id); if (pending) pending.timer = setTimeout(expire, REQUEST_QUIET_MS - quiet); return; }
 				this.pending.delete(id); reject(new RemoteError(504, "Request timed out; delivery is uncertain. Check the session before retrying."));
-			}, 60_000);
-			this.pending.set(id, { resolve, reject, timer });
+			};
+			this.pending.set(id, { resolve, reject, timer: setTimeout(expire, REQUEST_QUIET_MS) });
 			void this.channel!.send({ type: "request", id, request }).catch(() => socket?.close());
 		});
 	}

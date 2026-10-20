@@ -1,3 +1,4 @@
+import { savedOrNetwork } from "./bootstrap.ts";
 import {
 	accountConfiguration, accountOrigin, deviceKey, identifier, workspaceIdentity,
 	type AccountConfiguration, type DeviceKey, type WorkspaceDevice, type MembershipPeer, type MembershipLease,
@@ -87,13 +88,23 @@ export class BrowserAccount {
 	}
 	static async open(origin: string): Promise<BrowserAccount> {
 		origin = accountOrigin(origin);
-		const response = await fetch(`${origin}/config`, {
-			cache: "no-store", credentials: "omit", redirect: "error", signal: AbortSignal.timeout(15_000),
-		});
-		if (!response.ok) throw new Error("Pi Desk account service is unavailable.");
-		const config = accountConfiguration(await response.json());
-		if (config.origin !== origin || !config.appOrigins.includes(location.origin)) throw new Error("This app is not authorized for the account service.");
-		return new BrowserAccount(config);
+		// Saved like the workspace's configuration (bootstrap.ts): on a slow link the last one is used.
+		const key = `pi-desk:account-configuration:${origin}`, saved = localStorage.getItem(key);
+		const read = (value: unknown) => {
+			const config = accountConfiguration(value);
+			if (config.origin !== origin || !config.appOrigins.includes(location.origin)) throw new Error("This app is not authorized for the account service.");
+			return config;
+		};
+		const network = (async () => {
+			const response = await fetch(`${origin}/config`, {
+				cache: "no-store", credentials: "omit", redirect: "error", signal: AbortSignal.timeout(120_000),
+			});
+			if (!response.ok) throw new Error("Pi Desk account service is unavailable.");
+			const value = await response.json(), config = read(value);
+			localStorage.setItem(key, JSON.stringify(value));
+			return config;
+		})();
+		return new BrowserAccount(await savedOrNetwork(network, () => { try { return saved ? read(JSON.parse(saved)) : undefined; } catch { return undefined; } }));
 	}
 	private markedOut(): boolean { return localStorage.getItem(this.logoutKey) === "1"; }
 	/** Whether this browser may be enrolled; the account service has the final word on each request. */
@@ -138,7 +149,7 @@ export class BrowserAccount {
 		const proof = await accountProof({ id: device.id, method, url: url.href, body, accessToken: "" }, device.key);
 		if (this.closed || this.markedOut() || epoch !== this.epoch) throw new BrowserSignInRequired();
 		const response = await fetch(url, {
-			method, credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20_000),
+			method, credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60_000),
 			headers: { "X-Pi-Desk-Proof": proof, ...(method === "POST" ? { "Content-Type": "application/json" } : {}) },
 			...(input === undefined ? {} : { body }),
 		});

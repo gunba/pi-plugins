@@ -2,7 +2,7 @@ import { compactVerify, CompactSign } from "jose";
 import { deviceKey, type DeviceKey } from "./account.ts";
 import { CredentialVerifier, type DeviceCredential } from "./device-credential.ts";
 import { API_VERSION } from "./release.ts";
-import { base64, newSecret, PROTOCOL_VERSION, SecureChannel, validId, validSecret } from "./secure-channel.ts";
+import { base64, CHANNEL_FEATURES, newSecret, PROTOCOL_VERSION, SecureChannel, validId, validSecret } from "./secure-channel.ts";
 
 export type ProofPurpose = "pi-desk-client-hello+jws" | "pi-desk-host-hello+jws" | "pi-desk-host-admission+jws"
 	| "pi-desk-party-offer+jws" | "pi-desk-party-accept+jws";
@@ -20,9 +20,10 @@ export interface ChannelHandlers {
 	failed: (error: Error) => void;
 }
 export interface ChannelSession { channel: SecureChannel; peer: DeviceCredential; own: DeviceCredential }
+/** features: channel formats this end can use (secure-channel.ts); signed with the rest, ignored by older ends. */
 interface Hello {
 	protocol: number; api: number; host: string; nonce: string; key: DeviceKey; credential: string;
-	offer?: string;
+	offer?: string; features?: string[];
 }
 export class ChannelVersionError extends Error {
 	constructor() { super("Update Pi Desk on the computer and reload the app."); }
@@ -55,8 +56,9 @@ async function hello(message: ChannelWire, credential: DeviceCredential, purpose
 	if (data.host !== host || !validSecret(data.nonce)
 		|| data.credential !== base64(await digest(message.credential))) throw new Error("Channel context does not match.");
 	const key = (await deviceKey(data.key)).key;
+	const features = Array.isArray(data.features) ? data.features.filter((item): item is string => typeof item === "string").slice(0, 16) : undefined;
 	return { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: data.nonce, key, credential: data.credential as string,
-		...(typeof data.offer === "string" ? { offer: data.offer } : {}) };
+		...(typeof data.offer === "string" ? { offer: data.offer } : {}), ...(features ? { features } : {}) };
 }
 async function ephemeral(): Promise<{ privateKey: CryptoKey; publicKey: DeviceKey }> {
 	const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
@@ -76,7 +78,9 @@ async function channel(privateKey: CryptoKey, remote: DeviceKey, offer: ChannelW
 	try {
 		return await SecureChannel.create({
 			secret: base64(root), clientNonce: client.nonce, challenge: host.nonce, host: host.host, device, role,
-		}, handlers.output, handlers.input, handlers.failed);
+		}, handlers.output, handlers.input, handlers.failed,
+		// Compact frames only when both ends offered them.
+		{ compact: !!client.features?.includes("compact") && !!host.features?.includes("compact") });
 	} finally { root.fill(0); }
 }
 
@@ -98,7 +102,7 @@ export class ClientHandshake {
 		if (own.id === host) throw new Error("A computer cannot connect to itself.");
 		const key = await ephemeral();
 		const data: Hello = { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: newSecret(),
-			key: key.publicKey, credential: base64(await digest(credential)) };
+			key: key.publicKey, credential: base64(await digest(credential)), features: [...CHANNEL_FEATURES] };
 		const offer: ChannelWire = { type: "offer", credential,
 			proof: await identity.signProof(bytes(data), offerPurpose(purpose)) };
 		return new ClientHandshake(offer, key.privateKey, own, data, verifier, purpose);
@@ -127,7 +131,7 @@ export async function acceptChannelOffer(value: unknown, host: string, identity:
 	const credential = await identity.certificate(), own = await verifier.verify(credential, "host", host);
 	const key = await ephemeral();
 	const data: Hello = { protocol: PROTOCOL_VERSION, api: API_VERSION, host, nonce: newSecret(),
-		key: key.publicKey, credential: base64(await digest(credential)), offer: base64(await digest(offer)) };
+		key: key.publicKey, credential: base64(await digest(credential)), offer: base64(await digest(offer)), features: [...CHANNEL_FEATURES] };
 	const accept: ChannelWire = { type: "accept", credential,
 		proof: await identity.signProof(bytes(data), acceptPurpose(purpose)) };
 	if (Math.min(own.expires, peer.expires) <= Date.now() / 1000) throw new Error("Channel authorization expired.");

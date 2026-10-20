@@ -8,8 +8,9 @@ import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../s
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
 import { EventDelivery, EventWindow } from "./event-window.ts";
-import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload } from "../shared/relay-protocol.ts";
-import type { HostEvent } from "../shared/protocol.ts";
+import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent } from "../shared/relay-protocol.ts";
+import type { HostEvent, SessionView } from "../shared/protocol.ts";
+import { sessionChanges } from "../shared/session-patch.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
 import { AccountSignInRequired } from "./account-errors.ts";
 import { MAX_NETWORK_PACKET } from "../../../pi-party/network.ts";
@@ -20,6 +21,17 @@ interface Peer {
 	leaseUntil: number; ownExpires: number; sentCredential?: string; handshaking: boolean; renewing: boolean;
 	/** A browser on this computer connected straight to the host; otherwise frames go through the relay. */
 	local?: WebSocket;
+	/** The browser applies conversation changes alone; `sent` is what it was last sent of each conversation. */
+	patches?: boolean; sent?: Map<string, SessionView>;
+}
+/** An event as this browser receives it: a conversation it already has comes as its changes. */
+function forBrowser(peer: Peer, event: HostEvent): HostEvent | SessionPatchEvent {
+	if (!peer.patches || !peer.sent) return event;
+	if (event.type === "state") { peer.sent = new Map(event.state.sessions.map(session => [session.key, session])); return event; }
+	if (event.type !== "session") return event;
+	const before = peer.sent.get(event.session.key);
+	peer.sent.set(event.session.key, event.session);
+	return before ? { type: "session_patch", key: event.session.key, changes: sessionChanges(before, event.session) } : event;
 }
 export interface RemoteAccess { id: string; authorized: () => boolean }
 export interface HostAccount extends ChannelIdentity {
@@ -347,6 +359,7 @@ export class RelayConnector {
 				this.drop(peer.id, true, 4003); return;
 			}
 			peer.ready = true; clearTimeout(peer.timer);
+			if (!peer.initiator && Array.isArray(message.features) && message.features.includes("session-patch")) { peer.patches = true; peer.sent = new Map(); }
 			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE, ping: true,
 				...(this.options.direct && !peer.local ? { direct: { port: this.options.direct, platform: process.platform } } : {}) } satisfies RemotePayload);
 			if (!this.valid(peer)) return;
@@ -358,8 +371,10 @@ export class RelayConnector {
 				if (!this.valid(peer)) peer.unwatch();
 				return;
 			}
+			// Changes are worked out as each event is sent, against what this browser actually received: waiting
+			// snapshots of a conversation may be merged before then, which changes alone could not be.
 			peer.delivery = new EventDelivery(peer.events, (sequence, event) =>
-				peer.channel!.send({ type: "event", sequence, event } satisfies RemotePayload),
+				peer.channel!.send({ type: "event", sequence, event: forBrowser(peer, event) } satisfies RemotePayload),
 				() => this.drop(peer.id, true, 1013));
 			peer.unwatch = this.options.watch(event => {
 				if (!this.valid(peer)) { this.drop(peer.id, true, 1013); return; }

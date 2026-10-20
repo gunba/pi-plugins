@@ -1,9 +1,11 @@
 import type { HostEvent } from "./protocol.ts";
+import type { SessionChange } from "./session-patch.ts";
 import type { ReleaseInfo } from "./release.ts";
 export interface ApiRequest { method: "GET" | "POST"; path: string; body?: Record<string, unknown> }
 export interface ApiResponse { status: number; body: unknown; asset?: { mimeType: string; base64: string } }
 export type RemotePayload =
-	| { type: "hello"; api: number }
+	/** features: "session-patch", the browser applies a conversation's changes alone (session-patch.ts). */
+	| { type: "hello"; api: number; features?: string[] }
 	/**
 	 * `direct`: the host's loopback port, which a browser on the same computer can use instead of the relay.
 	 * `ping`: the host answers pings, which browsers use to show the connection's round-trip time.
@@ -15,7 +17,7 @@ export type RemotePayload =
 	| { type: "upgrade-required"; api: number }
 	| { type: "request"; id: string; request: ApiRequest }
 	| { type: "response"; id: string; response: ApiResponse }
-	| { type: "event"; sequence: number; event: HostEvent }
+	| { type: "event"; sequence: number; event: HostEvent | SessionPatchEvent }
 	| { type: "events_ack"; sequence: number };
 
 export function relayOrigin(value: string): string {
@@ -37,3 +39,6 @@ export function socketUrl(origin: string, path: string, host: string): string {
 	url.searchParams.set("host", host);
 	return url.href;
 }
+
+/** A conversation's changes since the last time this browser was sent it, in place of its whole entry. */
+export type SessionPatchEvent = { type: "session_patch"; key: string; changes: SessionChange[] };

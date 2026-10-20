@@ -26,6 +26,8 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 	// Response headers for the Caddy site that serves this directory (`import site.caddy`).
 	const quote = (value: string) => `"${value.replace(/["\\]/g, "\\$&")}"`;
 	await writeFile(join(output, "site.caddy"), [
+		// Compressed: the app's script and stylesheet were sent whole (964 KB), 20 s on a plane before the page appeared.
+		"encode zstd gzip",
 		"header {",
 		`\tContent-Security-Policy ${quote(contentSecurityPolicy({ socketOrigin: socket.origin, accountOrigin: account.origin }))}`,
 		"\tX-Content-Type-Options nosniff", "\tReferrer-Policy no-referrer", "\tCross-Origin-Resource-Policy same-origin",
