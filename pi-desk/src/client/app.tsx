@@ -864,7 +864,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             </div>;
           })}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
-            <p className="sidebar-hint">{computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
+            <p className="sidebar-hint">{"loaded" in computer && computer.loaded === false && computer.presence?.online !== false
+              ? <span className="sidebar-loading"><span className="loading-spinner" aria-hidden="true" />Loading conversations…</span>
+              : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
           </section>)}
         </nav>
         </div>
@@ -908,7 +910,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           {(() => {
             const name = session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
               disabled={!connected || session.state !== "ready" || closing}
-              control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>Welcome</strong>;
+              control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>{waiting ? "" : "Welcome"}</strong>;
             return headerPlan ? <PlanHeader view={headerPlan} title={name} disabled={!connected || closing}
               invoke={action => run({ kind: "action", view: headerPlan.id, revision: headerPlan.revision, action: action.id })} />
               : <div className="conversation-heading">

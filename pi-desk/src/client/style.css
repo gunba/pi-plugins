@@ -2691,3 +2691,5 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .loading-spinner { width:26px; height:26px; border-radius:50%; border:2.5px solid color-mix(in srgb, var(--muted) 25%, transparent); border-top-color:var(--accent); animation:activity-orbit .9s linear infinite; }
 .loading-detail { font-size:11.5px; opacity:.8; }
 .account-page .loading { margin-top:18px; }
+.sidebar-loading { display:inline-flex; align-items:center; gap:7px; }
+.sidebar-loading .loading-spinner { width:12px; height:12px; border-width:1.5px; }
