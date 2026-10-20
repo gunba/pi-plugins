@@ -78,22 +78,25 @@ test("a long message that keeps arriving on a slow link is delivered; one that s
 	await link.server.channel.send({ noise });
 	assert.ok(wires.length >= 3, "several chunks");
 	t.mock.timers.enable({ apis: ["setTimeout"] });
-	// Each chunk is taken in (decryption is asynchronous) before the clock moves on 45 s: 90 s or more in all.
+	// Decryption and decompression are asynchronous and slow on a busy machine: wait for them by the real clock (only
+	// timeouts are mocked), not a count of turns.
+	const until = async condition => { for (const end = Date.now() + 10_000; !condition() && Date.now() < end;) await new Promise(resolve => setImmediate(resolve)); };
+	// Each chunk is taken in before the clock moves on 45 s: 90 s or more in all.
 	const taken = index => link.delivered.length || (link.client.channel.assembly?.next ?? 0) > index;
 	for (const [index, wire] of wires.entries()) {
 		link.client.channel.receive(wire);
-		for (let turn = 0; turn < 1000 && !taken(index); turn++) await new Promise(resolve => setImmediate(resolve));
+		await until(() => taken(index) || link.failure());
 		t.mock.timers.tick(45_000);
 	}
-	// Until it arrives (the last chunk is decompressed asynchronously) or the channel fails.
-	for (let turn = 0; turn < 100_000 && !link.delivered.length && !link.failure(); turn++) await new Promise(resolve => setImmediate(resolve));
+	await until(() => link.delivered.length || link.failure());
 	assert.equal(link.failure(), undefined);
 	assert.equal(link.delivered[0]?.noise, noise);
 	// A message that stops arriving for over a minute is abandoned.
 	wires.length = 0;
 	await link.server.channel.send({ noise });
 	link.client.channel.receive(wires[0]);
-	for (let turn = 0; turn < 1000 && !link.client.channel.assembly; turn++) await new Promise(resolve => setImmediate(resolve));
+	await until(() => link.client.channel.assembly);
+	assert.ok(link.client.channel.assembly, "the first chunk was taken in");
 	t.mock.timers.tick(61_000);
 	assert.match(link.failure()?.message ?? "", /Incomplete encrypted message/);
 	t.mock.timers.reset();
