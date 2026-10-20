@@ -1,3 +1,4 @@
+import { Loading } from "./loading.tsx";
 import {
   useCallback,
   useEffect,
@@ -190,6 +191,16 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [session?.key, selected]);
   const canCompose = session?.state === "starting" || session?.state === "ready";
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
+  // The selected conversation's computer, while its conversations have not arrived: a loading view, not the empty
+  // Welcome page, which looked as if there were no conversations. An offline computer says so instead.
+  const selectedComputer = !session && selected.includes(":") ? state.host?.computers?.find(computer => computer.id === selected.slice(0, selected.indexOf(":"))) : undefined;
+  const offline = (computer: { presence?: { online: boolean } }) => computer.presence?.online === false;
+  const waiting = selectedComputer && !selectedComputer.loaded
+    ? offline(selectedComputer) ? <div className="welcome"><div className="welcome-mark">π</div><h1>{selectedComputer.name} is offline</h1>
+        <p>This conversation opens when {selectedComputer.name} is back online.</p></div>
+      : <div className="welcome"><Loading label={`Loading this conversation from ${selectedComputer.name}…`} /></div>
+    : !session && state.host?.computers?.length && state.host.computers.every(computer => !computer.loaded) && !state.host.computers.every(offline)
+      ? <div className="welcome"><Loading label="Connecting to your computers…" /></div> : undefined;
   const connected = state.host?.computers
     ? currentComputer?.connected ?? state.host.computers.some(computer => computer.connected)
     : transportConnected;
@@ -968,7 +979,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
             summarised={contextFrom !== undefined && message.order < contextFrom} contextStart={message.order === contextFrom} />}
-          empty={
+          empty={waiting ??
               <div className="welcome">
                 <div className="welcome-mark">π</div>
                 <div className="eyebrow">

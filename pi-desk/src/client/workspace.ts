@@ -2,7 +2,8 @@ import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
 import type { ConnectionInterruption, ConnectionState, HostPresence } from "./connection-state.ts";
 
 export interface Computer {
-	id: string; name: string; platform?: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string;
+	/** loaded: its conversations have arrived at least once. */
+	id: string; name: string; platform?: string; cwd: string; connected: boolean; connection: ConnectionState; epoch: number; error?: string; loaded?: boolean;
 	/** Round-trip milliseconds over the browser's connection, and whether it is direct rather than through the relay. */
 	latency?: number; direct?: boolean;
 	presence?: HostPresence;

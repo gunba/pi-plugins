@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Loading } from "./loading.tsx";
 import { BrowserAccount, BrowserSignInRequired } from "./account.ts";
 import "./account.css";
 
@@ -35,11 +36,15 @@ export function AccountGate({ origin, children }: { origin: string; children: (a
 		return () => { active = false; revision++; unwatch?.(); account?.close(); };
 	}, [origin, attempt]);
 	if (phase === "ready" && client) return children(client);
+	// Checking an existing sign-in is a wait, not a sign-in page: the page asking to sign in only appears when it is needed.
+	if (phase === "opening" || phase === "joining") return <main className="account-page">
+		<div className="brand-mark" aria-hidden="true">π</div>
+		<Loading label={phase === "opening" ? "Checking your sign-in…" : "Opening your workspace…"} />
+	</main>;
 	return <main className="account-page">
 		<div className="brand-mark" aria-hidden="true">π</div>
 		<h1>Your workspace, anywhere.</h1>
 		<p>Sign in to access your computers and conversations.</p>
-		{(phase === "opening" || phase === "joining") && <p role="status">{phase === "opening" ? "Connecting…" : "Opening your workspace…"}</p>}
 		{phase === "signin" && client && <button className="primary" disabled={busy} onClick={() => {
 			setBusy(true); setError("");
 			void client.signIn().catch(error => { setBusy(false); setError(error instanceof Error ? error.message : "Sign-in did not complete."); });

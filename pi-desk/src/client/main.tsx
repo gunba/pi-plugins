@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { Loading } from "./loading.tsx";
 import { useEffect, useState } from "react";
 import { App } from "./app.tsx";
 import { AccountGate } from "./account-gate.tsx";
@@ -22,7 +23,7 @@ function Workspace({ account }: { account?: BrowserAccount }) {
 	if (ready) return <App account={account} />;
 	return <main className="account-page"><div className="brand-mark">π</div><h1>Pi Desk</h1>
 		{error ? <><p role="alert">{error}</p><button onClick={() => setAttempt(value => value + 1)}>Try again</button></>
-			: <p role="status">Opening your workspace…</p>}</main>;
+			: <Loading label="Opening your workspace…" />}</main>;
 }
 function Entry() {
 	const [config, setConfig] = useState<Deployment>(), [error, setError] = useState("");
@@ -33,7 +34,7 @@ function Entry() {
 	if (config?.kind === "local") return <Workspace />;
 	return <main className="account-page"><div className="brand-mark">π</div><h1>Pi Desk</h1>
 		{error ? <><p role="alert">{error}</p><button onClick={() => location.reload()}>Try again</button></>
-			: <p role="status">Connecting…</p>}</main>;
+			: <Loading label="Connecting to your workspace…" />}</main>;
 }
 createRoot(document.getElementById("root")!).render(<Entry />);
 if ("serviceWorker" in navigator)

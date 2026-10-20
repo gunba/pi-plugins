@@ -36,7 +36,7 @@ function workspace(): WorkspaceState {
 		release: RELEASE, name: "Workspace", cwd: "", directoryError, sessions: [...remotes.entries()].flatMap(([id, remote]) =>
 			(remote.state?.sessions ?? []).map(session => ({ ...session, computer: id, key: sessionKey(id, session.key) }))),
 		computers: [...remotes.entries()].map(([id, remote]) => ({
-			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state,
+			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state, loaded: !!remote.state,
 			latency: remote.client.latency, direct: remote.client.direct,
 			platform: remote.state?.platform, epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
 			release: remote.state?.release, operatorAvailability: remote.state?.operatorAvailability, updates: remote.state?.updates, storageError: remote.state?.storageError, parties: remote.state?.parties, quests: remote.state?.quests, dictation: remote.state?.dictation, cacheCompaction: remote.state?.cacheCompaction, settingsSync: remote.state?.settingsSync, diagnostics: remote.client.diagnostics,
