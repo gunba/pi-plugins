@@ -146,6 +146,10 @@ export class PartyStore {
 	setComputerOperations(computer: string, operations: string[]): void {
 		this.db.prepare("UPDATE network_computers SET operations=? WHERE computer=?").run(JSON.stringify(operations), computer);
 	}
+	/** The conversations a computer last listed as open (native ids); kept while it is disconnected. */
+	openSessions(computer: string): string[] {
+		return (this.db.prepare("SELECT session FROM network_members WHERE computer=?").all(computer) as { session: string }[]).map(row => row.session.split("@")[0]!);
+	}
 	computerSupports(computer: string, operation: string): boolean {
 		const row = this.db.prepare("SELECT operations FROM network_computers WHERE computer=?").get(computer) as { operations: string | null } | undefined;
 		try { return !!row?.operations && (JSON.parse(row.operations) as string[]).includes(operation); } catch { return false; }

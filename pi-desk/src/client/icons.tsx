@@ -36,6 +36,7 @@ const paths: Record<string, ReactNode> = {
 	login: <><path d="M14 3h6v18h-6M3 12h12m-4-4 4 4-4 4" /></>,
 	edit: <><path d="m4 16 12-12 4 4L8 20H4Zm10-10 4 4" /></>,
 	check: <path d="m5 12 4 4L19 6" />,
+	chevron: <path d="m6 9 6 6 6-6" />,
 	close: <path d="m6 6 12 12M18 6 6 18" />,
 	warning: <><path d="m12 3 10 18H2Z" /><path d="M12 9v5m0 3v.1" /></>,
 	more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,

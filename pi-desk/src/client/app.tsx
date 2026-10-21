@@ -379,12 +379,20 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [moving, setMoving] = useState<MoveRequest>();
   /** An off computer's conversations that another computer keeps copies of, to move elsewhere. */
   const keptFor = (computer: { id?: string; connected?: boolean; loaded?: boolean; presence?: { online: boolean } }) => {
-    if (!computer.id || computer.loaded || computer.connected && computer.presence?.online !== false) return [];
+    // Only once it is known to be off: a computer reconnecting for a moment still has its own list.
+    if (!computer.id || computer.loaded || computer.connected || !offline(computer)) return [];
     const seen = new Set<string>();
     return (state.host?.computers ?? []).flatMap(holder => holder.teleport?.copies ?? [])
       .filter(copy => copy.computer === computer.id && !copy.moved && !seen.has(copy.session) && !!seen.add(copy.session))
-      .sort((a, b) => b.updated - a.updated).slice(0, 20);
+      .sort((a, b) => Number(!!b.open) - Number(!!a.open) || b.updated - a.updated);
   };
+  // Sections folded away, kept per browser; and off computers whose closed conversations are listed too.
+  const [folded, setFolded] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-folded-computers") ?? "[]")); } catch { return new Set(); } });
+  const toggleFolded = (id: string) => setFolded(previous => {
+    const next = new Set(previous); if (!next.delete(id)) next.add(id);
+    localStorage.setItem("pi-desk-folded-computers", JSON.stringify([...next])); return next;
+  });
+  const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
   const briefState = latestReply && briefs[selected]?.reply === latestReply ? briefs[selected] : undefined;
   const briefItem: WorkItem | undefined = briefState?.brief ? { id: `brief:${briefState.reply}`, at: briefState.brief.created, message: briefState.reply,
     block: { type: "brief", brief: briefState.brief, working: briefState.working, rewrite: () => writeBrief(true) } } : undefined;
@@ -846,7 +854,12 @@ export function App({ account }: { account?: BrowserAccount }) {
         <nav className="session-list" aria-label="Computers">
           {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
-            <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
+            <button type="button" className="computer-name" aria-expanded={!folded.has(computer.id ?? "local")}
+              title={folded.has(computer.id ?? "local") ? `Show ${computer.name}'s conversations` : `Hide ${computer.name}'s conversations`}
+              onClick={() => toggleFolded(computer.id ?? "local")}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong>
+              {folded.has(computer.id ?? "local") && host.sessions.some(item => item.computer === computer.id) &&
+                <span className="computer-count">{host.sessions.filter(item => item.computer === computer.id).length}</span>}
+              <Icon name="chevron" /></button>
             <small title={"latency" in computer && computer.latency !== undefined ? `Connected; round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}>
               <span className={`status-dot ${connectionTone(computer)}`} role="img" aria-label={connectionLabel(computer)} />
               {/* The green dot says connected; words only when something is wrong, so the name has the room. */}
@@ -854,6 +867,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             <button className="icon-button computer-create" aria-label={`New agent on ${computer.name}`} title={`New agent on ${computer.name}`}
               disabled={!computer.connected} onClick={() => openNewConversation(computer.id)}><Icon name="plus" /></button>
           </div>
+          {!folded.has(computer.id ?? "local") && <>
           {computer.storageError && <details className="computer-storage-error"><summary><Icon name="warning" />Session save delayed</summary>
             <p>{computer.storageError}</p><button disabled={!computer.connected} onClick={() => void api("/storage/retry", {}, computer.id).catch(error => console.error("Catalog retry failed:", error))}>Retry saving</button>
           </details>}
@@ -892,14 +906,19 @@ export function App({ account }: { account?: BrowserAccount }) {
             </div>;
           })}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
-            (keptFor(computer).length > 0 ? <>{keptFor(computer).map(copy => <div className="session-row kept-copy" key={copy.session}>
+            (keptFor(computer).length > 0 ? <>{keptFor(computer).filter(copy => copy.open || closedShown.has(computer.id!)).map(copy => <div className="session-row kept-copy" key={copy.session}>
               <span className="kept-copy-name" title={`${copy.cwd} · last active ${new Date(copy.updated).toLocaleString()}`}>
                 <strong>{copy.title || basename(copy.cwd)}</strong><small>{basename(copy.cwd)} · {new Date(copy.updated).toLocaleDateString([], { day: "numeric", month: "short" })}</small></span>
               <button type="button" className="quiet-action" onClick={() => setMoving({ source: computer as Computer, session: copy.session, title: copy.title || basename(copy.cwd), cwd: copy.cwd })}>Move…</button>
-            </div>)}</> :
+            </div>)}
+            {/* Only what was open there is listed; the rest of what is kept, on asking. */}
+            {keptFor(computer).some(copy => !copy.open) && <button type="button" className="quiet-action kept-more"
+              onClick={() => setClosedShown(previous => { const next = new Set(previous); if (!next.delete(computer.id!)) next.add(computer.id!); return next; })}>
+              {closedShown.has(computer.id!) ? "Hide closed conversations" : `Closed conversations (${keptFor(computer).filter(copy => !copy.open).length})…`}</button>}</> :
             <p className="sidebar-hint">{"loaded" in computer && computer.loaded === false && computer.presence?.online !== false
               ? <span className="sidebar-loading"><span className="loading-spinner" aria-hidden="true" />Loading conversations…</span>
               : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>)}
+          </>}
           </section>)}
         </nav>
         </div>

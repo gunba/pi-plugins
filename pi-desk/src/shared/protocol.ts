@@ -148,7 +148,9 @@ export interface SessionView {
 	inputs?: InputStatus[];
 }
 /** A conversation's copy kept on another computer (host copies.ts): whose it is, where it ran, how much there is. */
-export type ConversationCopy = { session: string; computer: string; cwd: string; title?: string; size: number; head: string; updated: number; moved?: { to: string; at: number } };
+export type ConversationCopy = { session: string; computer: string; cwd: string; title?: string; size: number; head: string; updated: number; moved?: { to: string; at: number };
+	/** Open on its computer when that was last seen, as its agent directory said. */
+	open?: boolean };
 export interface HostState { release: ReleaseInfo; operatorAvailability?: import("./operator.ts").OperatorAvailability; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;

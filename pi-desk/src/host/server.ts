@@ -16,7 +16,7 @@ import { commandFrom, workerCommandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
 import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
-import type { HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import type { ConversationCopy, HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
@@ -399,7 +399,7 @@ export class DeskHost {
 			...(this.dictation?.available ? { dictation: true } : {}),
 			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}),
 			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}),
-			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.teleport.copies().filter(copy => !copy.moved).slice(0, 200) } } : {}) };
+			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.keptCopies() } } : {}) };
 	}
 
 	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
@@ -1078,6 +1078,17 @@ export class DeskHost {
 
 	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
 	/** This computer's conversations that are copied to the computers that keep copies. */
+	/** Kept copies for the app: those open on their computer when it was last seen come first, and say so. */
+	private keptCopies(): ConversationCopy[] {
+		const open = new Map<string, Set<string>>();
+		const isOpen = (copy: ConversationCopy) => {
+			let sessions = open.get(copy.computer);
+			if (!sessions) open.set(copy.computer, sessions = new Set(this.parties?.store.openSessions(copy.computer) ?? []));
+			return sessions.has(copy.session);
+		};
+		return this.teleport!.copies().filter(copy => !copy.moved).map(copy => isOpen(copy) ? { ...copy, open: true } : copy)
+			.sort((a, b) => Number(!!b.open) - Number(!!a.open) || b.updated - a.updated).slice(0, 200);
+	}
 	private copyableConversations(): Conversation[] {
 		const seen = new Set<string>();
 		return [...this.sessions.values()].flatMap(entry => {
