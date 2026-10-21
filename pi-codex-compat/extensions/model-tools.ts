@@ -16,12 +16,18 @@ export type ToolActivationState = {
 	managedToolNames?: string[];
 };
 
-/** Tools this adapter switches on and off with the model. image_gen is not one: it is loaded with tool_search. */
+/** This adapter's tools; failed calls to them, and to image_gen, are marked as errors. */
 export const CODEX_COMPAT_TOOL_NAMES = [
 	"exec_command",
 	"write_stdin",
 	"view_image",
 ];
+/**
+ * The one tool switched on and off with the model: view_image, by what the model can see. Every model has the same
+ * other tools: the process tools and image_gen are loaded with tool_search, whatever the model. Codex models once had
+ * the process tools declared for them; switching models then added and removed tools, which breaks the prompt cache.
+ */
+export const MODEL_TOOL_NAMES = ["view_image"];
 
 export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
 
@@ -37,8 +43,8 @@ function mergeToolNames(...groups: string[][]): string[] {
 	return [...new Set(groups.flat())];
 }
 
-function withoutCodexCompatTools(toolNames: string[]): string[] {
-	return toolNames.filter((name) => !CODEX_COMPAT_TOOL_NAMES.includes(name));
+function withoutModelTools(toolNames: string[]): string[] {
+	return toolNames.filter((name) => !MODEL_TOOL_NAMES.includes(name));
 }
 
 function normalized(value: string | undefined): string {
@@ -119,14 +125,9 @@ export function toolsForModel(
 	capabilities: ToolActivationCapabilities = {},
 ): string[] {
 	if (!model) return [];
-	// Other models can load the process tools with tool_search.
-	const tools = isCodexLikeModel(model) ? ["exec_command", "write_stdin"] : [];
 	const canGenerateImages = capabilities.imageGenerationAuthenticated === true;
 	// A text-only model views images through its own provider, so that still needs an image-generation model here.
-	if (model?.input?.includes("image") || canGenerateImages && isImageGenerationModel(model)) {
-		tools.push("view_image");
-	}
-	return tools;
+	return model.input?.includes("image") || canGenerateImages && isImageGenerationModel(model) ? ["view_image"] : [];
 }
 
 export function syncCodexCompatTools(
@@ -136,12 +137,11 @@ export function syncCodexCompatTools(
 	capabilities: ToolActivationCapabilities = {},
 ): { activeTools: string[]; state: ToolActivationState } {
 	const activeOwnedTools = activeTools.filter((name) =>
-		CODEX_COMPAT_TOOL_NAMES.includes(name),
+		MODEL_TOOL_NAMES.includes(name),
 	);
-	// The process tools are deferred, so they start inactive; they are eligible unless a later sync finds them switched off.
 	let eligibleToolNames = state.eligibleToolNames
 		? [...state.eligibleToolNames]
-		: mergeToolNames(activeOwnedTools, ["exec_command", "write_stdin"]);
+		: activeOwnedTools;
 
 	if (state.enabled) {
 		const manuallyDisabled = new Set(
@@ -158,7 +158,7 @@ export function syncCodexCompatTools(
 	const adapterTools = toolsForModel(model, capabilities).filter((name) =>
 		eligibleToolNames.includes(name),
 	);
-	const base = withoutCodexCompatTools(activeTools);
+	const base = withoutModelTools(activeTools);
 	return {
 		activeTools: mergeToolNames(base, adapterTools),
 		state: {

@@ -107,8 +107,7 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	return ownerFor;
 }
 
-// Codex models are trained on these tools, so they are declared for them; other models use bash and load these with
-// tool_search when a command should keep running in the background.
+// Every model uses bash, and loads these with tool_search when a command should keep running in the background.
 const PROCESSES = { exposure: "deferred" as const, namespace: { name: "processes", description: "Run a command in the background and wait on or interrupt it." } };
 
 export function registerProcessTools(pi: ExtensionAPI, ownerFor: ExecRuntimeOwnerFor): void {

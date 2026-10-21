@@ -43,6 +43,7 @@ import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessag
 import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
 import { packageCopies } from "./package-updates.ts";
+import { activateNewTools } from "./new-tools.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
@@ -257,6 +258,7 @@ export class DeskEngine {
 			// Every tool call carries a one-line description for the user (pi-ui tool-descriptions.ts).
 			describeAgentTools(result.session.agent.state as never);
 			context.attach(result.session); this.contexts.set(result.session, context);
+			activateNewTools(result.session, context.toolChoices());
 			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
 			const loaded = services.resourceLoader.getExtensions();
 			return { ...result, services, diagnostics: [

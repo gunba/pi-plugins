@@ -14,21 +14,22 @@ test("provider matching stays exact while supporting current GPT model versions"
 	assert.equal(isImageGenerationModel({ provider: "github-copilot", id: "gpt-6-sol" }), false);
 });
 
-test("process tools are declared for Codex models only, without suppressing native editing tools", () => {
+test("every model has the same tools: a model switch neither adds nor removes the process tools", () => {
 	assert.equal(PRESERVE_BUILTIN_BASH, true);
-	const codex = syncCodexCompatTools(["read", "bash", "edit", "write", "custom"], { provider: "openai-codex", id: "gpt-6.1-sol" }, EMPTY);
-	assert.deepEqual(codex.activeTools, ["read", "bash", "edit", "write", "custom", "exec_command", "write_stdin"]);
-	const claude = syncCodexCompatTools(codex.activeTools, { provider: "anthropic", id: "claude-opus-5.5" }, codex.state);
-	assert.deepEqual(claude.activeTools, ["read", "bash", "edit", "write", "custom"]);
-	assert.deepEqual(syncCodexCompatTools(claude.activeTools, { provider: "openai-codex", id: "gpt-6.1-sol" }, claude.state).activeTools, codex.activeTools);
+	const codexModel = { provider: "openai-codex", id: "gpt-6.1-sol" }, claudeModel = { provider: "anthropic", id: "claude-opus-5.5" };
+	assert.deepEqual(syncCodexCompatTools(["read", "bash", "edit", "write"], codexModel, EMPTY).activeTools, ["read", "bash", "edit", "write"]);
+	const loaded = ["read", "bash", "edit", "write", "custom", "exec_command", "write_stdin"];
+	const claude = syncCodexCompatTools(loaded, claudeModel, EMPTY);
+	assert.deepEqual(claude.activeTools, loaded);
+	assert.deepEqual(syncCodexCompatTools(claude.activeTools, codexModel, claude.state).activeTools, loaded);
 	assert.deepEqual(toolsForModel(undefined), []);
 });
 
 test("image generation needs a signed-in image service, whatever model the conversation uses", () => {
 	const text = { provider: "openai-codex", id: "gpt-6.1-sol", input: ["text"] };
-	assert.deepEqual(toolsForModel(text), ["exec_command", "write_stdin"]);
+	assert.deepEqual(toolsForModel(text), []);
 	// image_gen itself is loaded with tool_search, so the model switch never adds or removes it.
-	assert.deepEqual(toolsForModel(text, AUTH), ["exec_command", "write_stdin", "view_image"]);
+	assert.deepEqual(toolsForModel(text, AUTH), ["view_image"]);
 	const claude = { provider: "anthropic", id: "claude", input: ["text", "image"] };
 	assert.deepEqual(toolsForModel(claude), ["view_image"]);
 	assert.deepEqual(toolsForModel(claude, AUTH), ["view_image"]);
@@ -42,8 +43,8 @@ test("image generation needs a signed-in image service, whatever model the conve
 
 test("resynchronization respects manual tool choices and never widens an allowlist", () => {
 	const model = { provider: "openai-codex", id: "gpt-6.1-sol", input: ["text", "image"] };
-	// The deferred process tools start inactive, so they are eligible; an allowlist that leaves them out unregisters them.
-	assert.deepEqual(syncCodexCompatTools(["read", "edit"], model, EMPTY, AUTH).activeTools, ["read", "edit", "exec_command", "write_stdin"]);
+	// Nothing is added that was not already active.
+	assert.deepEqual(syncCodexCompatTools(["read", "edit"], model, EMPTY, AUTH).activeTools, ["read", "edit"]);
 	const initial = syncCodexCompatTools(["read", "edit", "custom", "exec_command", "write_stdin", "view_image"], model, EMPTY, AUTH);
 	const reduced = initial.activeTools.filter(name => !["custom", "view_image"].includes(name));
 	const next = syncCodexCompatTools(reduced, model, initial.state, AUTH);
