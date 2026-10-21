@@ -18,6 +18,7 @@ import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-regi
 import { sessionDisplay } from "./session-display.ts";
 import type { ConversationCopy, HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { PackageUpdates } from "./package-updates.ts";
+import { homeFolder } from "./local-path.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
@@ -1171,7 +1172,7 @@ export class DeskHost {
 		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
 		if (source === self) throw new Error("This conversation is already on this computer.");
 		let folder: string;
-		try { folder = realpathSync(cwd); if (!statSync(folder).isDirectory()) throw new Error(); } catch { throw new Error(`${cwd} is not a folder on this computer.`); }
+		try { folder = realpathSync(homeFolder(cwd)); if (!statSync(folder).isDirectory()) throw new Error(); } catch { throw new Error(`${cwd} is not a folder on this computer.`); }
 		const computers = network.computers(), name = (id: string) => computers.find(computer => computer.id === id)?.name ?? "its computer";
 		const owner = computers.find(computer => computer.id === source && computer.online && computer.operations.includes(COPIES));
 		let fetched = owner ? await teleport.fetch(packet => network.send(source, packet), source, session, true) : teleport.copyLocal(source, session);
@@ -1250,7 +1251,7 @@ export class DeskHost {
 			cwd = readSessionHeader(sessionFile).cwd;
 		}
 		const key = existing?.view.key ?? randomUUID();
-		const options: WorkerInit = { cwd: realpathSync(cwd), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
+		const options: WorkerInit = { cwd: realpathSync(homeFolder(cwd)), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
 			deskDirectory: this.options.dataDir ?? join(this.options.agentDir!, "desk"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,

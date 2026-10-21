@@ -8,6 +8,16 @@ export function localPath(path: string): boolean {
 	return true;
 }
 
+/**
+ * A conversation's folder as people and agents write it: "~" and "~/…" are the home folder, and a relative folder is
+ * under it. Resolved against the folder Desk was started from, "~" from an agent on another computer became
+ * …/pi-plugins/~ and the conversation could not start.
+ */
+export function homeFolder(value: string): string {
+	const path = value.trim();
+	return path === "~" ? homedir() : /^~[\\/]/.test(path) ? resolve(homedir(), path.slice(2)) : resolve(homedir(), path);
+}
+
 export function folderPath(value: string, cwd: string): string {
 	if (!value || value.length > 4000 || /[\x00-\x1f\x7f]/.test(value)) throw new Error("Enter a folder path.");
 	// Reject network paths before normalization or filesystem access.
