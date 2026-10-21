@@ -881,7 +881,8 @@ export function App({ account }: { account?: BrowserAccount }) {
                   <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
                     <span className="session-marks"><VersionTag session={item} computer={computer} />
                     {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
-                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} /></span>}</span></small></span>
+                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
+                      <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</span></small></span>
               </button>
               {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${title(item)}`} title="Rename (or double-click the name)"
                 onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}

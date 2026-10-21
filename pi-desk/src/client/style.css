@@ -503,8 +503,10 @@ details[open] > summary:before {
 .version-banner > span { flex:1; min-width:0; }
 .version-banner > button { flex:none; white-space:nowrap; }
 @media (max-width: 760px) { .version-banner { margin:0 16px 10px; flex-wrap:wrap; } }
-.session-marks { flex:none; margin-left:auto; padding-left:6px; display:inline-flex; align-items:center; gap:6px; }
-.session-metadata .session-model { display:inline-flex; align-items:center; }
+/* The folder gives way first (flex-shrink 3), then the model's name. */
+.session-marks { flex:0 1 auto; min-width:0; max-width:60%; margin-left:auto; padding-left:6px; display:inline-flex; align-items:center; gap:6px; }
+.session-metadata .session-model { display:inline-flex; align-items:center; gap:4px; min-width:0; }
+.session-model > span:last-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .session-model .provider-icon { width:13px; height:13px; border-radius:0; background:none; color:inherit; }
 .session-model .provider-icon svg { width:12px; height:12px; }
 .session-model .provider-icon > span { font-size:8px; }

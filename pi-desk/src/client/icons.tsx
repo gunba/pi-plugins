@@ -63,7 +63,8 @@ export function SectionIcon({ id }: { id: string }) { return <Icon name={section
 export function ProviderIcon({ id, title }: { id: string; title: string }) {
 	const brand = id.startsWith("openai") ? "openai" : id.startsWith("google") ? "google" : id.startsWith("anthropic") ? "anthropic" : "other";
 	return <span className={`provider-icon provider-${brand}`} aria-hidden="true">
-		{brand === "anthropic" ? <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 4h3l7 16h-3.5l-1.4-3.5H6L4.5 20H1Zm-.9 9.7h4.8L9.5 7.8ZM15 4h3l7 16h-3.2Z" /></svg>
+		{/* The mark runs from x 1 to 25: a 24-wide view cut its last stroke. */}
+		{brand === "anthropic" ? <svg viewBox="0 0 26 24" fill="currentColor"><path d="M8 4h3l7 16h-3.5l-1.4-3.5H6L4.5 20H1Zm-.9 9.7h4.8L9.5 7.8ZM15 4h3l7 16h-3.2Z" /></svg>
 			: brand === "google" ? <svg viewBox="0 0 24 24" fill="none" strokeWidth="4"><path stroke="#4285f4" d="M20.8 10.2v2c0 3-1.5 5.3-4 6.5" /><path stroke="#34a853" d="M17.6 18.2a9 9 0 0 1-13.7-3.7" /><path stroke="#fbbc05" d="M4.1 15.1a9 9 0 0 1 0-6.2" /><path stroke="#ea4335" d="M3.9 9.5A9 9 0 0 1 18 5" /><path stroke="#4285f4" d="M12 11.7h9" /></svg>
 			: brand === "openai" ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
 				{[0, 60, 120, 180, 240, 300].map(angle => <path key={angle} transform={`rotate(${angle} 12 12)`} d="M12 5c0-4 7-4 8-1s-1 5-4 7l-4 2V8l4-2" />)}
