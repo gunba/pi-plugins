@@ -5,9 +5,12 @@ description: "Use Chrome, with its signed-in sessions, to read, operate and chec
 
 # Browse
 
-Use `chrome_devtools_load` with a task-oriented query to expose the needed
-capabilities. The package provides list, select, navigate, evaluate and
-screenshot tools; it is not an MCP server.
+Call the browser tools from `codemode` scripts: `tools.chrome_devtools_list_pages`,
+`chrome_devtools_select_page`, `chrome_devtools_navigate`,
+`chrome_devtools_evaluate` and `chrome_devtools_screenshot`. Their parameters
+are in codemode's description; each returns text (JSON for data). They are not
+MCP tools. Where `chrome_devtools_load` is offered instead (an older
+pi-chrome-devtools), use it with a task-oriented query to expose them.
 
 List pages and pass an explicit string `pageId` to each page operation.
 Omitting it selects the current or first page. In particular, `navigate`
