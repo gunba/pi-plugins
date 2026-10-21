@@ -17,6 +17,7 @@ import { SessionWorker } from "./worker-client.ts";
 import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
 import type { ConversationCopy, HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import { PackageUpdates } from "./package-updates.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
@@ -96,6 +97,7 @@ export class DeskHost {
 	private logins?: Logins;
 	/** Pi's general setup, mirrored with the workspace's other computers. */
 	private settingsSync?: SettingsSync;
+	private packageUpdates?: PackageUpdates;
 	/** Conversation copies kept away from their computer, and moving conversations between computers (teleport.ts). */
 	private teleport?: Teleport;
 	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
@@ -195,6 +197,8 @@ export class DeskHost {
 			this.inputs = new InputLedger(directory);
 			this.logins = new Logins(this.options.agentDir!);
 			this.settingsSync = new SettingsSync(this.options.agentDir!, homedir(), directory, hostname());
+			// Pi's packages kept current here, a version per folder, only for an installed Desk (not tests or development).
+			if (process.env.PI_DESK_RUNTIME) { this.packageUpdates = new PackageUpdates({ cwd: this.options.cwd, agentDir: this.options.agentDir!, root: join(directory, "packages") }); this.packageUpdates.start(); }
 			this.teleport = new Teleport(join(directory, "teleport"), {
 				self: () => this.accountIdentity?.device.id ?? "",
 				conversations: () => this.copyableConversations(),
@@ -1833,7 +1837,7 @@ export class DeskHost {
 		try { await this.logins?.close(); } catch (error) { errors.push(error); }
 		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
-		clearInterval(this.heartbeat);
+		clearInterval(this.heartbeat); this.packageUpdates?.close();
 		this.updateWatch?.close(); clearTimeout(this.updateTimer);
 		clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
 		clearTimeout(this.accountRetry); clearInterval(this.accountFollow); this.accountRevision++;

@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { within } from "../../manage/source.ts";
 
 export { piPackageDir, pointStableRuntime, runtimePin, stablePath, type RuntimePin } from "./stable-runtime.ts";
+import { unpinnedNpm } from "./package-updates.ts";
 import type { RuntimePin } from "./stable-runtime.ts";
 const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
 const comparable = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
@@ -13,7 +14,8 @@ const comparable = (path: string) => process.platform === "win32" ? path.toLower
  * Resource discovery alone sees the pinned package. The real manager retains
  * all persistence and trust behavior; no runtime paths are saved to settings.
  */
-export function resourceSettings(settings: SettingsManager, cwd: string, agentDir: string, pin?: RuntimePin): SettingsManager {
+/** `copies`: the newest Desk-kept copy of each unpinned npm package (package-updates.ts), loaded instead of Pi's own install. */
+export function resourceSettings(settings: SettingsManager, cwd: string, agentDir: string, pin?: RuntimePin, copies: Record<string, string> = {}): SettingsManager {
 	if (!pin) return settings;
 	const original = canonical(pin.source), pinned = canonical(pin.root);
 	const packages = new DefaultPackageManager({ cwd, agentDir, settingsManager: settings });
@@ -36,6 +38,8 @@ export function resourceSettings(settings: SettingsManager, cwd: string, agentDi
 		const result = { ...value }, base = scope === "user" ? agentDir : join(cwd, ".pi");
 		if (Array.isArray(value.packages)) result.packages = value.packages.map(entry => {
 			const source = typeof entry === "string" ? entry : entry.source;
+			const copy = scope === "user" ? copies[unpinnedNpm(source) ?? ""] : undefined;
+			if (copy) return typeof entry === "string" ? copy : { ...entry, source: copy };
 			const installed = packages.getInstalledPath(source, scope);
 			if (!installed || comparable(canonical(installed)) !== comparable(original)) return entry;
 			return typeof entry === "string" ? pinned : { ...entry, source: pinned };

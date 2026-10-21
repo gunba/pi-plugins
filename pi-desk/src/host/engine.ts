@@ -42,6 +42,7 @@ import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
+import { packageCopies } from "./package-updates.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
@@ -211,7 +212,7 @@ export class DeskEngine {
 			let context: NativeContext | undefined;
 			// Pi's own model runtime and logins (auth.json).
 			const services = await createAgentSessionServices({
-				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin),
+				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin, packageCopies(join(operatorDirectory, "packages"))),
 				resourceLoaderOptions: {
 					extensionFactories: [
 						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
