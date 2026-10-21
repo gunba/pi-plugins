@@ -1,0 +1,72 @@
+{
+  "speaker": {
+    "type": "choice",
+    "instructions": "Who wrote reviewer_comment? Judge from its content together with commenter_is_change_author and commenter_account. Code review bots and AI review assistants count as automation even when they write like a person, and so does a person pasting an AI review.",
+    "criteria": {
+      "reviewer": "A person reviewing someone else's change and giving feedback on it in their own words, including a person telling a coding agent what to change (\"@copilot fix X\")",
+      "author": "The change's own author or co-author annotating, explaining or asking about their own change",
+      "automation": "Output of a bot, CI system, linter or AI review assistant (or a person pasting one), or a person only typing a bot command such as /lgtm, @bors r+, /test, please test"
+    }
+  },
+  "subject": {
+    "type": "choice",
+    "instructions": "What is reviewer_comment mainly about? file is the file it was left on; code_context ends at the commented line. A comment on a test file can still be about the code under test, and a comment on source code can be about its tests.",
+    "criteria": {
+      "test_code": "How a test is written: what it checks or asserts, its inputs and setup, its reliability, structure, naming, helpers, speed or where it lives",
+      "test_coverage": "Whether the change is tested: asks for a test or for specific test cases, says tests are missing or insufficient, or asks to remove a test",
+      "code_comment": "Comments or doc comments in the code (including docstrings and API doc comments): one is missing, wrong, unclear, redundant or should be added, removed or reworded",
+      "other": "Anything else: the behaviour or design of the code itself, docs files, commit messages, CI or process"
+    }
+  },
+  "kind": {
+    "type": "choice",
+    "instructions": "What does reviewer_comment mainly do?",
+    "criteria": {
+      "finding": "States that something in the change is wrong, broken, missing or risky and should be fixed",
+      "suggestion": "Proposes a better alternative or improvement without claiming the current code is wrong",
+      "question": "Asks for clarification, rationale or information without asserting a problem",
+      "nit": "Trivial: typo, formatting, whitespace, wording or minor naming preference",
+      "ack": "Approval, thanks, LGTM, Reviewed-by or agreement with no request",
+      "process": "CI, test runs, labels, merging, backports, scheduling or other discussion not about the code itself"
+    }
+  },
+  "depth": {
+    "type": "score",
+    "instructions": "How much understanding did writing reviewer_comment require?",
+    "criteria": [
+      "Surface: visible at a glance, such as typos, formatting or naming taste",
+      "Local: requires careful reading of the changed lines themselves",
+      "Contextual: requires knowledge of surrounding code, callers, project conventions or history beyond the shown lines",
+      "Deep: requires system-level knowledge such as invariants, concurrency or memory models, hardware, specifications, or consequences far from the change"
+    ]
+  },
+  "severity": {
+    "type": "score",
+    "instructions": "If reviewer_comment is right and the change had shipped unchanged, how bad would the consequence be? For a test, count what the weakness lets through: a test that cannot catch the regression it was written for, or one that fails at random, is a real cost.",
+    "criteria": [
+      "None or cosmetic",
+      "Maintainability cost: harder to read, change or debug later",
+      "A real defect could ship unnoticed, a test fails at random, or a reader is misled",
+      "Crash, data loss or corruption, security hole, or widespread breakage"
+    ]
+  },
+  "outcome": {
+    "type": "choice",
+    "instructions": "What happened to the point raised in reviewer_comment? Use replies (each tagged with the speaker's role) and signals: outdated means the commented code changed after the comment; resolved means the thread was marked resolved; later_version means the author posted a new version of the patch.",
+    "criteria": {
+      "accepted": "The author agreed and changed the code or committed to change it",
+      "explained": "The author or others answered or explained, and the point was settled without a change",
+      "rejected": "The author disagreed or declined and the code stayed as it was",
+      "deferred": "Agreed but left for a follow-up change",
+      "unknown": "No reply and no signal that decides it"
+    }
+  },
+  "concrete": {
+    "type": "bool",
+    "instructions": "Does reviewer_comment name a concrete mechanism, scenario, input, test case or counterexample, rather than a vague concern or preference?",
+    "criteria": {
+      "true": "Concrete and checkable",
+      "false": "Vague, general or a matter of preference"
+    }
+  }
+}

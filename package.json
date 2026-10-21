@@ -48,7 +48,9 @@
     "skills": [
       "./pi-browser/skills/browse",
       "./pi-improve-skill/skills/improve-skill",
-      "./pi-code-review/skills/code-review"
+      "./pi-code-review/skills/code-review",
+      "./pi-code-craft/skills/test-writing",
+      "./pi-code-craft/skills/code-comments"
     ]
   },
   "peerDependencies": {

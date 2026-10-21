@@ -82,6 +82,10 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   34,871 review comments in 35 top-tier projects (GitHub, kernel mailing lists,
   Go Gerrit), labelled with Jev, plus the mining pipeline and a held-out
   benchmark.
+- [`pi-code-craft`](pi-code-craft/README.md) — test-writing and code-comments
+  skills built from 26,000 review remarks on tests and comments in 64 projects,
+  including changes written by coding agents, labelled with Jev, plus the mining
+  pipeline and a held-out test-writing benchmark.
 - [`pi-system-one`](pi-system-one/README.md) — one system-prompt paragraph on
   when to use System One classifier models such as TypeSafe's Jev through
   codemode's `models.classify`.

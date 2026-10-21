@@ -1,0 +1,31 @@
+{
+  "move": {
+    "type": "choice",
+    "instructions": "reviewer_comment is about tests. Which problem does it raise or which improvement does it ask for? Pick the one that fits best.",
+    "criteria": {
+      "missing_case": "Names a specific case the tests do not cover: an input, boundary, error path, variant, configuration, platform or interaction",
+      "needs_test": "Asks for a test (often a regression test) for the change without naming particular cases",
+      "not_discriminating": "The test would pass without the change, does not reach the new code path, or does not test what it claims to",
+      "weak_assertion": "An assertion is missing or too loose: it checks only that nothing crashed, a status, a count or a truthy value, and should check the exact result, error, message or side effect",
+      "wrong_expectation": "The expected value is wrong, was copied from the current (buggy) output, or the test checks the code against itself",
+      "overspecified": "The test pins down incidental details (exact wording, ordering, internal calls, timing, a whole snapshot) and will break on harmless changes",
+      "flaky": "The result can vary from run to run: timing, sleeps, ordering, concurrency, randomness, network, clock or machine load",
+      "isolation_cleanup": "Shared or global state, leaked resources, temporary files or settings not restored, or tests that depend on each other's order",
+      "environment_assumption": "The test assumes something about the machine: platform, architecture, locale, filesystem, permissions, installed tools, build configuration; or its skip conditions are wrong",
+      "test_logic_bug": "The test code itself is broken: wrong variable, a loop or branch that never runs, an unawaited call, wrong setup, a check that can never fail",
+      "unrealistic_setup": "The test sets up a state or input that cannot happen in practice, or bypasses the real path users take",
+      "mocking": "Mocks, stubs or fakes are misused: they hide the behaviour under test, mirror the implementation, or a real object or existing fake should be used",
+      "implementation_coupling": "The test reaches into internals or private details instead of testing behaviour through the public interface, or tests at the wrong level (unit versus integration or end to end)",
+      "duplicate_or_parametrize": "Tests repeat each other or an existing test, and should be merged, table-driven or parametrised",
+      "reuse_test_infra": "An existing test helper, fixture, harness, assertion utility or framework feature should be used",
+      "simplify_reduce": "The test is larger or more complex than needed: reduce the reproducer, drop irrelevant setup, remove logic from the test",
+      "placement_naming": "The test is in the wrong file, suite or directory, or its name does not say what it tests",
+      "diagnostics": "When the test fails it should say why: assertion messages, comparing values instead of booleans, useful output",
+      "explain_test": "Asks for a comment or description explaining what the test checks or why",
+      "cost": "The test is too slow, heavy or wasteful: iterations, sleeps, timeouts, resources",
+      "different_technique": "Proposes another kind of test: fuzzing, property-based, differential, golden or FileCheck output, benchmark, end-to-end",
+      "weakened_or_removed": "Tests or assertions were deleted, skipped, disabled or loosened, or expected results were changed, to make the change pass",
+      "other": "Something else about tests"
+    }
+  }
+}

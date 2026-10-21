@@ -1,0 +1,24 @@
+{
+  "move": {
+    "type": "choice",
+    "instructions": "reviewer_comment is about comments or doc comments in the code. Which problem does it raise or which improvement does it ask for? Pick the one that fits best.",
+    "criteria": {
+      "explain_why": "Asks for a comment explaining why the code does something non-obvious: the reason, a workaround, a trade-off or an alternative that was rejected",
+      "document_contract": "Asks to write down an invariant, precondition, assumption, ownership, lifetime, locking rule, unit or other hidden contract",
+      "api_docs": "Documentation of a public or exported interface is missing or incomplete: what it does, parameters, return value, errors, examples",
+      "wrong_or_stale": "A comment is inaccurate, outdated, or contradicts the code",
+      "unclear": "A comment is confusing, ambiguous or misleading in its wording and should be reworded",
+      "redundant": "A comment restates what the code plainly says, or adds nothing, and should be removed or cut",
+      "too_long": "A comment is too long or detailed for where it is; it should be shortened or moved to docs, the commit message or an issue",
+      "change_narrative": "A comment narrates the change or its history (previously, now, changed to, fixed, added, as requested), which belongs in the commit message",
+      "todo": "About a TODO, FIXME or XXX: it needs an issue link or owner, should be resolved now, or should be added",
+      "reference": "Asks to cite an issue, bug, specification, RFC, manual or other source",
+      "code_instead": "The code should explain itself instead: rename, extract a function, add an assertion or a type rather than a comment",
+      "commented_out_code": "Commented-out code should be removed or explained",
+      "placement": "A comment is in the wrong place, for example inside a body when it belongs on the declaration",
+      "format_convention": "Comment syntax or convention: doc comment markers, kernel-doc or docstring format, capitalisation, full sentences, line width",
+      "typo_grammar": "Spelling or grammar only",
+      "other": "Something else about comments"
+    }
+  }
+}
