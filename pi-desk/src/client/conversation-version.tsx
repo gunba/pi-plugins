@@ -15,8 +15,9 @@ export function staleVersion(session: WorkspaceSession, computer?: Host): { runn
 
 export function VersionTag({ session, computer }: { session: WorkspaceSession; computer?: Host }) {
 	const stale = staleVersion(session, computer);
-	return stale ? <span className="session-version" title={`Running Desk ${stale.running}; this computer has ${stale.current}. Restart it to use the new version. History is kept.`}>
-		{stale.running.startsWith("an ") ? "old" : stale.running}</span> : null;
+	// A mark, not the version number: the sidebar line is narrow, and the conversation's banner says the rest.
+	const text = `Running Desk ${stale?.running}; this computer has ${stale?.current}. Restart it to use the new version. History is kept.`;
+	return stale ? <span className="session-version" role="img" aria-label={text} title={text}><Icon name="refresh" /></span> : null;
 }
 
 export function VersionBanner({ session, computer, busy, report }: {

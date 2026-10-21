@@ -834,7 +834,10 @@ export function App({ account }: { account?: BrowserAccount }) {
           {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
           <div className="computer-heading">
             <span className="computer-name" title={computer.name}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong></span>
-            <small title={"latency" in computer && computer.latency !== undefined ? `Round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}><span className={`status-dot ${connectionTone(computer)}`} />{connectionLabel(computer)}</small>
+            <small title={"latency" in computer && computer.latency !== undefined ? `Connected; round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}>
+              <span className={`status-dot ${connectionTone(computer)}`} role="img" aria-label={connectionLabel(computer)} />
+              {/* The green dot says connected; words only when something is wrong, so the name has the room. */}
+              {computer.connection !== "connected" && connectionLabel(computer)}</small>
             <button className="icon-button computer-create" aria-label={`New agent on ${computer.name}`} title={`New agent on ${computer.name}`}
               disabled={!computer.connected} onClick={() => openNewConversation(computer.id)}><Icon name="plus" /></button>
           </div>
@@ -863,10 +866,9 @@ export function App({ account }: { account?: BrowserAccount }) {
                   aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
                 <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong></span>
                   <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
-                    <VersionTag session={item} computer={computer} />
+                    <span className="session-marks"><VersionTag session={item} computer={computer} />
                     {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
-                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
-                      <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</small></span>
+                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} /></span>}</span></small></span>
               </button>
               {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${title(item)}`} title="Rename (or double-click the name)"
                 onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}
@@ -876,14 +878,14 @@ export function App({ account }: { account?: BrowserAccount }) {
             </div>;
           })}
           {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
-            keptFor(computer).length > 0 ? <>{keptFor(computer).map(copy => <div className="session-row kept-copy" key={copy.session}>
+            (keptFor(computer).length > 0 ? <>{keptFor(computer).map(copy => <div className="session-row kept-copy" key={copy.session}>
               <span className="kept-copy-name" title={`${copy.cwd} · last active ${new Date(copy.updated).toLocaleString()}`}>
                 <strong>{copy.title || basename(copy.cwd)}</strong><small>{basename(copy.cwd)} · {new Date(copy.updated).toLocaleDateString([], { day: "numeric", month: "short" })}</small></span>
               <button type="button" className="quiet-action" onClick={() => setMoving({ source: computer as Computer, session: copy.session, title: copy.title || basename(copy.cwd), cwd: copy.cwd })}>Move…</button>
             </div>)}</> :
             <p className="sidebar-hint">{"loaded" in computer && computer.loaded === false && computer.presence?.online !== false
               ? <span className="sidebar-loading"><span className="loading-spinner" aria-hidden="true" />Loading conversations…</span>
-              : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>}
+              : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>)}
           </section>)}
         </nav>
         </div>
