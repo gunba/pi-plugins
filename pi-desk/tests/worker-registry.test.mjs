@@ -262,3 +262,17 @@ test("a recorded worker PID now used by an unrelated process does not block a re
 		assert.equal(readWorkerRecord(root), undefined, "the stale record is cleared before the relaunch");
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("a worker reports in before it loads the Pi SDK", async () => {
+	// The worker's start-up path loaded the Pi SDK's 1,600 modules before writing its record: a busy Windows computer
+	// missed the 30-second start-up window, and its conversations would not start.
+	const script = `import { registerHooks } from "node:module";
+		const loaded = []; registerHooks({ load(url, context, next) { loaded.push(url); return next(url, context); } });
+		await import(${JSON.stringify(new URL("../src/host/worker-runtime.ts", import.meta.url).href)});
+		console.log(JSON.stringify(loaded.filter(url => url.includes("pi-coding-agent"))));`;
+	const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+	let output = ""; child.stdout.on("data", chunk => { output += chunk; });
+	const [code] = await once(child, "exit");
+	assert.equal(code, 0);
+	assert.deepEqual(JSON.parse(output), []);
+});

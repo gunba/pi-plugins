@@ -9,7 +9,7 @@ import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/l
 import type { WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { WorkerChannel, type WorkerEndpointAddress } from "./worker-channel.ts";
 import { WorkerConnectionError } from "./worker-errors.ts";
-import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./runtime-resources.ts";
+import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./stable-runtime.ts";
 
 export interface WorkerBootstrap {
 	version: 1;
