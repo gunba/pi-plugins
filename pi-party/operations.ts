@@ -75,7 +75,9 @@ export class PartyOperations {
 			...(input.kind === "fork" ? { call: input.call } : {}),
 			...(input.kind === "create" && input.model ? { model: input.model } : {}),
 			...(input.kind === "create" && input.reasoning ? { reasoning: input.reasoning } : {}) };
-		if (computer === "local" ? !this.hostOnline() : !store.computerOnline(computer)) throw Error("The agent's Desk computer is not connected.");
+		if (computer === "local" ? !this.hostOnline() : !store.computerOnline(computer)) throw Error(computer === "local"
+			? "Desk is not running on this computer, so it cannot start or move agents."
+			: `${store.computers().find(known => known.id === computer)?.name ?? computer} is offline (not connected to this computer's Desk now). agent_discover lists the computers and their state.`);
 		const pending = this.db.prepare("SELECT count(*) AS n FROM party_operations WHERE status IN ('queued','sent')").get() as { n: number };
 		if (pending.n >= 64) throw Error("Too many agent operations are awaiting an outcome.");
 		const request = partyOperation(operation);

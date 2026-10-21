@@ -99,6 +99,8 @@ export class PartyStore {
 			`);
 			// What each other computer's Desk said it supports, such as receiving files.
 			if (!columns("network_computers").has("operations")) this.db.exec("ALTER TABLE network_computers ADD COLUMN operations TEXT");
+			// Its name (host name) and platform, so agents can name a computer rather than guess its ID.
+			if (!columns("network_computers").has("name")) this.db.exec("ALTER TABLE network_computers ADD COLUMN name TEXT; ALTER TABLE network_computers ADD COLUMN platform TEXT");
 			const policy = this.db.prepare("SELECT value FROM network_meta WHERE key=\'wake-policy\'").get() as { value: string } | undefined;
 			if (policy?.value !== "idle-starts") {
 				// Old delivery-batch counts cannot represent actual autonomous starts.
@@ -143,8 +145,23 @@ export class PartyStore {
 		});
 	}
 	/** Record what a computer's Desk announced it supports; older ones announce nothing. */
-	setComputerOperations(computer: string, operations: string[]): void {
-		this.db.prepare("UPDATE network_computers SET operations=? WHERE computer=?").run(JSON.stringify(operations), computer);
+	setComputerOperations(computer: string, operations: string[], name?: string, platform?: string): void {
+		this.db.prepare("UPDATE network_computers SET operations=?, name=coalesce(?, name), platform=coalesce(?, platform) WHERE computer=?")
+			.run(JSON.stringify(operations), name ?? null, platform ?? null, computer);
+	}
+	/**
+	 * A computer as an agent names it: its ID, the start of its ID, or its name, in any case; "local" or "this" for
+	 * this one. An unknown one is an error that lists the computers there are, so a wrong name is not taken for an outage.
+	 */
+	resolveComputer(input: string, self?: string): string {
+		const value = input.trim(), lower = value.toLowerCase(), known = this.computers();
+		if (["", "local", "this", "here"].includes(lower) || self && lower === self.toLowerCase()) return "local";
+		const matches = known.filter(computer => computer.id === value || computer.name?.toLowerCase() === lower)
+			.concat(lower.length >= 8 ? known.filter(computer => computer.id.startsWith(lower)) : []);
+		const ids = [...new Set(matches.map(computer => computer.id))];
+		if (ids.length === 1) return ids[0]!;
+		const list = known.map(computer => `${computer.name ?? "unnamed"} (${computer.platform ?? "?"}, ${computer.state}): ${computer.id}`).join("; ");
+		throw Error(`${ids.length ? "More than one" : "No"} computer matches "${input}". ${list ? `Computers: ${list}; or "local" for this one.` : "No other computers are known; \"local\" is this one."}`);
 	}
 	/** The conversations a computer last listed as open (native ids); kept while it is disconnected. */
 	openSessions(computer: string): string[] {
@@ -163,9 +180,10 @@ export class PartyStore {
 		const insert = this.db.prepare("INSERT INTO message_files (message,name,size,sha256,data) VALUES (?,?,?,?,?)");
 		for (const file of files) insert.run(message, file.name, file.size, file.sha256, Buffer.from(file.data, "base64"));
 	}
-	computers(): { id: string; state: string }[] {
-		return (this.db.prepare("SELECT computer FROM network_computers ORDER BY computer").all() as { computer: string }[])
-			.map(row => ({ id: row.computer, state: this.computerOnline(row.computer) ? "connected" : "offline" }));
+	computers(): { id: string; state: string; name?: string; platform?: string }[] {
+		return (this.db.prepare("SELECT computer, name, platform FROM network_computers ORDER BY computer").all() as { computer: string; name: string | null; platform: string | null }[])
+			.map(row => ({ id: row.computer, state: this.computerOnline(row.computer) ? "connected" : "offline",
+				...(row.name ? { name: row.name } : {}), ...(row.platform ? { platform: row.platform } : {}) }));
 	}
 	computerOnline(computer: string): boolean {
 		return !!this.db.prepare("SELECT 1 FROM network_computers WHERE computer=? AND connected=1 AND seen>?").get(computer, this.now() - LEASE_MS);

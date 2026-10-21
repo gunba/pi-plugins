@@ -104,7 +104,7 @@ export class PartyNetwork {
 		if (packet.type === "presence") { this.store.touchComputer(id); return; }
 		if (packet.type === "directory") {
 			const computer = partyComputer(packet.computer);
-			if (computer) { this.announced.set(id, computer); this.store.setComputerOperations(id, computer.operations); }
+			if (computer) { this.announced.set(id, computer); this.store.setComputerOperations(id, computer.operations, computer.name, computer.platform); }
 			this.store.cacheDirectory(id, packet.agents); this.changed(); return;
 		}
 		if (packet.type === "messages") {

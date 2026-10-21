@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -382,7 +383,7 @@ export default function party(pi: ExtensionAPI): void {
 			const found = database().discover(params.query, params.includeOffline, params.offset);
 			for (const peer of found.agents) peerLabels.set(peer.session, peer.label);
 			return result({ agents: found.agents.map(publicAgent), nextOffset: found.nextOffset ?? null,
-				computers: [{ id: "local", state: operations().hostOnline() ? "connected" : "offline" }, ...database().computers()] });
+				computers: [{ id: "local", name: hostname(), platform: process.platform, state: operations().hostOnline() ? "connected" : "offline" }, ...database().computers()] });
 		},
 	});
 	pi.registerTool({
@@ -405,10 +406,11 @@ export default function party(pi: ExtensionAPI): void {
 			const setup = [params.model && `Model: ${params.model}`, params.reasoning && `Reasoning: ${params.reasoning}`].filter(Boolean).join(" · ");
 			if (!(await context.ui.confirm("Create agent", `${params.label}\nComputer: ${params.computer ?? "local"}\nDirectory: ${params.cwd}${setup ? `\n${setup}` : ""}\n\n${params.task}`))) return result({ approved: false });
 			if (abort?.aborted) throw Error("Agent creation was cancelled.");
-			const request = operations().queue(database(), session, owner, { ...params, kind: "create" });
+			const computer = params.computer === undefined ? undefined : database().resolveComputer(params.computer, hostname());
+			const request = operations().queue(database(), session, owner, { ...params, computer, kind: "create" });
 			const response = await operations().wait(request.id, abort), created = response.result!.session;
 			const ignored = (params.model || params.reasoning) && !response.result!.model && !response.result!.reasoning;
-			return result({ ...response, agent: params.computer && params.computer !== "local" ? agentId(params.computer, created) : created,
+			return result({ ...response, agent: computer && computer !== "local" ? agentId(computer, created) : created,
 				...(ignored ? { warning: "That computer's Desk is too old to choose a model or reasoning level. The agent started on its defaults; update Desk there to choose them." } : {}) });
 		},
 	});
@@ -435,11 +437,12 @@ export default function party(pi: ExtensionAPI): void {
 			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "A folder on that computer; default its home folder." })),
 			note: Type.String({ minLength: 1, maxLength: 32000, description: "What to do there: your next turn starts from it." }) }),
 		async execute(_id, params) {
-			if (params.computer === "local") throw Error("You are already on this computer.");
-			if (!database().computerSupports(params.computer, "move")) throw Error("That computer is not connected, or its Desk is too old to take a moving agent.");
-			operations().queue(database(), session, owner, { kind: "move", computer: params.computer, ...(params.cwd ? { cwd: params.cwd } : {}), task: params.note });
+			const computer = database().resolveComputer(params.computer, hostname());
+			if (computer === "local") throw Error("You are already on this computer.");
+			if (database().computerOnline(computer) && !database().computerSupports(computer, "move")) throw Error("That computer's Desk is too old to take a moving agent.");
+			operations().queue(database(), session, owner, { kind: "move", computer, ...(params.cwd ? { cwd: params.cwd } : {}), task: params.note });
 			// The move waits for this turn to end: stopping now lets it go at once.
-			return { ...result({ moving: true, computer: params.computer, cwd: params.cwd ?? "its home folder",
+			return { ...result({ moving: true, computer, cwd: params.cwd ?? "its home folder",
 				next: "This conversation stops here now and continues there from your note. If the move fails, you are told here." }), terminate: true };
 		},
 	});
