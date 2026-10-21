@@ -185,12 +185,25 @@ export function App({ account }: { account?: BrowserAccount }) {
     (session) => session.key === selected,
   );
   const previousSession = useRef<string | undefined>(undefined);
+  // The agent shown, so that one which moves itself to another computer is followed there: its conversation leaves
+  // this computer before it starts on the other.
+  const following = useRef<{ agent: string; until: number } | undefined>(undefined);
+  const shownAgent = session && !session.moved ? session.agentId ?? session.snapshot?.id : undefined;
+  if (shownAgent) following.current = { agent: shownAgent, until: 0 };
   useEffect(() => {
+    if ((!session || session.moved) && previousSession.current === selected && following.current) following.current.until = Date.now() + 120_000;
     if (!session && previousSession.current === selected) {
       setSelected(""); setPanel(undefined);
     }
     previousSession.current = session?.key;
-  }, [session?.key, selected]);
+  }, [session?.key, session?.moved, selected]);
+  useEffect(() => {
+    const follow = following.current;
+    if (!follow || follow.until < Date.now() || (session && !session.moved)) return;
+    const there = state.host?.sessions.find(item => (item.agentId ?? item.snapshot?.id) === follow.agent && item.key !== session?.key
+      && !item.moved && item.state !== "closed");
+    if (there) { follow.until = 0; setSelected(there.key); }
+  }, [state.host?.sessions, session]);
   const canCompose = session?.state === "starting" || session?.state === "ready";
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
   // The selected conversation's computer, while its conversations have not arrived: a loading view, not the empty

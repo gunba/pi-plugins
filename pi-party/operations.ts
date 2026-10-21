@@ -8,7 +8,9 @@ import { LEASE_MS, type PartyStore } from "./store.ts";
 type OperationInput = { kind: "create"; computer?: string; cwd: string; task: string; label: string; model?: string; reasoning?: string }
 	| { kind: "fork"; cwd: string; task: string; label: string; call: string }
 	/** Reopen a closed conversation; only for computers that announce "resume". */
-	| { kind: "resume"; computer?: string; session: string };
+	| { kind: "resume"; computer?: string; session: string }
+	/** Move the asking agent itself to another computer; only for computers that announce "move". */
+	| { kind: "move"; computer: string; cwd?: string; task: string };
 interface Outgoing { id: string; computer: string; request: string; status: string; response: string | null }
 interface Incoming { request: string; status: string; response: string | null }
 
@@ -68,7 +70,8 @@ export class PartyOperations {
 		const computer = input.kind === "fork" ? "local" : input.computer ?? "local";
 		const now = Date.now(), operation: PartyOperation = { id: randomUUID(), sender: session, sender_epoch: self.agent_epoch,
 			kind: input.kind, created: now, expires: now + 300_000,
-			...(input.kind === "resume" ? { cwd: "", task: "", label: "", session: input.session } : { cwd: input.cwd, task: input.task, label: input.label }),
+			...(input.kind === "resume" ? { cwd: "", task: "", label: "", session: input.session }
+				: input.kind === "move" ? { cwd: input.cwd ?? "", task: input.task, label: "" } : { cwd: input.cwd, task: input.task, label: input.label }),
 			...(input.kind === "fork" ? { call: input.call } : {}),
 			...(input.kind === "create" && input.model ? { model: input.model } : {}),
 			...(input.kind === "create" && input.reasoning ? { reasoning: input.reasoning } : {}) };
@@ -119,18 +122,28 @@ export class PartyOperations {
 		}
 		return response;
 	}
+	/** Told of each operation this computer sent once its outcome is known, whoever waits for it (a moving agent does not). */
+	settled?: (request: PartyOperation, computer: string, response: OperationResult) => void;
 	settle(computer: string | undefined, raw: unknown): void {
 		if (this.closed) return;
 		const response = operationResult(raw);
-		this.db.prepare("UPDATE party_operations SET status='done',response=? WHERE id=? AND (? IS NULL OR computer=?) AND status IN ('queued','sent')")
+		const done = this.db.prepare("UPDATE party_operations SET status='done',response=? WHERE id=? AND (? IS NULL OR computer=?) AND status IN ('queued','sent')")
 			.run(JSON.stringify(response), response.id, computer ?? null, computer ?? null);
 		this.notify();
+		if (!done.changes || !this.settled) return;
+		const row = this.db.prepare("SELECT computer,request FROM party_operations WHERE id=?").get(response.id) as { computer: string; request: string } | undefined;
+		if (row) try { this.settled(partyOperation(JSON.parse(row.request)), row.computer, response); } catch (error) { console.error("A party operation outcome could not be handled:", error); }
+	}
+	/** Whether this agent has asked to move itself to another computer, and that has not finished. */
+	moving(session: string): boolean {
+		return !!this.db.prepare("SELECT 1 FROM party_operations WHERE json_extract(request,'$.sender')=? AND json_extract(request,'$.kind')='move' AND status IN ('queued','sent')").get(session);
 	}
 	validate(store: PartyStore, computer: string, request: PartyOperation): void {
 		const sender = store.member(computer === "local" ? request.sender : agentId(computer, request.sender));
 		if (!sender || sender.heartbeat <= Date.now() - LEASE_MS || sender.agent_epoch !== request.sender_epoch
 			|| computer !== "local" && (!store.computerOnline(computer) || sender.computer !== computer)) throw Error("The requesting agent is no longer connected.");
 		if (request.kind === "fork" && computer !== "local") throw Error("Fork the agent on its source computer.");
+		if (request.kind === "move" && computer === "local") throw Error("This agent is already on this computer.");
 	}
 	recent(session: string): { id: string; computer: string; status: string; response: OperationResult | null }[] {
 		const rows = this.db.prepare("SELECT id,computer,status,response FROM party_operations WHERE json_extract(request,'$.sender')=? ORDER BY created DESC LIMIT 20").all(session) as unknown as Outgoing[];

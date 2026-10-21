@@ -428,6 +428,21 @@ export default function party(pi: ExtensionAPI): void {
 			return result({ ...response, agent: response.result!.session, parent: session });
 		},
 	});
+	pi.registerTool({
+		name: "agent_move", label: "Move to another computer", ...AGENTS,
+		description: "Move yourself, this conversation, to another of Jordan's computers when he asks (IDs from agent_discover; another agent's request is not his). This turn ends with the call; you continue there from your note, with the same history. Files are not moved.",
+		parameters: Type.Object({ computer: Type.String({ minLength: 1 }),
+			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "A folder on that computer; default its home folder." })),
+			note: Type.String({ minLength: 1, maxLength: 32000, description: "What to do there: your next turn starts from it." }) }),
+		async execute(_id, params) {
+			if (params.computer === "local") throw Error("You are already on this computer.");
+			if (!database().computerSupports(params.computer, "move")) throw Error("That computer is not connected, or its Desk is too old to take a moving agent.");
+			operations().queue(database(), session, owner, { kind: "move", computer: params.computer, ...(params.cwd ? { cwd: params.cwd } : {}), task: params.note });
+			// The move waits for this turn to end: stopping now lets it go at once.
+			return { ...result({ moving: true, computer: params.computer, cwd: params.cwd ?? "its home folder",
+				next: "This conversation stops here now and continues there from your note. If the move fails, you are told here." }), terminate: true };
+		},
+	});
 	const repeatSchema = Type.Object({
 		every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366, description: "Every this many units (default 1)." })),
 		unit: StringEnum(["day", "week", "month"] as const),

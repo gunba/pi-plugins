@@ -10,7 +10,8 @@ export interface DeliveryReceipt { id: string; accepted: boolean; error?: string
 /** User-approved agent creation over the computer channel; not a general remote command. */
 export interface PartyOperation {
 	id: string; sender: string; sender_epoch: string; created: number; expires: number;
-	kind: "create" | "fork" | "resume"; cwd: string; task: string; label: string; call?: string;
+	/** move: the sender moves itself to the receiving computer, into cwd (empty: its home folder); task is its note for continuing there. */
+	kind: "create" | "fork" | "resume" | "move"; cwd: string; task: string; label: string; call?: string;
 	/** provider/id or a bare model id; omitted uses the target computer's default. */
 	model?: string; reasoning?: string;
 	/** resume: the native session id of the conversation to reopen. Only sent to computers that list "resume". */
@@ -71,7 +72,7 @@ export function remoteMessage(value: unknown): PartyMessage {
 }
 export function partyOperation(value: unknown): PartyOperation {
 	const input = record(value), kind = text(input.kind, 20);
-	if (kind !== "create" && kind !== "fork" && kind !== "resume") throw Error("Invalid agent operation.");
+	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
 		kind, created: integer(input.created), expires: integer(input.expires),
 		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
@@ -86,6 +87,10 @@ export function partyOperation(value: unknown): PartyOperation {
 	}
 	if (kind === "resume") {
 		operation.session = id(input.session);
+		return operation;
+	}
+	if (kind === "move") {
+		if (!operation.task.trim()) throw Error("Say what to do after the move.");
 		return operation;
 	}
 	if (!operation.cwd.trim() || !operation.task.trim() || !operation.label.trim()) throw Error("Specify a directory, task and name for the new agent.");

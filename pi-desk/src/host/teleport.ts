@@ -197,7 +197,8 @@ export function sessionFolder(agentDir: string, cwd: string, configured?: string
  * Places a moved conversation's file where Pi keeps this folder's conversations: its header names the new folder, and a
  * note tells the model where it now is (paths and tools from earlier may differ). Returns the file's path.
  */
-export function placeMoved(incoming: string, folder: string, cwd: string, note: string): string {
+/** Places a moved conversation in `folder`, its header pointing at `cwd`, with `note` appended when given. */
+export function placeMoved(incoming: string, folder: string, cwd: string, note?: string): string {
 	// Read and written in parts: a conversation can be larger than the longest string Node can hold.
 	const source = openSync(incoming, "r"), size = statSync(incoming).size;
 	let end = lastLineEnd(incoming);
@@ -238,7 +239,7 @@ export function placeMoved(incoming: string, folder: string, cwd: string, note: 
 				if (!count) break;
 				writeSync(output, buffer, 0, count); offset += count;
 			}
-			writeSync(output, `${JSON.stringify(notice)}\n`);
+			if (note !== undefined) writeSync(output, `${JSON.stringify(notice)}\n`);
 		} finally { closeSync(output); }
 		renameSync(`${target}.tmp`, target);
 		return target;

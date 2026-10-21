@@ -234,6 +234,7 @@ export class DeskHost {
 			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.refreshQuests(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
 			this.partyOperations.startHost(); this.flushLocalPartyOperations();
+			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moveFailed(request, computer, response.error); };
 			this.quests = new QuestStore(join(this.options.agentDir!, "party"));
 			this.refreshQuests();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
@@ -1031,6 +1032,7 @@ export class DeskHost {
 		// As long as the requester waits, leaving time for the reply to reach it.
 		const wait = Math.max(30_000, request.expires - Date.now() - 15_000);
 		if (request.kind === "resume") return this.resumeAgent(request.session!, wait);
+		if (request.kind === "move") return this.moveAgentHere(computer, request, wait);
 		let fork: { cwd: string; file: string } | undefined;
 		if (request.kind === "fork") {
 			const member = store.member(request.sender)!;
@@ -1117,7 +1119,10 @@ export class DeskHost {
 	private async releaseForMove(session: string): Promise<{ file: string; cwd: string; title?: string }> {
 		const managed = this.conversation(session), file = managed && (managed.view.snapshot?.file ?? managed.view.file);
 		if (!managed || !file) throw new Error("That conversation is not on this computer.");
-		if (["running", "waiting"].includes(managed.view.snapshot?.activity ?? "")) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
+		const busy = () => ["running", "waiting"].includes(managed.view.snapshot?.activity ?? "");
+		// An agent moving itself asked during its turn, which that call ends: give the turn time to finish.
+		for (let wait = 0; busy() && wait < 600 && this.partyOperations?.moving(session); wait++) await new Promise(resolve => setTimeout(resolve, 100));
+		if (busy()) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
 		const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
 		await this.stopForMove(managed);
 		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
@@ -1126,7 +1131,27 @@ export class DeskHost {
 	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
 	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
 	 */
-	private async moveConversation(source: string, session: string, cwd: string): Promise<{ key: string }> {
+	/** An agent on another computer moves itself here, as Jordan asked it, and continues from its note. */
+	private async moveAgentHere(source: string, request: PartyOperation, wait: number): Promise<NonNullable<OperationResult["result"]>> {
+		const { key, note } = await this.moveConversation(source, request.sender, request.cwd.trim() || homedir(), true);
+		const managed = await this.waitForSession(key, wait);
+		await managed.worker!.command({ kind: "continue", text: `${note}\n\nYour note for continuing here:\n${request.task}` });
+		return { session: request.sender, state: "moved", key };
+	}
+	/** An agent's move to another computer did not happen: it is told, or, if it was already stopped, its conversation says so. */
+	private async moveFailed(request: PartyOperation, computer: string, error: string): Promise<void> {
+		if (this.teleport?.movedAway(request.sender)) return;
+		const managed = this.conversation(request.sender);
+		if (!managed) return;
+		const name = this.partyNetwork?.computers().find(item => item.id === computer)?.name ?? "the other computer";
+		const text = `Your move to ${name} did not happen: ${error} You are still on ${hostname()} (${managed.view.snapshot?.cwd ?? managed.view.cwd}). Tell Jordan.`;
+		if (managed.worker && managed.view.state === "ready") {
+			try { await managed.worker.command({ kind: "continue", text }); return; } catch { /* An older worker: shown on the conversation instead. */ }
+		}
+		managed.view = { ...managed.view, kept: managed.view.state === "closed" || managed.view.kept, error: `Move to ${name} failed: ${error}` };
+		this.persist(true); this.emit({ type: "session", session: managed.view });
+	}
+	private async moveConversation(source: string, session: string, cwd: string, asked = false): Promise<{ key: string; note: string }> {
 		const teleport = this.teleport, network = this.partyNetwork, self = this.accountIdentity?.device.id;
 		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
 		if (source === self) throw new Error("This conversation is already on this computer.");
@@ -1142,15 +1167,17 @@ export class DeskHost {
 			}
 			if (!fetched) throw failure instanceof Error ? failure : new Error(`${name(source)} is off, and no computer that is on keeps a copy of this conversation.`);
 		}
-		const note = `This conversation moved from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
-		const file = placeMoved(fetched.file, sessionFolder(this.options.agentDir!, folder, configuredSessionDirectory(folder, this.options.agentDir!, this.options.sessionDir)), folder, note);
+		const note = `This conversation moved${asked ? ", as you asked," : ""} from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
+		// An agent that asked to move gets the note as the message that starts its next turn instead.
+		const file = placeMoved(fetched.file, sessionFolder(this.options.agentDir!, folder, configuredSessionDirectory(folder, this.options.agentDir!, this.options.sessionDir)), folder, asked ? undefined : note);
 		teleport.record(session, { from: source, to: self, at: Date.now(), file: realpathSync(file) });
 		network.flush();
-		return { key: this.createSession(folder, file) };
+		return { key: this.createSession(folder, file), note };
 	}
 
 	private partyComputer(): PartyComputer {
-		return { name: hostname(), platform: process.platform, version: RELEASE.version, operations: ["create", "fork", "resume", "files", "settings", ...this.teleport?.operations() ?? []] };
+		return { name: hostname(), platform: process.platform, version: RELEASE.version,
+			operations: ["create", "fork", "resume", "files", "settings", ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
@@ -1438,7 +1465,7 @@ export class DeskHost {
 			if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.logins!.snapshot());
 			if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.logins!.signOut(string(data.provider, 200)));
 			if (url.pathname === "/api/teleport/move" && request.method === "POST")
-				return reply(await this.moveConversation(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096)));
+				return reply({ key: (await this.moveConversation(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096))).key });
 			if (url.pathname === "/api/teleport/settings" && request.method === "POST") {
 				if (!this.teleport) throw new Error("Conversation copies need your workspace.");
 				this.teleport.configure({ ...(typeof data.hold === "boolean" ? { hold: data.hold } : {}), ...(typeof data.send === "boolean" ? { send: data.send } : {}) });

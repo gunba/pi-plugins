@@ -198,6 +198,8 @@ export type WorkerCommand =
 	| { kind: "asset"; id: string; origin: ReferenceOrigin }
 	| { kind: "artifact"; id: string; offset: number; query?: string; origin: ReferenceOrigin }
 	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" | "now" }
+	/** Start a turn with a Desk message (shown, not the user's): an agent that moved itself here continues from its note. */
+	| { kind: "continue"; text: string }
 	| { kind: "native_read"; name: string; args: string }
 	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
 	| { kind: "brief"; refresh?: boolean }

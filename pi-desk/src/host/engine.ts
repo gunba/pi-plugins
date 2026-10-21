@@ -656,6 +656,10 @@ export class DeskEngine {
 			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value,
 				operation => this.change(operation, true));
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
+			case "continue":
+				void session.sendCustomMessage({ customType: "pi-desk/moved", content: command.text, display: true }, { triggerTurn: true })
+					.catch(error => this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
+				this.scheduleSnapshot(); return;
 			case "reload": await this.reload(); return this.snapshot();
 			case "prompt": {
 				if (this.presentation.snapshot().interactions.some(item => item.settings)) throw Error("Finish or cancel the pending Settings form before sending a message.");

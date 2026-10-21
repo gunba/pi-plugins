@@ -15,6 +15,7 @@ agent by its ID.
 | `agent_delivery` | Pause or resume automatic delivery. |
 | `agent_create` | With user approval, start a new agent with a task on a connected Desk computer, optionally choosing its model and reasoning level. |
 | `agent_fork` | With user approval, start an independent agent from this agent's completed context. |
+| `agent_move` | When the user asks, move this agent to another Desk computer: its turn ends, and it continues there from its note, with the same history. Files are not moved. |
 
 Discovery lists live agents by default; `includeOffline` adds previously
 registered ones. Results never include conversation transcripts. Remote IDs use
