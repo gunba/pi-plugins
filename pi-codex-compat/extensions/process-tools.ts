@@ -89,8 +89,12 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	// bash runs are timed too, so exec_command can say how long commands like it took in this folder.
 	const started = new Map<string, { cwd: string; cmd: string; at: number }>();
 	pi.on("tool_call", (event, ctx) => {
-		const command = (event.input as { command?: unknown }).command;
-		if (event.toolName === "bash" && typeof command === "string") started.set(event.toolCallId, { cwd: ctx.cwd, cmd: command, at: Date.now() });
+		if (event.toolName !== "bash") return;
+		const { command, timeout } = event.input as { command?: unknown; timeout?: unknown };
+		// bash shows the agent nothing until it ends: an agent that gave a watch loop 45 minutes saw its job fail in the
+		// first minute only when the user stopped it, 29 minutes later. Longer work runs in the background, looked at as it goes.
+		if (typeof timeout === "number" && timeout > FOREGROUND_SECONDS) return { block: true, reason: FOREGROUND_LIMIT };
+		if (typeof command === "string") started.set(event.toolCallId, { cwd: ctx.cwd, cmd: command, at: Date.now() });
 	});
 	pi.on("tool_result", event => {
 		const run = started.get(event.toolCallId);
@@ -106,6 +110,11 @@ export function createExecLifecycle(pi: ExtensionAPI): ExecRuntimeOwnerFor {
 	});
 	return ownerFor;
 }
+
+const FOREGROUND_SECONDS = 600;
+const FOREGROUND_LIMIT = `Not run: bash waits at most ${FOREGROUND_SECONDS / 60} minutes (timeout ${FOREGROUND_SECONDS}), because you see nothing until it ends. `
+	+ "Run longer work in the background with exec_command (find it with tool_search \"exec_command\"): write_stdin shows its output so far, "
+	+ "at most 5 minutes per look, and it reports itself when it finishes. A loop that waits for an outcome should also stop on errors.";
 
 // Codex models are trained on these tools, so they are declared for them; other models use bash and load these with
 // tool_search when a command should keep running in the background.
