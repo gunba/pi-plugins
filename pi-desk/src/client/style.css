@@ -881,6 +881,7 @@ details[open] > summary:before {
   background: var(--surface);
   box-shadow: 0 4px 24px #00000004;
   overflow: hidden;
+  position: relative;
 }
 .composer:focus-within {
   border-color: var(--focus-border);
@@ -890,13 +891,18 @@ details[open] > summary:before {
   display: block;
   border: 0;
   box-shadow: none;
-  resize: vertical;
+  resize: none;
   min-height: 92px;
-  max-height: 220px;
+  max-height: 60dvh;
   padding: 17px 19px 4px;
   background: transparent;
   font-size: 14px;
 }
+.composer-resize { position:absolute; top:0; left:0; right:0; height:10px; cursor:row-resize; touch-action:none; z-index:2; }
+.composer-resize::after { content:""; position:absolute; top:4px; left:50%; width:36px; height:4px; margin-left:-18px; border-radius:2px; background:var(--border); opacity:0; transition:opacity .15s; }
+.composer:hover .composer-resize::after, .composer-resize:focus-visible::after { opacity:1; }
+.composer-resize:hover::after, .composer-resize:active::after { background:var(--accent); opacity:1; }
+@media (pointer: coarse) { .composer-resize::after { opacity:1; } }
 .command-completion { border-bottom:1px solid var(--border); padding:8px; max-height:280px; overflow:auto; }
 .command-completion-heading { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; padding:4px 8px 8px; }
 .command-completion-heading > span { margin-left:auto; }

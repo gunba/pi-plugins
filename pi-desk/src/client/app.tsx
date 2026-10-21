@@ -78,6 +78,7 @@ import type {
   WorkerCommand,
 } from "../shared/protocol.ts";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
+import { ComposerResize } from "./composer-resize.tsx";
 
 const basename = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -1064,6 +1065,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 event.preventDefault(); setDraggingFiles(false);
                 if (!sending && attachments.ready) attachments.add(event.dataTransfer.files);
               }}>
+              <ComposerResize input={composerInput} />
               <AttachmentList files={attachments.files} disabled={sending} remove={attachments.remove} />
               <input ref={fileInput} type="file" multiple hidden aria-label="Choose attachments" disabled={sending || !attachments.ready}
                 onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
