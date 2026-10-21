@@ -429,22 +429,26 @@ details[open] > summary:before {
 .session-label-line > strong { flex:1; min-width:0; }
 .session-row { position:relative; }
 .session-row:hover .session-item:not(.selected) { background:var(--hover); }
+/* The row's buttons sit on its title line, which keeps room for them; the second line, with its marks, runs to the edge. */
 .session-close {
-  position:absolute; right:6px; top:50%; transform:translateY(-50%); display:grid; place-items:center;
-  min-width:32px; min-height:32px; padding:6px; border-radius:7px; color:var(--muted);
+  position:absolute; right:4px; top:14px; transform:translateY(-50%); display:grid; place-items:center;
+  min-width:26px; min-height:26px; padding:5px; border-radius:7px; color:var(--muted);
   opacity:0; pointer-events:none;
 }
 .session-row:hover :is(.session-close, .session-rename), .session-row:focus-within :is(.session-close, .session-rename) { opacity:1; pointer-events:auto; }
-.session-rename { position:absolute; right:36px; top:50%; transform:translateY(-50%); display:grid; place-items:center; min-width:30px; min-height:30px; padding:6px; border-radius:7px; color:var(--muted); opacity:0; pointer-events:none; }
+.session-rename { position:absolute; right:31px; top:14px; transform:translateY(-50%); display:grid; place-items:center; min-width:26px; min-height:26px; padding:5px; border-radius:7px; color:var(--muted); opacity:0; pointer-events:none; }
 .session-rename .ui-icon { width:14px; height:14px; }
 .session-rename:hover:not(:disabled) { color:var(--accent); background:var(--surface); }
-.session-row:has(.session-rename) .session-item { padding-right:64px; }
+.session-row:has(.session-close) .session-label-line { padding-right:26px; }
+.session-row:has(.session-rename) .session-label-line { padding-right:54px; }
 .session-rename-form { display:grid; gap:4px; padding:6px 8px; }
 .session-rename-form input { width:100%; margin:0; padding:7px 9px; font-size:13px; }
 .session-close:hover:not(:disabled) { color:var(--danger); background:var(--surface); }
 @media (hover:none), (pointer:coarse) {
-  .session-close { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:2px; }
-  .session-rename { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:44px; }
+  .session-close { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:2px; top:50%; }
+  .session-rename { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:44px; top:50%; }
+  .session-row:has(.session-close) .session-label-line { padding-right:0; }
+  .session-row:has(.session-close) .session-item { padding-right:44px; }
   .session-row:has(.session-rename) .session-item { padding-right:88px; }
 }
 .session-item {
@@ -453,7 +457,7 @@ details[open] > summary:before {
   align-items: center;
   width: 100%;
   min-height: 44px;
-  padding: 4px 30px 4px 10px;
+  padding: 4px 8px 4px 10px;
   border: 0;
   background: transparent;
   border-radius: 3px;
