@@ -1144,6 +1144,23 @@ export function App({ account }: { account?: BrowserAccount }) {
                   if (completion.keyDown(event)) return;
                   if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.nativeEvent.isComposing) {
                     const editor = event.currentTarget;
+                    // A new recall asks the conversation for your messages: after a long turn, none may be loaded here.
+                    if (event.key === "ArrowUp" && draft === "" && !(recall.current && recall.current.shown === draft)) {
+                      event.preventDefault();
+                      const conversation = selected;
+                      void (async () => {
+                        let list: readonly string[] = sent;
+                        try {
+                          const reply = await command<{ result?: string[] | null }>({ kind: "sent_messages" });
+                          if (Array.isArray(reply?.result) && reply.result.length) list = reply.result;
+                        } catch { /* A conversation on an older Desk: the messages loaded here. */ }
+                        const step = recallStep("ArrowUp", "", { start: 0, end: 0 }, list);
+                        if (!step || "done" in step || selectedRef.current !== conversation || composerInput.current?.value !== "") return;
+                        recall.current = step; setDraft(step.shown); localStorage.setItem(draftKey(conversation), step.shown);
+                        requestAnimationFrame(() => editor.setSelectionRange(step.shown.length, step.shown.length));
+                      })();
+                      return;
+                    }
                     const step = recallStep(event.key, draft, { start: editor.selectionStart, end: editor.selectionEnd }, sent, recall.current);
                     if (step) {
                       event.preventDefault();

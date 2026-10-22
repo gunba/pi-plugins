@@ -208,6 +208,8 @@ export type WorkerCommand =
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }
+	/** Your last messages in this conversation's branch, oldest first, for the message box's Up and Down history. */
+	| { kind: "sent_messages" }
 	/** Take one waiting message out of Pi's queue; it is never sent, and its whole text comes back to edit. */
 	| { kind: "queue_cancel"; queue: "steering" | "followUp"; index: number; text: string }
 	| { kind: "answer"; id: string; answer: unknown }

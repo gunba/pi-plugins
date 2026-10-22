@@ -16,8 +16,8 @@ export function sentMessages(messages: readonly ChatMessage[]): string[] {
 	return texts;
 }
 
-/** Where the message box is in that list: the message shown, and what was typed before recalling began. */
-export interface Recall { index: number; shown: string; typed: string }
+/** Where the message box is in a list of sent messages: the message shown, and what was typed before recalling began. */
+export interface Recall { sent: readonly string[]; index: number; shown: string; typed: string }
 
 /**
  * The text an arrow key brings, or undefined to let it move the caret. Up recalls from an empty box, or steps back from
@@ -29,10 +29,10 @@ export function recallStep(key: "ArrowUp" | "ArrowDown", draft: string, caret: {
 	if (key === "ArrowUp") {
 		if (!recalling && draft !== "") return;
 		if (recalling && draft.slice(0, caret.start).includes("\n")) return;
-		const index = (recalling ? recalling.index : sent.length) - 1;
-		return index >= 0 ? { index, shown: sent[index]!, typed: recalling?.typed ?? draft } : undefined;
+		const list = recalling?.sent ?? sent, index = (recalling ? recalling.index : list.length) - 1;
+		return index >= 0 ? { sent: list, index, shown: list[index]!, typed: recalling?.typed ?? draft } : undefined;
 	}
 	if (!recalling || draft.slice(caret.end).includes("\n")) return;
 	const index = recalling.index + 1;
-	return index < sent.length ? { index, shown: sent[index]!, typed: recalling.typed } : { done: recalling.typed };
+	return index < recalling.sent.length ? { ...recalling, index, shown: recalling.sent[index]! } : { done: recalling.typed };
 }

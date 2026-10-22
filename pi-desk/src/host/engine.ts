@@ -44,6 +44,7 @@ import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../..
 import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
 import { packageCopies } from "./package-updates.ts";
 import { activateNewTools } from "./new-tools.ts";
+import { sentMessageTexts } from "./sent-messages.ts";
 import { openingMessage, sessionTitle } from "../shared/session-title.ts";
 import { promptCommands } from "./prompt-commands.ts";
 import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNativeCommand } from "./native-commands.ts";
@@ -667,6 +668,7 @@ export class DeskEngine {
 			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value,
 				operation => this.change(operation, true));
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
+			case "sent_messages": return sentMessageTexts(session.sessionManager.getBranch());
 			case "continue":
 				void session.sendCustomMessage({ customType: "pi-desk/moved", content: command.text, display: true }, { triggerTurn: true })
 					.catch(error => this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
