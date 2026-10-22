@@ -135,7 +135,7 @@ least 150 remarks:
 
 ### Agent-written changes
 
-See `agents.md`.
+See `agents.md` beside this file.
 
 ## Limits
 

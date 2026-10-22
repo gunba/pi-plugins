@@ -1,10 +1,9 @@
-# What maintainers raise about tests
+# Review remarks on tests
 
-Real review remarks from maintainers of top projects that changed the tests
-they were about, grouped like the steps in `SKILL.md`. Read the section for
-the step you are on to see the kind of problem and the level of detail
-reviewers expect. All come from changes outside the benchmark set. For more,
-run `node scripts/examples.mjs --move <name>`; the name is under each heading.
+Real review remarks from maintainers of top projects, grouped by the kind of
+problem they raise. Use them to calibrate: the kind of problem to look for, and
+the level of detail expected. For more, run
+`node scripts/examples.mjs --move <name>`; the name is under each heading.
 
 ## Cases
 

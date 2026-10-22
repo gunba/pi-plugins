@@ -48,7 +48,8 @@ For comments:
   the code or run long. They ask agents to explain *why* half as often as
   they ask people.
 
-`skills/*/references/corpus.md` have the method, label checks and tables.
+`docs/` has the method, label checks and tables: `tests.md`, `comments.md`
+and `agents.md`. The skills themselves contain only instructions.
 
 ## Benchmarks
 

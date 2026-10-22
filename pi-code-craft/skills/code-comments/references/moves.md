@@ -1,7 +1,8 @@
-# What maintainers raise about code comments
+# Review remarks on code comments
 
-Real review remarks from maintainers of top projects that changed the comments
-they were about, grouped like the checks in `SKILL.md`. For more, run
+Real review remarks from maintainers of top projects, grouped by the kind of
+problem they raise. Use them to calibrate: the kind of problem to look for, and
+the level of detail expected. For more, run
 `node scripts/examples.mjs --move <name>`; the name is under each heading.
 
 ## Comments that are wrong

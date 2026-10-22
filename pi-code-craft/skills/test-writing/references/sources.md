@@ -1,9 +1,7 @@
 # The projects' own testing guides
 
-The review data says what maintainers ask for in practice. These guides are
-where several of the same projects wrote it down. Read the one for the
-project or ecosystem you are working in; where it disagrees with this skill,
-follow the project.
+Read the guide for the project or ecosystem you are working in. Where it
+differs from this skill, follow the project.
 
 | Guide | What it adds |
 |---|---|

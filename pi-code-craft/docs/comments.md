@@ -3,7 +3,7 @@
 The review data is shared with the `test-writing` skill: 14,522 reviewed
 changes from 64 projects on GitHub, kernel.org mailing lists, and Go's and
 Chromium's Gerrit, collected April 2025 to September 2026, including 1,986
-changes written by coding agents. See that skill's `references/corpus.md` for
+changes written by coding agents. See `tests.md` for
 the sources and sampling.
 
 ## Labels

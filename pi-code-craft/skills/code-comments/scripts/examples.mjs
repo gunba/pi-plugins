@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Print real review remarks on code comments from the reference pools:
-// remarks maintainers acted on, high-value first (exemplars.jsonl), or remarks
+// remarks maintainers acted on, strongest first (exemplars.jsonl), or remarks
 // authors declined, with the reply (rejected.jsonl).
 //
 //   node examples.mjs --move document_contract --lang Go

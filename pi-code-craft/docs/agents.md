@@ -144,4 +144,4 @@ jakebailey, [TypeScript-Go](https://github.com/microsoft/typescript-go/pull/1313
 
 AndriySvyryd, [EF Core](https://github.com/dotnet/efcore/pull/37693#discussion_r2806372086)
 
-For more, run `node scripts/examples.mjs --agents --move <name>`.
+For more, run `node skills/test-writing/scripts/examples.mjs --agents --move <name>`.
