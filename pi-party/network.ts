@@ -32,6 +32,9 @@ export type PartyPacket =
 	| { type: "settings"; manifest: unknown }
 	| { type: "settings-request"; keys: unknown }
 	| { type: "settings-files"; files: unknown }
+	/** Files of a message held for them, asked for one part at a time, from computers that announce "message-parts". */
+	| { type: "message-file-request"; message: string; name: string; offset: number }
+	| { type: "message-file-part"; message: string; name: string; offset: number; data?: string; error?: string }
 	/** Conversation copies and moves (Desk teleport.ts), sent only to computers that announce "copies". */
 	| { type: "copies-status" | "copies" | "copies-ack" | "moves" | "copy-fetch" | "copy-data"; [key: string]: unknown };
 

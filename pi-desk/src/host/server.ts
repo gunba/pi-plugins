@@ -18,6 +18,7 @@ import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-regi
 import { sessionDisplay } from "./session-display.ts";
 import type { ConversationCopy, HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { PackageUpdates } from "./package-updates.ts";
+import { MESSAGE_PARTS } from "../../../pi-party/store.ts";
 import { homeFolder } from "./local-path.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
@@ -1193,7 +1194,7 @@ export class DeskHost {
 
 	private partyComputer(): PartyComputer {
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: ["create", "fork", "resume", "files", "settings", ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
+			operations: ["create", "fork", "resume", "files", "settings", MESSAGE_PARTS, ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */

@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../pi-work-ui/index.ts";
 import { isManagedChild } from "../pi-work-coordination/index.ts";
 import { nativePromptPreparing } from "../pi-work-coordination/native-queue.ts";
-import { LEASE_MS, MAX_MESSAGE_FILE_BYTES, MAX_MESSAGE_FILES, PartyStore, type Member, type MessageFile, type PartyMessage } from "./store.ts";
+import { INLINE_FILE_BYTES, LEASE_MS, MAX_MESSAGE_FILE_BYTES, MAX_MESSAGE_FILES, MESSAGE_PARTS, PartyStore, sendNames, type Member, type MessageFile, type PartyMessage } from "./store.ts";
 import { PartyChat } from "./chat.ts";
 import { renderPartyCall, renderPartyResult, renderPartyNotice } from "./render.ts";
 import { getPresentation } from "../pi-ui/index.ts";
@@ -288,17 +288,20 @@ export default function party(pi: ExtensionAPI): void {
 		return sent;
 	};
 	/** Read files to send, relative to this conversation's folder. The recipient gets copies on its own computer. */
-	const readFiles = (paths: string[], cwd: string): MessageFile[] => {
-		if (paths.length > MAX_MESSAGE_FILES) throw Error(`Send at most ${MAX_MESSAGE_FILES} files with one message.`);
+	const readFiles = (paths: string[], cwd: string, limit = MAX_MESSAGE_FILE_BYTES): MessageFile[] => {
+		const full = [...new Set(paths.map(path => isAbsolute(path) ? path : resolve(cwd, path)))];
+		if (full.length > MAX_MESSAGE_FILES) throw Error(`Send at most ${MAX_MESSAGE_FILES} files with one message.`);
+		const names = sendNames(full);
 		let total = 0;
-		return paths.map(path => {
-			const full = isAbsolute(path) ? path : resolve(cwd, path);
+		return full.map((path, index) => {
 			let size: number;
-			try { const info = statSync(full); if (!info.isFile()) throw Error(); size = info.size; }
+			try { const info = statSync(path); if (!info.isFile()) throw Error(); size = info.size; }
 			catch { throw Error(`${path} is not a file that can be read.`); }
-			if ((total += size) > MAX_MESSAGE_FILE_BYTES) throw Error(`Files are limited to ${MAX_MESSAGE_FILE_BYTES / 1024 / 1024} MB per message; share larger ones another way, such as a shared drive.`);
-			const data = readFileSync(full);
-			return { name: basename(full), size: data.length, sha256: createHash("sha256").update(data).digest("hex"), data: data.toString("base64") };
+			if ((total += size) > limit) throw Error(limit < MAX_MESSAGE_FILE_BYTES
+				? `The recipient's computer runs an older Desk that takes at most ${limit / 1024 / 1024} MB of files per message. It updates itself; send fewer files until then.`
+				: `Files are limited to ${limit / 1024 / 1024} MB per message; share larger ones another way, such as a shared drive.`);
+			const data = readFileSync(path);
+			return { name: names[index]!, size: data.length, sha256: createHash("sha256").update(data).digest("hex"), data: data.toString("base64") };
 		});
 	};
 	/**
@@ -516,7 +519,10 @@ export default function party(pi: ExtensionAPI): void {
 		renderCall: (args, theme, context) => renderPartyCall("send", args, theme, context, peerLabel),
 		renderResult: (result, options, theme, context) => renderPartyResult("send", result, options, theme, context, peerLabel),
 		async execute(_id, params, signal, _update, context) {
-			const files = params.files?.length ? readFiles(params.files, context.cwd) : [];
+			// Files reach another computer in parts; one whose Desk predates that takes them in the message, up to 8 MB.
+			const remote = params.files?.length ? database().member(params.to)?.computer : undefined;
+			const files = params.files?.length ? readFiles(params.files, context.cwd,
+				remote && !database().computerSupports(remote, MESSAGE_PARTS) ? INLINE_FILE_BYTES : MAX_MESSAGE_FILE_BYTES) : [];
 			const sent = sendMessage(params.to, params.message, params.wake !== false, files);
 			const recipient = database().member(sent.recipient)!;
 			const closed = params.wake !== false && recipient.heartbeat <= Date.now() - LEASE_MS && recipient.state !== "restarting";

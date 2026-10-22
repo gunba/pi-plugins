@@ -24,6 +24,8 @@ export class PartyNetwork {
 	/** The settings manifest last sent to each computer. */
 	private manifests = new Map<string, string>();
 	private teleport?: Teleport;
+	/** When this computer last asked each computer for a file part, while waiting for it. */
+	private asking = new Map<string, number>();
 	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport) {
 		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
@@ -45,7 +47,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id);
+		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.asking.delete(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -80,6 +82,15 @@ export class PartyNetwork {
 			}
 		} finally { this.flushing.delete(id); }
 	}
+	/** Ask a computer for the next part of a held message's files: one at a time, so a large set never fills the channel. */
+	private async askForPart(id: string): Promise<void> {
+		const asked = this.asking.get(id);
+		if (asked && Date.now() - asked < 120_000) return;
+		const next = this.store.nextFilePart(id), send = this.peers.get(id);
+		if (!next || !send) { this.asking.delete(id); return; }
+		this.asking.set(id, Date.now());
+		await send({ type: "message-file-request", ...next });
+	}
 	async receive(id: string, raw: unknown): Promise<void> {
 		if (this.closed || !this.peers.has(id)) throw Error("Party computer is disconnected.");
 		const packet = record(raw);
@@ -109,9 +120,24 @@ export class PartyNetwork {
 		}
 		if (packet.type === "messages") {
 			if (!Array.isArray(packet.messages) || packet.messages.length > 16) throw Error("Invalid party message batch.");
-			const receipts = packet.messages.map(message => this.store.acceptRemoteMessage(id, message));
+			// A message whose files come in parts has no receipt until they have arrived (store.ts holdForParts).
+			const receipts = packet.messages.map(message => this.store.acceptRemoteMessage(id, message)).filter(receipt => receipt !== undefined);
 			this.changed();
-			await this.peers.get(id)!({ type: "receipts", receipts }); return;
+			if (receipts.length) await this.peers.get(id)!({ type: "receipts", receipts });
+			await this.askForPart(id); return;
+		}
+		if (packet.type === "message-file-request") {
+			const offset = Number(packet.offset), part = Number.isSafeInteger(offset) && offset >= 0
+				? this.store.filePart(id, String(packet.message), String(packet.name), offset) : undefined;
+			await this.peers.get(id)?.({ type: "message-file-part", message: String(packet.message), name: String(packet.name), offset,
+				...(part?.length ? { data: part.toString("base64") } : { error: "The sender no longer has this file." }) });
+			return;
+		}
+		if (packet.type === "message-file-part") {
+			this.asking.delete(id);
+			const receipt = this.store.addFilePart(id, packet);
+			if (receipt) { this.changed(); await this.peers.get(id)?.({ type: "receipts", receipts: [receipt] }); }
+			await this.askForPart(id); return;
 		}
 		if (packet.type === "receipts") { this.store.recordReceipts(id, packet.receipts); this.changed(); return; }
 		if (packet.type === "settings" && this.sync) {

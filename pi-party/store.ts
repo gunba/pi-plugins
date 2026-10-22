@@ -21,11 +21,44 @@ export interface PartyMessage {
 }
 /** A file sent with a message, stored until the recipient's process saves it to disk. data is base64. */
 export interface MessageFile { name: string; size: number; sha256: string; data: string }
-/** Files per message, kept well inside the encrypted channel's 32 MB queue. */
-export const MAX_MESSAGE_FILES = 10, MAX_MESSAGE_FILE_BYTES = 8 * 1024 * 1024;
+/**
+ * Files per message. Between computers they travel in parts the recipient asks for, one at a time ("message-parts"),
+ * so a large set is never one packet; a computer whose Desk predates that takes them inside the message, up to 8 MB.
+ */
+export const MAX_MESSAGE_FILES = 50, MAX_MESSAGE_FILE_BYTES = 200 * 1024 * 1024, INLINE_FILE_BYTES = 8 * 1024 * 1024;
+export const FILE_PART_BYTES = 4 * 1024 * 1024, MESSAGE_PARTS = "message-parts";
+/**
+ * Names for files sent together: their own, or, where two share one (in any case: Windows would merge them), with as
+ * many parent folders as tell them apart, joined by "-": projectplan/offices/sydney.md becomes projectplan-offices-sydney.md.
+ * Sending them failed outright before.
+ */
+export function sendNames(paths: readonly string[]): string[] {
+	const parts = paths.map(path => path.split(/[\\/]+/).filter(Boolean)), depth = paths.map(() => 1);
+	const name = (index: number) => parts[index]!.slice(-depth[index]!).join("-");
+	for (let round = 0; round < 64; round++) {
+		const groups = new Map<string, number[]>();
+		paths.forEach((_path, index) => { const key = name(index).toLowerCase(); groups.set(key, [...groups.get(key) ?? [], index]); });
+		let grew = false;
+		for (const group of groups.values()) if (group.length > 1) for (const index of group) if (depth[index]! < parts[index]!.length) { depth[index]!++; grew = true; }
+		if (!grew) break;
+	}
+	// Still the same (a folder named like another's file): numbered.
+	const seen = new Map<string, number>();
+	return paths.map((_path, index) => {
+		const base = name(index), count = (seen.get(base.toLowerCase()) ?? 0) + 1;
+		seen.set(base.toLowerCase(), count);
+		const dot = base.lastIndexOf(".");
+		return count === 1 ? base : dot > 0 ? `${base.slice(0, dot)} (${count})${base.slice(dot)}` : `${base} (${count})`;
+	});
+}
+/** What a message with files in parts says of each: the data follows on request. */
+export interface FileHeader { name: string; size: number; sha256: string }
 
-/** Check files before they are stored: count, total size, plain file names, and that each matches its hash. */
-export function checkFiles(files: MessageFile[]): void {
+/**
+ * Check files before they are stored: count, total size, plain file names, and that each matches its hash. With
+ * `headers`, only what a message with files in parts says of them: the data is checked as it arrives.
+ */
+export function checkFiles(files: MessageFile[], headers = false): void {
 	if (files.length > MAX_MESSAGE_FILES) throw Error(`Send at most ${MAX_MESSAGE_FILES} files with one message.`);
 	let total = 0;
 	const names = new Set<string>();
@@ -33,6 +66,11 @@ export function checkFiles(files: MessageFile[]): void {
 		if (typeof file.name !== "string" || !file.name || file.name.length > 255 || /[\\/\x00-\x1f]|^\.\.?$/.test(file.name)) throw Error("Invalid file name.");
 		if (names.has(file.name)) throw Error(`Two files are called ${file.name}.`);
 		names.add(file.name);
+		if (headers) {
+			if (!Number.isSafeInteger(file.size) || file.size < 0 || typeof file.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(file.sha256)) throw Error(`${file.name} is described wrongly.`);
+			total += file.size;
+			continue;
+		}
 		const bytes = Buffer.from(typeof file.data === "string" ? file.data : "", "base64");
 		if (bytes.length !== file.size || createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw Error(`${file.name} arrived incomplete.`);
 		total += bytes.length;
@@ -96,6 +134,13 @@ export class PartyStore {
 					status TEXT NOT NULL, error TEXT);
 				CREATE TABLE IF NOT EXISTS message_files (message TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
 					sha256 TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(message, name));
+				-- A message from another computer whose files are still arriving: kept apart until they all have,
+				-- so no version of an agent sees it half received.
+				CREATE TABLE IF NOT EXISTS incoming_messages (message TEXT PRIMARY KEY, computer TEXT NOT NULL, wire TEXT NOT NULL, created INTEGER NOT NULL);
+				CREATE TABLE IF NOT EXISTS incoming_files (message TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL,
+					sha256 TEXT NOT NULL, PRIMARY KEY(message, name));
+				CREATE TABLE IF NOT EXISTS incoming_parts (message TEXT NOT NULL, name TEXT NOT NULL, offset INTEGER NOT NULL,
+					data BLOB NOT NULL, PRIMARY KEY(message, name, offset));
 			`);
 			// What each other computer's Desk said it supports, such as receiving files.
 			if (!columns("network_computers").has("operations")) this.db.exec("ALTER TABLE network_computers ADD COLUMN operations TEXT");
@@ -205,22 +250,31 @@ export class PartyStore {
 			WHERE n.computer=? AND n.status='queued' ORDER BY m.created,m.id LIMIT 16`).iterate(computer) as unknown as Iterable<PartyMessage>;
 		const result: PartyMessage[] = [];
 		let size = 256;
+		const parts = this.computerSupports(computer, MESSAGE_PARTS);
 		for (const message of messages) {
 			if (this.messageCurrent(message)) {
-				const files = this.messageFiles(message.id);
-				// A message with files travels in a packet of its own.
-				if (files.length && result.length) break;
-				const wire = { ...message, recipient: nativeId(message.recipient), ...(files.length ? { files } : {}) }, bytes = Buffer.byteLength(JSON.stringify(wire));
+				// Files go in parts the recipient asks for; to an older Desk, inside a packet of the message's own.
+				const headers = this.fileHeaders(message.id), inline = headers.length > 0 && !parts;
+				if (inline && headers.reduce((total, file) => total + file.size, 0) > INLINE_FILE_BYTES) {
+					this.db.prepare("UPDATE network_messages SET status='failed',error=? WHERE message=?")
+						.run("The recipient's computer runs an older Desk that takes at most 8 MB of files. It updates itself; send again then.", message.id);
+					continue;
+				}
+				if (inline && result.length) break;
+				const wire = { ...message, recipient: nativeId(message.recipient),
+					...(inline ? { files: this.messageFiles(message.id) } : headers.length ? { files: headers, parts: true } : {}) }, bytes = Buffer.byteLength(JSON.stringify(wire));
 				if (size + bytes > MAX_NETWORK_PACKET) break;
 				result.push(wire); size += bytes;
-				if (files.length) break;
+				if (inline) break;
 			}
 			else this.db.prepare("UPDATE network_messages SET status='failed',error=? WHERE message=?")
 				.run("Agent membership changed before delivery.", message.id);
 		}
 		return result;
 	}
-	acceptRemoteMessage(computer: string, input: unknown): DeliveryReceipt {
+	/** A message from another computer: delivered, refused, or (undefined) held while its files arrive in parts. */
+	acceptRemoteMessage(computer: string, input: unknown): DeliveryReceipt | undefined {
+		if ((input as { parts?: unknown }).parts === true) return this.holdForParts(computer, input);
 		const wire = remoteMessage(input), message = { ...wire, sender: agentId(computer, wire.sender) };
 		// Files are checked against their hashes and stored apart from the message row.
 		const raw = (input as { files?: unknown }).files, files = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGE_FILES + 1) as MessageFile[] : [];
@@ -243,6 +297,72 @@ export class PartyStore {
 			this.insertFiles(message.id, files);
 			return { id: message.id, accepted: true };
 		});
+	}
+	private holdForParts(computer: string, input: unknown): DeliveryReceipt | undefined {
+		const wire = remoteMessage(input), raw = (input as { files?: unknown }).files;
+		const headers = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGE_FILES + 1) as FileHeader[] : [];
+		checkFiles(headers.map(file => ({ ...file, data: "" })), true);
+		if (this.db.prepare("SELECT 1 FROM messages WHERE id=?").get(wire.id)) return { id: wire.id, accepted: true };
+		if (this.db.prepare("SELECT 1 FROM incoming_messages WHERE message=?").get(wire.id)) return;
+		// Refused now rather than after the files arrive: the same checks run again when they have.
+		const sender = this.member(agentId(computer, wire.sender)), recipient = this.member(wire.recipient);
+		if (!this.computerOnline(computer) || sender?.computer !== computer || !recipient || recipient.computer || !this.messageCurrent({ ...wire, sender: agentId(computer, wire.sender) }))
+			return { id: wire.id, accepted: false, error: "Agent membership changed before delivery." };
+		if (recipient.cwd === "ChatGPT") return { id: wire.id, accepted: false, error: "This agent cannot receive files." };
+		this.tx(() => {
+			this.db.prepare("DELETE FROM incoming_messages WHERE created<?").run(this.now() - 2 * 86_400_000);
+			this.db.exec("DELETE FROM incoming_files WHERE message NOT IN (SELECT message FROM incoming_messages); DELETE FROM incoming_parts WHERE message NOT IN (SELECT message FROM incoming_messages)");
+			this.db.prepare("INSERT INTO incoming_messages VALUES (?,?,?,?)").run(wire.id, computer, JSON.stringify({ ...input as object, files: undefined, parts: undefined }), this.now());
+			for (const file of headers) this.db.prepare("INSERT INTO incoming_files VALUES (?,?,?,?)").run(wire.id, file.name, file.size, file.sha256);
+		});
+	}
+	/** The next part this computer should ask a computer for: the first file of its oldest held message not yet whole. */
+	nextFilePart(computer: string): { message: string; name: string; offset: number } | undefined {
+		const row = this.db.prepare(`SELECT f.message, f.name, coalesce((SELECT sum(length(p.data)) FROM incoming_parts p WHERE p.message=f.message AND p.name=f.name), 0) AS offset, f.size
+			FROM incoming_files f JOIN incoming_messages m ON m.message=f.message WHERE m.computer=? ORDER BY m.created, f.message, f.name`).all(computer) as { message: string; name: string; offset: number; size: number }[];
+		const next = row.find(file => file.offset < file.size);
+		return next ? { message: next.message, name: next.name, offset: next.offset } : undefined;
+	}
+	/**
+	 * A part of a held message's file. When every file is whole and matches its hash, the message is delivered as one
+	 * that arrived with its files, and its receipt is returned; a mismatch drops it, to be sent again.
+	 */
+	addFilePart(computer: string, input: unknown): DeliveryReceipt | undefined {
+		const part = input as { message?: unknown; name?: unknown; offset?: unknown; data?: unknown; error?: unknown };
+		const held = this.db.prepare("SELECT wire FROM incoming_messages WHERE message=? AND computer=?").get(part.message as string, computer) as { wire: string } | undefined;
+		if (!held || typeof part.name !== "string") return;
+		const drop = (error: string): DeliveryReceipt => {
+			this.tx(() => { for (const table of ["incoming_messages", "incoming_files", "incoming_parts"]) this.db.prepare(`DELETE FROM ${table} WHERE message=?`).run(part.message as string); });
+			return { id: part.message as string, accepted: false, error };
+		};
+		if (typeof part.error === "string") return drop(part.error.slice(0, 400));
+		const file = this.db.prepare("SELECT size FROM incoming_files WHERE message=? AND name=?").get(part.message as string, part.name) as { size: number } | undefined;
+		const next = this.nextFilePart(computer);
+		if (!file || !next || typeof part.data !== "string" || next.message !== part.message || next.name !== part.name || next.offset !== part.offset) return;
+		const data = Buffer.from(part.data, "base64");
+		if (!data.length || data.length > FILE_PART_BYTES || next.offset + data.length > file.size) return drop("A file part arrived damaged.");
+		this.db.prepare("INSERT INTO incoming_parts VALUES (?,?,?,?)").run(part.message as string, part.name, next.offset, data);
+		const remaining = this.db.prepare(`SELECT 1 FROM incoming_files f WHERE f.message=? AND f.size > coalesce((SELECT sum(length(p.data)) FROM incoming_parts p
+			WHERE p.message=f.message AND p.name=f.name), 0)`).get(part.message as string);
+		if (remaining) return;
+		const files = (this.db.prepare("SELECT name, size, sha256 FROM incoming_files WHERE message=? ORDER BY name").all(part.message as string) as unknown as FileHeader[]).map(header => {
+			const chunks = (this.db.prepare("SELECT data FROM incoming_parts WHERE message=? AND name=? ORDER BY offset").all(part.message as string, header.name) as { data: Uint8Array }[]);
+			return { ...header, data: Buffer.concat(chunks.map(chunk => Buffer.from(chunk.data))).toString("base64") };
+		});
+		let receipt: DeliveryReceipt | undefined;
+		try { receipt = this.acceptRemoteMessage(computer, { ...JSON.parse(held.wire), files }); }
+		catch (error) { return drop(error instanceof Error ? error.message : String(error)); }
+		this.tx(() => { for (const table of ["incoming_messages", "incoming_files", "incoming_parts"]) this.db.prepare(`DELETE FROM ${table} WHERE message=?`).run(part.message as string); });
+		return receipt;
+	}
+	/** A part of a file this computer sent, for the computer the message is for; undefined once that message is settled. */
+	filePart(computer: string, message: string, name: string, offset: number): Buffer | undefined {
+		if (!this.db.prepare("SELECT 1 FROM network_messages WHERE message=? AND computer=? AND status='queued'").get(message, computer)) return;
+		const row = this.db.prepare("SELECT substr(data, ?, ?) AS part FROM message_files WHERE message=? AND name=?").get(offset + 1, FILE_PART_BYTES, message, name) as { part: Uint8Array } | undefined;
+		return row ? Buffer.from(row.part) : undefined;
+	}
+	private fileHeaders(message: string): FileHeader[] {
+		return this.db.prepare("SELECT name, size, sha256 FROM message_files WHERE message=? ORDER BY name").all(message) as unknown as FileHeader[];
 	}
 	recordReceipts(computer: string, input: unknown): void {
 		if (!Array.isArray(input) || input.length > 16) throw Error("Invalid party receipts.");
