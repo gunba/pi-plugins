@@ -42,6 +42,7 @@ import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./chan
 import { BriefContext, RewindContext } from "./message-view.tsx";
 import type { Brief, BriefState } from "./brief.tsx";
 import { splitDictationNote } from "../shared/dictation-note.ts";
+import { recallStep, sentMessages, type Recall } from "./message-history.ts";
 import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
@@ -365,6 +366,9 @@ export function App({ account }: { account?: BrowserAccount }) {
     return () => window.removeEventListener("pi-desk:quote", quoted);
   }, [selected]);
   const messages = state.messages[selected] ?? emptyMessages;
+  // Up and Down in the message box bring back your earlier messages, as in a terminal (message-history.ts).
+  const sent = useMemo(() => sentMessages(messages), [messages]);
+  const recall = useRef<Recall | undefined>(undefined);
   const loadedWork = useMemo(() => workItems(messages), [messages]);
   // The reply "What do I need to know?" covers: the latest one with something written in it.
   // The reply that ends the turn: the last message, when it is Pi's and has text (not a stopped turn's tool call).
@@ -1138,6 +1142,18 @@ export function App({ account }: { account?: BrowserAccount }) {
                 }}
                 onKeyDown={(event) => {
                   if (completion.keyDown(event)) return;
+                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    const editor = event.currentTarget;
+                    const step = recallStep(event.key, draft, { start: editor.selectionStart, end: editor.selectionEnd }, sent, recall.current);
+                    if (step) {
+                      event.preventDefault();
+                      const text = "done" in step ? step.done : step.shown;
+                      recall.current = "done" in step ? undefined : step;
+                      setDraft(text); localStorage.setItem(draftKey(selected), text);
+                      requestAnimationFrame(() => editor.setSelectionRange(text.length, text.length));
+                      return;
+                    }
+                  }
                   const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
                     metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
                     matchMedia("(pointer:fine)").matches, deliveryMode);
