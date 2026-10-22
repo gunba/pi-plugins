@@ -605,6 +605,14 @@ export function App({ account }: { account?: BrowserAccount }) {
   const run = (command: WorkerCommand) => {
     void commandPromise(command);
   };
+  /** A waiting message taken out of Pi's queue comes back to the message box, whole, unless something is being written there. */
+  async function cancelWaiting(queue: "steering" | "followUp", index: number, preview: string) {
+    try {
+      const reply = await command<{ result?: { text?: string } | null }>({ kind: "queue_cancel", queue, index, text: preview });
+      const text = reply?.result?.text ?? preview;
+      if (!draft.trim()) { setDraft(text); localStorage.setItem(draftKey(selected), text); }
+    } catch (error) { setError(errorText(error)); }
+  }
   async function commandPromise(value: WorkerCommand) {
     try {
       await command(value);
@@ -1092,7 +1100,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             )}
             {session.snapshot && <NativeQueue queue={session.snapshot.queue}
               sendNow={connected && session.state === "ready" && session.workerRuntime?.queueNow
-                ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined} />}
+                ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined}
+              cancel={connected && session.state === "ready" && session.workerRuntime?.queueCancel
+                ? (queue, index, text) => void cancelWaiting(queue, index, text) : undefined} />}
             <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
               onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}

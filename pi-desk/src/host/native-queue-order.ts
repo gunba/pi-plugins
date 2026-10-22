@@ -12,6 +12,27 @@ const queuedText = (message: unknown): string | undefined => {
 };
 
 /**
+ * Take one waiting message, steering or follow-up, out of Pi's queue so it is never sent. Pi has no per-message removal;
+ * like promoteFollowUp, this uses its queue fields and refuses if their shape changed.
+ */
+export function cancelQueued(session: AgentSession, queue: "steering" | "followUp", index: number, text: string): void {
+	const native = session as unknown as QueueInternals;
+	const pending = queue === "steering" ? native.agent?.steeringQueue : native.agent?.followUpQueue;
+	const texts = queue === "steering" ? native._steeringMessages : native._followUpMessages;
+	if (!Array.isArray(texts) || !Array.isArray(pending?.messages) || typeof native._emitQueueUpdate !== "function")
+		throw new Error("This Pi version cannot cancel one waiting message.");
+	if (texts[index] !== text) throw new Error("That message is no longer waiting.");
+	// Duplicate texts are matched in order, the same way Pi removes delivered messages.
+	const occurrence = texts.slice(0, index).filter(item => item === text).length;
+	const position = pending.messages.map((message, at) => [queuedText(message), at] as const).filter(([value]) => value === text)[occurrence]?.[1];
+	if (position === undefined) throw new Error("That message is no longer waiting.");
+	pending.messages.splice(position, 1);
+	const rest = texts.filter((_item, at) => at !== index);
+	if (queue === "steering") native._steeringMessages = rest; else native._followUpMessages = rest;
+	native._emitQueueUpdate();
+}
+
+/**
  * Move one queued follow-up, including its images, to the end of steering.
  * Pi 1.1 has no per-message dequeue, so this uses its queue fields and refuses if their shape changed.
  */

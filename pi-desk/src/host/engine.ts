@@ -52,7 +52,7 @@ import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
-import { promoteFollowUp } from "./native-queue-order.ts";
+import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 
@@ -525,7 +525,7 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "native_read", "brief", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "queue_cancel", "native_read", "brief", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
@@ -632,6 +632,14 @@ export class DeskEngine {
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");
 				await this.change(async () => { session.setThinkingLevel(level); }, true);
 				return;
+			}
+			case "queue_cancel": {
+				const waiting = command.queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();
+				const text = waiting[command.index];
+				if (text === undefined || queuePreview(text) !== command.text) throw new Error("That message is no longer waiting.");
+				cancelQueued(session, command.queue, command.index, text);
+				this.scheduleSnapshot();
+				return { text };
 			}
 			case "queue_now": {
 				const queued = command.queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();

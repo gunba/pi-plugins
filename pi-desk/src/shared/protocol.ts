@@ -114,7 +114,7 @@ export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later). */
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; brief?: boolean }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; brief?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -208,6 +208,8 @@ export type WorkerCommand =
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }
+	/** Take one waiting message out of Pi's queue; it is never sent, and its whole text comes back to edit. */
+	| { kind: "queue_cancel"; queue: "steering" | "followUp"; index: number; text: string }
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }
