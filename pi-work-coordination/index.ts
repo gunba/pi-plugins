@@ -1,12 +1,29 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { WorkCoordinator, registry } from "./core.ts";
+import { MAX_WAIT_MS, WorkCoordinator, registry } from "./core.ts";
 export { WorkCoordinator, getWorkCoordinator } from "./core.ts";
 export const WAIT_ENTRY = "pi-work/wait-v1";
 export const WAKE_MESSAGE = "pi-work/wake-v1";
 const DISCOVER_COORDINATION = "pi-work/discover-coordination-v1";
 
 /** Runtime role comes from the child-owned event bus, never model-supplied text. */
+/** Milliseconds until a time an agent names: "HH:MM" at its next occurrence here, or an ISO date and time. */
+export function untilMs(until: string, now = new Date()): number {
+  const clock = /^(\d{1,2}):(\d{2})$/.exec(until.trim());
+  let at: number;
+  if (clock) {
+    if (Number(clock[1]) > 23 || Number(clock[2]) > 59) throw new Error(`${until} is not a time of day.`);
+    const next = new Date(now); next.setHours(Number(clock[1]), Number(clock[2]), 0, 0);
+    if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+    at = next.getTime();
+  } else at = Date.parse(until);
+  if (!Number.isFinite(at)) throw new Error(`${until} is not a time: give HH:MM or an ISO date and time.`);
+  const ms = at - now.getTime();
+  if (ms <= 0) throw new Error(`${until} has passed.`);
+  if (ms > MAX_WAIT_MS) throw new Error(`${until} is more than 24 hours away; wait in steps of at most 24 hours.`);
+  return ms;
+}
+
 export function isManagedChild(pi: ExtensionAPI): boolean {
   const probe = { installed: false, child: false };
   pi.events.emit(DISCOVER_COORDINATION, probe);
@@ -72,13 +89,14 @@ export function ensureWorkCoordination(pi: ExtensionAPI, options: { child?: bool
     name: "wait_agent", label: "Wait for agents",
     // Loaded with tool_search alongside the other subagent tools; see pi-subagents.
     exposure: "deferred", namespace: { name: "subagents", description: "Start subagents and message, follow up, wait for, list or interrupt them." },
-    description: "Wait for a subagent's message or completion, a background command finishing, or Jordan's next input. timeout_ms: 10000 to 3600000, default 30000.",
-    parameters: Type.Object({ timeout_ms: Type.Optional(Type.Integer({ maximum: 3_600_000 })) }, { additionalProperties: false }),
+    description: "Wait for a subagent's message or completion, a background command finishing, or Jordan's next input, which each end it early. timeout_ms: 10000 to 86400000 (24 h), default 30000; or until a time.",
+    parameters: Type.Object({ timeout_ms: Type.Optional(Type.Integer({ maximum: MAX_WAIT_MS })),
+      until: Type.Optional(Type.String({ description: "Instead of timeout_ms: HH:MM (its next occurrence, this computer's time) or an ISO date and time, within 24 h." })) }, { additionalProperties: false }),
     outputSchema: Type.Object({ message: Type.String(), timed_out: Type.Boolean() }),
     executionMode: "sequential",
     async execute(_id, params, signal, _update, ctx) {
       if (!coordinator || coordinator.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("agent mailbox is not initialized for this session");
-      const timeout = Math.max(10_000, params.timeout_ms ?? 30_000);
+      const timeout = Math.max(10_000, params.until ? untilMs(params.until) : params.timeout_ms ?? 30_000);
       const result = await coordinator.wait(timeout, signal);
       if (params.timeout_ms !== undefined && params.timeout_ms < timeout)
         result.message += `\n\nRequested timeout of ${params.timeout_ms}ms was clamped to the minimum of ${timeout}ms.`;

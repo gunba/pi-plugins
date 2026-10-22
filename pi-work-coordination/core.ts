@@ -1,3 +1,9 @@
+/**
+ * The longest wait: overnight work, such as a job that starts at midnight and runs for hours. It was an hour, and
+ * agents chained hourly waits. A wait still ends early on new input, a subagent's message or a command finishing.
+ */
+export const MAX_WAIT_MS = 24 * 3_600_000;
+
 export type AgentWaitResult = { message: string; timed_out: boolean };
 
 /** Notification activity only. The native session owns message content and execution. */
@@ -31,8 +37,8 @@ export class WorkCoordinator {
   async wait(timeoutMs: number, signal?: AbortSignal): Promise<AgentWaitResult> {
     signal?.throwIfAborted();
     if (this.closed) throw new Error("agent mailbox is closed");
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000)
-      throw new Error("Wait timeout must be between 1 ms and 1 hour");
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_WAIT_MS)
+      throw new Error("Wait timeout must be between 1 ms and 24 hours");
     if (this.active) throw new Error("A wait is already in progress");
     if (this.unread.size) return { message: "Wait completed.", timed_out: false };
     return new Promise((resolve, reject) => {

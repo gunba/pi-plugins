@@ -57,7 +57,7 @@ test("abort, user input and shutdown release a pending tool", async () => {
 });
 test("invalid or overlapping waits cannot replace the active waiter", async () => {
   const c = new WorkCoordinator("s");
-  for (const timeout of [0, -1, 1.5, Infinity, 3_600_001]) await assert.rejects(c.wait(timeout), /timeout/i);
+  for (const timeout of [0, -1, 1.5, Infinity, 24 * 3_600_000 + 1]) await assert.rejects(c.wait(timeout), /timeout/i);
   const waiting = c.wait(1000);
   await assert.rejects(c.wait(1000), /already in progress/);
   c.notify(["result"]);
