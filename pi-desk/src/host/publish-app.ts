@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, stat, utimes, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { remoteOrigins } from "../shared/relay-protocol.ts";
@@ -21,6 +21,7 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 	// A deployment is a fresh artifact, never an in-place overwrite. Node 22.23 refuses to copy into an existing directory.
 	if (existsSync(output)) throw new Error("Publish to a new directory.");
 	await cp(directory, output, { recursive: true, force: false, errorOnExist: true });
+	await carryAssets(dirname(output), output);
 	await writeFile(join(output, "desk-account.json"), JSON.stringify({ kind: "account", accountOrigin: account.origin, appOrigin, ...RELEASE }) + "\n");
 	const socket = new URL(origin); socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
 	// Response headers for the Caddy site that serves this directory (`import site.caddy`).
@@ -39,6 +40,25 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 		"@manifest path *.webmanifest", "header @manifest Content-Type application/manifest+json",
 		"",
 	].join("\n"));
+}
+
+/**
+ * Earlier releases' versioned files (/assets/…) are copied into a new release for a week from when they were first
+ * published: a page opened, or kept by a phone's service worker, before this release still finds the files it names.
+ * With only this release's files, such a page stayed grey. Each release carries the last one's, so they add up.
+ */
+const CARRY_MS = 7 * 86_400_000;
+async function carryAssets(releases: string, output: string): Promise<void> {
+	const target = join(output, "assets");
+	for (const release of await readdir(releases).catch(() => [] as string[])) {
+		const folder = join(releases, release, "assets");
+		if (join(releases, release) === output || !existsSync(folder) || !existsSync(target)) continue;
+		for (const file of await readdir(folder)) {
+			const from = join(folder, file), to = join(target, file), info = await stat(from);
+			if (existsSync(to) || !info.isFile() || Date.now() - info.mtimeMs > CARRY_MS) continue;
+			await copyFile(from, to); await utimes(to, info.atime, info.mtime);
+		}
+	}
 }
 
 export async function runPublishApp(args: string[]): Promise<void> {
