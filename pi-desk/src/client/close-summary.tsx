@@ -8,8 +8,8 @@ export function CloseSummary({ session }: { session: SessionView }) {
 			return typeof summary === "string" && summary ? [{ id: view.id, title: view.title, summary }] : [];
 		});
 	return <>
-		<p>Close this session and remove it from the workspace. Its Pi process and background work will stop.
-			You can reopen the conversation from Resume conversation.</p>
+		{/* The dialog's choices say whether it stays in the sidebar, so this describes only what closing does. */}
+		<p>Closing stops its Pi process and background work. Its history is kept, and Resume conversation reopens it.</p>
 		<ul>
 			{session.state === "starting" && <li>Pi is still loading; close waits for startup and cleanup to finish.</li>}
 			{session.snapshot?.activity === "running" && <li>The current run will be stopped.</li>}
