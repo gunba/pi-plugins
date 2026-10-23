@@ -7,6 +7,8 @@ interface Status {
 	presence?: HostPresence;
 	latency?: number;
 }
+/** The directory last saw this computer go offline: known to be off, not just reconnecting. */
+export const isOffline = (computer: { presence?: { online: boolean } }) => computer.presence?.online === false;
 /** Directory presence is a recent host report, not permission to send commands. */
 export function connectionLabel(value: Status, now = Date.now()): string {
 	if (value.connection === "reconnecting" && value.presence && !value.presence.online

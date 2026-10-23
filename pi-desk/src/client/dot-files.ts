@@ -20,11 +20,10 @@ export async function stageDotFiles(files: File[], dot: string, connection: stri
 	return results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
 }
 
-export async function saveDotDownload(file: DotDownload, computer?: string, surface?: string): Promise<void> {
-	const query = surface ? `&surface=${encodeURIComponent(surface)}` : "";
+export async function saveDotDownload(file: DotDownload, computer?: string): Promise<void> {
 	const chunks: Uint8Array<ArrayBuffer>[] = [];
 	for (let offset = 0; offset < file.size;) {
-		const chunk = await api<{ data: string; next: number; size: number }>(`/dot/downloads/${file.id}?offset=${offset}${query}`, undefined, computer);
+		const chunk = await api<{ data: string; next: number; size: number }>(`/dot/downloads/${file.id}?offset=${offset}`, undefined, computer);
 		const bytes = Uint8Array.from(atob(chunk.data), c => c.charCodeAt(0));
 		if (chunk.size !== file.size || chunk.next !== offset + bytes.length || !bytes.length || chunk.next > file.size) throw Error("Native download changed. Open it again.");
 		chunks.push(bytes); offset = chunk.next;
@@ -33,5 +32,5 @@ export async function saveDotDownload(file: DotDownload, computer?: string, surf
 	const url = URL.createObjectURL(blob), anchor = document.createElement("a");
 	anchor.href = url; anchor.download = file.name; anchor.click();
 	setTimeout(() => URL.revokeObjectURL(url), 60_000);
-	await api(`/dot/downloads/${file.id}/release${surface ? `?surface=${encodeURIComponent(surface)}` : ""}`, {}, computer);
+	await api(`/dot/downloads/${file.id}/release`, {}, computer);
 }

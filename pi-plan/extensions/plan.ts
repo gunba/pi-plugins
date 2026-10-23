@@ -1,7 +1,8 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { ensureWorkCoordination, getWorkCoordinator, isManagedChild } from "../../pi-work-coordination/index.ts";
+import { ensureWorkCoordination, isManagedChild } from "../../pi-work-coordination/index.ts";
+import { activeWatches, WATCH_CHANGED } from "../../pi-watch/index.ts";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { planWorkSection } from "../../pi-work-ui/sections.ts";
 import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/index.ts";
@@ -141,7 +142,7 @@ class PlanController {
 				if (epoch !== this.epoch) throw new Error("The session changed.");
 				const current = this.store.get();
 				if (current?.id !== expected?.id || current?.revision !== expected?.revision) throw new Error("The plan changed. Review it before trying again.");
-				mutate(); getWorkCoordinator(ctx.sessionManager.getSessionId())?.cancel("plan-command");
+				mutate();
 			});
 		} finally { this.editing--; this.requestDrive(ctx); }
 	}
@@ -224,7 +225,6 @@ class PlanController {
 						if (!current) throw new Error("No current plan.");
 						this.store.edit(ref(current), { autoContinue: args === "auto on" });
 					} else this.store.create({ objective: args });
-					getWorkCoordinator(ctx.sessionManager.getSessionId())?.cancel("plan-command");
 					this.pi.appendEntry(PLAN_COMMAND_ENTRY, { text: this.current() ? planWorkSection(this.current())!.detail : "Plan cleared." });
 				});
 			},
@@ -244,6 +244,10 @@ class PlanController {
 			this.store.restore(ctx.sessionManager.getBranch()); this.refreshUi();
 		};
 		this.pi.on("session_start", (_event, ctx) => restore(ctx));
+		this.pi.events.on(WATCH_CHANGED, value => {
+			const ctx = this.ctx, change = value as { sessionId?: string; count?: number };
+			if (ctx && change.count === 0 && change.sessionId === ctx.sessionManager.getSessionId()) this.requestDrive(ctx);
+		});
 		this.pi.on("session_tree", (_event, ctx) => restore(ctx));
 		this.pi.on("session_shutdown", () => {
 			this.epoch++; this.stopping = true; this.requested = false; this.attempt = undefined; this.wrapup = undefined;
@@ -310,7 +314,8 @@ class PlanController {
 		finally { this.driving = false; }
 	}
 	private drive(ctx: ExtensionContext): void {
-		if (this.editing || getWorkCoordinator(ctx.sessionManager.getSessionId())?.blocked
+		// A conversation that is watching for something is waiting on purpose; its watch wakes it.
+		if (this.editing || activeWatches(ctx.sessionManager.getSessionId())
 			|| !ctx.isIdle() || ctx.hasPendingMessages() || this.attempt || this.remote?.suspended) return;
 		this.store.reconcile(ctx.sessionManager.getBranch());
 		const plan = this.current();

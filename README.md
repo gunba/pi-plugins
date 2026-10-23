@@ -15,18 +15,6 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 
 ## Extensions
 
-- `pi-codex-compat` — managed `exec_command` and `write_stdin` process control,
-  plus `view_image` and `image_gen`. Native Pi `edit`, `write` and `bash` remain
-  available, including through codemode. Process control works across providers.
-  Text-only Codex models receive saved image artifacts and delegate visual
-  inspection to an authenticated image-capable model for concise descriptions.
-  Managed shell sessions launch independently, stream partial output, terminate
-  process trees, retain complete logs when display output is truncated, and use
-  compact tool rendering.
-  `view_image` validates image data and emits Pi-native image blocks.
-  `image_gen` follows OpenAI Codex's standalone image tool, generates or edits
-  with GPT Image 2.5 Sunburst or Flare, and saves outputs under
-  `$CODEX_HOME/generated_images`.
 - [`pi-local-links`](pi-local-links/README.md) — resolves relative file hyperlinks
   in assistant Markdown against the session working directory, using absolute
   file URLs for terminal Ctrl+click. Applies during streaming and history
@@ -55,9 +43,10 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   context into Pi's compaction summariser so checkpoint summaries are written
   with the same project rules as normal turns.
 - [`pi-command-guard`](pi-command-guard/README.md) — in-process drive/Git wipe protection, exact-call confirmations and inherited SDK-child policy.
-- [`pi-output-budget`](pi-output-budget/README.md) — bounded text previews,
-  immutable complete-output artifacts, character paging, batched read-only
-  file inspection, and compact replay links for older archived results.
+- [`pi-output-budget`](pi-output-budget/README.md) — tool results cut once to
+  16,000 characters (where Pi's own tools cut theirs), immutable complete-output
+  artifacts, character paging, images read at most 1.5 MB each, and compact
+  replay links for older archived results.
   The same explicit policy is installed in SDK children;
   unrelated extension discovery remains disabled.
 - `pi-session-memory` — bounds long-running Pi processes by releasing obsolete
@@ -69,12 +58,18 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   each terminal redraw. Git branch and extension status updates stay live.
 - `pi-context-ledger` — shows a saved breakdown of
   pre-conversation context (system prompt, skills, MCPs, tools, first message)
-  after the first user message, in the terminal and Desk; never sent to the model.
+  after the first user message in the terminal; never sent to the model.
 - [`pi-context-window`](pi-context-window/README.md) — `/context-window`
   opens a modal for the active model's window and checkpoint setting, including
   an opt-in 1M/900K preset for supported OpenAI models.
-- [`pi-party`](pi-party/README.md) — agent discovery and direct messages between
-  Pi agents on this and connected Desk computers, with an `/inbox` viewer.
+- [`pi-agents`](pi-agents/README.md) — `agent_start`, `agent_send`, `agent_list`,
+  `agent_stop` and `agent_move` for two kinds of agents: primary agents are
+  conversations in Jordan's Desk on any of his computers, which he can open and
+  talk to; secondary agents are background helpers that report back, waking an
+  idle parent. Also Jordan's quest log and an `/inbox` viewer.
+- [`pi-watch`](pi-watch/README.md) — `watch` waits without spending turns: a
+  background command's output and end, a re-run command's changes, or a time,
+  filtered by a classifier when asked. Watches survive restarts.
 - [`pi-improve-skill`](pi-improve-skill/skills/improve-skill/SKILL.md) — improves a skill
   against benchmark cases: one strong-model session runs task-model trials, has task-model
   investigators explain each run, edits the skill and checks held-out cases.
@@ -101,16 +96,6 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   paragraphs for Word documents and slides for decks, from the files
   themselves. The `show` tool presents results, previews and changes at key
   moments, and flags changed cells the agent did not mention.
-- [`pi-subagents`](pi-subagents/README.md) — native Pi SDK children with Codex
-  V2-style `spawn_agent`, same-tree `send_message` and `followup_task`, mailbox
-  `wait_agent`, current-turn interruption and task-path discovery. Creation supports
-  fresh or inherited context. Messages and results do not start idle parents;
-  explicit follow-ups can start work. Completed turns release idle runtimes without
-  waiting for descendants. Histories, tool permissions, trust and account choices
-  remain native, with bounded depth and root-wide admission.
-  Optional model and thinking overrides require one user approval for the root
-  conversation; descendants share that approval. `/subagents permissions`
-  shows its status, and `/subagents permissions revoke` revokes future overrides.
 - [`pi-work-ui`](pi-work-ui/README.md) — combines plan, subagent, party and
   scheduled state above the editor. `/work` opens complete details in a modal;
   fullscreen summary clicks open the corresponding section. Management reuses
@@ -204,16 +189,5 @@ changed independently with `/codex-wire prewarm on|off`. Provider replacement or
 failed reactivation cannot silently route Codex work through the stock provider.
 The SDK child adapter inherits Wire rather than rediscovering all extensions.
 
-`exec_command` selects an explicit `shell`, then Pi's trusted `shellPath` setting,
-then Pi's platform shell discovery. It no longer selects Windows CMD merely
-because `ComSpec` exists.
-
-`wait_agent({timeout_ms?})` waits inside the current tool call for agent messages,
-final-status notifications or user input, with a bounded timeout. It takes no
-agent-ID list and does not end the turn or require a separate wake. Running
-processes use `write_stdin`; timed reminders use `schedule`.
-
-Use `node pi-codex-wire/ledger.mjs <run.jsonl> [...]` to group provider-reported
-usage by root/child session, request purpose and origin. Request attempts,
-prewarms, summaries and allowance observations remain separate; decoder usage is
-not added again. These records do not establish a subscription charging formula.
+There is no waiting tool. Reports from secondary agents wake the conversation that
+started them; background commands and timed wake-ups use `watch`.

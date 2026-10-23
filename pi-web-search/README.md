@@ -75,7 +75,7 @@ Reference IDs are not rewritten before subsequent `open`, `click` or `find`
 requests. Reference lifetime and cross-session availability remain service
 behavior, not a local cache guarantee.
 
-Search and image generation share `pi-codex-service` for registry authentication,
+Search uses `pi-codex-service` for registry authentication,
 base-URL/header overrides, cancellation, and bounded response reading. Requests
 have a five-minute deadline and a 32 MiB response limit. A cancelled auth lookup
 cannot start a late request, and response overflow cancels the body reader.

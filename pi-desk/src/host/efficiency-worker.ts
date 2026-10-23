@@ -1,8 +1,9 @@
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parentPort, workerData } from "node:worker_threads";
 import { addText, buildReport, emptyFile, type FileState } from "./efficiency.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 /** Reads new session data into the efficiency cache and posts the report. Runs off the host's main thread. */
 const { directories, cachePath } = (workerData ?? JSON.parse(process.env.EFFICIENCY_INPUT ?? "{}")) as { directories: string[]; cachePath: string };
@@ -65,7 +66,6 @@ for (const path of [...new Set(directories.flatMap(folder => sessionFiles(folder
 	} finally { closeSync(handle); }
 }
 mkdirSync(dirname(cachePath), { recursive: true });
-writeFileSync(`${cachePath}.tmp`, JSON.stringify(cache), { mode: 0o600 });
-renameSync(`${cachePath}.tmp`, cachePath);
+atomicJson(cachePath, cache, { compact: true });
 const report = buildReport(Object.values(cache.files));
 if (parentPort) parentPort.postMessage(report); else console.log(JSON.stringify(report, null, 1));

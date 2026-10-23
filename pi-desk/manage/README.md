@@ -17,20 +17,12 @@ the worker they close. An unfinished running record without a held lease is repo
 as unconfirmed rather than replayed. `/desk status` distinguishes this operation
 state from the running host and its active/pending versions.
 
-`update` downloads a published release, records its exact identity in
-`state.json.autoApply`, and attempts idle activation. With any live worker it
-finishes in the deliberate `waiting` phase, releasing the controller process.
-The host watches update records and worker exits; the existing heartbeat is a
-fallback wake-up. An `apply` controller revalidates the request. It holds the
-normal management/startup locks while the authenticated local control endpoint
-atomically checks the worker count and closes admission. A new worker arriving
-before that check defers activation.
+`update` downloads the latest published release and `update-now` the version the
+app showed; both record its exact identity in `state.json.autoApply`. Browser
+update requests authorize only this fixed release operation, not shell commands
+or client-supplied download URLs.
 
-Idle sessions still count as workers for automatic activation; interrupted
-references do not. Browser update requests authorize only this fixed release
-operation, not shell commands or client-supplied download URLs.
-
-Explicit `apply-now` and `update-now` replace the host while independent actors
+`update`, `update-now` and `apply-now` replace the host while independent actors
 keep running. Application is bound to the verified prepared identity. A brief
 admission hold commits actor identities and input receipts; the replacement
 host adopts those same actors rather than restarting their native sessions.
@@ -67,8 +59,8 @@ private registry, without inheriting the host's Desk process markers.
 Staging and activation share the installation's `manage` lease. Configuration
 and activation then acquire `login-edit`, `launch` and `host`, in that order.
 Configuration and direct selection require a stopped host and login-start
-process. Explicit host handoff permits the verified supervisor to remain alive;
-automatic idle application still waits for the manager to stop. An unresponsive
+process. Host handoff permits the verified supervisor to remain alive; without
+one, selection waits for the login-start manager to stop. An unresponsive
 process is not treated as permission to stop or replace it.
 
 The server checks the selected identity **after acquiring the host lease**.

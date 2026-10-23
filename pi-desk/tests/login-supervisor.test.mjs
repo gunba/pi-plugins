@@ -32,7 +32,7 @@ test("the same login supervisor restarts only the host through its stable entry 
 		name: "pi-desk-0123456789abcdef", node: process.execPath, entry, directory, cwd: directory,
 		arguments: ["--data-dir", directory], environment: {}, unit: join(directory, "fixture.service") });
 	atomicJson(join(home, "state.json"), { format: 1, source: directory, active: source, pending: target });
-	const ticket = { id: "handoff", source, target, state: "committed", created: Date.now(), workers: [], sessions: [] };
+	const ticket = { id: "handoff", source, target, state: "committed", created: Date.now(), workers: [] };
 	const ledger = new InputLedger(directory); ledger.writeCheckpoint(ticket); ledger.close();
 	let calls = 0, identity;
 	try {
@@ -66,7 +66,7 @@ test("a handoff whose controller failed after the commit is finished from durabl
 	atomicJson(join(release, "runtime.json"), { format: 1, id: target, digest, platform: process.platform, arch: process.arch, node: process.versions.modules,
 		source: directory, readyAt: new Date().toISOString(), plugins: "1.0.0", desk: "1.0.1", engine: "1.2.0" });
 	const workers = [{ key: "conversation", instance: randomUUID() }];
-	const ticket = { id: "handoff", source, target, state: "committed", created: 1, workers, sessions: [] };
+	const ticket = { id: "handoff", source, target, state: "committed", created: 1, workers };
 	const ledger = new InputLedger(directory);
 	ledger.writeCheckpoint(ticket);
 	const accepted = ledger.admit("conversation", { id: randomUUID(), activation: "activation", generation: "generation", command: { kind: "prompt", text: "Accepted before the update" } });

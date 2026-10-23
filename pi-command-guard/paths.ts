@@ -3,8 +3,13 @@ import { posix, win32 } from "node:path";
 export type Environment = {
 	cwd: string; home: string; platform: "win32" | "posix";
 };
-export type Finding = { decision: "confirm" | "block"; rule: string; reason: string };
-export const confirm = (rule: string, reason: string): Finding => ({ decision: "confirm", rule, reason });
+/**
+ * A read-only git command, run in cwd, whose output lists what a confirmed Git wipe would lose: untracked files
+ * (`git clean --dry-run`), all uncommitted changes, or only unstaged ones (`git status`).
+ */
+export type LostPaths = { cwd: string; kind: "untracked" | "changes" | "unstaged"; args: string[] };
+export type Finding = { decision: "confirm" | "block"; rule: string; reason: string; lost?: LostPaths };
+export const confirm = (rule: string, reason: string, lost?: LostPaths): Finding => ({ decision: "confirm", rule, reason, ...(lost ? { lost } : {}) });
 export const block = (rule: string, reason: string): Finding => ({ decision: "block", rule, reason });
 
 const windowsPath = (path: string) => path.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");

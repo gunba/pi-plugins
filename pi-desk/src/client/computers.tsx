@@ -39,7 +39,7 @@ function ComputerCard({ computer }: { computer: Computer }) {
 		void work().catch(error => setError(String(error))).finally(() => setBusy(false));
 	};
 	const updates = computer.updates;
-	return <details className="computer-card" open={!!updates?.available || updates?.phase === "waiting" || updates?.phase === "failed"}>
+	return <details className="computer-card" open={!!updates?.available || updates?.phase === "failed"}>
 		<summary><span className={`status-dot ${connectionTone(computer)}`} /><strong>{computer.name}</strong>
 			{computer.release && <span className="computer-version">Desk {computer.release.version}</span>}
 			<small>{connectionLabel(computer)}</small></summary>
@@ -123,10 +123,9 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 	return <section className="computer-update" aria-label="Software update">
 		<div className="update-line">
 			{working ? <span role="status">{updates.phase === "preparing" ? "Preparing" : "Applying"} Desk {offer ?? "update"}…</span>
-				: updates.phase === "waiting" ? <span role="status">Waiting for {updates.activeSessions ?? 0} open Pi sessions to close{updates.pending ? `; Desk ${updates.pending} is ready` : ""}.</span>
 				: offer ? <span role="status"><strong>Desk {offer} is available</strong></span>
 				: <span className="muted">{updates.checkedAt && !updates.checkError ? `Up to date · checked ${ago(updates.checkedAt)}` : `Desk ${updates.current}`}</span>}
-			{!working && updates.phase !== "waiting" && (offer
+			{!working && (offer
 				? <button className="primary" disabled={busy || checking || !computer.connected} onClick={() => check("update")}>{checking ? "Checking…" : "Update now"}</button>
 				: <button className="quiet-action" disabled={busy || checking || !computer.connected} onClick={() => check("check")}>{checking ? "Checking…" : "Check now"}</button>)}
 		</div>

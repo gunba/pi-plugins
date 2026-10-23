@@ -2,15 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicJson } from "../../manage/store.ts";
-import { DotBrowser } from "./dot-browser.ts";
 import { DotAuth, DotAuthError, type DotAuthorize, type DotIdentity } from "./dot-auth.ts";
 import { DotApi, type DotApiEvent, type DotRead } from "./dot-api.ts";
 import { DotHttpError } from "./dot-http.ts";
 import { DotFiles, dotUuid } from "./dot-files.ts";
 import { DotDownloadStore } from "./dot-download-store.ts";
-import { DotSurface } from "./dot-surface.ts";
 import type { DotEntry } from "./dot-wire.ts";
-import type { DotSnapshot, DotInput, DotUpload, DotSurfaceFrame, DotSurfaceInput, DotSurfaceMode, DotDownload } from "../shared/dot.ts";
+import type { DotSnapshot, DotInput, DotUpload, DotDownload } from "../shared/dot.ts";
 
 interface Config {
 	enabled: boolean; dot?: string; name?: string; path?: string; room?: string;
@@ -26,10 +24,9 @@ interface Options {
 const rejected = (error: unknown) => error instanceof DotHttpError && [400, 401, 403, 404, 413, 415, 422, 429].includes(error.status);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-/** Chat with Jordan's Dot through Pi's ChatGPT login. Chrome is used only for a user-opened native surface. */
+/** Chat with Jordan's Dot through Pi's ChatGPT login. */
 export class DotConnection {
 	private directory: string;
-	private agentDir: string;
 	private options: Options;
 	private config: Config = { enabled: false };
 	private loadFailed = false;
@@ -50,14 +47,9 @@ export class DotConnection {
 	private inputs = new Map<string, DotInput>();
 	private files: DotFiles;
 	private downloads: DotDownloadStore;
-	private surface?: DotSurface;
-	private handoffs = new Set<string>();
-	private browsing?: Promise<DotSurfaceFrame>;
-	private handingOff?: Promise<void>;
-	private clearingSurface?: Promise<void>;
-	get busy(): boolean { return !!this.work || !!this.connecting || !!this.browsing || !!this.handingOff || !!this.clearingSurface || !!this.surface; }
-	constructor(dataDir: string, agentDir: string, options: Options) {
-		this.directory = join(dataDir, "dot"); this.agentDir = agentDir; this.options = options;
+	get busy(): boolean { return !!this.work || !!this.connecting; }
+	constructor(dataDir: string, options: Options) {
+		this.directory = join(dataDir, "dot"); this.options = options;
 		mkdirSync(this.directory, { recursive: true, mode: 0o700 });
 		this.files = new DotFiles(this.directory); this.downloads = new DotDownloadStore(this.directory);
 		try {
@@ -94,7 +86,7 @@ export class DotConnection {
 	private reconnect(automatic: boolean): Promise<void> {
 		if (this.loadFailed) return Promise.reject(Error("Dot’s saved connection or delivery receipts could not be read."));
 		if (this.connecting) return Promise.reject(Error("Wait for Dot's current connection attempt."));
-		if (this.busy) return Promise.reject(Error("Finish the Dot message or close its native view before reconnecting."));
+		if (this.busy) return Promise.reject(Error("Finish the Dot message before reconnecting."));
 		this.stopped = false;
 		this.connecting = this.open(automatic).finally(() => { this.connecting = undefined; });
 		return this.connecting;
@@ -210,7 +202,7 @@ export class DotConnection {
 		const previous = this.inputs.get(id);
 		if (previous) { this.sameIntent(previous, dot, text, files, connection); return structuredClone(previous); }
 		this.binding(connection); this.ready();
-		if (this.busy) throw Error("Wait for the current Dot action or close its native view.");
+		if (this.busy) throw Error("Wait for the current Dot action.");
 		if (dot !== this.snapshot.id) throw Error("The selected Dot changed. Review it before sending.");
 		this.files.forInput(dot, files, connection);
 		if (files.some(file => [...this.inputs.values()].some(input => ["sending", "accepted", "unknown"].includes(input.state) && input.files?.includes(file)))) throw Error("An attachment is already reserved by an earlier message. Check that message before reusing it.");
@@ -283,85 +275,23 @@ export class DotConnection {
 		this.binding(file.connection ?? ""); return this.files.append(id, offset, data);
 	}
 	removeFile(id: string): void {
-		if (this.work || this.browsing || this.surface?.busy) throw Error("Wait for the current Dot action.");
+		if (this.work) throw Error("Wait for the current Dot action.");
 		this.files.remove(id);
-	}
-	async openSurface(mode: DotSurfaceMode): Promise<DotSurfaceFrame> {
-		this.ready();
-		if (!["conversation", "activity", "settings", "computer"].includes(mode)) throw Error("Unsupported Dot view.");
-		if (this.busy) throw Error("Finish the current Dot action before opening its native view.");
-		const operation = (async () => {
-			const browser = new DotBrowser(this.agentDir);
-			try {
-				await browser.open(this.config.path); const native = await browser.select();
-				if (native.dot !== this.snapshot.id || native.room !== this.config.room) throw Error("Chrome is signed into a different Dot. Sign into this Dot's account to use the native view.");
-				if (this.stopped) throw Error("Dot connection closed.");
-				const surface = new DotSurface(browser, true, this.snapshot.id!, mode);
-				this.surface = surface; await surface.open(); return await surface.view();
-			} catch (error) {
-				await this.surface?.close().catch(() => {}); this.surface = undefined;
-				await browser.close().catch(() => {}); throw error;
-			}
-		})();
-		this.browsing = operation;
-		try { return await operation; } finally { if (this.browsing === operation) this.browsing = undefined; }
-	}
-	private currentSurface(id: string): DotSurface {
-		if (!this.surface || this.surface.id !== id) throw Error("Native Dot view is no longer open."); return this.surface;
-	}
-	surfaceView(id: string, after?: number): Promise<DotSurfaceFrame> { return this.currentSurface(id).view(after); }
-	async surfaceInput(id: string, inputId: string, width: number, height: number, input: DotSurfaceInput): Promise<void> {
-		if (this.work || this.connecting || this.browsing || this.handingOff) throw Error("Wait for the current Dot operation.");
-		if (!dotUuid(inputId)) throw Error("Invalid native input ID.");
-		await this.currentSurface(id).input(inputId, width, height, input); this.revision++;
-	}
-	async surfaceFiles(id: string, files: string[]): Promise<void> {
-		if (this.work || this.connecting || this.browsing || this.handingOff || this.surface?.busy) throw Error("Wait for the current Dot operation.");
-		const surface = this.currentSurface(id), selected = this.files.forInput(this.snapshot.id!, files, this.config.connection);
-		const job = (async () => {
-			for (const file of selected) { this.files.save({ ...file, state: "uploading" }); this.handoffs.add(file.id); }
-			try {
-				await surface.chooseFiles(selected.map(file => this.files.path(file.id)));
-				for (const file of selected) this.files.save({ ...file, state: "handed-off" });
-			} catch (error) {
-				for (const file of selected) this.files.save({ ...file, state: "unknown", error: "Native upload is unconfirmed. Review Dot before uploading again." });
-				throw error;
-			}
-		})().finally(() => { if (this.handingOff === job) this.handingOff = undefined; });
-		this.handingOff = job; return job;
-	}
-	async closeSurface(id?: string): Promise<void> {
-		await this.browsing?.catch(() => {}); await this.handingOff?.catch(() => {}); await this.clearingSurface;
-		if (id && id !== this.surface?.id) return;
-		const surface = this.surface; this.surface = undefined;
-		const job = (async () => {
-			await surface?.close();
-			for (const id of this.handoffs) {
-				const file = this.files.get(id);
-				if (file) this.files.save({ ...file, state: "unknown", error: "The native view closed without an upload receipt. Review Dot before uploading again." });
-			}
-			this.handoffs.clear(); this.revision++;
-		})().finally(() => { if (this.clearingSurface === job) this.clearingSurface = undefined; });
-		this.clearingSurface = job; await job;
 	}
 	download(message: string, attachment: string): Promise<DotDownload> {
 		const client = this.ready();
 		return this.downloads.create((path, maximum, signal) => client.download(message, attachment, path, maximum, signal));
 	}
-	downloadChunk(id: string, offset: number, surface?: string): Promise<{ data: string; next: number; size: number }> {
-		return surface ? this.currentSurface(surface).downloadChunk(id, offset) : this.downloads.chunk(id, offset);
-	}
-	releaseDownload(id: string, surface?: string): Promise<void> {
-		return surface ? this.currentSurface(surface).releaseDownload(id) : this.downloads.release(id);
-	}
+	downloadChunk(id: string, offset: number): Promise<{ data: string; next: number; size: number }> { return this.downloads.chunk(id, offset); }
+	releaseDownload(id: string): Promise<void> { return this.downloads.release(id); }
 	async disconnect(): Promise<void> {
-		if (this.busy) throw Error("Finish the current Dot action or close its native view before disconnecting.");
+		if (this.busy) throw Error("Finish the current Dot action before disconnecting.");
 		await this.close(); this.config = { ...this.config, enabled: false }; atomicJson(join(this.directory, "connection.json"), this.config);
 		this.snapshot = { transport: "direct", state: "disconnected", id: this.config.dot, name: this.config.name, messages: [], inputs: this.receipts() };
 	}
 	async close(): Promise<void> {
 		this.stopped = true; this.candidate?.close();
-		await this.work; await this.connecting?.catch(() => {}); await this.closeSurface().catch(() => {});
+		await this.work; await this.connecting?.catch(() => {});
 		const client = this.client; this.client = undefined; client?.close(); await this.downloads.clear();
 	}
 }

@@ -1,9 +1,9 @@
 import { watch, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { LEASE_MS, PartyStore, type Member } from "../../../pi-party/store.ts";
+import { LEASE_MS, PartyStore, type Member } from "../../../pi-agents/store.ts";
 import type { PartyDirectory } from "../shared/parties.ts";
-import { partyDelivery } from "../../../pi-party/availability.ts";
+import { partyDelivery } from "../../../pi-agents/availability.ts";
 
 /** Agent registry metadata for the client, over the same store used by agent messaging. */
 export class Parties {

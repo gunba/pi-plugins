@@ -1,6 +1,6 @@
-import type { PartyStore } from "../../../pi-party/store.ts";
-import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-party/network.ts";
-import type { PartyOperations } from "../../../pi-party/operations.ts";
+import type { PartyStore } from "../../../pi-agents/store.ts";
+import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-agents/network.ts";
+import type { PartyOperations } from "../../../pi-agents/operations.ts";
 import type { SettingsSync } from "./settings-sync.ts";
 import { TELEPORT_PACKETS, type Teleport, type TeleportPacket } from "./teleport.ts";
 

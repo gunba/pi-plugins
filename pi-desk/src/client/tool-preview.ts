@@ -69,6 +69,10 @@ const READERS: Record<string, (args: Args) => string> = {
 	show: args => str(args.title),
 	update_goal: args => [str(args.action), str(args.objective) || str(args.blocked_reason)].filter(Boolean).join(": "),
 	wait_agent: args => Array.isArray(args.ids) ? list(args.ids.map(String)) : "",
+	agent_start: args => [str(args.name), args.primary === true ? "conversation" : ""].filter(Boolean).join(" · ") || str(args.task),
+	agent_stop: args => str(args.agent),
+	agent_list: args => str(args.query),
+	watch: args => str(args.command) || str(args.until) || (args.stop !== undefined ? `stop ${str(args.stop)}` : "list"),
 	wait_for_work: args => Array.isArray(args.targets) ? list(args.targets.map(String)) : "",
 };
 for (const name of ["party_send", "agent_send", "send_message", "followup_task"])

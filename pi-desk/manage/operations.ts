@@ -22,9 +22,10 @@ import { InputLedger } from "../src/host/inputs.ts";
 import type { UpdateCheckpoint } from "../src/shared/checkpoint.ts";
 import { settleHandoff } from "./handoff.ts";
 
-export type DeskOperation = "setup" | "stage" | "update" | "update-now" | "apply" | "apply-now" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
+/** update: the latest published release; update-now: the version the app showed. Both hand the host over while conversations keep running. */
+export type DeskOperation = "setup" | "stage" | "update" | "update-now" | "apply-now" | "restart" | "rollback" | "stop" | "login-install" | "login-remove";
 export interface Operation {
-	id: string; action: DeskOperation; phase: "running" | "waiting" | "complete" | "failed" | "interrupted";
+	id: string; action: DeskOperation; phase: "running" | "complete" | "failed" | "interrupted";
 	started: string; updated: string; message: string;
 	/** The prepared runtime whose own controller applies this update. */
 	handoff?: string;
@@ -64,8 +65,8 @@ export function operationStatus(home: string): Operation | undefined {
 		let value: Operation;
 		try { value = JSON.parse(readFileSync(operationFile(home), "utf8")); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-		if (!value || !["setup", "stage", "update", "update-now", "apply", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
-			|| !["running", "waiting", "complete", "failed", "interrupted"].includes(value.phase) || typeof value.message !== "string")
+		if (!value || !["setup", "stage", "update", "update-now", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(value.action)
+			|| !["running", "complete", "failed", "interrupted"].includes(value.phase) || typeof value.message !== "string")
 			throw new Error("Invalid Desk operation record.");
 		return value;
 	};
@@ -89,14 +90,9 @@ export function runtimeUpdateState(home: string): RuntimeUpdateState | undefined
 	const check = readUpdateCheck(home, state.active);
 	return { current: current.desk, pending: state.pending ? readControllerRelease(home, state.pending).desk : undefined, pendingId: state.pending,
 		available: check?.available, checkedAt: check?.checkedAt, checkError: check?.error,
-		phase: operation?.phase === "running" ? ["apply", "apply-now", "update-now"].includes(operation.action) ? "applying" : "preparing"
-			: operation?.phase === "waiting" ? "waiting"
+		phase: operation?.phase === "running" ? ["apply-now", "update", "update-now"].includes(operation.action) ? "applying" : "preparing"
 			: operation && ["failed", "interrupted"].includes(operation.phase) ? "failed" : "idle",
 		message: operation?.message };
-}
-export function automaticUpdatePending(home: string): boolean {
-	const state = readState(home);
-	return !!state?.pending && state.autoApply === state.pending && operationStatus(home)?.phase === "waiting";
 }
 function armUpdate(home: string, id: string): void {
 	const lock = new SessionLease(join(home, "manage"));
@@ -225,26 +221,25 @@ async function operate(options: OperationOptions): Promise<Operation> {
 			options.signal?.throwIfAborted();
 			if (release.id === readState(home)?.active) { publish("Desk is up to date.", "complete"); return value; }
 			armUpdate(home, release.id);
-			if (options.action === "update-now") options.prepared = release.id;
+			options.prepared = release.id;
 			const own = controllerRuntime();
-			if (options.action === "update-now" && own && own !== release.id) {
+			if (own && own !== release.id) {
 				value = { ...value, handoff: release.id };
 				publish(`Desk ${release.desk} is ready; its own controller applies it`, "complete");
 				return value;
 			}
 		}
-		if (["update", "update-now", "apply", "apply-now"].includes(options.action)) {
-			const forced = options.action === "apply-now" || options.action === "update-now";
-			if (forced && !options.prepared) throw new Error("Select the prepared update before stopping sessions.");
-			publish(forced ? "Checkpointing conversations before the update" : "Checking whether the prepared update can be applied");
+		if (["update", "update-now", "apply-now"].includes(options.action)) {
+			if (!options.prepared) throw new Error("Select the prepared update before stopping sessions.");
+			publish("Checkpointing conversations before the update");
 			const previous = readState(home)?.active;
 			let result: Awaited<ReturnType<typeof activatePreparedRuntime>>;
-			try { result = await activatePreparedRuntime(home, forced ? options.prepared : undefined, forced ? value.id : undefined); }
+			try { result = await activatePreparedRuntime(home, options.prepared, value.id); }
 			catch (error) {
 				// A lost or late reply does not say whether the host committed the handoff and stopped. Its durable
 				// checkpoint does, once the host has finished stopping; the handoff is then finished, not abandoned.
-				const ticket = forced && previous && await settledHost(installation.directory) === "stopped" ? committedHandoff(installation.directory) : undefined;
-				if (ticket && ticket.id === value.id && ticket.source === previous && ticket.target === options.prepared && ticket.workers) {
+				const ticket = previous && await settledHost(installation.directory) === "stopped" ? committedHandoff(installation.directory) : undefined;
+				if (ticket && ticket.id === value.id && ticket.source === previous && ticket.target === options.prepared) {
 					const runtime = settleHandoff(home, installation.directory, ticket, true);
 					if (runtime) {
 						const forward = runtime === ticket.target, desk = readRelease(home, runtime).desk;
@@ -264,18 +259,13 @@ async function operate(options: OperationOptions): Promise<Operation> {
 				}
 				throw error;
 			}
-			if (result.deferred !== undefined) {
-				publish("Update ready. It will apply after all open Pi sessions close.", "waiting");
-			} else {
-				if (result.startup) {
-					publish(`Starting Desk ${result.release}`);
-					if (result.startup === "launcher") await runLauncher(home, ["start"]);
-				}
-				const failures = result.startup && forced
-					? await waitForRestoration(installation.directory, value.id, options.signal) : 0;
-				publish(failures ? `Desk ${result.release} is installed; ${failures} conversations need manual attention.`
-					: result.release ? `Desk ${result.release} is installed. Native history and account access are retained.` : "Desk is up to date.", "complete");
+			if (result.startup) {
+				publish(`Starting Desk ${result.release}`);
+				if (result.startup === "launcher") await runLauncher(home, ["start"]);
 			}
+			const failures = result.startup ? await waitForRestoration(installation.directory, value.id, options.signal) : 0;
+			publish(failures ? `Desk ${result.release} is installed; ${failures} conversations need manual attention.`
+				: `Desk ${result.release} is installed. Native history and account access are retained.`, "complete");
 			return value;
 		}
 		if (options.action === "stage") {
@@ -314,7 +304,7 @@ export async function launchOperation(home: string, action: Exclude<DeskOperatio
 	const code = runtime ?? state.active;
 	readControllerRelease(home, code);
 	const file = join(versionDirectory(home, code), "source", "pi-desk", "dist", "host", "manage-cli.js");
-	const node = ["update", "update-now", "apply", "apply-now"].includes(action) ? configuredNode(home) : process.execPath;
+	const node = ["update", "update-now", "apply-now"].includes(action) ? configuredNode(home) : process.execPath;
 	if (process.platform === "win32") {
 		await launchWindowsController({ home, cwd: readInstallation(home).cwd, node, entry: file,
 			args: [home, action, ...(target ? [target] : [])] });

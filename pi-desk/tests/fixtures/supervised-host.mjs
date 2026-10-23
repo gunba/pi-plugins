@@ -20,7 +20,7 @@ if (process.argv[2] === "wrapper") {
 		throw new Error(`Unexpected host network request: ${new URL(url).hostname}`);
 	};
 	const host = new DeskHost({ dataDir: config.directory, agentDir: config.agentDir, cwd: config.cwd, port: 0 });
-	host.scheduleUpdateCheck = () => {};
+	host.updates.scheduleCheck = () => {};
 	await host.start();
 	await new Promise(resolve => setTimeout(resolve, 250));
 	process.send?.({ type: "ready", runtime: basename(process.env.PI_DESK_RUNTIME) });

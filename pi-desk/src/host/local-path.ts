@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 export function localPath(path: string): boolean {
@@ -8,21 +8,25 @@ export function localPath(path: string): boolean {
 	return true;
 }
 
+/** "~" and "~/…" (or "~\…", as an agent on Windows writes it) as the home folder; any other path unchanged. */
+export function expandHome(path: string): string {
+	return path === "~" ? homedir() : /^~[\\/]/.test(path) ? join(homedir(), path.slice(2)) : path;
+}
+
 /**
  * A conversation's folder as people and agents write it: "~" and "~/…" are the home folder, and a relative folder is
  * under it. Resolved against the folder Desk was started from, "~" from an agent on another computer became
  * …/pi-plugins/~ and the conversation could not start.
  */
 export function homeFolder(value: string): string {
-	const path = value.trim();
-	return path === "~" ? homedir() : /^~[\\/]/.test(path) ? resolve(homedir(), path.slice(2)) : resolve(homedir(), path);
+	return resolve(homedir(), expandHome(value.trim()));
 }
 
 export function folderPath(value: string, cwd: string): string {
 	if (!value || value.length > 4000 || /[\x00-\x1f\x7f]/.test(value)) throw new Error("Enter a folder path.");
 	// Reject network paths before normalization or filesystem access.
 	if (value.startsWith("\\\\") || value.startsWith("//")) throw new Error("Network and device paths cannot be browsed here.");
-	const path = value === "~" ? homedir() : /^~[\\/]/.test(value) ? resolve(homedir(), value.slice(2)) : resolve(cwd, value);
+	const path = resolve(cwd, expandHome(value));
 	if (!localPath(path)) throw new Error("Network and device paths cannot be browsed here.");
 	return path;
 }

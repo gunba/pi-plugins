@@ -2,7 +2,7 @@ export interface RuntimeUpdateState {
 	current: string;
 	pending?: string;
 	pendingId?: string;
-	phase: "idle" | "preparing" | "waiting" | "applying" | "failed";
+	phase: "idle" | "preparing" | "applying" | "failed";
 	message?: string;
 	activeSessions?: number;
 	available?: string;

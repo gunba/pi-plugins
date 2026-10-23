@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
-import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { ContextPanel } from "./context-panel.tsx";
@@ -33,22 +32,19 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 	const [error, setError] = useState("");
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); };
 	const snapshot = session.snapshot, ui = session.ui, view = (id: string) => views.find(item => item.id === id && !item.scope);
-	const window = view("context-window"), usageView = view("pi-usage"), ledgerView = view("pi-context-ledger");
+	const window = view("context-window"), usageView = view("pi-usage");
 	const ready = session.state === "ready" && !!ui, locked = busy || !connected;
-	const outdated = session.workerRuntime && computer?.release && computer.release.version !== session.workerRuntime.version;
 	return <div className="settings-page">
 		{error && <p className="error-text" role="alert">{error}</p>}
 		<section className="settings-group">
 			<Row label="Computer"><span>{computer?.name ?? host.name}</span>
 				{move && <button className="quiet-action" disabled={busy} onClick={move}>Move to another computer…</button>}</Row>
 			<Row label="Model">{snapshot?.model ? <span>{snapshot.model.name}{snapshot.thinking && snapshot.thinking !== "off" ? ` · ${snapshot.thinking} reasoning` : ""}</span> : <span className="muted">Not started</span>}</Row>
-			{session.workerRuntime && <Row label="Version"><span>Desk {session.workerRuntime.version} · Pi {session.workerRuntime.engine}</span>
-				{outdated && ready && <button className="quiet-action" disabled={locked} onClick={() => run(api(`/sessions/${session.key}/restart`, { replace: true }))}>
-					<Icon name="refresh" />Restart on {computer!.release!.version}</button>}</Row>}
+			{session.workerRuntime && <Row label="Version"><span>Desk {session.workerRuntime.version} · Pi {session.workerRuntime.engine}</span></Row>}
 			<Row label="Pinned"><input type="checkbox" role="switch" aria-label="Pin conversation" checked={!!session.pinned} disabled={locked}
 				onChange={event => run(api(`/sessions/${session.key}/metadata`, { generation: ui?.generation, pinned: event.target.checked }))} /></Row>
 		</section>
-		{ready && <ContextGroup session={session} window={window} ledger={ledgerView} machine={{ id: computer?.id, name: computer?.name ?? host.name, threshold: computer ? computer.cacheCompaction : host.cacheCompaction }}
+		{ready && <ContextGroup session={session} window={window} machine={{ id: computer?.id, name: computer?.name ?? host.name, threshold: computer ? computer.cacheCompaction : host.cacheCompaction }}
 			locked={locked || settingBusy} invoke={invoke} act={act} run={run} />}
 		{snapshot?.usage && <SpendGroup usage={snapshot.usage} allowances={usageView} />}
 		<section className="settings-group settings-more">
@@ -75,8 +71,8 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 }
 
 /** Context in one bar: what is used, where Pi compacts, and the budget, which can be changed in place. */
-function ContextGroup({ session, window, ledger, machine, locked, invoke, act, run }: {
-	session: SessionView; window?: ViewSnapshot; ledger?: ViewSnapshot; machine: { id?: string; name: string; threshold?: number }; locked: boolean;
+function ContextGroup({ session, window, machine, locked, invoke, act, run }: {
+	session: SessionView; window?: ViewSnapshot; machine: { id?: string; name: string; threshold?: number }; locked: boolean;
 	invoke: (command: WorkerCommand) => Promise<unknown>; act: Act; run: (work: Promise<unknown>) => void;
 }) {
 	const context = session.snapshot?.context, details = window?.data as UiDetails | undefined;
@@ -84,7 +80,6 @@ function ContextGroup({ session, window, ledger, machine, locked, invoke, act, r
 	const limit = window?.context?.limit ?? context?.contextWindow ?? 0, used = context?.tokens ?? 0;
 	const compactAt = Number(/compaction near ([\d,]+)/i.exec(details?.summary ?? "")?.[1]?.replace(/,/g, "")) || undefined;
 	const [editing, setEditing] = useState(false), [budget, setBudget] = useState(""), [instructions, setInstructions] = useState<string>();
-	const total = (ledger?.data as { ledger?: Ledger } | undefined)?.ledger;
 	return <section className="settings-group">
 		<Row label="Context">
 			<div className="context-line">
@@ -120,8 +115,7 @@ function ContextGroup({ session, window, ledger, machine, locked, invoke, act, r
 			</select><span className="muted">all conversations on {machine.name}</span>
 		</Row>}
 		<Disclosure id={`settings:${session.key}:opening`} className="settings-disclosure" summary={<><span>Opening context</span>
-			<small>{total ? `${tokens(total.total)} tokens: ${total.groups.slice(0, 3).map(group => `${group.label.toLowerCase()} ${tokens(group.tokens)}`).join(" · ")}` : "instructions, skills and tools"}</small></>}>
-			{total && <ul className="ledger-groups">{total.groups.map(group => <li key={group.label}><span>{group.label}</span><small>{group.note}</small><b>{tokens(group.tokens)}</b></li>)}</ul>}
+			<small>instructions, skills and tools</small></>}>
 			<ContextPanel key={session.key} session={session} disabled={locked} invoke={invoke} />
 		</Disclosure>
 	</section>;
@@ -140,6 +134,7 @@ function SpendGroup({ usage, allowances }: { usage: NonNullable<NonNullable<Sess
 				<ul>{parts.map(([label, value, kind]) => <li key={label}><i className={kind} />{label} <b>{Math.round(value / total * 100)}%</b> <span className="muted">{money(value)}</span></li>)}</ul>
 			</div>
 		</Row>}
+		<Row label="Tokens"><span>{tokens(usage.input)} input · {tokens(usage.output)} output · {tokens(usage.cacheRead)} cache read · {tokens(usage.cacheWrite)} cache write</span></Row>
 		{usage.missed && <Row label="Cache misses">{usage.missed.count
 			? <span><b>{money(usage.missed.cost)}</b> <span className="muted">lost to {usage.missed.count} miss{usage.missed.count === 1 ? "" : "es"} ({tokens(usage.missed.tokens)} tokens paid for again)</span></span>
 			: <span className="muted">None</span>}</Row>}

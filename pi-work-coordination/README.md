@@ -1,34 +1,12 @@
-# Agent waiting
+# Work coordination
 
-`wait_agent({timeout_ms?})` waits for an agent message or final-status
-notification. Already queued notifications return immediately; new input also
-ends the wait. The tool stays pending and returns through Pi's normal agent loop. It never ends the turn or starts a separate wake.
+Shared helpers for the plugins that run agents.
 
-The default timeout is 30 seconds. Shorter requests are clamped to 10 seconds;
-the maximum is 24 hours, or `until` a time (HH:MM or an ISO date and time). A timeout returns
-`{message, timed_out: true}` without stopping child work. Interruption, shutdown
-and branch replacement release the wait. Native SDK, RPC and terminal sessions
-share the same implementation.
+- `ensureWorkCoordination(pi, { child })` records, once per runtime event bus, whether the session is a root
+  conversation or an SDK child that pi-agents runs as a secondary agent. `isManagedChild(pi)` reads it: a managed child's parent owns its
+  turns, so plugins such as pi-plan and pi-agents leave its turns alone.
+- `nativePromptPreparing(sessionManager)` (`native-queue.ts`) is true while Pi is admitting a prompt, when `isIdle()`
+  is still true, so other plugins don't start a competing turn.
 
-A background command left running by `exec_command` also ends the wait when it finishes, with a notice giving its exit code and the end of its output.
-
-## Integration
-
-`ensureWorkCoordination(pi)` installs once per runtime event bus.
-Message owners retain their durable inbox/outbox and notify the coordinator
-after durable admission. Explicit follow-ups can notify a pending wait before
-entering context at a native boundary. The coordinator tracks unread notification
-IDs, not task, process or timer ownership. Context consumption acknowledges only the IDs
-included in that context, preserving messages arriving during another request.
-
-Ordinary messages and results do not start an idle agent. Waiting agents receive
-them through the pending tool; idle agents retain them for their next task.
-`followup_task` separately requests a turn; the mailbox itself never starts one.
-
-`getWorkCoordinator(sessionId)` exposes the pending-wait state to plan controls.
-No wait scheduler or resource journal is created. Historical unadmitted
-completion records remain recoverable as context without replaying old work.
-
-```sh
-node --test pi-work-coordination/tests/*.test.mjs
-```
+There is no waiting tool. Agents wait with `watch` (pi-watch), and reports from secondary agents wake the conversation
+that started them (pi-agents).

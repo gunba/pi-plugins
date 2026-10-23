@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { assessCommand, dialectFor, type Assessment } from "./policy.ts";
-import { normalizePath, type Environment } from "./paths.ts";
-import { CHILD_POLICIES_EVENT, type ChildPolicySource } from "../pi-subagents/extensions/child-policies.ts";
+import type { Environment } from "./paths.ts";
+import { lostPaths } from "./lost.ts";
+import { CHILD_POLICIES_EVENT, type ChildPolicySource } from "../pi-agents/subagents/child-policies.ts";
 
 export default function commandGuard(pi: ExtensionAPI): void {
 	pi.events.on(CHILD_POLICIES_EVENT, data => {
@@ -16,21 +17,20 @@ export default function commandGuard(pi: ExtensionAPI): void {
 	pi.on("session_start", retire); pi.on("session_tree", retire); pi.on("session_shutdown", retire);
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
 		const input = event.input as Record<string, unknown>;
-		if (!["bash", "powershell", "exec_command"].includes(event.toolName)) return;
+		// watch runs its command (until and stop take none) in the shell Pi finds for bash.
+		if (!["bash", "powershell", "watch"].includes(event.toolName)) return;
 		const env: Environment = { cwd: ctx.cwd, home: homedir(), platform: process.platform === "win32" ? "win32" : "posix" };
-		if (event.toolName === "exec_command" && typeof input.workdir === "string") env.cwd = normalizePath(input.workdir, env);
 		const settings = pi.getSettings();
-		const command = event.toolName === "exec_command" ? input.cmd : input.command;
+		const command = input.command;
 		if (typeof command !== "string") return;
+		// Pi's shell prefix and shell setting apply to bash only.
 		const review = event.toolName === "bash" && settings.shellCommandPrefix ? `${settings.shellCommandPrefix}\n${command}` : command;
-		const explicitShell = event.toolName === "exec_command" && typeof input.shell === "string" ? input.shell.trim() : "";
 		let assessment: Assessment;
 		if (event.toolName === "powershell") assessment = assessCommand(review, env, "powershell");
-		else if (explicitShell || event.toolName === "bash" && settings.shellPath) assessment = assessCommand(review, env, dialectFor(explicitShell || settings.shellPath!));
+		else if (event.toolName === "bash" && settings.shellPath) assessment = assessCommand(review, env, dialectFor(settings.shellPath));
 		else {
-			// Unified Exec resolves configuration when launching. Do not treat the
-			// session's older shell setting as proof of its eventual dialect.
-			const results = (event.toolName === "exec_command" || env.platform === "win32" ? ["posix", "powershell", "cmd"] as const : ["posix"] as const).map(dialect => assessCommand(review, env, dialect));
+			// The discovered shell is bash or sh; on Windows the command is checked in every dialect.
+			const results = (env.platform === "win32" ? ["posix", "powershell", "cmd"] as const : ["posix"] as const).map(dialect => assessCommand(review, env, dialect));
 			assessment = results.find(result => result.decision === "block") ?? results.find(result => result.decision === "confirm") ?? { decision: "pass" };
 		}
 		if (assessment.decision === "pass") return;
@@ -43,8 +43,10 @@ export default function commandGuard(pi: ExtensionAPI): void {
 			return createHash("sha256").update(JSON.stringify({ tool: event.toolName, input: event.input, shell: current.shellPath, prefix: current.shellCommandPrefix })).digest("hex");
 		};
 		const original = signature(), epoch = generation, session = ctx.sessionManager.getSessionId(), cwd = ctx.cwd;
+		// Shown only; the decision above does not depend on it.
+		const lost = assessment.lost ? await lostPaths(assessment.lost, ctx.signal) : "";
 		const asked = Date.now(), timeout = 120_000;
-		const approved = await ctx.ui.confirm("Confirm Git wipe", `${assessment.reason}\n\nTool: ${event.toolName}\nDirectory: ${env.cwd}\n\n${review}`, { signal: ctx.signal, timeout });
+		const approved = await ctx.ui.confirm("Confirm Git wipe", `${assessment.reason}\n\nTool: ${event.toolName}\nDirectory: ${env.cwd}\n\n${review}${lost ? `\n\n${lost}` : ""}`, { signal: ctx.signal, timeout });
 		// confirm() reports a timeout and a refusal alike; say which, so the agent does not tell the user they refused.
 		if (approved !== true) return denied(ctx.signal?.aborted ? "The confirmation was cancelled."
 			: Date.now() - asked >= timeout - 1_000 ? "The user was asked but did not answer within 2 minutes (they may be away); this is not a refusal."

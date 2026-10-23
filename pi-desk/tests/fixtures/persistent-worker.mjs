@@ -29,8 +29,6 @@ const runtime = await serveWorker(process.argv[2], async send => {
 			send({ type: "snapshot", snapshot: snapshot() });
 			return snapshot();
 		},
-		async checkpoint() {},
-		async shutdownCheckpoint() { return snapshot(); },
 		async close() { if (closed) return; closed = true; const exit = once(child, "exit"); child.kill(); await exit; },
 	};
 });

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { computeSessionStats, reduceSessionUsage } from "../index.ts";
-import { outcomeFrom } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
+import { outcomeFrom } from "../../pi-agents/subagents/pi-sdk-driver.ts";
 
 const usage = {
 	input: 2, output: 3, cacheRead: 5, cacheWrite: 7, totalTokens: 17, reasoning: 1, cacheWrite1h: 2,
@@ -44,4 +45,19 @@ test("SDK child outcomes include native auxiliary charges without treating them 
 	const noAssistant = outcomeFrom([], "", auxiliary);
 	assert.equal(noAssistant.usage.totalTokens, 4 * 17);
 	assert.equal(noAssistant.usage.contextTokens, 0);
+});
+
+test("the usage fold matches Pi's own totals, including billed tools and summaries", () => {
+	const usage = { input: 100, output: 20, cacheRead: 30, cacheWrite: 40, totalTokens: 190, cost: { input: .1, output: .2, cacheRead: .3, cacheWrite: .4, total: 1 } };
+	const entries = [
+		...["assistant", "toolResult"].map(role => ({ type: "message", message: { role, content: [], usage } })),
+		...["compaction", "branch_summary"].map(type => ({ type, usage })),
+	];
+	const native = AgentSession.prototype.getSessionStats.call({ sessionManager: { getEntries: () => entries }, getContextUsage: () => undefined });
+	const actual = computeSessionStats(entries);
+	assert.equal(actual.totalInput, native.tokens.input);
+	assert.equal(actual.totalOutput, native.tokens.output);
+	assert.equal(actual.totalCacheRead, native.tokens.cacheRead);
+	assert.equal(actual.totalCacheWrite, native.tokens.cacheWrite);
+	assert.equal(actual.totalCost, native.cost);
 });

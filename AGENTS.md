@@ -6,7 +6,7 @@ root unless using `npm --prefix pi-desk`.
 Choose checks for the changed code:
 
 - Extensions: `npm run typecheck` and the relevant existing test file, for example
-  `node --test pi-codex-compat/tests/tool-arguments.test.mjs`.
+  `node --test pi-output-budget/tests/tools.test.mjs`.
 - Narrow a regression run with
   `node --test --test-name-pattern="pattern" path/to/file.test.mjs`.
 - Desk: `npm --prefix pi-desk run typecheck` and the relevant

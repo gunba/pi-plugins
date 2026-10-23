@@ -15,21 +15,10 @@ export interface DotInput {
 }
 export interface DotUpload {
 	id: string; dot: string; connection?: string; name: string; mime: string; size: number; received: number;
-	state: "staging" | "ready" | "uploading" | "uploaded" | "unknown" | "failed" | "handed-off";
+	state: "staging" | "ready" | "uploading" | "uploaded" | "unknown" | "failed";
 	remoteId?: string; error?: string;
 }
-export type DotSurfaceMode = "conversation" | "activity" | "settings" | "computer";
 export interface DotDownload { id: string; name: string; mime: string; size: number }
-export interface DotSurfaceFrame {
-	id: string; dot: string; mode: DotSurfaceMode; sequence: number; width: number; height: number;
-	image?: string; error?: string; downloads?: DotDownload[]; fileChooser?: { multiple: boolean; accept: string };
-}
-export type DotSurfaceInput =
-	| { kind: "pointer"; phase: "down" | "move" | "up"; x: number; y: number; button: "left" | "right"; count: 1 | 2; modifiers: number }
-	| { kind: "click"; x: number; y: number; button: "left" | "right"; count: number }
-	| { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
-	| { kind: "key"; key: string; code: string; modifiers: number }
-	| { kind: "text"; text: string };
 export interface DotSnapshot {
 	transport?: "direct"; identity?: string; connection?: string; live?: boolean; avatarError?: string;
 	state: "disconnected" | "connecting" | "ready" | "unavailable";

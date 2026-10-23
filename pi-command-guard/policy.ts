@@ -1,5 +1,5 @@
 import { lex, inputSubstitutions, commandName, programTokens, type Dialect, type Word } from "./syntax.ts";
-import { block, confirm, pathFinding, type Environment, type Finding } from "./paths.ts";
+import { block, confirm, normalizePath, pathFinding, type Environment, type Finding, type LostPaths } from "./paths.ts";
 export type Assessment = { decision: "pass" } | Finding;
 const MAX_COMMAND = 16_384;
 const choose = (findings: (Finding | undefined)[]): Assessment => findings.find(item => item?.decision === "block") ?? findings.find(Boolean) ?? { decision: "pass" };
@@ -76,6 +76,29 @@ export function assessCommand(source: string, env: Environment, dialect: Dialect
 		} else segment.push(word);
 	}
 	check(); return choose(hits);
+}
+
+/** `git clean` with the command's own options as a dry run, so it lists exactly what the command would remove. */
+function cleanDryRun(words: Word[]): string[] | undefined {
+	const list = ["clean", "--dry-run"];
+	for (let i = 0; i < words.length; i++) {
+		const { text, dynamic } = words[i];
+		if (dynamic) return undefined;
+		if (["--force", "--quiet", "--interactive"].includes(text)) continue;
+		if (!/^-[^-]/.test(text)) { list.push(text); continue; }
+		let flags = "";
+		for (let at = 1; at < text.length; at++) {
+			if (text[at] === "e") {
+				const pattern = text.slice(at + 1) || (words[i + 1]?.dynamic ? undefined : words[++i]?.text);
+				if (pattern === undefined) return undefined;
+				list.push("-e", pattern);
+				break;
+			}
+			if (!"fqi".includes(text[at])) flags += text[at];
+		}
+		if (flags) list.push(`-${flags}`);
+	}
+	return list;
 }
 
 function command(words: Word[], env: Environment, dialect: Dialect, depth: number, cwdChanged: boolean, input?: string): (Finding | undefined)[] {
@@ -170,19 +193,28 @@ function command(words: Word[], env: Environment, dialect: Dialect, depth: numbe
 		return command(args.slice(at), env, dialect, depth + 1, cwdChanged);
 	}
 	if (name === "git") {
-		let start = 0;
-		while (start < values.length && values[start].startsWith("-")) { const option = values[start++]; if (["-C", "-c", "--git-dir", "--work-tree"].includes(option)) start++; }
+		// Where the command runs, so the confirmation can list what it would lose; unknown after a cd or a dynamic -C.
+		let start = 0, cwd: string | undefined = cwdChanged ? undefined : env.cwd;
+		while (start < values.length && values[start].startsWith("-")) {
+			const option = values[start++];
+			if (/^--(?:git-dir|work-tree)/.test(option)) cwd = undefined;
+			if (option === "-C") { const dir = args[start]; cwd = cwd && dir && !dir.dynamic ? normalizePath(dir.text, { ...env, cwd }) : undefined; }
+			if (["-C", "-c", "--git-dir", "--work-tree"].includes(option)) start++;
+		}
 		const sub = lower[start], rest = lower.slice(start + 1);
+		const lost = (kind: LostPaths["kind"], list: string[] | undefined): LostPaths | undefined => cwd && list ? { cwd, kind, args: list } : undefined;
+		const status = ["status", "--porcelain", "-z", "--untracked-files=no"];
 		const wholeTree = rest.some(value => [".", "./", ":/", ":(top)", ":(top)*", "*"].includes(value));
 		const force = rest.some(value => value === "--force" || /^-[^-]*f/.test(value));
 		const dryRun = rest.some(value => value === "--dry-run" || /^-[^-]*n/.test(value));
-		if (sub === "clean" && force && !dryRun && (wholeTree || rest.every(value => value.startsWith("-")))) return [confirm("git-clean", "Git would wipe untracked working-tree files.")];
-		if (sub === "reset" && rest.includes("--hard")
-			|| sub === "restore" && (!rest.includes("--staged") || rest.includes("--worktree")) && wholeTree
-			|| sub === "checkout" && (force || rest.includes("--") && wholeTree)
-			|| sub === "switch" && (force || rest.includes("--discard-changes"))
-			|| sub === "stash" && rest[0] === "clear"
-			|| sub === "reflog" && rest[0] === "expire" && rest.includes("--all")) return [confirm("git-discard", "Git would discard working-tree changes or repository recovery history.")];
+		if (sub === "clean" && force && !dryRun && (wholeTree || rest.every(value => value.startsWith("-")))) return [confirm("git-clean", "Git would wipe untracked working-tree files.", lost("untracked", cleanDryRun(args.slice(start + 1))))];
+		const discards = sub === "reset" && rest.includes("--hard") ? "changes"
+			: sub === "restore" && (!rest.includes("--staged") || rest.includes("--worktree")) && wholeTree ? rest.includes("--staged") ? "changes" : "unstaged"
+			: sub === "checkout" && (force || rest.includes("--") && wholeTree) ? force ? "changes" : "unstaged"
+			: sub === "switch" && (force || rest.includes("--discard-changes")) ? "changes"
+			: sub === "stash" && rest[0] === "clear" || sub === "reflog" && rest[0] === "expire" && rest.includes("--all") ? "history" : undefined;
+		if (discards) return [confirm("git-discard", "Git would discard working-tree changes or repository recovery history.",
+			discards === "history" ? undefined : lost(discards, status))];
 		if (sub === "push" && !dryRun && rest.some(value => value === "--force" || value === "-f" || value === "--mirror" || value.startsWith("+"))) return [confirm("git-rewrite", "Git would overwrite remote history without a lease check.")];
 	}
 	return [];

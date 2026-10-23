@@ -31,8 +31,7 @@ const runtime = await serveWorker(process.argv[2], async send => {
 			return engine.snapshot();
 		},
 		snapshot: () => engine.snapshot(), command: (generation, command) => engine.command(generation, command),
-		checkpoint: (id, action) => engine.checkpoint(id, action),
-		shutdownCheckpoint: () => engine.shutdownCheckpoint(), close: () => engine.close(),
+		close: () => engine.close(),
 	};
 });
 process.on("SIGTERM", () => { void runtime.stop(); });

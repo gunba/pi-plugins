@@ -204,7 +204,7 @@ test("stale activations, native generation changes, denied access and pending co
 	const f = await fixture(t);
 	assert.equal((await f.request("inputs", f.input("Wrong worker", { activation: randomUUID() }))).status, 409);
 	assert.equal((await f.request("uploads", { activation: randomUUID(), command: { kind: "upload_begin", name: "bad", size: 1 } })).status, 409);
-	const denied = await f.host.api({ authorized: () => false }, {
+	const denied = await f.host.api.handle({ authorized: () => false }, {
 		method: "POST", path: `/api/sessions/${f.key}/inputs`, body: f.input("Unauthorized"),
 	});
 	assert.equal(denied.status, 401);

@@ -1,8 +1,8 @@
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { within } from "../../manage/source.ts";
+import { expandHome } from "./local-path.ts";
 
 export { piPackageDir, pointStableRuntime, runtimePin, stablePath, type RuntimePin } from "./stable-runtime.ts";
 import { unpinnedNpm } from "./package-updates.ts";
@@ -22,8 +22,7 @@ export function resourceSettings(settings: SettingsManager, cwd: string, agentDi
 	type Settings = ReturnType<SettingsManager["getGlobalSettings"]>;
 	const redirect = (value: string, base: string) => {
 		const prefix = /^[!+-]/.test(value) ? value[0]! : "", path = prefix ? value.slice(1) : value;
-		const expanded = path === "~" ? homedir() : path.startsWith("~/") || path.startsWith("~\\") ? join(homedir(), path.slice(2)) : path;
-		const absolute = resolve(base, expanded);
+		const absolute = resolve(base, expandHome(path));
 		if (!within(original, absolute)) return value;
 		const part = relative(original, absolute), mapped = join(pinned, part), wildcard = part.search(/[*?[{]/);
 		let candidate = mapped;

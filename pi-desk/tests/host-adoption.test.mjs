@@ -140,7 +140,7 @@ test("public runtime activation replaces the host while a busy actor and its pro
 	next = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	const recover = next.recoverUpdateReferences.bind(next);
 	next.recoverUpdateReferences = () => { next.runtime = target; next.runtimeHome = home; return recover(); };
-	next.scheduleUpdateCheck = () => {}; // This isolated release fixture has no remote update channel.
+	next.updates.scheduleCheck = () => {}; // This isolated release fixture has no remote update channel.
 	await next.start();
 	const adopted = await next.waitForSession(key);
 	await next.restoreUpdateJob;

@@ -91,7 +91,7 @@ export default function desk(pi: ExtensionAPI) {
 						`${current.host.host?.sessions.active ?? 0} running Pi sessions and their background work will stop. Open sessions remain in the workspace as interrupted; resume explicitly afterward.`)) return;
 				}
 				await launchOperation(location.home, command as Exclude<DeskOperation, "setup">);
-				notify(command === "update" ? "Update accepted. It applies automatically after open Pi sessions close. See computer settings or /desk status."
+				notify(command === "update" ? "Update accepted. Desk replaces its host with the latest release; conversations keep running. See /desk status."
 					: "Operation accepted. Use /desk status for its outcome.");
 			} catch (error) { notify(error instanceof Error ? error.message : String(error), "error"); }
 			finally { if (!shutdown) ctx.ui.setStatus("desk", undefined); }

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { uptime } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import type { WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { WorkerChannel, type WorkerEndpointAddress } from "./worker-channel.ts";
 import { WorkerConnectionError } from "./worker-errors.ts";
 import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./stable-runtime.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 export interface WorkerBootstrap {
 	version: 1;
@@ -33,10 +34,7 @@ export function workerDirectory(directory: string, key: string): string {
 	return join(directory, "workers", key);
 }
 export function writeWorkerFile(directory: string, name: "bootstrap.json" | "worker.json", value: WorkerBootstrap | WorkerRecord): void {
-	const file = join(directory, name), temporary = `${file}.${randomUUID()}.tmp`;
-	const fd = openSync(temporary, "wx", 0o600);
-	try { writeFileSync(fd, JSON.stringify(value) + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
-	renameSync(temporary, file);
+	atomicJson(join(directory, name), value, { compact: true, sync: true });
 }
 function read<T>(directory: string, name: string): T | undefined {
 	// A stopping worker removes its record while the host polls for that, so a check-then-open could fail between

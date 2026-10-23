@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { createAgentSession, DefaultPackageManager, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { inheritProviderRuntime } from "../../pi-subagents/extensions/subagents.ts";
-import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
+import { inheritProviderRuntime } from "../../pi-agents/subagents/subagents.ts";
+import { bindChildProvider } from "../../pi-agents/subagents/pi-sdk-driver.ts";
 import nativeCompaction from "../../pi-codex-wire/extensions/native-compaction.ts";
 
 function response(toolName, model) {

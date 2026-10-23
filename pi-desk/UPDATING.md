@@ -57,8 +57,7 @@ automatic updates on, a computer installs a new release itself once no message i
 being delivered and no setting is being applied; working conversations carry on,
 and each moves onto the new version after ten idle minutes.
 **Check for updates** refreshes availability; detection alone installs nothing.
-`/desk update` retains the quieter path: download while conversations continue,
-then apply automatically when no Pi workers remain, including idle workers.
+`/desk update` installs the latest release the same way.
 
 From 0.5.24, the confirmed website update holds new host admissions briefly,
 saves the catalog and input ledger, and replaces only the HTTP/relay host through
@@ -80,18 +79,15 @@ and worker versions; restart an individual conversation when its work is safely
 checkpointed to load the newer worker. Reloading resources alone does not replace
 its SDK. Runtime selection keeps older slots for live actors and rollback.
 
-Hosts through 0.5.23 still own non-reconnectable workers. Their first move to
-0.5.24 requires one coordinated native checkpoint and restoration through the
-old controller. Queued opaque context, pending input or unsafe child scopes can
-refuse that migration rather than lose data. After migration, native work does
-not need to become idle for a host-only update. Host-owned sign-in/Dot operations
-and failed catalog saves still need to finish before cutover. Failed or
-unconfirmed outcomes need attention, not replay.
+A host on 0.5.23 or earlier owned workers that cannot be handed over: after its
+update, its conversations show as interrupted and resume by hand. Host-owned
+sign-in/Dot operations and failed catalog saves still need to finish before
+cutover. Failed or unconfirmed outcomes need attention, not replay.
 Ordinary **Close** still removes a conversation from the workspace while keeping
-its native history. Native `/desk restart` and rollback remain explicit lifecycle
-operations; they do not opt into the website's continuation checkpoint.
+its native history. Native `/desk restart` and rollback stop the host and its
+workers; resume conversations afterwards.
 
-The browser shows preparation, waiting, application and failure states. A failed
+The browser shows preparation, application and failure states. A failed
 download leaves the running release intact. The updater never cleans or
 reinstalls the Pi package that another terminal process may be using. Website
 publication is separate from native host updates.
@@ -101,7 +97,7 @@ publication is separate from native host updates.
 | `/desk` | Open the native management menu |
 | `/desk status` | Show host, active/staged versions and latest operation outcome |
 | `/desk stage` | Build the installed source explicitly for development; does not activate it |
-| `/desk update` | Download a verified release and apply it automatically when no Pi workers remain |
+| `/desk update` | Download the latest verified release and hand the host over to it; conversations keep running |
 | `/desk restart` | Confirm interruption of running sessions, select the staged version and start the host |
 | `/desk rollback` | Confirm interruption and select the previous prepared runtime |
 | `/desk stop` | Stop the host and its workers; keep native history |

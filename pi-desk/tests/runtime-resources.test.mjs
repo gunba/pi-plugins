@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { resourceSettings } from "../src/host/runtime-resources.ts";
-import { loadChildToolExtensions } from "../../pi-subagents/extensions/child-tool-extensions.ts";
+import { loadChildToolExtensions } from "../../pi-agents/subagents/child-tool-extensions.ts";
 
 const provider = (name, value) => `import {Type} from "typebox";
 export default pi => pi.registerTool({

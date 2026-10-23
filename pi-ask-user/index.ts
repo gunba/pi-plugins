@@ -31,10 +31,7 @@ import {
 import { renderSingleSelectRows } from "./single-select-layout.ts";
 import { getPresentation } from "../pi-ui/index.ts";
 
-import { createRequire } from "node:module";
 import { stripVTControlCharacters } from "node:util";
-const _require = createRequire(import.meta.url);
-const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
 /**
  * `getMarkdownTheme()` returns a bag of closures that read through a Proxy
@@ -82,9 +79,6 @@ interface AskParams {
    allowMultiple?: boolean;
    allowFreeform?: boolean;
    allowComment?: boolean;
-   displayMode?: AskDisplayMode;
-   overlayToggleKey?: string | null;
-   commentToggleKey?: string | null;
    timeout?: number;
 }
 
@@ -232,25 +226,12 @@ class BoxBorderTop implements Component {
 
 class BoxBorderBottom implements Component {
    private color: (s: string) => string;
-   private label?: string;
-   private labelColor?: (s: string) => string;
-   constructor(color: (s: string) => string, label?: string, labelColor?: (s: string) => string) {
+   constructor(color: (s: string) => string) {
       this.color = color;
-      this.label = label;
-      this.labelColor = labelColor;
    }
    invalidate(): void { }
    render(width: number): string[] {
-      const inner = Math.max(0, width - 2);
-      if (!this.label || inner < this.label.length + 4) {
-         return [this.color(`╰${"─".repeat(inner)}╯`)];
-      }
-      const tag = ` ${this.label} `;
-      const leftDashes = inner - tag.length - 1;
-      const style = this.labelColor ?? this.color;
-      return [
-         this.color("╰" + "─".repeat(Math.max(0, leftDashes))) + style(tag) + this.color("─╯"),
-      ];
+      return [this.color(`╰${"─".repeat(Math.max(0, width - 2))}╯`)];
    }
 }
 
@@ -314,12 +295,8 @@ function buildShortcut(spec: string): ResolvedShortcut {
    };
 }
 
-function resolveShortcut(
-   paramValue: string | null | undefined,
-   envValue: string | undefined,
-   defaultSpec: string,
-): ResolvedShortcut {
-   const candidates: Array<string | null | undefined> = [paramValue, envValue, defaultSpec];
+function resolveShortcut(envValue: string | undefined, defaultSpec: string): ResolvedShortcut {
+   const candidates: Array<string | undefined> = [envValue, defaultSpec];
    for (const raw of candidates) {
       const normalized = normalizeShortcutSpec(raw);
       if (normalized === undefined) continue; // not provided, fall through
@@ -366,41 +343,19 @@ function matchesSelectDown(data: string, keybindings: KeybindingsManager): boole
    );
 }
 
-function buildCustomUIOptions(
-   displayMode: AskDisplayMode,
-   onHandle?: (handle: OverlayHandle) => void,
-) {
-   switch (displayMode) {
-      case "inline":
-         return undefined;
-      case "overlay":
-         return {
-            overlay: true,
-            overlayOptions: {
-               anchor: "center" as const,
-               width: ASK_OVERLAY_WIDTH,
-               minWidth: ASK_OVERLAY_MIN_WIDTH,
-               maxHeight: ASK_OVERLAY_MAX_HEIGHT,
-               margin: 1,
-            },
-            ...(onHandle ? { onHandle } : {}),
-         };
-      default: {
-         const _exhaustive: never = displayMode;
-         void _exhaustive;
-         return {
-            overlay: true,
-            overlayOptions: {
-               anchor: "center" as const,
-               width: ASK_OVERLAY_WIDTH,
-               minWidth: ASK_OVERLAY_MIN_WIDTH,
-               maxHeight: ASK_OVERLAY_MAX_HEIGHT,
-               margin: 1,
-            },
-            ...(onHandle ? { onHandle } : {}),
-         };
-      }
-   }
+function buildCustomUIOptions(displayMode: AskDisplayMode, onHandle: (handle: OverlayHandle) => void) {
+   if (displayMode === "inline") return undefined;
+   return {
+      overlay: true,
+      overlayOptions: {
+         anchor: "center" as const,
+         width: ASK_OVERLAY_WIDTH,
+         minWidth: ASK_OVERLAY_MIN_WIDTH,
+         maxHeight: ASK_OVERLAY_MAX_HEIGHT,
+         margin: 1,
+      },
+      onHandle,
+   };
 }
 
 class MultiSelectList implements Component {
@@ -1014,7 +969,7 @@ class AskComponent extends Container {
    set focused(value: boolean) {
       this._focused = value;
       if (this.editor && (this.mode === "freeform" || this.mode === "comment")) {
-         (this.editor as any).focused = value;
+         this.editor.focused = value;
       }
    }
 
@@ -1083,11 +1038,7 @@ class AskComponent extends Container {
       this.addChild(this.helpText);
 
       this.addChild(new Spacer(1));
-      this.addChild(new BoxBorderBottom(
-         (s: string) => theme.fg("accent", s),
-         `v${ASK_USER_VERSION}`,
-         (s: string) => theme.fg("dim", s),
-      ));
+      this.addChild(new BoxBorderBottom((s: string) => theme.fg("accent", s)));
 
       this.updateStaticText();
       this.showSelectMode();
@@ -1120,7 +1071,7 @@ class AskComponent extends Container {
          if (index === 0 || index === rawLines.length - 1) {
             // Box top/bottom borders already rendered at innerWidth — re-render at full width
             if (index === 0) return new BoxBorderTop(borderColor, "ask_user", titleColor).render(width)[0];
-            return new BoxBorderBottom(borderColor, `v${ASK_USER_VERSION}`, (s: string) => this.theme.fg("dim", s)).render(width)[0];
+            return new BoxBorderBottom(borderColor).render(width)[0];
          }
          const padded = truncateToWidth(line, innerWidth, "", true);
          return `${borderColor(BOX_BORDER_LEFT)}${padded}${borderColor(BOX_BORDER_RIGHT)}`;
@@ -1269,10 +1220,7 @@ class AskComponent extends Container {
 
    private saveEditorDraft(): void {
       if (!this.editor) return;
-      const getText = (this.editor as any).getText;
-      if (typeof getText !== "function") return;
-
-      const currentText = String(getText.call(this.editor) ?? "");
+      const currentText = this.editor.getText();
       if (this.mode === "freeform") {
          this.freeformDraft = currentText;
       } else if (this.mode === "comment") {
@@ -1281,11 +1229,7 @@ class AskComponent extends Container {
    }
 
    private setEditorText(text: string): void {
-      const editor = this.ensureEditor();
-      const setText = (editor as any).setText;
-      if (typeof setText === "function") {
-         setText.call(editor, text);
-      }
+      this.ensureEditor().setText(text);
    }
 
    private handleSelectionSubmit(selections: string[], wantsComment: boolean): void {
@@ -1341,7 +1285,7 @@ class AskComponent extends Container {
 
       const editor = this.ensureEditor();
       this.setEditorText(this.freeformDraft);
-      (editor as any).focused = this._focused;
+      editor.focused = this._focused;
 
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold("Custom response")), 1, 0));
       this.modeContainer.addChild(new Spacer(1));
@@ -1362,7 +1306,7 @@ class AskComponent extends Container {
 
       const editor = this.ensureEditor();
       this.setEditorText(this.commentDraft);
-      (editor as any).focused = this._focused;
+      editor.focused = this._focused;
 
       const selectedLabel = this.pendingSelections.length === 1 ? "Selected option:" : "Selected options:";
       this.modeContainer.addChild(new Text(this.theme.fg("accent", this.theme.bold(selectedLabel)), 1, 0));
@@ -1524,26 +1468,12 @@ export default function(pi: ExtensionAPI) {
             allowMultiple = false,
             allowFreeform = true,
             allowComment = false,
-            displayMode,
-            overlayToggleKey,
-            commentToggleKey,
             timeout,
          } = params as AskParams;
-         const envMode = process.env.PI_ASK_USER_DISPLAY_MODE;
-         const envDisplayMode: AskDisplayMode | undefined =
-            envMode === "overlay" || envMode === "inline" ? envMode : undefined;
-         const effectiveDisplayMode: AskDisplayMode = displayMode ?? envDisplayMode ?? "overlay";
+         const effectiveDisplayMode: AskDisplayMode = process.env.PI_ASK_USER_DISPLAY_MODE === "inline" ? "inline" : "overlay";
          const shortcuts: ResolvedAskShortcuts = {
-            overlayToggle: resolveShortcut(
-               overlayToggleKey,
-               process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY,
-               DEFAULT_OVERLAY_TOGGLE_KEY,
-            ),
-            commentToggle: resolveShortcut(
-               commentToggleKey,
-               process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY,
-               DEFAULT_COMMENT_TOGGLE_KEY,
-            ),
+            overlayToggle: resolveShortcut(process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY, DEFAULT_OVERLAY_TOGGLE_KEY),
+            commentToggle: resolveShortcut(process.env.PI_ASK_USER_COMMENT_TOGGLE_KEY, DEFAULT_COMMENT_TOGGLE_KEY),
          };
          const question = displayText(rawQuestion);
          const options = normalizeOptions(rawOptions);
@@ -1653,11 +1583,7 @@ export default function(pi: ExtensionAPI) {
                // receive input). Inline mode does not need this because the prompt is
                // already non-modal. Skipped entirely if the user disabled the shortcut.
                const overlayToggle = shortcuts.overlayToggle;
-               if (
-                  effectiveDisplayMode === "overlay"
-                  && !overlayToggle.disabled
-                  && typeof ctx.ui.onTerminalInput === "function"
-               ) {
+               if (effectiveDisplayMode === "overlay" && !overlayToggle.disabled) {
                   removeOverlayInputListener = ctx.ui.onTerminalInput((data) => {
                      if (!overlayToggle.matches(data) || !overlayHandle) return undefined;
                      const nextHidden = !overlayHandle.isHidden();
@@ -1670,16 +1596,12 @@ export default function(pi: ExtensionAPI) {
                   });
                }
 
-               const customResult = await ctx.ui.custom<AskUIResult | null | undefined>(
+               result = await ctx.ui.custom<AskUIResult | null>(
                   customFactory,
                   buildCustomUIOptions(effectiveDisplayMode, (handle) => {
                      overlayHandle = handle;
                   }),
                );
-               cleanupDialog?.();
-               result = customResult === undefined
-                  ? await askViaDialogs(ctx.ui, question, normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout, signal)
-                  : customResult;
             }
          } catch (error) {
             if ((error as { code?: string })?.code === "operator_unavailable") {
@@ -1700,7 +1622,6 @@ export default function(pi: ExtensionAPI) {
 
          if (signal?.aborted) result = null;
          if (result === null) {
-            pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
             return {
                content: [{ type: "text", text: "User cancelled the question" }],
                details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,

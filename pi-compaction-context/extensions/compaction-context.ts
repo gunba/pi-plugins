@@ -2,7 +2,28 @@ import { Buffer } from "node:buffer";
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { inPlaceBlocker, summarizeInPlace, type SentRequest } from "./in-place.ts";
 import { BRIEF_ENTRY, BRIEF_EVENT, writeBrief, type BriefProbe } from "./brief.ts";
-import { WARM_EVENT, warmCache, type WarmProbe } from "./warm.ts";
+import { getPresentation } from "../../pi-ui/index.ts";
+
+/** Tool calls that make a turn worth a brief written without being asked, when it changed no files. */
+const AUTO_BRIEF_CALLS = 8;
+
+/** A turn that ended with an answer after real work: it edited or wrote files, or made several tool calls. */
+export function substantialTurn(messages: readonly unknown[]): boolean {
+  let calls = 0, edits = false;
+  let last: { stopReason?: string; content?: unknown } | undefined;
+  for (const message of messages as { role?: string; stopReason?: string; content?: unknown }[]) {
+    if (message?.role !== "assistant") continue;
+    last = message;
+    for (const block of Array.isArray(message.content) ? message.content as { type?: string; name?: string }[] : []) {
+      if (block?.type !== "toolCall") continue;
+      calls++;
+      if (block.name === "edit" || block.name === "write") edits = true;
+    }
+  }
+  const answered = last?.stopReason === "stop" && Array.isArray(last.content)
+    && (last.content as { type?: string; text?: string }[]).some(block => block?.type === "text" && !!block.text?.trim());
+  return answered && (edits || calls >= AUTO_BRIEF_CALLS);
+}
 
 type ContextFile = { path: string; content: string };
 type Snapshot = Pick<BeforeAgentStartEvent["systemPromptOptions"], "contextFiles" | "customPrompt" | "appendSystemPrompt">;
@@ -90,18 +111,18 @@ export default function compactionContext(pi: ExtensionAPI): void {
   const contexts = new Map<string, ExtensionContext>();
   const remember = (ctx: ExtensionContext) => { const id = ctx.sessionManager?.getSessionId?.(); if (id) contexts.set(id, ctx); };
   pi.on("session_start", (_event, ctx) => remember(ctx));
-  pi.on("agent_end", (_event, ctx) => remember(ctx));
+  pi.on("agent_end", (event, ctx) => {
+    remember(ctx);
+    // Ready when Jordan is back from being away: written only from the turn's cached request, once per reply.
+    if (getPresentation(pi)?.operatorAvailable !== false || !substantialTurn(event.messages)) return;
+    const id = ctx.sessionManager.getSessionId();
+    void writeBrief(ctx, sent.get(id), brief => pi.appendEntry(BRIEF_ENTRY, brief), { cacheOnly: true, auto: true }).catch(() => {});
+  });
   const releaseBrief = pi.events?.on(BRIEF_EVENT, raw => {
     const probe = raw as BriefProbe;
     const ctx = probe && typeof probe === "object" ? contexts.get(probe.session) : undefined;
     if (!ctx) return;
     probe.result = writeBrief(ctx, sent.get(probe.session), brief => pi.appendEntry(BRIEF_ENTRY, brief), { refresh: probe.refresh, signal: probe.signal });
-  });
-  // pi-codex-compat asks for this while a command the agent left running is still going (warm.ts).
-  const releaseWarm = pi.events?.on(WARM_EVENT, raw => {
-    const probe = raw as WarmProbe;
-    const ctx = probe && typeof probe === "object" ? contexts.get(probe.session) : undefined;
-    if (ctx) probe.result = warmCache(ctx, sent.get(probe.session)).catch(() => false);
   });
   let turnRequest = false, lastInPlace = "not tried yet";
   const prepare = (signal: AbortSignal, ctx: ExtensionContext) => {
@@ -140,7 +161,7 @@ export default function compactionContext(pi: ExtensionAPI): void {
   pi.on("session_compact_failed", clear);
   pi.on("session_tree", clear);
   pi.on("context", clear);
-  pi.on("session_shutdown", (_event, ctx) => { clear(); sent.delete(ctx.sessionManager.getSessionId()); contexts.delete(ctx.sessionManager.getSessionId()); releaseBrief?.(); releaseWarm?.(); });
+  pi.on("session_shutdown", (_event, ctx) => { clear(); sent.delete(ctx.sessionManager.getSessionId()); contexts.delete(ctx.sessionManager.getSessionId()); releaseBrief?.(); });
   pi.on("before_provider_request", (event, ctx) => {
     remember(ctx);
     if (turnRequest) {

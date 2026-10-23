@@ -1,1 +1,1 @@
-export * from "../../../pi-party/quest-model.ts";
+export * from "../../../pi-agents/quest-model.ts";

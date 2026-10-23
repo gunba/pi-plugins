@@ -13,7 +13,7 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
   assert.equal(manifest.pi.extensions.filter(path => path === './pi-codex-wire/extensions/index.ts').length, 1);
   assert.equal(manifest.pi.extensions.filter(path => path === './pi-local-links/extensions/local-links.ts').length, 1);
-  for (const path of ['./pi-party/index.ts', './pi-context-window/index.ts']) {
+  for (const path of ['./pi-agents/index.ts', './pi-context-window/index.ts']) {
     assert.equal(manifest.pi.extensions.filter(entry => entry === path).length, 1);
   }
   const paths = manifest.pi.extensions
@@ -28,9 +28,11 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   assert.deepEqual(result.errors, []);
   assert.equal(result.extensions.length, paths.length);
   assert.ok(result.extensions.some(extension => extension.commands.has('codex-wire')));
-  assert.ok(result.extensions.some(extension => extension.tools.has('spawn_agent')));
+  for (const name of ['agent_start', 'agent_send', 'agent_list', 'agent_stop', 'agent_move', 'watch'])
+    assert.equal(result.extensions.filter(extension => extension.tools.has(name)).length, 1, name);
   assert.ok(result.extensions.every(extension => !extension.tools.has('subagent') && !extension.tools.has('subagent_fork') && !extension.tools.has('report')));
-  assert.ok(result.extensions.some(extension => extension.tools.has('agent_send')));
+  for (const removed of ['spawn_agent', 'send_message', 'followup_task', 'interrupt_agent', 'list_agents', 'wait_agent', 'agent_create', 'agent_fork', 'agent_discover', 'agent_close', 'agent_profile', 'agent_delivery', 'agent_inbox', 'exec_command', 'write_stdin', 'view_image', 'image_gen'])
+    assert.ok(result.extensions.every(extension => !extension.tools.has(removed)), removed);
   assert.ok(result.extensions.some(extension => extension.commands.has('context-window')));
   assert.equal(result.extensions.filter(extension => extension.commands.has('work')).length, 1);
   const links = result.extensions.find(extension => extension.path.replaceAll('\\', '/').endsWith('/pi-local-links/extensions/local-links.ts'));

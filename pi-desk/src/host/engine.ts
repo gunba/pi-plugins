@@ -51,7 +51,6 @@ import { nativeBuiltins, nativeExecution, nativeModel, readNativeCommand, runNat
 import { NativeContext } from "./context.ts";
 import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
-import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
@@ -114,7 +113,6 @@ export class DeskEngine {
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
 	private handoffAbort?: AbortController;
-	private checkpointHold?: { id: string; running: boolean };
 	private attachmentScope?: string;
 	private usageRevision = 0;
 	/** The conversation's extension event bus, for requests to its plugins such as briefs. */
@@ -126,6 +124,7 @@ export class DeskEngine {
 	private branch?: { manager: SessionManager; read: () => ReturnType<SessionManager["getBranch"]> };
 	private compacting?: SessionSnapshot["compacting"];
 	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
+	private briefCache?: { manager: SessionManager; leaf: string | null; value?: string };
 	private measured?: { manager: SessionManager; leaf: string | null; revision: number; value?: number };
 	/** Why Desk itself started the current compaction; Pi reports those as manual. */
 	private automaticCompaction?: "threshold" | "cache";
@@ -166,11 +165,6 @@ export class DeskEngine {
 
 	async start(options: WorkerInit): Promise<SessionSnapshot> {
 		if (this.closed || this.startJob) throw new Error("Session engine is already started or closing.");
-		if (options.checkpoint) {
-			if (!/^[a-zA-Z0-9_-]{1,128}$/.test(options.checkpoint)) throw new Error("Invalid restore checkpoint.");
-			this.checkpointHold = { id: options.checkpoint, running: false };
-			this.transition = true; this.presentation.setSuspended(true);
-		}
 		this.startJob = this.initialize(options);
 		return this.startJob;
 	}
@@ -260,7 +254,7 @@ export class DeskEngine {
 			describeAgentTools(result.session.agent.state as never);
 			context.attach(result.session); this.contexts.set(result.session, context);
 			activateNewTools(result.session, context.toolChoices());
-			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => this.presentation.suspended));
+			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => false));
 			const loaded = services.resourceLoader.getExtensions();
 			return { ...result, services, diagnostics: [
 				...services.diagnostics,
@@ -283,7 +277,6 @@ export class DeskEngine {
 			this.presentation.reset();
 		});
 		await this.bind(this.runtime.session);
-		if (this.checkpointHold) await this.presentation.maintenance(this.checkpointHold.id, "restore");
 		if (this.closed) throw new Error("Session startup was cancelled.");
 		for (const diagnostic of this.runtime.diagnostics) this.presentation.notify(diagnostic.message, diagnostic.type);
 		return this.snapshot();
@@ -489,9 +482,27 @@ export class DeskEngine {
 				...("estimated" in context ? { estimated: true } : {}) } : undefined,
 			usage: this.usageCache.value,
 			contextFrom: this.contextFrom(manager, leaf),
+			brief: this.briefFor(manager, leaf),
 			compacting: this.compacting,
 			ui,
 		};
+	}
+
+	/** The reply of the latest brief pi-compaction-context saved ("pi-brief" entries) after the last user message. */
+	private briefFor(manager: SessionManager, leaf: string | null): string | undefined {
+		if (this.briefCache?.manager === manager && this.briefCache.leaf === leaf) return this.briefCache.value;
+		const branch = this.branch?.manager === manager ? this.branch.read() : manager.getBranch();
+		let value: string | undefined;
+		for (let at = branch.length - 1; at >= 0; at--) {
+			const entry = branch[at]!;
+			if (entry.type === "message" && entry.message.role === "user") break;
+			if (entry.type !== "custom" || entry.customType !== "pi-brief") continue;
+			const reply = (entry.data as { reply?: unknown } | undefined)?.reply;
+			value = typeof reply === "string" ? reply : undefined;
+			break;
+		}
+		this.briefCache = { manager, leaf, value };
+		return value;
 	}
 
 	/** Messages before the latest compaction's kept range reach the model only through its summary. */
@@ -712,62 +723,6 @@ export class DeskEngine {
 		}
 	}
 
-	private checkpointSnapshot(): CheckpointSnapshot {
-		const session = this.runtime?.session;
-		if (!session || this.replacing || this.closed) throw new Error("Finish opening this conversation before updating.");
-		if (session.agent.hasQueuedMessages() || session.pendingMessageCount || this.queueGuards.get(session)?.pending)
-			throw new Error("Send or cancel queued Pi input before updating. This Pi version cannot export every queued message and image safely.");
-		this.presentation.inspectMaintenance();
-		if (!session.isIdle && !this.running)
-			throw new Error("Wait for Pi's pending prompt or retry to settle before updating.");
-		const manager = session.sessionManager, file = manager.getSessionFile();
-		if (!file) throw new Error("This conversation has no saved session to restore.");
-		return { session: manager.getSessionId(), file, cwd: manager.getCwd(), leaf: manager.getLeafId(),
-			running: this.checkpointHold?.running ?? this.running };
-	}
-
-	async checkpoint(id: string, action: CheckpointAction): Promise<CheckpointSnapshot | undefined> {
-		if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error("Invalid maintenance checkpoint.");
-		if (action === "release") {
-			if (!this.checkpointHold || this.checkpointHold.id !== id) return;
-			await this.transitionJob?.catch(() => {});
-			const resume = this.checkpointHold.running, session = this.runtime?.session;
-			this.presentation.setSuspended(false);
-			try { await this.presentation.maintenance(id, "release"); }
-			catch (error) { this.presentation.setSuspended(true); throw error; }
-			this.checkpointHold = undefined; this.transition = false;
-			this.scheduleSnapshot();
-			if (resume && !this.closed && session?.isIdle)
-				void session.prompt("Continue", { source: "interactive" }).catch(error =>
-					this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));
-			return;
-		}
-		if (this.checkpointHold) {
-			if (this.checkpointHold.id !== id) throw new Error("Another maintenance checkpoint holds this conversation.");
-			await this.transitionJob;
-			return this.checkpointSnapshot();
-		}
-		if (this.transition || this.runtime?.session.isCompacting)
-			throw new Error("Finish the pending setting or compaction before updating.");
-		const snapshot = this.checkpointSnapshot();
-		if (action === "inspect") return snapshot;
-		this.checkpointHold = { id, running: snapshot.running };
-		this.transition = true; this.presentation.setSuspended(true); this.scheduleSnapshot();
-		const session = this.runtime!.session;
-		const job = Promise.resolve().then(async () => {
-			this.presentation.cancelInteractions();
-			// Owners capture/park synchronously before abort yields. Stop the parent
-			// concurrently so a foreground child result cannot start another model turn.
-			const stopped = await Promise.allSettled([this.presentation.maintenance(id, "hold"), session.abort()]);
-			for (const result of stopped) if (result.status === "rejected") throw result.reason;
-			if (!session.isIdle) throw new Error("Pi started another turn during the checkpoint.");
-			return this.checkpointSnapshot();
-		});
-		this.transitionJob = job;
-		try { return await job; }
-		finally { this.transitionJob = undefined; }
-	}
-
 	private measuredContext(session: AgentSession): number | undefined {
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.measured?.manager !== manager || this.measured.leaf !== leaf || this.measured.revision !== this.usageRevision)
@@ -838,14 +793,6 @@ export class DeskEngine {
 				} });
 			} catch (error) { this.failed = true; throw error; }
 		});
-	}
-
-	async shutdownCheckpoint(): Promise<(CheckpointSnapshot & { checkpoint: string }) | undefined> {
-		const hold = this.checkpointHold;
-		await this.close();
-		const manager = this.runtime?.session.sessionManager, file = manager?.getSessionFile();
-		return hold && manager && file ? { checkpoint: hold.id, session: manager.getSessionId(), file,
-			cwd: manager.getCwd(), leaf: manager.getLeafId(), running: hold.running } : undefined;
 	}
 
 	close(): Promise<void> {

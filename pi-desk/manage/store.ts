@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, unlinkSync, realpathSync, lstatSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, writeFileSync, unlinkSync, realpathSync, lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { SourceSnapshot } from "./source.ts";
 import { within } from "./source.ts";
@@ -22,10 +22,19 @@ export const versionDirectory = (home: string, id: string): string => {
 	if (!validId(id)) throw new Error("Invalid runtime identity.");
 	return join(home, "versions", id);
 };
-export function atomicJson(file: string, data: unknown): void {
+/**
+ * Replaces `file` with `data` as JSON, private to this user, so a reader sees the old or the new contents and never
+ * part of either. `compact` leaves out indentation (large files, or files only Desk reads); `sync` flushes the data
+ * to disk before the replacement.
+ */
+export function atomicJson(file: string, data: unknown, options: { compact?: boolean; sync?: boolean } = {}): void {
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	try {
-		writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+		const descriptor = openSync(temporary, "wx", 0o600);
+		try {
+			writeFileSync(descriptor, (options.compact ? JSON.stringify(data) : JSON.stringify(data, null, 2)) + "\n");
+			if (options.sync) fsyncSync(descriptor);
+		} finally { closeSync(descriptor); }
 		publishFileSync(temporary, file);
 	} finally { try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
 }

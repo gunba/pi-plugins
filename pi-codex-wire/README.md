@@ -220,29 +220,7 @@ Snapshots are scoped to endpoint, account and credential. Reversed completion or
 
 Model lookup follows native Codex: longest matching prefix, then a single simple provider-namespace suffix. If neither matches, the plugin uses Codex 0.159.1's fallback capabilities, displays a warning and records `nativeFallback: true`. It keeps the requested model ID and reasoning effort. The catalog is not an allowlist: a model can accept requests without appearing there. The backend still decides whether the account can use that model.
 
-## Controlled comparison
-
-Compare **CLI versus Desktop** identity with the same Wire transport. This does not compare the full native applications.
-
-1. Pause other use of the shared allowance, including other Pi sessions, native Codex, Work and background tools. Keep the account, model, reasoning, transport, tools and workload constant.
-2. Start each run with fresh conversation history. Use an identical read-only task or fixed fixture. Avoid workloads that change files between runs.
-3. Read the same allowance window from the account usage display. Record its **used** percentage and a stable reset label:
-
-   ```text
-   /codex-wire mark 12.3 5h:2026-09-07T12:00
-   ```
-
-4. Submit the task. After Pi settles and the allowance display updates, record another mark with the same reset label.
-5. Repeat in alternating order: CLI, Desktop, Desktop, CLI. Keep cold-start and warm-context measurements separate. Use enough repeated work to exceed the allowance display's rounding resolution; agree a budget before doing so.
-6. Summarize the diagnostic files locally:
-
-   ```sh
-   node report.mjs path/to/cli-run.jsonl path/to/desktop-run.jsonl
-   ```
-
-The report separates uncached input, cached input, output, reasoning, wire attempts and allowance percentage points. It flags reset changes, failed requests, missing coverage and transport fallback. It does not treat API dollar estimates as subscription accounting or count response usage twice.
-
-### Passive allowance status
+## Passive allowance status
 
 `/pi-usage` shows cumulative recorded token/cost totals and observed subscription
 windows; `/pi-usage on|off` controls its status. `PI_CODEX_USAGE_STATUS=off` disables
@@ -266,8 +244,6 @@ results, compaction/branch summaries, native usage entries such as cache warming
 and deduplicated child receipts. The fast footer and SDK child outcomes use the
 same reducer. Recorded API costs are not subscription allowance measurements.
 
-A repeatable difference between the identity profiles supports **client-correlated treatment**. It does not establish deliberate discrimination: routing, account experiments, backend bugs and rounding remain alternative explanations. A null result cannot rule out treatment keyed to another client signal.
-
 ## Diagnostics and boundaries
 
 Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime.
@@ -279,27 +255,20 @@ its process and whether the run has closed.
 
 Activation runs background retention outside the request path: closed runs and
 runs whose process has exited are limited to 14 days and 64 MiB in total.
-Active writers are excluded. Older logs without ownership records are preserved,
-because their writer cannot be identified safely; remove those only after stopping
-the Pi processes that could still use them.
+Active writers are excluded. Logs without ownership records, written by older
+versions, are removed once none of their parts has changed for 14 days.
 
-New records also include root/child session IDs, lifecycle-derived request
+Records also include root/child session IDs, lifecycle-derived request
 purpose/origin, per-attempt IDs, prewarm-to-inference links and full-input
-fallback reasons. `node ledger.mjs <run.jsonl> [...]` aggregates terminal
-provider usage once per attempt. It does not add the overlapping decoder usage.
-Summary requests with fresh routing IDs are linked to compaction or branch-summary
-lifecycle events by their abort signal, without reading prompt text or
-misclassifying unrelated requests made while a summary is active.
-Legacy records without attempt IDs are identified and excluded from these
-attempt totals. Missing coverage and conflicting response usage are reported.
-Allowance reset counters are retained for comparison, not assigned causally to
-individual concurrent requests.
+fallback reasons. Summary requests with fresh routing IDs are linked to compaction
+or branch-summary lifecycle events by their abort signal, without reading prompt
+text or misclassifying unrelated requests made while a summary is active.
 
 Requests through the registered `openai-codex` provider are covered, including SDK children that inherit it. The child adapter fills in its session ID for SDK summary calls that omit one. Child launch fails closed if the root Wire registration is absent or replaced. Auxiliary window IDs are persisted in the host session's custom entries and survive provider reactivation. Independently created runtimes need the bundle loaded; client selection is shared through the agent directory. Proxy environment settings apply to WebSockets; SSE continues through Pi's supplied fetch implementation.
 
-This is application-protocol emulation, not byte-for-byte native execution. It uses Pi's runtime and Node's networking stack. The transport is pinned to a source version. Unsupported tool namespaces fail explicitly. The model-visible Pi prompt and tools are deliberately retained so identity comparisons hold the workload constant. New native protocol features require a source review and tests before adoption.
+This is application-protocol emulation, not byte-for-byte native execution. It uses Pi's runtime and Node's networking stack. The transport is pinned to a source version. Unsupported tool namespaces fail explicitly. The model-visible Pi prompt and tools are retained. New native protocol features require a source review and tests before adoption.
 
-No inference or allowance-consuming comparison is run by installation or activation. A user prompt initiates requests.
+Installation and activation send no inference requests. A user prompt initiates requests.
 
 ## Verify locally
 
@@ -307,7 +276,7 @@ No inference or allowance-consuming comparison is run by installation or activat
 npm test
 ```
 
-The tests use local HTTP/WebSocket servers and fake credentials, plus Pi's actual serializer/parser. They cover native field projections, turn isolation, continuation, prewarm, fallback, cancellation, catalog failures, tool calls, privacy and report accounting.
+The tests use local HTTP/WebSocket servers and fake credentials, plus Pi's actual serializer/parser. They cover native field projections, turn isolation, continuation, prewarm, fallback, cancellation, catalog failures, tool calls, privacy and log retention.
 
 Source map:
 

@@ -1,8 +1,9 @@
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { atomicJson } from "../../manage/store.ts";
 
 /**
  * Pi updates its packages only when someone runs `pi update`, and then in place, under running conversations. Desk keeps
@@ -77,8 +78,7 @@ export class PackageUpdates {
 	}
 	private write(copies: Copies): void {
 		mkdirSync(this.options.root, { recursive: true });
-		const file = join(this.options.root, "current.json"), temporary = `${file}.${process.pid}.tmp`;
-		writeFileSync(temporary, JSON.stringify(copies, null, 2)); renameSync(temporary, file);
+		atomicJson(join(this.options.root, "current.json"), copies);
 	}
 	/** Versions go two weeks after being replaced: by then the conversations that loaded them have restarted onto newer ones. */
 	private prune(copies: Copies): void {

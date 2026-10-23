@@ -21,9 +21,8 @@ async function load(t, factories, eventBus = createEventBus()) {
 }
 
 function countTools(result) {
-  const names = result.extensions.flatMap((extension) => [...extension.tools.keys()]);
-  assert.equal(names.filter((name) => name === "wait_agent").length, 1);
-  assert.equal(names.filter((name) => name === "cancel_work_wait").length, 0);
+  // Exactly one extension on the bus holds the claim, and releases it on shutdown.
+  assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_shutdown")).length, 1);
 }
 
 test("real loader deduplicates distinct ExtensionAPI event facades on one underlying bus", async (t) => {
@@ -36,7 +35,6 @@ test("real loader deduplicates distinct ExtensionAPI event facades on one underl
   assert.equal(new Set(facades).size, 3, "the host uses distinct event facade objects");
   assert.deepEqual(result.errors, []);
   countTools(result);
-  assert.equal(result.extensions.filter((extension) => extension.handlers.has("session_start")).length, 1);
 });
 
 test("standalone root and SDK child loaders each install their own policy", async (t) => {

@@ -6,10 +6,6 @@ import type {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
-import {
-	CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
-	isChatGptCodexModel,
-} from "../../pi-codex-compat/extensions/model-tools.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -102,6 +98,14 @@ export function plainSearchText(output: string): string {
 	return searchDisplayText(output.replace(/^Internal Error \(\)\n?/gm, "").replace(/ ?\[wordlim: \d+\]/g, ""));
 }
 const SEPARATOR = "\n" + "-".repeat(80) + "\n";
+/** The max_output_tokens a search asks Codex for. */
+const SEARCH_OUTPUT_TOKENS = 10_000;
+
+/** A model reached through a ChatGPT (Codex) sign-in, whose account search uses. */
+function isChatGptCodexModel(model: { provider?: string; api?: string } | null | undefined): boolean {
+	const provider = model?.provider?.trim().toLowerCase() ?? "", api = model?.api?.trim().toLowerCase();
+	return api === "openai-codex-responses" || ["codex", "openai-codex", "chatgpt"].includes(provider);
+}
 
 /** The Codex model for search: this conversation's, else the computer's default Codex model, else any signed-in one. */
 export function searchModel(ctx: ExtensionContext): ExtensionContext["model"] | undefined {
@@ -147,7 +151,7 @@ export async function executeWebSearch(
 						allowed_callers: ["direct"],
 						external_web_access: true,
 					},
-					max_output_tokens: CODEX_TOOL_OUTPUT_TOKEN_BUDGET,
+					max_output_tokens: SEARCH_OUTPUT_TOKENS,
 				},
 			}, signal, dependencies.fetchImpl);
 			const response = parseSearchResponse(text);

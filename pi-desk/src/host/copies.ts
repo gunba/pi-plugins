@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -11,6 +11,7 @@ import { join } from "node:path";
  * sent again from the start. Copies go 30 days after their conversation was last active.
  */
 import type { ConversationCopy } from "../shared/protocol.ts";
+import { atomicJson } from "../../manage/store.ts";
 export type CopyInfo = ConversationCopy;
 /** What a computer sends: its conversation's next bytes, from `offset`, whole lines only. */
 export type CopyChunk = { session: string; cwd: string; title?: string; offset: number; data: string; total: number; head: string; updated: number };
@@ -116,7 +117,7 @@ export class CopyStore {
 	private file(computer: string, session: string) { return join(this.directory, computer, `${session}.jsonl`); }
 	private save(): void {
 		mkdirSync(this.directory, { recursive: true });
-		writeFileSync(join(this.directory, "index.json.tmp"), JSON.stringify(this.index)); renameSync(join(this.directory, "index.json.tmp"), join(this.directory, "index.json"));
+		atomicJson(join(this.directory, "index.json"), this.index, { compact: true });
 	}
 	/** What this holder has of one computer's conversations, for that computer to continue from. */
 	status(computer: string): Record<string, { size: number; head: string }> {

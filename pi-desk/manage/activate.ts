@@ -69,16 +69,14 @@ export async function activateRuntime(home: string, requested?: string) {
 	} finally { lock.close(); }
 }
 
-/** Hold startup admission and select the verified host; independent actors stay pinned. */
-export async function activatePreparedRuntime(home: string, stopFor?: string, checkpoint?: string): Promise<{ release?: string; startup?: "supervisor" | "launcher"; deferred?: number }> {
-	if (stopFor && !checkpoint) throw new Error("Explicit activation requires a host handoff.");
+/** Hand a running host over to the prepared `target`, or select it for a stopped host; independent actors stay pinned. */
+export async function activatePreparedRuntime(home: string, target: string, checkpoint: string): Promise<{ release: string; startup?: "supervisor" | "launcher" }> {
 	const manage = new SessionLease(join(home, "manage"));
 	let edit: SessionLease | undefined, launch: SessionLease | undefined, host: SessionLease | undefined;
 	try {
 		const state = readState(home), installation = readInstallation(home);
-		if (stopFor && (state?.pending !== stopFor || state.autoApply !== stopFor))
+		if (!state?.pending || state.pending !== target || state.autoApply !== target)
 			throw new Error("The prepared update changed. Review it before stopping sessions.");
-		if (!state?.pending || state.autoApply !== state.pending) return {};
 		const release = readRelease(home, state.pending);
 		if (canonicalPath(release.source) !== canonicalPath(state.source)) throw new Error("Runtime source does not match this installation.");
 		edit = new SessionLease(join(installation.directory, "login-edit"));
@@ -90,7 +88,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 			if (canonicalPath(login.entry) !== canonicalPath(launcherPath(home)) || canonicalPath(login.node) !== canonicalPath(process.execPath))
 				throw new Error("The configured launcher or Node has changed. Repair login-start before updating.");
 		}
-		const supervisorId = login && stopFor ? before.host?.supervisor : undefined;
+		const supervisorId = login ? before.host?.supervisor : undefined;
 		const supervisor = supervisorId ? liveSupervisor(installation.directory) : undefined;
 		if (supervisorId && (!supervisor || supervisor.instance !== supervisorId || supervisor.owner !== login!.owner
 			|| canonicalPath(supervisor.entry) !== canonicalPath(login!.entry) || canonicalPath(supervisor.node) !== canonicalPath(login!.node)))
@@ -103,9 +101,7 @@ export async function activatePreparedRuntime(home: string, stopFor?: string, ch
 		}
 		if (before.state === "running") {
 			if (!state.active || before.host?.runtime !== state.active) throw new Error("The running host does not match the selected runtime.");
-			const result = await stopHost(installation.directory, { idleOnly: !stopFor, runtime: state.active,
-				...(stopFor ? { checkpoint: { id: checkpoint!, target: stopFor } } : {}) }, launch);
-			if (result.deferred !== undefined) return { deferred: result.deferred };
+			await stopHost(installation.directory, { runtime: state.active, checkpoint: { id: checkpoint, target } }, launch);
 		}
 		if (login && !supervisor) {
 			const until = Date.now() + SHUTDOWN_WAIT_MS;

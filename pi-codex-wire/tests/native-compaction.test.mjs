@@ -15,9 +15,9 @@ import { CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheck
 import { CHECKPOINT, entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../extensions/checkpoint-state.ts";
 import { compactInput } from "../extensions/compact-input.ts";
 import nativeCompaction, { inheritCompactor, retryCompaction } from "../extensions/native-compaction.ts";
-import { copyCompletedParentTurns } from "../../pi-subagents/extensions/subagent-runtime.ts";
-import { bindChildProvider } from "../../pi-subagents/extensions/pi-sdk-driver.ts";
-import { inheritProviderRuntime } from "../../pi-subagents/extensions/subagents.ts";
+import { copyCompletedParentTurns } from "../../pi-agents/subagents/subagent-runtime.ts";
+import { bindChildProvider } from "../../pi-agents/subagents/pi-sdk-driver.ts";
+import { inheritProviderRuntime } from "../../pi-agents/subagents/subagents.ts";
 
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url")}.x`;
 const responsesUrl = "https://chatgpt.com/backend-api/codex/responses";

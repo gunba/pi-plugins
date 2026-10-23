@@ -1,23 +1,7 @@
 export const LEDGER_ENTRY = "pi-context-ledger";
 export type LedgerLeaf = { label: string; tokens: number };
 export type LedgerGroup = { label: string; tokens: number; note: string; items: LedgerLeaf[] };
-/** measured: total is what the provider reported for the first request, and the parts are scaled to it. */
-export type Ledger = { total: number; contextWindow: number; windowPercent: number | null; groups: LedgerGroup[]; measured?: boolean };
-/** The first request's size as the provider counted it (input, cache reads and cache writes). */
-export const LEDGER_MEASURED_ENTRY = "pi-context-ledger-measured";
-
-/**
- * The estimate counts characters, which undercounts JSON tool definitions in particular. Scale every part
- * so the total is the measured one; the shares stay estimates.
- */
-export function measuredLedger(ledger: Ledger, measured: number): Ledger {
-	if (!(measured > 0) || !(ledger.total > 0)) return ledger;
-	const factor = measured / ledger.total;
-	const scale = (tokens: number) => Math.round(tokens * factor);
-	return { ...ledger, total: measured, measured: true,
-		windowPercent: ledger.contextWindow > 0 ? (measured / ledger.contextWindow) * 100 : ledger.windowPercent,
-		groups: ledger.groups.map(group => ({ ...group, tokens: scale(group.tokens), items: group.items.map(item => ({ ...item, tokens: scale(item.tokens) })) })) };
-}
+export type Ledger = { total: number; contextWindow: number; windowPercent: number | null; groups: LedgerGroup[] };
 
 /** Persisted entry data crosses the same untrusted boundary as other transcript content. */
 export function readLedger(value: unknown): Ledger | undefined {

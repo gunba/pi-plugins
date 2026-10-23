@@ -38,11 +38,6 @@ function envFirst(...names: string[]): string | undefined {
   return undefined;
 }
 
-function terminalName(): string {
-  if (process.env.WT_SESSION) return "Windows Terminal";
-  return envFirst("TERM_PROGRAM", "TERMINAL_EMULATOR", "TERM") ?? "unknown";
-}
-
 function pathEntries(): string[] {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const seen = new Set<string>();
@@ -233,7 +228,6 @@ export default function (pi: ExtensionAPI) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || process.env.TZ;
   const shell = envFirst("SHELL", "ComSpec", "COMSPEC") ?? "unknown";
   const bashPath = findExecutable(["bash"]);
-  const terminal = terminalName();
   const platform = `${sanitizePromptValue(os.platform(), "unknown", 40)}/${sanitizePromptValue(os.arch(), "unknown", 40)} ${sanitizePromptValue(os.release(), "unknown", 80)}`;
   pi.on("before_agent_start", async (event, ctx) => {
     const cwd = eventCwd(event);
@@ -246,7 +240,7 @@ export default function (pi: ExtensionAPI) {
       "### Local env",
       `- timezone: ${sanitizePromptValue(timeZone)}`,
       `- os: ${platform}`,
-      `- term: ${sanitizePromptValue(terminal)}; ${shellParts.join("; ")}`,
+      `- ${shellParts.join("; ")}`,
       `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 

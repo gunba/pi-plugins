@@ -1,14 +1,14 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { LEASE_MS, type PartyStore } from "../../../pi-party/store.ts";
+import { LEASE_MS, type PartyStore } from "../../../pi-agents/store.ts";
 import { atomicJson } from "../../manage/store.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConnectorRequest, ConnectorResponse } from "./relay-connector.ts";
-import type { QuestStore } from "../../../pi-party/quests.ts";
-import { nativeId, type PartyComputer } from "../../../pi-party/network.ts";
-import type { PartyOperations } from "../../../pi-party/operations.ts";
-import { isToday, localTime, repeatLabel, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-party/quest-model.ts";
+import type { QuestStore } from "../../../pi-agents/quests.ts";
+import { nativeId, type PartyComputer } from "../../../pi-agents/network.ts";
+import type { PartyOperations } from "../../../pi-agents/operations.ts";
+import { isToday, localTime, repeatLabel, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-agents/quest-model.ts";
 
 interface Client { name: string; redirectUris: string[]; created: number }
 interface Token { client: string; kind: "access" | "refresh"; expires: number }

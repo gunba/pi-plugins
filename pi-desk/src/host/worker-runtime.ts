@@ -9,7 +9,7 @@ import { WorkerRequests } from "./worker-requests.ts";
 import { WorkerControls } from "./worker-controls.ts";
 import { readWorkerBootstrap, removeWorkerRecord, workerLease, writeWorkerFile } from "./worker-registry.ts";
 
-type Engine = Pick<DeskEngine, "start" | "command" | "snapshot" | "checkpoint" | "shutdownCheckpoint" | "close">;
+type Engine = Pick<DeskEngine, "start" | "command" | "snapshot" | "close">;
 export interface WorkerRuntime { endpoint: WorkerEndpoint; closed: Promise<void>; stop(): Promise<void> }
 
 /** Native loading begins after the host authenticates and requests initialization. */
@@ -52,11 +52,8 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 	};
 	const closeNative = async () => {
 		if (!engineJob) { nativeClosed = true; return; }
-		const current = await engineJob;
-		const cursor = initialized ? await current.shutdownCheckpoint() : undefined;
-		await current.close();
+		await (await engineJob).close();
 		nativeClosed = true;
-		return cursor;
 	};
 	const controls = new WorkerControls(() => ui?.generation ?? snapshot?.ui.generation ?? "", async (command, _id, generation) => {
 		if (command.kind === "close") return closeNative();
@@ -82,7 +79,6 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 			initialGeneration = snapshot.ui.generation;
 			return snapshot;
 		}
-		if (request.type === "checkpoint") return current.checkpoint(request.checkpoint, request.action);
 		const result = await current.command(request.generation, request.command);
 		if (isControl(request.command)) endpoint?.publish({ type: "snapshot", snapshot: current.snapshot() });
 		return result;

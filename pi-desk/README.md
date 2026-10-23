@@ -121,7 +121,7 @@ Dot's execution and memory remain in OpenAI's cloud. Closing Desk or selecting
 **Disconnect** does not pause it. Sending first saves a local outbox entry and
 clears the input, so you can compose the next message immediately. Messages
 leave the queue in order; an unconfirmed send holds later messages. A paused
-Dot also holds its queue until resumed from **Manage Dot**.
+Dot also holds its queue until it is resumed in ChatGPT.
 
 The host saves delivery receipts and never automatically resends an uncertain
 delivery. **Check delivery** reconciles a receipt. **Cancel unconfirmed attempt**
@@ -135,21 +135,8 @@ account-bound; after an account change, reconnect the original account or select
 the files again. Unconfirmed uploads retain their bytes and receipts for review.
 A confirmed message releases its staged file copies. Supported downloads stream
 through the host's bounded, short-lived cache (128 MiB per file, 256 MiB total).
-Other attachment previews and unsupported download origins use **Native view**.
-
-**Activity**, **Computer**, **Manage Dot**, and **Native view** open an owned Chrome
-tab only on request. These views require Pi's Chrome DevTools connection and a
-browser profile signed into the same Dot account; its browser sign-in is separate
-from the saved login used for chat. Closing the view closes its owned Dot tab.
-The native view carries ChatGPT's rendered interface and keyboard/pointer input;
-cloud tasks, profile, rules and approvals remain owned by ChatGPT. **Fit** adapts
-the view to the available space; zoom and **Pan** support detailed work on small
-screens. **Type text** supplies a local text field and keyboard buttons for touch
-keyboards. Shift+Esc moves focus out of the native controls. Page or Dot changes
-stop input, and an uncertain input stops the local queue without replay.
-Browser permission dialogs, external authorization windows, microphone capture
-and audio playback are not forwarded; complete those steps on the connection
-computer. Video can be viewed in the native interface without forwarded audio.
+Other attachment previews and unsupported download origins open in ChatGPT.
+Dot's activity, cloud computer, profile, rules and approvals also stay in ChatGPT.
 
 **Agent access** (in the Dot connection panel) lets the Dot message your Pi agents.
 Turning it on registers the Dot as "Steve (Dot)" in agent messaging and shows a
@@ -164,7 +151,7 @@ treat its messages as peer context. Requests travel through the relay, which
 sees those messages but not transcripts. Turning access off revokes every token.
 
 The direct adapter uses ChatGPT's private backend protocol, not a supported
-public Dot API. Native views also depend on ChatGPT's web interface. Provider
+public Dot API. Provider
 changes can require an adapter update; unsupported authorization and permission
 steps stay with the provider. Dot usage remains subject to the selected account's
 subscription and Dot allowances. Hosts without direct-connection support show an
@@ -807,7 +794,12 @@ Remote access setup is in [RELAY.md](RELAY.md).
 - `src/host/integrations.ts`: documented third-party status and command bridges.
 - `src/host/transcript-feed.ts`: shared native message projection for roots and children.
 - `src/host/worker.ts`: private process protocol and command receipts.
-- `src/host/server.ts`: authenticated HTTP API and reconnectable event stream.
+- `src/host/server.ts`: the host's conversations, their workers, inputs and saved references, and its lifecycle.
+- `src/host/host-http.ts`: local HTTP server, process controls and pairing; `host-api.ts` and `session-routes.ts`: the app's API.
+- `src/host/host-events.ts`: change delivery to browsers and the reconnectable event stream.
+- `src/host/host-updates.ts`: update checks, automatic host updates and conversation restarts.
+- `src/host/account-connection.ts`: workspace identity, relay and the agent network to other computers.
+- `src/host/agent-operations.ts` and `conversation-moves.ts`: agents' requests of this computer, and moving conversations.
 - `src/account/`: delegated-token validation, device directory and credentials.
 - `src/host/account-identity.ts`: native sign-in and protected persistence.
 - `src/host/publish-app.ts`: separate website configuration and headers.

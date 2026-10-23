@@ -48,7 +48,7 @@ export function handoffTicket(directory: string, source: string | undefined): Up
 	const ledger = new InputLedger(directory);
 	try {
 		const ticket = ledger.checkpoint();
-		return ticket?.workers && ticket.state === "committed" && ticket.source === source ? ticket : undefined;
+		return ticket?.state === "committed" && ticket.source === source ? ticket : undefined;
 	} finally { ledger.close(); }
 }
 

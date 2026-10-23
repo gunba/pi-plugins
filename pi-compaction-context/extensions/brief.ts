@@ -27,6 +27,8 @@ export type Brief = {
 	usage?: Usage;
 	/** Already written for this reply; nothing was sent. */
 	reused?: boolean;
+	/** Written without being asked, after a substantial turn while the user was away. */
+	auto?: boolean;
 };
 export type BriefProbe = { session: string; refresh?: boolean; signal?: AbortSignal; result?: Promise<Brief> };
 
@@ -54,6 +56,9 @@ Where you chose something for them or assumed something they did not say, and wh
 
 ## Not done or not verified
 What you could not do, what failed, and what you did not test or confirm.
+
+## Next steps
+Up to three messages the user could send you next, most useful first. Each is one line in their words, as they would type it to you, on its own "- " bullet. Write "None." if nothing follows.
 
 Adapt to the kind of work: for code, say what was tested and how; for research, give the findings and their sources; for errands, give the confirmations; for system changes, say what is different now and how to reverse it. If the turn only answered a question, keep it to Outcome and Needs you.`;
 
@@ -92,8 +97,12 @@ function latest(branch: readonly Entry[]): { reply?: Entry; kept?: Brief } {
 	return { reply };
 }
 
+/** Thrown when a cache-only brief would need the conversation sent again at full price. */
+export const NOT_CACHED = "The conversation's cached request can't be reused.";
+
+/** Writes the brief on the latest reply, or returns the one already written. cacheOnly refuses the transcript route. */
 export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | undefined, save: (brief: Brief) => void,
-	options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<Brief> {
+	options: { refresh?: boolean; signal?: AbortSignal; cacheOnly?: boolean; auto?: boolean } = {}): Promise<Brief> {
 	const model = ctx.model;
 	if (!model) throw Error("This conversation has no model yet.");
 	const branch = ctx.sessionManager.getBranch() as unknown as Entry[];
@@ -106,6 +115,7 @@ export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | unde
 	const replayable = sent && sent.model === modelKey && !cacheExpired(model, branch as never)
 		&& (!reply || ids.indexOf(reply.id) > (sent.leaf ? ids.indexOf(sent.leaf) : -1));
 	const payload = replayable ? withReplyAndQuestion(JSON.parse(sent!.payload), sent!.api, replyText, BRIEF_PROMPT) : undefined;
+	if (options.cacheOnly && !payload) throw Error(NOT_CACHED);
 	// A side request: a provider with per-conversation connection state (codex-wire) sends it separately, leaving
 	// that state for the conversation's next turn. Other providers ignore the header's meaning.
 	const headers = { [SIDE_REQUEST_HEADER]: "1" };
@@ -124,7 +134,8 @@ export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | unde
 	if (result.stopReason === "error" || result.stopReason === "aborted") throw Error(result.errorMessage ?? "The brief could not be written.");
 	const markdown = text(result.content);
 	if (!markdown) throw Error("The model returned no brief.");
-	const brief: Brief = { markdown, reply: reply?.id ?? null, created: Date.now(), model: modelKey, source: payload ? "cache" : "transcript", usage: result.usage };
+	const brief: Brief = { markdown, reply: reply?.id ?? null, created: Date.now(), model: modelKey, source: payload ? "cache" : "transcript", usage: result.usage,
+		...(options.auto ? { auto: true } : {}) };
 	save(brief);
 	return brief;
 }

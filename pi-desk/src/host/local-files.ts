@@ -2,11 +2,10 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fileLink } from "../../../pi-local-links/extensions/links.ts";
 import { ExpiredReference } from "./references.ts";
-import { localPath } from "./local-path.ts";
+import { expandHome, localPath } from "./local-path.ts";
 import { openDesktopFile, type DesktopFileAction } from "./desktop-files.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, type FileCommand, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
@@ -81,9 +80,7 @@ export class LocalFiles {
 		if (!path || path.length > 4000 || /[\x00-\x1f\x7f]/.test(path)) return;
 		if (process.platform !== "win32" && (/^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\"))) return;
 		try {
-			if (path === "~") path = homedir();
-			else if (path.startsWith("~/") || process.platform === "win32" && path.startsWith("~\\")) path = resolve(homedir(), path.slice(2));
-			const url = pathToFileURL(resolve(cwd, path));
+			const url = pathToFileURL(resolve(cwd, expandHome(path)));
 			if (Number.isSafeInteger(line) && line! > 0 && line! <= 9_999_999) url.hash = `L${line}`;
 			return this.observe(url.href, cwd, name);
 		} catch { return; }

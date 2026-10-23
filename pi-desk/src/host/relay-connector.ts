@@ -13,7 +13,7 @@ import type { HostEvent, SessionView } from "../shared/protocol.ts";
 import { sessionChanges } from "../shared/session-patch.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
 import { AccountSignInRequired } from "./account-errors.ts";
-import { MAX_NETWORK_PACKET } from "../../../pi-party/network.ts";
+import { MAX_NETWORK_PACKET } from "../../../pi-agents/network.ts";
 
 interface Peer {
 	id: string; purpose: ChannelPurpose; initiator?: boolean; handshake?: ClientHandshake; device?: DeviceCredential; channel?: SecureChannel; ready: boolean;

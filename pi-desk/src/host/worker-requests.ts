@@ -34,7 +34,7 @@ export class WorkerRequests {
 			error => ({ type: "result" as const, id: request.id, error: error instanceof Error ? error.message : String(error),
 				...(error instanceof StaleGeneration ? { code: "stale_generation" as const } : error instanceof ReceiptConflict ? { code: "receipt_conflict" as const } : {}) }),
 		);
-		const readOnly = request.type === "describe" || request.type === "control" || request.type === "checkpoint" && request.action === "inspect"
+		const readOnly = request.type === "describe" || request.type === "control"
 			|| request.type === "command" && ["snapshot", "history", "asset", "artifact", "native_read", "context_inspect", "context_read"].includes(request.command.kind)
 			|| request.type === "command" && request.command.kind === "file" && ["info", "text", "chunk"].includes(request.command.operation);
 		if (!readOnly) {

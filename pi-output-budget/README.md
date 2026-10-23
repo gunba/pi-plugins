@@ -10,29 +10,31 @@ it explicitly; `noExtensions: true` still prevents unrelated extension discovery
   Its text preview is 32,000 characters. `offset` and `limit` select source lines.
   When truncated, the complete **requested range** is captured once in an
   immutable artifact. `full: true` permits up to 128,000 characters in one result.
+  Images (PNG, JPEG, GIF, WebP; BMP is converted to PNG) are resized to the
+  model's limits and to at most 1.5 MB each, because every request resends every
+  image in the conversation. The file on disk is untouched.
 - `read_artifact` reads a captured artifact by ID. `offset` and `length` count
   UTF-16 characters, not source lines. Always follow the returned `next_offset`
   until it is `null` when completeness matters. Unicode pairs are not split.
   `query` performs literal, case-sensitive line search over the full artifact;
   paging then refers to the search results.
-  Results remain in request order; one file error does not hide other results.
-  Each file retains its own large-output reference, and the combined preview is
-  also bounded. Images use `read`.
 
-Other text-only tool results receive a 16,000-character preview. Their native
-details, error state and nested model usage are preserved. Image blocks pass
-through untouched. Limits are characters, not claimed exact token counts.
+## Other tool results
 
-Completed truncated managed-command logs are archived before native log
-cleanup. Earlier truncation is respected even if the final output chunk is
-small. Native Bash/PowerShell full-log files are captured when available.
-The MCP adapter's full-text spill files are also captured, even when the returned
-preview is short or accompanied by images. Their artifact references point to
-the complete original text. Paths
-inside server-controlled MCP payloads are not followed.
-Other tools may already have truncated their data upstream: their artifacts
-contain all returned text, including the original truncation/retrieval notice,
-not data the underlying tool never returned.
+Text-only results longer than 16,000 characters are cut to that length, with
+the complete text in an artifact.
+
+Pi's own tools cut their output first: `bash` and `powershell` keep the last
+50 KB, `grep`, `find` and `ls` the first 50 KB, and `codemode` (its
+`max_output_tokens`) and MCP tools (20 KB) the start and end. Their results are
+cut again in the same place, so the two cuts act as one, and Pi's closing
+notice is kept. When Pi saved the complete output to a temporary file, that
+file is captured as an artifact, so it outlives Pi's cleanup; only that path in
+Pi's details is followed, never a path inside a tool's or server's payload.
+
+Results of other tools keep their first 16,000 characters. Native details, error
+state and nested model usage are preserved. Image blocks pass through untouched.
+Limits are characters, not claimed exact token counts.
 
 ## Earlier results
 

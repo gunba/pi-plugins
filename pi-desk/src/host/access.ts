@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { atomicJson } from "../../manage/store.ts";
 
 interface Device { id: string; label: string; hash: string; created: number }
 interface AccessData { version: 1; operator: string; devices: Device[] }
@@ -25,11 +26,7 @@ export class AccessStore {
 		this.save();
 	}
 
-	private save(): void {
-		const temporary = `${this.file}.${randomUUID()}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-		renameSync(temporary, this.file);
-	}
+	private save(): void { atomicJson(this.file, this.data); }
 
 	isOperator(token: string): boolean { return timingSafeEqual(digest(token), digest(this.data.operator)); }
 

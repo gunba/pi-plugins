@@ -1,97 +1,58 @@
-import { Worker as ThreadWorker } from "node:worker_threads";
-import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import type { Socket } from "node:net";
-import { WebSocketServer } from "ws";
-import { MAX_WIRE } from "../shared/secure-channel.ts";
-import { existsSync, mkdirSync, realpathSync, statSync, type FSWatcher, watch } from "node:fs";
-import { createPartyFork } from "../../../pi-party/fork.ts";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir, hostname } from "node:os";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
-import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { PartyOperations } from "../../../pi-agents/operations.ts";
 import { AccessStore } from "./access.ts";
-import { commandFrom, workerCommandFrom, object, string } from "./commands.ts";
 import { SessionWorker } from "./worker-client.ts";
 import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
-import type { ConversationCopy, HostEvent, HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import type { HostState, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { PackageUpdates } from "./package-updates.ts";
-import { MESSAGE_PARTS } from "../../../pi-party/store.ts";
 import { homeFolder } from "./local-path.ts";
-import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
-import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
-import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
-import { AccountNetwork } from "./account-network.ts";
-import type { NativeAccountIdentity } from "./account-identity.ts";
-import { securityHeaders, serveClient } from "./static.ts";
 import { readSessionHeader, SessionCatalog } from "./session-files.ts";
-import { SavedSessionIndex, CatalogChanged } from "./saved-sessions.ts";
-import { isControl } from "../shared/controls.ts";
-import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
+import { SavedSessionIndex } from "./saved-sessions.ts";
+import { WorkerConnectionError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
-import { API_HEADER, RELEASE, apiMatches, upgradeMessage } from "../shared/release.ts";
-import { CACHE_COMPACTION_LEAD_MS, QUIET_MS, mcpServerCommands, readAutomatic, readCacheCompaction, restartBlockers, workerHasRunningCommands, writeAutomatic,
-	writeCacheCompaction, type AutomaticUpdates } from "./automatic-updates.ts";
+import { RELEASE } from "../shared/release.ts";
 import { InputLedger } from "./inputs.ts";
 import { Logins, adoptSavedLogins, retireSavedLogins } from "./logins.ts";
 import { SettingsSync } from "./settings-sync.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
 import { liveSupervisor } from "./login-supervisor.ts";
-import { operatorAvailability, setOperatorAvailability } from "./operator.ts";
+import { operatorAvailability } from "./operator.ts";
 import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
-import { readState } from "../../manage/store.ts";
 import { Attachments } from "./attachments.ts";
-import type { InputSubmission } from "../shared/inputs.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
-import { automaticUpdatePending, launchOperation, runtimeUpdateState } from "../../manage/operations.ts";
-import { checkRuntimeUpdate, readUpdateCheck, updateCheckInterval } from "../../manage/update-check.ts";
-import type { RuntimeUpdateState } from "../shared/updates.ts";
 import { isOpenSession } from "../shared/workspace.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
-import { PartyNetwork } from "./party-network.ts";
 import { DotConnector } from "./dot-connector.ts";
-import { accountConfiguration, accountOrigin, workspaceIdentity, type AccountConfiguration } from "../shared/account.ts";
-import { PartyOperations } from "../../../pi-party/operations.ts";
-import { QuestStore } from "../../../pi-party/quests.ts";
-import { Dictation, MAX_DICTATION_BYTES } from "./dictation.ts";
-import type { Quest, QuestActor, QuestCommand, QuestView } from "../shared/quests.ts";
-import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi-party/network.ts";
-import { configuredSessionDirectory } from "./session-directories.ts";
-import { COPIES, HOLD, Teleport, placeMoved, sessionFolder, type Conversation, type Move } from "./teleport.ts";
+import { Dictation } from "./dictation.ts";
+import { Teleport } from "./teleport.ts";
 import { DotConnection } from "./dot.ts";
+import { AccountConnection } from "./account-connection.ts";
+import { AgentOperations, applyModelChoice } from "./agent-operations.ts";
+import { ConversationMoves } from "./conversation-moves.ts";
+import { EfficiencyReports } from "./efficiency.ts";
+import { HostApi } from "./host-api.ts";
+import type { HostCore, HostOptions, ManagedSession } from "./host-core.ts";
+import { HostEvents } from "./host-events.ts";
+import { HostHttp } from "./host-http.ts";
+import { HostQuests } from "./host-quests.ts";
+import { HostUpdates } from "./host-updates.ts";
 
-interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; proxy?: string }
-interface ModelChoice { model?: string; reasoning?: string }
-interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number;
-	/** A new conversation's chosen model, applied once it is ready and before any message is delivered. */
-	setup?: ModelChoice; settingUp?: Promise<void>;
-	/** Keep it in the sidebar once its close completes. */
-	keepOnClose?: boolean;
-	/** Its process is being replaced: closing it is the first half of a restart, so it stays open and selected. */
-	replacing?: boolean }
-interface EventClient { response: ServerResponse; device: string }
-const json = (response: ServerResponse, code: number, value: unknown) => {
-	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-	response.end(JSON.stringify(value));
-};
-const cookie = (request: IncomingMessage) => /(?:^|;\s*)pi_desk=([^;]+)/.exec(request.headers.cookie ?? "")?.[1] ?? "";
-
-/** A delivery or setting change running this long is stuck. */
-const STUCK_MS = 60 * 60_000;
-/** A failed automatic update is tried again after this long. */
-const RETRY_MS = 60 * 60_000;
-
-/** How often a host checks the account service for a moved relay. */
-const ACCOUNT_FOLLOW_MS = 10 * 60_000;
-
-/** An agent as this computer names it: its id here, or id@computer for one on another computer. */
-const requester = (computer: string, sender: string) => computer === "local" ? sender : `${sender}@${computer}`;
-
+/**
+ * Desk's host on this computer: its conversations, each run by an independent worker process, their inputs and saved
+ * references, and its lifecycle, from startup and reattaching workers after an update to shutdown. Its other parts
+ * share these through `core` (host-core.ts).
+ */
 export class DeskHost {
-	private options: Options;
+	private options: HostOptions & { agentDir: string };
 	private access: AccessStore;
 	private catalog?: SessionCatalog;
 	private storageError?: string;
@@ -111,87 +72,99 @@ export class DeskHost {
 	private restoringUpdate = false;
 	private restoreUpdateJob?: Promise<void>;
 	private parties?: Parties;
-	private partyNetwork?: PartyNetwork;
 	private partyOperations?: PartyOperations;
+	private dotConnector?: DotConnector;
+	private dictation?: Dictation;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
-	private server = createServer((request, response) => { void this.handle(request, response); });
-	private directSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_WIRE * 2, perMessageDeflate: false });
 	private sessions = new Map<string, ManagedSession>();
 	private startupWaits = new Set<() => void>();
-	private clients = new Set<EventClient>();
-	private watchers = new Set<(event: HostEvent) => void>();
-	/** What browsers last received: each conversation, and the host state apart from its conversations. */
-	private sentSessions = new Map<string, string>();
-	/** Remote browsers, through the relay or directly; they receive what local browsers do. */
-	private browsers = new Set<(event: HostEvent) => void>();
-	private sentHost?: string;
-	private relay?: RelayConnector;
-	private relayStatus?: RelayStatus;
-	private dotConnector?: DotConnector;
-	private quests?: QuestStore;
-	private dictation?: Dictation;
-	private questView?: QuestView;
-	private accountIdentity?: NativeAccountIdentity;
-	private accountRevision = 0;
-	private accountRetry?: ReturnType<typeof setTimeout>;
-	private accountFollow?: ReturnType<typeof setInterval>;
-	private sequence = 0;
-	private history: { id: number; frame: string }[] = [];
-	private historyBytes = 0;
 	private hostLease?: SessionLease;
 	private heartbeat?: ReturnType<typeof setInterval>;
-	private attemptWindow = new Map<string, { count: number; until: number }>();
 	private closing = false;
 	private closeJob?: Promise<void>;
 	private preserveWorkers = false;
 	private control?: HostControl;
 	private directory = "";
-	/** The efficiency report, refreshed in a worker thread when it is older than ten minutes and someone asks. */
-	private efficiency?: { report: unknown; at: number };
-	private efficiencyRun?: Promise<void>;
 	private runtime?: string;
 	private runtimeHome?: string;
-	private updates?: RuntimeUpdateState;
-	private updateWatch?: FSWatcher;
-	private updateTimer?: ReturnType<typeof setTimeout>;
-	private applyingUpdate = false;
-	private automatic: AutomaticUpdates = { host: true, conversations: true };
-	private cacheCompaction?: number;
-	/** The cache use each conversation was last compacted ahead of, so one cache period gets one attempt. */
-	private cacheCompacted = new Map<string, number>();
-	/** When each open conversation was last seen busy; it qualifies for an automatic restart after QUIET_MS. */
-	private quietSince = new Map<string, number>();
-	/** The version each conversation was last restarted for, so a failed restart is not repeated. */
-	private restartAttempts = new Map<string, string>();
-	private maintaining = false;
-	private forcedMaintenance?: { only?: string };
-	private hostUpdateAttempt?: { version: string; at: number };
-	private hostUpdateWaiting?: string;
-	private readonly started = Date.now();
-	private updateCheckTimer?: ReturnType<typeof setTimeout>;
-	private updateCheckAbort = new AbortController();
-	private checkingUpdate = false;
-	private lastUpdateCheck = 0;
-	private updateCheckError?: string;
 	private resolveClosed!: () => void;
 	private rejectClosed!: (error: unknown) => void;
 	readonly closed = new Promise<void>((resolve, reject) => { this.resolveClosed = resolve; this.rejectClosed = reject; });
-	private clientDir = resolve(dirname(fileURLToPath(import.meta.url)), "../client");
 	origin = "";
+	private readonly core: HostCore;
+	private readonly events = new HostEvents();
+	private readonly updates: HostUpdates;
+	private readonly account: AccountConnection;
+	private readonly moves: ConversationMoves;
+	private readonly agents: AgentOperations;
+	private readonly quests: HostQuests;
+	private readonly efficiency: EfficiencyReports;
+	private readonly api: HostApi;
+	private readonly http: HostHttp;
+	private server = createServer((request, response) => { void this.http.handle(request, response); });
 
-	constructor(options: Options) {
+	constructor(options: HostOptions) {
 		this.options = { ...options, cwd: realpathSync(options.cwd), agentDir: options.agentDir ?? getAgentDir() };
 		// Access data is opened only after acquiring the host lease in start().
 		this.access = undefined!;
 		void this.closed.catch(() => {});
+		const host = this;
+		this.core = {
+			get options() { return host.options; },
+			get directory() { return host.directory; },
+			get origin() { return host.origin; },
+			get closing() { return host.closing; },
+			get restoringUpdate() { return host.restoringUpdate; },
+			get held() { return !!host.checkpoints?.held; },
+			sessions: this.sessions,
+			get inputs() { return host.inputs!; },
+			state: () => this.state(),
+			emit: event => this.events.emit(event),
+			persist: immediate => this.persist(immediate),
+			persistEvent: immediate => this.persistEvent(immediate),
+			createSession: (cwd, sessionFile, existing, takeover, adopt) => this.createSession(cwd, sessionFile, existing, takeover, adopt),
+			waitForSession: (key, timeoutMs) => this.waitForSession(key, timeoutMs),
+			replaceWorker: managed => this.replaceWorker(managed),
+			inputEvent: managed => this.inputEvent(managed),
+			drainInputs: managed => this.drainInputs(managed),
+			attachments: key => this.attachments(key),
+			refreshParties: () => this.refreshParties(),
+		};
+		const dotBusy = () => !!this.dot?.busy, signingIn = () => !!this.logins?.signingIn;
+		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn });
+		this.moves = new ConversationMoves(this.core, { teleport: () => this.teleport, parties: () => this.parties, network: () => this.account.network,
+			self: () => this.account.identity?.device.id, moving: session => this.partyOperations?.moving(session) });
+		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
+			teleport: () => this.teleport, moves: this.moves });
+		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, connector: () => this.dotConnector,
+			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
+			request: (access, request) => this.api.handle(access, request),
+			watch: handler => {
+				const remove = this.events.addBrowser(handler); handler({ type: "state", state: this.state() });
+				return remove;
+			} });
+		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties });
+		this.efficiency = new EfficiencyReports({ agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, directory: () => this.directory, closing: () => this.closing });
+		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot,
+			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport,
+			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events });
+		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
+			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn,
+			stop: preserveWorkers => {
+				this.closing = true;
+				if (preserveWorkers) this.preserveWorkers = true;
+				setImmediate(() => { void this.close().catch(() => {}); });
+			},
+			reconnectAccount: () => { void this.account.connect().catch(() => {}); },
+			events: this.events, api: (device, request) => this.api.handle(device, request) });
 	}
 
 	async start(): Promise<{ origin: string; pairingUrl: string }> {
-		const directory = this.options.dataDir ?? join(this.options.agentDir!, "desk");
+		const directory = this.options.dataDir ?? join(this.options.agentDir, "desk");
 		this.directory = directory;
 		this.dictation = new Dictation(directory);
-		this.automatic = readAutomatic(directory);
-		this.cacheCompaction = readCacheCompaction(directory);
+		this.updates.load();
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
@@ -200,23 +173,23 @@ export class DeskHost {
 			this.access = new AccessStore(directory);
 			this.catalog = new SessionCatalog(directory);
 			this.inputs = new InputLedger(directory);
-			this.logins = new Logins(this.options.agentDir!);
-			this.settingsSync = new SettingsSync(this.options.agentDir!, homedir(), directory, hostname());
+			this.logins = new Logins(this.options.agentDir);
+			this.settingsSync = new SettingsSync(this.options.agentDir, homedir(), directory, hostname());
 			// Pi's packages kept current here, a version per folder, only for an installed Desk (not tests or development).
-			if (process.env.PI_DESK_RUNTIME) { this.packageUpdates = new PackageUpdates({ cwd: this.options.cwd, agentDir: this.options.agentDir!, root: join(directory, "packages") }); this.packageUpdates.start(); }
+			if (process.env.PI_DESK_RUNTIME) { this.packageUpdates = new PackageUpdates({ cwd: this.options.cwd, agentDir: this.options.agentDir, root: join(directory, "packages") }); this.packageUpdates.start(); }
 			this.teleport = new Teleport(join(directory, "teleport"), {
-				self: () => this.accountIdentity?.device.id ?? "",
-				conversations: () => this.copyableConversations(),
-				movedAway: (session, move) => { void this.retireMoved(session, move); },
-				release: session => this.releaseForMove(session),
+				self: () => this.account.identity?.device.id ?? "",
+				conversations: () => this.moves.copyable(),
+				movedAway: (session, move) => { void this.moves.retire(session, move); },
+				release: session => this.moves.release(session),
 			});
-			this.adoption = adoptSavedLogins(directory, this.options.agentDir!)
+			this.adoption = adoptSavedLogins(directory, this.options.agentDir)
 				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
 				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
 			// Dot signs into ChatGPT with Pi's own Codex login.
-			this.dot = new DotConnection(directory, this.options.agentDir!, { proxy: this.options.proxy, authPath: join(this.options.agentDir!, "auth.json") });
+			this.dot = new DotConnection(directory, { proxy: this.options.proxy, authPath: join(this.options.agentDir, "auth.json") });
 			this.dot.start();
-			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir!, this.options.sessionDir,
+			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
 					const file = view.snapshot?.file ?? view.file;
 					return file ? [dirname(file)] : [];
@@ -236,30 +209,30 @@ export class DeskHost {
 			this.checkpoints = new UpdateCheckpoints(this.inputs, () => [...this.sessions.values()].flatMap(managed => managed.worker ? [{
 				key: managed.view.key, worker: managed.worker,
 			}] : []), () => {
-				this.refreshUpdates();
+				this.updates.refresh();
 				for (const managed of this.sessions.values()) this.drainInputs(managed);
-				this.flushLocalPartyOperations();
+				this.agents.flushLocal();
 			});
-			this.parties = new Parties(this.options.agentDir!, () => { this.refreshParties(); this.refreshQuests(); this.partyNetwork?.flush(); this.flushLocalPartyOperations(); });
-			this.partyOperations = new PartyOperations(join(this.options.agentDir!, "party"));
-			this.partyOperations.startHost(); this.flushLocalPartyOperations();
-			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moveFailed(request, computer, response.error); };
-			this.quests = new QuestStore(join(this.options.agentDir!, "party"));
-			this.refreshQuests();
+			this.parties = new Parties(this.options.agentDir, () => { this.refreshParties(); this.quests.refresh(); this.account.network?.flush(); this.agents.flushLocal(); });
+			this.partyOperations = new PartyOperations(join(this.options.agentDir, "party"));
+			this.partyOperations.startHost(); this.agents.flushLocal();
+			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moves.failed(request, computer, response.error); };
+			const quests = this.quests.open(this.options.agentDir);
+			this.quests.refresh();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
-			this.dotConnector.quests = { store: this.quests, finished: (quest, by) => this.questFinished(quest, by) };
+			this.dotConnector.quests = { store: quests, finished: (quest, by) => this.quests.finished(quest, by) };
 			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
-			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.partyComputer(),
-				computers: () => this.partyNetwork?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };
+			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.agents.computer(),
+				computers: () => this.account.network?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };
 			this.refreshParties();
-			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir!, sessionDir: this.options.sessionDir,
+			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
 					path: view.snapshot?.cwd ?? view.cwd, modified: view.created,
 				}))],
 				directories: () => [...new Set([...this.sessions.values()].flatMap(({ view }) =>
 					view.file ? [dirname(view.file)] : []))],
 			});
-			this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket as Socket, head));
+			this.server.on("upgrade", (request, socket, head) => this.account.upgrade(request, socket as Socket, head));
 			await new Promise<void>((resolve, reject) => {
 				this.server.once("error", reject);
 				this.server.listen(this.options.port ?? 8910, "127.0.0.1", () => {
@@ -272,35 +245,22 @@ export class DeskHost {
 			this.origin = `http://127.0.0.1:${address.port}`;
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
-				for (const client of this.clients) this.write(client.response, ": heartbeat\n\n");
-				this.refreshUpdates(); this.refreshParties(); this.refreshQuests(); void this.maintain(); void this.retireLogins();
-				try { this.partyOperations?.touchHost(); this.flushLocalPartyOperations(); }
+				this.events.heartbeat();
+				this.updates.refresh(); this.refreshParties(); this.quests.refresh(); void this.updates.maintain(); void this.retireLogins();
+				try { this.partyOperations?.touchHost(); this.agents.flushLocal(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
 			this.heartbeat.unref();
-			await this.connectAccount();
-			void this.followAccount();
-			this.accountFollow = setInterval(() => { void this.followAccount(); }, ACCOUNT_FOLLOW_MS); this.accountFollow.unref();
+			await this.account.start();
 			this.control.publish(directory);
-			if (this.runtimeHome) {
-				try {
-					this.updateWatch = watch(this.runtimeHome, (_event, name) => {
-						if (!["state.json", "operation.json"].includes(String(name))) return;
-						clearTimeout(this.updateTimer);
-						this.updateTimer = setTimeout(() => this.refreshUpdates(), 50);
-					});
-					this.updateWatch.on("error", () => { this.updateWatch?.close(); this.updateWatch = undefined; });
-				} catch { /* The existing heartbeat also refreshes update state. */ }
-				this.refreshUpdates();
-				this.scheduleUpdateCheck();
-			}
+			this.updates.start();
 			if (!restoreTicket) {
 				for (const [key, instance] of adoption) {
 					const managed = this.sessions.get(key)!;
-					this.createSession(managed.view.cwd, managed.view.file, managed, false, undefined, instance);
+					this.createSession(managed.view.cwd, managed.view.file, managed, false, instance);
 				}
 				this.restoringUpdate = false;
-				this.refreshUpdates();
+				this.updates.refresh();
 			}
 			if (restoreTicket) this.restoreUpdateJob = this.restoreUpdatedConversations(restoreTicket).catch(error => {
 				console.error("Conversation restoration failed:", error instanceof Error ? error.message : String(error));
@@ -309,22 +269,21 @@ export class DeskHost {
 					this.inputs?.interrupt(undefined, "Conversation restoration could not complete");
 				this.restoringUpdate = false;
 				if (!this.closing) {
-					this.refreshUpdates();
+					this.updates.refresh();
 					for (const managed of this.sessions.values()) this.drainInputs(managed);
-					this.flushLocalPartyOperations();
+					this.agents.flushLocal();
 				}
 			});
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
 			clearInterval(this.heartbeat);
-			this.updateWatch?.close(); clearTimeout(this.updateTimer);
-			clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
+			this.updates.close();
 			await this.saved?.close();
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.relay?.close(); this.partyNetwork?.close(); this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
-			clearTimeout(this.accountRetry); clearInterval(this.accountFollow); this.accountRevision++; this.accountIdentity?.close();
+			this.account.close();
+			this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -336,150 +295,41 @@ export class DeskHost {
 		const ticket = this.inputs!.checkpoint();
 		if (!ticket || !this.runtime || ![ticket.source, ticket.target].includes(this.runtime)
 			|| !["held", "committed"].includes(ticket.state)) return;
-		for (const actor of ticket.sessions) {
-			const managed = this.sessions.get(actor.key);
-			if (managed && isOpenSession(managed.view) && managed.view.file === actor.file && managed.view.agentId === actor.session)
-				managed.view.leaf = actor.leaf;
-		}
 		if (ticket.state === "held") { ticket.state = "cancelled"; this.inputs!.writeCheckpoint(ticket); return; }
 		return ticket;
 	}
 
 	private async restoreUpdatedConversations(ticket: UpdateCheckpoint): Promise<void> {
-		if (ticket.workers) {
-			await Promise.all(ticket.workers.map(async actor => {
-				try {
-					const existing = this.sessions.get(actor.key);
-					if (!existing || !isOpenSession(existing.view) || existing.worker)
-						throw new Error("The saved actor reference was closed or changed; no replacement was started.");
-					this.createSession(existing.view.cwd, existing.view.file, existing, false, undefined, actor.instance);
-					await this.waitForSession(actor.key);
-					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key);
-				} catch (error) {
-					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key, error instanceof Error ? error.message : String(error));
-				}
-			}));
-			if (!this.closing) this.inputs!.completeCheckpoint(ticket.id);
-			return;
-		}
-		const workers: { key: string; worker: SessionWorker }[] = [];
-		try {
-			await Promise.all(ticket.sessions.map(async actor => {
-				try {
-					const existing = this.sessions.get(actor.key);
-					if (!existing || !isOpenSession(existing.view) || existing.view.file !== actor.file || existing.view.agentId !== actor.session)
-						throw new Error("The saved conversation was closed or changed; it was not restarted.");
-					if (existing.worker) throw new Error("This conversation is already open; its work was not resent.");
-					const key = this.createSession(actor.cwd, actor.file, existing, false, ticket.id);
-					if (key !== actor.key) throw new Error("This native session is open in another conversation; its work was not resent.");
-					workers.push({ key, worker: this.sessions.get(key)!.worker! });
-					const managed = await this.waitForSession(key);
-					if (managed.view.snapshot?.id !== actor.session || managed.view.snapshot.file !== actor.file)
-						throw new Error("The native conversation changed during restoration.");
-					if (actor.running && !actor.dispatched && !actor.error) {
-						const digest = createHash("sha256").update(`desk-update:${ticket.id}:${actor.key}`).digest("hex");
-						const id = [digest.slice(0, 8), digest.slice(8, 12), digest.slice(12, 16), digest.slice(16, 20), digest.slice(20, 32)].join("-");
-						this.inputs!.continueCheckpoint(ticket.id, key, { id, activation: managed.view.activation!,
-							generation: managed.worker!.generation, command: { kind: "prompt", text: "Continue" } });
-						this.inputEvent(managed);
-					} else this.inputs!.finishCheckpointActor(ticket.id, key);
-				} catch (error) {
-					if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key, error instanceof Error ? error.message : String(error));
-				}
-			}));
-			if (!this.closing) this.inputs!.completeCheckpoint(ticket.id);
-		} finally {
-			await Promise.all(workers.map(async ({ key, worker }) => {
-				try { await worker.checkpoint(ticket.id, "release"); }
-				catch (error) {
-					if (!this.closing) {
-						this.inputs!.interrupt(key, "The updated worker could not confirm release");
-						this.inputs!.finishCheckpointActor(ticket.id, key, error instanceof Error ? error.message : String(error));
-					}
-				}
-			}));
-		}
+		await Promise.all(ticket.workers.map(async actor => {
+			try {
+				const existing = this.sessions.get(actor.key);
+				if (!existing || !isOpenSession(existing.view) || existing.worker)
+					throw new Error("The saved actor reference was closed or changed; no replacement was started.");
+				this.createSession(existing.view.cwd, existing.view.file, existing, false, actor.instance);
+				await this.waitForSession(actor.key);
+				if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key);
+			} catch (error) {
+				if (!this.closing) this.inputs!.finishCheckpointActor(ticket.id, actor.key, error instanceof Error ? error.message : String(error));
+			}
+		}));
+		if (!this.closing) this.inputs!.completeCheckpoint(ticket.id);
 	}
 
 	state(): HostState {
 		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
-			parties: this.parties?.snapshot, relay: this.relayStatus, updates: this.updates, storageError: this.storageError, quests: this.questView,
+			parties: this.parties?.snapshot, relay: this.account.status, updates: this.updates.state, storageError: this.storageError, quests: this.quests.view,
 			...(this.dictation?.available ? { dictation: true } : {}),
-			...(this.cacheCompaction ? { cacheCompaction: this.cacheCompaction } : {}),
+			...(this.updates.cacheCompaction ? { cacheCompaction: this.updates.cacheCompaction } : {}),
 			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}),
-			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.keptCopies() } } : {}) };
-	}
-
-	/** Re-read the quest log when it, the date or working hours may have changed; the client follows host state. */
-	private refreshQuests(): void {
-		if (this.closing || !this.quests) return;
-		let next: QuestView;
-		try { next = this.quests.view(); } catch (error) { console.error(`The quest log could not be read: ${error instanceof Error ? error.message : String(error)}`); return; }
-		if (JSON.stringify(next) === JSON.stringify(this.questView)) return;
-		this.questView = next; this.emit({ type: "state", state: this.state() });
-	}
-
-	/** Tell the agent that added a quest that it is finished, from the host's quest-log identity. */
-	private questFinished(quest: Quest, by: QuestActor): void {
-		if (!this.parties || !this.quests || quest.source.kind !== "agent" || !quest.source.id || !quest.notify || by.kind === "agent" && by.id === quest.source.id) return;
-		if (quest.state !== "done" && quest.state !== "abandoned") return;
-		try {
-			const service = this.quests.service(), store = this.parties.store;
-			if (store.member(service.session)?.owner !== service.owner) store.register(service.session, service.owner, "Quest log", "", "service");
-			const who = by.kind === "dot" ? "Jordan's Dot" : "Jordan";
-			store.send(service.session, service.owner, quest.source.id, `${who} ${quest.state === "done" ? "completed" : "abandoned"} the quest you added: “${quest.title}” (id ${quest.id}).${quest.state === "done" ? " Carry on with anything that was waiting on it." : ""}`, true);
-		} catch (error) { console.error(`The agent that added “${quest.title}” could not be told: ${error instanceof Error ? error.message : String(error)}`); }
+			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.moves.keptCopies() } } : {}) };
 	}
 
 	private refreshParties(): void {
 		if (this.closing || !this.parties) return;
 		const ids = [...this.sessions.values()].filter(item => isOpenSession(item.view))
 			.flatMap(({ view }) => view.snapshot?.id ?? view.agentId ?? []);
-		if (this.parties.refresh(ids)) { this.emit({ type: "state", state: this.state() }); this.partyNetwork?.flush(); }
-	}
-
-	private refreshUpdates(): void {
-		if (!this.runtimeHome || this.closing) return;
-		const active = [...this.sessions.values()].filter(item => item.worker).length;
-		let next: RuntimeUpdateState | undefined;
-		try {
-			const value = runtimeUpdateState(this.runtimeHome);
-			if (!value) throw new Error("The managed runtime selection is missing.");
-			next = { ...value, activeSessions: active, checking: this.checkingUpdate, checkError: this.updateCheckError ?? value.checkError,
-				automatic: this.automatic, outdated: this.outdated().length, ...(this.hostUpdateWaiting ? { waiting: this.hostUpdateWaiting } : {}) };
-			if (this.restoringUpdate) next = { ...next, phase: "applying", message: "Restoring conversations…" };
-		}
-		catch (error) { next = { current: RELEASE.version, phase: "failed", message: error instanceof Error ? error.message : String(error) }; }
-		if (JSON.stringify(next) !== JSON.stringify(this.updates)) {
-			this.updates = next;
-			this.emit({ type: "state", state: this.state() });
-		}
-		if (active || this.restoringUpdate || this.checkpoints?.held || this.applyingUpdate || next?.phase !== "waiting") return;
-		try { if (!automaticUpdatePending(this.runtimeHome)) return; } catch { return; }
-		this.applyingUpdate = true;
-		// The controller rechecks admission atomically in this host. A session
-		// arriving between this hint and that check simply defers activation.
-		void launchOperation(this.runtimeHome, "apply").catch(() => {}).finally(() => { this.applyingUpdate = false; });
-	}
-
-	private scheduleUpdateCheck(): void {
-		if (!this.runtimeHome || !this.runtime || this.closing) return;
-		clearTimeout(this.updateCheckTimer);
-		const checked = Math.max(readUpdateCheck(this.runtimeHome, this.runtime)?.checkedAt ?? 0, this.lastUpdateCheck);
-		this.updateCheckTimer = setTimeout(() => this.checkForUpdates(), Math.max(0, checked + updateCheckInterval - Date.now()));
-		this.updateCheckTimer.unref();
-	}
-	private checkForUpdates(): void {
-		if (!this.runtimeHome || this.closing || this.checkingUpdate) return;
-		clearTimeout(this.updateCheckTimer);
-		this.checkingUpdate = true; this.updateCheckError = undefined; this.refreshUpdates();
-		void checkRuntimeUpdate(this.runtimeHome, this.updateCheckAbort.signal).catch(error => {
-			if (!this.closing) this.updateCheckError = error instanceof Error ? error.message : String(error);
-		}).finally(() => {
-			this.checkingUpdate = false; this.lastUpdateCheck = Date.now();
-			this.refreshUpdates(); this.scheduleUpdateCheck();
-		});
+		if (this.parties.refresh(ids)) { this.events.emit({ type: "state", state: this.state() }); this.account.network?.flush(); }
 	}
 
 	private hostStatus(): HostStatus {
@@ -487,152 +337,18 @@ export class DeskHost {
 		const ticket = this.inputs?.checkpoint();
 		return {
 			release: RELEASE, instance: this.control!.record.instance, pid: process.pid, started: this.control!.record.started,
-			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir!,
-			sessionDir: this.options.sessionDir, relay: this.relayStatus, runtime: this.runtime,
+			origin: this.origin, stopping: this.closing, cwd: this.options.cwd, agentDir: this.options.agentDir,
+			sessionDir: this.options.sessionDir, relay: this.account.status, runtime: this.runtime,
 			supervisor: liveSupervisor(this.directory)?.instance === process.env.PI_DESK_SUPERVISOR ? process.env.PI_DESK_SUPERVISOR : undefined,
 			checkpoint: this.checkpoints?.status(),
 			restore: ticket && this.runtime && [ticket.source, ticket.target].includes(this.runtime)
 				&& ["committed", "complete"].includes(ticket.state)
-				? { id: ticket.id, pending: this.restoringUpdate, failures: (ticket.workers ?? ticket.sessions).filter(actor => actor.error).length } : undefined,
+				? { id: ticket.id, pending: this.restoringUpdate, failures: ticket.workers.filter(actor => actor.error).length } : undefined,
 			sessions: { active: active.length,
 				working: active.filter(({ view }) => view.state === "starting" || view.snapshot?.activity !== "idle"
 					|| view.controls?.some(control => control.state === "running")).length,
 				questions: active.reduce((sum, { view }) => sum + (view.ui?.interactions.length ?? 0), 0) },
 		};
-	}
-
-	/**
-	 * Hosts follow the workspace when its services move, as browsers do on each load. The website names the account
-	 * service (desk-account.json) and the account service names the relay and website (/config); hosts saved both when
-	 * they signed in, so they check here. The workspace itself never changes: device identities belong to it, and a
-	 * moved account service keeps this computer's identity (`identityOrigin`).
-	 */
-	private async followAccount(): Promise<void> {
-		if (this.closing) return;
-		const network = new AccountNetwork(this.options.proxy);
-		try {
-			const saved = await readAccount(this.directory);
-			if (!saved) return;
-			let origin = saved.config.origin;
-			const pointer = await network.request<{ accountOrigin?: unknown }>("GET", `${saved.appOrigin}/desk-account.json`, undefined, 10_000).catch(() => undefined);
-			if (pointer?.status === 200 && typeof pointer.body.accountOrigin === "string") origin = accountOrigin(pointer.body.accountOrigin);
-			const response = await network.request<AccountConfiguration>("GET", `${origin}/config`, undefined, 10_000);
-			if (response.status !== 200 || this.closing) return;
-			const config = accountConfiguration(response.body);
-			if (config.origin !== origin || workspaceIdentity(config) !== workspaceIdentity(saved.config)) return;
-			const moved = config.origin !== saved.config.origin;
-			if (!moved && config.relayOrigin === saved.config.relayOrigin && config.appOrigins.join() === saved.config.appOrigins.join()) return;
-			const identityOrigin = moved ? saved.identityOrigin ?? saved.config.origin : saved.identityOrigin;
-			const next: SavedAccount = { version: 1, appOrigin: config.appOrigins.includes(saved.appOrigin) ? saved.appOrigin : config.appOrigins[0]!,
-				config, ...(identityOrigin ? { identityOrigin } : {}) };
-			await saveAccount(this.directory, next);
-			console.error(moved ? `The workspace's account service moved to ${config.origin}; reconnecting.`
-				: `The account service moved the relay or website; reconnecting.`);
-			await this.connectAccount();
-		} catch { /* The saved configuration stays in use until the services answer. */ }
-		finally { network.close(); }
-	}
-
-	private async connectAccount(): Promise<void> {
-		const revision = ++this.accountRevision;
-		clearTimeout(this.accountRetry); this.relay?.close(); this.relay = undefined;
-		this.partyNetwork?.close(); this.partyNetwork = undefined;
-		this.accountIdentity?.close(); this.accountIdentity = undefined; this.relayStatus = undefined;
-		const saved = await readAccount(this.directory);
-		if (this.closing || revision !== this.accountRevision) return;
-		if (!saved) { this.emit({ type: "state", state: this.state() }); return; }
-		const update = (status: RelayStatus) => {
-			if (this.closing || revision !== this.accountRevision) return;
-			this.relayStatus = status; this.emit({ type: "state", state: this.state() });
-		};
-		update({ origin: saved.config.relayOrigin, appOrigin: saved.appOrigin, state: "connecting" });
-		try {
-			const { NativeAccountIdentity } = await import("./account-identity.ts");
-			const identity = await NativeAccountIdentity.open(this.directory, saved.config, { proxy: this.options.proxy, identityOrigin: saved.identityOrigin });
-			if (this.closing || revision !== this.accountRevision) { identity.close(); return; }
-			this.accountIdentity = identity;
-			const network = new PartyNetwork(this.parties!.store, workspaceIdentity(identity.config), () => {
-				if (this.closing || revision !== this.accountRevision) return;
-				this.parties!.networkChanged(); this.refreshParties();
-			}, { operations: this.partyOperations!, execute: (computer, request) => this.executePartyOperation(computer, request) }, this.partyComputer(), this.settingsSync, this.teleport);
-			this.partyNetwork = network;
-			this.relay = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.options.proxy, direct: Number(new URL(this.origin).port),
-				request: (access, request) => this.api(access, request),
-				watch: handler => {
-					this.browsers.add(handler); handler({ type: "state", state: this.state() });
-					return () => this.browsers.delete(handler);
-				}, status: update, party: {
-					connected: (id, send, close) => network.connected(id, send, close),
-					receive: (id, packet) => network.receive(id, packet),
-				}, connector: { enabled: () => !!this.dotConnector?.enabled, handle: request => this.dotConnector!.handle(request, this.connectorUrl()!) },
-			});
-			this.relay.start();
-		} catch {
-			if (this.closing || revision !== this.accountRevision) return;
-			this.relay?.close(); this.relay = undefined; this.partyNetwork?.close(); this.partyNetwork = undefined;
-			this.accountIdentity?.close(); this.accountIdentity = undefined;
-			update({ origin: saved.config.relayOrigin, appOrigin: saved.appOrigin, state: "offline",
-				error: "Account identity is unavailable. Sign in on this computer and unlock its protected credential store." });
-			this.accountRetry = setTimeout(() => { void this.connectAccount().catch(() => {}); }, 30_000);
-			this.accountRetry.unref();
-		}
-	}
-
-	/**
-	 * A browser on this computer connecting to the host directly rather than through the relay. Only this computer's
-	 * Desk website may connect, for this computer; the relay connector then checks the browser as it would through the relay.
-	 */
-	private upgrade(request: IncomingMessage, socket: Socket, head: Buffer): void {
-		const url = new URL(request.url ?? "/", this.origin), relay = this.relay, appOrigin = this.relayStatus?.appOrigin;
-		if (url.pathname !== "/direct" || !relay || !appOrigin || request.headers.origin !== appOrigin
-			|| request.headers.host !== new URL(this.origin).host || url.searchParams.get("host") !== this.accountIdentity?.device.id) {
-			socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return;
-		}
-		this.directSockets.handleUpgrade(request, socket, head, ws => relay === this.relay ? relay.direct(ws) : ws.close(1013));
-	}
-
-	private write(response: ServerResponse, frame: string): void {
-		if (response.destroyed) return;
-		if (response.writableLength > 1024 * 1024) { response.destroy(); return; }
-		response.write(frame);
-	}
-
-	private emit(event: HostEvent): void {
-		for (const next of this.unsent(event)) this.deliver(next);
-		// Internal waits see every event: they check state outside the views, which can change without the views changing.
-		for (const handler of this.watchers) handler(event);
-	}
-
-	/**
-	 * Every change sends the whole conversation, or for host state every conversation, to every browser: most of the
-	 * relay's traffic. An unchanged conversation is not sent again, and host state whose only changes are in
-	 * conversations is sent as those conversations.
-	 */
-	private unsent(event: HostEvent): HostEvent[] {
-		if (event.type === "session") {
-			const sent = JSON.stringify(event.session);
-			if (this.sentSessions.get(event.session.key) === sent) return [];
-			this.sentSessions.set(event.session.key, sent);
-			return [event];
-		}
-		if (event.type !== "state") return [event];
-		const host = JSON.stringify({ ...event.state, sessions: event.state.sessions.map(session => session.key) });
-		if (host === this.sentHost) return event.state.sessions.flatMap(session => this.unsent({ type: "session", session }));
-		this.sentHost = host;
-		this.sentSessions = new Map(event.state.sessions.map(session => [session.key, JSON.stringify(session)]));
-		return [event];
-	}
-
-	private deliver(event: HostEvent): void {
-		const id = ++this.sequence;
-		const frame = `id: ${id}\ndata: ${JSON.stringify(event)}\n\n`;
-		this.history.push({ id, frame });
-		this.historyBytes += Buffer.byteLength(frame);
-		while (this.history.length > 512 || this.historyBytes > 2 * 1024 * 1024) {
-			this.historyBytes -= Buffer.byteLength(this.history.shift()!.frame);
-		}
-		for (const client of this.clients) this.write(client.response, frame);
-		for (const handler of this.browsers) handler(event);
 	}
 
 	private workerEvent(key: string, message: WorkerMessage): void {
@@ -649,9 +365,9 @@ export class DeskHost {
 					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key) };
 				managed.keepOnClose = undefined;
 			}
-			this.emit({ type: "session", session: managed.view });
+			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
-			if (message.control.kind === "close" && message.control.state === "completed") this.refreshUpdates();
+			if (message.control.kind === "close" && message.control.state === "completed") this.updates.refresh();
 			if (message.control.state !== "running") this.drainInputs(managed);
 			return;
 		}
@@ -690,14 +406,14 @@ export class DeskHost {
 			const worker = managed.worker;
 			void worker?.close().catch(() => {}).finally(() => {
 				if (managed.worker === worker) managed.worker = undefined;
-				this.refreshUpdates();
+				this.updates.refresh();
 			});
 		}
-		else { this.emit({ type: "worker", key, message }); return; }
-		this.emit({ type: "session", session: managed.view });
+		else { this.events.emit({ type: "worker", key, message }); return; }
+		this.events.emit({ type: "session", session: managed.view });
 		this.persist();
 		if (message.type === "snapshot") {
-			if (message.snapshot.activity !== "idle") this.quietSince.delete(key);
+			if (message.snapshot.activity !== "idle") this.updates.active(key);
 			this.refreshParties(); this.drainInputs(managed);
 		}
 	}
@@ -707,22 +423,22 @@ export class DeskHost {
 		if (this.closing || this.sessions.get(key) !== managed || managed.worker || !managed.view.reconnecting) return;
 		try {
 			// Adoption is bound to this actor. A missing or changed actor must never cold-start here.
-			this.createSession(managed.view.cwd, managed.view.file, managed, false, undefined, instance);
+			this.createSession(managed.view.cwd, managed.view.file, managed, false, instance);
 		} catch (error) {
 			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, interrupted: true,
 				error: error instanceof Error ? error.message : String(error) };
-			this.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
 		}
 	}
 
 	private inputEvent(managed: ManagedSession): void {
 		managed.view = { ...managed.view, inputs: this.inputs!.pending(managed.view.key) };
-		if (!this.closing) this.emit({ type: "session", session: managed.view });
+		if (!this.closing) this.events.emit({ type: "session", session: managed.view });
 	}
 
 	private attachments(key: string): Attachments {
 		let referenced: Set<string> | undefined;
-		return new Attachments(this.options.agentDir!, key, id => (referenced ??= this.inputs!.files(key)).has(id));
+		return new Attachments(this.options.agentDir, key, id => (referenced ??= this.inputs!.files(key)).has(id));
 	}
 
 	private async reconcileInputs(managed: ManagedSession): Promise<void> {
@@ -747,7 +463,7 @@ export class DeskHost {
 		if (managed.draining || managed.reconciling || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
 			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
 		if (managed.setup) {
-			if (!managed.settingUp) managed.settingUp = this.applyAgentModel(managed, managed.setup)
+			if (!managed.settingUp) managed.settingUp = applyModelChoice(managed, managed.setup)
 				.catch(error => console.error(`The chosen model was not applied: ${error instanceof Error ? error.message : String(error)}`))
 				.then(() => { managed.setup = undefined; managed.settingUp = undefined; this.drainInputs(managed); });
 			return;
@@ -793,10 +509,10 @@ export class DeskHost {
 			try { this.catalog?.write([...this.sessions.values()].map(item => item.view)); }
 			catch (error) {
 				const message = "Conversation references were not saved. Native histories remain intact; leave Desk running and check storage before restarting. " + (error instanceof Error ? error.message : String(error));
-				if (this.storageError !== message) { this.storageError = message; this.emit({ type: "state", state: this.state() }); }
+				if (this.storageError !== message) { this.storageError = message; this.events.emit({ type: "state", state: this.state() }); }
 				throw error;
 			}
-			if (this.storageError) { this.storageError = undefined; this.emit({ type: "state", state: this.state() }); }
+			if (this.storageError) { this.storageError = undefined; this.events.emit({ type: "state", state: this.state() }); }
 		} else if (!this.catalogTimer) this.catalogTimer = setTimeout(() => {
 			try { this.persist(true); }
 			catch (error) { console.error("Background catalog publication failed:", error); }
@@ -806,17 +522,6 @@ export class DeskHost {
 	private persistEvent(immediate = false): void {
 		try { this.persist(immediate); }
 		catch (error) { console.error("Catalog publication failed:", error); }
-	}
-
-	private flushLocalPartyOperations(): void {
-		if (this.closing || this.checkpoints?.held || this.restoringUpdate || !this.partyOperations) return;
-		let requests: PartyOperation[];
-		try { requests = this.partyOperations.outgoing("local"); }
-		catch { console.error("Party operations could not be read."); return; }
-		for (const request of requests) void this.partyOperations.receive("local", request,
-			operation => this.executePartyOperation("local", operation)).then(result => {
-			if (result && !this.closing) this.partyOperations!.settle("local", result);
-		}).catch(error => { if (!this.closing) console.error("Party operation failed:", error instanceof Error ? error.message : String(error)); });
 	}
 
 	/**
@@ -830,7 +535,7 @@ export class DeskHost {
 			const cancel = () => finish(Error("Desk stopped during agent startup."));
 			const finish = (error?: Error, managed?: ManagedSession) => {
 				if (finished) return; finished = true;
-				clearTimeout(timer); this.watchers.delete(check); this.startupWaits.delete(cancel);
+				clearTimeout(timer); unwatch(); this.startupWaits.delete(cancel);
 				error ? reject(error) : resolve(managed!);
 			};
 			const check = () => {
@@ -839,7 +544,27 @@ export class DeskHost {
 				else if (managed.initialized && managed.worker && managed.view.state === "ready") finish(undefined, managed);
 			};
 			const timer = setTimeout(() => finish(Error("Agent startup timed out. Check its conversation before retrying.")), timeoutMs);
-			this.startupWaits.add(cancel); this.watchers.add(check);
+			this.startupWaits.add(cancel); const unwatch = this.events.watch(check);
+			if (this.closing) cancel(); else check();
+		});
+	}
+
+	private waitForControl(key: string, id: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			let finished = false;
+			const cancel = () => finish(Error("Desk stopped before closure was confirmed."));
+			const finish = (error?: Error) => {
+				if (finished) return; finished = true;
+				clearTimeout(timer); unwatch(); this.startupWaits.delete(cancel);
+				error ? reject(error) : resolve();
+			};
+			const check = () => {
+				const status = this.sessions.get(key)?.view.controls?.find(control => control.id === id);
+				if (status?.state === "completed") finish();
+				else if (status && status.state !== "running") finish(Error(status.error ?? "Closure was not confirmed."));
+			};
+			const timer = setTimeout(() => finish(Error("Closure timed out. Check the agent before trying again.")), 120_000);
+			this.startupWaits.add(cancel); const unwatch = this.events.watch(check);
 			if (this.closing) cancel(); else check();
 		});
 	}
@@ -858,7 +583,7 @@ export class DeskHost {
 		const armed = agent ? !!this.parties?.store.member(agent)?.delivery : undefined;
 		// One continuous restart: the conversation stays listed and selected, shown as updating, until the new process is up.
 		managed.replacing = true;
-		managed.view = { ...managed.view, updating: true }; this.emit({ type: "session", session: managed.view });
+		managed.view = { ...managed.view, updating: true }; this.events.emit({ type: "session", session: managed.view });
 		try {
 			await worker.submitControl({ kind: "close" }, worker.generation, id);
 			await this.waitForControl(view.key, id);
@@ -867,7 +592,7 @@ export class DeskHost {
 			managed.replacing = undefined;
 			const message = error instanceof Error ? error.message : String(error);
 			managed.view = { ...managed.view, updating: undefined, ...(managed.worker ? {} : { state: "failed" as const, error: message, interrupted: true }) };
-			this.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
 			throw error;
 		}
 		// The old process has released its registration. Peers see "restarting" rather than offline, and
@@ -887,33 +612,8 @@ export class DeskHost {
 			const current = this.sessions.get(view.key) ?? managed;
 			current.replacing = undefined;
 			current.view = { ...current.view, updating: undefined, state: "failed", error: error instanceof Error ? error.message : String(error), interrupted: true };
-			this.emit({ type: "session", session: current.view }); this.persistEvent(true);
+			this.events.emit({ type: "session", session: current.view }); this.persistEvent(true);
 			throw error;
-		}
-	}
-
-	/** Conversations on an older Desk than this host, with what would stop each being restarted now. */
-	private outdated(): { managed: ManagedSession; blockers: string[] }[] {
-		return [...this.sessions.values()].filter(managed => managed.worker && managed.view.state === "ready"
-			&& managed.view.workerRuntime?.version !== RELEASE.version).map(managed => ({ managed,
-			blockers: restartBlockers(managed.view, this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending")) }));
-	}
-
-	/** Restart one idle conversation onto this host's version, keeping its agent reachable meanwhile. */
-	private async restartForUpdate(managed: ManagedSession): Promise<void> {
-		const key = managed.view.key;
-		this.restartAttempts.set(key, RELEASE.version);
-		managed.view = { ...managed.view, updating: true };
-		this.emit({ type: "session", session: managed.view });
-		try {
-			await this.replaceWorker(managed);
-			await this.waitForSession(key);
-		} catch (error) {
-			console.error(`Desk could not restart ${managed.view.title ?? key} onto ${RELEASE.version}: ${error instanceof Error ? error.message : String(error)}`);
-		} finally {
-			const current = this.sessions.get(key);
-			if (current?.view.updating) { current.view = { ...current.view, updating: undefined }; this.emit({ type: "session", session: current.view }); }
-			this.refreshUpdates();
 		}
 	}
 
@@ -925,345 +625,14 @@ export class DeskHost {
 		const older = [...this.sessions.values()].some(({ view }) => view.state !== "closed" && !!view.snapshot && "accounts" in view.snapshot);
 		if (!older) retireSavedLogins(this.directory);
 	}
-	/**
-	 * Keep this computer current without interrupting work: restart one idle conversation at a time onto
-	 * this host's version, and update the host itself when every conversation has been quiet for a while.
-	 */
-	private async maintain(force = false, only?: string): Promise<void> {
-		if (this.maintaining) { if (force) this.forcedMaintenance = { only }; return; }
-		if (this.closing || this.checkpoints?.held || this.restoringUpdate || this.applyingUpdate) return;
-		this.maintaining = true;
-		try {
-			const now = Date.now();
-			// Updating the host leaves conversations running: workers outlive it. It waits only for what the host
-			// itself carries, messages being delivered and settings being applied. Waiting for every conversation
-			// to fall quiet kept a computer with one long-running conversation on an old version for days.
-			let hostBusy: string | undefined;
-			for (const managed of this.sessions.values()) {
-				if (!managed.worker || managed.view.state === "closed") continue;
-				const key = managed.view.key, title = managed.view.title ?? managed.view.name ?? "A conversation";
-				const pending = this.inputs!.pending(key).filter(input => input.state === "queued" || input.state === "sending");
-				// Anything older than an hour is stuck, not in progress, and must not hold every update back.
-				if (pending.some(input => now - input.updated < STUCK_MS)) hostBusy ??= `${title} has a message being delivered`;
-				if (managed.view.controls?.some(control => control.state === "running" && now - control.started < STUCK_MS)) hostBusy ??= `${title} is applying a setting`;
-				const busy = restartBlockers(managed.view, pending.length > 0).some(reason => reason !== "its folder is missing");
-				if (busy) { this.quietSince.delete(key); continue; }
-				if (!this.quietSince.has(key)) this.quietSince.set(key, now);
-			}
-			if (this.cacheCompaction) this.compactBeforeCacheExpiry(now);
-			// The host first: it interrupts nothing, and a conversation restart below ends this pass.
-			const available = this.updates?.available, attempt = this.hostUpdateAttempt;
-			const waiting = !available || !this.automatic.host || !this.runtimeHome ? undefined
-				: now - this.started < QUIET_MS ? "Desk started in the last ten minutes"
-				: hostBusy ?? (this.dot?.busy ? "A Dot operation is running" : this.logins?.signingIn ? "A sign-in is in progress"
-				: !["idle", "failed"].includes(this.updates!.phase) ? `Another update is ${this.updates!.phase}`
-				// A failed attempt is retried later, not abandoned: one failure used to stop automatic updates for good.
-				: attempt?.version === available && now - attempt.at < RETRY_MS ? `The last attempt failed; Desk retries ${new Date(attempt.at + RETRY_MS).toLocaleTimeString()}` : undefined);
-			if (this.hostUpdateWaiting !== waiting) { this.hostUpdateWaiting = waiting; this.refreshUpdates(); }
-			if (!force && !only && available && this.automatic.host && this.runtimeHome && !waiting) {
-				this.hostUpdateAttempt = { version: available, at: now };
-				await launchOperation(this.runtimeHome, "update-now", available);
-				this.refreshUpdates();
-			}
-			if (force || this.automatic.conversations) {
-				for (const { managed, blockers } of this.outdated()) {
-					const key = managed.view.key;
-					if (only && key !== only) continue;
-					// An explicit request retries a restart that failed earlier.
-					if (blockers.length || !force && this.restartAttempts.get(key) === RELEASE.version) continue;
-					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
-					// The new version's prompt and tools cost the conversation its prompt cache, so an automatic move waits for
-					// the cache to expire. Codex declares no cache lifetime; it moves after the quiet period alone.
-					const cache = managed.view.snapshot?.cache;
-					if (!force && cache && cache.usedAt + cache.ttlMs > now) continue;
-					if (!managed.worker?.pid || await workerHasRunningCommands(managed.worker.pid, mcpServerCommands(this.options.agentDir!, managed.view.cwd))) continue;
-					await this.restartForUpdate(managed);
-					if (!force) return;
-				}
-			}
-		} catch (error) {
-			console.error(`Automatic update check failed: ${error instanceof Error ? error.message : String(error)}`);
-		} finally {
-			this.maintaining = false;
-			// A request made during a background pass runs once that pass ends.
-			const queued = this.forcedMaintenance; this.forcedMaintenance = undefined;
-			if (queued) void this.maintain(true, queued.only);
-		}
-	}
 
-	/**
-	 * Compact each idle conversation in the last few minutes before its prompt cache expires, when its context is above
-	 * the chosen share of its budget: afterwards the next message would pay to cache the whole context again.
-	 */
-	private compactBeforeCacheExpiry(now: number): void {
-		for (const managed of this.sessions.values()) {
-			const view = managed.view, snapshot = view.snapshot, cache = snapshot?.cache, worker = managed.worker;
-			if (!worker || !cache || view.state !== "ready" || snapshot.activity !== "idle" || snapshot.compacting) continue;
-			const left = cache.usedAt + cache.ttlMs - now;
-			if (left <= 0 || left > CACHE_COMPACTION_LEAD_MS || (snapshot.context?.percent ?? 0) < this.cacheCompaction!) continue;
-			if (this.cacheCompacted.get(view.key) === cache.usedAt || view.ui?.interactions.length || view.controls?.some(control => control.state === "running")
-				|| this.inputs!.pending(view.key).some(input => input.state === "queued" || input.state === "sending")) continue;
-			this.cacheCompacted.set(view.key, cache.usedAt);
-			void worker.submitControl({ kind: "compact", reason: "cache" }, worker.generation, randomUUID())
-				.catch(error => console.error(`Desk could not compact ${view.title ?? view.key} before its cache expired: ${error instanceof Error ? error.message : String(error)}`));
-		}
-	}
-
-	/** This computer's public MCP address through the relay; undefined until the account connection is up. */
-	private connectorUrl(): string | undefined {
-		return this.relayStatus && this.accountIdentity ? `${this.relayStatus.origin}/connector/${this.accountIdentity.device.id}` : undefined;
-	}
-
-	private waitForControl(key: string, id: string): Promise<void> {
-		return new Promise((resolve, reject) => {
-			let finished = false;
-			const cancel = () => finish(Error("Desk stopped before closure was confirmed."));
-			const finish = (error?: Error) => {
-				if (finished) return; finished = true;
-				clearTimeout(timer); this.watchers.delete(check); this.startupWaits.delete(cancel);
-				error ? reject(error) : resolve();
-			};
-			const check = () => {
-				const status = this.sessions.get(key)?.view.controls?.find(control => control.id === id);
-				if (status?.state === "completed") finish();
-				else if (status && status.state !== "running") finish(Error(status.error ?? "Closure was not confirmed."));
-			};
-			const timer = setTimeout(() => finish(Error("Closure timed out. Check the agent before trying again.")), 120_000);
-			this.startupWaits.add(cancel); this.watchers.add(check);
-			if (this.closing) cancel(); else check();
-		});
-	}
-
-	private async executePartyOperation(computer: string, request: PartyOperation): Promise<OperationResult["result"]> {
-		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw Error("Desk is updating or shutting down.");
-		const store = this.parties!.store;
-		this.partyOperations!.validate(store, computer, request);
-		// As long as the requester waits, leaving time for the reply to reach it.
-		const wait = Math.max(30_000, request.expires - Date.now() - 15_000);
-		if (request.kind === "resume") return this.resumeAgent(request.session!, wait);
-		if (request.kind === "move") return this.moveAgentHere(computer, request, wait);
-		if (request.kind === "close") return this.closeCreated(computer, request);
-		let fork: { cwd: string; file: string } | undefined;
-		if (request.kind === "fork") {
-			const member = store.member(request.sender)!;
-			const file = store.sessionFile(member.session)
-				?? SessionManager.findById(member.cwd, member.session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir));
-			if (!file) throw Error("The source agent\'s saved native session is unavailable.");
-			fork = createPartyFork(file, member.session, request.call!);
-		}
-		const key = this.createSession(fork?.cwd ?? request.cwd, fork?.file);
-		// The agent that asked may close it later (agent_close), and only it.
-		const created = this.sessions.get(key);
-		if (created) { created.view = { ...created.view, createdBy: requester(computer, request.sender) }; this.persist(true); }
-		try {
-			const managed = await this.waitForSession(key, wait), worker = managed.worker!;
-			this.partyOperations!.validate(store, computer, request);
-			await worker.command({ kind: "name", name: request.label });
-			const setup = await this.applyAgentModel(managed, request);
-			this.partyOperations!.validate(store, computer, request);
-			this.inputs!.admit(key, { id: request.id, activation: managed.view.activation!, generation: worker.generation,
-				command: { kind: "prompt", text: request.task, behavior: "followUp" } });
-			this.inputEvent(managed); this.drainInputs(managed); this.refreshParties(); this.partyNetwork?.flush();
-			return { session: managed.view.agentId!, state: "queued", key, ...setup };
-		} catch (error) {
-			const managed = this.sessions.get(key);
-			if (managed?.worker) {
-				await managed.worker.close(); managed.worker = undefined;
-				managed.view = { ...managed.view, state: "closed", snapshot: undefined, ui: undefined, historyReady: false };
-				this.emit({ type: "session", session: managed.view }); this.persist(true);
-			}
-			throw error;
-		}
-	}
-
-	private refreshEfficiency(): void {
-		if (this.efficiencyRun || this.closing) return;
-		const built = new URL("./efficiency-worker.js", import.meta.url);
-		const directories = [join(this.options.agentDir!, "sessions"), ...(this.options.sessionDir ? [this.options.sessionDir] : [])];
-		const worker = new ThreadWorker(existsSync(built) ? built : new URL("./efficiency-worker.ts", import.meta.url), {
-			workerData: { directories, cachePath: join(this.directory, "efficiency.json") }, resourceLimits: { maxOldGenerationSizeMb: 1024 } });
-		this.efficiencyRun = new Promise(resolve => {
-			worker.once("message", report => { this.efficiency = { report, at: Date.now() }; });
-			worker.once("error", error => console.error(`The efficiency report could not be built: ${error instanceof Error ? error.message : String(error)}`));
-			worker.once("exit", () => { this.efficiencyRun = undefined; resolve(); });
-		});
-	}
-
-	/** How this computer describes itself to the others; "resume" tells them they may reopen its conversations. */
-	/** This computer's conversations that are copied to the computers that keep copies. */
-	/** Kept copies for the app: those open on their computer when it was last seen come first, and say so. */
-	private keptCopies(): ConversationCopy[] {
-		const open = new Map<string, Set<string>>();
-		const isOpen = (copy: ConversationCopy) => {
-			let sessions = open.get(copy.computer);
-			if (!sessions) open.set(copy.computer, sessions = new Set(this.parties?.store.openSessions(copy.computer) ?? []));
-			return sessions.has(copy.session);
-		};
-		return this.teleport!.copies().filter(copy => !copy.moved).map(copy => isOpen(copy) ? { ...copy, open: true } : copy)
-			.sort((a, b) => Number(!!b.open) - Number(!!a.open) || b.updated - a.updated).slice(0, 200);
-	}
-	private copyableConversations(): Conversation[] {
-		const seen = new Set<string>();
-		return [...this.sessions.values()].flatMap(entry => {
-			const session = entry.view.agentId ?? entry.view.snapshot?.id;
-			if (!session || seen.has(session)) return [];
-			seen.add(session);
-			const managed = this.conversation(session)!, file = managed.view.snapshot?.file ?? managed.view.file;
-			const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
-			return session && file ? [{ session, file, cwd: managed.view.cwd, ...(title ? { title } : {}) }] : [];
-		});
-	}
-	/**
-	 * This computer's entries for a conversation, the current one first. One that went to another computer and came back
-	 * has older entries here too (the file it left from, an earlier return): they must not be moved or copied.
-	 */
-	private conversations(session: string): ManagedSession[] {
-		const current = (managed: ManagedSession) => Number(!managed.view.moved && !this.teleport?.superseded(session, managed.view.snapshot?.file ?? managed.view.file ?? ""));
-		return [...this.sessions.values()].filter(managed => (managed.view.agentId ?? managed.view.snapshot?.id) === session)
-			.sort((a, b) => current(b) - current(a) || Number(!!b.worker) - Number(!!a.worker) || (b.view.created ?? 0) - (a.view.created ?? 0));
-	}
-	private conversation(session: string): ManagedSession | undefined { return this.conversations(session)[0]; }
-	/** Stops a conversation here for good: it moved, or is moving, to another computer. */
-	private async stopForMove(managed: ManagedSession, moved?: Move): Promise<void> {
-		const worker = managed.worker;
-		if (worker) {
-			managed.keepOnClose = false;
-			await worker.submitControl({ kind: "close" }, worker.generation, randomUUID());
-			for (let wait = 0; wait < 600 && managed.worker === worker; wait++) await new Promise(resolve => setTimeout(resolve, 100));
-			if (managed.worker === worker) throw new Error("The conversation did not stop in time.");
-		}
-		managed.view = { ...managed.view, state: "closed", kept: undefined, ...(moved ? { moved } : {}) };
-		this.persist(true); this.emit({ type: "session", session: managed.view });
-	}
-	private async retireMoved(session: string, move: Move): Promise<void> {
-		for (const managed of this.conversations(session))
-			await this.stopForMove(managed, move).catch(error => console.error(`A moved conversation could not be stopped here: ${error instanceof Error ? error.message : String(error)}`));
-	}
-	/** Gives a conversation up for a move: stopped here, its file handed over. Refused while it is working or asking. */
-	private async releaseForMove(session: string): Promise<{ file: string; cwd: string; title?: string }> {
-		const managed = this.conversation(session), file = managed && (managed.view.snapshot?.file ?? managed.view.file);
-		if (!managed || !file) throw new Error("That conversation is not on this computer.");
-		const busy = () => ["running", "waiting"].includes(managed.view.snapshot?.activity ?? "");
-		// An agent moving itself asked during its turn, which that call ends: give the turn time to finish.
-		for (let wait = 0; busy() && wait < 600 && this.partyOperations?.moving(session); wait++) await new Promise(resolve => setTimeout(resolve, 100));
-		if (busy()) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
-		const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
-		await this.stopForMove(managed);
-		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
-	}
-	/**
-	 * Closes a conversation the asking agent started with agent_create or agent_fork: a note says so in it, its work is
-	 * stopped, and it leaves the sidebar and stops being wakeable. Any other conversation is refused.
-	 */
-	private async closeCreated(computer: string, request: PartyOperation): Promise<NonNullable<OperationResult["result"]>> {
-		const managed = this.conversation(request.session!);
-		if (!managed) throw new Error("No conversation with that ID is on this computer.");
-		if (managed.view.createdBy !== requester(computer, request.sender)) throw new Error("You can close only conversations you started with agent_create or agent_fork.");
-		if (managed.worker && managed.view.state === "ready") {
-			const note = request.task.trim() ? `Closed by the agent that started it: ${request.task.trim()}` : "Closed by the agent that started it.";
-			try { await managed.worker.command({ kind: "note", text: note }); } catch { /* An older worker: closed without the note. */ }
-		}
-		await this.stopForMove(managed);
-		return { session: request.session!, state: "closed", key: managed.view.key };
-	}
-	/** An agent on another computer moves itself here, as Jordan asked it, and continues from its note. */
-	private async moveAgentHere(source: string, request: PartyOperation, wait: number): Promise<NonNullable<OperationResult["result"]>> {
-		const { key, note } = await this.moveConversation(source, request.sender, request.cwd.trim() || homedir(), true);
-		const managed = await this.waitForSession(key, wait);
-		await managed.worker!.command({ kind: "continue", text: `${note}\n\nYour note for continuing here:\n${request.task}` });
-		return { session: request.sender, state: "moved", key };
-	}
-	/** An agent's move to another computer did not happen: it is told, or, if it was already stopped, its conversation says so. */
-	private async moveFailed(request: PartyOperation, computer: string, error: string): Promise<void> {
-		if (this.teleport?.movedAway(request.sender)) return;
-		const managed = this.conversation(request.sender);
-		if (!managed) return;
-		const name = this.partyNetwork?.computers().find(item => item.id === computer)?.name ?? "the other computer";
-		const text = `Your move to ${name} did not happen: ${error} You are still on ${hostname()} (${managed.view.snapshot?.cwd ?? managed.view.cwd}). Tell Jordan.`;
-		if (managed.worker && managed.view.state === "ready") {
-			try { await managed.worker.command({ kind: "continue", text }); return; } catch { /* An older worker: shown on the conversation instead. */ }
-		}
-		managed.view = { ...managed.view, kept: managed.view.state === "closed" || managed.view.kept, error: `Move to ${name} failed: ${error}` };
-		this.persist(true); this.emit({ type: "session", session: managed.view });
-	}
-	/**
-	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
-	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
-	 */
-	private async moveConversation(source: string, session: string, cwd: string, asked = false): Promise<{ key: string; note: string }> {
-		const teleport = this.teleport, network = this.partyNetwork, self = this.accountIdentity?.device.id;
-		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
-		if (source === self) throw new Error("This conversation is already on this computer.");
-		let folder: string;
-		try { folder = realpathSync(homeFolder(cwd)); if (!statSync(folder).isDirectory()) throw new Error(); } catch { throw new Error(`${cwd} is not a folder on this computer.`); }
-		const computers = network.computers(), name = (id: string) => computers.find(computer => computer.id === id)?.name ?? "its computer";
-		const owner = computers.find(computer => computer.id === source && computer.online && computer.operations.includes(COPIES));
-		let fetched = owner ? await teleport.fetch(packet => network.send(source, packet), source, session, true) : teleport.copyLocal(source, session);
-		if (!fetched) {
-			let failure: unknown;
-			for (const holder of computers.filter(computer => computer.online && computer.operations.includes(HOLD))) {
-				try { fetched = await teleport.fetch(packet => network.send(holder.id, packet), source, session, false); break; } catch (error) { failure = error; }
-			}
-			if (!fetched) throw failure instanceof Error ? failure : new Error(`${name(source)} is off, and no computer that is on keeps a copy of this conversation.`);
-		}
-		const note = `This conversation moved${asked ? ", as you asked," : ""} from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
-		// An agent that asked to move gets the note as the message that starts its next turn instead.
-		const file = placeMoved(fetched.file, sessionFolder(this.options.agentDir!, folder, configuredSessionDirectory(folder, this.options.agentDir!, this.options.sessionDir)), folder, asked ? undefined : note);
-		teleport.record(session, { from: source, to: self, at: Date.now(), file: realpathSync(file) });
-		network.flush();
-		return { key: this.createSession(folder, file), note };
-	}
-
-	private partyComputer(): PartyComputer {
-		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
-	}
-
-	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
-	private async resumeAgent(session: string, wait?: number): Promise<NonNullable<OperationResult["result"]>> {
-		const store = this.parties!.store, managed = [...this.sessions.values()].find(item => item.view.agentId === session);
-		if (managed?.worker && (managed.view.state === "ready" || managed.view.state === "starting")) return { session, state: "running", key: managed.view.key };
-		if (managed?.worker) throw Error("This conversation is still stopping. Try again in a moment.");
-		const member = store.member(session);
-		const file = managed?.view.file ?? store.sessionFile(session)
-			?? (member ? SessionManager.findById(member.cwd, session, configuredSessionDirectory(member.cwd, this.options.agentDir!, this.options.sessionDir)) : undefined);
-		if (!file) throw Error("This conversation's saved history is not on this computer.");
-		const key = managed ? this.createSession(managed.view.cwd, managed.view.file ?? file, managed, true) : this.createSession(member?.cwd ?? "", file, undefined, true);
-		await this.waitForSession(key, wait);
-		this.refreshParties(); this.partyNetwork?.flush();
-		return { session, state: "resumed", key };
-	}
-
-	/** Set a new agent's requested model and reasoning before its task is admitted. */
-	private async applyAgentModel(managed: ManagedSession, request: ModelChoice): Promise<{ model?: string; reasoning?: string }> {
-		const worker = managed.worker!, applied: { model?: string; reasoning?: string } = {};
-		if (request.model) {
-			const models = managed.view.snapshot?.models ?? [];
-			const matches = models.filter(model => `${model.provider}/${model.id}` === request.model || model.id === request.model);
-			const listed = () => models.slice(0, 60).map(model => `${model.provider}/${model.id}`).join(", ");
-			if (!matches.length) throw Error(`Model ${request.model} is not available on this computer. Available: ${listed() || "none"}.`);
-			if (matches.length > 1) throw Error(`Model ${request.model} is ambiguous. Use one of: ${matches.map(model => `${model.provider}/${model.id}`).join(", ")}.`);
-			await worker.command({ kind: "model", provider: matches[0]!.provider, id: matches[0]!.id });
-			applied.model = `${matches[0]!.provider}/${matches[0]!.id}`;
-		}
-		if (request.reasoning) {
-			try { await worker.command({ kind: "thinking", level: request.reasoning }); }
-			catch (error) {
-				const levels = (await worker.command({ kind: "snapshot" }) as { thinkingLevels?: string[] }).thinkingLevels;
-				throw Error(`${error instanceof Error ? error.message : String(error)}${levels?.length ? ` Available: ${levels.join(", ")}.` : ""}`);
-			}
-			applied.reasoning = request.reasoning;
-		}
-		return applied;
-	}
-
-	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, checkpoint?: string, adopt?: string): string {
+	private createSession(cwd: string, sessionFile?: string, existing?: ManagedSession, takeover = false, adopt?: string): string {
 		if (this.closing || this.checkpoints?.held) throw new WorkerConnectionError("Desk is applying an update or shutting down. Reconnect before starting Pi.");
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
 			// A conversation that moved to another computer runs there, never again here.
 			const header = readSessionHeader(sessionFile), headerId = header.id ?? "", moved = this.teleport?.movedAway(headerId);
-			if (moved) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
+			if (moved) throw new Error(`This conversation moved to ${this.account.network?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
 			if (this.teleport?.superseded(headerId, sessionFile)) throw new Error("This conversation went to another computer and came back; it continues in the copy that came back.");
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
 				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
@@ -1275,18 +644,18 @@ export class DeskHost {
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(homeFolder(cwd)), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
-			deskDirectory: this.options.dataDir ?? join(this.options.agentDir!, "desk"),
-			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}), ...(checkpoint ? { checkpoint } : {}) };
+			deskDirectory: this.options.dataDir ?? join(this.options.agentDir, "desk"),
+			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
-		this.emit({ type: "session", session: managed.view });
+		this.events.emit({ type: "session", session: managed.view });
 		try { this.persist(true); }
 		catch (error) {
 			if (existing) this.sessions.set(key, existing); else this.sessions.delete(key);
-			this.emit({ type: "state", state: this.state() });
+			this.events.emit({ type: "state", state: this.state() });
 			throw error;
 		}
 		let worker: SessionWorker;
@@ -1296,11 +665,11 @@ export class DeskHost {
 			}, { directory: this.directory, key, adopt });
 		} catch (error) {
 			if (existing) this.sessions.set(key, existing); else this.sessions.delete(key);
-			this.persistEvent(true); this.emit({ type: "state", state: this.state() });
+			this.persistEvent(true); this.events.emit({ type: "state", state: this.state() });
 			throw error;
 		}
 		managed.worker = worker;
-		this.refreshUpdates();
+		this.updates.refresh();
 		void worker.start().then(snapshot => {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
@@ -1309,7 +678,7 @@ export class DeskHost {
 				workerRuntime: worker.runtime, reconnecting: undefined };
 			managed.initialized = true; managed.initialGeneration = worker.initialGeneration ?? snapshot.ui.generation;
 			this.saved?.invalidate();
-			this.emit({ type: "session", session: managed.view });
+			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
 			this.refreshParties();
 			managed.reconciling = true;
@@ -1320,522 +689,11 @@ export class DeskHost {
 			if (!adopt) this.inputs!.interrupt(key, "Session startup failed");
 			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, historyReady: false, error: error instanceof Error ? error.message : String(error),
 				inputs: this.inputs!.pending(key) };
-			this.emit({ type: "session", session: managed.view });
+			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
-			void (adopt ? worker.detach() : worker.close()).catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.refreshUpdates(); });
+			void (adopt ? worker.detach() : worker.close()).catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.updates.refresh(); });
 		});
 		return key;
-	}
-
-	private async body(request: IncomingMessage): Promise<Record<string, unknown>> {
-		if (!request.headers["content-type"]?.startsWith("application/json")) throw new Error("Use application/json.");
-		const buffers: Buffer[] = [];
-		let length = 0;
-		for await (const chunk of request) {
-			length += Buffer.byteLength(chunk);
-			if (length > 1_100_000) throw new Error("Request is too large.");
-			buffers.push(Buffer.from(chunk));
-		}
-		return object(JSON.parse(Buffer.concat(buffers).toString("utf8")));
-	}
-
-	private allowedOrigin(origin: string | undefined): boolean {
-		return origin === this.origin;
-	}
-
-	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		securityHeaders(response);
-		try {
-			const allowedHosts = [new URL(this.origin).host];
-			if (!request.headers.host || !allowedHosts.includes(request.headers.host)) { json(response, 403, { error: "Unrecognized host." }); return; }
-			const url = new URL(request.url ?? "/", this.origin);
-			const operator = this.access.isOperator((request.headers.authorization ?? "").replace(/^Bearer /, ""));
-			if (request.headers.origin && !this.allowedOrigin(request.headers.origin)) {
-				json(response, 403, { error: "Unrecognized request origin." }); return;
-			}
-			// Process controls are local-only and use a per-incarnation credential,
-			// never the persistent operator/device credentials or relay routing.
-			if (url.pathname.startsWith("/api/host/")) {
-				if (!this.control?.authenticate((request.headers.authorization ?? "").replace(/^Bearer /, ""))) {
-					json(response, 401, { error: "Local host control authentication required." }); return;
-				}
-				if (url.pathname === "/api/host/status" && request.method === "GET") {
-					json(response, 200, this.hostStatus()); return;
-				}
-				if (url.pathname === "/api/host/update-checkpoint" && request.method === "GET" && this.checkpoints) {
-					const checkpoint = await this.checkpoints.wait(string(url.searchParams.get("id"), 128));
-					json(response, 200, { instance: this.control.record.instance, checkpoint }); return;
-				}
-				if (request.method === "POST") {
-					const data = await this.body(request);
-					if (data.instance !== this.control.record.instance) { json(response, 409, { error: "The host changed." }); return; }
-					if (url.pathname === "/api/host/cancel-update" && this.checkpoints) {
-						this.checkpoints.cancel(string(data.checkpoint, 128));
-						json(response, 202, { instance: this.control.record.instance }); return;
-					}
-					if (["/api/host/prepare-update", "/api/host/stop-for-update"].includes(url.pathname)) {
-						if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-						if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
-						const target = string(data.target, 64), id = string(data.checkpoint, 128);
-						const state = this.runtimeHome ? readState(this.runtimeHome) : undefined;
-						if (this.closing || this.restoringUpdate || !this.runtime || data.runtime !== this.runtime || state?.active !== this.runtime
-							|| state.pending !== target || state.autoApply !== target || !this.checkpoints) {
-							json(response, 409, { error: "The host or prepared update changed." }); return;
-						}
-						if (url.pathname.endsWith("prepare-update")) {
-							const checkpoint = this.checkpoints.prepare(id, this.runtime, target);
-							json(response, 202, { instance: this.control.record.instance, checkpoint }); return;
-						}
-						await this.checkpoints.commit(id, target);
-						this.closing = true; this.preserveWorkers = true;
-						json(response, 202, { instance: this.control.record.instance });
-						setImmediate(() => { void this.close().catch(() => {}); }); return;
-					}
-					if (url.pathname === "/api/host/stop") {
-						if (data.runtime !== undefined && data.runtime !== this.runtime) {
-							json(response, 409, { error: "The running runtime changed." }); return;
-						}
-						this.closing = true;
-						json(response, 202, { instance: this.control.record.instance });
-						setImmediate(() => { void this.close().catch(() => {}); });
-						return;
-					}
-					if (url.pathname === "/api/host/stop-if-idle") {
-						if (this.dot?.busy) throw Error("Dot has an active operation.");
-						if (this.logins?.signingIn) throw Error("A sign-in is in progress.");
-						if (this.closing || !this.runtime || data.runtime !== this.runtime) {
-							json(response, 409, { error: "The host changed or is already stopping." }); return;
-						}
-						const active = [...this.sessions.values()].filter(item => item.worker).length;
-						if (active) { json(response, 200, { instance: this.control.record.instance, deferred: active }); return; }
-						this.closing = true;
-						json(response, 202, { instance: this.control.record.instance });
-						setImmediate(() => { void this.close().catch(() => {}); });
-						return;
-					}
-					if (url.pathname === "/api/host/invite" && !this.closing) {
-						if (data.local !== true) { json(response, 400, { error: "Use account sign-in for remote access." }); return; }
-						const destination = `${this.origin}/#pair=${this.access.invite()}`;
-						json(response, 200, { instance: this.control.record.instance, url: destination });
-						return;
-					}
-					if (url.pathname === "/api/host/account" && !this.closing) {
-						void this.connectAccount().catch(() => {});
-						json(response, 202, { instance: this.control.record.instance }); return;
-					}
-				}
-				json(response, 404, { error: "Unknown host control." }); return;
-			}
-			if (this.closing) {
-				response.setHeader("Connection", "close");
-				json(response, 503, { error: "Pi Desk is shutting down. Reconnect after it restarts." }); return;
-			}
-			if (request.method !== "GET" && !operator && !this.allowedOrigin(request.headers.origin)) {
-				json(response, 403, { error: "Unrecognized request origin." }); return;
-			}
-			if (url.pathname === "/desk-account.json" && request.method === "GET") { json(response, 200, { kind: "local", ...RELEASE }); return; }
-			const clientApi = request.headers[API_HEADER.toLowerCase()] ?? (url.pathname === "/api/events" ? url.searchParams.get("api") : undefined);
-			if (url.pathname.startsWith("/api/") && !apiMatches(clientApi)) {
-				json(response, 426, { error: upgradeMessage("This browser/client", clientApi), release: RELEASE });
-				return;
-			}
-			if (url.pathname === "/api/pair" && request.method === "POST") {
-				const ip = request.socket.remoteAddress ?? "unknown";
-				const attempts = this.attemptWindow.get(ip);
-				const next = !attempts || attempts.until < Date.now() ? { count: 1, until: Date.now() + 60_000 }
-					: { ...attempts, count: attempts.count + 1 };
-				this.attemptWindow.set(ip, next);
-				if (next.count > 12) { json(response, 429, { error: "Too many pairing attempts. Try again in a minute." }); return; }
-				const data = await this.body(request);
-				const paired = this.access.pair(string(data.token, 200), string(data.label, 100));
-				const secure = request.headers.origin?.startsWith("https:") ? "; Secure" : "";
-				response.setHeader("Set-Cookie", `pi_desk=${paired.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000${secure}`);
-				json(response, 200, paired.device);
-				return;
-			}
-			const device = operator ? "operator" : this.access.authenticate(cookie(request));
-			if (url.pathname.startsWith("/api/") && !device) { json(response, 401, { error: "Pair this browser to continue." }); return; }
-			if (url.pathname === "/api/events" && request.method === "GET") {
-				response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
-				const client = { response, device: device! };
-				this.clients.add(client);
-				const last = Number(request.headers["last-event-id"]);
-				const first = this.history[0]?.id ?? this.sequence + 1;
-				if (Number.isSafeInteger(last) && last >= first - 1 && last <= this.sequence && request.headers["last-event-id"]) {
-					for (const item of this.history) if (item.id > last) this.write(response, item.frame);
-				} else this.write(response, `id: ${this.sequence}\ndata: ${JSON.stringify({ type: "state", state: this.state() })}\n\n`);
-				request.on("close", () => this.clients.delete(client));
-				return;
-			}
-			if (url.pathname.startsWith("/api/") && (request.method === "GET" || request.method === "POST")) {
-				const result = await this.api(device!, { method: request.method, path: `${url.pathname}${url.search}`,
-					...(request.method === "POST" ? { body: await this.body(request) } : {}) });
-				if (result.asset) {
-					response.writeHead(result.status, { "Content-Type": result.asset.mimeType, "Cache-Control": "no-store", "Content-Disposition": "inline" });
-					response.end(Buffer.from(result.asset.base64, "base64"));
-				} else json(response, result.status, result.body);
-				return;
-			}
-			if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
-				await serveClient(this.clientDir, url.pathname, response);
-				return;
-			}
-			json(response, 404, { error: "Not found." });
-		} catch (error) {
-			if (response.headersSent) { response.destroy(); return; }
-			json(response, 400, { error: error instanceof Error ? error.message : String(error) });
-		}
-	}
-
-	private async api(device: string | RemoteAccess, request: ApiRequest): Promise<ApiResponse> {
-		const reply = (body: unknown, status = 200): ApiResponse => ({ body, status });
-		try {
-			if (typeof device === "string" ? device !== "operator" && !this.access.hasDevice(device) : !device.authorized()) {
-				return reply({ error: "Device access is no longer authorized." }, 401);
-			}
-			if (this.closing) return reply({ error: "Desk is applying an update or shutting down. Reconnect shortly." }, 503);
-			const url = new URL(request.path, this.origin);
-			const data = request.body ?? {};
-			const restorationControl = this.restoringUpdate && (/^\/api\/sessions\/[a-f0-9-]+\/close$/.test(url.pathname)
-				|| /^\/api\/sessions\/[a-f0-9-]+\/command$/.test(url.pathname) && (data.command as { kind?: string } | undefined)?.kind === "answer");
-			if (request.method !== "GET" && (this.checkpoints?.held || this.restoringUpdate && !restorationControl))
-				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
-			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.state());
-			if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.logins!.snapshot());
-			if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.logins!.signOut(string(data.provider, 200)));
-			if (url.pathname === "/api/teleport/move" && request.method === "POST")
-				return reply({ key: (await this.moveConversation(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096))).key });
-			if (url.pathname === "/api/teleport/settings" && request.method === "POST") {
-				if (!this.teleport) throw new Error("Conversation copies need your workspace.");
-				this.teleport.configure({ ...(typeof data.hold === "boolean" ? { hold: data.hold } : {}), ...(typeof data.send === "boolean" ? { send: data.send } : {}) });
-				this.partyNetwork?.reannounce(this.partyComputer());
-				this.refreshParties(); return reply({ ...this.teleport.settings });
-			}
-			if (url.pathname === "/api/logins/sign-ins" && request.method === "POST") return reply(this.logins!.start(
-				string(data.id, 36), string(data.provider, 200), string(data.type, 10) as import("../shared/logins.ts").ProviderAuthType), 202);
-			const signIn = /^\/api\/logins\/sign-ins\/([a-f0-9-]{36})\/(answer|cancel)$/.exec(url.pathname);
-			if (signIn && request.method === "POST") {
-				if (signIn[2] === "cancel") await this.logins!.cancel(signIn[1]!);
-				else this.logins!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
-				return reply({});
-			}
-			if (url.pathname === "/api/dot/connector") {
-				const connector = this.dotConnector!;
-				const view = () => ({ enabled: connector.enabled, url: connector.enabled ? this.connectorUrl() : undefined, relay: this.relayStatus?.state ?? "offline",
-					approvals: connector.enabled ? connector.approvals() : [], connections: connector.connections() });
-				if (request.method === "GET") return reply(view());
-				if (request.method === "POST") {
-					if (typeof data.approve === "string" || typeof data.deny === "string") connector.decide(string(data.approve ?? data.deny, 36), typeof data.approve === "string");
-					else {
-						if (data.enabled === true) connector.enable(); else if (data.enabled === false) connector.disable();
-						else throw new Error("Choose enabled true or false.");
-						this.relay?.connectorChanged(); this.refreshParties(); this.partyNetwork?.flush();
-					}
-					return reply(view());
-				}
-			}
-			if (url.pathname === "/api/dot" && request.method === "GET") return reply(await this.dot!.view());
-			if (url.pathname === "/api/dot/connect" && request.method === "POST") {
-				void this.dot!.connect().catch(() => {}); return reply({ accepted: true }, 202);
-			}
-			if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await this.dot!.disconnect(); return reply({}); }
-			if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await this.dot!.history(string(url.searchParams.get("before"), 1000)));
-			if (url.pathname === "/api/dot/inputs" && request.method === "POST") return reply({ input: this.dot!.send(
-				string(data.id, 36), string(data.dot, 200), string(data.text, 32_000),
-				Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], string(data.connection, 64)) }, 202);
-			if (url.pathname === "/api/dot/uploads" && request.method === "POST") return reply(this.dot!.stageFile(
-				string(data.id, 36), string(data.dot, 200), string(data.name, 200), string(data.mime, 100), Number(data.size), string(data.connection, 64)));
-			const dotFile = /^\/api\/dot\/uploads\/([a-f0-9-]{36})(?:\/(discard))?$/.exec(url.pathname);
-			if (dotFile && !dotFile[2] && request.method === "POST") return reply(this.dot!.appendFile(dotFile[1]!, Number(data.offset), string(data.data, 400_000)));
-			if (dotFile?.[2] && request.method === "POST") { this.dot!.removeFile(dotFile[1]!); return reply({}); }
-			if (url.pathname === "/api/dot/surface" && request.method === "POST") return reply(await this.dot!.openSurface(
-				string(data.mode, 20) as import("../shared/dot.ts").DotSurfaceMode));
-			const dotSurface = /^\/api\/dot\/surface\/([a-f0-9-]{36})(?:\/(inputs|files|close))?$/.exec(url.pathname);
-			if (dotSurface) {
-				const id = dotSurface[1]!;
-				if (!dotSurface[2] && request.method === "GET") return reply(await this.dot!.surfaceView(id, Number(url.searchParams.get("after"))));
-				if (dotSurface[2] === "close" && request.method === "POST") { await this.dot!.closeSurface(id); return reply({}); }
-				if (dotSurface[2] === "inputs" && request.method === "POST") {
-					await this.dot!.surfaceInput(id, string(data.id, 36), Number(data.width), Number(data.height), data.input as import("../shared/dot.ts").DotSurfaceInput);
-					return reply({});
-				}
-				if (dotSurface[2] === "files" && request.method === "POST") {
-					if (!Array.isArray(data.files)) throw Error("Choose files for the native file picker.");
-					await this.dot!.surfaceFiles(id, data.files.map(file => string(file, 36))); return reply({});
-				}
-			}
-			if (url.pathname === "/api/dot/downloads" && request.method === "POST") return reply(await this.dot!.download(string(data.message, 500), string(data.attachment, 500)));
-			const dotDownload = /^\/api\/dot\/downloads\/([a-f0-9-]{36})(?:\/(release))?$/.exec(url.pathname);
-			if (dotDownload) {
-				const surface = url.searchParams.get("surface") ?? undefined;
-				if (!dotDownload[2] && request.method === "GET") return reply(await this.dot!.downloadChunk(dotDownload[1]!, Number(url.searchParams.get("offset")), surface));
-				if (dotDownload[2] === "release" && request.method === "POST") { await this.dot!.releaseDownload(dotDownload[1]!, surface); return reply({}); }
-			}
-			const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})(?:\/(cancel))?$/.exec(url.pathname);
-			if (dotInput && !dotInput[2] && request.method === "GET") return reply({ input: await this.dot!.input(dotInput[1]!) ?? null });
-			if (dotInput?.[2] && request.method === "POST") return reply({ input: this.dot!.cancelInput(
-				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], data.connection === undefined ? undefined : string(data.connection, 64)) });
-			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
-			if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
-				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-				if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
-				const version = string(data.version, 40);
-				if (!this.runtimeHome || !/^\d+\.\d+\.\d+$/.test(version)) return reply({ error: "Select the published update." }, 409);
-				await launchOperation(this.runtimeHome, "update-now", version);
-				this.refreshUpdates();
-				return reply({ accepted: true }, 202);
-			}
-			if (url.pathname === "/api/dictation" && request.method === "POST") {
-				if (!this.dictation?.available) return reply({ error: "Dictation is not set up on this computer." }, 409);
-				const audio = Buffer.from(string(data.audio, Math.ceil(MAX_DICTATION_BYTES * 4 / 3) + 4), "base64");
-				const language = typeof data.language === "string" && /^[a-z]{2}$/.test(data.language) ? data.language : undefined;
-				const mime = typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", result = await this.dictation.transcribe(audio, mime, language);
-				// Sizes only, never the words: enough to tell a silent or truncated clip from a transcription problem.
-				console.error(`Dictation: ${audio.length} bytes of ${mime}${typeof data.peak === "number" ? `, peak level ${data.peak.toFixed(3)}` : ""} → ${result.text.length} characters.`);
-				return reply(result);
-			}
-			if (url.pathname === "/api/efficiency" && request.method === "GET") {
-				if (!this.efficiency || Date.now() - this.efficiency.at > 600_000) this.refreshEfficiency();
-				return reply({ report: this.efficiency?.report ?? null, refreshing: !!this.efficiencyRun });
-			}
-			if (url.pathname === "/api/dictation/settings") {
-				if (request.method === "GET") return reply(this.dictation!.settings());
-				if (request.method === "POST") {
-					const value = this.dictation!.configure(data);
-					this.emit({ type: "state", state: this.state() });
-					return reply(value);
-				}
-			}
-			if (url.pathname === "/api/quests" && this.quests) {
-				if (request.method === "POST") {
-					const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
-					const quest = this.quests.apply(by, command);
-					if (quest) this.questFinished(quest, by);
-					this.refreshQuests();
-					return reply({ quest: quest ?? null, quests: this.questView });
-				}
-				return reply(this.quests.view());
-			}
-			if (url.pathname === "/api/cache-compaction" && request.method === "POST") {
-				const threshold = data.threshold === null || data.threshold === undefined ? undefined : Number(data.threshold);
-				writeCacheCompaction(this.directory, threshold); this.cacheCompaction = threshold;
-				this.emit({ type: "state", state: this.state() });
-				return reply({ threshold: threshold ?? null });
-			}
-			if (url.pathname === "/api/runtime/automatic" && request.method === "POST") {
-				const next = { host: typeof data.host === "boolean" ? data.host : this.automatic.host,
-					conversations: typeof data.conversations === "boolean" ? data.conversations : this.automatic.conversations };
-				writeAutomatic(this.directory, next); this.automatic = next; this.refreshUpdates();
-				return reply({ automatic: next });
-			}
-			if (url.pathname === "/api/runtime/restart-idle" && request.method === "POST") {
-				const only = data.key === undefined ? undefined : string(data.key, 100);
-				const outdated = this.outdated().filter(item => !only || item.managed.view.key === only);
-				const title = (item: typeof outdated[number]) => item.managed.view.title ?? item.managed.view.name ?? "";
-				const skipped = outdated.filter(item => item.blockers.length).map(item => ({ title: title(item), reason: item.blockers.join(", ") }));
-				let restarting = 0;
-				// The same check the restart makes, so the reply says what will actually happen.
-				for (const item of outdated.filter(item => !item.blockers.length)) {
-					if (item.managed.worker?.pid && !await workerHasRunningCommands(item.managed.worker.pid, mcpServerCommands(this.options.agentDir!, item.managed.view.cwd))) restarting++;
-					else skipped.push({ title: title(item), reason: "a command it started is still running" });
-				}
-				void this.maintain(true, only);
-				return reply({ restarting, skipped }, 202);
-			}
-			if (url.pathname === "/api/runtime/check" && request.method === "POST") {
-				if (!this.runtimeHome) return reply({ error: "This host is not a managed installation." }, 409);
-				this.checkForUpdates();
-				return reply({ accepted: true }, 202);
-			}
-			if (url.pathname === "/api/runtime/apply" && request.method === "POST") {
-				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
-				if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
-				const prepared = string(data.prepared, 64);
-				if (!this.runtimeHome || !/^[a-f0-9]{64}$/.test(prepared)) return reply({ error: "Select a prepared update." }, 409);
-				await launchOperation(this.runtimeHome, "apply-now", prepared);
-				this.refreshUpdates();
-				return reply({ accepted: true }, 202);
-			}
-			if (url.pathname === "/api/folders/places" && request.method === "GET") return reply(await this.folders!.places());
-			if (url.pathname === "/api/folders/drives" && request.method === "GET") return reply(await this.folders!.volumes());
-			if (url.pathname === "/api/folders" && request.method === "GET") return reply(await this.folders!.page({
-				path: url.searchParams.get("path") ?? undefined, query: url.searchParams.get("query") ?? undefined,
-				hidden: url.searchParams.get("hidden") === "1", offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
-			}));
-			if (url.pathname === "/api/sessions" && request.method === "POST") {
-				// Validate everything first: a rejected request must not leave a conversation behind.
-				const model = data.model === undefined ? undefined : string(data.model, 300), reasoning = data.reasoning === undefined ? undefined : string(data.reasoning, 20);
-				const key = this.createSession(string(data.cwd, 4000) || this.options.cwd);
-				const managed = this.sessions.get(key);
-				if (managed && (model || reasoning)) managed.setup = { ...(model ? { model } : {}), ...(reasoning ? { reasoning } : {}) };
-				return reply({ key }, 202);
-			}
-			if (url.pathname === "/api/resume" && request.method === "POST") {
-				const file = realpathSync(string(data.file, 4000));
-				const old = [...this.sessions.values()].find(item => (item.view.snapshot?.file ?? item.view.file) === file);
-				return reply({ key: this.createSession(this.options.cwd, file, old, data.takeover === true) }, 202);
-			}
-			const inputRoute = /^\/api\/sessions\/([a-f0-9-]+)\/(inputs|uploads|restart)(?:\/([a-f0-9-]+)(?:\/(cancel|dismiss))?)?$/.exec(url.pathname);
-			if (inputRoute) {
-				const key = inputRoute[1]!, managed = this.sessions.get(key);
-				if (!managed) return reply({ error: "Unknown session." }, 404);
-				const id = inputRoute[3];
-				if (inputRoute[2] === "inputs" && id) {
-					if (request.method === "GET" && !inputRoute[4]) return reply(this.inputs!.read(key, id));
-					if (request.method === "POST" && inputRoute[4]) {
-						const result = inputRoute[4] === "cancel" ? this.inputs!.cancel(key, id) : this.inputs!.dismiss(key, id);
-						this.inputEvent(managed);
-						return reply({ result: result ?? null });
-					}
-				} else if (!id && request.method === "POST") {
-					if (inputRoute[2] === "restart") {
-						if (managed.worker && data.replace === true) return reply({ key: await this.replaceWorker(managed) }, 202);
-						if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
-						if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
-						return reply({ key: this.createSession(managed.view.cwd, managed.view.file, managed, data.takeover === true) }, 202);
-					}
-					const command = commandFrom(data.command);
-					const activation = string(data.activation, 100);
-					const generation = data.generation === undefined ? undefined : string(data.generation, 100);
-					let input: InputSubmission | undefined;
-					if (inputRoute[2] === "inputs") {
-						if (command.kind !== "prompt") throw new Error("Expected a message.");
-						const id = string(data.id, 100);
-						if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid message receipt.");
-						input = { id, activation, generation, command };
-						const previous = this.inputs!.existing(key, input);
-						if (previous) return reply({ accepted: true, input: previous });
-					}
-					if (this.closing || !managed.worker || managed.view.state === "closed" || managed.view.state === "failed")
-						throw new Error("Start or resume this conversation before sending.");
-					if (activation !== managed.view.activation) throw new StaleGeneration();
-					if (inputRoute[2] === "uploads") {
-						switch (command.kind) {
-							case "upload_begin": case "upload_chunk": case "upload_finish": case "upload_discard":
-								return reply({ result: this.attachments(key).command(command) ?? null });
-							default: throw new Error("Expected an upload command.");
-						}
-					}
-					if (managed.view.controls?.some(control => control.state === "running")) throw new Error("Wait for the current operation before sending.");
-					if (generation !== undefined ? generation !== managed.view.ui?.generation
-						: managed.initialized && managed.initialGeneration !== managed.view.ui?.generation) throw new StaleGeneration();
-					if (!input!.command.text.trim() && !input!.command.attachments?.length) throw new Error("Enter a message or attach a file.");
-					this.attachments(key).check(input!.command.attachments ?? []);
-					if (input!.command.behavior === "now" && !managed.worker.runtime?.sendNow) throw new Error("This worker does not support Send now. Restart this conversation when idle to enable it.");
-					const accepted = this.inputs!.admit(key, input!);
-					this.inputEvent(managed);
-					this.drainInputs(managed);
-					return reply({ accepted: true, input: accepted }, 202);
-				}
-				return reply({ error: "Unknown input operation." }, 404);
-			}
-			const control = /^\/api\/sessions\/([a-f0-9-]+)\/(close|metadata)$/.exec(url.pathname);
-			if (control && request.method === "POST") {
-				const managed = this.sessions.get(control[1]!);
-				if (!managed) throw new Error("Unknown session.");
-				if (control[2] === "close") {
-					if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
-					if (!managed.worker) {
-						this.inputs!.interrupt(managed.view.key, "The conversation closed");
-						managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
-							snapshot: undefined, ui: undefined, inputs: this.inputs!.pending(managed.view.key) };
-						this.persist(true);
-						this.emit({ type: "session", session: managed.view });
-						return reply({ accepted: true });
-					}
-					managed.keepOnClose = data.keep === true;
-					const result = await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
-					if (result.control.state === "running") {
-						this.inputs!.interrupt(managed.view.key, "The conversation is closing");
-						this.inputEvent(managed);
-					}
-					return reply(result, 202);
-				} else {
-					if (managed.worker && data.generation !== managed.view.ui?.generation) throw new StaleGeneration();
-					managed.view = { ...managed.view, pinned: data.pinned === true };
-				}
-				this.persist(true);
-				this.emit({ type: "session", session: managed.view });
-				return reply({});
-			}
-			const route = /^\/api\/sessions\/([a-f0-9-]+)\/(command|history|assets\/([a-f0-9]{64})|artifacts\/(sha256-[a-f0-9]{64})|files\/([a-f0-9]{64})(?:\/(text|chunk|open|reveal))?)$/.exec(url.pathname);
-			if (route) {
-				const managed = this.sessions.get(route[1]!);
-				if (!managed) return reply({ error: "Unknown session." }, 404);
-				if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this conversation before using its controls.");
-				const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };
-				if (route[2] === "command" && request.method === "POST") {
-					const command = workerCommandFrom(data.command);
-					if (["asset", "artifact", "file", "history", "snapshot", "prompt"].includes(command.kind)) throw new Error("Use the corresponding session endpoint.");
-					if (isControl(command)) {
-						if (command.kind === "queue_now" && !managed.worker.runtime?.queueNow) throw new Error("Restart this conversation to use Send now on waiting messages.");
-						if (command.kind !== "abort" && command.kind !== "queue_now" && this.inputs!.pending(managed.view.key).some(input => input.state === "queued" || input.state === "sending"))
-							throw new Error("Cancel or finish pending messages before changing this session.");
-						return reply({ result: await managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
-					}
-					if (command.kind === "queue_cancel" && !managed.worker.runtime?.queueCancel) throw new Error("Restart this conversation to cancel waiting messages.");
-					const result = await managed.worker.command(command, string(data.generation, 100), string(data.id, 100));
-					return reply({ result: result ?? null });
-				}
-				if (route[2] === "history" && request.method === "GET") {
-					return reply(await managed.worker.command(workerCommandFrom({ kind: "history",
-						before: url.searchParams.has("before") ? string(url.searchParams.get("before"), 100) : undefined,
-						after: url.searchParams.get("after") ?? undefined, from: url.searchParams.get("from") ?? undefined,
-						source: url.searchParams.has("source") ? string(url.searchParams.get("source"), 100) : undefined })));
-				}
-				if (route[3] && request.method === "GET") {
-					const asset = await managed.worker.command(workerCommandFrom({ kind: "asset", id: route[3], origin })) as { mimeType: string; base64: string };
-					return { status: 200, body: null, asset };
-				}
-				if (route[4] && request.method === "GET") {
-					return reply(await managed.worker.command(workerCommandFrom({ kind: "artifact", id: route[4], origin,
-						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
-						query: url.searchParams.has("query") ? url.searchParams.get("query") : undefined })));
-				}
-				if (route[5] && ["open", "reveal"].includes(route[6] ?? "") && request.method === "POST") {
-					return reply(await managed.worker.command(workerCommandFrom({ kind: "file", id: route[5], origin, operation: route[6], version: data.version }),
-						undefined, string(data.id, 100)));
-				}
-				if (route[5] && !["open", "reveal"].includes(route[6] ?? "") && request.method === "GET") {
-					return reply(await managed.worker.command(workerCommandFrom({ kind: "file", id: route[5], origin, operation: route[6] ?? "info",
-						version: url.searchParams.get("version"),
-						offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
-						line: url.searchParams.has("line") ? Number(url.searchParams.get("line")) : undefined })));
-				}
-			}
-			if (url.pathname === "/api/operator-availability" && request.method === "POST") {
-				if (data.mode !== "present" && data.mode !== "away") throw Error("Choose Present or Away.");
-				const value = setOperatorAvailability(this.directory, data.mode);
-				this.emit({ type: "state", state: this.state() });
-				return reply(value);
-			}
-			if (url.pathname === "/api/history" && request.method === "GET") {
-				return reply(await this.saved!.page({
-					query: url.searchParams.get("query") ?? "",
-					offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : 0,
-					revision: url.searchParams.get("revision") ?? undefined,
-					refresh: url.searchParams.get("refresh") === "1",
-					cwd: url.searchParams.get("cwd") ?? undefined,
-					scan: url.searchParams.get("scan") ?? undefined,
-					named: url.searchParams.get("named") === "1",
-					reader: url.searchParams.get("reader") ?? undefined,
-				}));
-			}
-			if (url.pathname === "/api/history/cancel" && request.method === "POST") {
-				this.saved!.cancel(string(request.body?.scan, 100), string(request.body?.reader, 100));
-				return reply({});
-			}
-			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
-			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.access.devices());
-			if (url.pathname === "/api/revoke" && request.method === "POST") {
-				const id = string(data.id, 100);
-				this.access.revoke(id);
-				for (const client of this.clients) if (client.device === id) client.response.end();
-				return reply({});
-			}
-			return reply({ error: "Not found." }, 404);
-		} catch (error) { return reply({ error: error instanceof Error ? error.message : String(error) },
-			error instanceof WorkerConnectionError ? 503 : error instanceof CatalogChanged || error instanceof StaleGeneration || error instanceof ReceiptConflict ? 409 : 400); }
 	}
 
 	close(): Promise<void> {
@@ -1851,27 +709,13 @@ export class DeskHost {
 		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat); this.packageUpdates?.close();
-		this.updateWatch?.close(); clearTimeout(this.updateTimer);
-		clearTimeout(this.updateCheckTimer); this.updateCheckAbort.abort();
-		clearTimeout(this.accountRetry); clearInterval(this.accountFollow); this.accountRevision++;
-		this.relay?.close(); this.partyNetwork?.close();
-		this.accountIdentity?.close();
-		try { this.dotConnector?.close(); this.quests?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		this.updates.close();
+		this.account.close();
+		try { this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
-		for (const client of this.clients) client.response.end();
+		this.events.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));
 		for (const result of workers) if (result.status === "rejected") errors.push(result.reason);
-		try {
-			const ticket = this.inputs?.checkpoint();
-			if (!this.preserveWorkers && ticket?.state === "committed" && !ticket.workers) {
-				for (const actor of ticket.sessions) {
-					const final = this.sessions.get(actor.key)?.worker?.closedCheckpoint;
-					if (final?.checkpoint === ticket.id && final.session === actor.session && final.file === actor.file) actor.leaf = final.leaf;
-					else actor.error = "The previous worker did not confirm its final saved cursor. Resume manually before continuing work.";
-				}
-				this.inputs!.writeCheckpoint(ticket);
-			}
-		} catch (error) { errors.push(error); }
 		await Promise.all([...this.sessions.values()].map(item => item.draining));
 		await this.checkpoints?.settled(); await this.restoreUpdateJob;
 		try {
@@ -1887,4 +731,3 @@ export class DeskHost {
 		if (errors.length) throw new AggregateError(errors, "Host shutdown encountered errors; check the log.");
 	}
 }
-

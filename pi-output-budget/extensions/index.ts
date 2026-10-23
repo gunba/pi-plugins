@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { ArtifactStore, boundedText } from "./artifacts.ts";
-import { MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
+import { cutText, type Kept, MAX_CHARS, OUTPUT_CHARS, READ_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
 import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
@@ -25,6 +25,29 @@ export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
 }
 
+/**
+ * The most an image read sends, within the model's own limits (Pi's are 2000 pixels a side and 4.5 MB). Every
+ * request resends every image in the conversation, and full-size screenshots pushed conversations past
+ * Anthropic's 32 MB request limit.
+ */
+const IMAGE_BYTES = 1.5 * 1024 * 1024;
+
+/** The context the native reader sees: Pi resizes to the model's image limits, so the cap goes into them. */
+function imageCapped(ctx: ExtensionToolContext): ExtensionToolContext {
+  const model = ctx.model, images = model?.inputLimits?.images;
+  if (!model) return ctx;
+  const resize = { ...images?.resize, maxBytes: Math.min(images?.resize?.maxBytes ?? IMAGE_BYTES, IMAGE_BYTES) };
+  return Object.create(ctx, { model: { value: { ...model, inputLimits: { ...model.inputLimits, images: { ...images, resize } } } } });
+}
+
+/**
+ * Which part of its output each of Pi's own tools keeps when it cuts it: bash and PowerShell the last 50 KB, grep,
+ * find and ls the first 50 KB, codemode (its max_output_tokens) and MCP tools (20 KB) the start and end. Their longer
+ * results are cut to OUTPUT_CHARS in the same place, so the two cuts act as one.
+ */
+const PI_CUTS: Record<string, Kept> = { bash: "end", powershell: "end", grep: "start", find: "start", ls: "start", codemode: "start and end" };
+const piCut = (tool: string): Kept | undefined => PI_CUTS[tool] ?? (tool.startsWith("mcp__") ? "start and end" : undefined);
+
 /** Use the native reader for path resolution, image processing, errors and cancellation. */
 export async function readSnapshot(id: string, params: Static<typeof readSchema>, signal: AbortSignal | undefined,
   ctx: ExtensionToolContext, store: ArtifactStore, budget = params.full ? MAX_CHARS : READ_CHARS) {
@@ -33,6 +56,7 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
   const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
   const native = createReadToolDefinition(ctx.cwd, {
     autoResizeImages: settings.getImageAutoResize(),
+    resizeOptions: { maxBytes: IMAGE_BYTES },
     operations: {
       access: path => access(path, constants.R_OK),
       readFile: async path => {
@@ -48,7 +72,7 @@ export async function readSnapshot(id: string, params: Static<typeof readSchema>
     },
   });
   let result;
-  try { result = await native.execute(id, params, signal, undefined, ctx); }
+  try { result = await native.execute(id, params, signal, undefined, imageCapped(ctx)); }
   catch (error) {
     // Reading past the end is an answer, not a failure: there is nothing more.
     const past = /Offset (\d+) is beyond end of file \((\d+) lines? total\)/.exec(error instanceof Error ? error.message : String(error));
@@ -84,9 +108,9 @@ export default function outputBudget(pi: ExtensionAPI): void {
     const error = event.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
     let hint: string | undefined;
     try {
-      const path = ["read", "grep", "ls", "find", "edit", "write", "apply_patch"].includes(event.toolName) ? missingPath(event.toolName, error, input) : undefined;
+      const path = ["read", "grep", "ls", "find", "edit", "write"].includes(event.toolName) ? missingPath(event.toolName, error, input) : undefined;
       hint = path ? await missingPathHint(path, ctx.cwd, roots) : undefined;
-      if (!hint && (event.toolName === "edit" || event.toolName === "apply_patch")) hint = editHint(error, input, ctx.cwd);
+      if (!hint && event.toolName === "edit") hint = editHint(error, input, ctx.cwd);
     } catch { hint = undefined; }
     if (hint) return { content: [...event.content, { type: "text" as const, text: `\n${hint}` }] };
   });
@@ -121,60 +145,34 @@ export default function outputBudget(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    const native = event.details as {
-      fullOutputPath?: string; full_output_artifact?: string; outputBudgeted?: boolean;
-      outputGuard?: { truncated?: boolean; fullOutputPath?: string };
-    } | undefined;
-    if (native?.outputBudgeted) return;
-    // outputGuard is local adapter metadata, not the server-controlled mcpResult.
-    const mcpSpill = native?.outputGuard?.truncated === true && typeof native.outputGuard.fullOutputPath === "string"
-      ? native.outputGuard.fullOutputPath : undefined;
-    const textOnly = event.content.every(block => block.type === "text");
-    if (!textOnly && !mcpSpill) return;
+    const details = event.details as { fullOutputPath?: unknown; outputBudgeted?: boolean } | undefined;
+    if (details?.outputBudgeted) return;
+    const keep = piCut(event.toolName);
+    // Only Pi's own spill files are followed, never a path a tool or server put in its payload.
+    const full = keep && typeof details?.fullOutputPath === "string" ? details.fullOutputPath : undefined;
     const text = event.content.map(block => block.type === "text" ? block.text : "").join("\n");
-    const bashLog = (event.toolName === "bash" || event.toolName === "powershell") ? native?.fullOutputPath : undefined;
-    if (text.length <= OUTPUT_CHARS && !bashLog && !mcpSpill) return;
+    const cut = event.content.every(block => block.type === "text") && text.length > OUTPUT_CHARS;
+    if (!cut && !full) return;
     ctx.signal?.throwIfAborted();
     const store = outputArtifactStore();
-    if (mcpSpill) {
-      let notice: string;
-      try {
-        const full = await store.putFile(mcpSpill);
-        ctx.signal?.throwIfAborted();
-        notice = `\n[Complete MCP text: ${full}; use read_artifact with offset=0.]`;
-        return {
-          content: textOnly
-            ? [{ type: "text" as const, text: page(text).text + notice }]
-            : [...event.content, { type: "text" as const, text: notice }],
-          details: { ...event.details as object, outputBudgeted: true, outputArtifact: full, full_output_artifact: full },
-        };
-      } catch {
-        ctx.signal?.throwIfAborted();
-        notice = `\n[Could not archive complete MCP text. The preview is incomplete; original spill: ${mcpSpill}]`;
-      }
-      if (!textOnly) return { content: [...event.content, { type: "text" as const, text: notice }] };
-      const fallback = await boundedText(store, notice + "\n" + text);
-      return { content: fallback.content, details: { ...event.details as object, ...fallback.details } };
-    }
-    const result = await boundedText(store, text);
-    if ((event.toolName === "exec_command" || event.toolName === "write_stdin") && native?.full_output_artifact) {
-      result.content[0]!.text += `\n[Complete command output: ${native.full_output_artifact}; use read_artifact.]`;
-    }
-    if (bashLog) {
-      try {
-        const full = await store.putFile(bashLog);
-        result.content[0]!.text += `\n[Complete command output: ${full}; use read_artifact.]`;
-        return { content: result.content, details: { ...event.details as object, ...result.details, full_output_artifact: full } };
-      } catch {
-        result.content[0]!.text += `\n[Could not archive the complete native command log. Retrieve omitted output from the native log: ${bashLog}]`;
-      }
-    }
-    // Preserve native details (including complete shell-log paths), errors and nested usage.
-    const details = event.details;
+    let complete: string | undefined;
+    if (full) try { complete = await store.putFile(full); } catch { /* Reported below; Pi's own notice names the file. */ }
+    const result: { content: typeof event.content; details: Record<string, unknown> } = { content: [...event.content],
+      details: complete ? { full_output_artifact: complete } : {} };
+    if (cut && keep) {
+      const uncut = complete ?? await store.put(text);
+      result.content = [{ type: "text", text: `${cutText(text, keep, OUTPUT_CHARS)}\n\n[Cut to its ${keep}, ${OUTPUT_CHARS} of ${text.length} characters. ${complete ? "Complete output" : "Uncut text"}: ${uncut}; use read_artifact.]` }];
+      result.details = { ...result.details, outputBudgeted: true, ...(complete ? {} : { outputArtifact: uncut }) };
+    } else if (cut) {
+      const bounded = await boundedText(store, text);
+      result.content = bounded.content; result.details = { ...result.details, ...bounded.details };
+    } else if (complete) result.content.push({ type: "text", text: `[Complete output: ${complete}; use read_artifact.]` });
+    if (full && !complete) result.content.push({ type: "text", text: `[Could not archive the complete output; it is in ${full} until Pi deletes it.]` });
+    // Preserve native details (including complete-output paths), errors and nested usage.
     const plainDetails = details == null || (typeof details === "object" && !Array.isArray(details)
       && [Object.prototype, null].includes(Object.getPrototypeOf(details)));
     return plainDetails
-      ? { content: result.content, details: { ...details as object, ...result.details } }
+      ? { content: result.content, details: { ...details, ...result.details } }
       : { content: result.content };
   });
 

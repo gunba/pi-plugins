@@ -19,7 +19,6 @@ import {
 	type PresentationScope,
 	type UiTranscriptSource,
 	type UiTranscriptHandle,
-	type UiMaintenance,
 } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot, PresentationSnapshot, ViewSnapshot } from "../shared/protocol.ts";
 
@@ -48,31 +47,9 @@ export class DeskPresentation implements Presentation {
 	private batchChanged = false;
 	private nextRevision: () => number;
 	private scopes = new Map<string, { label: string; presentation: DeskPresentation; close: () => void }>();
-	suspended = false;
 	private availability: () => boolean = () => true;
 	get operatorAvailable(): boolean { return !!this.settingOrigin.getStore()?.live() || this.availability(); }
 	setOperatorAvailability(available: () => boolean): void { this.availability = available; }
-	private maintenanceOwners = new Map<string, UiMaintenance>();
-	registerMaintenance(owner: UiMaintenance): UiTranscriptHandle {
-		if (this.retired) throw new Error("The presentation has closed.");
-		const id = randomUUID(); this.maintenanceOwners.set(id, owner);
-		return { id, close: () => { this.maintenanceOwners.delete(id); } };
-	}
-	inspectMaintenance(): void {
-		const covered = new Set<string>();
-		for (const owner of this.maintenanceOwners.values()) {
-			owner.inspect(); for (const scope of owner.scopes()) covered.add(scope);
-		}
-		if ([...this.scopes.keys()].some(id => !covered.has(id)))
-			throw new Error("A scoped session has no owning-driver maintenance checkpoint.");
-	}
-	async maintenance(id: string, action: "hold" | "restore" | "release"): Promise<void> {
-		for (const owner of this.maintenanceOwners.values()) await owner[action](id);
-	}
-	setSuspended(value: boolean): void {
-		this.suspended = value;
-		for (const { presentation } of this.scopes.values()) presentation.setSuspended(value);
-	}
 	private retired = false;
 	private uiRevision = 0;
 	private presentationRevision = 0;
@@ -116,7 +93,7 @@ export class DeskPresentation implements Presentation {
 		const host = this;
 		const lease: Presentation = {
 			version: 2,
-			get suspended() { return !current() || host.suspended; },
+			get suspended() { return !current(); },
 			get operatorAvailable() { return host.operatorAvailable; },
 			capabilities: this.capabilities,
 			...(resources ? { resources: () => { if (!current()) throw Error("The resource view belongs to a previous session."); return resources(); } } : {}),
@@ -128,10 +105,6 @@ export class DeskPresentation implements Presentation {
 			publish: (id, view, actions) => { if (current()) this.publish(id, view, actions); },
 			open: (id, section) => { if (current()) this.open(id, section); },
 			request: (form, options) => current() ? this.request(form, options) : Promise.resolve(null),
-			registerMaintenance: owner => {
-				if (!current()) throw new Error("The maintenance owner belongs to a previous session.");
-				return this.registerMaintenance(owner);
-			},
 			createScope: (id, label) => {
 				if (!current()) throw new Error("The presentation belongs to a previous session.");
 				return this.createScope(id, label);
@@ -194,7 +167,6 @@ export class DeskPresentation implements Presentation {
 	reset(): void {
 		this.uiRevision++;
 		this.presentationRevision++;
-		this.maintenanceOwners.clear();
 		for (const source of [...this.transcripts]) source.close();
 		this.generation = randomUUID();
 		for (const scope of [...this.scopes.values()]) scope.close();
@@ -240,7 +212,6 @@ export class DeskPresentation implements Presentation {
 		this.scopes.get(id)?.close();
 		const child = new DeskPresentation(() => { if (!child.retired) this.update(); },
 			(view, section) => this.open(`scope:${id}/${view}`, section), this.nextRevision, this.registerSource);
-		child.setSuspended(this.suspended);
 		child.setOperatorAvailability(() => this.availability());
 		const ui = child.createUi(this.theme);
 		const close = () => {
@@ -252,7 +223,7 @@ export class DeskPresentation implements Presentation {
 		this.scopes.set(id, { label: plain(label), presentation: child, close });
 		return {
 			version: 2, capabilities: child.capabilities, ui,
-			get suspended() { return child.retired || child.suspended; },
+			get suspended() { return child.retired; },
 			get operatorAvailable() { return child.operatorAvailable; },
 			batch: child.batch.bind(child),
 			publish: child.publish.bind(child), open: child.open.bind(child), request: child.request.bind(child),

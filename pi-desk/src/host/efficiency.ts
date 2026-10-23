@@ -2,6 +2,9 @@
  * The efficiency report: where a computer's agents spend, read incrementally from its native session files.
  * Each file is parsed once and then only what was appended, so the report stays cheap to refresh.
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 
 /** Per-turn misses at or below this are cache breakpoint granularity, as in Pi core's cache-stats. */
 const NOISE = 1024;
@@ -189,4 +192,30 @@ export function buildReport(states: readonly FileState[], now = Date.now()): Eff
 	}
 	return { generated: now, files: states.length, week: period(states, day(6), day(0)), previousWeek: period(states, day(13), day(7)),
 		recurringErrors: [...signatures.values()].filter(error => error.sessions > 1 && error.recent > 0).sort((a, b) => b.recent - a.recent).slice(0, 25) };
+}
+
+/** The host's latest report, rebuilt in a worker thread (efficiency-worker.ts) when it is older than ten minutes and someone asks. */
+export class EfficiencyReports {
+	private latest?: { report: unknown; at: number };
+	private running?: Promise<void>;
+	private readonly options: { agentDir: string; sessionDir?: string; directory: () => string; closing: () => boolean };
+	constructor(options: EfficiencyReports["options"]) { this.options = options; }
+
+	read(): { report: unknown; refreshing: boolean } {
+		if (!this.latest || Date.now() - this.latest.at > 600_000) this.refresh();
+		return { report: this.latest?.report ?? null, refreshing: !!this.running };
+	}
+
+	private refresh(): void {
+		if (this.running || this.options.closing()) return;
+		const built = new URL("./efficiency-worker.js", import.meta.url);
+		const directories = [join(this.options.agentDir, "sessions"), ...(this.options.sessionDir ? [this.options.sessionDir] : [])];
+		const worker = new Worker(existsSync(built) ? built : new URL("./efficiency-worker.ts", import.meta.url), {
+			workerData: { directories, cachePath: join(this.options.directory(), "efficiency.json") }, resourceLimits: { maxOldGenerationSizeMb: 1024 } });
+		this.running = new Promise(resolve => {
+			worker.once("message", report => { this.latest = { report, at: Date.now() }; });
+			worker.once("error", error => console.error(`The efficiency report could not be built: ${error instanceof Error ? error.message : String(error)}`));
+			worker.once("exit", () => { this.running = undefined; resolve(); });
+		});
+	}
 }

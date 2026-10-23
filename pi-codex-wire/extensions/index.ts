@@ -150,7 +150,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     if (!provider) throw new Error("The openai-codex provider is unavailable");
     original = provider;
     diagnostics = new Diagnostics(join(directory, "logs", `${randomUUID()}.jsonl`),
-      () => ctx.ui.notify("Codex wire diagnostics could not be written; this run cannot support an allowance comparison.", "warning"));
+      () => ctx.ui.notify("Codex wire diagnostics could not be written.", "warning"));
     diagnostics.write({ kind: "run", profile: mode, referenceVersion: CODEX_VERSION, transport: selectedTransport,
       compression, client, prewarm, rootSessionId: ctx.sessionManager.getSessionId() });
     // Housekeeping runs at activation, never inside a model request.
@@ -513,13 +513,13 @@ export default function codexWire(pi: ExtensionAPI): void {
     },
   });
   pi.registerCommand("codex-wire", {
-    description: "Always-on Codex wire: status, reconnect, prewarm <on|off>, client <cli|desktop>, user-agent <profile>, or mark <used-percent> <reset-id>",
+    description: "Always-on Codex wire: status, reconnect, prewarm <on|off>, client <cli|desktop> or user-agent <profile>",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (!args.trim() || parts[0] === "status") {
         ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nPrewarm: ${prewarm ? "on" : "off"}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
       }
-      if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing or marking a comparison run.", "warning"); return; }
+      if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing Codex wire settings.", "warning"); return; }
       if (parts[0] === "prewarm") {
         try {
           if (parts.length !== 2) throw new Error("Use /codex-wire prewarm <on|off>");
@@ -550,17 +550,8 @@ export default function codexWire(pi: ExtensionAPI): void {
         } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot save Codex wire User-Agent", "error"); }
         return;
       }
-      if (parts[0] === "mark") {
-        const used = Number(parts[1]);
-        if (parts.length !== 3 || !Number.isFinite(used) || used < 0 || used > 100 || !/^[a-zA-Z0-9:_-]{1,64}$/.test(parts[2])) {
-          ctx.ui.notify("Use /codex-wire mark <used-percent 0..100> <reset-id>; use the same reset-id throughout one allowance window.", "error"); return;
-        }
-        if (!diagnostics || mode === "off") { ctx.ui.notify("Enable a comparison mode first.", "error"); return; }
-        diagnostics.write({ kind: "allowance-mark", usedPercent: used, resetId: parts[2] });
-        ctx.ui.notify("Recorded allowance snapshot. No model request was made.", "info"); return;
-      }
       if (parts.length !== 1 || parts[0] !== "reconnect") {
-        ctx.ui.notify("Codex Wire is always enabled. Use status, reconnect, prewarm, client, user-agent, or mark.", "error"); return;
+        ctx.ui.notify("Codex Wire is always enabled. Use status, reconnect, prewarm, client or user-agent.", "error"); return;
       }
       try { activate(ctx, client); }
       catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot activate Codex wire", "error"); }

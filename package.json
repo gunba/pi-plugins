@@ -20,6 +20,9 @@
     "typecheck": "tsc --noEmit"
   },
   "pi": {
+    "prompts": [
+      "./prompts/*.md"
+    ],
     "extensions": [
       "./pi-session-ownership/index.ts",
       "./pi-desk/extensions/desk.ts",
@@ -27,7 +30,6 @@
       "./node_modules/@gotgenes/pi-anthropic-auth/src/index.ts",
       "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",
-      "./pi-codex-compat/extensions/codex-compat.ts",
       "./pi-web-search/extensions/web-search.ts",
       "./pi-ask-user/index.ts",
       "./pi-config/extensions/pi-config.ts",
@@ -36,10 +38,11 @@
       "./pi-fast-footer/extensions/fast-footer.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-context-window/index.ts",
-      "./pi-party/index.ts",
+      "./pi-agents/index.ts",
       "./pi-plan/extensions/plan.ts",
+      "./pi-watch/index.ts",
       "./pi-show/extensions/show.ts",
-      "./pi-subagents/extensions/subagents.ts",
+      "./pi-agents/subagents/subagents.ts",
       "./pi-output-budget/extensions/index.ts",
       "./pi-system-one/index.ts",
       "./pi-command-guard/index.ts",

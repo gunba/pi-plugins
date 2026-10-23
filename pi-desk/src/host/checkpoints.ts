@@ -56,7 +56,7 @@ export class UpdateCheckpoints {
 	private async capture(id: string, source: string, target: string): Promise<void> {
 		const workers = await Promise.all(this.captured.map(async actor => ({ key: actor.key, ...await actor.worker.handoffIdentity() })));
 		if (this.cancelled || this.disposed) return;
-		const ticket: UpdateCheckpoint = { id, source, target, state: "held", created: Date.now(), workers, sessions: [] };
+		const ticket: UpdateCheckpoint = { id, source, target, state: "held", created: Date.now(), workers };
 		this.inputs.writeCheckpoint(ticket);
 		this.current!.state = "ready"; this.changed();
 	}
@@ -65,11 +65,11 @@ export class UpdateCheckpoints {
 			throw new Error("The update handoff is not ready or changed.");
 		try {
 			const ticket = this.inputs.checkpoint();
-			if (!ticket || ticket.id !== id || ticket.target !== target || ticket.state !== "held" || !ticket.workers)
+			if (!ticket || ticket.id !== id || ticket.target !== target || ticket.state !== "held")
 				throw new Error("The saved update handoff changed.");
 			const identities = await Promise.all(this.captured.map(actor => actor.worker.handoffIdentity()));
 			if (this.cancelled || this.disposed) throw new Error("The update handoff expired.");
-			if (identities.some((identity, index) => identity.instance !== ticket.workers![index]?.instance))
+			if (identities.some((identity, index) => identity.instance !== ticket.workers[index]?.instance))
 				throw new Error("An actor changed during the update handoff.");
 			ticket.state = "committed"; this.inputs.writeCheckpoint(ticket); clearTimeout(this.timer);
 		} catch (error) {

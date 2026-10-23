@@ -61,8 +61,6 @@ const runtime = await serveWorker(process.argv[2], async send => {
    await new Promise(resolve => setTimeout(resolve, 250));
    return { ...snapshot(), writes: ++writes };
   },
-  async checkpoint() {},
-  async shutdownCheckpoint() { return snapshot(); },
   async close() { const exit = once(child, 'exit'); child.kill(); await exit; }
  };
 });
@@ -119,7 +117,7 @@ connection.channel.send({ type: 'command', id: 'accepted-work', generation: 'fix
 	next.channel.send({ type: "command", id: "snapshot", generation: "fixture-generation", command: { kind: "snapshot" } });
 	assert.equal((await nextInbox.wait("snapshot")).value.writes, 1);
 	next.channel.send({ type: "shutdown", id: "shutdown" });
-	assert.equal((await nextInbox.wait("shutdown")).value.pid, initialized.pid);
+	assert.equal((await nextInbox.wait("shutdown")).error, undefined);
 	await waitWorkerStopped(directory, next.record.instance);
 	stopped = true;
 	assert.equal(readWorkerRecord(directory), undefined);
@@ -139,8 +137,7 @@ const runtime = await serveWorker(process.argv[2], async () => {
  const until = Date.now() + 6000;
  while (Date.now() < until) {}
  const snapshot = () => ({ id: 'cold-native-id', ui: { generation: 'cold-generation' } });
- return { async start() { return snapshot(); }, snapshot, async command() {}, async checkpoint() {},
-  async shutdownCheckpoint() { return snapshot(); }, async close() {} };
+ return { async start() { return snapshot(); }, snapshot, async command() {}, async close() {} };
 });
 runtime.closed.then(() => process.exit(0), () => process.exit(1));
 `);
@@ -199,7 +196,7 @@ const runtime = await serveWorker(process.argv[2], async () => {
  const snapshot = () => ({ id: 'diagnostic-native-id', ui: { generation: 'diagnostic-generation' } });
  return { async start(options) { if (options.sessionFile === 'startup-failure') throw new Error('fixture initialization failed'); return snapshot(); }, snapshot,
   async command() { setImmediate(() => { throw new Error('fixture uncaught failure'); }); },
-  async checkpoint() {}, async shutdownCheckpoint() {}, async close() {} };
+  async close() {} };
 });
 runtime.closed.then(() => process.exit(0), () => process.exit(1));
 `);

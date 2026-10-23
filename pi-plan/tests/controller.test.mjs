@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createExtensionHarness, executeTool } from "./helpers.mjs";
-import { getWorkCoordinator } from "../../pi-work-coordination/index.ts";
 import { preparePlanArguments } from "../src/tools.ts";
 import { DeskPresentation } from "../../pi-desk/src/host/presentation.ts";
 import { PRESENTATION_DISCOVER } from "../../pi-ui/index.ts";
@@ -25,16 +24,17 @@ test("manual checklists survive turns and share one terminal work section", asyn
 	await h.emit("session_shutdown");
 });
 
-test("human queues, explicit waits and in-flight reservations gate automatic continuation", async () => {
+test("human queues, active watches and in-flight reservations gate automatic continuation", async () => {
 	const h = createExtensionHarness({ pending: true }); await h.start(); await create(h, { max_rounds: 2 });
 	assert.equal(h.sentMessages.length, 0);
 	h.setPending(false); await settled(h); assert.equal(h.sentMessages.length, 1);
 	await read(h); await read(h); assert.equal(h.sentMessages.length, 1);
 	await h.admitLastRound();
-	const coordinator = getWorkCoordinator(h.ctx.sessionManager.getSessionId());
-	const waiting = coordinator.wait(1000);
+	// pi-watch's registry: a conversation with an active watch is waiting on purpose.
+	const watching = globalThis[Symbol.for("gunba.pi-watch.v1")], id = h.ctx.sessionManager.getSessionId();
+	watching.set(id, 1);
 	await settled(h); assert.equal(h.sentMessages.length, 1);
-	coordinator.cancel("test"); await waiting; await settled(h); assert.equal(h.sentMessages.length, 2);
+	watching.delete(id); await settled(h); assert.equal(h.sentMessages.length, 2);
 	await h.admitLastRound(); await settled(h);
 	const current = await read(h);
 	assert.equal(current.phase, "blocked"); assert.equal(current.blockedReason.code, "round-limit");

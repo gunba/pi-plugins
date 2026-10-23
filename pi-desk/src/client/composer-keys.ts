@@ -1,5 +1,9 @@
 export type Delivery = "steer" | "followUp" | "now";
 export const deliveryPreferenceKey = "pi-desk:send-mode";
+/** Where a conversation's unsent message is kept in this browser. */
+export const draftKey = (key: string) => `pi-desk:draft:${key}`;
+/** Set while a conversation's draft holds dictated text, so the message tells the agent it was dictated. */
+export const dictatedKey = (key: string) => `pi-desk:dictated:${key}`;
 export function readDelivery(storage: Pick<Storage, "getItem">): Delivery {
 	const value = storage.getItem(deliveryPreferenceKey);
 	return value === "followUp" || value === "now" ? value : "steer";

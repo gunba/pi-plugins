@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSnapshot, WorkerCommand, WorkerInit, WorkerMessage, WorkerRequest, WorkerState, WorkerReceipt, WorkerRuntimeInfo } from "../shared/protocol.ts";
 import type { ControlCommand, ControlStatus } from "../shared/controls.ts";
-import type { CheckpointAction, CheckpointSnapshot } from "../shared/checkpoint.ts";
 import { ReceiptConflict, StaleGeneration, WorkerCommandError, WorkerConnectionError } from "./worker-errors.ts";
 import { attachWorker, waitWorkerStopped, workerDirectory, type WorkerAttachment } from "./worker-registry.ts";
 
@@ -31,7 +30,6 @@ export class SessionWorker {
 	/** The worker's operating-system process, once attached. */
 	pid?: number;
 	snapshot?: SessionSnapshot;
-	closedCheckpoint?: CheckpointSnapshot & { checkpoint: string };
 	private readonly event: (message: WorkerMessage) => void;
 
 	constructor(options: WorkerInit, event: (message: WorkerMessage) => void, location?: WorkerLocation,
@@ -95,9 +93,6 @@ export class SessionWorker {
 		return promise;
 	}
 
-	checkpoint(id: string, action: CheckpointAction): Promise<CheckpointSnapshot | undefined> {
-		return this.request({ type: "checkpoint", id: `${id}:${action}`, checkpoint: id, action }) as Promise<CheckpointSnapshot | undefined>;
-	}
 	submitControl(command: ControlCommand | { kind: "close" }, generation: string, id: string): Promise<{ accepted: true; control: ControlStatus }> {
 		return this.request({ type: "control", id, generation: command.kind === "close" ? "" : generation, command }) as Promise<{ accepted: true; control: ControlStatus }>;
 	}
@@ -151,7 +146,7 @@ export class SessionWorker {
 		this.stopping = true;
 		const connection = await this.connection;
 		try {
-			this.closedCheckpoint = await this.request({ type: "shutdown", id: randomUUID(), force }) as typeof this.closedCheckpoint;
+			await this.request({ type: "shutdown", id: randomUUID(), force });
 			this.shutdownConfirmed = true;
 		} catch (error) { if (!force) { this.stopping = false; throw error; } }
 		await this.waitStopped(this.directory, connection.record.instance);

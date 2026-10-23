@@ -22,7 +22,7 @@ function fixture(t) {
 				async attach(_file, _path, dispatch) { dispatch(); return "remote-file"; },
 			}; callbacks.push(changed); clients.push(client); return client;
 		} };
-	const dot = new DotConnection(directory, directory, options);
+	const dot = new DotConnection(directory, options);
 	t.after(async () => { await dot.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { dot, options, directory, opened, posts, callbacks, clients, signInAs(id) { selected = id; }, fail(value) { failing = value; }, uncertain(value) { uncertain = value; } };
 }
@@ -52,7 +52,7 @@ test("unconfirmed direct delivery survives restart and stale account events neve
 	assert.equal((await f.dot.input(id)).state, "unknown");
 	assert.equal(f.dot.send(id, before.id, "One attempt", [], before.connection).state, "unknown"); assert.equal(f.posts.length, 1);
 	await f.dot.close();
-	const restored = new DotConnection(f.directory, f.directory, f.options);
+	const restored = new DotConnection(f.directory, f.options);
 	try { assert.equal((await restored.input(id)).state, "unknown"); assert.equal(restored.send(id, before.id, "One attempt", [], before.connection).state, "unknown"); }
 	finally { await restored.close(); }
 	assert.equal(f.posts.length, 1);
@@ -73,7 +73,7 @@ test("the existing root delivery ledger fences accepted and interrupted sends af
  const interrupted = { ...accepted, id: randomUUID(), text: "Unconfirmed", state: "sending", messageId: undefined };
  for (const input of [accepted, interrupted]) writeFileSync(join(f.directory, "dot", `${input.id}.json`), JSON.stringify(input));
  const original = readFileSync(join(f.directory, "dot", `${accepted.id}.json`), "utf8");
- const restored = new DotConnection(f.directory, f.directory, f.options);
+ const restored = new DotConnection(f.directory, f.options);
  try {
   assert.equal((await restored.input(accepted.id))?.state, "accepted");
   assert.equal((await restored.input(interrupted.id))?.state, "unknown");

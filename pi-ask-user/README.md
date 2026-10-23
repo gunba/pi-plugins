@@ -18,8 +18,6 @@ Use `ask_user` sparingly:
 
 Registered tool name: `ask_user`.
 
-Parameters match the vendored upstream extension:
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `question` | `string` | required | The question to ask the user |
@@ -28,10 +26,12 @@ Parameters match the vendored upstream extension:
 | `allowMultiple` | `boolean?` | `false` | Enable multi-select mode |
 | `allowFreeform` | `boolean?` | `true` | Add a freeform response option |
 | `allowComment` | `boolean?` | `false` | Allow an optional comment after a structured choice |
-| `displayMode` | `"overlay" | "inline"?` | env var or `"overlay"` | UI rendering mode |
-| `overlayToggleKey` | `string?` | env var or `"alt+o"` | Shortcut to hide/show the overlay prompt |
-| `commentToggleKey` | `string?` | env var or `"ctrl+g"` | Shortcut to toggle the optional comment row |
 | `timeout` | `number?` | — | Auto-dismiss after N ms |
+
+In the terminal the question opens as an overlay. `PI_ASK_USER_DISPLAY_MODE=inline`
+shows it in place instead. `alt+o` hides and reopens the overlay and `ctrl+g` toggles
+the optional comment; `PI_ASK_USER_OVERLAY_TOGGLE_KEY` and
+`PI_ASK_USER_COMMENT_TOGGLE_KEY` change those keys, or `off` disables them.
 
 ## Provenance
 

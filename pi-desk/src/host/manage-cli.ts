@@ -17,7 +17,7 @@ try {
 	const args = parseArgs({ allowPositionals: true, options: { launch: { type: "string" } } });
 	const [directory, action, target] = args.positionals;
 	home = directory; launch = args.values.launch;
-	if (!home || args.positionals.length > 3 || !["stage", "update", "update-now", "apply", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")
+	if (!home || args.positionals.length > 3 || !["stage", "update", "update-now", "apply-now", "restart", "rollback", "stop", "login-install", "login-remove"].includes(action ?? "")
 		|| action === "apply-now" && !validId(target)
 		|| action === "update-now" && !/^\d+\.\d+\.\d+$/.test(target ?? "")
 		|| target !== undefined && !["apply-now", "update-now"].includes(action))

@@ -4,10 +4,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PartyStore } from "../../pi-party/store.ts";
+import { PartyStore } from "../../pi-agents/store.ts";
 import { DotConnector } from "../src/host/dot-connector.ts";
-import { QuestStore } from "../../pi-party/quests.ts";
-import { partyDelivery } from "../../pi-party/availability.ts";
+import { QuestStore } from "../../pi-agents/quests.ts";
+import { partyDelivery } from "../../pi-agents/availability.ts";
 
 const base = "https://relay.example/connector/11111111-1111-1111-1111-111111111111";
 const callback = "https://chatgpt.com/connector_platform_oauth_redirect";

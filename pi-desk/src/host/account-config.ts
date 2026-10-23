@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { accountConfiguration, accountOrigin, type AccountConfiguration } from "../shared/account.ts";
 import { AccountNetwork } from "./account-network.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 /** `identityOrigin`: the account service this computer enrolled with, when the service has since moved (NativeAccountIdentity.open). */
 export interface SavedAccount { version: 1; appOrigin: string; config: AccountConfiguration; identityOrigin?: string }
@@ -19,11 +20,7 @@ export async function readAccount(directory: string): Promise<SavedAccount | und
 }
 export async function saveAccount(directory: string, value: SavedAccount): Promise<void> {
 	await mkdir(directory, { recursive: true, mode: 0o700 });
-	const temporary = join(directory, `account.${crypto.randomUUID()}.tmp`);
-	try {
-		await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: "wx" });
-		await rename(temporary, join(directory, "account.json"));
-	} finally { await rm(temporary, { force: true }); }
+	atomicJson(join(directory, "account.json"), value, { compact: true });
 }
 export async function discoverAccount(options: { workspace?: string; account?: string; proxy?: string }): Promise<SavedAccount> {
 	const network = new AccountNetwork(options.proxy);

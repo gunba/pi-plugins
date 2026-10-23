@@ -36,8 +36,8 @@ test('RPC freeform prompt strips terminal controls and returns user response', a
  assert.deepEqual(result.details.response, {kind: 'freeform', text: 'yes'});
 });
 test('actual custom question component stays inside narrow viewports', async () => {
- await tool().execute('id', {question: 'Choose a 界 option', options: ['First', 'Second'], displayMode: 'inline'}, undefined, undefined, {
-  hasUI: true, mode: 'tui', ui: {async custom(factory) {
+ await tool().execute('id', {question: 'Choose a 界 option', options: ['First', 'Second']}, undefined, undefined, {
+  hasUI: true, mode: 'tui', ui: {onTerminalInput: () => () => {}, async custom(factory) {
    const component = factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => {});
    for (let width = 1; width <= 100; width++) {
     for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
@@ -51,8 +51,8 @@ test('answered custom dialogs release abort listeners and timeouts', async t => 
  t.mock.timers.enable({apis: ['setTimeout']});
  const controller = new AbortController();
  let callbacks = 0;
- await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100, displayMode: 'inline'}, controller.signal, undefined, {
-  hasUI: true, mode: 'tui', ui: {async custom(factory) {
+ await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100}, controller.signal, undefined, {
+  hasUI: true, mode: 'tui', ui: {onTerminalInput: () => () => {}, async custom(factory) {
    factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => callbacks++);
    assert.equal(getEventListeners(controller.signal, 'abort').length, 1);
    return {kind: 'selection', selections: ['A']};
@@ -68,8 +68,8 @@ test('abort closes an active custom dialog once and releases its timer', async t
  t.mock.timers.enable({apis: ['setTimeout']});
  const controller = new AbortController();
  let callbacks = 0;
- const result = await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100, displayMode: 'inline'}, controller.signal, undefined, {
-  hasUI: true, mode: 'tui', ui: {custom: factory => new Promise(resolve => {
+ const result = await tool().execute('id', {question: 'Choose', options: ['A'], timeout: 100}, controller.signal, undefined, {
+  hasUI: true, mode: 'tui', ui: {onTerminalInput: () => () => {}, custom: factory => new Promise(resolve => {
    factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), value => { callbacks++; resolve(value); });
    controller.abort();
   })}

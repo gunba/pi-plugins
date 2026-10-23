@@ -13,8 +13,7 @@ import type {
 // user's message contain wide (CJK/emoji) characters.
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
-import { getPresentation } from "../../pi-ui/index.ts";
-import { LEDGER_ENTRY, LEDGER_MEASURED_ENTRY, measuredLedger, readLedger, type Ledger, type LedgerGroup, type LedgerLeaf } from "../model.ts";
+import { LEDGER_ENTRY, type Ledger, type LedgerGroup, type LedgerLeaf } from "../model.ts";
 
 const CUSTOM_TYPE = LEDGER_ENTRY;
 const DISABLE_ENV = "PI_CONTEXT_LEDGER";
@@ -408,28 +407,6 @@ export default function contextLedger(pi: ExtensionAPI): void {
   const armedSessions = new Set<string>();
   const shownSessions = new Set<string>();
   const optionsBySession = new Map<string, BuildSystemPromptOptions>();
-  const measuring = new Set<string>();
-  function publish(ctx: ExtensionContext): void {
-    const remote = getPresentation(pi);
-    if (!remote) return;
-    const branch = ctx.sessionManager.getBranch();
-    const index = branch.map(entry => entry.type === "custom" && entry.customType === CUSTOM_TYPE).lastIndexOf(true);
-    const entry = index >= 0 ? branch[index] : undefined;
-    const estimate = entry?.type === "custom" ? readLedger(entry.data) : undefined;
-    // The first request's real size, recorded after this breakdown, replaces the character estimate.
-    const measured = branch.slice(index + 1).find(item => item.type === "custom" && item.customType === LEDGER_MEASURED_ENTRY);
-    const tokens = measured?.type === "custom" ? Number((measured.data as { tokens?: unknown } | undefined)?.tokens) : NaN;
-    const ledger = estimate && Number.isFinite(tokens) ? measuredLedger(estimate, tokens) : estimate;
-    remote.publish(CUSTOM_TYPE, { kind: "ledger", surface: "settings", title: "Initial context",
-      data: { ledger: ledger ?? null, autoEnabled },
-      actions: [
-        ...(remote.runCommand ? [{ id: "refresh", label: "Recompute breakdown" }] : []),
-        { id: "automatic", label: autoEnabled ? "Disable automatic card" : "Enable automatic card" },
-      ] }, {
-      refresh: () => remote.runCommand?.("context-ledger"),
-      automatic: () => { autoEnabled = !autoEnabled; publish(ctx); },
-    });
-  }
 
   pi.registerEntryRenderer<Ledger>(CUSTOM_TYPE, (entry, options, theme) => {
     const ledger = entry.data;
@@ -442,9 +419,7 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!sessionId) return;
     // Only fresh conversations have a meaningful "first user message" to follow.
     if (event.reason === "startup" || event.reason === "new") armedSessions.add(sessionId);
-    publish(ctx);
   });
-  pi.on("session_tree", (_event, ctx) => publish(ctx));
 
   pi.on("before_agent_start", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId?.();
@@ -453,7 +428,8 @@ export default function contextLedger(pi: ExtensionAPI): void {
     if (!sessionId || !armedSessions.has(sessionId) || shownSessions.has(sessionId)) return;
     armedSessions.delete(sessionId);
 
-    if (!autoEnabled || ctx.mode !== "tui" && !getPresentation(pi)) return;
+    // Desk shows opening context in its own settings panel.
+    if (!autoEnabled || ctx.mode !== "tui") return;
     shownSessions.add(sessionId);
 
     // From Pi 1.2 a run an extension starts (an agent message, for one) can come first; its message is the one counted.
@@ -462,18 +438,6 @@ export default function contextLedger(pi: ExtensionAPI): void {
       : event.message.content.map(part => part.type === "text" ? part.text : "").join("");
     const ledger = computeLedger(ctx, pi, event.systemPrompt, event.systemPromptOptions, opening, event.messageType === "user" ? event.images?.length ?? 0 : 0);
     pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
-    measuring.add(sessionId);
-    publish(ctx);
-  });
-
-  // The first reply reports how large its request really was: the system prompt, tools and first message.
-  pi.on("message_end", (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId?.();
-    const message = event.message as { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
-    if (!sessionId || !measuring.has(sessionId) || message.role !== "assistant" || !message.usage) return;
-    measuring.delete(sessionId);
-    const tokens = (message.usage.input ?? 0) + (message.usage.cacheRead ?? 0) + (message.usage.cacheWrite ?? 0);
-    if (tokens > 0) { pi.appendEntry(LEDGER_MEASURED_ENTRY, { tokens }); publish(ctx); }
   });
 
   pi.registerCommand("context-ledger", {
@@ -482,7 +446,6 @@ export default function contextLedger(pi: ExtensionAPI): void {
       const command = args.trim().toLowerCase();
       if (command === "off" || command === "on") {
         autoEnabled = command === "on";
-        publish(ctx);
         ctx.ui.notify(`pi-context-ledger: automatic breakdown ${autoEnabled ? "enabled" : "disabled"}`, "info");
         return;
       }
@@ -498,7 +461,6 @@ export default function contextLedger(pi: ExtensionAPI): void {
       }
       const ledger = computeLedger(ctx, pi, ctx.getSystemPrompt(), options, "", 0);
       pi.appendEntry<Ledger>(CUSTOM_TYPE, ledger);
-      publish(ctx);
     },
   });
 }

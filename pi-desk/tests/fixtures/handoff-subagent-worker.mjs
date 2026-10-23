@@ -21,7 +21,7 @@ const runtime = await serveWorker(process.argv[2], async send => {
 				writeFileSync(join(options.cwd, "subagent-model-calls.json"), JSON.stringify(calls));
 				const count = calls[id].length;
 				const call = id === root
-					? count === 1 ? { name: "spawn_agent", arguments: { task_name: "handoff_child", message: "Child lifecycle fixture", fork_turns: "none" } } : undefined
+					? count === 1 ? { name: "agent_start", arguments: { name: "handoff_child", task: "Child lifecycle fixture", context: "fresh" } } : undefined
 					: count === 1 ? { name: "handoff_fixture", arguments: {} } : undefined;
 				const reason = call ? "toolUse" : "stop", stream = createAssistantMessageEventStream();
 				queueMicrotask(() => {
@@ -35,12 +35,11 @@ const runtime = await serveWorker(process.argv[2], async send => {
 				});
 				return stream;
 			} });
-			engine.runtime.session.setActiveToolsByName(["spawn_agent", "followup_task", "handoff_fixture"]);
+			engine.runtime.session.setActiveToolsByName(["agent_start", "agent_send", "handoff_fixture"]);
 			return engine.snapshot();
 		},
 		snapshot: () => engine.snapshot(), command: (generation, command) => engine.command(generation, command),
-		checkpoint: (id, action) => engine.checkpoint(id, action),
-		shutdownCheckpoint: () => engine.shutdownCheckpoint(), close: () => engine.close(),
+		close: () => engine.close(),
 	};
 });
 process.on("SIGTERM", () => { void runtime.stop(); });

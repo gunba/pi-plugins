@@ -18,7 +18,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	const menu = useAnchoredPopover(session.key, false, 340);
 	const snapshot = session.snapshot;
 	const badges = (session.ui?.views ?? []).filter(view => !view.scope).flatMap(view => (view.badges ?? []).map(badge => ({ ...badge, view })));
-	const context = snapshot?.context, usage = snapshot?.usage;
+	const context = snapshot?.context;
 	const contextView = session.ui?.views.find(view => !view.scope && view.context);
 	const capacity = contextView?.context?.capacity ?? context?.contextWindow;
 	const limit = contextView?.context?.limit ?? context?.contextWindow;
@@ -47,20 +47,6 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		return <span className={`usage-gauge usage-gauge-cache${left ? "" : " expired"}`} title={title}>
 			<span className="usage-gauge-label">Cache</span>
 			<span className="usage-gauge-value">{live ? "live" : left ? countdown(left) : "expired"}</span>
-		</span>;
-	};
-	/** How much of this conversation's spend went on reading its cache: the cost the 97% hit rate hides. */
-	const spendGauge = () => {
-		const costs = usage?.costs, total = usage?.cost ?? 0;
-		if (!costs || total <= 0) return null;
-		const share = (value: number) => `${Math.round(value / total * 100)}%`, money = (value: number) => `$${value.toFixed(value < 10 ? 2 : 0)}`;
-		const title = [`This conversation's spend at API prices: ${money(total)}, including compaction and child agents.`,
-			`Cache reads ${money(costs.cacheRead)} (${share(costs.cacheRead)})`, `Uncached input ${money(costs.input)} (${share(costs.input)})`,
-			`Cache writes ${money(costs.cacheWrite)} (${share(costs.cacheWrite)})`, `Output ${money(costs.output)} (${share(costs.output)})`,
-			usage?.missed?.count ? `Lost to ${usage.missed.count} cache miss${usage.missed.count === 1 ? "" : "es"}: ${money(usage.missed.cost)} (${tokens(usage.missed.tokens)} tokens billed again)` : "No cache misses."].join("\n");
-		return <span className="usage-gauge usage-gauge-spend" title={title}>
-			<span className="usage-gauge-label">Cache spend</span>
-			<span className="usage-gauge-value">{share(costs.cacheRead)}</span>
 		</span>;
 	};
 	/** A remaining allowance drawn as a gauge; older workers send only "NN% left · resets in …". */
@@ -98,7 +84,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	};
 	return <div className="composer-status">
 		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
-			<div className="composer-facts-inline">{cacheGauge()}{spendGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
+			<div className="composer-facts-inline">{cacheGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
 			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
 		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}
@@ -110,12 +96,6 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 			<div className="composer-status-heading" tabIndex={-1} data-autofocus><strong>{connected ? state : "Disconnected"}</strong><span>{computer}</span></div>
 			<div className="composer-overflow-preferences">{preferences}</div>
 			<div className="composer-status-section">{contextControl}{badges.map(badgeControl)}</div>
-			{usage && <div className="composer-status-section composer-usage">
-				<strong>Recorded usage · ${usage.cost.toFixed(2)}</strong>
-				<span>↑{tokens(usage.input)} input · ↓{tokens(usage.output)} output</span>
-				<span>{tokens(usage.cacheRead)} cache read · {tokens(usage.cacheWrite)} cache write</span>
-				<small>Recorded totals, not a subscription balance.</small>
-			</div>}
 			<p className="composer-shortcuts">{shortcutHint}</p>
 		</div>
 	</div>;

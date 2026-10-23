@@ -1,5 +1,6 @@
 import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
 import type { ConnectionInterruption, ConnectionState, HostPresence } from "./connection-state.ts";
+import { sessionTitle } from "../shared/session-title.ts";
 
 export interface Computer {
 	/** loaded: its conversations have arrived at least once. */
@@ -26,3 +27,8 @@ export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]
 export type WorkspaceEvent = Exclude<HostEvent, { type: "state" | "session" }>
 	| { type: "state"; state: WorkspaceState } | { type: "session"; session: WorkspaceSession };
 export const sessionKey = (computer: string, key: string) => `${computer}:${key}`;
+/** What a conversation is called: its name, or else its opening message. */
+export const conversationTitle = (session: SessionView) =>
+	sessionTitle(session.snapshot?.name ?? session.name, session.snapshot?.title ?? session.title);
+/** The last part of a path, such as a project folder's name. */
+export const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;

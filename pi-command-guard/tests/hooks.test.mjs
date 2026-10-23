@@ -7,20 +7,24 @@ function harness(answer = async () => false) {
   const handlers = new Map(), settings = {};
   const pi = { on: (name, handler) => handlers.set(name, handler), events: { on: () => {} }, getSettings: () => settings };
   install(pi);
-  let questions = 0;
+  let questions = 0, opened;
+  // The dialog opens after the guard has asked git what the wipe would lose.
+  const asked = new Promise(resolve => { opened = resolve; });
   const controller = new AbortController();
   const ctx = { cwd: '/work/project', hasUI: true, signal: controller.signal,
     sessionManager: { getSessionId: () => 'one' },
-    ui: { confirm: async (...args) => { questions++; return answer(...args); } } };
-  return { handlers, settings, ctx, controller, questions: () => questions,
+    ui: { confirm: async (...args) => { questions++; opened(); return answer(...args); } } };
+  return { handlers, settings, ctx, controller, asked, questions: () => questions,
     call: event => handlers.get('tool_call')(event, ctx) };
 }
-const removal = () => ({ toolName: 'exec_command', toolCallId: 'one', input: { cmd: 'git reset --hard', shell: '/bin/bash' } });
+const removal = () => ({ toolName: 'bash', toolCallId: 'one', input: { command: 'git reset --hard' } });
 
 test('hard denials do not request an override; harmless metadata invokes no dialog or command', async () => {
   const h = harness(async () => { throw Error('no dialog expected'); });
-  assert.equal((await h.call({ ...removal(), input: { cmd: 'rm -rf /', shell: '/bin/bash' } })).block, true);
-  assert.equal(await h.call({ ...removal(), input: { cmd: 'python -c "print(1)"', shell: '/bin/bash' } }), undefined);
+  assert.equal((await h.call({ ...removal(), input: { command: 'rm -rf /' } })).block, true);
+  assert.equal((await h.call({ toolName: 'watch', input: { command: 'rm -rf /', every: 60 } })).block, true);
+  assert.equal(await h.call({ ...removal(), input: { command: 'python -c "print(1)"' } }), undefined);
+  assert.equal(await h.call({ toolName: 'watch', input: { until: '09:00' } }), undefined);
   assert.equal(h.questions(), 0);
 });
 
@@ -41,6 +45,7 @@ test('headless, cancelled and retired confirmations do not grant execution', asy
     let release;
     const h = harness(() => new Promise(resolve => { release = resolve; }));
     const pending = h.call(removal());
+    await h.asked;
     if (retire === 'signal') h.controller.abort(); else h.handlers.get(retire)();
     release(true);
     assert.equal((await pending).block, true, retire);
@@ -48,10 +53,10 @@ test('headless, cancelled and retired confirmations do not grant execution', asy
 });
 
 test('changing arguments, command configuration or identity invalidates approval', async () => {
-  for (const mutate of [(h,e) => { e.input.cmd += '; echo changed'; }, h => { h.settings.shellPath = '/other/shell'; }, h => { h.ctx.sessionManager.getSessionId = () => 'two'; }]) {
+  for (const mutate of [(h,e) => { e.input.command += '; echo changed'; }, h => { h.settings.shellPath = '/other/shell'; }, h => { h.ctx.sessionManager.getSessionId = () => 'two'; }]) {
     let release;
     const h = harness(() => new Promise(resolve => { release = resolve; })), event = removal();
-    const pending = h.call(event); mutate(h, event); release(true);
+    const pending = h.call(event); await h.asked; mutate(h, event); release(true);
     assert.equal((await pending).block, true);
   }
 });
@@ -59,9 +64,9 @@ test('changing arguments, command configuration or identity invalidates approval
 test('only native bash prefixes are included; ordinary cleanup and file edits do not prompt', async () => {
   const h = harness(async () => false); h.settings.shellCommandPrefix = 'rm -rf /';
   assert.equal((await h.call({ toolName: 'bash', input: { command: 'echo hi' } })).block, true);
-  assert.equal(await h.call({ toolName: 'exec_command', input: { cmd: 'echo hi' } }), undefined);
+  assert.equal(await h.call({ toolName: 'watch', input: { command: 'echo hi' } }), undefined);
   assert.equal(await h.call({ toolName: 'write', input: { path: '/etc/profile', content: 'example' } }), undefined);
   assert.equal(await h.call({ toolName: 'edit', input: { path: '.git/config', edits: [] } }), undefined);
-  assert.equal(await h.call({ ...removal(), input: { cmd: 'rm -rf /tmp/owned-task/runtime', shell: '/bin/bash' } }), undefined);
+  assert.equal(await h.call({ toolName: 'watch', input: { command: 'rm -rf /tmp/owned-task/runtime' } }), undefined);
   assert.equal(h.questions(), 0);
 });

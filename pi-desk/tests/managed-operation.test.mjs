@@ -15,10 +15,8 @@ import { DeskHost } from "../src/host/server.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 
-for (const stop of [false, true]) test(stop
-	? "confirmed update detaches workers and retains native conversation references"
-	: "automatic selection retains idle workers and preserves rollback after explicit close", async () => {
-	const root = fs.mkdtempSync(join(tmpdir(), "desk-idle-update-")), home = join(root, "runtime"), directory = join(root, "data");
+test("confirmed update detaches workers and retains native conversation references", async () => {
+	const root = fs.mkdtempSync(join(tmpdir(), "desk-update-")), home = join(root, "runtime"), directory = join(root, "data");
 	fs.mkdirSync(home); fs.mkdirSync(directory);
 	const ready = (digest, desk) => {
 		const id = runtimeIdentity(digest, process.platform, process.arch, process.versions.modules);
@@ -36,36 +34,29 @@ for (const stop of [false, true]) test(stop
 	let stopped = 0, detached = 0;
 	try {
 		await host.start(); host.runtime = active; host.runtimeHome = home;
-		const snapshot = { session: "native-fixture", file: join(root, "session.jsonl"), cwd: root, leaf: "held-leaf", running: false };
 		const instance = "11111111-1111-4111-8111-111111111111";
-		const worker = { handoffIdentity: async () => ({ instance }), detach: async () => { detached++; },
-			checkpoint: async () => { assert.fail("Host updates must not hold native execution."); }, close: async () => { stopped++; } };
+		const worker = { handoffIdentity: async () => ({ instance }), detach: async () => { detached++; }, close: async () => { stopped++; } };
 		host.sessions.set("fixture", { initialized: true, view: { key: "fixture", cwd: root, state: "ready", created: 1,
-			file: snapshot.file, name: "Session", snapshot: { activity: "idle" } }, worker });
-		assert.deepEqual(await activatePreparedRuntime(home), { deferred: 1 });
+			file: join(root, "session.jsonl"), name: "Session", snapshot: { activity: "idle" } }, worker });
 		await assert.rejects(activatePreparedRuntime(home, "c".repeat(64), "stale-checkpoint"), /prepared update changed/);
-		assert.equal(stopped, 0, "neither idle status nor stale approval authorizes stopping workers");
+		assert.equal(stopped, 0, "a stale approval does not authorize stopping workers");
 		assert.equal(readState(home).active, active);
 		assert.equal(host.closing, false);
-		if (!stop) host.sessions.delete("fixture");
-		assert.deepEqual(await activatePreparedRuntime(home, stop ? pending : undefined, stop ? "fixture-checkpoint" : undefined), { release: "0.5.0", startup: "launcher" });
+		assert.deepEqual(await activatePreparedRuntime(home, pending, "fixture-checkpoint"), { release: "0.5.0", startup: "launcher" });
 		assert.equal(stopped, 0);
-		assert.equal(detached, Number(stop));
+		assert.equal(detached, 1);
 		const saved = new SessionCatalog(directory).read();
-		assert.equal(saved.length, Number(stop));
-		if (stop) {
-			assert.equal(saved[0].interrupted, true);
-			assert.equal(saved[0].file, join(root, "session.jsonl"));
-			assert.equal(saved[0].key, "fixture");
-			assert.equal(saved[0].name, "Session");
-			const ledger = new InputLedger(directory);
-			try {
-				const ticket = ledger.checkpoint();
-				assert.equal(ticket.state, "committed");
-				assert.deepEqual(ticket.workers, [{ key: "fixture", instance }]);
-				assert.deepEqual(ticket.sessions, []);
-			} finally { ledger.close(); }
-		}
+		assert.equal(saved.length, 1);
+		assert.equal(saved[0].interrupted, true);
+		assert.equal(saved[0].file, join(root, "session.jsonl"));
+		assert.equal(saved[0].key, "fixture");
+		assert.equal(saved[0].name, "Session");
+		const ledger = new InputLedger(directory);
+		try {
+			const ticket = ledger.checkpoint();
+			assert.equal(ticket.state, "committed");
+			assert.deepEqual(ticket.workers, [{ key: "fixture", instance }]);
+		} finally { ledger.close(); }
 		const selected = readState(home);
 		assert.equal(selected.active, pending);
 		assert.equal(selected.previous, active);

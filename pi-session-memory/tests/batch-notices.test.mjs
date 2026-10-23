@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { pruneCompactedSession } from "../extensions/session-memory.ts";
-import { NOTICE_ENTRY, undispatchedNotices } from "../../pi-subagents/extensions/subagent-runtime.ts";
+import { NOTICE_ENTRY, undispatchedNotices } from "../../pi-agents/subagents/subagent-runtime.ts";
 
 test("compacted batched notices retain every delivery ID without retaining report bodies", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "pi-memory-notices-"));

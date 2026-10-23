@@ -64,7 +64,7 @@ export function closestRegion(content: string, text: string): string | undefined
 	return `Closest match, lines ${from + 1}–${to}${differing >= 0 ? ` (first difference at line ${start + differing + 1})` : ""}:\n${numbered(file.slice(from, Math.min(to, from + 40)), from)}`;
 }
 
-/** A hint for a failed edit or patch, from the file as it is now. */
+/** A hint for a failed edit, from the file as it is now. */
 export function editHint(error: string, input: Record<string, unknown>, cwd: string): string | undefined {
 	const read = (path: string) => { try { const full = resolve(cwd, path); return statSync(full).size <= 4 << 20 ? readFileSync(full, "utf8") : undefined; } catch { return; } };
 	const edits = Array.isArray(input.edits) ? input.edits as { oldText?: unknown }[] : typeof input.oldText === "string" ? [{ oldText: input.oldText }] : [];
@@ -78,12 +78,6 @@ export function editHint(error: string, input: Record<string, unknown>, cwd: str
 			return lines.length ? `It occurs at lines ${lines.join(", ")}. Include nearby lines to pick one.` : undefined;
 		}
 		return closestRegion(content, text);
-	}
-	// apply_patch: "Failed to find expected lines in <path>:\n<lines>"
-	const patch = /Failed to find expected lines in (.+?):\n([\s\S]+)$/.exec(error);
-	if (patch) {
-		const content = read(patch[1]!.trim());
-		return content === undefined ? undefined : closestRegion(content, patch[2]!.replace(/\n(?:Wall time|Exit code)[\s\S]*$/, ""));
 	}
 }
 

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { CopySender, CopyStore, lastLineEnd, type CopyChunk, type CopyInfo } from "./copies.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 /**
  * Moving a conversation to another computer ("teleport"), including from a computer that is off.
@@ -61,7 +62,7 @@ export class Teleport {
 	operations(): string[] { return [COPIES, ...(this.store ? [HOLD] : [])]; }
 	configure(settings: Partial<Settings>): void {
 		this.settings = { ...this.settings, ...settings };
-		mkdirSync(this.directory, { recursive: true }); writeFileSync(join(this.directory, "copies.json"), JSON.stringify(this.settings));
+		mkdirSync(this.directory, { recursive: true }); atomicJson(join(this.directory, "copies.json"), this.settings, { compact: true });
 		// Kept copies stay on disk when holding stops; they are no longer received or offered.
 		this.store = this.settings.hold ? this.store ?? new CopyStore(join(this.directory, "copies")) : undefined;
 	}
@@ -88,7 +89,7 @@ export class Teleport {
 	copies(): CopyInfo[] { return this.store?.list() ?? []; }
 	record(session: string, move: Move): void {
 		this.moves[session] = move;
-		mkdirSync(this.directory, { recursive: true }); writeFileSync(join(this.directory, "moves.json"), JSON.stringify(this.moves));
+		mkdirSync(this.directory, { recursive: true }); atomicJson(join(this.directory, "moves.json"), this.moves, { compact: true });
 		this.store?.moved(session, move.to, move.at);
 	}
 	disconnected(peer: string): void { this.sender.forget(peer); this.sentStatus.delete(peer); this.sentMoves.delete(peer); }

@@ -37,7 +37,9 @@ export class InputLedger {
 	}
 	checkpoint(): UpdateCheckpoint | undefined {
 		const row = this.db.prepare("SELECT payload FROM update_checkpoint WHERE singleton=1").get() as { payload: string } | undefined;
-		return row ? JSON.parse(row.payload) as UpdateCheckpoint : undefined;
+		const ticket = row ? JSON.parse(row.payload) as UpdateCheckpoint : undefined;
+		// Desk 0.5.23 and earlier restarted conversations instead of handing workers over; their tickets are not restored.
+		return Array.isArray(ticket?.workers) ? ticket : undefined;
 	}
 	writeCheckpoint(ticket: UpdateCheckpoint): void {
 		if (!/^[a-f0-9]{64}$/.test(ticket.source) || !/^[a-f0-9]{64}$/.test(ticket.target) || ticket.source === ticket.target)
@@ -46,7 +48,7 @@ export class InputLedger {
 			.run(JSON.stringify(ticket));
 	}
 	finishCheckpointActor(id: string, key: string, error?: string): void {
-		const ticket = this.checkpoint(), actor = (ticket?.workers ?? ticket?.sessions)?.find(actor => actor.key === key);
+		const ticket = this.checkpoint(), actor = ticket?.workers.find(actor => actor.key === key);
 		if (!ticket || ticket.id !== id || !["committed", "complete"].includes(ticket.state) || !actor) throw new Error("The restore checkpoint changed.");
 		actor.restored = true;
 		if (error) actor.error = error.slice(0, 2000);
@@ -54,25 +56,9 @@ export class InputLedger {
 	}
 	completeCheckpoint(id: string): void {
 		const ticket = this.checkpoint();
-		if (!ticket || ticket.id !== id || ticket.state !== "committed" || (ticket.workers ?? ticket.sessions).some(actor => !actor.restored))
+		if (!ticket || ticket.id !== id || ticket.state !== "committed" || ticket.workers.some(actor => !actor.restored))
 			throw new Error("Conversation restoration is not complete.");
 		ticket.state = "complete"; this.writeCheckpoint(ticket);
-	}
-	/** The continuation receipt and dispatch marker commit together; unknown admission is never replayed. */
-	continueCheckpoint(id: string, key: string, input: InputSubmission): InputStatus | undefined {
-		this.db.exec("BEGIN IMMEDIATE");
-		try {
-			const ticket = this.checkpoint(), actor = ticket?.sessions.find(actor => actor.key === key);
-			if (!ticket || ticket.id !== id || ticket.state !== "committed" || !actor?.running)
-				throw new Error("This conversation has no active-work continuation checkpoint.");
-			let result: InputStatus | undefined;
-			if (!actor.dispatched) {
-				result = this.admit(key, input);
-				actor.dispatched = true; actor.restored = true;
-				this.writeCheckpoint(ticket);
-			}
-			this.db.exec("COMMIT"); return result;
-		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	private row(session: string, id: string): Row | undefined {
 		return this.db.prepare("SELECT * FROM inputs WHERE session=? AND id=?").get(session, id) as unknown as Row | undefined;

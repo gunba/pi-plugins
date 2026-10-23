@@ -87,7 +87,6 @@ function request(value: unknown): value is WorkerRequest {
 	if (value.type === "describe") return true;
 	if (value.type === "receipt") return typeof value.target === "string" && value.target.length <= 128 && (value.wait === undefined || typeof value.wait === "boolean");
 	if (value.type === "init") return object(value.options) && typeof value.options.cwd === "string";
-	if (value.type === "checkpoint") return typeof value.checkpoint === "string" && ["inspect", "hold", "release"].includes(String(value.action));
 	return (value.type === "command" || value.type === "control") && typeof value.generation === "string" && object(value.command) && typeof value.command.kind === "string";
 }
 

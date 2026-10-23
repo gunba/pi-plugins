@@ -4,9 +4,8 @@ import remarkGfm from "remark-gfm";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
 import { Modal } from "./surfaces.tsx";
-import { DOT_FILE_COUNT, type DotInput, type DotMessage, type DotSnapshot, type DotUpload, type DotDownload, type DotSurfaceFrame, type DotSurfaceMode } from "../shared/dot.ts";
+import { DOT_FILE_COUNT, type DotInput, type DotMessage, type DotSnapshot, type DotUpload, type DotDownload } from "../shared/dot.ts";
 import { stageDotFiles, saveDotDownload } from "./dot-files.ts";
-import { DotNativeView } from "./dot-native-view.tsx";
 import { DotAgentAccess } from "./dot-agent-access.tsx";
 import type { Computer } from "./workspace.ts";
 import { api } from "./connection.ts";
@@ -150,7 +149,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		return () => { document.title = previous; };
 	}, [unread, view.name]);
 	const reserved = dotReservedFiles(outbox, view.inputs);
-	const files = (view.uploads ?? []).filter(file => file.state !== "handed-off" && !reserved.has(file.id));
+	const files = (view.uploads ?? []).filter(file => !reserved.has(file.id));
 	const filesReady = !!view.connection && files.every(file => file.connection === view.connection && ["ready", "uploaded"].includes(file.state));
 	const action = async (name: "connect" | "disconnect") => {
 		const epoch = generation.current; selection.current++; readSequence.current++; setBusy(true); setError("");
@@ -250,12 +249,11 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		catch (error) { if (epoch === generation.current) setError(errorText(error)); }
 		finally { if (epoch === generation.current) setBusy(false); }
 	};
-	const receipt = view.inputs.find(input => input.id === pending?.id);
 	const ready = online && !!view.connection && view.state === "ready";
 	const status = !online ? computer?.connection === "paused" ? "App paused" : "Offline"
 		: view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
 	return { computers, id, online, view, loaded, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: before ?? view.before, draft, pending, busy, error: error || pollError,
-		loadingHistory, receipt, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
+		loadingHistory, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
 		/** Remove a message that was not sent; Edit puts its text back in the composer and keeps its files staged. */
 		remove(input: DotOutboxInput, edit = false) {
 			if (!removableDotInput(input)) return;
@@ -294,27 +292,13 @@ export function DotNavigation({ dot, selected, open }: { dot: DotConversationSta
 }
 
 export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotConversationState; openNavigation: () => void; openQuests?: () => void }) {
-	const [showConnection, setShowConnection] = useState(false), [native, setNative] = useState<DotSurfaceFrame>(), [opening, setOpening] = useState(false), [nativeError, setNativeError] = useState("");
+	const [showConnection, setShowConnection] = useState(false), [dictationError, setDictationError] = useState("");
 	const [discarding, setDiscarding] = useState<DotUpload>();
-	const picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null), live = useRef(true), nativeLock = useRef(false), connection = useRef({ computer: dot.id, dot: dot.view.id, binding: dot.view.connection });
-	connection.current = { computer: dot.id, dot: dot.view.id, binding: dot.view.connection };
-	useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-	useEffect(() => { setNative(undefined); setDiscarding(undefined); setNativeError(""); }, [dot.id, dot.view.id, dot.view.connection]);
-	const openNative = async (mode: DotSurfaceMode) => {
-		if (!dot.ready || nativeLock.current) return;
-		const computer = dot.id, identity = dot.view.id, binding = dot.view.connection;
-		const current = () => live.current && connection.current.computer === computer && connection.current.dot === identity && connection.current.binding === binding;
-		nativeLock.current = true; setOpening(true); setNativeError("");
-		try {
-			const frame = await api<DotSurfaceFrame>("/dot/surface", { mode }, computer);
-			if (!current()) { await api(`/dot/surface/${frame.id}/close`, {}, computer); return; }
-			setNative(frame);
-		} catch (error) { if (current()) setNativeError(error instanceof Error ? error.message : String(error)); }
-		finally { nativeLock.current = false; if (live.current) setOpening(false); }
-	};
+	const picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null);
+	useEffect(() => { setDiscarding(undefined); setDictationError(""); }, [dot.id, dot.view.id, dot.view.connection]);
 	useEffect(() => { const node = editor.current; if (node) { node.style.height = "auto"; node.style.height = `${Math.min(node.scrollHeight, 220)}px`; } }, [dot.draft]);
 	const feed = useRef<HTMLDivElement>(null), atBottom = useRef(true), scrollTop = useRef(0);
-	const { view, messages, receipt, pending, ready, busy } = dot;
+	const { view, messages, pending, ready, busy } = dot;
 	const name = view.name ?? "Dot", last = messages.at(-1), scrollKey = `${storageKey(dot.id)}:scroll:${view.connection ?? view.id ?? "none"}`;
 	useEffect(() => {
 		atBottom.current = true; scrollTop.current = 0;
@@ -325,13 +309,13 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 	}, [scrollKey]);
 	useEffect(() => {
 		if (feed.current) feed.current.scrollTop = atBottom.current ? feed.current.scrollHeight : scrollTop.current;
-	}, [last?.id, last?.text, native?.id, messages.length, dot.optimistic.length, dot.optimistic.at(-1)?.state, scrollKey]);
-	const readVisible = () => { if (!native && atBottom.current && !document.hidden && document.hasFocus()) dot.markRead(); };
+	}, [last?.id, last?.text, messages.length, dot.optimistic.length, dot.optimistic.at(-1)?.state, scrollKey]);
+	const readVisible = () => { if (atBottom.current && !document.hidden && document.hasFocus()) dot.markRead(); };
 	useEffect(() => {
 		readVisible();
 		window.addEventListener("focus", readVisible); document.addEventListener("visibilitychange", readVisible);
 		return () => { window.removeEventListener("focus", readVisible); document.removeEventListener("visibilitychange", readVisible); };
-	}, [dot.markRead, native?.id, scrollKey]);
+	}, [dot.markRead, scrollKey]);
 	return <>
 		<header className="topbar dot-topbar">
 			<button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
@@ -339,34 +323,28 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 			<div className="conversation-heading"><span>Dot · {dot.status}</span><strong>{name}</strong></div>
 			<div className="top-actions dot-actions">
 				{openQuests && <button className="subtle-button" onClick={openQuests}>Quests</button>}
-				{ready && !native && <button className="subtle-button" disabled={busy || !!pending || opening} onClick={() => void openNative("activity")}>Activity</button>}
 				{ready && <button className="subtle-button" aria-expanded={showConnection} onClick={() => setShowConnection(value => !value)}>Connection</button>}
-				{ready && !native && <ActionMenu label="Dot options" disabled={busy || opening || pending?.state === "sending"}
-					actions={[{ id: "conversation", label: "Native view" }, { id: "settings", label: "Manage Dot" }, ...(!pending ? [{ id: "computer", label: "Computer" }] : [])]}
-					invoke={action => void openNative(action.id as DotSurfaceMode)} />}
 			</div>
 		</header>
-		{(dot.error || view.error || nativeError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || view.error || nativeError)}</div>}
+		{(dot.error || view.error || dictationError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || view.error || dictationError)}</div>}
 		{(!ready || showConnection) && <section className="dot-connection" aria-label="Dot connection">
 			<h2>{ready ? "Dot connection" : view.state === "connecting" ? "Connecting Dot…" : "Connect your Dot"}</h2>
-			{dot.computers && <label>Connection computer<select aria-label="Dot connection computer" value={dot.id ?? ""} disabled={busy || opening} onChange={event => dot.chooseComputer(event.target.value)}>
+			{dot.computers && <label>Connection computer<select aria-label="Dot connection computer" value={dot.id ?? ""} disabled={busy} onChange={event => dot.chooseComputer(event.target.value)}>
 				{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
 			</select></label>}
 			{dot.loaded ? <>
 				<div className="dot-connection-actions">
-					<button className="primary" disabled={!dot.online || busy || opening || !!view.busy || view.state === "connecting"} onClick={() => void dot.action("connect")}>
+					<button className="primary" disabled={!dot.online || busy || !!view.busy || view.state === "connecting"} onClick={() => void dot.action("connect")}>
 						{view.state === "connecting" ? "Connecting…" : ready ? "Reconnect Dot" : "Connect Dot"}</button>
-					{ready && <button disabled={!dot.online || busy || opening || !!view.busy} onClick={() => void dot.action("disconnect")}>Disconnect</button>}
+					{ready && <button disabled={!dot.online || busy || !!view.busy} onClick={() => void dot.action("disconnect")}>Disconnect</button>}
 				</div>
 				{ready && view.identity ? <p>Connected as <strong>{view.identity}</strong>.</p>
 					: <p className="muted">Dot uses Pi's ChatGPT login on this computer (OpenAI Codex under Settings → Accounts &amp; connections).</p>}
 				<p>No ChatGPT window is needed for messages, attachments or live updates. Keep the connection computer online.</p>
-				<p className="muted">Activity, computer and management views open ChatGPT only when you ask. Those views may need a separate browser sign-in to the same account.</p>
 				<DotAgentAccess key={`access:${dot.id ?? "local"}`} computer={dot.id} online={dot.online} />
 			</> : <p role="status">Checking this computer’s Dot support…</p>}
 			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
 		</section>}
-		{native ? <DotNativeView key={`${dot.id}:${view.connection}:${native.id}`} initial={native} connection={view.connection!} computer={dot.id} close={() => setNative(undefined)} /> : <>
 		{dot.unread > 0 && <button type="button" className="dot-new-messages" onClick={() => {
 			atBottom.current = true;
 			if (feed.current) feed.current.scrollTop = feed.current.scrollHeight;
@@ -394,10 +372,10 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 							</div>
 							<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}
 								components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{said.text}</Markdown></div>
-								{message.attachments.map((attachment, index) => <button type="button" className="dot-attachment" key={attachment.id ?? index} disabled={!ready || busy || opening}
-									onClick={() => attachment.downloadable ? void dot.download(message.id, attachment.id) : void openNative("conversation")}>
-									{attachment.name}{attachment.downloadable ? " ↓" : " ↗"}
-								</button>)}
+								{message.attachments.map((attachment, index) => attachment.downloadable
+									? <button type="button" className="dot-attachment" key={attachment.id ?? index} disabled={!ready || busy}
+										onClick={() => void dot.download(message.id, attachment.id)}>{attachment.name} ↓</button>
+									: <span className="dot-attachment" key={attachment.id ?? index}>{attachment.name}</span>)}
 							</div>
 						</article>
 					</div>;
@@ -419,9 +397,8 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 						{!input.ignored && <>
 							{input.state === "queued" && <button className="text-button" onClick={() => dot.skip(input)}>Cancel</button>}
 							{input.state === "unknown" && <><button className="text-button" disabled={busy} onClick={() => void dot.check(input.id)}>Check delivery</button>
-								<ActionMenu label="Delivery options" disabled={busy || opening} actions={[...(ready && (!input.connection || input.connection === view.connection) ? [{ id: "review", label: "Review in Dot" }] : []),
-									{ id: "cancel", label: "Cancel unconfirmed attempt" }, { id: "continue", label: "Leave unresolved and continue queue" }]}
-									invoke={action => action.id === "review" ? void openNative("conversation") : action.id === "cancel" ? void dot.cancelUnconfirmed(input) : dot.skip(input)} /></>}
+								<ActionMenu label="Delivery options" disabled={busy} actions={[{ id: "cancel", label: "Cancel unconfirmed attempt" }, { id: "continue", label: "Leave unresolved and continue queue" }]}
+									invoke={action => action.id === "cancel" ? void dot.cancelUnconfirmed(input) : dot.skip(input)} /></>}
 						</>}
 					</div>
 					{input.error && <small className="dot-delivery-note">{errorText(input.error)}</small>}
@@ -437,31 +414,29 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				<div className="dot-draft-file-info"><strong>{file.name}</strong><span>{file.state === "ready" ? `${(file.size / 1024).toFixed(0)} KB` : file.state === "staging" ? `${Math.round(file.received / file.size * 100)}%` : file.state === "unknown" ? "Needs review" : file.state}</span>
 					{file.connection !== view.connection && <small>From an earlier Dot connection. Reconnect that account or select the file again.</small>}
 					{file.error && <small>{file.error}</small>}</div>
-				{["unknown", "uploaded", "failed"].includes(file.state) && <button className="subtle-button" disabled={!ready || busy || opening || receipt?.state === "sending"} onClick={() => void openNative("conversation")}>Review</button>}
 				<button aria-label={`Discard staged ${file.name}`} disabled={busy || file.state === "uploading"} onClick={() => ["ready", "staging"].includes(file.state) ? void dot.discard(file) : setDiscarding(file)}>×</button>
 			</div>)}</div>}
 			<input ref={picker} type="file" multiple hidden onChange={event => { const files = [...(event.currentTarget.files ?? [])]; event.currentTarget.value = ""; if (files.length) void dot.attach(files); }} />
 			<form className="dot-compose-form" onSubmit={event => { event.preventDefault(); atBottom.current = true; dot.send(); }}
 				onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
-				onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); if (ready && !busy && !opening) void dot.attach([...event.dataTransfer.files]); }}>
+				onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); if (ready && !busy) void dot.attach([...event.dataTransfer.files]); }}>
 				<div className="dot-compose-row">
-					<button type="button" className="icon-button dot-attach-button" aria-label="Attach files to Dot" title="Attach files" disabled={!ready || busy || opening || dot.files.length >= DOT_FILE_COUNT} onClick={() => picker.current?.click()}><Icon name="plus" /></button>
+					<button type="button" className="icon-button dot-attach-button" aria-label="Attach files to Dot" title="Attach files" disabled={!ready || busy || dot.files.length >= DOT_FILE_COUNT} onClick={() => picker.current?.click()}><Icon name="plus" /></button>
 					<div className="composer dot-composer"><textarea ref={editor} aria-label="Message Dot" placeholder={`Message ${name}`} rows={1} value={dot.draft} maxLength={32_000}
 						onChange={event => dot.saveDraft(event.target.value)}
-						onPaste={event => { if (!event.clipboardData.files.length) return; event.preventDefault(); if (ready && !busy && !opening) void dot.attach([...event.clipboardData.files]); }}
+						onPaste={event => { if (!event.clipboardData.files.length) return; event.preventDefault(); if (ready && !busy) void dot.attach([...event.clipboardData.files]); }}
 						onKeyDown={event => {
 							if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); atBottom.current = true; dot.send(); }
 						}} /></div>
-					<DictationButton append={dot.dictate} submit={text => { dot.dictate(text); dot.send(); }} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
-					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!view.connection || !view.id || busy || opening || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
+					<DictationButton append={dot.dictate} submit={text => { dot.dictate(text); dot.send(); }} report={setDictationError} computer={dictationComputer(dot.computers, dot.id)} />
+					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!view.connection || !view.id || busy || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
 				</div>
-				<div className="dot-composer-hint">{view.paused ? "Dot is paused. Resume it from Manage Dot to send queued messages." : "Shift+Enter for a new line"}</div>
+				<div className="dot-composer-hint">{view.paused ? "Dot is paused. Resume it in ChatGPT to send queued messages." : "Shift+Enter for a new line"}</div>
 			</form>
 		</div>
-		</>}
 		{discarding && <Modal title="Discard staged file" close={() => setDiscarding(undefined)}>
 			<p>Discard Desk’s local copy of <strong>{discarding.name}</strong>?</p>
-			<p className="muted">This does not remove an upload or draft already in ChatGPT. Review its native conversation first.</p>
+			<p className="muted">This does not remove an upload or draft already in ChatGPT.</p>
 			<div className="dialog-actions"><button disabled={busy} onClick={() => setDiscarding(undefined)}>Keep file</button>
 				<button disabled={busy || !!pending} onClick={() => { void dot.discard(discarding); setDiscarding(undefined); }}>Discard local copy</button></div>
 		</Modal>}

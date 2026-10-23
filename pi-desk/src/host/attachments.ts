@@ -1,11 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import {
-	closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync,
-	readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync,
-} from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { extname, join } from "node:path";
 import { imageDamage } from "../../../pi-output-budget/extensions/image-check.ts";
 import { CHUNK_BYTES, FILE_COUNT, FILE_LIMIT, MESSAGE_FILE_LIMIT, type Attachment, type UploadCommand } from "../shared/attachments.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 interface Stored extends Attachment { created: number; ready: boolean; used: boolean }
 const ID = /^[a-f0-9]{64}$/;
@@ -41,8 +39,7 @@ export class Attachments {
 	}
 	private save(data: Stored): void {
 		const path = join(this.folder(data.id), "metadata.json");
-		writeFileSync(`${path}.tmp`, JSON.stringify(data), { mode: 0o600 });
-		renameSync(`${path}.tmp`, path);
+		atomicJson(path, data, { compact: true });
 	}
 	private path(data: Stored): string { return join(this.folder(data.id), `attachment${extension(data.name)}`); }
 	private open(data: Stored, writable = false): number {

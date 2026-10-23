@@ -17,14 +17,13 @@ function Group({ group, total }: { group: LedgerGroup; total: number }) {
 	</details>;
 }
 
-export function LedgerCard({ ledger, expanded = false }: { ledger: Ledger; expanded?: boolean }) {
-	const [open, setOpen] = useState(expanded);
+/** A saved conversation's initial-context card: estimated tokens by group, outside model context. */
+export function LedgerCard({ ledger }: { ledger: Ledger }) {
+	const [open, setOpen] = useState(false);
 	return <details className="ledger-card" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-		<summary><strong>Initial context</strong><span>{ledger.measured ? "" : "~"}{tokens(ledger.total)} tokens</span></summary>
+		<summary><strong>Initial context</strong><span>~{tokens(ledger.total)} tokens</span></summary>
 		{open && <div className="ledger-content">
-			<p className="muted">{ledger.measured
-				? "The first request's size as the provider counted it, split into instructions, tools and the first message (the split is estimated)."
-				: "Instruction, tool and first-message estimates, not current conversation usage."}
+			<p className="muted">Instruction, tool and first-message estimates, not current conversation usage.
 				{ledger.windowPercent !== null && ` ${ledger.windowPercent.toFixed(1)}% of the ${tokens(ledger.contextWindow)}-token window.`}</p>
 			{ledger.groups.map((group, index) => <Group key={index} group={group} total={ledger.total} />)}
 			<p className="muted">This breakdown is saved outside model context.</p>

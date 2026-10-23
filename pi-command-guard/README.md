@@ -1,7 +1,7 @@
 # Command protection
 
-`pi-command-guard` checks model-issued shell commands for drive destruction and
-Git wipes before Pi executes them. It uses Pi's `tool_call` hook, including nested calls made through
+`pi-command-guard` checks model-issued shell commands (`bash`, `powershell` and the
+command a `watch` runs) for drive destruction and Git wipes before Pi executes them. It uses Pi's `tool_call` hook, including nested calls made through
 `ctx.executeTool`, and is inherited by SDK children through the parent policy bus.
 It registers no model tools, prompt instructions or bypass
 command. The policy runs in process; it does not launch a shell, consult a model,
@@ -14,6 +14,11 @@ read scripts, or execute a command to decide whether to admit it.
 - Confirm Git wipes: hard reset, whole-tree cleanup or restoration, forced
   checkout/switch, clearing stashes or repository-wide reflogs, deleting `.git`
   history, and remote-history overwrites without a lease check.
+- When a confirmed wipe would discard working-tree changes or delete untracked
+  files, the dialog lists the first 20 paths and their count, from a read-only
+  `git status` or `git clean --dry-run` with the command's own options. It is
+  skipped after a `cd` or with `--git-dir`/`--work-tree`, and shows nothing when
+  git fails or takes longer than 1.5 seconds. The list never changes the decision.
 - Allow ordinary file cleanup, recursive/wildcard deletion, file writes/edits,
   inline programs, database/cloud operations and targeted Git maintenance without
   a guard prompt. `--force-with-lease` retains Git's own concurrency check.

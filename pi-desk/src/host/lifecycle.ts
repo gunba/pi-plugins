@@ -124,7 +124,8 @@ export async function startHost(directory: string, cwd: string, arguments_: stri
 	} finally { launch.close(); }
 }
 
-export async function stopHost(directory: string, options?: { idleOnly: boolean; runtime: string; checkpoint?: { id: string; target: string } }, launch?: SessionLease): Promise<{ stopped: boolean; unclean?: boolean; deferred?: number }> {
+/** `handoff`: stop for an update to `target`, leaving the workers running for the replacement host to adopt. */
+export async function stopHost(directory: string, handoff?: { runtime: string; checkpoint: { id: string; target: string } }, launch?: SessionLease): Promise<{ stopped: boolean; unclean?: boolean }> {
 	const current = await probeHost(directory, launch);
 	if (current.state === "stopped") {
 		const record = readHostRecord(directory);
@@ -137,11 +138,10 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 	if (current.state === "unresponsive") throw new Error(`Host is not responding. No PID was signalled. ${current.error}`);
 	const record = readHostRecord(directory)!;
 	if (record.instance !== current.host!.instance) throw new Error("The host changed. Check status before stopping it.");
-	let result: { instance: string; deferred?: number };
 	try {
-		if (options?.checkpoint) {
-			const { id, target } = options.checkpoint;
-			const body = { runtime: options.runtime, checkpoint: id, target };
+		if (handoff) {
+			const { id, target } = handoff.checkpoint;
+			const body = { runtime: handoff.runtime, checkpoint: id, target };
 			let preparation = await controlRequest<{ instance: string; checkpoint: import("./checkpoints.ts").CheckpointStatus }>(record, "prepare-update", body);
 			const until = Date.now() + 120_000;
 			while (preparation.checkpoint.state === "preparing" && Date.now() < until)
@@ -151,15 +151,13 @@ export async function stopHost(directory: string, options?: { idleOnly: boolean;
 		}
 		// Committing waits for every conversation's worker to confirm its identity, which takes a while on a busy
 		// Windows PC. The caller still settles from the durable checkpoint if this reply is late or lost.
-		result = await controlRequest<{ instance: string; deferred?: number }>(record,
-			options?.checkpoint ? "stop-for-update" : options?.idleOnly ? "stop-if-idle" : "stop",
-			options ? { runtime: options.runtime, ...(options.checkpoint ? { checkpoint: options.checkpoint.id, target: options.checkpoint.target } : {}) } : {},
-			options?.checkpoint ? 120_000 : undefined);
+		await controlRequest(record, handoff ? "stop-for-update" : "stop",
+			handoff ? { runtime: handoff.runtime, checkpoint: handoff.checkpoint.id, target: handoff.checkpoint.target } : {},
+			handoff ? 120_000 : undefined);
 	} catch (error) {
-		if (options?.checkpoint) await controlRequest(record, "cancel-update", { checkpoint: options.checkpoint.id }).catch(() => {});
+		if (handoff) await controlRequest(record, "cancel-update", { checkpoint: handoff.checkpoint.id }).catch(() => {});
 		throw error;
 	}
-	if (result.deferred !== undefined) return { stopped: false, deferred: result.deferred };
 	const until = Date.now() + SHUTDOWN_WAIT_MS;
 	while (Date.now() < until) {
 		if (readHostRecord(directory)?.instance !== record.instance) return { stopped: true };

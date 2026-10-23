@@ -58,6 +58,8 @@ export interface SessionSnapshot {
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
 	contextFrom?: number;
 	compacting?: { reason: "manual" | "threshold" | "overflow" | "cache"; started: number };
+	/** The reply that "What do I need to know?" has already been written for, when no message has followed it. */
+	brief?: string;
 	/** When the conversation's prompt cache was last used, and how long the provider keeps it after a use. */
 	cache?: { usedAt: number; ttlMs: number };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
@@ -176,8 +178,6 @@ export interface WorkerInit {
 	deskDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
-	/** Reopen saved native state without autonomous work until restoration finishes. */
-	checkpoint?: string;
 }
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
@@ -229,7 +229,6 @@ export type WorkerRequest =
 	| { type: "describe"; id: string }
 	| { type: "receipt"; id: string; target: string; wait?: boolean }
 	| { type: "control"; id: string; generation: string; command: import("./controls.ts").ControlCommand | { kind: "close" } }
-	| { type: "checkpoint"; id: string; action: import("./checkpoint.ts").CheckpointAction; checkpoint: string }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
 	| { type: "chat"; generation: string; message: ChatMessage; replaces?: string }

@@ -25,7 +25,7 @@ test("rotation bounds a run and a retired writer cannot append again", async t =
   assert.equal(JSON.parse(await readFile(`${file}.owner`, "utf8")).closed, true);
 });
 
-test("retention leaves active and unowned logs intact", async t => {
+test("retention keeps active and recent unowned logs and expires old unowned ones", async t => {
   const directory = await mkdtemp(join(tmpdir(), "wire-retention-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const active = new Diagnostics(join(directory, "active.jsonl"));
@@ -33,11 +33,13 @@ test("retention leaves active and unowned logs intact", async t => {
   active.write({ kind: "run" }); retired.write({ kind: "run" }); retired.close();
   t.after(() => active.close());
   const old = new Date(Date.now() - 30 * 86400000);
-  const unmanaged = join(directory, "unmanaged.jsonl");
-  await writeFile(unmanaged, "unowned");
-  for (const file of [active.path, retired.path, unmanaged]) await utimes(file, old, old);
+  const unmanaged = join(directory, "unmanaged.jsonl"), recent = join(directory, "recent.jsonl");
+  await writeFile(unmanaged, "unowned"); await writeFile(`${unmanaged}.1`, "unowned"); await writeFile(recent, "unowned");
+  for (const file of [active.path, retired.path, unmanaged, `${unmanaged}.1`]) await utimes(file, old, old);
   await retainDiagnostics(directory);
   await assert.rejects(stat(retired.path), { code: "ENOENT" });
   assert.ok((await stat(active.path)).isFile());
-  assert.ok((await stat(unmanaged)).isFile());
+  await assert.rejects(stat(unmanaged), { code: "ENOENT" });
+  await assert.rejects(stat(`${unmanaged}.1`), { code: "ENOENT" });
+  assert.ok((await stat(recent)).isFile());
 });

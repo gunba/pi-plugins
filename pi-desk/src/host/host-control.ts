@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { ReleaseInfo } from "../shared/release.ts";
+import { atomicJson } from "../../manage/store.ts";
 
 export interface HostRecord {
 	version: 1; instance: string; secret: string; pid: number; started: number; origin: string;
@@ -43,8 +44,6 @@ export class HostControl {
 		return /^[a-f0-9]{64}$/.test(token) && timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(this.record.secret, "hex"));
 	}
 	publish(directory: string): void {
-		const file = join(directory, "host.json"), temporary = `${file}.${this.record.instance}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(this.record)}\n`, { flag: "wx", mode: 0o600 });
-		renameSync(temporary, file);
+		atomicJson(join(directory, "host.json"), this.record, { compact: true });
 	}
 }

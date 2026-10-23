@@ -137,7 +137,7 @@ export class Transcript {
 			if (typeof shown.title === "string" && Array.isArray(shown.items))
 				blocks.push({ type: "shown", shown, files: shown.items.map(item => item.path && cwd ? this.files.observePath(item.path, cwd) ?? null : null) });
 		}
-		for (const [id, label] of [[details.outputArtifact, "Complete captured output"], [details.full_output_artifact, "Complete process output"],
+		for (const [id, label] of [[details.outputArtifact, "Complete captured output"], [details.full_output_artifact, "Complete output"],
 			[details.artifact, "Captured output"], [details.search_artifact, "Captured search results"]] as const) {
 			if (typeof id !== "string" || !/^sha256-[a-f0-9]{64}$/.test(id) || blocks.some(block => block.type === "artifact" && block.id === id)) continue;
 			this.artifacts.delete(id); this.artifacts.add(id);

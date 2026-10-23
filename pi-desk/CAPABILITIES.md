@@ -58,7 +58,6 @@ restart; Settings identifies them.
 | `pi-codex-wire` | Normal Codex transport and identity; Standard/Fast/Ultrafast speed, session settings, allowance and usage in Settings |
 | `pi-message-timestamps` | Native message timestamps and saved tool durations; terminal activity clock remains in Pi |
 | `pi-local-links` | Authenticated native file opening, folder reveal, previews and downloads, including links in older and child messages |
-| `pi-codex-compat` | Managed process, image-inspection and image-generation tools; process state, output and images in chat |
 | `pi-web-search` | Native search tool, readable results and Markdown citations |
 | `pi-ask-user` | Choice, multi-select, free text, comments, editor, cancel and timed forms |
 | `pi-config` | Searchable Settings/Resources browser: effective and saved values, native loaded-file inventory, protected previews and checked editing |
@@ -66,11 +65,12 @@ restart; Settings identifies them.
 | `pi-compaction-context` | Native compaction hooks; manual compaction in conversation settings |
 | `pi-session-memory` | Native branch-aware memory/pruning hooks; no browser memory store |
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
-| `pi-context-ledger` | Expandable initial-context card and Settings controls; excluded from model context |
+| `pi-context-ledger` | Saved initial-context cards (automatic in the terminal, `/context-ledger` on request) shown as expandable cards; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
-| `pi-party` | Account-wide encrypted agent discovery and direct messages, a Messages card, and user-approved agent creation on a chosen computer. |
+| `pi-agents` | Primary agents (Desk conversations on any computer, started with Jordan's approval) and secondary agents (background helpers that report back) through `agent_start`, `agent_send`, `agent_list`, `agent_stop` and `agent_move`; account-wide encrypted discovery and direct messages, the Messages card, and the quest log. |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
-| `pi-subagents` | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
+| `pi-watch` | `watch` waits without spending turns; a **Watching** badge by the message box lists watches with a Stop action. |
+| `pi-agents` (secondary agents) | **Agents** shows active and queued work; **Previous agents** holds searchable, virtualized history. Full inactive panels open on demand without resuming work; launch settings remain under **Manage agents** and `/subagents` |
 | `pi-output-budget` | Bounded previews and complete immutable artifact paging/search |
 | `pi-work-ui` | Work navigation and section targeting; browser panels show each controller once rather than repeating terminal summaries |
 | Browser skill / Chrome DevTools | Host Chrome tools and screenshots; Settings links to the installed extension's native dialogs |
@@ -98,11 +98,8 @@ hidden and catches up on return; these are not push notifications when Desk is
 closed.
 
 Dot's cloud execution and memory remain at OpenAI. Pi's Workspace is hidden
-when viewing Dot. Native views expose ChatGPT's activity, profile, approvals and
-cloud-computer controls through an owned Chrome tab opened only on request. Those
-views require a separate browser sign-in to the same account. External sign-in
-windows, browser permission dialogs, microphone capture and audio are not
-forwarded. The private backend/web protocols can change; see the [Dot setup and
+when viewing Dot. ChatGPT's activity, profile, approvals and cloud-computer
+controls stay in ChatGPT. The private backend protocol can change; see the [Dot setup and
 verification limits](README.md#dot).
 
 ## Account selection

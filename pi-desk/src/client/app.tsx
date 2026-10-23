@@ -1,119 +1,61 @@
-import { Loading } from "./loading.tsx";
-import { MoveConversation, type MoveRequest } from "./move-conversation.tsx";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-} from "react";
-import Markdown from "react-markdown";
-import { markdownPlugins } from "./markdown-links.ts";
-import { MessageView as Message } from "./message-view.tsx";
-import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
-import type { BrowserAccount } from "./account.ts";
-import { ResumeConversation } from "./resume.tsx";
-import { OsIcon } from "./os-icon.tsx";
-import { FolderField } from "./folder-picker.tsx";
-import { connectionLabel, connectionTone } from "./connection-state.ts";
-import { activityLabel, sessionActivity } from "./activity.ts";
-import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
-import { Inspector, Modal, Navigation, useMedia } from "./surfaces.tsx";
-import { useConfirmation } from "./confirmation.tsx";
-import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { isControl } from "../shared/controls.ts";
-import { openView, panelViews } from "./work-views.ts";
-import { sessionKey, type Computer, type WorkspaceState as HostState } from "./workspace.ts";
-import { AttachmentList, useAttachments, type DraftFile } from "./attachments.tsx";
-import { SettingsLayout, SettingsContent, settingsGroups, settingsSections, settingsPage, MERGED_VIEWS } from "./settings.tsx";
-import { SettingsForm } from "./settings-form.tsx";
-import { sessionTitle } from "../shared/session-title.ts";
-import { ComposerStatus } from "./composer-status.tsx";
-import { ModelPicker } from "./model-picker.tsx";
-import { DeliveryControl, deliveryModes } from "./delivery-control.tsx";
-import { NativeQueue } from "./native-queue.tsx";
-import { ConversationTitle } from "./conversation-title.tsx";
-import { WorkspaceActions } from "./workspace-actions.tsx";
-import { DotConversation, DotNavigation, useDotConversation } from "./dot-conversation.tsx";
-import { PlanView } from "./plan-view.tsx";
-import { PlanHeader } from "./plan-header.tsx";
-import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
-import { BriefContext, RewindContext } from "./message-view.tsx";
-import type { Brief, BriefState } from "./brief.tsx";
 import { splitDictationNote } from "../shared/dictation-note.ts";
-import { recallStep, sentMessages, type Recall } from "./message-history.ts";
-import { Icon, ProviderIcon } from "./icons.tsx";
+import type { ChatMessage, HistoryPage, WorkerCommand } from "../shared/protocol.ts";
+import type { BrowserAccount } from "./account.ts";
+import { activityLabel, sessionActivity } from "./activity.ts";
+import { agentInventory } from "./agent-inventory.ts";
 import { AgentPane } from "./agent-pane.tsx";
+import { useAttachments } from "./attachments.tsx";
+import type { Brief, BriefState } from "./brief.tsx";
+import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
+import { CloseConversationButton } from "./close-conversation.tsx";
+import { useCommandCompletion } from "./command-completion.tsx";
+import { deskCommandHandlers } from "./command-handlers.ts";
+import { CompactionOverlay } from "./compaction-overlay.tsx";
+import { Composer } from "./composer.tsx";
+import { draftKey, readDelivery } from "./composer-keys.ts";
+import { useConfirmation } from "./confirmation.tsx";
+import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
+import { connectionLabel, isOffline } from "./connection-state.ts";
+import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
+import { ConversationTitle } from "./conversation-title.tsx";
+import { VersionBanner } from "./conversation-version.tsx";
+import { deskCommandCatalog } from "./desk-commands.ts";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
 import { LiveNotices, reportDeskError } from "./desk-status.ts";
-import { agentInventory } from "./agent-inventory.ts";
-import { ViewPreviews } from "./view-previews.tsx";
-import { CloseConversationButton } from "./close-conversation.tsx";
-import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from "./composer-keys.ts";
-import { useCommandCompletion } from "./command-completion.tsx";
-import { deskCommand, deskCommandCatalog, type DeskCommandHandlers } from "./desk-commands.ts";
+import { dictationComputer } from "./dictation.tsx";
+import { DotConversation, useDotConversation } from "./dot-conversation.tsx";
+import { Icon } from "./icons.tsx";
+import { InteractionForm, type InteractionDraft } from "./interaction-form.tsx";
+import { Loading } from "./loading.tsx";
+import type { Recall } from "./message-history.ts";
+import { useMessageSending } from "./message-sending.tsx";
+import { BriefContext, MessageView as Message, RewindContext } from "./message-view.tsx";
+import { MoveConversation, type MoveRequest } from "./move-conversation.tsx";
+import { NativeQueue } from "./native-queue.tsx";
+import { useNewConversation } from "./new-conversation.tsx";
 import { PendingInputs } from "./pending-inputs.tsx";
-import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
-import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
-import { DetailsView } from "./details-view.tsx";
-import { Configuration } from "./configuration.tsx";
-import { ExternalLinks } from "./external-links.tsx";
-import { TranscriptView } from "./transcript-view.tsx";
-import { CompactionOverlay } from "./compaction-overlay.tsx";
-import { VersionBanner, VersionTag } from "./conversation-version.tsx";
-import { NewConversationModel, rememberModel, rememberedModel, type ModelChoice } from "./new-model.tsx";
+import { PlanHeader } from "./plan-header.tsx";
 import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
-import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
-import { withDictationNote } from "../shared/dictation-note.ts";
-import { LedgerCard } from "./ledger-card.tsx";
-import type { Ledger } from "../../../pi-context-ledger/model.ts";
-import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
+import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
+import { ResumeConversation } from "./resume.tsx";
+import { SettingsLayout, SettingsContent, settingsGroups, settingsPage, MERGED_VIEWS } from "./settings.tsx";
+import { Sidebar } from "./sidebar.tsx";
 import { cacheTranscript, trimCaches, reconcileHistory, reduceEvents, transcriptKey, type ClientState } from "./state.ts";
-import type {
-  ChatMessage,
-  HistoryPage,
-  InteractionSnapshot,
-  SessionView,
-  ViewSnapshot,
-  WorkerCommand,
-} from "../shared/protocol.ts";
-import type { UiAnswer } from "../../../pi-ui/index.ts";
-import { ComposerResize } from "./composer-resize.tsx";
+import { Inspector, Modal, useMedia } from "./surfaces.tsx";
+import { TranscriptView } from "./transcript-view.tsx";
+import { ViewCard } from "./view-card.tsx";
+import { ViewPreviews } from "./view-previews.tsx";
+import { openView, panelViews } from "./work-views.ts";
+import { conversationTitle, folderName, sessionKey, type WorkspaceState as HostState } from "./workspace.ts";
 
-const basename = (path: string) =>
-  path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
-const title = (session: SessionView) =>
-  sessionTitle(session.snapshot?.name ?? session.name, session.snapshot?.title ?? session.title);
 /** What "Review the changes" sends: a review of the turn's work with the code-review skill, reported before anything changes. */
 const REVIEW_REQUEST = "Use the code-review skill to review the changes you made in your last turn. Check each finding against the code before you report it, and don't change anything yet.";
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
-const draftKey = (key: string) => `pi-desk:draft:${key}`;
-/** Set while a conversation's draft holds dictated text, so the message tells the agent it was dictated. */
-const dictatedKey = (key: string) => `pi-desk:dictated:${key}`;
 const emptyMessages: NonNullable<ClientState["messages"][string]> = [];
-function uploadedPrompt(text: string, files: DraftFile[], session: string): PromptCommand | undefined {
-  if (files.some(file => file.uploaded?.session !== session)) return;
-  return { kind: "prompt", text, ...(files.length ? { attachments: files.map(file => file.uploaded!.id) } : {}) };
-}
-/** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
-function SidebarRename({ title, rename, close }: { title: string; rename: (name: string) => Promise<unknown>; close: () => void }) {
-  const [draft, setDraft] = useState(title), [saving, setSaving] = useState(false), [error, setError] = useState("");
-  const save = async () => {
-    if (saving) return;
-    if (!draft.trim() || draft.trim() === title) { close(); return; }
-    setSaving(true); setError("");
-    try { await rename(draft.trim()); close(); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); setSaving(false); }
-  };
-  return <form className="session-rename-form" onSubmit={event => { event.preventDefault(); void save(); }}>
-    <input autoFocus aria-label="Conversation name" maxLength={300} value={draft} disabled={saving} onFocus={event => event.currentTarget.select()}
-      onChange={event => setDraft(event.target.value)} onBlur={() => { if (!saving && !error) close(); }}
-      onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } }} />
-    {error && <small className="error-text" role="alert">{error}</small>}
-  </form>;
-}
 
 export function App({ account }: { account?: BrowserAccount }) {
   const [state, setState] = useState<ClientState>({ messages: {} });
@@ -128,8 +70,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [transportConnected, setConnected] = useState(false);
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
-  /** The conversation being renamed in the sidebar. */
-  const [renaming, setRenaming] = useState("");
   const wideWorkspace = useMedia("(min-width: 1280px)");
   // Below this width the sidebar is a drawer, so the header names the conversation and closes it.
   const phone = useMedia("(max-width: 760px)");
@@ -142,26 +82,17 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [workExtra, setWorkExtra] = useState<WorkItem>();
   const [workModal, setWorkModal] = useState<WorkItem>();
   useEffect(() => { const width = localStorage.getItem("pi-desk:work-pane-width"); if (width) document.documentElement.style.setProperty("--work-pane", width); }, []);
-  const [create, setCreate] = useState(false);
   const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
-  const createRequest = useRef(0);
   const [focusedView, setFocusedView] = useState("");
   const [settingsSection, setSettingsSection] = useState("general");
   const [focusedAgent, setFocusedAgent] = useState("");
   const [agentHistoryOpen, setAgentHistoryOpen] = useState(false);
   const autoAgents = useRef("");
-  const [cwd, setCwd] = useState("");
-  const [newComputer, setNewComputer] = useState<string>();
-  const [newModel, setNewModel] = useState<ModelChoice>({ model: "", reasoning: "" });
   const [draft, setDraft] = useState("");
   const [deliveryMode, setDeliveryMode] = useState(() => readDelivery(localStorage));
   const composerInput = useRef<HTMLTextAreaElement>(null);
-  const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
   const liveNotices = useRef(new LiveNotices());
-  const setError = useCallback((text: string, _key?: string) => { if (text) reportDeskError(text); }, []);
+  const setError = useCallback((text: string) => { if (text) reportDeskError(text); }, []);
   useEffect(() => {
     // Browsers report a resize made during a ResizeObserver callback, as measured transcript rows do,
     // then deliver the rest next frame. Nothing is lost, so it is not an error worth showing.
@@ -171,15 +102,13 @@ export function App({ account }: { account?: BrowserAccount }) {
     return () => { window.removeEventListener("error", failed); window.removeEventListener("unhandledrejection", rejected); };
   }, []);
   const attachments = useAttachments(selected, setError);
-  const fileInput = useRef<HTMLInputElement>(null);
   const titleControl = useRef<{ edit: () => void }>(null);
-  const [draggingFiles, setDraggingFiles] = useState(false);
   const [commandOutput, setCommandOutput] = useState<{ title: string; text: string }>();
   const [providerHint, setProviderHint] = useState<string>();
   const [latestRequest, setLatestRequest] = useState(0);
   const [dismissedQuestion, setDismissedQuestion] = useState("");
   const [activeQuestion, setActiveQuestion] = useState("");
-  const questionDrafts = useRef(new Map<string, QuestionDraft>());
+  const questionDrafts = useRef(new Map<string, InteractionDraft>());
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const session = state.host?.sessions.find(
@@ -207,15 +136,16 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [state.host?.sessions, session]);
   const canCompose = session?.state === "starting" || session?.state === "ready";
   const currentComputer = state.host?.computers?.find(computer => computer.id === session?.computer);
+  const newConversation = useNewConversation({ host: state.host, session, current: currentComputer,
+    created: key => { setSelected(key); setSidebar(false); setPanel(undefined); } });
   // The selected conversation's computer, while its conversations have not arrived: a loading view, not the empty
   // Welcome page, which looked as if there were no conversations. An offline computer says so instead.
   const selectedComputer = !session && selected.includes(":") ? state.host?.computers?.find(computer => computer.id === selected.slice(0, selected.indexOf(":"))) : undefined;
-  const offline = (computer: { presence?: { online: boolean } }) => computer.presence?.online === false;
   const waiting = selectedComputer && !selectedComputer.loaded
-    ? offline(selectedComputer) ? <div className="welcome"><div className="welcome-mark">π</div><h1>{selectedComputer.name} is offline</h1>
+    ? isOffline(selectedComputer) ? <div className="welcome"><div className="welcome-mark">π</div><h1>{selectedComputer.name} is offline</h1>
         <p>This conversation opens when {selectedComputer.name} is back online.</p></div>
       : <div className="welcome"><Loading label={`Loading this conversation from ${selectedComputer.name}…`} /></div>
-    : !session && state.host?.computers?.length && state.host.computers.every(computer => !computer.loaded) && !state.host.computers.every(offline)
+    : !session && state.host?.computers?.length && state.host.computers.every(computer => !computer.loaded) && !state.host.computers.every(isOffline)
       ? <div className="welcome"><Loading label="Connecting to your computers…" /></div> : undefined;
   const connected = state.host?.computers
     ? currentComputer?.connected ?? state.host.computers.some(computer => computer.connected)
@@ -227,7 +157,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const controlBusy = controls.some(control => control.state === "running");
   const closing = controls.some(control => control.kind === "close" && control.state === "running");
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
-  const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
+  const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${conversationTitle(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
   const planView = (ui?.views ?? []).find(view => view.id === "plan" && view.kind === "details" && !view.scope);
@@ -240,16 +170,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const chooseAgent = (id: string) => { setFocusedAgent(id); localStorage.setItem(`pi-desk:agent-selection:${selected}`, id); };
   const openAgentPane = (id?: string, history = false) => { if (id) chooseAgent(id); setAgentHistoryOpen(history); setPanel("agents"); };
   useEffect(() => { setFocusedAgent(localStorage.getItem(`pi-desk:agent-selection:${selected}`) ?? ""); }, [selected]);
-  useEffect(() => {
-    if (panel === "view" && focusedView === "subagents") setPanel("agents");
-    if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
-    const activation = `${selected}:${session?.activation}`;
-    if (activeAgents && autoAgents.current !== activation) {
-      autoAgents.current = activation;
-      if (!wideWorkspace && !panel && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
-        && matchMedia("(min-width:1181px)").matches) setPanel("agents");
-    }
-  }, [panel, focusedView, activeAgents, selected, session?.activation, ui, wideWorkspace]);
   const settingsForms = (ui?.interactions ?? []).filter(interaction => interaction.settings);
   const questions = (ui?.interactions ?? []).filter(interaction => !interaction.settings);
   const settingsForm = settingsForms[0];
@@ -265,92 +185,19 @@ export function App({ account }: { account?: BrowserAccount }) {
     for (const id of questionDrafts.current.keys()) if (!pending.has(id)) questionDrafts.current.delete(id);
   }, [state.host?.sessions]);
   useEffect(askForNotificationsOnFirstClick, []);
-  useQuestionAlerts(state.host?.sessions, selected, key => { setSelected(key); setSidebar(false); setPanel(undefined); }, title);
-  const noArguments = (name: string, args: string) => { if (args) throw Error(`Use /${name} without arguments.`); };
-  const openPicker = (label: string) => {
-    const picker = label === "Model" ? document.querySelector<HTMLButtonElement>("button.model-picker")
-      : document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
-    if (!picker || picker.disabled) throw Error("This choice is unavailable while the current operation is pending.");
-    picker.focus();
-    if (picker instanceof HTMLSelectElement) picker.showPicker?.(); else picker.click();
-  };
-  const rename = async (args: string) => {
-    if (session?.state !== "ready") throw Error("Wait for Pi to finish opening this conversation before renaming it.");
-    if (args) await command({ kind: "name", name: args }); else titleControl.current?.edit();
-  };
+  useQuestionAlerts(state.host?.sessions, selected, key => { setSelected(key); setSidebar(false); setPanel(undefined); }, conversationTitle);
   const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };
-  const commandHandlers: DeskCommandHandlers = {
-    settings: { description: "Open Settings; optionally choose a section.", execute: args => {
-      const section = args || (session ? "conversation" : "general");
-      if (!settingsSections.some(item => item.id === section)) throw Error(`Choose a settings section: ${settingsSections.map(item => item.id).join(", ")}.`);
-      setSettingsSection(section); setPanel("settings");
-    } },
-    new: { description: "Start a fresh session in this conversation, or /new <folder> for a new conversation there.", execute: args => {
-      // Like Pi: a new session in the running process, without starting another. Older workers lack the adapter.
-      if (!args && session?.snapshot?.commands.some(item => item.name === "new" && item.execution === "control"))
-        return command({ kind: "native", name: "new", args: "" });
-      openNewConversation(); if (args) setCwd(args);
-    } },
-    resume: { description: "Switch this conversation to a saved session.", execute: args => { noArguments("resume", args); setResumeOpen(session?.state === "ready" ? "switch" : true); } },
-    name: { description: "Rename this conversation.", execute: rename },
-    rename: { description: "Alias for /name.", execute: rename },
-    compact: { description: "Compact native context.", execute: args => command({ kind: "compact", instructions: args || undefined }) },
-    reload: { description: "Reload native resources.", execute: args => { noArguments("reload", args); return command({ kind: "reload" }); } },
-    fork: { description: "Choose a branch entry, or /fork <entry-id> [at|before].", execute: args => {
-      if (!args) { setSettingsSection("conversation"); setPanel("settings"); return; }
-      const [entry, position = "at", extra] = args.split(/\s+/);
-      if (extra || !["at", "before"].includes(position)) throw Error("Use /fork <entry-id> [at|before].");
-      return command({ kind: "fork", entry, position: position as "at" | "before" });
-    } },
-    tree: { description: "Open native branch history.", execute: args => { noArguments("tree", args); setSettingsSection("conversation"); setPanel("settings"); } },
-    model: { description: "Choose a model.", argumentHint: "<provider/model>", execute: args => {
-      if (!args) { openPicker("Model"); return; }
-      if (session?.snapshot?.commands.some(item => item.name === "model" && item.execution === "control"))
-        return command({ kind: "native", name: "model", args });
-      const matches = session?.snapshot?.models.filter(model => `${model.provider}/${model.id}` === args || model.id === args) ?? [];
-      if (matches.length !== 1) throw Error("Choose an exact provider/model from this worker's model picker.");
-      return command({ kind: "model", provider: matches[0].provider, id: matches[0].id });
-    } },
-    thinking: { description: "Choose a reasoning level.", argumentHint: "<level>", execute: args => {
-      if (!args) { openPicker("Reasoning level"); return; }
-      return command({ kind: "thinking", level: args.toLowerCase() });
-    } },
-    login: { description: "Sign Pi in to a provider (Settings → Accounts & connections).", argumentHint: "<provider>", execute: accountPanel },
-    logout: { description: "Sign Pi out of a provider (Settings → Accounts & connections).", execute: args => { noArguments("logout", args); accountPanel(""); } },
-    copy: { description: "Copy the latest assistant text.", execute: async args => {
-      noArguments("copy", args);
-      if (!session?.snapshot?.commands.some(item => item.name === "copy" && item.execution === "read")) throw Error("This worker has no native clipboard-text adapter.");
-      const value = await command<{ result: string }>({ kind: "native_read", name: "copy", args: "" });
-      if (!value.result) throw Error("There is no assistant text to copy.");
-      await navigator.clipboard.writeText(value.result);
-    } },
-    quit: { description: "Close this conversation, preserving its history.", execute: async args => {
-      noArguments("quit", args);
-      if (!session?.activation) throw Error("This conversation is not open.");
-      await api(`/sessions/${selected}/close`, { id: crypto.randomUUID(), activation: session.activation });
-    } },
-    hotkeys: { description: "Show Desk keyboard shortcuts.", execute: args => {
-      noArguments("hotkeys", args);
-      setCommandOutput({ title: "Keyboard shortcuts", text: `Enter — ${deliveryModes.find(mode => mode.value === deliveryMode)!.label} (choose with the arrow beside Send)\nCtrl+Enter — interrupt and send\nAlt+Enter / Ctrl+Q — queue a follow-up\nShift+Enter / Ctrl+J — new line\nTab — complete a slash command\nUp / Down — choose a completion\nEsc — dismiss completion or dialog` });
-    } },
-    help: { description: "Show commands for this conversation.", execute: args => {
-      noArguments("help", args);
-      const catalog = deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers);
-      setCommandOutput({ title: "Commands", text: catalog.map(item => `/${item.name}${item.argumentHint ? ` ${item.argumentHint}` : ""} — ${item.unavailable ?? item.description}`).join("\n") });
-    } },
-  };
+  const commandHandlers = deskCommandHandlers({ session, key: selected, command, delivery: deliveryMode,
+    openSettings: section => { setSettingsSection(section); setPanel("settings"); },
+    newConversation: folder => newConversation.open(undefined, folder), resume: setResumeOpen,
+    editTitle: () => titleControl.current?.edit(), accounts: accountPanel,
+    show: (title, text) => setCommandOutput({ title, text }) });
   const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {
     setDraft(text); localStorage.setItem(draftKey(selected), text);
   });
-  // Ctrl+T starts a new conversation. Chrome passes it to pages in app windows (--app); in a tab it keeps it for itself.
-  const newConversation = useRef<() => void>(() => undefined);
-  useEffect(() => {
-    const pressed = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "t") { event.preventDefault(); newConversation.current(); }
-    };
-    window.addEventListener("keydown", pressed);
-    return () => window.removeEventListener("keydown", pressed);
-  }, []);
+  const { send, sending } = useMessageSending({ selected, selectedRef, session, connected, epoch, attachments, draft, setDraft, deliveryMode,
+    controlBusy, extensionErrors, commandHandlers, command, confirmation, confirmationContext,
+    show: (title, text) => setCommandOutput({ title, text }), delivered: () => setLatestRequest(value => value + 1), report: setError });
   // Reply buttons on shown work and changes quote them into the composer.
   useEffect(() => {
     const quoted = (event: Event) => {
@@ -366,8 +213,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     return () => window.removeEventListener("pi-desk:quote", quoted);
   }, [selected]);
   const messages = state.messages[selected] ?? emptyMessages;
-  // Up and Down in the message box bring back your earlier messages, as in a terminal (message-history.ts).
-  const sent = useMemo(() => sentMessages(messages), [messages]);
+  // The message box's recall of earlier messages (composer.tsx), kept across conversations.
   const recall = useRef<Recall | undefined>(undefined);
   const loadedWork = useMemo(() => workItems(messages), [messages]);
   // The reply "What do I need to know?" covers: the latest one with something written in it.
@@ -381,22 +227,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [briefs, setBriefs] = useState<Record<string, BriefState>>({});
   // "Move to another computer" (teleport): the conversation being moved, while its window is open.
   const [moving, setMoving] = useState<MoveRequest>();
-  /** An off computer's conversations that another computer keeps copies of, to move elsewhere. */
-  const keptFor = (computer: { id?: string; connected?: boolean; loaded?: boolean; presence?: { online: boolean } }) => {
-    // Only once it is known to be off: a computer reconnecting for a moment still has its own list.
-    if (!computer.id || computer.loaded || computer.connected || !offline(computer)) return [];
-    const seen = new Set<string>();
-    return (state.host?.computers ?? []).flatMap(holder => holder.teleport?.copies ?? [])
-      .filter(copy => copy.computer === computer.id && !copy.moved && !seen.has(copy.session) && !!seen.add(copy.session))
-      .sort((a, b) => Number(!!b.open) - Number(!!a.open) || b.updated - a.updated);
-  };
-  // Sections folded away, kept per browser; and off computers whose closed conversations are listed too.
-  const [folded, setFolded] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-folded-computers") ?? "[]")); } catch { return new Set(); } });
-  const toggleFolded = (id: string) => setFolded(previous => {
-    const next = new Set(previous); if (!next.delete(id)) next.add(id);
-    localStorage.setItem("pi-desk-folded-computers", JSON.stringify([...next])); return next;
-  });
-  const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
   const briefState = latestReply && briefs[selected]?.reply === latestReply ? briefs[selected] : undefined;
   const briefItem: WorkItem | undefined = briefState?.brief ? { id: `brief:${briefState.reply}`, at: briefState.brief.created, message: briefState.reply,
     block: { type: "brief", brief: briefState.brief, working: briefState.working, rewrite: () => writeBrief(true) } } : undefined;
@@ -440,6 +270,18 @@ export function App({ account }: { account?: BrowserAccount }) {
     }
   }, [selected, newestWork]);
   const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length > 0 && (!panel || settings);
+  useEffect(() => {
+    if (panel === "view" && focusedView === "subagents") setPanel("agents");
+    if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
+    const activation = `${selected}:${session?.activation}`;
+    if (activeAgents && autoAgents.current !== activation) {
+      autoAgents.current = activation;
+      // Working agents open beside the conversation wherever the panel fits beside it (not as a dialog) and that
+      // side is free: no other panel, and no changes shown there.
+      if (!panel && !showWorkPane && !document.activeElement?.matches("input,textarea,[contenteditable=true]")
+        && matchMedia("(min-width:1181px)").matches) setPanel("agents");
+    }
+  }, [panel, focusedView, activeAgents, selected, session?.activation, ui, showWorkPane]);
   const openWork = (item: WorkItem) => {
     if (wideWorkspace && !dotSelected && !questsSelected) {
       // A brief is listed from its own state, which a copy here would leave behind.
@@ -465,45 +307,6 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [panel, focusedView, selected]);
   const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
-  /** One conversation or settings view as a card in the view panel. */
-  const viewCard = (view: ViewSnapshot) => (
-                <section className="panel-card" key={view.id} data-view={view.id}>
-                  {view.kind === "configuration" ? <Configuration key={`${selected}:${ui?.generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
-                    invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
-                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} disabled={!connected || closing}
-                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
-                  <div className="panel-section-heading">
-                  <WorkspaceActions view={view} disabled={!!view.working || !connected}
-                    invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
-                  </div>
-                  {view.working && <p className="muted" role="status">{view.working}…</p>}
-                  {view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
-                  {view.kind === "details" ? <>
-                    <DetailsView data={view.id === "subagents" ? { ...view.data as UiDetails, items: [] } : view.data as UiDetails}
-                      disabled={!!view.working || !connected} invoke={(action, value) => run({
-                        kind: "action", view: view.id, revision: view.revision, action: action.id, value,
-                      })} />
-                    {view.id === "subagents" && <button onClick={() => openAgentPane(undefined, true)}>Browse agents and history →</button>}
-                    {(view.data as UiDetails).transcript && <TranscriptView key={(view.data as UiDetails).transcript}
-                      source={(view.data as UiDetails).transcript!} session={selected} generation={ui!.generation}
-                      connected={connected} epoch={epoch}
-                      messages={state.messages[transcriptKey(selected, (view.data as UiDetails).transcript!)] ?? emptyMessages}
-                      onLatest={storeHistory} renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={(view.data as UiDetails).transcript} />} />}
-                  </> : view.kind === "ledger" ? <div>
-                    <p className="muted">Automatic card {(view.data as { autoEnabled: boolean }).autoEnabled ? "enabled" : "disabled"} for new conversations.</p>
-                    {(view.data as { ledger?: Ledger }).ledger
-                      ? <LedgerCard ledger={(view.data as { ledger: Ledger }).ledger} expanded />
-                      : <p>No saved breakdown. Recompute one, or start a conversation.</p>}
-                  </div> : (
-                    <pre>
-                      {typeof view.data === "string"
-                        ? view.data
-                        : JSON.stringify(view.data, null, 2)}
-                    </pre>
-                  )}
-                  </>}
-                </section>
-  );
   const contextFrom = session?.snapshot?.contextFrom, compactControl = controls.find(control => control.kind === "compact" && control.state === "running");
   // Workers before 0.5.42 report only manual compaction, as a running control.
   const compacting = session?.snapshot?.compacting ?? (compactControl ? { reason: "manual" as const, started: compactControl.started } : undefined);
@@ -565,38 +368,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     setState(previous => ({ ...previous, focused: [selected] }));
     localStorage.setItem("pi-desk:selected", selected);
   }, [selected]);
-  useEffect(() => {
-    if (!connected || !session?.activation || !attachments.ready || sendingRef.current) return;
-    const receipt = JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null") as SubmissionReceipt | null;
-    if (!receipt) return;
-    let cancelled = false;
-    const text = localStorage.getItem(draftKey(selected)) ?? "";
-    const files = attachments.files;
-    void (async () => {
-      const status = await readSubmission(receipt, readInput);
-      if (!admittedInput(status)) return;
-      const prompt = uploadedPrompt(text, files, selected);
-      const fingerprint = prompt ? await submissionFingerprint(prompt) : undefined;
-      if (cancelled || sendingRef.current) return;
-      if (fingerprint === receipt.fingerprint) await finishSubmission(receipt, text, files.map(file => file.id));
-      else clearSubmission(localStorage, selected, receipt.id);
-    })().catch(error => { if (!cancelled) setError(errorText(error)); });
-    return () => { cancelled = true; };
-  }, [selected, connected, epoch, session?.activation, attachments.ready]);
 
-  async function readInput(id: string): Promise<InputStatus> {
-    return (await api<{ status: InputStatus }>(`/sessions/${selected}/inputs/${id}`)).status;
-  }
-  async function finishSubmission(receipt: SubmissionReceipt, text: string, fileIds: string[], shown = text) {
-    if (JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null")?.id !== receipt.id) return;
-    try { if (fileIds.length) await attachments.clear(fileIds); }
-    catch { throw new Error("Message queued on the computer, but its attachment draft could not be cleared. The receipt is retained to prevent a duplicate."); }
-    if (!clearSubmission(localStorage, selected, receipt.id)) return;
-    if (localStorage.getItem(draftKey(selected)) === shown) { localStorage.removeItem(draftKey(selected)); localStorage.removeItem(dictatedKey(selected)); }
-    if (selectedRef.current === selected) {
-      setDraft(current => current === shown ? "" : current); setLatestRequest(value => value + 1);
-    }
-  }
   async function command<T = unknown>(command: WorkerCommand, id: string = crypto.randomUUID()) {
     if (!session?.ui) throw new Error("Session is still starting.");
     return api<T>(`/sessions/${selected}/command`, {
@@ -640,134 +412,11 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (text !== undefined && selectedRef.current === selected) { setDraft(text); localStorage.setItem(draftKey(selected), text); composerInput.current?.focus({ preventScroll: true }); }
     } catch (error) { setError(errorText(error)); }
   }
-  async function newSession(event: FormEvent) {
-    event.preventDefault();
-    if (creating) return;
-    const request = ++createRequest.current;
-    setCreating(true); setCreateError("");
-    try {
-      rememberModel(newComputer, newModel);
-      const result = await api<{ key: string }>("/sessions", { cwd, ...(newModel.model ? { model: newModel.model } : {}),
-        ...(newModel.reasoning ? { reasoning: newModel.reasoning } : {}) }, newComputer);
-      if (request !== createRequest.current) return;
-      setSelected(result.key);
-      setCreate(false);
-      setSidebar(false);
-      setPanel(undefined);
-    } catch (error) {
-      if (request === createRequest.current) setCreateError(errorText(error));
-    } finally { if (request === createRequest.current) setCreating(false); }
-  }
   async function restartSession() {
     if (!session || !connected) return;
     try {
       await api(`/sessions/${session.key}/restart`, { takeover: true });
     } catch (error) { setError(errorText(error)); }
-  }
-  function openNewConversation(computerId?: string) {
-    const computer = computerId ? state.host?.computers?.find(computer => computer.id === computerId)
-      : currentComputer?.connected ? currentComputer : state.host?.computers?.find(computer => computer.connected);
-    createRequest.current++; setCreateError(""); setCreating(false);
-    setNewComputer(computer?.id);
-    setNewModel(rememberedModel(computer?.id));
-    setCwd(session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? state.host?.cwd ?? "");
-    setCreate(true);
-  }
-  newConversation.current = () => openNewConversation();
-  function closeNewConversation() { createRequest.current++; setCreate(false); setCreating(false); }
-  /** Sends the draft; `dictated` text is sent with it without passing through the composer. */
-  async function send(delivery: Delivery = deliveryMode, dictated?: string) {
-    const shown = draft, text = dictated === undefined ? draft : withDictation(draft, dictated);
-    // The agent is told the message was dictated, so it reads past misheard words.
-    const modelText = text.trim() && (dictated !== undefined || localStorage.getItem(dictatedKey(selected)) === "1") ? withDictationNote(text) : text;
-    // Dictated words that can't be sent now stay in the draft rather than being lost.
-    const keep = () => {
-      if (dictated === undefined || selectedRef.current !== selected) return;
-      setDraft(current => current === shown ? text : current); localStorage.setItem(draftKey(selected), text); localStorage.setItem(dictatedKey(selected), "1");
-    };
-    if (!text.trim() && !attachments.files.length) return;
-    if (!attachments.ready || sendingRef.current || controlBusy || !connected
-      || extensionErrors.length || !session?.activation || !["starting", "ready"].includes(session.state)) { keep(); return; }
-    if (delivery === "now" && !session.workerRuntime?.sendNow) {
-      keep(); setError("This worker does not support Send now. Restart this conversation when idle to enable it."); return;
-    }
-    const fileIds = attachments.files.map(file => file.id);
-    sendingRef.current = true; setSending(true);
-    try {
-      const local = deskCommand(text, session.snapshot?.commands ?? [], commandHandlers);
-      if (local) {
-        if (fileIds.length) throw Error("Commands cannot include file attachments.");
-        if (Object.hasOwn(commandHandlers, local.name)) await commandHandlers[local.name].execute(local.args);
-        else {
-          const info = session.snapshot?.commands.find(item => item.name === local.name);
-          if (info?.execution === "read") {
-            const value = await command<{ result: unknown }>({ kind: "native_read", name: local.name, args: local.args });
-            if (selectedRef.current === selected) setCommandOutput({ title: `/${local.name}`, text: typeof value.result === "string" ? value.result : JSON.stringify(value.result, null, 2) ?? "" });
-          } else if (info?.execution === "control") await command({ kind: "native", name: local.name, args: local.args });
-          else throw Error(`/${local.name} has no Desk adapter.`);
-        }
-        if (localStorage.getItem(draftKey(selected)) === text) localStorage.removeItem(draftKey(selected));
-        if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
-        return;
-      }
-      const receiptKey = submissionKey(selected);
-      let previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as SubmissionReceipt | null;
-      const status = previous ? await readSubmission(previous, readInput) : undefined;
-      if (previous && admittedInput(status)) {
-        // Check cached upload IDs before touching files that may already have been consumed.
-        const cached = uploadedPrompt(modelText, attachments.files, session.key);
-        if (cached && submissionDecision(previous, session.activation, await submissionFingerprint(cached), status) === "confirmed") {
-          await finishSubmission(previous, text, fileIds, shown); return;
-        }
-        clearSubmission(localStorage, selected, previous.id);
-        previous = null;
-      }
-      const uploaded = await attachments.upload(session.key, value => api(`/sessions/${selected}/uploads`, {
-        activation: session.activation, command: value,
-      }));
-      const prompt: PromptCommand = {
-        kind: "prompt", text: modelText, ...(uploaded.length ? { attachments: uploaded } : {}),
-      };
-      const fingerprint = await submissionFingerprint(prompt);
-      const decision = submissionDecision(previous, session.activation, fingerprint, status);
-      const reusable = decision === "reuse";
-      if (decision === "confirm"
-        && !await confirmation.request({
-          title: "Send this message again?", context: confirmationContext, accept: "Send again", cancel: "Keep draft",
-          body: <>
-            <p>The earlier delivery was not confirmed. Check its history first.
-              Sending now could duplicate a message that already arrived.</p>
-            {text && <pre className="confirmation-preview">{text.slice(0, 2000)}{text.length > 2000 ? "…" : ""}</pre>}
-            {!!fileIds.length && <p>{fileIds.length} attachment{fileIds.length === 1 ? "" : "s"}</p>}
-          </>,
-        })) return;
-      const receipt = reusable ? previous! : createSubmission({
-        activation: session.activation, state: session.state, generation: session.ui?.generation,
-      }, fingerprint, delivery);
-      localStorage.setItem(receiptKey, JSON.stringify(receipt));
-      try {
-        const input = await submitWithReceipt(receipt, async () => (await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
-          id: receipt.id, activation: receipt.activation, generation: receipt.generation,
-          command: { ...prompt, behavior: receipt.behavior },
-        })).input, readInput);
-        if (!admittedInput(input)) {
-          localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
-          throw new Error(input.error ?? "This message was cancelled. It was not sent again.");
-        }
-      }
-      catch (error) {
-        if (JSON.parse(localStorage.getItem(receiptKey) ?? "null")?.id === receipt.id) {
-          if (error instanceof ApiError && error.status === 409) localStorage.setItem(receiptKey, JSON.stringify({ ...receipt, requiresConfirmation: true }));
-        }
-        throw error;
-      }
-      await finishSubmission(receipt, text, fileIds, shown);
-    } catch (error) {
-      keep();
-      setError(`${errorText(error)} Your draft has been kept.`);
-    } finally {
-      sendingRef.current = false; setSending(false);
-    }
   }
 
   if (upgrade) return <main className="pair-page">
@@ -794,164 +443,24 @@ export function App({ account }: { account?: BrowserAccount }) {
     );
 
   const host = state.host;
-  const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
-    connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
   const questLogs: QuestLog[] = host.computers
     ? host.computers.flatMap(computer => computer.quests ? [{ computer: computer.id, name: computer.name, view: computer.quests, connected: computer.connected }] : [])
     : host.quests ? [{ name: host.name, view: host.quests, connected }] : [];
-  const openQuests = questLogs.reduce((count, log) => count + log.view.quests.filter(quest => quest.state === "open").length, 0);
   const agentSession = (id: string) => host.sessions.find(item => (item.snapshot?.id ?? item.agentId) === id);
-  const questTracker = <QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? title(found) : undefined; }}
+  const questTracker = <QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? conversationTitle(found) : undefined; }}
     openAgent={id => { const found = agentSession(id); if (found) { setSelected(found.key); setPanel(undefined); setSidebar(false); } }}
     ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} />;
-  const selectedModel = session?.snapshot?.model;
-  const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
-    && selectedModel.id === session.snapshot.defaultModel.id;
-  const modelPreferences = session?.snapshot && <>
-    <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
-      aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
-      title={isDefaultModel ? "Default for new conversations on this computer" : "Set as default for new conversations on this computer"}
-      disabled={isDefaultModel || settingBusy || !connected || session.state !== "ready" || !selectedModel}
-      onClick={() => selectedModel && run({ kind: "model", provider: selectedModel.provider, id: selectedModel.id, makeDefault: true })}>
-      <Icon name="star" />
-    </button>
-    <select
-      aria-label="Reasoning level"
-      title="Change reasoning; active work stops and continues with the new setting"
-      value={session.snapshot?.thinking ?? ""}
-      disabled={settingBusy || !connected || session.state !== "ready"}
-      onChange={(event) =>
-        run({ kind: "thinking", level: event.target.value })
-      }
-    >
-      {session.snapshot?.thinkingLevels.map((level) => (
-        <option key={level} value={level}>
-          {level.charAt(0).toUpperCase() + level.slice(1)}
-        </option>
-      ))}
-    </select>
-  </>;
   return (
     <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
       open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
-      state: briefState?.working ? "writing" : briefState?.brief ? "ready" : undefined,
+      state: briefState?.working ? "writing" : briefState?.brief || latestReply && session?.snapshot?.brief === latestReply ? "ready" : undefined,
       review: turnChangedFiles && session?.activation && connected && !closing ? () => void requestReview() : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
-      <Navigation open={sidebar} close={() => setSidebar(false)}>
-        <div className="brand">
-          <span className="brand-mark small">π</span>
-          <strong>Pi Desk</strong>
-        </div>
-        <div className="sidebar-actions">
-          <button className="new-chat" aria-label="New conversation" title="New conversation (Ctrl+T)" onClick={() => openNewConversation()}>
-            <Icon name="plus" /> New chat
-          </button>
-          <button className="resume-chat" title="Resume conversation" aria-label="Resume conversation" onClick={() => { setResumeOpen(true); setSidebar(false); }}>
-            <Icon name="clock" /> Resume
-          </button>
-        </div>
-        <div className="sidebar-scroll">
-        <div className="nav-label">Dots</div>
-        <nav className="dot-list" aria-label="Dots">
-          <DotNavigation dot={dot} selected={dotSelected} open={() => { setSelected("dot"); setSidebar(false); setPanel(undefined); }} />
-          {questLogs.length > 0 && <button className={`session-item quest-navigation${questsSelected ? " selected" : ""}`} aria-current={questsSelected ? "page" : undefined}
-            onClick={() => { setSelected("quests"); setSidebar(false); setPanel(undefined); }}>
-            <span className="quest-navigation-icon" aria-hidden="true">!</span>
-            <span><strong>Quests</strong><small>{openQuests ? `${openQuests} open` : "All clear"}</small></span></button>}
-        </nav>
-        <div className="nav-label">
-          Computers <span>{computers.length}</span>
-        </div>
-        <nav className="session-list" aria-label="Computers">
-          {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
-          <div className="computer-heading">
-            <button type="button" className="computer-name" aria-expanded={!folded.has(computer.id ?? "local")}
-              title={folded.has(computer.id ?? "local") ? `Show ${computer.name}'s conversations` : `Hide ${computer.name}'s conversations`}
-              onClick={() => toggleFolded(computer.id ?? "local")}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong>
-              {folded.has(computer.id ?? "local") && host.sessions.some(item => item.computer === computer.id) &&
-                <span className="computer-count">{host.sessions.filter(item => item.computer === computer.id).length}</span>}
-              <Icon name="chevron" /></button>
-            <small title={"latency" in computer && computer.latency !== undefined ? `Connected; round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}>
-              <span className={`status-dot ${connectionTone(computer)}`} role="img" aria-label={connectionLabel(computer)} />
-              {/* The green dot says connected; words only when something is wrong, so the name has the room. */}
-              {computer.connection !== "connected" && connectionLabel(computer)}</small>
-            <button className="icon-button computer-create" aria-label={`New agent on ${computer.name}`} title={`New agent on ${computer.name}`}
-              disabled={!computer.connected} onClick={() => openNewConversation(computer.id)}><Icon name="plus" /></button>
-          </div>
-          {!folded.has(computer.id ?? "local") && <>
-          {computer.storageError && <details className="computer-storage-error"><summary><Icon name="warning" />Session save delayed</summary>
-            <p>{computer.storageError}</p><button disabled={!computer.connected} onClick={() => void api("/storage/retry", {}, computer.id).catch(error => console.error("Catalog retry failed:", error))}>Retry saving</button>
-          </details>}
-          {(computer.updates?.available || computer.updates?.pending || computer.updates?.phase === "preparing") &&
-            <button className="sidebar-update" onClick={() => { setSettingsSection("computers"); setPanel("settings"); setSidebar(false); }}>
-              {computer.updates.phase === "applying" ? "Applying update…" : computer.updates.phase === "preparing" ? "Preparing update…"
-                : computer.updates.pending ? "Update ready" : "Update available"} →
-            </button>}
-          {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
-            <button onClick={() => location.reload()}>Reload app</button></div>}
-          {host.sessions.filter(item => item.computer === computer.id)
-            .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map(item => {
-            const renamable = computer.connected && item.state === "ready" && !!item.ui;
-            if (renaming === item.key && renamable) return <div className="session-row" key={item.key}>
-              <SidebarRename title={title(item)} close={() => setRenaming("")}
-                rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
-            </div>;
-            return <div className="session-row" key={item.key}>
-              <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => {
-                setSelected(item.key); setSidebar(false); setPanel(undefined);
-              }} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
-                <span className={`status-dot ${sessionActivity(item)}`} role="img"
-                  aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
-                <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{title(item)}</strong></span>
-                  <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{basename(item.cwd)}</span>
-                    <span className="session-marks"><VersionTag session={item} computer={computer} />
-                    {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
-                      <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
-                      <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</span></small></span>
-              </button>
-              {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${title(item)}`} title="Rename (or double-click the name)"
-                onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}
-              <CloseConversationButton icon session={item} name={title(item)} computer={computer.name} connected={computer.connected}
-                 disabled={selected === item.key && sending} report={text => setError(text, item.key)}
-                confirmed={() => { if (selectedRef.current === item.key) setPanel(undefined); }} />
-            </div>;
-          })}
-          {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
-            (keptFor(computer).length > 0 ? <>{keptFor(computer).filter(copy => copy.open || closedShown.has(computer.id!)).map(copy => <div className="session-row kept-copy" key={copy.session}>
-              <span className="kept-copy-name" title={`${copy.cwd} · last active ${new Date(copy.updated).toLocaleString()}`}>
-                <strong>{copy.title || basename(copy.cwd)}</strong><small>{basename(copy.cwd)} · {new Date(copy.updated).toLocaleDateString([], { day: "numeric", month: "short" })}</small></span>
-              <button type="button" className="quiet-action" onClick={() => setMoving({ source: computer as Computer, session: copy.session, title: copy.title || basename(copy.cwd), cwd: copy.cwd })}>Move…</button>
-            </div>)}
-            {/* Only what was open there is listed; the rest of what is kept, on asking. */}
-            {keptFor(computer).some(copy => !copy.open) && <button type="button" className="quiet-action kept-more"
-              onClick={() => setClosedShown(previous => { const next = new Set(previous); if (!next.delete(computer.id!)) next.add(computer.id!); return next; })}>
-              {closedShown.has(computer.id!) ? "Hide closed conversations" : `Closed conversations (${keptFor(computer).filter(copy => !copy.open).length})…`}</button>}</> :
-            <p className="sidebar-hint">{"loaded" in computer && computer.loaded === false && computer.presence?.online !== false
-              ? <span className="sidebar-loading"><span className="loading-spinner" aria-hidden="true" />Loading conversations…</span>
-              : computer.connected ? "No open sessions." : "Connect to see open sessions."}</p>)}
-          </>}
-          </section>)}
-        </nav>
-        </div>
-        <div className="sidebar-bottom">
-          <button
-            onClick={() => {
-              setSettingsSection("general");
-              setPanel("settings");
-              setSidebar(false);
-            }}
-          >
-            <Icon name="settings" /><span>Settings</span>
-          </button>
-          <div className="host-label" title="Connections from this browser">
-            <span
-              className={`status-dot ${connectionTone({ connection: transportConnected ? "connected" : host.computers?.[0]?.connection ?? "connecting" })}`}
-            />
-            <span>{state.host.name}</span>
-            <small>{host.computers ? `${host.computers.filter(computer => computer.connected).length}/${host.computers.length} connected` : connected ? "Connected" : "Reconnecting"}</small>
-          </div>
-        </div>
-      </Navigation>
+      <Sidebar open={sidebar} close={() => setSidebar(false)} host={host} connected={connected} transportConnected={transportConnected}
+        selected={selected} sending={sending} dot={dot} questLogs={questLogs} select={key => { setSelected(key); setSidebar(false); setPanel(undefined); }}
+        newConversation={newConversation.open} resume={() => { setResumeOpen(true); setSidebar(false); }}
+        openSettings={section => { setSettingsSection(section); setPanel("settings"); setSidebar(false); }}
+        move={setMoving} report={setError} closed={key => { if (selectedRef.current === key) setPanel(undefined); }} />
       <main className={`main${dotSelected ? " main-dot" : questsSelected ? " main-quests" : ""}`} data-primary-focus tabIndex={-1}>
         {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)}
           openQuests={questLogs.length && !wideWorkspace ? () => { setSelected("quests"); setPanel(undefined); } : undefined} />
@@ -971,13 +480,13 @@ export function App({ account }: { account?: BrowserAccount }) {
             ☰
           </button>
           {(() => {
-            const name = session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={title(session)}
+            const name = session ? <ConversationTitle key={`${session.key}:${session.activation}`} title={conversationTitle(session)}
               disabled={!connected || session.state !== "ready" || closing}
               control={titleControl} rename={name => command({ kind: "name", name })} /> : <strong>{waiting ? "" : "Welcome"}</strong>;
             return headerPlan ? <PlanHeader view={headerPlan} title={name} disabled={!connected || closing}
               invoke={action => run({ kind: "action", view: headerPlan.id, revision: headerPlan.revision, action: action.id })} />
               : <div className="conversation-heading">
-                {phone && <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${basename(session.cwd)}` : "Your workspace"}</span>}
+                {phone && <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${folderName(session.cwd)}` : "Your workspace"}</span>}
                 {name}
               </div>;
           })()}
@@ -1001,7 +510,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 if (session && !["conversation", "context", "tools", "activity"].includes(settingsSection)) setSettingsSection("conversation");
                 setPanel("settings");
               }}><Icon name="settings" /></button>
-            {phone && session?.activation && <CloseConversationButton icon session={session} name={title(session)}
+            {phone && session?.activation && <CloseConversationButton icon session={session} name={conversationTitle(session)}
               computer={currentComputer?.name ?? host.name} connected={connected} disabled={sending} report={setError}
               confirmed={() => setPanel(undefined)} />}
           </div>
@@ -1049,7 +558,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <div className="welcome-mark">π</div>
                 <div className="eyebrow">
                   {session
-                    ? basename(session.cwd)
+                    ? folderName(session.cwd)
                     : "A LITTLE SPACE TO THINK BIG"}
                 </div>
                 <h1>
@@ -1064,7 +573,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     : "Start a conversation in any project. Pick it up on any device."}
                 </p>
                 {!session && (
-                  <button className="primary" onClick={() => openNewConversation()}>
+                  <button className="primary" onClick={() => newConversation.open()}>
                     Start a conversation <span>↗</span>
                   </button>
                 )}
@@ -1083,8 +592,8 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
             )}</>}
         />
-        {question && inlineQuestion && <Question inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`} context=""
-          question={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
+        {question && inlineQuestion && <InteractionForm inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`}
+          interaction={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
           close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
         {session && canCompose && (
           <div className="composer-dock">
@@ -1106,127 +615,13 @@ export function App({ account }: { account?: BrowserAccount }) {
                 ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined}
               cancel={connected && session.state === "ready" && session.workerRuntime?.queueCancel
                 ? (queue, index, text) => void cancelWaiting(queue, index, text) : undefined} />}
-            <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
-              onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
-              onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false); }}
-              onDrop={event => {
-                event.preventDefault(); setDraggingFiles(false);
-                if (!sending && attachments.ready) attachments.add(event.dataTransfer.files);
-              }}>
-              <ComposerResize input={composerInput} />
-              <AttachmentList files={attachments.files} disabled={sending} remove={attachments.remove} />
-              <input ref={fileInput} type="file" multiple hidden aria-label="Choose attachments" disabled={sending || !attachments.ready}
-                onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
-              {completion.menu}
-              <textarea
-                ref={composerInput} aria-label="Message Pi"
-                aria-autocomplete="list"
-                aria-controls={completion.active ? "command-completion" : undefined}
-                aria-activedescendant={completion.selected}
-                disabled={sending}
-                placeholder={
-                  busy
-                    ? "Steer Pi, or queue a follow-up…"
-                    : "Ask Pi anything about your project…"
-                }
-                value={draft}
-                rows={3}
-                onPaste={event => {
-                  if (event.clipboardData.files.length) { event.preventDefault(); attachments.add(event.clipboardData.files); }
-                }}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  localStorage.setItem(draftKey(selected), event.target.value);
-                  if (!event.target.value.trim()) localStorage.removeItem(dictatedKey(selected));
-                }}
-                onKeyDown={(event) => {
-                  if (completion.keyDown(event)) return;
-                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    const editor = event.currentTarget;
-                    // A new recall asks the conversation for your messages: after a long turn, none may be loaded here.
-                    if (event.key === "ArrowUp" && draft === "" && !(recall.current && recall.current.shown === draft)) {
-                      event.preventDefault();
-                      const conversation = selected;
-                      void (async () => {
-                        let list: readonly string[] = sent;
-                        try {
-                          const reply = await command<{ result?: string[] | null }>({ kind: "sent_messages" });
-                          if (Array.isArray(reply?.result) && reply.result.length) list = reply.result;
-                        } catch { /* A conversation on an older Desk: the messages loaded here. */ }
-                        const step = recallStep("ArrowUp", "", { start: 0, end: 0 }, list);
-                        if (!step || "done" in step || selectedRef.current !== conversation || composerInput.current?.value !== "") return;
-                        recall.current = step; setDraft(step.shown); localStorage.setItem(draftKey(conversation), step.shown);
-                        requestAnimationFrame(() => editor.setSelectionRange(step.shown.length, step.shown.length));
-                      })();
-                      return;
-                    }
-                    const step = recallStep(event.key, draft, { start: editor.selectionStart, end: editor.selectionEnd }, sent, recall.current);
-                    if (step) {
-                      event.preventDefault();
-                      const text = "done" in step ? step.done : step.shown;
-                      recall.current = "done" in step ? undefined : step;
-                      setDraft(text); localStorage.setItem(draftKey(selected), text);
-                      requestAnimationFrame(() => editor.setSelectionRange(text.length, text.length));
-                      return;
-                    }
-                  }
-                  const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey,
-                    metaKey: event.metaKey, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing },
-                    matchMedia("(pointer:fine)").matches, deliveryMode);
-                  if (!action) return;
-                  event.preventDefault();
-                  if (action === "newline") {
-                    const editor = event.currentTarget, start = editor.selectionStart;
-                    const text = `${draft.slice(0, start)}\n${draft.slice(editor.selectionEnd)}`;
-                    setDraft(text); localStorage.setItem(draftKey(selected), text);
-                    requestAnimationFrame(() => editor.setSelectionRange(start + 1, start + 1));
-                  } else {
-                    void send(action);
-                  }
-                }}
-              />
-              <div className="composer-controls">
-                <div className="model-controls">
-                  {session.snapshot && <>
-                  <ModelPicker snapshot={session.snapshot} disabled={settingBusy || !connected || session.state !== "ready"}
-                    select={(model, context) => run({ kind: "model", provider: model.provider, id: model.id, ...(context ? { context } : {}) })}
-                    accounts={accountPanel} history={() => { setSettingsSection("conversation"); setPanel("settings"); }} />
-                  <div className="composer-preferences">{modelPreferences}</div>
-                  </>}
-                </div>
-                <ComposerStatus key={session.key} session={session} computer={currentComputer?.name ?? state.host.name} connected={connected} disabled={closing}
-                  preferences={modelPreferences} shortcutHint={`Enter: ${deliveryModes.find(mode => mode.value === deliveryMode)!.label} · Shift+Enter: new line · Ctrl+Enter: send now · Alt+Enter: queue`}
-                  open={view => { setPanel("view"); setFocusedView(view.id); }}
-                  invoke={(view, action, value) => commandPromise({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
-                <div className="send-controls">
-                  <DictationButton disabled={!connected} report={setError} submit={text => void send(deliveryMode, text)} computer={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)} append={text => setDraft(current => {
-                    const next = withDictation(current, text); localStorage.setItem(draftKey(selected), next); localStorage.setItem(dictatedKey(selected), "1"); return next;
-                  })} />
-                  <button type="button" className="icon-button" aria-label="Attach files" title="Attach files (up to 8 MiB each)"
-                    disabled={sending || !attachments.ready} onClick={() => fileInput.current?.click()}>＋</button>
-                  {busy && controls.every(control => control.state !== "running" || ["compact", "navigate"].includes(control.kind)) && (
-                    <button
-                      className="stop-button"
-                      type="button"
-                      aria-label="Stop Pi"
-                      disabled={!connected}
-                      onClick={() => run({ kind: "abort" })}
-                    >
-                      ■
-                    </button>
-                  )}
-                  <DeliveryControl value={deliveryMode} scope={selected} busy={busy && !controlBusy}
-                    canSendNow={!!session.workerRuntime?.sendNow} send={value => void send(value)}
-                    choose={value => { setDeliveryMode(value); localStorage.setItem(deliveryPreferenceKey, value); composerInput.current?.focus({ preventScroll: true }); }}
-                    disabled={(!draft.trim() && !attachments.files.length) || !attachments.ready || !!extensionErrors.length
-                      || sending || controlBusy || !connected || !session.activation || !["starting", "ready"].includes(session.state)} />
-                </div>
-              </div>
-              {attachments.progress && <p className="upload-progress" role="status">Uploading {attachments.progress}</p>}
-              {!!attachments.files.length && session.snapshot?.model && !session.snapshot.model.images && (
-                <p className="upload-progress">This model receives attachments as file paths. Image input is not supported by this model.</p>
-              )}
-            </form>
+            <Composer session={session} selected={selected} selectedRef={selectedRef} composerInput={composerInput} recall={recall} messages={messages}
+              draft={draft} setDraft={setDraft} attachments={attachments} completion={completion} deliveryMode={deliveryMode} setDeliveryMode={setDeliveryMode}
+              send={send} command={command} run={run} commandPromise={commandPromise} busy={busy} controlBusy={controlBusy} settingBusy={settingBusy}
+              connected={connected} closing={closing} sending={sending} controls={controls} extensionErrors={extensionErrors}
+              computer={currentComputer?.name ?? state.host.name} dictation={dictationComputer(state.host?.computers, session?.computer, state.host?.dictation)}
+              accounts={accountPanel} history={() => { setSettingsSection("conversation"); setPanel("settings"); }}
+              openView={view => { setPanel("view"); setFocusedView(view.id); }} report={setError} />
 
           </div>
         )}
@@ -1251,7 +646,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             </button>
           </div>
           <SettingsLayout enabled={settings} active={panel === "view" ? focusedView : settingsPage(settingsSection)}
-            groups={settingsGroups({ session: session ? title(session) : undefined, computer: currentComputer?.name ?? host.name,
+            groups={settingsGroups({ session: session ? conversationTitle(session) : undefined, computer: currentComputer?.name ?? host.name,
               views: settingsViews.map(view => ({ id: view.id, title: view.title })) })}
             choose={id => {
               if (settingsViews.some(view => view.id === id && !MERGED_VIEWS.has(view.id))) { setFocusedView(id); setPanel("view"); }
@@ -1260,14 +655,15 @@ export function App({ account }: { account?: BrowserAccount }) {
 
           {panel === "agents" && session && <AgentPane key={`${selected}:agents`} session={session} views={agentViews}
             history={agentHistory} historyInitiallyOpen={agentHistoryOpen}
-            context={`${currentComputer?.name ?? host.name} · ${title(session)}`}
+            context={`${currentComputer?.name ?? host.name} · ${conversationTitle(session)}`}
             focused={focusedAgent} choose={chooseAgent} connected={connected && !closing} epoch={epoch} messages={state.messages}
             onLatest={storeHistory} renderMessage={(message, source, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected} source={source} />}
             answer={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
             openView={id => { setFocusedView(id); setPanel("view"); }} />}
           {panel === "view" &&
             (visibleViews.length ? (
-              visibleViews.map(view => viewCard(view))
+              visibleViews.map(view => <ViewCard key={view.id} view={view} session={selected} generation={ui!.generation} connected={connected}
+                closing={closing} epoch={epoch} messages={state.messages} onLatest={storeHistory} run={run} openAgents={() => openAgentPane(undefined, true)} />)
             ) : (
               <p className="muted">This view is unavailable. Reopen it from this session's controls.</p>
             ))}
@@ -1275,7 +671,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy} providerHint={providerHint}
             invoke={command}
             move={session && currentComputer?.teleport && (session.agentId ?? session.snapshot?.id)
-              ? () => setMoving({ source: currentComputer, session: (session.agentId ?? session.snapshot?.id)!, title: title(session), cwd: session.cwd }) : undefined}
+              ? () => setMoving({ source: currentComputer, session: (session.agentId ?? session.snapshot?.id)!, title: conversationTitle(session), cwd: session.cwd }) : undefined}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}
           </SettingsLayout>
         </Inspector>
@@ -1285,55 +681,24 @@ export function App({ account }: { account?: BrowserAccount }) {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
         }} switchTo={resumeOpen === "switch" ? async file => { await command({ kind: "switch", file }); setResumeOpen(false); } : undefined} />}
       {/* A settings control's follow-up form (an extension's menu or prompt). Pi waits for it, so closing the dialog cancels it. */}
-      {settingsForm && <Modal key={`${selected}/${settingsForm.id}`} title={settingsForm.form.title || "Settings"} className="settings-form-modal"
-        close={() => { void command({ kind: "answer", id: settingsForm.id, answer: null }).catch(() => undefined); }}>
-        <SettingsForm interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`} drafts={questionDrafts.current} disabled={!connected || closing}
-          answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />
-      </Modal>}
+      {settingsForm && <InteractionForm key={`${selected}/${settingsForm.id}`} interaction={settingsForm} draftKey={`${selected}/${settingsForm.id}`}
+        drafts={questionDrafts.current} disabled={!connected || closing}
+        close={() => { void command({ kind: "answer", id: settingsForm.id, answer: null }).catch(() => undefined); }}
+        answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />}
       {moving && <MoveConversation request={moving} computers={state.host?.computers ?? []} close={() => setMoving(undefined)}
         moved={(computer, key) => { setSelected(sessionKey(computer, key)); setPanel(undefined); setSidebar(false); }} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}
-      {create && (
-        <Modal title="New conversation" close={closeNewConversation}>
-          <form onSubmit={(event) => void newSession(event)}>
-            {state.host.computers && <label>Computer
-              <select aria-label="Computer for new conversation" disabled={creating} value={newComputer ?? ""} onChange={event => {
-                setNewComputer(event.target.value);
-                setNewModel(rememberedModel(event.target.value));
-                setCwd(state.host!.computers!.find(computer => computer.id === event.target.value)?.cwd ?? "");
-              }}>
-                {!newComputer && <option value="">Choose a connected computer</option>}
-                {state.host.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>
-                  {computer.name}{computer.connected ? "" : ` · ${connectionLabel(computer)}`}
-                </option>)}
-              </select>
-            </label>}
-            <FolderField key={newComputer ?? "local"} value={cwd} onChange={setCwd} computer={newComputer}
-              disabled={creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)} />
-            <NewConversationModel sessions={state.host.sessions} computer={newComputer} value={newModel} change={setNewModel} disabled={creating} />
-            <p className="muted">
-              Pi loads this project's instructions, tools, and settings. Your model choice is remembered for next time.
-            </p>
-            {createError && <p className="error-text" role="alert">{createError}</p>}
-            <div className="dialog-actions">
-              <button type="button" onClick={closeNewConversation}>
-                Cancel
-              </button>
-              <button className="primary" disabled={!cwd || creating || !!state.host.computers && !state.host.computers.some(computer => computer.id === newComputer && computer.connected)}>{creating ? "Creating…" : "Create conversation"}</button>
-            </div>
-          </form>
-        </Modal>
-      )}
+      {newConversation.dialog}
       {confirmation.dialog}
       {workModal && <WorkModal item={workModal} session={selected} close={() => setWorkModal(undefined)} />}
       {question && !inlineQuestion && `${selected}/${question.id}` !== dismissedQuestion && (
-        <Question
+        <InteractionForm
           key={`${selected}/${question.id}`}
           draftKey={`${selected}/${question.id}`}
-          context={`${currentComputer ? `${currentComputer.name} · ` : ""}${session ? title(session) : ""}`}
-          question={question}
+          owner={`${currentComputer ? `${currentComputer.name} · ` : ""}${session ? conversationTitle(session) : ""}`}
+          interaction={question}
           questions={questions}
           choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
           drafts={questionDrafts.current}
@@ -1345,187 +710,5 @@ export function App({ account }: { account?: BrowserAccount }) {
   );
 }
 
-type QuestionDraft = { choices: string[]; text: string; freeform: boolean };
-function Question({
-  inline = false,
-  draftKey,
-  context,
-  question,
-  questions,
-  choose,
-  drafts,
-  close,
-  answer,
-}: {
-  inline?: boolean;
-  draftKey: string;
-  context: string;
-  question: InteractionSnapshot;
-  questions: InteractionSnapshot[];
-  choose: (id: string) => void;
-  drafts: Map<string, QuestionDraft>;
-  close: () => void;
-  answer: (answer: UiAnswer | null) => Promise<void>;
-}) {
-  const form = question.form;
-  const saved = drafts.get(draftKey);
-  const [choices, setChoices] = useState<string[]>(saved?.choices ?? []);
-  const [text, setText] = useState(
-    saved?.text ?? (form.kind === "editor" || form.kind === "input" ? (form.value ?? "") : ""),
-  );
-  const [freeform, setFreeform] = useState(
-    saved?.freeform ?? (form.kind !== "question" || !form.options.length),
-  );
-  useEffect(() => { drafts.set(draftKey, { choices, text, freeform }); },
-    [drafts, draftKey, choices, text, freeform]);
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const submit = async (value: UiAnswer | null) => {
-    if (submitting) return;
-    setSubmitting(true); setError("");
-    try {
-      await answer(value);
-    } catch (error) { setError(errorText(error)); } finally {
-      setSubmitting(false);
-    }
-  };
-  const content = <form className="question-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit(
-            form.kind === "confirm"
-              ? { kind: "confirm", confirmed: true }
-              : freeform
-                ? { kind: "freeform", text }
-                : {
-                    kind: "selection",
-                    selections: choices,
-                    ...(form.kind === "question" && form.allowComment && text ? { comment: text } : {}),
-                  },
-          );
-        }}
-      >
-        <div className="question-scroll">
-          {context && <p className="muted question-owner">{context}</p>}
-          {questions.length > 1 && <label>
-            {questions.length} pending questions
-            <select aria-label="Pending questions" value={question.id} onChange={event => choose(event.target.value)}>
-              {questions.map(item => <option key={item.id} value={item.id}>
-                {item.form.title}{item.scope ? ` · ${item.scope.label}` : ""}
-              </option>)}
-            </select>
-          </label>}
-          {question.scope && <p className="muted">Agent: {question.scope.label}</p>}
-          {(form.kind === "input" || form.kind === "editor") && <>
-            {form.context && <p className="detail-copy">{form.context}</p>}
-            <ExternalLinks links={form.links} text={form.context} />
-          </>}
-        {form.kind === "confirm" ? (
-          <div className="request-description" tabIndex={0} aria-label="Request details">{form.message}</div>
-        ) : form.kind === "question" ? (
-          <>
-            {form.context && (
-              <div className="question-context">
-                <Markdown remarkPlugins={markdownPlugins()}>{form.context}</Markdown>
-              </div>
-            )}
-            <div className="choices">
-              {form.options.map((option, index) => (
-                <label
-                  className={`choice ${choices.includes(option.title) && !freeform ? "chosen" : ""}`}
-                  key={index}
-                >
-                  <input
-                    type={form.allowMultiple ? "checkbox" : "radio"}
-                    name="choice"
-                    checked={!freeform && choices.includes(option.title)}
-                    onChange={() => {
-                      setFreeform(false);
-                      setChoices(
-                        form.allowMultiple
-                          ? choices.includes(option.title)
-                            ? choices.filter((value) => value !== option.title)
-                            : [...choices, option.title]
-                          : [option.title],
-                      );
-                    }}
-                  />
-                  <span>
-                    <strong>{option.title}</strong>
-                    {option.description && <small>{option.description}</small>}
-                  </span>
-                </label>
-              ))}
-              {form.allowFreeform && !!form.options.length && (
-                <label className={`choice ${freeform ? "chosen" : ""}`}>
-                  <input
-                    type="radio"
-                    name="choice"
-                    checked={freeform}
-                    onChange={() => setFreeform(true)}
-                  />
-                  <span>Write an answer</span>
-                </label>
-              )}
-            </div>
-            {freeform && (
-              <textarea
-                data-autofocus
-                aria-label="Your answer"
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                placeholder="Your answer…"
-                rows={4}
-              />
-            )}
-            {form.allowComment && !freeform && (
-              <label>
-                Comment <span className="muted">(optional)</span>
-                <textarea
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  rows={2}
-                />
-              </label>
-            )}
-          </>
-        ) : (
-          <textarea
-            data-autofocus
-            aria-label={form.title}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={form.placeholder}
-            rows={form.kind === "editor" ? 14 : 3}
-          />
-        )}
-        {error && <p className="error-text" role="alert">{error}</p>}
-        </div>
-        <div className="dialog-actions">
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={() => void submit(null)}
-          >
-            Cancel
-          </button>
-          <button
-            className="primary"
-            disabled={
-              submitting ||
-              (form.kind === "question" &&
-                (freeform ? !text.trim() : !choices.length))
-            }
-          >
-            {form.kind === "confirm" ? "Confirm" : "submitLabel" in form && form.submitLabel ? form.submitLabel
-              : form.kind === "question" ? "Send answer" : form.kind === "input" || form.kind === "editor" ? "Save" : "Apply"}
-          </button>
-        </div>
-      </form>;
-  return inline ? <section className="inline-question" aria-labelledby={`question-${question.id}`}>
-    <header><Icon name={form.kind === "confirm" ? "check" : "chat"} /><h3 id={`question-${question.id}`}>{form.title}</h3></header>
-    {content}
-  </section> : <Modal className="question-modal" title={form.title} close={close}>{content}</Modal>;
-}
 document.documentElement.dataset.theme =
   localStorage.getItem("pi-desk:theme") ?? "light";

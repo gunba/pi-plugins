@@ -15,7 +15,7 @@ export type { DocumentChange, Shown, ShownItem };
 
 const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 const TEXT_LIMIT = 2 * 1024 * 1024, OFFICE_LIMIT = 64 * 1024 * 1024;
-const COMMAND_TOOLS = new Set(["bash", "exec_command", "powershell", "codemode", "patch_and_run"]);
+const COMMAND_TOOLS = new Set(["bash", "powershell", "codemode"]);
 const EXTENSION = String.raw`\.(?:xlsx|xlsm|docx|docm|pptx|pptm)`;
 const DOCUMENT_PATH = new RegExp(String.raw`"([^"\n]+?${EXTENSION})"|'([^'\n]+?${EXTENSION})'|([^\s"'\x60|;&<>(),]+?${EXTENSION})(?![\w.])`, "gi");
 const SCRIPT_PATH = /(?:"([^"\n]+?\.(?:py|js|mjs|cjs|ts|ps1|sh|r|jl))"|'([^'\n]+?\.(?:py|js|mjs|cjs|ts|ps1|sh|r|jl))'|([^\s"'`|;&<>()]+?\.(?:py|js|mjs|cjs|ts|ps1|sh|r|jl)))(?![\w.])/gi;
@@ -148,8 +148,8 @@ export default function show(pi: ExtensionAPI) {
 		const input = event.input as Record<string, unknown>, paths: string[] = [];
 		// Every call that may write is bracketed by snapshots of the folders the conversation works in.
 		if (!READ_ONLY.has(event.toolName)) {
-			const text = [input.command, input.cmd, input.code, input.input, input.chars, input.patch, input.path].filter(value => typeof value === "string").join("\n");
-			const workdir = [input.workdir, input.cwd].find(value => typeof value === "string") as string | undefined;
+			const text = [input.command, input.code, input.path].filter(value => typeof value === "string").join("\n");
+			const workdir = typeof input.cwd === "string" ? input.cwd : undefined;
 			const started = tracker.start(event.toolCallId, text, ctx.cwd, ctx.sessionManager.getSessionId(), workdir).catch(() => undefined);
 			tracked.set(event.toolCallId, started);
 			// A first snapshot of a large folder may take a while; the call does not wait for it.
@@ -157,7 +157,7 @@ export default function show(pi: ExtensionAPI) {
 		}
 		if ((event.toolName === "write" || event.toolName === "edit") && typeof input.path === "string") paths.push(resolve(ctx.cwd, expand(input.path)));
 		else if (COMMAND_TOOLS.has(event.toolName)) {
-			const text = [input.command, input.cmd, input.code, input.input].filter(value => typeof value === "string").join("\n");
+			const text = [input.command, input.code].filter(value => typeof value === "string").join("\n");
 			if (/\.(?:xlsx|xlsm|docx|docm|pptx|pptm|py|js|mjs|cjs|ts|ps1|sh|r|jl)\b/i.test(text)) paths.push(...mentionedDocuments(text, ctx.cwd));
 		}
 		if (!paths.length) return;
