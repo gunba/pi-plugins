@@ -453,7 +453,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   return (
     <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
       open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
-      state: briefState?.working ? "writing" : briefState?.brief || latestReply && session?.snapshot?.brief === latestReply ? "ready" : undefined,
+      // The snapshot names the reply by its session entry; transcript messages carry that as "entry:<id>".
+      state: briefState?.working ? "writing" : briefState?.brief || session?.snapshot?.brief && latestReply === `entry:${session.snapshot.brief}` ? "ready" : undefined,
       review: turnChangedFiles && session?.activation && connected && !closing ? () => void requestReview() : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Sidebar open={sidebar} close={() => setSidebar(false)} host={host} connected={connected} transportConnected={transportConnected}
