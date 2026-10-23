@@ -128,6 +128,8 @@ export interface SessionView {
 	updating?: boolean;
 	/** Closed to free resources but kept in the sidebar to resume later. */
 	kept?: boolean;
+	/** The agent that started this conversation with agent_create or agent_fork (id, or id@computer), which may close it. */
+	createdBy?: string;
 	/** It moved to another computer (teleport); it does not run here again. */
 	moved?: { to: string; at: number };
 	/** Native state; presentation data is carried once in ui below. */
@@ -202,6 +204,8 @@ export type WorkerCommand =
 	| { kind: "prompt"; text: string; attachments?: string[]; behavior?: "steer" | "followUp" | "now" }
 	/** Start a turn with a Desk message (shown, not the user's): an agent that moved itself here continues from its note. */
 	| { kind: "continue"; text: string }
+	/** A note shown in the conversation without starting a turn: the agent that started it closed it. */
+	| { kind: "note"; text: string }
 	| { kind: "native_read"; name: string; args: string }
 	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
 	| { kind: "brief"; refresh?: boolean }

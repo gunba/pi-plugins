@@ -669,6 +669,9 @@ export class DeskEngine {
 				operation => this.change(operation, true));
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
 			case "sent_messages": return sentMessageTexts(session.sessionManager.getBranch());
+			case "note":
+				await session.sendCustomMessage({ customType: "pi-desk/closed", content: command.text, display: true }, { triggerTurn: false });
+				this.scheduleSnapshot(); return;
 			case "continue":
 				void session.sendCustomMessage({ customType: "pi-desk/moved", content: command.text, display: true }, { triggerTurn: true })
 					.catch(error => this.presentation.notify(error instanceof Error ? error.message : String(error), "error"));

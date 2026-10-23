@@ -87,6 +87,9 @@ const RETRY_MS = 60 * 60_000;
 /** How often a host checks the account service for a moved relay. */
 const ACCOUNT_FOLLOW_MS = 10 * 60_000;
 
+/** An agent as this computer names it: its id here, or id@computer for one on another computer. */
+const requester = (computer: string, sender: string) => computer === "local" ? sender : `${sender}@${computer}`;
+
 export class DeskHost {
 	private options: Options;
 	private access: AccessStore;
@@ -1039,6 +1042,7 @@ export class DeskHost {
 		const wait = Math.max(30_000, request.expires - Date.now() - 15_000);
 		if (request.kind === "resume") return this.resumeAgent(request.session!, wait);
 		if (request.kind === "move") return this.moveAgentHere(computer, request, wait);
+		if (request.kind === "close") return this.closeCreated(computer, request);
 		let fork: { cwd: string; file: string } | undefined;
 		if (request.kind === "fork") {
 			const member = store.member(request.sender)!;
@@ -1048,6 +1052,9 @@ export class DeskHost {
 			fork = createPartyFork(file, member.session, request.call!);
 		}
 		const key = this.createSession(fork?.cwd ?? request.cwd, fork?.file);
+		// The agent that asked may close it later (agent_close), and only it.
+		const created = this.sessions.get(key);
+		if (created) { created.view = { ...created.view, createdBy: requester(computer, request.sender) }; this.persist(true); }
 		try {
 			const managed = await this.waitForSession(key, wait), worker = managed.worker!;
 			this.partyOperations!.validate(store, computer, request);
@@ -1148,6 +1155,21 @@ export class DeskHost {
 	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
 	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
 	 */
+	/**
+	 * Closes a conversation the asking agent started with agent_create or agent_fork: a note says so in it, its work is
+	 * stopped, and it leaves the sidebar and stops being wakeable. Any other conversation is refused.
+	 */
+	private async closeCreated(computer: string, request: PartyOperation): Promise<NonNullable<OperationResult["result"]>> {
+		const managed = this.conversation(request.session!);
+		if (!managed) throw new Error("No conversation with that ID is on this computer.");
+		if (managed.view.createdBy !== requester(computer, request.sender)) throw new Error("You can close only conversations you started with agent_create or agent_fork.");
+		if (managed.worker && managed.view.state === "ready") {
+			const note = request.task.trim() ? `Closed by the agent that started it: ${request.task.trim()}` : "Closed by the agent that started it.";
+			try { await managed.worker.command({ kind: "note", text: note }); } catch { /* An older worker: closed without the note. */ }
+		}
+		await this.stopForMove(managed);
+		return { session: request.session!, state: "closed", key: managed.view.key };
+	}
 	/** An agent on another computer moves itself here, as Jordan asked it, and continues from its note. */
 	private async moveAgentHere(source: string, request: PartyOperation, wait: number): Promise<NonNullable<OperationResult["result"]>> {
 		const { key, note } = await this.moveConversation(source, request.sender, request.cwd.trim() || homedir(), true);
@@ -1194,7 +1216,7 @@ export class DeskHost {
 
 	private partyComputer(): PartyComputer {
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: ["create", "fork", "resume", "files", "settings", MESSAGE_PARTS, ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
+			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...this.teleport ? [...this.teleport.operations(), "move"] : []] };
 	}
 
 	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */

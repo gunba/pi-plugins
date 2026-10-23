@@ -10,7 +10,9 @@ type OperationInput = { kind: "create"; computer?: string; cwd: string; task: st
 	/** Reopen a closed conversation; only for computers that announce "resume". */
 	| { kind: "resume"; computer?: string; session: string }
 	/** Move the asking agent itself to another computer; only for computers that announce "move". */
-	| { kind: "move"; computer: string; cwd?: string; task: string };
+	| { kind: "move"; computer: string; cwd?: string; task: string }
+	/** Close a conversation this agent started with agent_create or agent_fork; note is left in it. */
+	| { kind: "close"; computer?: string; session: string; note?: string };
 interface Outgoing { id: string; computer: string; request: string; status: string; response: string | null }
 interface Incoming { request: string; status: string; response: string | null }
 
@@ -71,6 +73,7 @@ export class PartyOperations {
 		const now = Date.now(), operation: PartyOperation = { id: randomUUID(), sender: session, sender_epoch: self.agent_epoch,
 			kind: input.kind, created: now, expires: now + 300_000,
 			...(input.kind === "resume" ? { cwd: "", task: "", label: "", session: input.session }
+				: input.kind === "close" ? { cwd: "", task: input.note ?? "", label: "", session: input.session }
 				: input.kind === "move" ? { cwd: input.cwd ?? "", task: input.task, label: "" } : { cwd: input.cwd, task: input.task, label: input.label }),
 			...(input.kind === "fork" ? { call: input.call } : {}),
 			...(input.kind === "create" && input.model ? { model: input.model } : {}),

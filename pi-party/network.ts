@@ -11,7 +11,8 @@ export interface DeliveryReceipt { id: string; accepted: boolean; error?: string
 export interface PartyOperation {
 	id: string; sender: string; sender_epoch: string; created: number; expires: number;
 	/** move: the sender moves itself to the receiving computer, into cwd (empty: its home folder); task is its note for continuing there. */
-	kind: "create" | "fork" | "resume" | "move"; cwd: string; task: string; label: string; call?: string;
+	/** close: end a conversation the sender started (session), with task as its closing note; only for computers that announce "close". */
+	kind: "create" | "fork" | "resume" | "move" | "close"; cwd: string; task: string; label: string; call?: string;
 	/** provider/id or a bare model id; omitted uses the target computer's default. */
 	model?: string; reasoning?: string;
 	/** resume: the native session id of the conversation to reopen. Only sent to computers that list "resume". */
@@ -75,7 +76,7 @@ export function remoteMessage(value: unknown): PartyMessage {
 }
 export function partyOperation(value: unknown): PartyOperation {
 	const input = record(value), kind = text(input.kind, 20);
-	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move") throw Error("Invalid agent operation.");
+	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move" && kind !== "close") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
 		kind, created: integer(input.created), expires: integer(input.expires),
 		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
@@ -89,6 +90,10 @@ export function partyOperation(value: unknown): PartyOperation {
 		if (!operation.call) throw Error("Specify the executing fork call.");
 	}
 	if (kind === "resume") {
+		operation.session = id(input.session);
+		return operation;
+	}
+	if (kind === "close") {
 		operation.session = id(input.session);
 		return operation;
 	}

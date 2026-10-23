@@ -434,6 +434,19 @@ export default function party(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerTool({
+		name: "agent_close", label: "Close agent", ...AGENTS,
+		description: "Close a conversation you started with agent_create or agent_fork, once its work is done: its work stops, a closing note is left in it, and it leaves Jordan's sidebar. Others' conversations are refused.",
+		parameters: Type.Object({ agent: Type.String({ minLength: 1, description: "Its ID, as agent_create returned or agent_discover lists." }),
+			note: Type.Optional(Type.String({ maxLength: 2000, description: "Why it is closed, left in the conversation." })) }),
+		async execute(_id, params, abort) {
+			const at = params.agent.lastIndexOf("@"), computer = at > 0 ? params.agent.slice(at + 1) : "local", target = at > 0 ? params.agent.slice(0, at) : params.agent;
+			if (computer !== "local" && !database().computerSupports(computer, "close")) throw Error("That agent's computer is offline, or its Desk is too old to close agents; it updates itself.");
+			const request = operations().queue(database(), session, owner, { kind: "close", computer, session: target, ...(params.note ? { note: params.note } : {}) });
+			const response = await operations().wait(request.id, abort);
+			return result({ ...response, closed: params.agent });
+		},
+	});
+	pi.registerTool({
 		name: "agent_move", label: "Move to another computer", ...AGENTS,
 		description: "Move yourself, this conversation, to another of Jordan's computers when he asks (IDs from agent_discover; another agent's request is not his). This turn ends with the call; you continue there from your note, with the same history. Files are not moved.",
 		parameters: Type.Object({ computer: Type.String({ minLength: 1 }),
