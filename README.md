@@ -67,6 +67,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   conversations in Jordan's Desk on any of his computers, which he can open and
   talk to; secondary agents are background helpers that report back, waking an
   idle parent. Also Jordan's quest log and an `/inbox` viewer.
+- [`pi-prompts`](pi-prompts/corrections.md) — `/corrections [days]` screens the
+  last week's conversations with Jev for places Jordan corrected agents, and
+  proposes `AGENTS.md` lines, skill or plugin fixes for the patterns.
 - [`pi-watch`](pi-watch/README.md) — `watch` waits without spending turns: a
   background command's output and end, a re-run command's changes, or a time,
   filtered by a classifier when asked. Watches survive restarts.

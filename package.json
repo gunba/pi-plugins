@@ -21,7 +21,7 @@
   },
   "pi": {
     "prompts": [
-      "./prompts/*.md"
+      "./pi-prompts/*.md"
     ],
     "extensions": [
       "./pi-session-ownership/index.ts",

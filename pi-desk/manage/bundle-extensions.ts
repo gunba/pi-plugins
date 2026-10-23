@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { Plugin } from "esbuild";
 
 /**
@@ -50,10 +50,13 @@ export async function bundleExtensions(root: string, build: typeof import("esbui
 	} };
 	const bundled: string[] = [];
 	for (const entry of entries) {
-		// Named after the package, which is how settings and tool lists identify an extension's origin.
+		// Named after the package, which is how settings and tool lists identify an extension's origin. A package's
+		// further extensions (pi-agents has its subagents runtime) add their file name.
 		const file = resolve(root, entry), parts = relative(root, file).split(sep);
-		const name = parts[0] === "node_modules" ? parts[parts[1]!.startsWith("@") ? 2 : 1]! : parts[0]!;
-		if (bundled.some(path => path.endsWith(`/${name}.mjs`))) throw new Error(`Two extensions would both be bundled as ${name}.mjs.`);
+		const taken = (candidate: string) => bundled.some(path => path.endsWith(`/${candidate}.mjs`));
+		const base = parts[0] === "node_modules" ? parts[parts[1]!.startsWith("@") ? 2 : 1]! : parts[0]!;
+		const name = taken(base) ? `${base}-${basename(file).replace(/\.[cm]?[jt]s$/, "")}` : base;
+		if (taken(name)) throw new Error(`Two extensions would both be bundled as ${name}.mjs.`);
 		const outfile = join(outdir, `${name}.mjs`);
 		await build({ entryPoints: [file], outfile, bundle: true, platform: "node", format: "esm", target: "node22",
 			define: { "import.meta.url": SOURCE_URL }, banner: { js: `const ${BUNDLE_URL} = import.meta.url;` },
