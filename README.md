@@ -24,8 +24,7 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   Tool timing metadata survives saved history without private renderer patches.
 - [`pi-web-search`](pi-web-search/README.md) — `web_search` and `web_fetch` for
   every model, through Parallel's search service (free without an account; a key
-  raises the rate limit). Reads JavaScript pages, PDFs and bot-checked sites;
-  leaves out AustLII, whose terms forbid AI use.
+  raises the rate limit). Reads JavaScript pages, PDFs and bot-checked sites.
 - [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) — pinned native
   Claude OAuth compatibility, including request identity and prompt shaping for
   root sessions, inherited child providers and compaction. Uses Pi's account

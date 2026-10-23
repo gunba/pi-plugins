@@ -16,10 +16,6 @@ const TIMEOUT_MS = 90_000;
 const RESULT_CHARS = 1_500;
 /** Text kept per fetched page. */
 const PAGE_CHARS = 12_000;
-/** AustLII's terms forbid AI use of its content, including retrieval while answering. */
-const AUSTLII = /(^|\.)austlii\.edu\.au$/i;
-const AUSTLII_NOTE = "AustLII's terms forbid AI use of its content, so it is left out. Legislation is on legislation.gov.au, "
-	+ "rulings and determinations on the ATO legal database (ato.gov.au/law), and judgments on the courts' own sites.";
 
 export const SEARCH_PARAMETERS = Type.Object({
 	goal: Type.String({ minLength: 1, description: "What the search must find, as a sentence; it may name preferred sources or dates." }),
@@ -36,7 +32,7 @@ type FetchParams = Static<typeof FETCH_PARAMETERS>;
 type Page = { url: string; title?: string; publish_date?: string; excerpts?: string[]; full_content?: string };
 type Failure = { url?: string; error?: string; message?: string; error_type?: string; http_status_code?: number | null };
 type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
-export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number; excluded?: number };
+export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
 
 function apiKey(): string | undefined {
 	if (process.env.PARALLEL_API_KEY?.trim()) return process.env.PARALLEL_API_KEY.trim();
@@ -46,7 +42,6 @@ function apiKey(): string | undefined {
 	} catch { return undefined; }
 }
 
-const host = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** One JSON-RPC message from a response, which the server sends as JSON or as a server-sent event stream. */
@@ -139,30 +134,29 @@ const timed = (signal: AbortSignal | undefined) => AbortSignal.any([...(signal ?
 
 export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
 	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
-	const all = payload.results ?? [], kept = all.filter(page => !AUSTLII.test(host(page.url))), excluded = all.length - kept.length;
+	const kept = payload.results ?? [];
 	const lines = kept.map((page, index) => [`${index + 1}. ${page.title?.trim() || page.url}`, `   ${page.url}${page.publish_date ? ` · ${page.publish_date}` : ""}`,
 		...page.excerpts?.length ? [clip(page.excerpts.join("\n…\n"), RESULT_CHARS).replace(/^/gm, "   ")] : []].join("\n"));
-	const notes = [...excluded ? [`${excluded} AustLII result${excluded === 1 ? "" : "s"} left out: ${AUSTLII_NOTE}`] : [], ...failures(payload)];
+	const notes = failures(payload);
 	const text = [kept.length ? lines.join("\n\n") : "No results.", ...notes.length ? [notes.join("\n")] : [],
 		...kept.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
 	return { content: [{ type: "text", text }],
-		details: { results: kept.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })), ...(excluded ? { excluded } : {}) } };
+		details: { results: kept.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
 }
 
 export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
-	const refused = params.urls.filter(url => AUSTLII.test(host(url))), urls = params.urls.filter(url => !refused.includes(url));
+	const urls = params.urls;
 	const invalid = urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
 	if (invalid.length) throw new Error(`Not http(s) URLs: ${invalid.join(", ")}`);
 	const payload: Payload = urls.length ? parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
 		...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal))) : {};
 	const sections = (payload.results ?? []).map(page => [`## ${page.title?.trim() || page.url}`, page.url,
 		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
-	const notes = [...refused.length ? [`Not read: ${refused.join(", ")}. ${AUSTLII_NOTE}`] : [],
-		...failures(payload).map(line => `Could not read ${line}`)];
+	const notes = failures(payload).map(line => `Could not read ${line}`);
 	const text = [...sections, ...notes.length ? [notes.join("\n")] : []].join("\n\n") || "Nothing was read.";
 	return { content: [{ type: "text", text }],
 		details: { results: (payload.results ?? []).map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
-			...(payload.errors?.length ? { errors: payload.errors.length } : {}), ...(refused.length ? { excluded: refused.length } : {}) } };
+			...(payload.errors?.length ? { errors: payload.errors.length } : {}) } };
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
