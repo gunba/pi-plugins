@@ -376,7 +376,7 @@ export default function party(pi: ExtensionAPI): void {
 				: recipient.state === "offline" ? { note: "This agent is not running. The message is kept and delivered when its conversation is next opened." } : {}) };
 	};
 	// Rarely used tools are loaded with tool_search when needed rather than declared in every request.
-	const AGENTS = { exposure: "deferred" as const, namespace: { name: "agents", description: "Create or fork agent conversations on Jordan's computers, and manage this agent's message delivery, profile and inbox." } };
+	const AGENTS = { exposure: "deferred" as const, namespace: { name: "agents", description: "Create, fork, move or close agent conversations on Jordan's computers, and manage this agent's message delivery, profile and inbox." } };
 	const QUESTS = { exposure: "deferred" as const, namespace: { name: "quests", description: "Add to Jordan's quest log things he must do himself, read it, or change quests you added." } };
 	pi.registerTool({
 		name: "agent_discover", label: "Discover agents",

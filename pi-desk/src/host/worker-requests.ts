@@ -35,7 +35,7 @@ export class WorkerRequests {
 				...(error instanceof StaleGeneration ? { code: "stale_generation" as const } : error instanceof ReceiptConflict ? { code: "receipt_conflict" as const } : {}) }),
 		);
 		const readOnly = request.type === "describe" || request.type === "control" || request.type === "checkpoint" && request.action === "inspect"
-			|| request.type === "command" && ["snapshot", "history", "asset", "artifact", "tree", "native_read", "context_inspect", "context_read"].includes(request.command.kind)
+			|| request.type === "command" && ["snapshot", "history", "asset", "artifact", "native_read", "context_inspect", "context_read"].includes(request.command.kind)
 			|| request.type === "command" && request.command.kind === "file" && ["info", "text", "chunk"].includes(request.command.operation);
 		if (!readOnly) {
 			this.admitted.set(request.id, { operation, fingerprint });

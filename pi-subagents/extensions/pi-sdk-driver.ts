@@ -322,7 +322,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		const childOnlyTools = (input.intrinsicToolNames ?? (!toolInfo ? customToolNames : []))
 			.filter((name) => customToolNames.includes(name));
 		const fallbackHelpers = !toolInfo
-			? ["wait_agent", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact", "inspect_files"] : [])]
+			? ["wait_agent", ...(input.descriptor.toolNames.includes("read") ? ["read_artifact"] : [])]
 			: [];
 		const enabledTools = () => [...new Set([
 			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),

@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
-import type { ArtifactPage, ChatBlock } from "../shared/protocol.ts";
+import type { ArtifactPage } from "../shared/protocol.ts";
 import { CopyButton } from "./transcript-parts.tsx";
-import { AssetLink } from "./assets.tsx";
-import { FileLink } from "./file-view.tsx";
 import { SurfaceFrame } from "./surfaces.tsx";
 import { useReferenceQuery } from "./reference-origin.tsx";
 

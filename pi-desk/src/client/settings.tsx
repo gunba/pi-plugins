@@ -32,7 +32,6 @@ const page = (id: string) => settingsSections.find(section => section.id === id)
 /** Extension views shown inside a Desk page rather than as their own. */
 export const MERGED_VIEWS = new Set(["context-window", "pi-context-ledger", "pi-usage", "desk-browser", "desk-mcp"]);
 const VIEW_TITLES: Record<string, string> = { "pi-usage": "Usage", config: "Pi settings", "desk-mcp": "MCP servers", "codex-wire": "Codex", "desk-browser": "Chrome" };
-const CONVERSATION_VIEWS = new Set<string>();
 export interface SettingsGroup { label: string; detail?: string; items: { id: string; title: string }[] }
 
 /** Settings grouped by what they apply to: this conversation, this computer, or Desk on every computer. */
@@ -66,12 +65,10 @@ export function SettingsLayout({ active, groups, choose, children, enabled = tru
 		</div>
 	</div>;
 }
-export function SettingsContent({ section: requested, host, account, session, computer, connected, busy, settingBusy, invoke, compose, restore, providerHint, renderView, move }: {
+export function SettingsContent({ section: requested, host, account, session, computer, connected, busy, settingBusy, invoke, restore, providerHint, move }: {
 	section: string; host: WorkspaceState; account?: BrowserAccount; session?: SessionView; computer?: Computer; providerHint?: string;
-	/** Renders a conversation view, by ID, inside a Desk page. */
-	renderView: (id: string) => ReactNode;
 	connected: boolean; busy: boolean; settingBusy: boolean; invoke: (command: WorkerCommand) => Promise<unknown>;
-	compose: (text: string) => void; restore: (target: string, text: string) => void;
+	restore: (target: string, text: string) => void;
 	/** Opens "Move to another computer" for this conversation, where it can move. */
 	move?: () => void;
 }) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { Row } from "./settings-pages.tsx";
-import type { Computer, WorkspaceState } from "./workspace.ts";
+import type { Computer } from "./workspace.ts";
 import type { DictationSettings } from "../shared/protocol.ts";
 
 /** Recordings stay within one request: five minutes of speech at 16 kbit/s. */

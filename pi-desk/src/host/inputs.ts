@@ -58,10 +58,6 @@ export class InputLedger {
 			throw new Error("Conversation restoration is not complete.");
 		ticket.state = "complete"; this.writeCheckpoint(ticket);
 	}
-	assertCheckpointInputs(): void {
-		if (this.db.prepare("SELECT 1 FROM inputs WHERE state IN ('queued','sending') LIMIT 1").get())
-			throw new Error("Wait for pending Desk input to reach Pi before updating.");
-	}
 	/** The continuation receipt and dispatch marker commit together; unknown admission is never replayed. */
 	continueCheckpoint(id: string, key: string, input: InputSubmission): InputStatus | undefined {
 		this.db.exec("BEGIN IMMEDIATE");

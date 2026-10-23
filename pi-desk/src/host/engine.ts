@@ -39,7 +39,7 @@ import type { UiTranscriptSource, UiTranscriptHandle } from "../../../pi-ui/inde
 import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
-import type { SessionSnapshot, TreePage, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import type { SessionSnapshot, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
 import { packageCopies } from "./package-updates.ts";
@@ -526,7 +526,7 @@ export class DeskEngine {
 		}
 		if (!this.runtime) throw new Error("Session is unavailable.");
 		const session = this.runtime.session;
-		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "tree", "abort", "queue_now", "queue_cancel", "native_read", "brief", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
+		if (this.transition && !["snapshot", "history", "asset", "artifact", "file", "abort", "queue_now", "queue_cancel", "native_read", "brief", "context_inspect", "context_read"].includes(command.kind)) throw new Error("A session transition is in progress.");
 		if (command.kind === "prompt" || command.kind === "compact" || command.kind === "navigate" && command.summarize) {
 			const errors = this.runtime.services.resourceLoader.getExtensions().errors;
 			if (errors.length) throw new Error(`Fix extension load errors before prompting: ${errors.map(error => error.path).join(", ")}`);
@@ -558,7 +558,6 @@ export class DeskEngine {
 				const context = this.contexts.get(session)!;
 				return command.kind === "context_update" ? context.update(command) : context.save(command.path, command.version, command.text);
 			}, true);
-			case "tree": return this.tree(command.after);
 			case "navigate": return this.change(async () => {
 				const result = await session.navigateTree(command.entry, { summarize: command.summarize });
 				if (!result.cancelled) {
@@ -711,24 +710,6 @@ export class DeskEngine {
 				});
 			}
 		}
-	}
-
-	private tree(after?: string): TreePage {
-		const manager = this.runtime!.session.sessionManager;
-		const entries = manager.getEntries();
-		const start = after ? entries.findIndex(entry => entry.id === after) + 1 : 0;
-		if (after && !start) throw new Error("Tree position no longer exists.");
-		const page = entries.slice(start, start + 150);
-		return {
-			generation: this.presentation.generation, leaf: manager.getLeafId(),
-			entries: page.map(entry => ({
-				id: entry.id, parentId: entry.parentId, type: entry.type,
-				timestamp: entry.timestamp,
-				label: entry.type === "message" ? `${entry.message.role}: ${"content" in entry.message ? typeof entry.message.content === "string" ? entry.message.content.slice(0, 160) : entry.message.content.filter(part => part.type === "text").map(part => part.text).join(" ").slice(0, 160) : ""}`
-					: entry.type === "custom" || entry.type === "custom_message" ? entry.customType : entry.type,
-			})),
-			next: start + page.length < entries.length ? page.at(-1)?.id : undefined,
-		};
 	}
 
 	private checkpointSnapshot(): CheckpointSnapshot {

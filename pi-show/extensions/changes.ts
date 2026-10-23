@@ -83,7 +83,6 @@ const home = homedir();
 const expand = (path: string) => path === "~" ? home : /^~[\\/]/.test(path) ? join(home, path.slice(2)) : path.replace(/^\$HOME(?=[\\/]|$)/, home);
 const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
 const within = (path: string, folder: string) => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
-const textual = (data: Buffer) => !data.subarray(0, 8192).includes(0);
 
 /** Scratch and system folders: never followed or compared. */
 export const SCRATCH = [tmpdir(), "/tmp", "/var/tmp", "/dev", "/proc", "/sys", "/run", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/snap"];

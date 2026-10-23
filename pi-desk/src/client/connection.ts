@@ -128,9 +128,6 @@ export async function initialize(identity?: BrowserAccount): Promise<void> {
 	account = identity; mode = identity ? "account" : "local";
 	await surfaces.prepare();
 	if (epoch !== generation) return;
-	// Remove obsolete authorization data, not drafts, attachments or native conversations.
-	for (const key of Object.keys(localStorage)) if (key.startsWith("pi-desk:computer:")) localStorage.removeItem(key);
-	localStorage.removeItem("pi-desk:transport");
 	if (mode === "account") {
 		if (/^#(?:remote|pair)=/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search);
 		unwatchAccount = account!.watch(() => { if (!account?.signedIn()) dispose(); });

@@ -31,14 +31,6 @@ export const MODEL_TOOL_NAMES = ["view_image"];
 
 export const CODEX_TOOL_OUTPUT_TOKEN_BUDGET = 10_000;
 
-/**
- * Pi's built-in bash remains visible by design. An extension cannot suppress it
- * and later distinguish its own suppression from a user's manual disablement.
- * Keeping it avoids resurrecting user-disabled state and preserves the richer
- * host-owned bash behavior while Unified Exec remains a plain-pipe fallback.
- */
-export const PRESERVE_BUILTIN_BASH = true;
-
 function mergeToolNames(...groups: string[][]): string[] {
 	return [...new Set(groups.flat())];
 }

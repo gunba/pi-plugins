@@ -1,8 +1,7 @@
 # Codex web search
 
 Pi's `web_search` tool is the single web tool for every model. Its display
-label is `web.run`. Searching, opening, clicking, finding, PDF screenshots,
-finance, weather, sports and time go to Codex's standalone **`alpha/search`**
+label is `web.run`. Searching, opening, clicking and finding go to Codex's standalone **`alpha/search`**
 service. Pages Codex cannot open, and link checks, are fetched directly and,
 when a site refuses automated clients, in the user's Chrome. It does not call
 Perplexity or run a separate Pi summarization agent. The service's internal
@@ -12,7 +11,7 @@ implementation is not established by this client inspection.
 
 | Request | With a ChatGPT login on the computer | Without one |
 |---|---|---|
-| `search_query`, `image_query`, `click`, `find`, `screenshot`, `finance`, `weather`, `sports`, `time` | Codex search | Not available; the result says so |
+| `search_query`, `click`, `find` | Codex search | Not available; the result says so |
 | `open` | Codex search; any page it reports as "not accessible" is fetched directly | URLs are fetched directly; reference IDs need Codex |
 | `check` (up to 50 URLs) | Fetched directly; status only | Same |
 

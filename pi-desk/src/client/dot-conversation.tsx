@@ -9,7 +9,7 @@ import { stageDotFiles, saveDotDownload } from "./dot-files.ts";
 import { DotNativeView } from "./dot-native-view.tsx";
 import { DotAgentAccess } from "./dot-agent-access.tsx";
 import type { Computer } from "./workspace.ts";
-import { api, ApiError } from "./connection.ts";
+import { api } from "./connection.ts";
 import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
 import { splitDictationNote, withDictationNote } from "../shared/dictation-note.ts";
 import { dotOutboxKey, dotReservedFiles, enqueueDot, nextDotInput, pendingDotMessages, readDotOutbox, reconcileDotInput, removableDotInput, removeDotInput, reviewDotQueue, sameDotInput, type DotOutbox, type DotOutboxInput } from "./dot-outbox.ts";
@@ -19,7 +19,7 @@ const empty: DotSnapshot = { state: "disconnected", messages: [], inputs: [] };
 const errorText = (error: unknown) => {
 	const text = error instanceof Error ? error.message : String(error);
 	if (/Session with given id not found|No session with given id/i.test(text)) return "The Dot connection was lost. Reconnect Dot.";
-	return error instanceof ApiError && error.status === 404 ? "Update Desk on this computer to connect Dot." : text;
+	return text;
 };
 const storageKey = (computer?: string) => `pi-desk:dot:${computer ?? "local"}`;
 const merge = (older: DotMessage[], newer: DotMessage[]) => [...new Map([...older, ...newer].map(message => [message.id, message])).values()]
@@ -43,7 +43,6 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		}
 	};
 	const [loaded, setLoaded] = useState(false);
-	const supported = view.transport === "direct";
 	const [older, setOlder] = useState<DotMessage[]>([]);
 	const [before, setBefore] = useState<string>();
 	const [outbox, setOutbox] = useState<DotOutbox>({ draft: "", inputs: [] });
@@ -64,7 +63,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		if (next.id !== loadedDot.current || next.connection !== loadedConnection.current) {
 			loadedDot.current = next.id; loadedConnection.current = next.connection; setOlder([]); setBefore(undefined);
 		}
-		if (next.transport === "direct" && next.connection) {
+		if (next.connection) {
 			const key = dotReadKey(id, next.connection);
 			if (readRef.current?.key !== key) {
 				let saved: string | null = null;
@@ -115,7 +114,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 					receive(next); setPollError("");
 					let updated = outboxRef.current;
 					for (const input of next.inputs) updated = reconcileDotInput(updated, input);
-					if (next.transport === "direct" && next.id && next.connection) updated = reviewDotQueue(updated, next.id, next.connection);
+					if (next.id && next.connection) updated = reviewDotQueue(updated, next.id, next.connection);
 					const remote = new Set(next.messages.map(message => message.id));
 					updated = { ...updated, inputs: updated.inputs.filter(input => !(input.state === "accepted" && input.dot === next.id && (!input.connection || input.connection === next.connection) && input.messageId && remote.has(input.messageId))) };
 					if (JSON.stringify(updated) !== JSON.stringify(outboxRef.current)) commit(updated);
@@ -126,8 +125,8 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		void refresh();
 		return () => { generation.current++; clearTimeout(timer); };
 	}, [id, online]);
-	const messages = supported ? merge(older, view.messages) : [];
-	const readKey = supported && view.connection ? dotReadKey(id, view.connection) : undefined;
+	const messages = merge(older, view.messages);
+	const readKey = view.connection ? dotReadKey(id, view.connection) : undefined;
 	const unread = read && read.key === readKey ? unreadDotMessages(read.state, view.messages).length : 0;
 	const markRead = () => {
 		const current = readRef.current;
@@ -154,7 +153,6 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const files = (view.uploads ?? []).filter(file => file.state !== "handed-off" && !reserved.has(file.id));
 	const filesReady = !!view.connection && files.every(file => file.connection === view.connection && ["ready", "uploaded"].includes(file.state));
 	const action = async (name: "connect" | "disconnect") => {
-		if (!supported) { setError("Update Desk on this computer to connect Dot."); return; }
 		const epoch = generation.current; selection.current++; readSequence.current++; setBusy(true); setError("");
 		try {
 			await api(`/dot/${name}`, {}, id);
@@ -164,7 +162,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		finally { if (epoch === generation.current) setBusy(false); }
 	};
 	const send = () => {
-		if (!supported || !view.id || !view.connection || busy || !filesReady || !outboxLoaded.current) return;
+		if (!view.id || !view.connection || busy || !filesReady || !outboxLoaded.current) return;
 		const held = dotReservedFiles(outboxRef.current, view.inputs);
 		// Steve is told when the message was dictated, so it reads past misheard words.
 		const outbox = dictated.current && outboxRef.current.draft.trim() ? { ...outboxRef.current, draft: withDictationNote(outboxRef.current.draft.trim()) } : outboxRef.current;
@@ -172,7 +170,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		catch (error) { setError(errorText(error)); }
 	};
 	useEffect(() => {
-		if (!online || !supported || view.state !== "ready" || view.paused || !view.id || !view.connection || loadedDot.current !== view.id || loadedConnection.current !== view.connection || view.busy || busy || !outboxLoaded.current) return;
+		if (!online || view.state !== "ready" || view.paused || !view.id || !view.connection || loadedDot.current !== view.id || loadedConnection.current !== view.connection || view.busy || busy || !outboxLoaded.current) return;
 		const key = dotOutboxKey(id), input = nextDotInput(outboxRef.current, view.id, view.connection);
 		if (!input || posting.current.has(key)) return;
 		const current = () => loadedComputer.current?.id === id;
@@ -214,12 +212,12 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		finally { if (epoch === generation.current) setBusy(false); }
 	};
 	const retry = (input: DotOutboxInput) => {
-		if (!supported || !view.connection || input.state !== "not-sent" || input.dot !== view.id) return;
+		if (!view.connection || input.state !== "not-sent" || input.dot !== view.id) return;
 		if (input.files?.length && input.connection !== view.connection) { setError("These attachments belong to an earlier connection. Reconnect that account, or skip this attempt and select the files again."); return; }
 		amend(input.id, { id: crypto.randomUUID(), connection: view.connection, requestId: undefined, messageId: undefined, state: "queued", error: undefined, ignored: false });
 	};
 	const history = async () => {
-		const cursor = before ?? view.before; if (!supported || !cursor || loadingHistory) return;
+		const cursor = before ?? view.before; if (!cursor || loadingHistory) return;
 		const epoch = generation.current, binding = loadedConnection.current; setLoadingHistory(true);
 		try {
 			const result = await api<{ messages: DotMessage[]; before?: string }>(`/dot/history?before=${encodeURIComponent(cursor)}`, undefined, id);
@@ -229,7 +227,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		finally { if (epoch === generation.current) setLoadingHistory(false); }
 	};
 	const attach = async (chosen: File[]) => {
-		if (!supported || busy || !view.id || !view.connection) return;
+		if (busy || !view.id || !view.connection) return;
 		if (files.length + chosen.length > DOT_FILE_COUNT) { setError(`Attach up to ${DOT_FILE_COUNT} files to a message.`); return; }
 		const epoch = generation.current; setBusy(true); setError("");
 		try { await stageDotFiles(chosen, view.id, view.connection, id, file => {
@@ -253,10 +251,10 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		finally { if (epoch === generation.current) setBusy(false); }
 	};
 	const receipt = view.inputs.find(input => input.id === pending?.id);
-	const ready = online && supported && !!view.connection && view.state === "ready";
+	const ready = online && !!view.connection && view.state === "ready";
 	const status = !online ? computer?.connection === "paused" ? "App paused" : "Offline"
-		: loaded && !supported ? "Update Desk" : view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
-	return { computers, id, online, view, loaded, supported, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: supported ? before ?? view.before : undefined, draft, pending, busy, error: error || pollError,
+		: view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
+	return { computers, id, online, view, loaded, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: before ?? view.before, draft, pending, busy, error: error || pollError,
 		loadingHistory, receipt, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
 		/** Remove a message that was not sent; Edit puts its text back in the composer and keeps its files staged. */
 		remove(input: DotOutboxInput, edit = false) {
@@ -272,7 +270,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 		dictate(text: string) { dictated.current = true; saveDraft(withDictation(outboxRef.current.draft, text)); },
 		/** Queue a message to the Dot without touching the draft, for actions elsewhere in Desk. */
 		queue(text: string) {
-			if (!supported || !view.id || !view.connection || !outboxLoaded.current) { setError("Connect your Dot first."); return; }
+			if (!view.id || !view.connection || !outboxLoaded.current) { setError("Connect your Dot first."); return; }
 			const draft = outboxRef.current.draft;
 			try { commit({ ...enqueueDot({ ...outboxRef.current, draft: text }, view.id, view.connection, []), draft }); }
 			catch (error) { setError(errorText(error)); }
@@ -348,13 +346,13 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 					invoke={action => void openNative(action.id as DotSurfaceMode)} />}
 			</div>
 		</header>
-		{(dot.error || dot.supported && view.error || nativeError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || dot.supported && view.error || nativeError)}</div>}
+		{(dot.error || view.error || nativeError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || view.error || nativeError)}</div>}
 		{(!ready || showConnection) && <section className="dot-connection" aria-label="Dot connection">
 			<h2>{ready ? "Dot connection" : view.state === "connecting" ? "Connecting Dot…" : "Connect your Dot"}</h2>
 			{dot.computers && <label>Connection computer<select aria-label="Dot connection computer" value={dot.id ?? ""} disabled={busy || opening} onChange={event => dot.chooseComputer(event.target.value)}>
 				{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
 			</select></label>}
-			{dot.supported ? <>
+			{dot.loaded ? <>
 				<div className="dot-connection-actions">
 					<button className="primary" disabled={!dot.online || busy || opening || !!view.busy || view.state === "connecting"} onClick={() => void dot.action("connect")}>
 						{view.state === "connecting" ? "Connecting…" : ready ? "Reconnect Dot" : "Connect Dot"}</button>
@@ -365,7 +363,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				<p>No ChatGPT window is needed for messages, attachments or live updates. Keep the connection computer online.</p>
 				<p className="muted">Activity, computer and management views open ChatGPT only when you ask. Those views may need a separate browser sign-in to the same account.</p>
 				<DotAgentAccess key={`access:${dot.id ?? "local"}`} computer={dot.id} online={dot.online} />
-			</> : <p role="status">{dot.loaded ? "Update Desk on this computer to use Dot’s saved-account connection. Your queued messages have not been sent." : "Checking this computer’s Dot support…"}</p>}
+			</> : <p role="status">Checking this computer’s Dot support…</p>}
 			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
 		</section>}
 		{native ? <DotNativeView key={`${dot.id}:${view.connection}:${native.id}`} initial={native} connection={view.connection!} computer={dot.id} close={() => setNative(undefined)} /> : <>
@@ -413,7 +411,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 						{input.state === "sending" && <span className="status-dot running" aria-hidden="true" />}
 						<span>{input.state === "queued" ? !dot.online ? "Queued · Offline" : view.paused ? "Queued · Dot paused" : "Queued" : input.state === "sending" ? "Sending…" : input.state === "accepted" ? "Sent" : input.state === "not-sent" ? "Not sent" : "Delivery needs confirmation"}</span>
 						{input.state === "not-sent" && <>
-							<button className="text-button" disabled={busy || !dot.supported || !view.connection} onClick={() => dot.retry(input)}>Retry</button>
+							<button className="text-button" disabled={busy || !view.connection} onClick={() => dot.retry(input)}>Retry</button>
 							<button className="text-button" title="Put this message back in the composer" onClick={() => dot.remove(input, true)}>Edit</button>
 							<button className="text-button" onClick={() => dot.remove(input)}>Remove</button></>}
 						{input.ignored && input.state === "unknown" && <button className="text-button" title="Stop tracking this attempt here. If it reached Dot, it still appears in the conversation."
@@ -455,7 +453,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 							if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); atBottom.current = true; dot.send(); }
 						}} /></div>
 					<DictationButton append={dot.dictate} submit={text => { dot.dictate(text); dot.send(); }} report={message => setNativeError(message)} computer={dictationComputer(dot.computers, dot.id)} />
-					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!dot.supported || !view.connection || !view.id || busy || opening || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
+					<button className="send-button" type="submit" aria-label="Send message to Dot" disabled={!view.connection || !view.id || busy || opening || !dot.filesReady || (!dot.draft.trim() && !dot.files.length)}><Icon name="send" /></button>
 				</div>
 				<div className="dot-composer-hint">{view.paused ? "Dot is paused. Resume it from Manage Dot to send queued messages." : "Shift+Enter for a new line"}</div>
 			</form>

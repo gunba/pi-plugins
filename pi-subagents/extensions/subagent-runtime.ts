@@ -318,14 +318,6 @@ type DiagnosticRecord = {
 	reason: "corrupt" | "unsupported" | "unavailable";
 };
 
-function textOfAssistant(entry: SessionEntry): string {
-	if (entry.type !== "message" || entry.message.role !== "assistant") return "";
-	return entry.message.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("");
-}
-
 function hasToolCall(entry: SessionEntry, toolCallId: string): boolean {
 	return (
 		entry.type === "message" &&
@@ -2293,10 +2285,3 @@ export class SubagentRuntime {
 	}
 }
 
-export function selectedAssistantText(entries: readonly SessionEntry[]): string {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const text = textOfAssistant(entries[index] as SessionEntry);
-		if (text) return text;
-	}
-	return "";
-}

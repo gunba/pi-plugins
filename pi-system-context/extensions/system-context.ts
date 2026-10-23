@@ -11,12 +11,13 @@ type ToolProbe = {
   format?: (line: string) => string | undefined;
 };
 
-const TOOL_CACHE_MS = 5 * 60_000;
-const TOOL_PROBE_TIMEOUT_MS = 350;
+// Probed once per process: re-probed every 5 minutes against a 350 ms limit, a slow probe under load (or PowerShell
+// starting on Windows) dropped a tool from the line, which changed the prompt and cost the conversation its cache.
+const TOOL_PROBE_TIMEOUT_MS = 2000;
 const MAX_PROMPT_VALUE_LENGTH = 180;
 const MAX_PROMPT_PATH_LENGTH = 240;
 
-let toolCache: { expiresAt: number; summary: Promise<string> } | undefined;
+let toolCache: { summary: Promise<string> } | undefined;
 
 function sanitizePromptValue(value: unknown, fallback = "unknown", maxLength = MAX_PROMPT_VALUE_LENGTH): string {
   const raw = typeof value === "string" ? value : value == null ? "" : String(value);
@@ -163,8 +164,7 @@ function formatPowerShellVersion(line: string): string | undefined {
 }
 
 function detectedTools(): Promise<string> {
-  const now = Date.now();
-  if (toolCache && toolCache.expiresAt > now) return toolCache.summary;
+  if (toolCache) return toolCache.summary;
 
   const probes: ToolProbe[] = [
     { label: "python", names: ["python", "py"], format: formatPythonVersion },
@@ -186,7 +186,7 @@ function detectedTools(): Promise<string> {
     if (!line) return undefined;
     return sanitizePromptValue(probe.format?.(line) ?? probe.label, probe.label, 80);
   })).then((results) => results.filter(Boolean).join(", ") || "none detected");
-  toolCache = { expiresAt: now + TOOL_CACHE_MS, summary };
+  toolCache = { summary };
   return summary;
 }
 
@@ -247,7 +247,6 @@ export default function (pi: ExtensionAPI) {
       `- timezone: ${sanitizePromptValue(timeZone)}`,
       `- os: ${platform}`,
       `- term: ${sanitizePromptValue(terminal)}; ${shellParts.join("; ")}`,
-      `- cwd: ${compactPromptPath(cwd)}`,
       `- path tools: ${sanitizePromptValue(await detectedTools(), "none detected", MAX_PROMPT_VALUE_LENGTH)}`,
     ].join("\n");
 

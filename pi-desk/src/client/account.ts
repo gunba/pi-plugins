@@ -12,10 +12,6 @@ export interface AccountDirectory { account: string; revision: number; devices: 
 export class BrowserSignInRequired extends Error {
 	constructor() { super("Sign in to your Pi Desk account."); }
 }
-export class AccountRequestError extends Error {
-	status: number;
-	constructor(status: number, code: string) { super(code); this.status = status; }
-}
 
 function keyDatabase(): Promise<IDBDatabase> {
 	return new Promise((resolve, reject) => {
@@ -160,7 +156,7 @@ export class BrowserAccount {
 				this.needsSignIn = true; this.credential = undefined; this.changed(); throw new BrowserSignInRequired();
 			}
 			if (value?.error === "device_revoked") { this.revoked = true; this.credential = undefined; this.changed(); }
-			throw new AccountRequestError(response.status, typeof value?.error === "string" ? value.error : "Account request failed.");
+			throw new Error(typeof value?.error === "string" ? value.error : "Account request failed.");
 		}
 		return value as T;
 	}

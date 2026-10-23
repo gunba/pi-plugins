@@ -61,7 +61,6 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 				from: data.from === undefined ? undefined : string(data.from, 100),
 				source: data.source === undefined ? undefined : string(data.source, 100) };
 		}
-		case "tree": return { kind: data.kind, after: data.after === undefined ? undefined : string(data.after, 100) };
 		case "navigate": return { kind: data.kind, entry: string(data.entry, 100), summarize: data.summarize === true };
 		case "switch": return { kind: data.kind, file: string(data.file, 8000) };
 		case "sent_messages": return { kind: data.kind };

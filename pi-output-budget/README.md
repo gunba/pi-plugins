@@ -15,7 +15,6 @@ it explicitly; `noExtensions: true` still prevents unrelated extension discovery
   until it is `null` when completeness matters. Unicode pairs are not split.
   `query` performs literal, case-sensitive line search over the full artifact;
   paging then refers to the search results.
-- `inspect_files` batches up to 20 explicit file reads or literal searches.
   Results remain in request order; one file error does not hide other results.
   Each file retains its own large-output reference, and the combined preview is
   also bounded. Images use `read`.
@@ -38,7 +37,7 @@ not data the underlying tool never returned.
 ## Earlier results
 
 Budgets apply only when a result is created: preview caps, artifacts,
-`read_artifact` and `inspect_files`. Earlier results are never rewritten later
+`read_artifact`. Earlier results are never rewritten later
 in the conversation, because changing earlier context breaks the provider's
 prompt cache.
 

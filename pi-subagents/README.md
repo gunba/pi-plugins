@@ -43,7 +43,7 @@ unknown targets are errors. Interruption preserves queued work, descendants and
 history. An explicit follow-up or owning-driver resume can unpark retained work.
 
 `wait_agent` defaults to 30 seconds, clamps shorter requests to 10 seconds and
-allows up to one hour. Already unread notifications return immediately. Timeout
+allows up to 24 hours. Already unread notifications return immediately. Timeout
 does not cancel work. SDK, RPC and terminal sessions use the same pending tool.
 Use `write_stdin` for processes; see [agent waiting](../pi-work-coordination/README.md).
 

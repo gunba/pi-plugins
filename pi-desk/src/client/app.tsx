@@ -43,7 +43,7 @@ import { BriefContext, RewindContext } from "./message-view.tsx";
 import type { Brief, BriefState } from "./brief.tsx";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import { recallStep, sentMessages, type Recall } from "./message-history.ts";
-import { Icon, ProviderIcon, SectionIcon } from "./icons.tsx";
+import { Icon, ProviderIcon } from "./icons.tsx";
 import { AgentPane } from "./agent-pane.tsx";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
 import { LiveNotices, reportDeskError } from "./desk-status.ts";
@@ -134,7 +134,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   // Below this width the sidebar is a drawer, so the header names the conversation and closes it.
   const phone = useMedia("(max-width: 760px)");
   const [panel, setPanel] = useState<
-    "workspace" | "settings" | "view" | "agents" | undefined
+    "settings" | "view" | "agents" | undefined
   >();
   // Changes and shown work open beside the conversation; hidden stays hidden until the agent shows something new.
   const [workHidden, setWorkHidden] = useState(() => localStorage.getItem("pi-desk:work-pane-hidden") === "true");
@@ -228,7 +228,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const closing = controls.some(control => control.kind === "close" && control.state === "running");
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${title(session)}` : "";
-  const visibleViews = panelViews(ui?.views ?? [], panel, focusedView);
+  const visibleViews = panelViews(ui?.views ?? [], focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
   const planView = (ui?.views ?? []).find(view => view.id === "plan" && view.kind === "details" && !view.scope);
   const headerPlan = !phone && !!planView && !!(planView.data as UiDetails).items?.length ? planView : undefined;
@@ -459,21 +459,20 @@ export function App({ account }: { account?: BrowserAccount }) {
     });
   }, [selected]);
   useEffect(() => {
-    if ((panel !== "workspace" && panel !== "view") || !focusedView) return;
+    if (panel !== "view" || !focusedView) return;
     const card = [...document.querySelectorAll<HTMLElement>("[data-view]")].find(element => element.dataset.view === focusedView);
     card?.scrollIntoView({ block: "start" });
   }, [panel, focusedView, selected]);
   const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
-  /** One workspace or settings view as a card; settings pages reuse it to group related views. */
+  /** One conversation or settings view as a card in the view panel. */
   const viewCard = (view: ViewSnapshot) => (
                 <section className="panel-card" key={view.id} data-view={view.id}>
                   {view.kind === "configuration" ? <Configuration key={`${selected}:${ui?.generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
                     invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
-                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={panel !== "view"} disabled={!connected || closing}
+                  : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} disabled={!connected || closing}
                     invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
                   <div className="panel-section-heading">
-                  {panel !== "view" && <h3><SectionIcon id={view.id} />{view.title}</h3>}
                   <WorkspaceActions view={view} disabled={!!view.working || !connected}
                     invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
                   </div>
@@ -1236,16 +1235,12 @@ export function App({ account }: { account?: BrowserAccount }) {
       {dotSelected && wideWorkspace && questLogs.length > 0 && <div className="quest-rail">{questTracker}</div>}
       {showWorkPane && <WorkPane items={paneItems} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
         close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
-      {panel && !(panel === "workspace" && wideWorkspace) && (
-        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : visibleViews[0]?.title ?? "Details"}
-          close={() => setPanel(undefined)} back={panel !== "workspace" && !settings ? () => setPanel("workspace") : undefined}>
+      {panel && (
+        <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : visibleViews[0]?.title ?? "Details"}
+          close={() => setPanel(undefined)}>
           <div className="panel-title">
-            {panel !== "workspace" && !settings && <button className="icon-button"
-              aria-label="Back to workspace" onClick={() => setPanel("workspace")}>‹</button>}
             <h2 data-surface-heading tabIndex={-1}>
-              {settings ? "Settings" : panel === "agents" ? "Agents" : panel === "workspace" ? "Workspace" : panel === "view"
-                  ? visibleViews[0]?.title ?? "Details"
-                : "Settings & tools"}
+              {settings ? "Settings" : panel === "agents" ? "Agents" : visibleViews[0]?.title ?? "Details"}
             </h2>
             <button
               className="icon-button"
@@ -1274,15 +1269,11 @@ export function App({ account }: { account?: BrowserAccount }) {
             (visibleViews.length ? (
               visibleViews.map(view => viewCard(view))
             ) : (
-              <p className="muted">
-                {panel === "view" ? "This view is unavailable. Reopen it from this session's controls."
-                  : "Plans, agents and messages will appear here."}
-              </p>
+              <p className="muted">This view is unavailable. Reopen it from this session's controls.</p>
             ))}
           {panel === "settings" && <SettingsContent section={settingsSection} host={host} account={account}
-            renderView={id => { const view = ui?.views.find(item => item.id === id && !item.scope); return view ? viewCard(view) : null; }}
             session={session} computer={currentComputer} connected={connected} busy={busy || sending || controlBusy} settingBusy={settingBusy} providerHint={providerHint}
-            invoke={command} compose={text => { setDraft(text); setPanel(undefined); }}
+            invoke={command}
             move={session && currentComputer?.teleport && (session.agentId ?? session.snapshot?.id)
               ? () => setMoving({ source: currentComputer, session: (session.agentId ?? session.snapshot?.id)!, title: title(session), cwd: session.cwd }) : undefined}
             restore={(target, text) => { if (selectedRef.current === target) setDraft(text); }} />}

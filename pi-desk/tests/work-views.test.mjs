@@ -11,16 +11,16 @@ test("Work renders each controller once, without terminal summaries and duplicat
 		{ id: "scope:child/work", kind: "work" },
 		{ id: "scope:child/messages", kind: "details" },
 	];
-	assert.deepEqual(panelViews(views, "workspace").map(v => v.id), ["messages", "plan", "scope:child/messages"]);
-	assert.deepEqual(panelViews(views, "view", "config").map(v => v.id), ["config"]);
-	assert.deepEqual(panelViews(views, "view", "work"), []);
+	assert.deepEqual(panelViews(views, "messages").map(v => v.id), ["messages"]);
+	assert.deepEqual(panelViews(views, "config").map(v => v.id), ["config"]);
+	assert.deepEqual(panelViews(views, "work"), []);
 });
 
 test("Work section navigation targets its structured controller, including child scopes", () => {
-	assert.deepEqual(openView("work"), { panel: "workspace", focused: undefined });
-	assert.deepEqual(openView("work", "messages"), { panel: "workspace", focused: "messages" });
-	assert.deepEqual(openView("work", "plan"), { panel: "workspace", focused: "plan" });
-	assert.deepEqual(openView("scope:child/work", "messages"), { panel: "workspace", focused: "scope:child/messages" });
-	assert.deepEqual(openView("messages"), { panel: "workspace", focused: "messages" });
+	assert.deepEqual(openView("work"), { panel: "view", focused: undefined });
+	assert.deepEqual(openView("work", "messages"), { panel: "view", focused: "messages" });
+	assert.deepEqual(openView("work", "plan"), { panel: "view", focused: "plan" });
+	assert.deepEqual(openView("scope:child/work", "messages"), { panel: "view", focused: "scope:child/messages" });
+	assert.deepEqual(openView("messages"), { panel: "view", focused: "messages" });
 	assert.deepEqual(openView("config"), { panel: "view", focused: "config" });
 });

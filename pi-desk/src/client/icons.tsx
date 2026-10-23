@@ -33,7 +33,6 @@ const paths: Record<string, ReactNode> = {
 	switch: <path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4" />,
 	star: <path d="m12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.4-5.7-3-5.7 3 1.1-6.4L2.8 9.7l6.4-.9L12 3Z" />,
 	trash: <><path d="M4 7h16M9 3h6l1 4M6 7l1 14h10l1-14M10 11v6m4-6v6" /></>,
-	login: <><path d="M14 3h6v18h-6M3 12h12m-4-4 4 4-4 4" /></>,
 	edit: <><path d="m4 16 12-12 4 4L8 20H4Zm10-10 4 4" /></>,
 	check: <path d="m5 12 4 4L19 6" />,
 	chevron: <path d="m6 9 6 6 6-6" />,

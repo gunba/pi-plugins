@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { ArtifactStore, boundedText } from "./artifacts.ts";
-import { literalMatches, MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
+import { MAX_CHARS, OUTPUT_CHARS, page, READ_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
 import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
@@ -94,7 +94,6 @@ export default function outputBudget(pi: ExtensionAPI): void {
     name: "read", label: "read", parameters: readSchema,
     description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,
     promptSnippet: "Read file contents",
-    promptGuidelines: ["Truncated reads are archived. read_artifact pages use next_offset; null marks the end of the captured content."],
     execute: (id, params, signal, _update, ctx) => readSnapshot(id, params, signal, ctx, outputArtifactStore()),
   });
 
@@ -118,57 +117,6 @@ export default function outputBudget(pi: ExtensionAPI): void {
         content: [{ type: "text" as const, text: `${result.text}\n\n[${params.query === undefined ? "Artifact" : "Search results"}: ${result.total_chars} characters; next_offset=${result.next_offset ?? "null"}]` }],
         details: { outputBudgeted: true, artifact: params.artifact, ...result, text: undefined },
       };
-    },
-  });
-
-  pi.registerTool({
-    name: "inspect_files", label: "inspect_files",
-    // read covers single files and codemode batches reads, so this is loaded with tool_search when needed.
-    exposure: "deferred", namespace: { name: "files", description: "Read or search up to 20 files in one call." },
-    description: "Inspect up to 20 explicit files in one read-only call. Each request reads a line range or searches that range for a literal string. Results preserve request order and per-file errors; large results are archived. Images must use read.",
-    parameters: Type.Object({
-      requests: Type.Array(Type.Object({
-        path: Type.String(),
-        offset: Type.Optional(Type.Integer({ minimum: 1 })),
-        limit: Type.Optional(Type.Integer({ minimum: 1 })),
-        query: Type.Optional(Type.String({ minLength: 1 })),
-      }, { additionalProperties: false }), { minItems: 1, maxItems: 20 }),
-    }, { additionalProperties: false }),
-    async execute(id, params, signal, _update, ctx) {
-      const store = outputArtifactStore();
-      const sections: string[] = [];
-      let errors = 0;
-      // Bounded sequential disk work; batching removes model round trips, not safety checks.
-      for (const [index, request] of params.requests.entries()) {
-        signal?.throwIfAborted();
-        try {
-          const result = await readSnapshot(`${id}-${index}`, request, signal, ctx, store, MAX_CHARS);
-          if (result.content.some(block => block.type !== "text") || !result.details || !("sourcePath" in result.details)) {
-            throw new Error("Use read for images");
-          }
-          const artifact = "outputArtifact" in result.details ? result.details.outputArtifact : undefined;
-          const preview = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-          // Keep each file's archive handle instead of expanding every large file into memory.
-          let output = preview;
-          if (request.query !== undefined) {
-            if (typeof artifact === "string") {
-              const matches = await store.searchPage(artifact, request.query, 0, MAX_CHARS);
-              output = matches.text;
-              if (matches.next_offset !== null) output += `\n\n[Output truncated. Complete matching lines: ${matches.search_artifact}. Use read_artifact with offset=${matches.next_offset}. Source: ${artifact}]`;
-            } else {
-              const matches = literalMatches(preview.slice(0, result.details.capturedChars), request.query);
-              output = (await boundedText(store, matches, MAX_CHARS)).content[0]!.text;
-            }
-          }
-          sections.push(`--- ${index + 1}. ${request.path} ---\n${output || "[No matches]"}`);
-        } catch (error) {
-          signal?.throwIfAborted();
-          errors++;
-          sections.push(`--- ${index + 1}. ${request.path} ---\nERROR: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      const result = await boundedText(store, sections.join("\n\n"), READ_CHARS);
-      return { ...result, details: { ...result.details, requests: params.requests.length, errors } };
     },
   });
 

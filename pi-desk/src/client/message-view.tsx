@@ -114,7 +114,7 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	const items = (result?.blocks ?? []).flatMap((block, index): WorkItem[] => block?.type === "diff" || block?.type === "document" || block?.type === "shown"
 		? [{ id: `${result!.id}:${index}`, at: result!.timestamp, message: result!.id, source, block }] : []);
 	const shown = items.find(item => item.block.type === "shown");
-	if (shown) return <ReferenceContext value={{ message: result!.id, source }}><ShownSummary item={shown as WorkItem & { block: Extract<ChatBlock, { type: "shown" }> }} session={sessionKey} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
+	if (shown) return <ReferenceContext value={{ message: result!.id, source }}><ShownSummary item={shown as WorkItem & { block: Extract<ChatBlock, { type: "shown" }> }} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
 	const changes = items.map(item => item.block);
 	const totals = changes.reduce((sum, block) => block.type === "diff" ? { added: sum.added + diffStats(block).added, removed: sum.removed + diffStats(block).removed } : sum, { added: 0, removed: 0 });
 	const pill = <Disclosure id={`tool:${call?.id ?? result?.toolCallId ?? owner.id}`} className={`tool-card tool-pill${result?.isError ? " tool-error" : ""}`} data-tool-call={call?.id ?? result?.toolCallId}

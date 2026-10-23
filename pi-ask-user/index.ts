@@ -37,24 +37,6 @@ const _require = createRequire(import.meta.url);
 const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
 
 /**
- * Emit a flat `{ type: "string", enum: [...] }` JSON Schema instead of the
- * `anyOf`/`oneOf` shape that `Type.Union([Type.Literal()])` produces. Google's
- * function-calling API rejects the union form. Local copy of pi-ai's StringEnum
- * to avoid a peer dependency for one helper.
- */
-function StringEnum<const T extends readonly string[]>(
-   values: T,
-   options?: { description?: string; default?: T[number] },
-) {
-   return Type.Unsafe<T[number]>({
-      type: "string",
-      enum: [...values],
-      ...(options?.description ? { description: options.description } : {}),
-      ...(options?.default !== undefined ? { default: options.default } : {}),
-   });
-}
-
-/**
  * `getMarkdownTheme()` returns a bag of closures that read through a Proxy
  * over the host's theme singleton. The Proxy only throws on property access,
  * not when the bag itself is constructed — so a naive
@@ -1601,7 +1583,6 @@ export default function(pi: ExtensionAPI) {
                };
             }
 
-            pi.events.emit("ask:answered", { question, context: normalizedContext, response });
             return {
                content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
                details: { question, context: normalizedContext, options, response, cancelled: false } as AskToolDetails,
@@ -1726,11 +1707,6 @@ export default function(pi: ExtensionAPI) {
             };
          }
 
-         pi.events.emit("ask:answered", {
-            question,
-            context: normalizedContext,
-            response: result,
-         });
          return {
             content: [{ type: "text", text: `User answered: ${formatResponseSummary(result)}` }],
             details: {

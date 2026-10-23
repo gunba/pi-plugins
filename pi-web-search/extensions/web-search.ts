@@ -48,29 +48,9 @@ export type SearchQuery = {
 
 export type WebSearchParams = {
 	search_query?: SearchQuery[];
-	image_query?: SearchQuery[];
 	open?: Array<{ ref_id: string; lineno?: number }>;
 	click?: Array<{ ref_id: string; id: number }>;
 	find?: Array<{ ref_id: string; pattern: string }>;
-	screenshot?: Array<{ ref_id: string; pageno: number }>;
-	finance?: Array<{
-		ticker: string;
-		type: "equity" | "fund" | "crypto" | "index";
-		market?: string;
-	}>;
-	weather?: Array<{ location: string; start?: string; duration?: number }>;
-	sports?: Array<{
-		tool?: "sports";
-		fn: "schedule" | "standings";
-		league: "nba" | "wnba" | "nfl" | "nhl" | "mlb" | "epl" | "ncaamb" | "ncaawb" | "ipl";
-		team?: string;
-		opponent?: string;
-		date_from?: string;
-		date_to?: string;
-		num_games?: number;
-		locale?: string;
-	}>;
-	time?: Array<{ utc_offset: string }>;
 	check?: string[];
 	response_length?: "short" | "medium" | "long";
 };
@@ -109,7 +89,7 @@ function parseSearchResponse(text: string): { output: string; results?: unknown[
 	};
 }
 
-const COMMANDS = ["search_query", "image_query", "open", "click", "find", "screenshot", "finance", "weather", "sports", "time"] as const;
+const COMMANDS = ["search_query", "open", "click", "find"] as const;
 const NOT_ACCESSIBLE = /URL (\S+) is not accessible via this tool\./g;
 // Codex's own fetch failures: "restricted URL", 403s from bot protection, timeouts, content types it does not read.
 const FETCH_FAILED = /Failed to fetch (https?:\/\/\S+?): /g;

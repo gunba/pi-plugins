@@ -178,7 +178,7 @@ function itemPreview(item: WorkItem): string {
 	return changed ? changed.replace(/^[+-]\s*\d+ /, "").trim().slice(0, 160) : item.block.text.split("\n")[0]!.slice(0, 160);
 }
 /** Work an agent showed: its title and note stay in the conversation; the files open in the side pane. */
-export function ShownSummary({ item, session, time }: { item: WorkItem & { block: ShownBlock }; session: string; time?: ReactNode }) {
+export function ShownSummary({ item, time }: { item: WorkItem & { block: ShownBlock }; time?: ReactNode }) {
 	const open = useContext(WorkFocus), { shown } = item.block;
 	return <section className="shown-card">
 		<header><span className="shown-badge"><Icon name="preview" />Shown</span><strong>{shown.title}</strong>{time}

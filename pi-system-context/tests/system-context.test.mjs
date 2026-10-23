@@ -16,11 +16,10 @@ test('environment uses native prompt sections instead of overriding the full pro
  assert.equal(await hook(first, ctx), undefined, 'no forced full-prompt override');
  assert.equal(first.systemPrompt, 'Original');
  assert.ok(first.systemPromptOptions.appendSystemPrompt.startsWith('Existing rule\n\n### Local env'));
- assert.match(first.systemPromptOptions.appendSystemPrompt, /cwd: \/tmp\/one control/);
+ assert.doesNotMatch(first.systemPromptOptions.appendSystemPrompt, /cwd:/, 'Pi\'s own <cwd> section carries the folder');
  assert.equal(first.systemPromptOptions.appendSystemPrompt.includes('\u0007'), false);
  const second = {systemPrompt: 'New', systemPromptOptions: {cwd: '/tmp/two'}};
  await hook(second, ctx);
- assert.match(second.systemPromptOptions.appendSystemPrompt, /cwd: \/tmp\/two/);
  assert.doesNotMatch(second.systemPromptOptions.appendSystemPrompt, /Original|Existing rule/);
  assert.equal(second.systemPromptOptions.appendSystemPrompt.match(/### Local env/g).length, 1);
 });

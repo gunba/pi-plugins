@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { Socket } from "node:net";
 import { WebSocketServer } from "ws";
 import { MAX_WIRE } from "../shared/secure-channel.ts";
-import { closeSync, existsSync, mkdirSync, openSync, readSync, realpathSync, statSync, type FSWatcher, watch } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, statSync, type FSWatcher, watch } from "node:fs";
 import { createPartyFork } from "../../../pi-party/fork.ts";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,7 +63,7 @@ import { configuredSessionDirectory } from "./session-directories.ts";
 import { COPIES, HOLD, Teleport, placeMoved, sessionFolder, type Conversation, type Move } from "./teleport.ts";
 import { DotConnection } from "./dot.ts";
 
-interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; publicOrigin?: string; proxy?: string }
+interface Options { cwd: string; port?: number; dataDir?: string; agentDir?: string; sessionDir?: string; proxy?: string }
 interface ModelChoice { model?: string; reasoning?: string }
 interface ManagedSession { view: SessionView; worker?: SessionWorker; initialized?: boolean; initialGeneration?: string; draining?: Promise<void>; reconciling?: boolean; reconnectAt?: number;
 	/** A new conversation's chosen model, applied once it is ready and before any message is delivered. */
@@ -917,10 +917,6 @@ export class DeskHost {
 		}
 	}
 
-	/**
-	 * Keep this computer current without interrupting work: restart one idle conversation at a time onto
-	 * this host's version, and update the host itself when every conversation has been quiet for a while.
-	 */
 	/** The earlier login store goes once no running conversation still uses the code that read it. */
 	private async retireLogins(): Promise<void> {
 		const folder = join(this.directory, "provider-accounts");
@@ -929,6 +925,10 @@ export class DeskHost {
 		const older = [...this.sessions.values()].some(({ view }) => view.state !== "closed" && !!view.snapshot && "accounts" in view.snapshot);
 		if (!older) retireSavedLogins(this.directory);
 	}
+	/**
+	 * Keep this computer current without interrupting work: restart one idle conversation at a time onto
+	 * this host's version, and update the host itself when every conversation has been quiet for a while.
+	 */
 	private async maintain(force = false, only?: string): Promise<void> {
 		if (this.maintaining) { if (force) this.forcedMaintenance = { only }; return; }
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate || this.applyingUpdate) return;
@@ -1152,10 +1152,6 @@ export class DeskHost {
 		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
 	}
 	/**
-	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
-	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
-	 */
-	/**
 	 * Closes a conversation the asking agent started with agent_create or agent_fork: a note says so in it, its work is
 	 * stopped, and it leaves the sidebar and stops being wakeable. Any other conversation is refused.
 	 */
@@ -1190,6 +1186,10 @@ export class DeskHost {
 		managed.view = { ...managed.view, kept: managed.view.state === "closed" || managed.view.kept, error: `Move to ${name} failed: ${error}` };
 		this.persist(true); this.emit({ type: "session", session: managed.view });
 	}
+	/**
+	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
+	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
+	 */
 	private async moveConversation(source: string, session: string, cwd: string, asked = false): Promise<{ key: string; note: string }> {
 		const teleport = this.teleport, network = this.partyNetwork, self = this.accountIdentity?.device.id;
 		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
@@ -1262,7 +1262,7 @@ export class DeskHost {
 		if (sessionFile) {
 			sessionFile = realpathSync(sessionFile);
 			// A conversation that moved to another computer runs there, never again here.
-			const headerId = sessionHeaderId(sessionFile) ?? "", moved = this.teleport?.movedAway(headerId);
+			const header = readSessionHeader(sessionFile), headerId = header.id ?? "", moved = this.teleport?.movedAway(headerId);
 			if (moved) throw new Error(`This conversation moved to ${this.partyNetwork?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
 			if (this.teleport?.superseded(headerId, sessionFile)) throw new Error("This conversation went to another computer and came back; it continues in the copy that came back.");
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
@@ -1271,7 +1271,7 @@ export class DeskHost {
 				if (adopt && active !== existing) throw new WorkerConnectionError("This native conversation is already attached elsewhere.");
 				return active.view.key;
 			}
-			cwd = readSessionHeader(sessionFile).cwd;
+			cwd = header.cwd;
 		}
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(homeFolder(cwd)), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
@@ -1340,13 +1340,13 @@ export class DeskHost {
 	}
 
 	private allowedOrigin(origin: string | undefined): boolean {
-		return origin === this.origin || !!this.options.publicOrigin && origin === this.options.publicOrigin;
+		return origin === this.origin;
 	}
 
 	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		securityHeaders(response);
 		try {
-			const allowedHosts = [new URL(this.origin).host, ...(this.options.publicOrigin ? [new URL(this.options.publicOrigin).host] : [])];
+			const allowedHosts = [new URL(this.origin).host];
 			if (!request.headers.host || !allowedHosts.includes(request.headers.host)) { json(response, 403, { error: "Unrecognized host." }); return; }
 			const url = new URL(request.url ?? "/", this.origin);
 			const operator = this.access.isOperator((request.headers.authorization ?? "").replace(/^Bearer /, ""));
@@ -1576,12 +1576,6 @@ export class DeskHost {
 			if (dotInput?.[2] && request.method === "POST") return reply({ input: this.dot!.cancelInput(
 				dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], data.connection === undefined ? undefined : string(data.connection, 64)) });
 			if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.persist(true); return reply({ saved: true }); }
-			if (url.pathname === "/api/runtime/update" && request.method === "POST") {
-				if (!this.runtimeHome) return reply({ error: "This host does not use a managed runtime." }, 409);
-				await launchOperation(this.runtimeHome, "update");
-				this.refreshUpdates();
-				return reply({ accepted: true }, 202);
-			}
 			if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
 				if (this.dot?.busy) throw Error("Finish the current Dot operation before updating.");
 				if (this.logins?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
@@ -1833,7 +1827,6 @@ export class DeskHost {
 			}
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
 			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.access.devices());
-			if (url.pathname === "/api/invite" && request.method === "POST") return reply({ token: this.access.invite() });
 			if (url.pathname === "/api/revoke" && request.method === "POST") {
 				const id = string(data.id, 100);
 				this.access.revoke(id);
@@ -1843,11 +1836,6 @@ export class DeskHost {
 			return reply({ error: "Not found." }, 404);
 		} catch (error) { return reply({ error: error instanceof Error ? error.message : String(error) },
 			error instanceof WorkerConnectionError ? 503 : error instanceof CatalogChanged || error instanceof StaleGeneration || error instanceof ReceiptConflict ? 409 : 400); }
-	}
-
-	closeForUpdate(): Promise<void> {
-		this.preserveWorkers = true;
-		return this.close();
 	}
 
 	close(): Promise<void> {
@@ -1900,13 +1888,3 @@ export class DeskHost {
 	}
 }
 
-/** The session id in a Pi conversation file's first line. */
-function sessionHeaderId(file: string): string | undefined {
-	let descriptor: number | undefined;
-	try {
-		descriptor = openSync(file, "r");
-		const buffer = Buffer.alloc(64 * 1024), read = readSync(descriptor, buffer, 0, buffer.length, 0), end = buffer.subarray(0, read).indexOf(10);
-		const header = JSON.parse(buffer.subarray(0, end < 0 ? read : end).toString("utf8"));
-		return header?.type === "session" && typeof header.id === "string" ? header.id : undefined;
-	} catch { return undefined; } finally { if (descriptor !== undefined) closeSync(descriptor); }
-}

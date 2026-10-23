@@ -65,11 +65,3 @@ as well as text, without rewriting JSONL or replacing the session tree.
 `/session-memory off` restores released payloads and disables further pruning.
 Use it before exporting complete history from a running process. Native
 compaction checkpoints in the active context are always retained.
-
-## Delivery-recovery verification
-
-9 September 2026: TypeScript and all 93 memory/subagent tests passed. The
-regression covers compaction, repeated pruning, session reopening, pending
-reports and unchanged JSONL bytes. A read-only replay of an affected session
-reproduced 166 false recoveries with the former cleanup and zero with the fix.
-No inference probes or session-file edits were used.

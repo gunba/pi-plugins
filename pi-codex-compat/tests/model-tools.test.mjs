@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PRESERVE_BUILTIN_BASH, imageGenerationService, isCodexLikeModel, isImageGenerationModel, syncCodexCompatTools, toolsForModel } from "../extensions/model-tools.ts";
+import { imageGenerationService, isCodexLikeModel, isImageGenerationModel, syncCodexCompatTools, toolsForModel } from "../extensions/model-tools.ts";
 
 const EMPTY = { enabled: false };
 const AUTH = { imageGenerationAuthenticated: true };
@@ -15,7 +15,6 @@ test("provider matching stays exact while supporting current GPT model versions"
 });
 
 test("every model has the same tools: a model switch neither adds nor removes the process tools", () => {
-	assert.equal(PRESERVE_BUILTIN_BASH, true);
 	const codexModel = { provider: "openai-codex", id: "gpt-6.1-sol" }, claudeModel = { provider: "anthropic", id: "claude-opus-5.5" };
 	assert.deepEqual(syncCodexCompatTools(["read", "bash", "edit", "write"], codexModel, EMPTY).activeTools, ["read", "bash", "edit", "write"]);
 	const loaded = ["read", "bash", "edit", "write", "custom", "exec_command", "write_stdin"];

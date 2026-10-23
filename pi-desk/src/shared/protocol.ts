@@ -104,12 +104,6 @@ export interface ChatMessage {
 }
 export interface ArtifactPage { generation: string; text: string; offset: number; next: number | null; total: number }
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }
-export interface TreePage {
-	generation: string;
-	leaf: string | null;
-	entries: { id: string; parentId: string | null; type: string; label: string; timestamp: string }[];
-	next?: string;
-}
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
@@ -193,7 +187,6 @@ export type WorkerCommand =
 	| ({ kind: "context_update" } & import("./context.ts").ContextChange)
 	| { kind: "context_save"; path: string; version: string; text: string }
 	| ({ kind: "history"; source?: string } & HistoryPosition)
-	| { kind: "tree"; after?: string }
 	| { kind: "navigate"; entry: string; summarize?: boolean }
 	| { kind: "fork"; entry: string; position: "before" | "at" }
 	/** Switch this conversation's Pi process to another saved session, as Pi's /resume does. */

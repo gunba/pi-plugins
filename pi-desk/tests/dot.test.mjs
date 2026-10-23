@@ -18,12 +18,11 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 			import React from "react";
 			import { renderToStaticMarkup } from "react-dom/server";
 			import { DotConversation } from "./src/client/dot-conversation.tsx";
-			const dot = { id: "pc", online: true, loaded: true, supported: true, ready: false, busy: false, status: "Not connected", error: "",
+			const dot = { id: "pc", online: true, loaded: true, ready: false, busy: false, status: "Not connected", error: "",
 				computers: [{id:"pc", name:"Fixture computer", connected:true}],
 				view: {state:"unavailable", name:"Dot", error:"Session with given id not found.", messages:[], inputs:[]},
 				messages:[], optimistic:[], files:[], filesReady:true, draft:"" };
 			export const html = renderToStaticMarkup(<DotConversation dot={dot} openNavigation={() => {}}/>);
-			export const unsupported = renderToStaticMarkup(<DotConversation dot={{...dot, supported:false}} openNavigation={() => {}}/>);
 		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic",
 			plugins: [{ name: "offline-connection", setup(builder) {
 				builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
@@ -32,14 +31,12 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 					? "export function Modal({children}) { return children; }"
 					: "export class ApiError extends Error {} export function api() { throw Error('No network'); }", loader: "js" }));
 			} }] });
-		const { html, unsupported } = createRequire(import.meta.url)(outfile);
+		const { html } = createRequire(import.meta.url)(outfile);
 		assert.match(html, /aria-label="Dot connection computer"/);
 		assert.match(html, />Connect Dot</);
 		assert.match(html, /No ChatGPT window is needed/);
 		assert.match(html, /uses Pi(?:'|&#x27;)s ChatGPT login/);
 		assert.doesNotMatch(html, /Chrome’s ChatGPT sign-in|opens a background tab/);
-		assert.match(unsupported, /Update Desk on this computer/);
-		assert.doesNotMatch(unsupported, /Dot ChatGPT account/);
 		assert.doesNotMatch(html, /Session with given id not found/);
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -31,17 +31,6 @@ test("read archives the exact requested range, including huge first lines", asyn
   assert.equal(full.content[0].text, text);
 });
 
-test("batch searches complete snapshots and reports errors without losing other files", async t => {
-  const f = await fixture(t);
-  await writeFile(join(f.cwd, "large.txt"), "early\n".repeat(30000) + "late needle\n");
-  const result = await f.tools.get("inspect_files").execute("batch", { requests: [
-    { path: "absent.txt" }, { path: "large.txt", query: "needle" },
-  ] }, undefined, undefined, f.ctx);
-  assert.equal(result.details.errors, 1);
-  assert.match(result.content[0].text, /ERROR:/);
-  assert.match(result.content[0].text, /30001: late needle/);
-});
-
 test("output middleware preserves errors, usage, native metadata and full-read overrides", async t => {
   const f = await fixture(t);
   const event = {
