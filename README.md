@@ -70,7 +70,8 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   proposes `AGENTS.md` lines, skill or plugin fixes for the patterns.
 - [`pi-watch`](pi-watch/README.md) — `watch` waits without spending turns: a
   background command's output and end, a re-run command's changes, or a time,
-  filtered by a classifier when asked. Watches survive restarts.
+  filtered by a classifier when asked. Watches survive restarts, and Desk reopens a
+  closed conversation when its time comes, showing the time in the sidebar.
 - [`pi-improve-skill`](pi-improve-skill/skills/improve-skill/SKILL.md) — improves a skill
   against benchmark cases: one strong-model session runs task-model trials, has task-model
   investigators explain each run, edits the skill and checks held-out cases.

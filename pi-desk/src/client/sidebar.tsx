@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "./connection.ts";
-import { activityLabel, sessionActivity } from "./activity.ts";
+import { activityLabel, sessionActivity, showsWake, wakeLabel } from "./activity.ts";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { connectionLabel, connectionTone, isOffline } from "./connection-state.ts";
 import { VersionTag } from "./conversation-version.tsx";
@@ -132,7 +132,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
             <span className={`status-dot ${sessionActivity(item)}`} role="img"
               aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
             <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
-              <small className="session-metadata"><span className="session-activity">{activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+              <small className="session-metadata"><span className="session-activity" title={item.wakes ? `A watch wakes it ${new Date(item.wakes).toLocaleString()}${item.state === "closed" ? "; Desk reopens it then" : ""}` : undefined}>
+                {item.wakes && showsWake(sessionActivity(item)) ? wakeLabel(item.wakes) : activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
                 {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
                   <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />

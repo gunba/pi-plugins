@@ -71,6 +71,8 @@ export class DeskHost {
 	private checkpoints?: UpdateCheckpoints;
 	private restoringUpdate = false;
 	private restoreUpdateJob?: Promise<void>;
+	/** When wakeDue last tried to reopen each conversation, and for which wake. */
+	private readonly wakeTried = new Map<string, { wakes: number; at: number }>();
 	private parties?: Parties;
 	private partyOperations?: PartyOperations;
 	private dotConnector?: DotConnector;
@@ -246,7 +248,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				this.events.heartbeat();
-				this.updates.refresh(); this.refreshParties(); this.quests.refresh(); void this.updates.maintain(); void this.retireLogins();
+				this.updates.refresh(); this.refreshParties(); this.quests.refresh(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue();
 				try { this.partyOperations?.touchHost(); this.agents.flushLocal(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -362,7 +364,8 @@ export class DeskHost {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
 				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
-					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key) };
+					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key),
+					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined }) };
 				managed.keepOnClose = undefined;
 			}
 			this.events.emit({ type: "session", session: managed.view });
@@ -384,7 +387,8 @@ export class DeskHost {
 		} else if (message.type === "ui") {
 			// Closing tears the presentation down, which announces new generations; that is not a restart.
 			if (managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
-			managed.view = { ...managed.view, ui: message.snapshot,
+			const wakes = Math.min(...message.snapshot.views.flatMap(view => view.wakes ? [view.wakes] : []));
+			managed.view = { ...managed.view, ui: message.snapshot, wakes: Number.isFinite(wakes) ? wakes : undefined,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
 		} else if (message.type === "detached") {
@@ -415,6 +419,25 @@ export class DeskHost {
 		if (message.type === "snapshot") {
 			if (message.snapshot.activity !== "idle") this.updates.active(key);
 			this.refreshParties(); this.drainInputs(managed);
+		}
+	}
+
+	/**
+	 * Reopens listed conversations that aren't running when one of their watches is due, such as after the computer
+	 * restarted or Jordan closed one keeping it in the sidebar; the watch then wakes the agent. One that fails to start
+	 * is tried again every 15 minutes while it stays listed.
+	 */
+	private wakeDue(): void {
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return;
+		const now = Date.now();
+		for (const managed of this.sessions.values()) {
+			const { view } = managed;
+			const tried = this.wakeTried.get(view.key);
+			if (managed.worker || !view.wakes || view.wakes > now || !view.file || view.moved || !isOpenSession(view)
+				|| (tried?.wakes === view.wakes && tried.at > now - 15 * 60_000)) continue;
+			this.wakeTried.set(view.key, { wakes: view.wakes, at: now });
+			try { this.createSession(view.cwd, view.file, managed); }
+			catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
 		}
 	}
 

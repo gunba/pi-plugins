@@ -19,6 +19,12 @@ export const WATCH_CHANGED = "pi-watch/changed";
 
 const MAX_ACTIVE = 8;
 const DEFAULT_HOURS = 24, MAX_HOURS = 168;
+/** How far ahead a time watch may be set. */
+const MAX_WAIT_DAYS = 31;
+/** A time watch checks the clock this often, so a computer that slept still wakes the agent on time. */
+const CLOCK_MS = 60_000;
+/** A time watch reached later than this, because the conversation wasn't running, says so. */
+const LATE_MS = 5 * 60_000;
 const TAIL_MS = 1_000;
 /** Output arriving within this long of the first new line is judged as one event. */
 const SETTLE_MS = 2_000;
@@ -86,7 +92,7 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command, run like bash's. Without every, it runs in the background: its new output wakes you, and so does its end. With every, it is re-run and a change in its output wakes you." })),
 	every: Type.Optional(Type.Integer({ minimum: 5, maximum: 86_400, description: "Seconds between runs of command." })),
-	until: Type.Optional(Type.String({ description: "Instead of command: wake at this time, HH:MM (its next occurrence, this computer's time) or an ISO date and time, within 7 days." })),
+	until: Type.Optional(Type.String({ description: `Instead of command: wake at this time, HH:MM (its next occurrence, this computer's time) or an ISO date and time, within ${MAX_WAIT_DAYS} days.` })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output that shows this, in plain words (\"the build fails or finishes\"). A classifier judges each event." })),
 	repeat: Type.Optional(Type.Boolean({ description: "With every: keep watching after waking you. By default the watch ends when it first wakes you." })),
 	hours: Type.Optional(Type.Number({ minimum: 0.05, maximum: MAX_HOURS, description: `How long a command watch lasts; default ${DEFAULT_HOURS}, at most ${MAX_HOURS}. A background command still running then is stopped.` })),
@@ -106,7 +112,7 @@ export function describeWatch(spec: WatchSpec): string {
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
 }
 
-/** Milliseconds since the epoch for "HH:MM" (its next occurrence here) or an ISO date and time, within 7 days. */
+/** Milliseconds since the epoch for "HH:MM" (its next occurrence here) or an ISO date and time, within MAX_WAIT_DAYS. */
 export function parseTime(text: string, now = Date.now()): number {
 	const clock = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
 	let at: number;
@@ -120,7 +126,7 @@ export function parseTime(text: string, now = Date.now()): number {
 	} else at = Date.parse(text);
 	if (!Number.isFinite(at)) throw new Error(`${text} is not a time: give HH:MM or an ISO date and time.`);
 	if (at <= now) throw new Error(`${text} has passed.`);
-	if (at - now > MAX_HOURS * 3_600_000) throw new Error(`${text} is more than 7 days away.`);
+	if (at - now > MAX_WAIT_DAYS * 86_400_000) throw new Error(`${text} is more than ${MAX_WAIT_DAYS} days away.`);
 	return at;
 }
 
@@ -343,10 +349,14 @@ class Watches {
 			return;
 		}
 		if (spec.mode === "time") {
-			const late = now >= spec.at!;
-			active.timers.push(setTimeout(() => this.guard(() => this.end(active,
-				late ? `${when(spec.at!)} has passed; the conversation wasn't running then` : `it's ${when(spec.at!)}, the time you set`, { kill: false })),
-			Math.max(0, spec.at! - now)));
+			// Node's timers stop while a computer sleeps and cannot span more than 24.8 days, so the clock is checked instead.
+			const check = () => this.guard(() => {
+				const left = spec.at! - Date.now();
+				if (left > 0) { active.timers = [setTimeout(check, Math.min(left, CLOCK_MS))]; return; }
+				this.end(active, -left > LATE_MS ? `it was due ${when(spec.at!)}, while the conversation wasn't running`
+					: `it's ${when(spec.at!)}, the time you set`, { kill: false });
+			});
+			active.timers.push(setTimeout(check, 0));
 			return;
 		}
 		if (spec.expires <= now) {
@@ -536,8 +546,9 @@ class Watches {
 		if (this.ctx.hasUI) this.ctx.ui.setStatus("pi-watch", specs.length ? `watching ${specs.length}` : undefined);
 		const presentation = getPresentation(this.pi);
 		if (!presentation || presentation.suspended) return;
+		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : []);
 		presentation.publish("pi-watch", specs.length ? {
-			kind: "details", title: "Watches",
+			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
 			data: { items: specs.map(spec => ({ id: spec.id, title: describeWatch(spec), subtitle: `${spec.id} · ends ${when(spec.expires)}`,
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
 			badges: [{ label: "Watching", value: String(specs.length), compact: true }],

@@ -128,6 +128,8 @@ export interface SessionView {
 	createdBy?: string;
 	/** It moved to another computer (teleport); it does not run here again. */
 	moved?: { to: string; at: number };
+	/** When its extensions next need it running (a watch set to a time). Desk reopens it then if it is listed but not running. */
+	wakes?: number;
 	/** Native state; presentation data is carried once in ui below. */
 	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */

@@ -54,6 +54,9 @@ export interface UiView {
 		meter?: { value: number; max: number; resetsAt?: number } }[];
 	/** Model capacity and the selected working window, in tokens. */
 	context?: { capacity: number; limit: number };
+	/** When, in ms since the epoch, this view's owner next needs the conversation running. A host that closes or loses
+	 * the conversation's process shows this time and reopens the conversation then. */
+	wakes?: number;
 	actions?: UiAction[];
 }
 export interface UiQuestion {

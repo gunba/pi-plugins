@@ -28,3 +28,12 @@ export function activityLabel(state: string): string {
 		default: return state;
 	}
 }
+
+/** When a conversation's watch wakes it: the time today, the weekday and time within a week, otherwise the date and time. */
+export function wakeLabel(at: number, now = Date.now()): string {
+	const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	if (new Date(at).toDateString() === new Date(now).toDateString()) return `Wakes ${time}`;
+	return `Wakes ${new Date(at).toLocaleDateString([], at - now < 6 * 86_400_000 ? { weekday: "short" } : { day: "numeric", month: "short" })} ${time}`;
+}
+/** States in which a pending wake says more than the activity itself. */
+export const showsWake = (state: string) => ["idle", "ready", "sleeping", "closed", "interrupted"].includes(state);

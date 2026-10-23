@@ -14,15 +14,20 @@ export function CloseConversationButton({ session, name, computer, connected, di
 	const close = async () => {
 		if (!session.activation || !connected || disabled || pending || closing) return;
 		const sleeping = session.state === "closed" && session.kept;
+		const wakes = session.wakes ? new Date(session.wakes).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined;
 		const choice = await confirmation.choose(sleeping
 			? { title: "Remove conversation?", context: `${computer} · ${name}`, accept: "Remove from sidebar",
-				body: <p>It is not running. Its history is kept and can be resumed from Resume.</p> }
+				body: <p>It is not running.{wakes && ` A watch is set to wake it ${wakes}; removing it means Desk won't reopen it then.`} Its history is kept and can be resumed from Resume.</p> }
+			// A conversation waiting on a watch is kept by default, so it stays in view until it wakes.
+			: wakes ? { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close until then", alternative: "Close and remove",
+				body: <><CloseSummary session={session} /><p className="muted">A watch is set to wake it {wakes}. Closed until then, it stays in the sidebar and Desk reopens it at that time. Removing it means Desk won't.</p></> }
 			: { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close and remove", alternative: "Close, keep in sidebar",
 				body: <><CloseSummary session={session} /><p className="muted">Keeping it in the sidebar stops Pi to free memory; open it later and choose Resume to carry on.</p></> });
 		if (!choice) return;
+		const keep = wakes && !sleeping ? choice === "accept" : choice === "alternative";
 		setPending(true); confirmed?.();
 		try {
-			await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation, ...(choice === "alternative" ? { keep: true } : {}) });
+			await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation, ...(keep ? { keep: true } : {}) });
 		} catch (error) {
 			report(`${name}: ${error instanceof Error ? error.message : String(error)}`);
 		} finally { setPending(false); }
