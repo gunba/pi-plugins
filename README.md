@@ -23,8 +23,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   native timing in Desk and a live elapsed/quiet clock in the terminal.
   Tool timing metadata survives saved history without private renderer patches.
 - [`pi-web-search`](pi-web-search/README.md) — `web_search` and `web_fetch` for
-  every model, through Parallel's search service (free without an account; a key
-  raises the rate limit). Reads JavaScript pages, PDFs and bot-checked sites.
+  every model, through Parallel's free search service, or Exa on a computer with an
+  Exa API key (Desk: Settings → Web search). Reads JavaScript pages, PDFs and
+  bot-checked sites.
 - [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) — pinned native
   Claude OAuth compatibility, including request identity and prompt shaping for
   root sessions, inherited child providers and compaction. Uses Pi's account

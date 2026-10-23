@@ -1,16 +1,18 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { getPresentation } from "../../pi-ui/index.ts";
 import { renderSearchResult } from "./render.ts";
 
 /**
- * Web search and page reading for every model, through Parallel's search service (its MCP server, which is free
- * without an account). A Parallel API key raises the free rate limits: PARALLEL_API_KEY, or a "parallel" entry
- * ({ "type": "api_key", "key": "…" }) in Pi's auth.json.
+ * Web search and page reading for every model. Parallel's search service (its MCP server, free without an account)
+ * runs them unless this computer has an Exa API key, saved from Desk's Settings → Web search into web-search.json in
+ * Pi's agent folder, or set as EXA_API_KEY. Then Exa runs them.
  */
 export const ENDPOINT = "https://search.parallel.ai/mcp";
+const EXA = "https://api.exa.ai";
 const TIMEOUT_MS = 90_000;
 /** Excerpts kept per search result; the whole result is cut again by pi-output-budget. */
 const RESULT_CHARS = 1_500;
@@ -34,12 +36,20 @@ type Failure = { url?: string; error?: string; message?: string; error_type?: st
 type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
 export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
 
-function apiKey(): string | undefined {
-	if (process.env.PARALLEL_API_KEY?.trim()) return process.env.PARALLEL_API_KEY.trim();
+const settingsFile = () => join(getAgentDir(), "web-search.json");
+/** This computer's Exa API key, read on every call so a key saved in Settings applies at once. */
+export function exaKey(): string | undefined {
+	if (process.env.EXA_API_KEY?.trim()) return process.env.EXA_API_KEY.trim();
 	try {
-		const entry = JSON.parse(readFileSync(join(getAgentDir(), "auth.json"), "utf8"))?.parallel;
-		return typeof entry?.key === "string" && entry.key.trim() ? entry.key.trim() : undefined;
+		const key = JSON.parse(readFileSync(settingsFile(), "utf8"))?.exaApiKey;
+		return typeof key === "string" && key.trim() ? key.trim() : undefined;
 	} catch { return undefined; }
+}
+function saveExaKey(key: string | undefined): void {
+	const file = settingsFile();
+	if (!key) { rmSync(file, { force: true }); return; }
+	writeFileSync(`${file}.tmp`, `${JSON.stringify({ exaApiKey: key }, null, 2)}\n`, { mode: 0o600 });
+	renameSync(`${file}.tmp`, file);
 }
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -69,10 +79,10 @@ export class McpClient {
 	}
 
 	private async post(method: string, params: unknown, signal: AbortSignal, notification = false) {
-		const id = this.next++, key = apiKey();
+		const id = this.next++;
 		const response = await this.fetchImpl(this.endpoint, { method: "POST", signal, headers: {
 			"content-type": "application/json", accept: "application/json, text/event-stream",
-			...(this.session ? { "mcp-session-id": this.session } : {}), ...(key ? { authorization: `Bearer ${key}` } : {}),
+			...(this.session ? { "mcp-session-id": this.session } : {}),
 		}, body: JSON.stringify({ jsonrpc: "2.0", method, params, ...(notification ? {} : { id }) }) });
 		const session = response.headers.get("mcp-session-id");
 		if (session) this.session = session;
@@ -98,7 +108,7 @@ export class McpClient {
 			return this.call(tool, args, signal, true);
 		}
 		if (response.status === 429) throw new Error("Parallel's free search is rate-limited right now. Try again shortly; "
-			+ "a Parallel API key (PARALLEL_API_KEY, or \"parallel\" in Pi's auth.json) raises the limit.");
+			+ "an Exa API key in Settings → Web search moves this computer's searches to Exa.");
 		if (!response.ok) throw new Error(`Parallel search failed: HTTP ${response.status} ${body.slice(0, 300)}`);
 		const reply = message(body, response.headers.get("content-type") ?? "", id);
 		if (reply?.error) throw new Error(`Parallel search failed: ${reply.error.message ?? JSON.stringify(reply.error)}`);
@@ -132,34 +142,102 @@ function failures(payload: Payload): string[] {
 const callerArgs = (ctx: ExtensionContext) => ({ session_id: ctx.sessionManager.getSessionId(), ...(ctx.model ? { model_name: ctx.model.id } : {}) });
 const timed = (signal: AbortSignal | undefined) => AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(TIMEOUT_MS)]);
 
-export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
-	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
-	const kept = payload.results ?? [];
-	const lines = kept.map((page, index) => [`${index + 1}. ${page.title?.trim() || page.url}`, `   ${page.url}${page.publish_date ? ` · ${page.publish_date}` : ""}`,
+/** The search results and fetch failures both services come down to. */
+type Found = { pages: Page[]; failures: string[] };
+
+function searchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
+	const lines = pages.map((page, index) => [`${index + 1}. ${page.title?.trim() || page.url}`, `   ${page.url}${page.publish_date ? ` · ${page.publish_date}` : ""}`,
 		...page.excerpts?.length ? [clip(page.excerpts.join("\n…\n"), RESULT_CHARS).replace(/^/gm, "   ")] : []].join("\n"));
-	const notes = failures(payload);
-	const text = [kept.length ? lines.join("\n\n") : "No results.", ...notes.length ? [notes.join("\n")] : [],
-		...kept.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
-	return { content: [{ type: "text", text }],
-		details: { results: kept.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
+	const text = [pages.length ? lines.join("\n\n") : "No results.", ...failures.length ? [failures.join("\n")] : [],
+		...pages.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
+	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
+}
+
+function fetchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
+	const sections = pages.map(page => [`## ${page.title?.trim() || page.url}`, page.url,
+		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
+	const text = [...sections, ...failures.length ? [failures.map(line => `Could not read ${line}`).join("\n")] : []].join("\n\n") || "Nothing was read.";
+	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
+		...(failures.length ? { errors: failures.length } : {}) } };
+}
+
+async function exa(path: string, body: Record<string, unknown>, key: string, signal: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Record<string, unknown>> {
+	const response = await fetchImpl(`${EXA}${path}`, { method: "POST", signal, headers: { "content-type": "application/json", "x-api-key": key }, body: JSON.stringify(body) });
+	const text = await response.text();
+	if (response.status === 401 || response.status === 403) throw new Error(`Exa refused this computer's API key (HTTP ${response.status}). Check it in Settings → Web search.`);
+	if (response.status === 402) throw new Error("Exa says the account is out of credit (HTTP 402). Add credit at dashboard.exa.ai.");
+	if (response.status === 429) throw new Error("Exa is rate-limiting requests right now. Try again shortly.");
+	if (!response.ok) throw new Error(`Exa failed: HTTP ${response.status} ${text.slice(0, 300)}`);
+	try { return JSON.parse(text); } catch { throw new Error(`Exa returned something unexpected: ${text.slice(0, 300)}`); }
+}
+type ExaPage = { url: string; title?: string | null; publishedDate?: string | null; highlights?: string[]; text?: string };
+const exaPage = (page: ExaPage): Page => ({ url: page.url, ...(page.title ? { title: page.title } : {}), ...(page.publishedDate ? { publish_date: page.publishedDate.slice(0, 10) } : {}),
+	...(page.highlights?.length ? { excerpts: page.highlights } : {}), ...(page.text !== undefined ? { full_content: page.text } : {}) });
+/** Results localized to this computer's country, from its locale (en-AU gives AU). */
+const country = () => /^[a-z]{2,3}-([A-Z]{2})\b/.exec(Intl.DateTimeFormat().resolvedOptions().locale)?.[1];
+
+/** Each query is its own Exa search, guided by the goal; results are interleaved by rank and deduplicated. */
+async function exaSearch(params: SearchParams, key: string, signal: AbortSignal): Promise<Found> {
+	const location = country();
+	const replies = await Promise.all(params.queries.map(query => exa("/search", { query, type: "auto", numResults: 5, objective: params.goal,
+		...(location ? { userLocation: location } : {}), contents: { highlights: { maxCharacters: RESULT_CHARS } } }, key, signal)));
+	const lists = replies.map(reply => (reply.results ?? []) as ExaPage[]), pages: Page[] = [], seen = new Set<string>();
+	for (let rank = 0; pages.length < 10 && lists.some(list => rank < list.length); rank++)
+		for (const list of lists) {
+			const page = list[rank];
+			if (page && !seen.has(page.url) && pages.length < 10) { seen.add(page.url); pages.push(exaPage(page)); }
+		}
+	return { pages, failures: [] };
+}
+
+async function exaFetch(params: FetchParams, key: string, signal: AbortSignal): Promise<Found> {
+	const reply = await exa("/contents", { urls: params.urls, ...params.full ? { text: true }
+		: params.goal ? { highlights: { query: params.goal, maxCharacters: 4_000 } } : { text: { maxCharacters: PAGE_CHARS } } }, key, signal);
+	const statuses = (reply.statuses ?? []) as { id: string; status: string; error?: { tag?: string; httpStatusCode?: number | null } }[];
+	return { pages: ((reply.results ?? []) as ExaPage[]).map(exaPage),
+		failures: statuses.filter(status => status.status !== "success").map(status =>
+			`${status.id}: ${status.error?.tag ?? "could not be read"}${status.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : ""}`) };
+}
+
+export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
+	const key = exaKey();
+	if (key) return searchText(await exaSearch(params, key, timed(signal)));
+	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
+	return searchText({ pages: payload.results ?? [], failures: failures(payload) });
 }
 
 export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
-	const urls = params.urls;
-	const invalid = urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
+	const invalid = params.urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
 	if (invalid.length) throw new Error(`Not http(s) URLs: ${invalid.join(", ")}`);
-	const payload: Payload = urls.length ? parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
-		...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal))) : {};
-	const sections = (payload.results ?? []).map(page => [`## ${page.title?.trim() || page.url}`, page.url,
-		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
-	const notes = failures(payload).map(line => `Could not read ${line}`);
-	const text = [...sections, ...notes.length ? [notes.join("\n")] : []].join("\n\n") || "Nothing was read.";
-	return { content: [{ type: "text", text }],
-		details: { results: (payload.results ?? []).map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
-			...(payload.errors?.length ? { errors: payload.errors.length } : {}) } };
+	const key = exaKey();
+	if (key) return fetchText(await exaFetch(params, key, timed(signal)));
+	const payload = parse(await mcp.call("web_fetch", { urls: params.urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
+		...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal)));
+	return fetchText({ pages: payload.results ?? [], failures: failures(payload) });
+}
+
+/** Desk's Settings → Web search: which service runs the tools on this computer, and the Exa key that switches to Exa. */
+function publishSettings(pi: ExtensionAPI): void {
+	const remote = getPresentation(pi);
+	if (!remote?.capabilities.includes("details") || remote.suspended) return;
+	const key = exaKey(), fromEnvironment = !!process.env.EXA_API_KEY?.trim();
+	remote.publish("web-search", { kind: "details", surface: "settings", title: "Web search", data: {
+		summary: "web_search and web_fetch use Parallel's free search unless this computer has an Exa API key; then they use Exa, "
+			+ "which ranks higher in independent tests and is billed per request. Applies to every conversation on this computer.",
+		fields: [{ label: "Service", value: key ? "Exa" : "Parallel (free)" }],
+		controls: fromEnvironment ? [] : [{ kind: "text", secret: true, label: "Exa API key", value: "",
+			placeholder: key ? "Saved; enter a new key to replace it" : "Paste a key from dashboard.exa.ai",
+			help: "Saved in this computer's Pi folder (web-search.json), readable only by you.", action: { id: "exa-key", label: "Save Exa key" } }],
+	}, actions: key && !fromEnvironment ? [{ id: "exa-remove", label: "Remove Exa key", destructive: true }] : [] }, {
+		"exa-key": value => { if (typeof value === "string" && value.trim()) { saveExaKey(value.trim()); publishSettings(pi); } },
+		"exa-remove": () => { saveExaKey(undefined); publishSettings(pi); },
+	});
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
+	// Another conversation may have saved or removed the key; agent_end keeps this one's page current.
+	pi.on("session_start", () => publishSettings(pi));
+	pi.on("agent_end", () => publishSettings(pi));
 	pi.registerTool({
 		name: "web_search",
 		label: "Web search",

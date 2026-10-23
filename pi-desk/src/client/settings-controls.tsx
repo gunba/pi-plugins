@@ -22,7 +22,7 @@ export function SettingControl({ control, invoke, disabled }: {
 				onChange={event => invoke(control.action, event.target.value)}>
 				{control.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
 			</select>
-			: control.kind === "text" ? <input id={id} type="search" value={draft} placeholder={control.placeholder}
+			: control.kind === "text" ? <input id={id} type={control.secret ? "password" : "search"} autoComplete="off" value={draft} placeholder={control.placeholder}
 				disabled={locked} onChange={event => setDraft(event.target.value)} onBlur={save}
 				onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); save(); } }} />
 			: <form onSubmit={event => { event.preventDefault(); save(); }}>

@@ -35,7 +35,8 @@ export type UiControl = {
 } & (
 	| { kind: "toggle"; value: boolean }
 	| { kind: "select"; value: string; options: { value: string; label: string }[] }
-	| { kind: "text"; value: string; placeholder?: string }
+	/** secret: a password-style field, for keys; the value shown is never the saved secret. */
+	| { kind: "text"; value: string; placeholder?: string; secret?: boolean }
 	| { kind: "range"; value: number; min: number; max: number; step?: number; used?: number | null; unit?: string }
 );
 export interface UiView {
