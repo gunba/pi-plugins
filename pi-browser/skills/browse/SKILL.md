@@ -45,13 +45,12 @@ the working directory or OS temporary directory. Large text uses Pi's normal
 
 ## Sites that refuse scripts
 
-To read or check URLs, use `web_search` (`open`, or `check` for link checks)
-rather than curl, wget or scripts. Many sites, including AustLII and the
-Federal Court, answer scripts with a bot check (Cloudflare, Akamai, CloudFront),
-a rate limit or a TLS failure. A script sees an ordinary 403 or connection
-error. That means neither "broken" nor "fine". `web_search` names the
-protection and loads such pages in a background Chrome tab, so its outcome is
-the real one: `ok`, `not_found`, `blocked`, `http_error` or `network_error`.
+To read public pages, use `web_fetch` rather than curl, wget or scripts. Many
+sites, such as the Federal Court, answer scripts with a bot check (Cloudflare,
+Akamai, CloudFront), a rate limit or a TLS failure: a script sees an ordinary
+403 or connection error, which means neither "broken" nor "fine". `web_fetch`
+reads such pages, and says when one could not be read and why. Use Chrome for
+pages behind a sign-in, and for interaction.
 
 When checking a page in Chrome yourself:
 

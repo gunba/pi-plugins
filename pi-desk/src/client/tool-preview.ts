@@ -46,9 +46,12 @@ const READERS: Record<string, (args: Args) => string> = {
 	grep: args => [str(args.pattern), str(args.path) && `in ${str(args.path)}`].filter(Boolean).join(" "),
 	find: args => [str(args.pattern), str(args.path) && `in ${str(args.path)}`].filter(Boolean).join(" "),
 	write_stdin: args => str(args.chars) ? `send ${JSON.stringify(str(args.chars)).slice(0, 40)}` : `wait for session ${String(args.session_id ?? "")}`.trim(),
+	web_fetch: args => list((Array.isArray(args.urls) ? args.urls.map(String) : []).map(url => url.replace(/^https?:\/\/(www\.)?/, "")), 2),
 	web_search: args => {
 		const parts: string[] = [];
 		const items = (key: string) => Array.isArray(args[key]) ? args[key] as Args[] : [];
+		// Calls before Desk 0.5.185 used Codex's search_query, open, find and check.
+		if (Array.isArray(args.queries)) parts.push(list(args.queries.map(query => `“${String(query)}”`), 2));
 		const queries = items("search_query").map(item => str(item.q)).filter(Boolean);
 		if (queries.length) parts.push(list(queries.map(query => `“${query}”`), 2));
 		const opened = items("open").map(item => str(item.ref_id)).filter(Boolean);

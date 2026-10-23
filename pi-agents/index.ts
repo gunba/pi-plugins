@@ -56,7 +56,6 @@ export default function party(pi: ExtensionAPI): void {
 	let pumping = false;
 	let stopped = false;
 	let armed = false;
-	let paused = false;
 	// Messages that arrived before this process opened the conversation wait for its next turn; later ones may wake it.
 	let wakeAfter = 0;
 	let preparingPrompt = false;
@@ -79,7 +78,6 @@ export default function party(pi: ExtensionAPI): void {
 	/** Why Desk cannot reopen a closed conversation for a sender, or undefined when it can. */
 	const resumeBlocker = (peer: Member): string | undefined => {
 		if (peer.kind !== "session" || peer.cwd === "ChatGPT") return "Only conversations can be reopened.";
-		if (peer.muted) return "It has paused automatic delivery.";
 		const computer = peer.computer ?? "local";
 		if (computer === "local") return operations().hostOnline() ? undefined : "Desk is not running on this computer.";
 		if (!database().computerOnline(computer)) return "Its computer is offline.";
@@ -119,7 +117,7 @@ export default function party(pi: ExtensionAPI): void {
 		const pending = store.pending(session, owner).length;
 		if (!pending) { source?.set(undefined); signature = ""; return; }
 		const status = `${pending} unread`;
-		const detail = [...(!armed ? [paused ? "Delivery paused. /inbox resume resumes it." : "Delivery paused until work resumes, or /inbox resume.", ""] : []),
+		const detail = [...(!armed ? ["Messages wait for this conversation's next turn.", ""] : []),
 			"/inbox opens message history."].join("\n");
 		const next = JSON.stringify([status, detail]);
 		if (next === signature) return;
@@ -131,7 +129,7 @@ export default function party(pi: ExtensionAPI): void {
 		if (stopped || pumping || !ctx || !store || self?.owner !== owner || getPresentation(pi)?.suspended) return;
 		// Filesystem notifications can be lost. The periodic pump must reconcile
 		// the same persisted delivery state used by the roster and host controls.
-		if (!child) { paused = !!self.muted; armed = !!self.delivery && !paused; }
+		if (!child) armed = !!self.delivery;
 		if (!armed) return;
 		// A managed child's driver owns its turns and usage accounting.
 		if (child && ctx.isIdle() && !starting) return;
@@ -202,14 +200,13 @@ export default function party(pi: ExtensionAPI): void {
 		} catch { /* No received files yet. */ }
 		chat?.close();
 		ctx = context; session = ctx.sessionManager.getSessionId();
-		providePrimaryAgents(session, primary); stopped = false; armed = false; paused = false; preparingPrompt = false; signature = "";
+		providePrimaryAgents(session, primary); stopped = false; armed = false; preparingPrompt = false; signature = "";
 		source = ui.source("messages");
 		safely(() => {
 			const self = database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
-			paused = !!self.muted;
 			// Messages that asked to wake it while it was closed start a turn now, as they would have had it been idle.
 			wakeAfter = 0;
-			if (!child) { armed = !paused; database().setDelivery(session, owner, armed); }
+			if (!child) { armed = true; database().setDelivery(session, owner, armed); }
 			database().admit(session, owner, deliveredPartyIds(ctx!.sessionManager.getBranch()));
 			bindRemote();
 			startTransport(); publish();
@@ -234,14 +231,14 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
 			wakeAfter = 0;
-			armed = !paused; store.setDelivery(session, owner, armed);
+			armed = true; store.setDelivery(session, owner, armed);
 		}
 	});
 	pi.on("before_agent_start", () => {
 		const self = member();
 		if (self?.owner !== owner) return;
 		preparingPrompt = true;
-		armed = !paused; store!.setDelivery(session, owner, armed);
+		armed = true; store!.setDelivery(session, owner, armed);
 		pump(true);
 	});
 	pi.on("context", event => {
@@ -270,14 +267,7 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("agent_settled", () => { preparingPrompt = false; refresh(); });
 	pi.on("session_info_changed", refresh);
 	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} });
-	const delivery = (enabled: boolean) => {
-		paused = !enabled; armed = enabled;
-		if (enabled) wakeAfter = 0;
-		database().setPaused(session, owner, paused);
-		database().setDelivery(session, owner, enabled);
-		pump(); publish(); signal();
-		return publicAgent(member()!);
-	};
+
 	const sendMessage = (to: string, text: string, wake: boolean, files: MessageFile[] = []) => {
 		const sent = database().send(session, owner, to, text, wake, files);
 		signal(); publish();
@@ -330,7 +320,6 @@ export default function party(pi: ExtensionAPI): void {
 				return { agents: found.agents.map(publicAgent), nextOffset: found.nextOffset };
 			},
 			history: query => database().history(session, owner, query),
-			delivery,
 			profile: description => { database().profile(session, owner, description); signal(); publish(); },
 			send: sendMessage,
 		});
@@ -339,8 +328,7 @@ export default function party(pi: ExtensionAPI): void {
 		ctx = context;
 		const value = args.trim();
 		try {
-			if (value === "resume" || value === "pause") { delivery(value === "resume"); return; }
-			if (value) { context.ui.notify("Use /inbox, /inbox pause or /inbox resume.", "warning"); return; }
+			if (value) { context.ui.notify("Use /inbox on its own.", "warning"); return; }
 			if (remote) { remote.open(); return; }
 			if (context.mode !== "tui") { context.ui.notify("The inbox requires interactive TUI mode.", "warning"); return; }
 			const self = member();
@@ -362,7 +350,7 @@ export default function party(pi: ExtensionAPI): void {
 		} catch (error) { context.ui.notify(String(error), "error"); }
 	};
 	pi.registerCommand("inbox", {
-		description: "Open agent messages; /inbox pause; /inbox resume",
+		description: "Open this conversation's agent messages",
 		handler: handleInbox,
 	});
 	const receipt = (message: { id: string; recipient: string; wake: number }) => {

@@ -1,6 +1,5 @@
-import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import { ensureWorkCoordination, isManagedChild } from "../../pi-work-coordination/index.ts";
 import { activeWatches, WATCH_CHANGED } from "../../pi-watch/index.ts";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../../pi-work-ui/index.ts";
@@ -17,8 +16,27 @@ import { STEP_STATUSES, stepSummary } from "../src/steps.ts";
 
 interface Attempt extends PlanRoundIdentity { content: string; admitted: boolean }
 const ref = (plan: PlanView): PlanRef => ({ id: plan.id, revision: plan.revision });
-/** Calling any of these shows or changes the plan, so the count of calls without an update starts again. */
-const PLAN_TOOL_NAMES = new Set(["get_plan", "create_plan", "update_plan"]);
+const seenKey = (plan: { id: string; revision: number } | null | undefined) => plan ? `${plan.id}:${plan.revision}` : "";
+/**
+ * Other plugins read the current plan by emitting this on the extension event bus with a probe object: probe.plan is
+ * then the plan, or null when there is none, and stays unset in a session that is shutting down.
+ */
+export const PLAN_READ = "pi-plan/read-v1";
+/** Calling either shows or changes the plan, so the count of calls without an update starts again. */
+const PLAN_TOOL_NAMES = new Set(["create_plan", "update_plan"]);
+/** Tools whose results showed the model the plan, including get_plan in earlier histories. */
+const PLAN_SHOWN_BY = new Set(["get_plan", "create_plan", "update_plan"]);
+
+/** The plan the model last saw in a plan tool's result, in this branch. */
+function lastShownPlan(branch: readonly SessionEntry[]): string {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || !PLAN_SHOWN_BY.has(entry.message.toolName)) continue;
+		const plan = (entry.message.details as { plan?: { id: string; revision: number } | null } | undefined)?.plan;
+		if (plan !== undefined) return seenKey(plan);
+	}
+	return "";
+}
 const result = (plan?: PlanView) => {
 	const value = { plan: plan ?? null };
 	return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
@@ -51,6 +69,8 @@ class PlanController {
 	/** The model's own tool calls since the active plan last changed, and which plan revision that was ("" when none is active). */
 	private sinceUpdate = 0;
 	private seen = "";
+	/** The plan revision the model last saw, as seenKey gives it; "" when it has seen none. */
+	private modelSeen = "";
 	constructor(privateApi: ExtensionAPI) {
 		this.pi = privateApi;
 		this.store = new PlanStore(privateApi);
@@ -136,7 +156,7 @@ class PlanController {
 			} else {
 				if (action === "clear" && !await ctx.ui.confirm("Clear plan?", "Its history stays in this session.")) return;
 				mutate = () => action === "clear" ? this.store.clear(ref(expected!))
-					: this.control({ plan_id: expected!.id, revision: expected!.revision, action: action as UpdateParams["action"] });
+					: this.control({ action: action as UpdateParams["action"] }, ref(expected!));
 			}
 			await this.run(ctx, () => {
 				if (epoch !== this.epoch) throw new Error("The session changed.");
@@ -146,8 +166,30 @@ class PlanController {
 			});
 		} finally { this.editing--; this.requestDrive(ctx); }
 	}
-	private control(params: UpdateParams): PlanView | undefined {
-		let planRef = { id: params.plan_id, revision: params.revision };
+	/**
+	 * The model's update, applied to the current plan. One that would replace the objective or steps is refused once,
+	 * with the current plan, when the plan changed since the model last saw it (in Desk, say), so the model cannot
+	 * overwrite a change it has not seen.
+	 */
+	private update(params: UpdateParams): PlanView | undefined {
+		const current = this.store.get();
+		if (!current) throw new Error("There is no current plan; create one with create_plan.");
+		if ((params.objective !== undefined || params.steps !== undefined) && this.modelSeen !== seenKey(current)) {
+			this.modelSeen = seenKey(current);
+			throw new Error(`The plan changed since you last saw it, so nothing was applied. It is now: ${JSON.stringify(current)}. `
+				+ "Send the update again if it still applies.");
+		}
+		// A revision this call makes is the model's own, even when a later part of the call fails (complete with steps
+		// applies the steps first), so it has not changed behind the model's back.
+		try { return this.control(params, ref(current)); }
+		finally { const after = this.current(); if (seenKey(after) !== seenKey(current)) this.modelSeen = seenKey(after); }
+	}
+	/** The plan a tool returns to the model, which has now seen it. */
+	private shown(plan: PlanView | undefined) {
+		this.modelSeen = seenKey(plan);
+		return result(plan);
+	}
+	private control(params: UpdateParams, planRef: PlanRef): PlanView | undefined {
 		const replacements = definition(params);
 		// Completing with the final steps (often all marked completed) applies them first, in one call.
 		if (params.action === "complete" && Object.keys(replacements).length) {
@@ -184,23 +226,16 @@ class PlanController {
 			return new Text(theme.fg(plan !== undefined ? "toolOutput" : "error", safeWorkText(text, true)), 0, 0);
 		};
 		this.pi.registerTool({
-			name: "get_plan", label: "Get Plan", description: "Read the current plan, its steps, id, revision and continuation state.",
-			promptGuidelines: guidance, parameters: Type.Object({}, { additionalProperties: false }), executionMode: "sequential",
-			execute: async (_id, _params, _signal, _update, ctx) => this.run(ctx, () => result(this.store.get())),
-			renderCall: (_params, theme) => call("Read plan", {}, theme),
-			renderResult: renderer,
-		});
-		this.pi.registerTool({
 			name: "create_plan", label: "Create Plan", description: "Create the plan: an objective and steps.",
 			promptGuidelines: guidance, parameters: CreateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
-			execute: async (_id, params: CreateParams, _signal, _update, ctx) => this.run(ctx, () => result(this.store.create({ ...definition(params), objective: params.objective }))),
+			execute: async (_id, params: CreateParams, _signal, _update, ctx) => this.run(ctx, () => this.shown(this.store.create({ ...definition(params), objective: params.objective }))),
 			renderCall: (params, theme) => call("Create plan", params, theme),
 			renderResult: renderer,
 		});
 		this.pi.registerTool({
-			name: "update_plan", label: "Update Plan", description: "Change the current plan revision: edit replaces the fields given; pause, resume, complete or blocked change its state.",
+			name: "update_plan", label: "Update Plan", description: "Change the current plan: edit replaces the fields given; pause, resume, complete or blocked change its state.",
 			promptGuidelines: guidance, parameters: UpdateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
-			execute: async (_id, params: UpdateParams, _signal, _update, ctx) => this.run(ctx, () => result(this.control(params))),
+			execute: async (_id, params: UpdateParams, _signal, _update, ctx) => this.run(ctx, () => this.shown(this.update(params))),
 			renderCall: (params, theme) => call("Update plan", params, theme),
 			renderResult: renderer,
 		});
@@ -220,7 +255,7 @@ class PlanController {
 					if (["pause", "resume", "clear", "complete"].includes(args)) {
 						if (!current) throw new Error("No current plan.");
 						if (args === "clear") this.store.clear(ref(current));
-						else this.control({ plan_id: current.id, revision: current.revision, action: args as UpdateParams["action"] });
+						else this.control({ action: args as UpdateParams["action"] }, ref(current));
 					} else if (args === "auto on" || args === "auto off") {
 						if (!current) throw new Error("No current plan.");
 						this.store.edit(ref(current), { autoContinue: args === "auto on" });
@@ -240,10 +275,15 @@ class PlanController {
 		const restore = (ctx: ExtensionContext) => {
 			this.epoch++; this.ctx = ctx; this.remote = getPresentation(this.pi); this.stopping = false; this.signature = "";
 			this.source = this.work.source("plan"); this.attempt = undefined; this.wrapup = undefined; this.lastStop = undefined;
-			this.sinceUpdate = 0; this.seen = "";
+			this.sinceUpdate = 0; this.seen = ""; this.modelSeen = lastShownPlan(ctx.sessionManager.getBranch());
 			this.store.restore(ctx.sessionManager.getBranch()); this.refreshUi();
 		};
 		this.pi.on("session_start", (_event, ctx) => restore(ctx));
+		this.pi.events.on(PLAN_READ, probe => {
+			const ctx = this.ctx;
+			if (!ctx || this.stopping || !probe || typeof probe !== "object") return;
+			try { (probe as { plan?: PlanView | null }).plan = this.read(ctx) ?? null; } catch { /* unreadable: leave it unset */ }
+		});
 		this.pi.events.on(WATCH_CHANGED, value => {
 			const ctx = this.ctx, change = value as { sessionId?: string; count?: number };
 			if (ctx && change.count === 0 && change.sessionId === ctx.sessionManager.getSessionId()) this.requestDrive(ctx);

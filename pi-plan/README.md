@@ -17,12 +17,16 @@ Direct commands: `/plan pause`, `/plan resume`, `/plan complete`, `/plan clear`,
 
 Model tools:
 
-- `get_plan` reads the current plan and exact id/revision.
 - `create_plan` accepts an objective, optional steps, `auto_continue` and
   `max_rounds`. Continuation defaults to false.
-- `update_plan` uses `plan_id`, `revision` and `action`. Edit changes only supplied
-  fields; `steps` replaces the complete list. Other actions are pause, resume,
-  complete and blocked.
+- `update_plan` takes an `action` and changes the current plan. Edit changes only
+  supplied fields; `steps` replaces the complete list. Other actions are pause,
+  resume, complete and blocked. An update that would replace the objective or steps
+  is refused once, with the current plan, when the plan changed since the model last
+  saw it (in Desk, say), so it can't overwrite a change it hasn't seen.
+
+Both return the plan. Other plugins read it by emitting `pi-plan/read-v1` on the
+extension event bus with a probe object, whose `plan` is then set.
 
 Step states are pending, in_progress and completed. Parallel active steps are
 allowed; normalized step content must be unique. Steps persist across turns.

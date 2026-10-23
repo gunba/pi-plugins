@@ -1,16 +1,20 @@
 import { clampThinkingLevel, type Api, type Context, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertResponsesMessages, convertResponsesTools, createGrammarToolInputProperties,
-	getCurrentSystemPrompt, getDeclaredTools, normalizeContext, resolveTranscriptTools } from "./serializer.ts";
+	getCurrentSystemPrompt, getDeclaredTools, getResponsesToolSupport, normalizeContext, resolveTranscriptTools } from "./serializer.ts";
 import type { JsonObject } from "./diagnostics.ts";
 
 /** Public Pi serializers preserve native tool arguments, results, images and reasoning. */
 export function compactInput(model: Model<Api>, context: Context, thinking: NonNullable<ExtensionContext["thinkingLevel"]>): JsonObject {
 	const supportsGrammar = model.compat && "supportsOpenAIGrammarTools" in model.compat
 		? model.compat.supportsOpenAIGrammarTools === true : false;
-	const compat = model.compat as { supportsAdditionalTools?: boolean; supportsToolSearch?: boolean } | undefined;
+	const compat = model.compat as { supportsAdditionalTools?: boolean; supportsToolSearch?: boolean; supportsMidConvoSystemMessages?: boolean } | undefined;
 	const transcript = normalizeContext(context);
-	const placement = resolveTranscriptTools(transcript.messages, !!(compat?.supportsAdditionalTools || compat?.supportsToolSearch));
+	// As Pi's openai-codex-responses provider places tools; Pi before 1.4.0 took a boolean here.
+	const support = { supportsMidConvoSystemMessages: compat?.supportsMidConvoSystemMessages ?? false,
+		supportsAdditionalTools: compat?.supportsAdditionalTools ?? false, supportsToolSearch: compat?.supportsToolSearch ?? false };
+	const placement = resolveTranscriptTools(transcript.messages, getResponsesToolSupport?.(support)
+		?? (support.supportsAdditionalTools || support.supportsToolSearch) as unknown as Parameters<typeof resolveTranscriptTools>[1]);
 	const toolOptions = { strict: null, supportsStrictMode: false, supportsOpenAIGrammarTools: supportsGrammar };
 	const level = clampThinkingLevel(model, thinking);
 	const effort = level === "off" ? undefined : (model.thinkingLevelMap?.[level] ?? level);
@@ -19,8 +23,7 @@ export function compactInput(model: Model<Api>, context: Context, thinking: NonN
 		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), {
 			includeSystemPrompt: false,
 			grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(transcript.messages), supportsGrammar),
-			supportsAdditionalTools: compat?.supportsAdditionalTools,
-			supportsToolSearch: compat?.supportsToolSearch,
+			...support,
 			toolOptions,
 		}),
 		tools: convertResponsesTools(placement.requestTools, toolOptions),

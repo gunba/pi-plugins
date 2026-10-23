@@ -3,9 +3,9 @@
 The `browse` skill uses `@narumitw/pi-chrome-devtools`, a native Pi extension.
 There is no browser runtime or MCP server in this repository.
 
-`web_search` (in `pi-web-search`) reads and checks pages and falls back to this
-Chrome when a site refuses automated clients; see its README. Use the browser
-tools directly for sign-ins, forms and other interaction.
+`web_search` and `web_fetch` (in `pi-web-search`) search the web and read
+public pages, including ones behind bot checks. Use the browser tools for
+sign-ins, forms and other interaction.
 
 ## Connect Chrome
 

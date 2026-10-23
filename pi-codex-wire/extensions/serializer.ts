@@ -7,9 +7,11 @@ const require = createRequire(import.meta.url);
 const { loadNative } = require("./native-import.mjs") as {
 	loadNative(specifier: string): unknown;
 };
-export const { convertResponsesMessages, convertResponsesTools } = loadNative(
+export const { convertResponsesMessages, convertResponsesTools, getResponsesToolSupport } = loadNative(
 	"@earendil-works/pi-ai/api/openai-responses-shared",
-) as typeof import("@earendil-works/pi-ai/api/openai-responses-shared");
+) as Omit<typeof import("@earendil-works/pi-ai/api/openai-responses-shared"), "getResponsesToolSupport">
+	// Pi before 1.4.0 has no getResponsesToolSupport, and its resolveTranscriptTools takes a boolean.
+	& Partial<Pick<typeof import("@earendil-works/pi-ai/api/openai-responses-shared"), "getResponsesToolSupport">>;
 export const { createGrammarToolInputProperties } = loadNative(
 	"@earendil-works/pi-ai/api/constrained-sampling",
 ) as typeof import("@earendil-works/pi-ai/api/constrained-sampling");

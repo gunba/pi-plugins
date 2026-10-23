@@ -22,12 +22,10 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
 - [`pi-message-timestamps`](pi-message-timestamps/README.md) — shows compact
   native timing in Desk and a live elapsed/quiet clock in the terminal.
   Tool timing metadata survives saved history without private renderer patches.
-- [`pi-web-search`](pi-web-search/README.md) — adds one `web_search` tool, labelled `web.run`, based on
-  Codex's standalone search client. It sends Codex-compatible commands directly
-  to the selected ChatGPT Codex model's `alpha/search` endpoint. It has no
-  provider router, fallback provider, summary workflow, or separately selected
-  model. Native citation references render as readable terminal text without
-  altering the model's source evidence.
+- [`pi-web-search`](pi-web-search/README.md) — `web_search` and `web_fetch` for
+  every model, through Parallel's search service (free without an account; a key
+  raises the rate limit). Reads JavaScript pages, PDFs and bot-checked sites;
+  leaves out AustLII, whose terms forbid AI use.
 - [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth) — pinned native
   Claude OAuth compatibility, including request identity and prompt shaping for
   root sessions, inherited child providers and compaction. Uses Pi's account
@@ -91,9 +89,9 @@ frontend/server dependencies. See its [capability map](pi-desk/CAPABILITIES.md) 
   `@narumitw/pi-chrome-devtools`. Explicit page IDs route actions, scoped
   observations limit context, and full text uses the output archive.
 - [`pi-plan`](pi-plan/README.md) — one branch-local objective and checklist,
-  with optional bounded automatic continuation. `/plan`, `get_plan`,
-  `create_plan` and `update_plan` share the same revision-fenced native state.
-  Manual plans never start extra model rounds.
+  with optional bounded automatic continuation. `/plan`, `create_plan` and
+  `update_plan` share the same native state; an update can't overwrite a change
+  the model hasn't seen. Manual plans never start extra model rounds.
 - [`pi-show`](pi-show/README.md) — agents show their work in Pi Desk. Files a
   call changes get computed diffs: lines for text, cells for spreadsheets,
   paragraphs for Word documents and slides for decks, from the files

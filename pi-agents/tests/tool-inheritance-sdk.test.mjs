@@ -103,14 +103,17 @@ async function integration(t, { search = false, party = false, policy = false, g
 	const settings = { packages: [], extensions: [], compaction: { enabled: false }, retry: { enabled: false } };
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
 	const requests = [];
+	// Parallel's search service, as web_search's MCP client reaches it.
 	globalThis.fetch = async (url, init) => {
-		assert.equal(String(url), "https://chatgpt.com/backend-api/codex/alpha/search", "all network calls must hit this fake search handler");
+		assert.equal(String(url), "https://search.parallel.ai/mcp", "all network calls must hit this fake search handler");
 		assert.equal(init?.method, "POST");
-		const headers = new Headers(init.headers);
-		assert.equal(headers.get("authorization"), `Bearer ${JWT}`);
-		assert.equal(headers.get("chatgpt-account-id"), "offline-fixture-account");
-		requests.push({ url: String(url), body: JSON.parse(init.body) });
-		return Response.json({ output: "OFFLINE SEARCH RESULT", results: [{ url: "https://example.invalid/fixture" }] });
+		const body = JSON.parse(init.body);
+		if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: {} }, { headers: { "mcp-session-id": "fixture-session" } });
+		if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+		assert.equal(body.method, "tools/call");
+		requests.push({ url: String(url), body });
+		const results = [{ url: "https://example.invalid/fixture", title: "OFFLINE SEARCH RESULT", excerpts: ["fixture"] }];
+		return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify({ results }) }] } });
 	};
 	const auditPath = join(directory, "shutdown.jsonl");
 	const fixturePath = join(directory, "provider.ts");
@@ -233,19 +236,17 @@ test("command protection follows real root, codemode and SDK child calls without
 	assert.equal(executed(child.manager).length, 1, "allowed call reaches only the fake executor");
 });
 
-test("actual web_search inherits child-selected Codex model and child session in its fake POST", { timeout: 25000 }, async (t) => {
+test("actual web_search runs with the child's own model and session in its fake POST", { timeout: 25000 }, async (t) => {
 	const h = await integration(t, { search: true, initialActive: ["web_search"] });
 	const a = await h.open("search-child");
 	const b = await h.open("search-grandchild", { modelIndex: 2, parentId: a.manager.getSessionId() });
 	for (const child of [a, b]) {
-		const outcome = await call(child, "web_search", { search_query: [{ q: "offline inheritance fixture" }], response_length: "short" });
+		const outcome = await call(child, "web_search", { goal: "offline inheritance fixture", queries: ["offline inheritance fixture"] });
 		assert.match(outcome.output, /OFFLINE SEARCH RESULT/);
 		assert.equal(toolResults(child.manager).at(-1).isError, false);
 	}
-	assert.deepEqual(h.requests.map((request) => ({ id: request.body.id, model: request.body.model })), [
-		{ id: "search-child", model: "child-codex-fixture" }, { id: "search-grandchild", model: "grandchild-codex-fixture" },
-	]);
-	assert.ok(h.requests.every((request) => request.body.id !== "root-tool-fixture" && request.body.model !== MODELS[0].id));
+	const callers = h.requests.map((request) => ({ id: request.body.params.arguments.session_id, model: request.body.params.arguments.model_name }));
+	assert.deepEqual(callers, [{ id: "search-child", model: "child-codex-fixture" }, { id: "search-grandchild", model: "grandchild-codex-fixture" }]);
 	assert.equal(h.rootCatalogs.length, 2);
 	assert.ok(h.rootCatalogs.every((catalog) => catalog.find((tool) => tool.name === "web_search").sourceInfo.path === SEARCH_SOURCE));
 	assert.deepEqual(new Set(h.observations.map((entry) => entry.sessionId)), new Set(["search-child", "search-grandchild"]));
@@ -258,7 +259,7 @@ test("child initialization retains enabled tools from multiple source extensions
 	assert.ok(available.includes("custom_inventory"));
 	assert.ok(available.includes("web_search"));
 	await call(child, "custom_inventory");
-	await call(child, "web_search", { search_query: [{ q: "offline fixture" }] });
+	await call(child, "web_search", { goal: "offline fixture", queries: ["offline fixture"] });
 	assert.equal(executed(child.manager).length, 1);
 	assert.equal(h.requests.length, 1);
 });

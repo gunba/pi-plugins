@@ -82,10 +82,15 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 			</select>
 		</label> : <span className="composer-badge" key={key} title={badge.description ?? `${badge.label} ${badge.value}`}>{badge.label} {badge.value}</span>;
 	};
+	const listed = badges.map((badge, index) => ({ badge, index }));
 	return <div className="composer-status">
-		<div className="composer-status-inline"><div className="composer-context-inline">{contextControl}</div>
-			<div className="composer-facts-inline">{cacheGauge()}{badges.filter(badge => !badge.control).map((badge, index) => gauge(badge) ? usageBadge(badge, index) : badgeControl(badge, index))}</div>
-			<div className="composer-badges-inline">{badges.filter(badge => badge.compact && badge.control).map(badgeControl)}</div>
+		{/* In order of priority on one line, which shows whatever the free space holds (style.css). */}
+		<div className="composer-status-inline"><span className="composer-fit-start" aria-hidden="true" />
+			{listed.filter(({ badge }) => !badge.control && gauge(badge)).map(({ badge, index }) => usageBadge(badge, index))}
+			{cacheGauge()}
+			{contextControl}
+			{listed.filter(({ badge }) => !badge.control && !gauge(badge)).map(({ badge, index }) => badgeControl(badge, index))}
+			{listed.filter(({ badge }) => badge.compact && badge.control).map(({ badge, index }) => badgeControl(badge, index))}
 		</div>
 		<button type="button" className="composer-status-trigger" ref={menu.trigger} popoverTarget={menu.id}
 			aria-label={`${connected ? state : "Disconnected"} · Conversation status and options`} title="Conversation status and options" aria-haspopup="dialog" aria-expanded={menu.open}>

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createExtensionHarness, executeTool } from "./helpers.mjs";
 import { preparePlanArguments } from "../src/tools.ts";
+import { PLAN_READ } from "../extensions/plan.ts";
 import { DeskPresentation } from "../../pi-desk/src/host/presentation.ts";
 import { PRESENTATION_DISCOVER } from "../../pi-ui/index.ts";
 
-const read = async h => (await executeTool(h, "get_plan")).details.plan;
+const read = async h => { const probe = {}; h.events.emit(PLAN_READ, probe); return probe.plan; };
 const create = (h, options = {}) => executeTool(h, "create_plan", { objective: "Finish", auto_continue: true, ...options });
-const update = async (h, args) => { const plan = await read(h); return executeTool(h, "update_plan", { plan_id: plan.id, revision: plan.revision, ...args }); };
+const update = (h, args) => executeTool(h, "update_plan", args);
 const settled = async (h, reason = "stop") => {
 	await h.emit("agent_end", { messages: [{ role: "assistant", content: [], stopReason: reason }] });
 	await h.emit("agent_settled");
@@ -20,7 +21,7 @@ test("manual checklists survive turns and share one terminal work section", asyn
 	assert.equal(h.sentMessages.length, 0); assert.equal((await read(h)).steps.length, 1);
 	const lines = h.widgets.get("pi-work")({ terminal: { rows: 40 }, requestRender() {} }, h.theme).render(150).join("\n");
 	assert.match(lines, /Plan active.*manual/); assert.match(lines, /Read files/); assert.doesNotMatch(lines, /\x1b/);
-	assert.deepEqual([...h.tools.keys()].filter(name => /plan|goal|todo/.test(name)), ["get_plan", "create_plan", "update_plan"]);
+	assert.deepEqual([...h.tools.keys()].filter(name => /plan|goal|todo/.test(name)), ["create_plan", "update_plan"]);
 	await h.emit("session_shutdown");
 });
 
@@ -54,7 +55,7 @@ test("errors, cancellation, tree changes and missing admissions suppress extra r
 	await settled(h); assert.equal(h.sentMessages.length, 1); assert.equal((await read(h)).activation, "disarmed");
 	await h.emit("session_tree"); await settled(h); assert.equal(h.sentMessages.length, 1);
 	await h.emit("session_shutdown");
-	await assert.rejects(read(h), /retired session/);
+	await assert.rejects(update(h, { action: "pause" }), /retired session/);
 });
 
 test("admission is independent of visible context; blocker threshold and completion wrap-up remain", async () => {
@@ -134,7 +135,7 @@ test("an active plan untouched for 25 of the model's tool calls is recalled in t
 	assert.equal(await call({ parentToolCallId: "script" }), undefined, "a script's own calls do not count");
 	const nudged = await call({ structuredContent: { output: "ok" } });
 	assert.equal(nudged.content[0].text, "ok", "the result itself is kept");
-	assert.equal(nudged.content[1].text, `\n[Plan check] 25 tool calls since the plan was last updated. 1 of 3 steps are marked done; current: "Test it". Compare that with the work so far and, if it is behind, update the plan now (update_plan with plan_id "${plan.id}", revision ${plan.revision}).`);
+	assert.equal(nudged.content[1].text, `\n[Plan check] 25 tool calls since the plan was last updated. 1 of 3 steps are marked done; current: "Test it". Compare that with the work so far and, if it is behind, update the plan now with update_plan.`);
 	assert.deepEqual(nudged.structuredContent, { output: "ok" }, "its structured form is kept");
 	// An update starts the count again; a plan left alone is recalled every 25 calls.
 	await update(h, { action: "edit", steps: [{ content: "Test it", status: "completed" }, { content: "Release it", status: "in_progress" }] });

@@ -49,7 +49,9 @@ jobs:
           npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies --json > /tmp/pi-dependencies.json
           node --input-type=module -e '
             import { readFileSync, writeFileSync } from "node:fs";
-            const versions = { "@earendil-works/pi-coding-agent": process.env.PI_VERSION, ...JSON.parse(readFileSync("/tmp/pi-dependencies.json", "utf8")) };
+            // npm view gives an array of objects when the registry lists the version more than once (as for Pi 1.4.0).
+            const listed = JSON.parse(readFileSync("/tmp/pi-dependencies.json", "utf8"));
+            const versions = { "@earendil-works/pi-coding-agent": process.env.PI_VERSION, ...(Array.isArray(listed) ? listed.at(-1) : listed) };
             for (const file of ["package.json", "pi-desk/package.json", "pi-codex-wire/package.json"]) {
               const json = JSON.parse(readFileSync(file, "utf8"));
               for (const field of ["dependencies", "devDependencies"])

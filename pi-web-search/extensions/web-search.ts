@@ -1,218 +1,188 @@
-import type {
-	AgentToolResult,
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { renderSearchResult, searchDisplayText } from "./render.ts";
-import { requestService } from "../../pi-codex-service/index.ts";
-import { describePage, fetchPages, type PageResult } from "./page-fetch.ts";
-
-const referenced = (description: string) => Type.String({ description });
-
-// Only the operations conversations use. Codex web search also offers sports, finance, weather, time,
-// PDF screenshots and image search; none were used in 90 days, so they are not declared to the model.
-export const WEB_SEARCH_PARAMETERS = Type.Object(
-	{
-		search_query: Type.Optional(Type.Array(Type.Object({
-			q: Type.String(),
-			recency: Type.Optional(Type.Integer({ description: "Only the last this many days." })),
-			domains: Type.Optional(Type.Array(Type.String())),
-		}), { maxItems: 4 })),
-		open: Type.Optional(Type.Array(Type.Object({
-			ref_id: referenced("Result ID or URL."),
-			lineno: Type.Optional(Type.Integer({ description: "Line to start at." })),
-		}))),
-		click: Type.Optional(Type.Array(Type.Object({ ref_id: referenced("Opened page's ID."), id: Type.Integer({ description: "Link number." }) }))),
-		find: Type.Optional(Type.Array(Type.Object({ ref_id: referenced("Opened page's ID or URL."), pattern: Type.String() }))),
-		check: Type.Optional(Type.Array(Type.String(), { description: "URLs to check load, without reading them.", maxItems: 50 })),
-		response_length: Type.Optional(StringEnum(["short", "medium", "long"] as const)),
-	},
-	{ additionalProperties: false },
-);
-
-export type SearchQuery = {
-	q: string;
-	recency?: number;
-	domains?: string[];
-};
-
-export type WebSearchParams = {
-	search_query?: SearchQuery[];
-	open?: Array<{ ref_id: string; lineno?: number }>;
-	click?: Array<{ ref_id: string; id: number }>;
-	find?: Array<{ ref_id: string; pattern: string }>;
-	check?: string[];
-	response_length?: "short" | "medium" | "long";
-};
-
-export type WebSearchDetails = {
-	/** The Codex model that ran the search, when Codex was used. */
-	model?: string;
-	results?: unknown[];
-	/** Pages read or checked directly or in Chrome. */
-	pages?: Array<Omit<PageResult, "text">>;
-};
-
-type UnknownRecord = Record<string, unknown>;
-
-export type WebSearchDependencies = {
-	fetchImpl?: typeof globalThis.fetch;
-};
-
-function isRecord(value: unknown): value is UnknownRecord {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseSearchResponse(text: string): { output: string; results?: unknown[] } {
-	let payload: unknown;
-	try {
-		payload = JSON.parse(text);
-	} catch {
-		throw new Error("Codex search returned invalid JSON");
-	}
-	if (!isRecord(payload) || typeof payload.output !== "string") {
-		throw new Error("Codex search response did not contain output");
-	}
-	return {
-		output: payload.output,
-		results: Array.isArray(payload.results) ? payload.results : undefined,
-	};
-}
-
-const COMMANDS = ["search_query", "open", "click", "find"] as const;
-const NOT_ACCESSIBLE = /URL (\S+) is not accessible via this tool\./g;
-// Codex's own fetch failures: "restricted URL", 403s from bot protection, timeouts, content types it does not read.
-const FETCH_FAILED = /Failed to fetch (https?:\/\/\S+?): /g;
+import { Type, type Static } from "typebox";
+import { renderSearchResult } from "./render.ts";
 
 /**
- * Codex search output as plain text. Citation markers become [turn0view0] and [3] Link text, keeping the IDs open,
- * click and find take; ChatGPT's quoting limits and empty error headers are dropped.
+ * Web search and page reading for every model, through Parallel's search service (its MCP server, which is free
+ * without an account). A Parallel API key raises the free rate limits: PARALLEL_API_KEY, or a "parallel" entry
+ * ({ "type": "api_key", "key": "…" }) in Pi's auth.json.
  */
-export function plainSearchText(output: string): string {
-	return searchDisplayText(output.replace(/^Internal Error \(\)\n?/gm, "").replace(/ ?\[wordlim: \d+\]/g, ""));
-}
-const SEPARATOR = "\n" + "-".repeat(80) + "\n";
-/** The max_output_tokens a search asks Codex for. */
-const SEARCH_OUTPUT_TOKENS = 10_000;
+export const ENDPOINT = "https://search.parallel.ai/mcp";
+const TIMEOUT_MS = 90_000;
+/** Excerpts kept per search result; the whole result is cut again by pi-output-budget. */
+const RESULT_CHARS = 1_500;
+/** Text kept per fetched page. */
+const PAGE_CHARS = 12_000;
+/** AustLII's terms forbid AI use of its content, including retrieval while answering. */
+const AUSTLII = /(^|\.)austlii\.edu\.au$/i;
+const AUSTLII_NOTE = "AustLII's terms forbid AI use of its content, so it is left out. Legislation is on legislation.gov.au, "
+	+ "rulings and determinations on the ATO legal database (ato.gov.au/law), and judgments on the courts' own sites.";
 
-/** A model reached through a ChatGPT (Codex) sign-in, whose account search uses. */
-function isChatGptCodexModel(model: { provider?: string; api?: string } | null | undefined): boolean {
-	const provider = model?.provider?.trim().toLowerCase() ?? "", api = model?.api?.trim().toLowerCase();
-	return api === "openai-codex-responses" || ["codex", "openai-codex", "chatgpt"].includes(provider);
-}
+export const SEARCH_PARAMETERS = Type.Object({
+	goal: Type.String({ minLength: 1, description: "What the search must find, as a sentence; it may name preferred sources or dates." }),
+	queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 5, description: "Short keyword searches for the goal, 3–6 words each; 2–3 work best." }),
+}, { additionalProperties: false });
+export const FETCH_PARAMETERS = Type.Object({
+	urls: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20, description: "Pages, PDFs or files to read." }),
+	goal: Type.Optional(Type.String({ description: "What to look for; the excerpts returned focus on it." })),
+	full: Type.Optional(Type.Boolean({ description: "Each page's whole text instead of excerpts; can be very long." })),
+}, { additionalProperties: false });
+type SearchParams = Static<typeof SEARCH_PARAMETERS>;
+type FetchParams = Static<typeof FETCH_PARAMETERS>;
 
-/** The Codex model for search: this conversation's, else the computer's default Codex model, else any signed-in one. */
-export function searchModel(ctx: ExtensionContext): ExtensionContext["model"] | undefined {
-	if (ctx.model && isChatGptCodexModel(ctx.model)) return ctx.model;
-	const available = ctx.modelRegistry.getAvailable().filter(model => isChatGptCodexModel(model));
-	if (!available.length) return;
-	let preferred: string | undefined;
+type Page = { url: string; title?: string; publish_date?: string; excerpts?: string[]; full_content?: string };
+type Failure = { url?: string; error?: string; message?: string; error_type?: string; http_status_code?: number | null };
+type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
+export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number; excluded?: number };
+
+function apiKey(): string | undefined {
+	if (process.env.PARALLEL_API_KEY?.trim()) return process.env.PARALLEL_API_KEY.trim();
 	try {
-		const settings = JSON.parse(readFileSync(join(getAgentDir(), "settings.json"), "utf8")) as { defaultProvider?: string; defaultModel?: string };
-		if (settings.defaultProvider === "openai-codex") preferred = settings.defaultModel;
-	} catch { /* No saved default. */ }
-	return available.find(model => model.id === preferred)
-		?? [...available].sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }))[0];
+		const entry = JSON.parse(readFileSync(join(getAgentDir(), "auth.json"), "utf8"))?.parallel;
+		return typeof entry?.key === "string" && entry.key.trim() ? entry.key.trim() : undefined;
+	} catch { return undefined; }
 }
 
-function pageSection(result: PageResult): string {
-	return describePage(result) + (result.text ? `\n\n${result.text}${result.truncated ? "\n[…truncated]" : ""}` : "");
+const host = (url: string) => { try { return new URL(url).hostname; } catch { return ""; } };
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** One JSON-RPC message from a response, which the server sends as JSON or as a server-sent event stream. */
+function message(body: string, type: string, id: number): { result?: unknown; error?: { message?: string } } | undefined {
+	if (!/event-stream/.test(type)) return body.trim() ? JSON.parse(body) : undefined;
+	for (const line of body.split(/\r?\n/)) {
+		if (!line.startsWith("data:")) continue;
+		const value = JSON.parse(line.slice(5));
+		if (value?.id === id) return value;
+	}
+	return undefined;
 }
 
-export async function executeWebSearch(
-	params: WebSearchParams,
-	signal: AbortSignal | undefined,
-	ctx: ExtensionContext,
-	dependencies: WebSearchDependencies = {},
-): Promise<AgentToolResult<WebSearchDetails>> {
-	if (signal?.aborted) throw new Error("web_search aborted");
-	const abort = signal ?? new AbortController().signal;
-	const { check, ...commands } = params;
-	const requested = COMMANDS.filter(name => commands[name]?.length);
-	const sections: string[] = [], pages: PageResult[] = [];
-	let model: ExtensionContext["model"] | undefined, results: unknown[] | undefined;
-	if (requested.length) {
-		model = searchModel(ctx);
-		if (model) {
-			const text = await requestService(ctx, model, {
-				path: "alpha/search", codex: true, label: "Codex search",
-				maxResponseBytes: 32 * 1024 * 1024,
-				body: {
-					id: ctx.sessionManager.getSessionId(),
-					model: model.id,
-					commands,
-					settings: {
-						allowed_callers: ["direct"],
-						external_web_access: true,
-					},
-					max_output_tokens: SEARCH_OUTPUT_TOKENS,
-				},
-			}, signal, dependencies.fetchImpl);
-			const response = parseSearchResponse(text);
-			results = response.results;
-			sections.push(plainSearchText(response.output));
-			// Codex reports bot-protected and missing pages alike, and can skip opens batched with a search.
-			// Fetch those here so the outcome is known.
-			const skipped = (commands.open ?? []).map(item => item.ref_id)
-				.filter(ref => /^https?:\/\//.test(ref) && !response.output.includes(`"ref_id":${JSON.stringify(ref)}`));
-			const reported = [...response.output.matchAll(NOT_ACCESSIBLE), ...response.output.matchAll(FETCH_FAILED)].map(match => match[1]!.replace(/[.,;]+$/, ""));
-			const refused = [...new Set([...reported, ...skipped])]
-				.filter(url => /^https?:\/\//.test(url));
-			if (refused.length) {
-				const fetched = await fetchPages(refused, { text: true, maxChars: 12_000 }, abort);
-				pages.push(...fetched);
-				sections.push(`Codex search did not open ${refused.length === 1 ? "this page" : "these pages"}, so ${refused.length === 1 ? "it was" : "they were"} fetched directly:\n\n${fetched.map(pageSection).join(SEPARATOR)}`);
-			}
-		} else {
-			const urls = (commands.open ?? []).map(item => item.ref_id).filter(ref => /^https?:\/\//.test(ref));
-			const unsupported = requested.filter(name => name !== "open");
-			if (!urls.length && !check?.length) throw new Error("Web search needs a ChatGPT login on this computer. Without one, web_search can only open or check URLs; use the browser tools to search.");
-			if (urls.length) {
-				const fetched = await fetchPages(urls, { text: true, maxChars: 12_000 }, abort);
-				pages.push(...fetched);
-				sections.push(fetched.map(pageSection).join(SEPARATOR));
-			}
-			if (unsupported.length || urls.length < (commands.open?.length ?? 0))
-				sections.push(`Not done: ${[...unsupported, ...(urls.length < (commands.open?.length ?? 0) ? ["open by reference ID"] : [])].join(", ")}. These need Codex search, which needs a ChatGPT login on this computer.`);
+/** A Streamable HTTP MCP client for one server: a session per process, opened on first use and reopened if it lapses. */
+export class McpClient {
+	private session?: string;
+	private opening?: Promise<void>;
+	private next = 1;
+	private readonly endpoint: string;
+	private readonly fetchImpl: typeof fetch;
+
+	constructor(endpoint = ENDPOINT, fetchImpl: typeof fetch = fetch) {
+		this.endpoint = endpoint;
+		this.fetchImpl = fetchImpl;
+	}
+
+	private async post(method: string, params: unknown, signal: AbortSignal, notification = false) {
+		const id = this.next++, key = apiKey();
+		const response = await this.fetchImpl(this.endpoint, { method: "POST", signal, headers: {
+			"content-type": "application/json", accept: "application/json, text/event-stream",
+			...(this.session ? { "mcp-session-id": this.session } : {}), ...(key ? { authorization: `Bearer ${key}` } : {}),
+		}, body: JSON.stringify({ jsonrpc: "2.0", method, params, ...(notification ? {} : { id }) }) });
+		const session = response.headers.get("mcp-session-id");
+		if (session) this.session = session;
+		const body = await response.text();
+		return { response, body, id };
+	}
+
+	private open(signal: AbortSignal): Promise<void> {
+		return this.opening ??= (async () => {
+			const { response, body } = await this.post("initialize", { protocolVersion: "2025-06-18", capabilities: {},
+				clientInfo: { name: "pi-web-search", version: "1" } }, signal);
+			if (!response.ok) throw new Error(`Parallel search did not start a session: HTTP ${response.status} ${body.slice(0, 200)}`);
+			await this.post("notifications/initialized", {}, signal, true);
+		})().catch(error => { this.opening = undefined; this.session = undefined; throw error; });
+	}
+
+	/** Calls a tool and returns its text; a lapsed session is reopened once. */
+	async call(tool: string, args: Record<string, unknown>, signal: AbortSignal, reopened = false): Promise<string> {
+		await this.open(signal);
+		const { response, body, id } = await this.post("tools/call", { name: tool, arguments: args }, signal);
+		if ((response.status === 404 || response.status === 400 && /session/i.test(body)) && !reopened) {
+			this.opening = undefined; this.session = undefined;
+			return this.call(tool, args, signal, true);
 		}
+		if (response.status === 429) throw new Error("Parallel's free search is rate-limited right now. Try again shortly; "
+			+ "a Parallel API key (PARALLEL_API_KEY, or \"parallel\" in Pi's auth.json) raises the limit.");
+		if (!response.ok) throw new Error(`Parallel search failed: HTTP ${response.status} ${body.slice(0, 300)}`);
+		const reply = message(body, response.headers.get("content-type") ?? "", id);
+		if (reply?.error) throw new Error(`Parallel search failed: ${reply.error.message ?? JSON.stringify(reply.error)}`);
+		const result = reply?.result as { content?: { type: string; text?: string }[]; isError?: boolean } | undefined;
+		const text = result?.content?.filter(block => block.type === "text").map(block => block.text ?? "").join("\n") ?? "";
+		if (result?.isError) throw new Error(`Parallel search failed: ${text.slice(0, 500)}`);
+		return text;
 	}
-	if (check?.length) {
-		const checked = await fetchPages(check.map(url => url.trim()), { text: false, maxChars: 2000 }, abort);
-		pages.push(...checked);
-		const counts = checked.reduce<Record<string, number>>((all, page) => ({ ...all, [page.outcome]: (all[page.outcome] ?? 0) + 1 }), {});
-		sections.push(`Checked ${checked.length} URL${checked.length === 1 ? "" : "s"}: ${Object.entries(counts).map(([outcome, count]) => `${count} ${outcome}`).join(", ")}\n\n${checked.map(describePage).join("\n")}`);
-	}
-	if (!sections.length) throw new Error("Give web_search at least one search, page or URL to check.");
-	return {
-		content: [{ type: "text", text: sections.join(SEPARATOR) }],
-		details: {
-			...(model ? { model: `${model.provider}/${model.id}` } : {}),
-			...(results ? { results } : {}),
-			...(pages.length ? { pages: pages.map(({ text: _text, ...page }) => page) } : {}),
-		},
-	};
+}
+
+let shared: McpClient | undefined;
+const client = () => shared ??= new McpClient();
+
+function parse(text: string): Payload {
+	try { return JSON.parse(text) as Payload; } catch { throw new Error(`Parallel search returned something unexpected: ${text.slice(0, 300)}`); }
+}
+
+function clip(text: string, max: number): string {
+	const trimmed = text.trim();
+	return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max).trimEnd()} […]`;
+}
+
+const FAILURES: Record<string, string> = { connect_error: "could not connect", http_error: "the site returned an error", timeout: "timed out" };
+function failures(payload: Payload): string[] {
+	return (payload.errors ?? []).map(error => {
+		const reason = error.message ?? error.error ?? FAILURES[error.error_type ?? ""] ?? error.error_type ?? "could not be read";
+		return `${error.url ?? "?"}: ${reason}${error.http_status_code ? ` (HTTP ${error.http_status_code})` : ""}`;
+	});
+}
+
+const callerArgs = (ctx: ExtensionContext) => ({ session_id: ctx.sessionManager.getSessionId(), ...(ctx.model ? { model_name: ctx.model.id } : {}) });
+const timed = (signal: AbortSignal | undefined) => AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(TIMEOUT_MS)]);
+
+export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
+	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
+	const all = payload.results ?? [], kept = all.filter(page => !AUSTLII.test(host(page.url))), excluded = all.length - kept.length;
+	const lines = kept.map((page, index) => [`${index + 1}. ${page.title?.trim() || page.url}`, `   ${page.url}${page.publish_date ? ` · ${page.publish_date}` : ""}`,
+		...page.excerpts?.length ? [clip(page.excerpts.join("\n…\n"), RESULT_CHARS).replace(/^/gm, "   ")] : []].join("\n"));
+	const notes = [...excluded ? [`${excluded} AustLII result${excluded === 1 ? "" : "s"} left out: ${AUSTLII_NOTE}`] : [], ...failures(payload)];
+	const text = [kept.length ? lines.join("\n\n") : "No results.", ...notes.length ? [notes.join("\n")] : [],
+		...kept.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
+	return { content: [{ type: "text", text }],
+		details: { results: kept.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })), ...(excluded ? { excluded } : {}) } };
+}
+
+export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
+	const refused = params.urls.filter(url => AUSTLII.test(host(url))), urls = params.urls.filter(url => !refused.includes(url));
+	const invalid = urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
+	if (invalid.length) throw new Error(`Not http(s) URLs: ${invalid.join(", ")}`);
+	const payload: Payload = urls.length ? parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
+		...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal))) : {};
+	const sections = (payload.results ?? []).map(page => [`## ${page.title?.trim() || page.url}`, page.url,
+		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
+	const notes = [...refused.length ? [`Not read: ${refused.join(", ")}. ${AUSTLII_NOTE}`] : [],
+		...failures(payload).map(line => `Could not read ${line}`)];
+	const text = [...sections, ...notes.length ? [notes.join("\n")] : []].join("\n\n") || "Nothing was read.";
+	return { content: [{ type: "text", text }],
+		details: { results: (payload.results ?? []).map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
+			...(payload.errors?.length ? { errors: payload.errors.length } : {}), ...(refused.length ? { excluded: refused.length } : {}) } };
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "web_search",
-		label: "web.run",
-		description:
-			"Search the web, open pages, follow links, find text and check URLs, through the ChatGPT login whatever model this conversation uses. Sites that refuse automated clients are opened in Chrome. For sign-ins or forms use the browser tools.",
-		promptSnippet: "Search the web, open pages and check links",
-		promptGuidelines: [
-			"Use web_search to search, verify current facts, and open or check URLs (not curl or scripts); batch independent searches and cite sources with Markdown links. \"blocked\" means the site refused automated access, not that the page is missing.",
-		],
-		parameters: WEB_SEARCH_PARAMETERS,
+		label: "Web search",
+		description: "Search the web for current information. Returns ranked pages with excerpts that usually answer the goal directly.",
+		promptSnippet: "Search the web",
+		promptGuidelines: ["Use web_search to find current facts and web_fetch to read pages (not curl or scripts); one web_search per independent question, and cite sources with Markdown links."],
+		parameters: SEARCH_PARAMETERS,
 		renderResult: renderSearchResult,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			return executeWebSearch(params as WebSearchParams, signal, ctx);
-		},
+		execute: (_id, params, signal, _update, ctx) => search(params as SearchParams, signal, ctx),
+	});
+	pi.registerTool({
+		name: "web_fetch",
+		label: "Web fetch",
+		description: "Read web pages, PDFs and other files by URL, including pages that need JavaScript: excerpts focused on the goal, or the whole text. For pages behind a sign-in, use the browser tools.",
+		promptSnippet: "Read web pages",
+		parameters: FETCH_PARAMETERS,
+		renderResult: renderSearchResult,
+		execute: (_id, params, signal, _update, ctx) => fetchPages(params as FetchParams, signal, ctx),
 	});
 }

@@ -110,7 +110,7 @@ return { types: Object.fromEntries(Object.entries(serializer).map(([name, value]
 		const result = await run();
 		assert.deepEqual(result, { types: { convertResponsesMessages: "function", convertResponsesTools: "function",
 			createGrammarToolInputProperties: "function", normalizeContext: "function", getCurrentSystemPrompt: "function",
-			getDeclaredTools: "function", resolveTranscriptTools: "function", responseReplay: "function" }, result: "OK" });
+			getDeclaredTools: "function", resolveTranscriptTools: "function", responseReplay: "function", getResponsesToolSupport: "function" }, result: "OK" });
 		assert.equal(cached.convertResponsesTools, undefined, "the old cached module was not modified or patched");
 	}
 });

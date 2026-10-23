@@ -72,14 +72,14 @@ test("direct messages deliver once without broadcasting to unrelated agents", as
 	const a = harness(t, "first"), b = harness(t, "second"), unrelated = harness(t, "other");
 	await a.emit("session_start"); await b.emit("session_start"); await unrelated.emit("session_start");
 	await a.call("agent_send", { to: "second", message: "The topic is ready.", wake: true });
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
 	assert.equal(b.sent[0].message.customType, PARTY_MESSAGE);
 	assert.equal(b.sent[0].options.triggerTurn, true);
 	assert.equal(unrelated.sent.length, 0);
 	await b.emit("before_agent_start");
 	await b.emit("context", { messages: b.branch.map(x => x.message) });
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
 });
 
@@ -100,10 +100,6 @@ test("idle peer delivery resumes from persisted state when a network wake signal
 		await b.emit("context", { messages: b.branch.map(x => x.message) });
 		t.mock.timers.tick(20_000);
 		assert.equal(b.sent.length, 1, "polling cannot replay an admitted message");
-		await b.command("pause");
-		await a.call("agent_send", { to: "recipient", message: "Keep this paused.", wake: true });
-		t.mock.timers.tick(20_000);
-		assert.equal(b.sent.length, 1, "the persisted explicit pause still holds");
 	} finally { db.close(); }
 });
 
@@ -167,7 +163,7 @@ test("discovery and opening the inbox cannot arm, wake or acknowledge a dormant 
 	await old.emit("session_shutdown");
 	const b = harness(t, "second");
 	await b.emit("session_start");
-	await b.command("pause");
+	await b.emit("session_tree");
 	await a.call("agent_send", { to: "second", message: "**Waiting** for the next task" });
 	b.ctx.mode = "tui";
 	let view;
@@ -206,12 +202,12 @@ test("agent_send accepts and delivers large messages without a schema or runtime
 		type: "toolCall", id: "large-party-message", name: "agent_send", arguments: args,
 	}), args);
 	await a.call("agent_send", args);
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
 	assert.equal(b.sent[0].message.content, `Message · first (first)\n\n${text}`);
 	assert.equal(b.sent[0].options.triggerTurn, false);
 	await b.emit("context", { messages: b.branch.map(x => x.message) });
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
 });
 
@@ -220,14 +216,14 @@ test("silent messages do not wake idle peers and compact delivery IDs suppress r
 	const a = harness(t, "first"), b = harness(t, "second");
 	await a.emit("session_start"); await b.emit("session_start");
 	await a.call("agent_send", { to: "second", message: "FYI", wake: false });
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent[0].options.triggerTurn, false);
 	const id = b.sent[0].message.details.messageId;
 	assert.deepEqual(deliveredPartyIds([{ message: { customType: PARTY_MESSAGE, details: { messageId: id } } }]), [id]);
 	await b.emit("session_shutdown");
 	const reopened = harness(t, "second", [{ message: { customType: PARTY_MESSAGE, details: { messageId: id } } }]);
 	await reopened.emit("session_start");
-	await reopened.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(reopened.sent.length, 0);
 });
 
@@ -273,7 +269,7 @@ test("agents find and message each other", async t => {
 	for (const removed of ["party_join", "party_invite", "party_members", "party_remove", "party_leave", "party_resume",
 		"agent_discover", "agent_create", "agent_fork", "agent_close", "agent_send", "agent_profile", "agent_delivery", "agent_inbox"]) assert.equal(a.tools.has(removed), false);
 	await b.call("agent_send", { to: "transport", message: "Direct follow-up", wake: false });
-	await a.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.match(a.sent.at(-1).message.content, /Direct follow-up/);
 	assert.equal(a.sent.at(-1).options.triggerTurn, false);
 	assert.equal(c.sent.length, 0);
@@ -284,7 +280,6 @@ test("managed children have local message tools without an out-of-driver idle wa
 	environment(t);
 	const a = harness(t, "a"), b = harness(t, "child", [], true);
 	await a.emit("session_start"); await b.emit("session_start");
-	await b.command("resume");
 	await a.call("agent_send", { to: "child", message: "For your next managed turn", wake: true });
 	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 0);
@@ -301,7 +296,7 @@ test("the inbox shows only this agent's messages and does not deliver them", asy
 	const a = harness(t, "a"), b = harness(t, "b"), c = harness(t, "c");
 	for (const h of [a, b, c]) await h.emit("session_start");
 	// Paused, so only the inbox could deliver the message.
-	await b.command("pause");
+	await b.emit("session_tree");
 	await a.call("agent_send", { to: "b", message: "Private direct findings", wake: false });
 	for (const [h, expected] of [[b, true], [c, false]]) {
 		h.ctx.mode = "tui";
@@ -316,22 +311,6 @@ test("the inbox shows only this agent's messages and does not deliver them", asy
 		view.close(); await opening;
 	}
 });
-test("an explicit delivery pause persists across reload", async t => {
-	environment(t);
-	const a = harness(t, "a"), b = harness(t, "b");
-	await a.emit("session_start"); await b.emit("session_start");
-	await b.command("pause");
-	await b.emit("session_shutdown");
-	const restored = harness(t, "b");
-	await restored.emit("session_start", { reason: "reload" });
-	await a.call("agent_send", { to: "b", message: "Still paused" });
-	await restored.emit("input", { source: "interactive" });
-	await restored.emit("before_agent_start");
-	assert.equal(restored.sent.length, 0);
-	await restored.command("resume");
-	assert.equal(restored.sent.length, 1);
-});
-
 test("a copy started by agent_start, or agent_fork in earlier histories, finds its checkpoint", async () => {
 	const { partyForkPoint } = await import("./fork.ts");
 	for (const name of ["agent_start", "agent_fork"]) {
@@ -349,7 +328,7 @@ test("a delivered message stays in the recipient's context after its sender clos
 	const a = harness(t, "runner"), b = harness(t, "coordinator");
 	await a.emit("session_start"); await b.emit("session_start");
 	await a.call("agent_send", { to: "coordinator", message: "Round 3 kept; finished.", wake: true });
-	await b.command("resume");
+	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
 	await a.emit("session_shutdown");
 	const store = new PartyStore(join(process.env.PI_CODING_AGENT_DIR, "party"));

@@ -550,8 +550,5 @@ export class PartyStore {
 		this.owned(session, owner);
 		this.db.prepare("UPDATE members SET delivery=? WHERE session=? AND owner=?").run(enabled ? 1 : 0, session, owner);
 	}
-	setPaused(session: string, owner: string, paused: boolean): void {
-		this.owned(session, owner);
-		this.db.prepare("UPDATE members SET muted=? WHERE session=? AND owner=?").run(paused ? 1 : 0, session, owner);
-	}
+
 }

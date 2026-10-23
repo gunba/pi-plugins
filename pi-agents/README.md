@@ -34,7 +34,6 @@ conversations during the next turn its parent's runtime runs; such a message nev
 ## Commands
 
 - `/inbox` opens this conversation's message history. Reading it does not deliver messages to Pi.
-- `/inbox pause` and `/inbox resume` control automatic delivery of messages from other agents.
 - `/subagents` opens the secondary agents' dashboard (see the subagents README).
 
 In Desk, the **Messages** card shows history, finds agents and sends messages, and the **Agents** panel shows

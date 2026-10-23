@@ -16,8 +16,6 @@ export const CreateParameters = Type.Object({
 	...Definition, objective: Type.String({ description: "What done means." }),
 }, { additionalProperties: false });
 export const UpdateParameters = Type.Object({
-	plan_id: Type.String({ minLength: 1 }),
-	revision: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 	action: StringEnum(["edit", "pause", "resume", "complete", "blocked"] as const),
 	...Definition,
 	blocked_reason: Type.Optional(Type.String({ description: "For action blocked." })),
@@ -25,18 +23,21 @@ export const UpdateParameters = Type.Object({
 export type CreateParams = Static<typeof CreateParameters>;
 export type UpdateParams = Static<typeof UpdateParameters>;
 
-/** Validate scalar fields before Pi's schema conversion can coerce them. */
+/**
+ * Validate scalar fields before Pi's schema conversion can coerce them. update_plan once took plan_id and revision;
+ * conversations that used it may still send them, so they are dropped rather than refused.
+ */
 export function preparePlanArguments<T extends CreateParams | UpdateParams>(value: unknown): T {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value as T;
-	const input = value as Record<string, unknown>;
-	for (const field of ["objective", "plan_id", "action", "blocked_reason"])
+	const { plan_id: _id, revision: _revision, ...input } = value as Record<string, unknown>;
+	for (const field of ["objective", "action", "blocked_reason"])
 		if (field in input && typeof input[field] !== "string") throw new Error(`${field} must be a string`);
-	for (const field of ["revision", "max_rounds"])
+	for (const field of ["max_rounds"])
 		if (field in input && (typeof input[field] !== "number" || !Number.isSafeInteger(input[field]) || (input[field] as number) < 1))
 			throw new Error(`${field} must be a positive safe integer`);
 	if ("auto_continue" in input && typeof input.auto_continue !== "boolean") throw new Error("auto_continue must be a boolean");
 	if ("steps" in input) planSteps(input.steps, true);
-	return value as T;
+	return input as T;
 }
 export function definition(params: CreateParams | UpdateParams) {
 	return {

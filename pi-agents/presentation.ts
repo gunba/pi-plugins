@@ -9,7 +9,6 @@ export interface PartyUiOperations {
 	state(): { self: PartyPeer; pending: number; armed: boolean };
 	discover(query: string, offline: boolean, offset: number): { agents: PartyPeer[]; nextOffset?: number };
 	history(query: HistoryQuery): HistoryPage;
-	delivery(enabled: boolean): void;
 	profile(description: string): void;
 	send(to: string, text: string, wake: boolean): void;
 }
@@ -70,8 +69,6 @@ export class PartyPresentation {
 		const controls = [
 			action("history", "Messages", () => { this.page = "history"; this.historyQuery = undefined; }),
 			action("discover", "Find agents", () => { this.page = "discover"; this.offset = 0; }),
-			action("delivery", state.armed && state.self.delivery === "ready" ? "Pause delivery" : "Resume delivery",
-				() => this.ops.delivery(!(state.armed && state.self.delivery === "ready"))),
 			action("profile", "Edit profile", async () => {
 				const description = await this.text("Describe this session's work", state.self.description, true);
 				if (description !== undefined) {
@@ -84,7 +81,7 @@ export class PartyPresentation {
 			summary: `${state.pending} pending for Pi`,
 			fields: [
 				{ label: "Session", value: state.self.label },
-				{ label: "Delivery", value: state.armed ? state.self.delivery : "Paused until work resumes" },
+				{ label: "Delivery", value: state.armed ? state.self.delivery : "Waits for the next turn" },
 				...(state.self.deliveryReason ? [{ label: "Reason", value: state.self.deliveryReason }] : []),
 			], items: [],
 		};

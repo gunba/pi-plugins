@@ -73,7 +73,7 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime,
 		model: runtime.getModel("openai-codex", modelData.id), resourceLoader: loader, sessionManager: manager,
-		settingsManager: settings, tools: ["get_plan", "create_plan", "update_plan"] }));
+		settingsManager: settings, tools: ["create_plan", "update_plan"] }));
 	const errors = [];
 	await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error) });
 	const tool = (name, args = {}) => [{ type: "toolCall", id: `fixture-${calls}`, name, arguments: args }];
@@ -85,17 +85,19 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	};
 	const finish = () => [{ type: "text", text: "Fixture finished." }];
 	const terminal = context => {
-		const plan = readPlan(context);
-		return tool("update_plan", { plan_id: plan.id, revision: plan.revision, action: "complete" });
+		readPlan(context);
+		return tool("update_plan", { action: "complete" });
 	};
 	const expectComplete = context => { assert.equal(readPlan(context).phase, "complete"); return finish(); };
 
-	// The restored plan is active but disarmed. A real human request can still edit it.
-	script.push(() => tool("get_plan"), context => {
-		const plan = readPlan(context);
-		assert.equal(plan.phase, "active");
-		assert.equal(plan.activation, "disarmed");
-		return tool("update_plan", { plan_id: plan.id, revision: plan.revision, action: "edit", objective: "Reviewed objective" });
+	// The restored plan is active but disarmed, and the model has not seen it: its first edit is refused with the plan.
+	// A real human request can still edit it.
+	const edit = () => tool("update_plan", { action: "edit", objective: "Reviewed objective" });
+	script.push(edit, context => {
+		const refusal = result(context);
+		assert.equal(refusal.isError, true);
+		assert.match(refusal.content[0].text, /changed since you last saw it[\s\S]*"objective":"Prior objective"[\s\S]*"phase":"active"[\s\S]*"activation":"disarmed"/);
+		return edit();
 	}, context => { assert.equal(readPlan(context).objective, "Reviewed objective"); return terminal(context); }, expectComplete);
 	await session.prompt("Update the plan to the reviewed objective.");
 	assert.equal(script.length, 0);
@@ -107,10 +109,8 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	let release, entered;
 	const held = new Promise(resolve => { release = resolve; });
 	const ready = new Promise(resolve => { entered = resolve; });
-	script.push(async () => { entered(); await held; return tool("get_plan"); }, context => {
-		assert.equal(readPlan(context), null);
-		return tool("create_plan", { objective: "Replacement objective" });
-	}, terminal, expectComplete);
+	script.push(async () => { entered(); await held; return tool("create_plan", { objective: "Replacement objective" }); },
+		terminal, expectComplete);
 	const running = session.sendCustomMessage({ customType: "pi-party/message", content: "Peer report", display: true }, { triggerTurn: true });
 	await ready;
 	await session.prompt("I removed it. Set it now.", { streamingBehavior: "steer" });

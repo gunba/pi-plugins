@@ -19,6 +19,8 @@ const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
 async function fixture(t, extraExtensions = [], uiContext) {
+	// Delivery is checked every 10 seconds; tests run that check with deliver(t).
+	t.mock.timers.enable({ apis: ["setInterval"] });
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-prompt-"));
 	const priorDir = process.env.PI_CODING_AGENT_DIR, priorFetch = globalThis.fetch;
 	process.env.PI_CODING_AGENT_DIR = directory;
@@ -77,12 +79,8 @@ async function fixture(t, extraExtensions = [], uiContext) {
 	return { session, runtime, db, contexts, requests, errors, started: started.promise };
 }
 
-/** Resumes message delivery as /inbox resume does, which also delivers any message waiting. */
-function resumeDelivery(f) {
-	const runner = f.session.extensionRunner;
-	return runner.getCommand("inbox").handler("resume", runner.createCommandContext());
-}
-
+/** Runs the 10-second delivery check now, as a missed file signal would leave it to (setInterval is mocked). */
+function deliver(t) { t.mock.timers.tick(10_000); }
 test("human and peer messages remain queued while agent creation awaits user approval", { timeout: 15000 }, async t => {
 	const entered = Promise.withResolvers(), approval = Promise.withResolvers();
 	t.after(() => approval.resolve(false));
@@ -95,7 +93,7 @@ test("human and peer messages remain queued while agent creation awaits user app
 	await entered.promise;
 	await f.session.prompt("HUMAN COMMENT WHILE WAITING", { streamingBehavior: "steer" });
 	f.db.send("sender", "sender-process", "recipient", "PEER COMMENT WHILE WAITING", true);
-	await resumeDelivery(f);
+	deliver(t);
 	await nextTick();
 	assert.equal(f.requests.length, 1, "an approval wait cannot start another model run");
 	approval.resolve(false);
@@ -142,7 +140,7 @@ test("agent-message arrivals during an asynchronous prompt hook are attached to 
 	const running = f.session.prompt("HUMAN TASK").catch(error => { promptError = error; });
 	await entered.promise;
 	f.db.send("sender", "sender-process", "recipient", "LATE PEER FINDING", true);
-	await resumeDelivery(f);
+	deliver(t);
 	await nextTick();
 	assert.equal(f.requests.length, 0, "a party wake cannot overtake prompt preparation");
 	gate.resolve();
@@ -168,7 +166,7 @@ test("agent-message wakes cannot overtake native authentication preflight", { ti
 	const running = f.session.prompt("HUMAN TASK", { streamingBehavior: "steer" }).catch(error => { promptError = error; });
 	await entered.promise;
 	f.db.send("sender", "sender-process", "recipient", "AUTH-PREFLIGHT PEER FINDING", true);
-	await resumeDelivery(f);
+	deliver(t);
 	await nextTick();
 	const requestsBeforeAdmission = f.requests.length;
 	gate.resolve(); await f.started; await nextTick();
@@ -184,7 +182,7 @@ test("agent-message wakes cannot overtake native authentication preflight", { ti
 test("an idle agent awakened by a peer remains steerable and cancellable", { timeout: 15000 }, async t => {
 	const f = await fixture(t);
 	f.db.send("sender", "sender-process", "recipient", "PEER-INITIATED TASK", true);
-	await resumeDelivery(f);
+	deliver(t);
 	await f.started;
 	assert.equal(f.session.isStreaming, true);
 	assert.equal(f.session.agent.state.isStreaming, true);

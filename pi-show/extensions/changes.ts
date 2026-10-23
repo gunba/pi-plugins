@@ -54,7 +54,7 @@ const CLAIMS_KEPT = 60 * 60_000;
 const MAX_FILES = 40, TEXT_LIMIT = 2 * 1024 * 1024, DIFF_CHARS = 64_000, OFFICE_LIMIT = 64 * 1024 * 1024;
 const ROOT_FILES = 20_000, ROOT_BYTES = 256 * 1024 ** 2, BIG_FILE = 32 * 1024 * 1024, ROOTS = 12, LOOSE = 32;
 /** Tools that never write files; every other call is watched. */
-export const READ_ONLY = new Set(["read", "grep", "find", "ls", "web_search", "read_artifact", "get_plan",
+export const READ_ONLY = new Set(["read", "grep", "find", "ls", "web_search", "web_fetch", "read_artifact",
 	"agent_list", "quest_list", "ask_user", "tool_search", "chrome_devtools_load"]);
 /** Dependencies, caches, and the lock files Office and LibreOffice keep beside an open document. */
 const DEFAULT_EXCLUDES = ["node_modules/", ".venv/", "venv/", "__pycache__/", "*.pyc", ".cache/", ".pytest_cache/", ".mypy_cache/", ".DS_Store", ".git/", "~$*", ".~lock.*#", "*.tmp"];
