@@ -6,7 +6,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 | Call | Watches | Wakes the agent |
 |---|---|---|
 | `watch({command})` | the command, run in the background | with its new output, and when it ends |
-| `watch({command, every})` | the command, re-run every `every` seconds | when its output changes; the watch then ends unless `repeat: true` |
+| `watch({command, every})` | the command, re-run every `every` seconds | when its output changes; the watch then ends |
 | `watch({until})` | the clock: `HH:MM` or an ISO date and time, within 31 days | at that time |
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |

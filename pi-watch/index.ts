@@ -49,8 +49,6 @@ export interface WatchSpec {
 	/** When a "time" watch wakes the agent, in ms since the epoch. */
 	at?: number;
 	wakeWhen?: string;
-	/** A "change" watch keeps going after it wakes the agent. */
-	repeat?: boolean;
 	cwd: string;
 	created: number;
 	expires: number;
@@ -63,7 +61,7 @@ export interface WatchSpec {
 }
 type WatchRecord =
 	| { op: "start"; watch: WatchSpec }
-	| { op: "seen"; id: string; offset?: number; last?: string }
+	| { op: "seen"; id: string; offset: number }
 	| { op: "end"; id: string; reason: string };
 
 interface Active {
@@ -80,7 +78,7 @@ interface Active {
 	settle?: NodeJS.Timeout;
 	recent: string[];
 	finishing: boolean;
-	/** Hash of the output a "change" watch last reported. */
+	/** Hash of a "change" watch's latest output. */
 	last?: string;
 }
 
@@ -91,10 +89,9 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command, run like bash's. Without every, it runs in the background: its new output wakes you, and so does its end. With every, it is re-run and a change in its output wakes you." })),
-	every: Type.Optional(Type.Integer({ minimum: 5, maximum: 86_400, description: "Seconds between runs of command." })),
+	every: Type.Optional(Type.Integer({ minimum: 5, maximum: 86_400, description: "Seconds between runs of command. The watch ends when it wakes you." })),
 	until: Type.Optional(Type.String({ description: `Instead of command: wake at this time, HH:MM (its next occurrence, this computer's time) or an ISO date and time, within ${MAX_WAIT_DAYS} days.` })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output that shows this, in plain words (\"the build fails or finishes\"). A classifier judges each event." })),
-	repeat: Type.Optional(Type.Boolean({ description: "With every: keep watching after waking you. By default the watch ends when it first wakes you." })),
 	hours: Type.Optional(Type.Number({ minimum: 0.05, maximum: MAX_HOURS, description: `How long a command watch lasts; default ${DEFAULT_HOURS}, at most ${MAX_HOURS}. A background command still running then is stopped.` })),
 	stop: Type.Optional(Type.String({ description: "ID of a watch to stop; its background command is stopped too." })),
 }, { additionalProperties: false });
@@ -221,14 +218,14 @@ class Watches {
 
 	/** Rebuilds this branch's watches from its entries and picks each one back up. */
 	restore(): void {
-		const specs = new Map<string, WatchSpec>(), seen = new Map<string, { offset?: number; last?: string }>();
+		const specs = new Map<string, WatchSpec>(), seen = new Map<string, number>();
 		for (const entry of this.ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== WATCH_ENTRY) continue;
 			const record = entry.data as WatchRecord;
 			if (record.op === "start") specs.set(record.watch.id, record.watch);
 			else if (record.op === "end") { specs.delete(record.id); seen.delete(record.id); }
-			else seen.set(record.id, { ...seen.get(record.id),
-				...(record.offset !== undefined ? { offset: record.offset } : {}), ...(record.last !== undefined ? { last: record.last } : {}) });
+			// Older change watches recorded an output hash here rather than an offset; those are skipped.
+			else if (typeof record.offset === "number") seen.set(record.id, record.offset);
 		}
 		for (const spec of specs.values()) this.arm(spec, seen.get(spec.id), true);
 		this.publish();
@@ -284,7 +281,6 @@ class Watches {
 		}
 		if (params.command !== undefined && params.until !== undefined) throw new Error("Give command or until, not both; hours sets how long a command watch lasts.");
 		if (params.until !== undefined && given.length > 1) throw new Error("until takes no other parameters.");
-		if (params.repeat !== undefined && params.every === undefined) throw new Error("repeat applies only with every.");
 		const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
 		if (params.command !== undefined && !command) throw new Error("command is empty.");
 		if (this.active.size >= MAX_ACTIVE) throw new Error(`At most ${MAX_ACTIVE} watches can run at once. ${this.list()}`);
@@ -294,7 +290,7 @@ class Watches {
 		const spec: WatchSpec = {
 			id: this.nextId(), mode: at !== undefined ? "time" : params.every !== undefined ? "change" : "output",
 			...(command ? { command } : {}), ...(params.every !== undefined ? { every: params.every } : {}), ...(at !== undefined ? { at } : {}),
-			...(wakeWhen ? { wakeWhen } : {}), ...(params.repeat ? { repeat: true } : {}),
+			...(wakeWhen ? { wakeWhen } : {}),
 			cwd: ctx.cwd, created: now, expires: at ?? now + (params.hours ?? DEFAULT_HOURS) * 3_600_000, computer: hostname(),
 		};
 		if (spec.mode === "output") this.launch(spec);
@@ -303,7 +299,7 @@ class Watches {
 		this.publish();
 		const ending = `It ends ${when(spec.expires)}.`, stop = `watch({stop: "${spec.id}"}) stops it.`;
 		const text = spec.mode === "time" ? `Watching as ${spec.id}: you'll be woken ${describeWatch(spec)}.`
-			: spec.mode === "change" ? `Watching as ${spec.id}: ${describeWatch(spec)}. You'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}${spec.repeat ? ", each time" : "; the watch then ends"}. ${ending} ${stop}`
+			: spec.mode === "change" ? `Watching as ${spec.id}: ${describeWatch(spec)}. You'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}; the watch then ends. ${ending} ${stop}`
 			: `Watching as ${spec.id}: ${describeWatch(spec)}, output in ${spec.log}. You'll be woken ${wakeWhen ? "when its output shows that" : "with its new output"}, and when it ends. ${ending} ${stop}`;
 		return `${text} End your turn now unless you have other work.`;
 	}
@@ -339,9 +335,9 @@ class Watches {
 		spec.pid = runner.pid;
 	}
 
-	private arm(spec: WatchSpec, seen: { offset?: number; last?: string } | undefined, restored: boolean): void {
+	private arm(spec: WatchSpec, offset: number | undefined, restored: boolean): void {
 		const active: Active = { spec, abort: new AbortController(), timers: [], queue: Promise.resolve(), failures: 0,
-			offset: seen?.offset ?? 0, decoder: new StringDecoder("utf8"), partial: "", pending: [], recent: [], finishing: false, last: seen?.last };
+			offset: offset ?? 0, decoder: new StringDecoder("utf8"), partial: "", pending: [], recent: [], finishing: false };
 		this.active.set(spec.id, active);
 		const now = Date.now();
 		if (spec.computer !== hostname()) {
@@ -462,7 +458,7 @@ class Watches {
 		void this.chain(active, () => this.end(active, how, { kill: false, output: active.recent.join("\n") }));
 	}
 
-	/** Re-runs a "change" watch's command, judging each new output, until it wakes the agent (unless it repeats). */
+	/** Re-runs a "change" watch's command, judging each new output, until it wakes the agent. */
 	private async poll(active: Active): Promise<void> {
 		const { spec, abort } = active;
 		while (!this.closed && this.active.get(spec.id) === active) {
@@ -474,8 +470,8 @@ class Watches {
 				// The first run only sets the baseline, unless a condition can already be true.
 				if (previous !== undefined || spec.wakeWhen) {
 					if (await this.chain(active, () => this.consider(active, output, previous === undefined ? "checked:" : "changed:"))) {
-						this.pi.appendEntry(WATCH_ENTRY, { op: "seen", id: spec.id, last: hash } satisfies WatchRecord);
-						if (!spec.repeat) { this.end(active, "it woke you", { kill: false, tell: false }); return; }
+						this.end(active, "it woke you", { kill: false, tell: false });
+						return;
 					}
 				}
 			}
