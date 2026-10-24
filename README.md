@@ -33,10 +33,10 @@ Do not pin a ref, or Pi's update checks will not see new commits.
   allowance status, `/pi-usage` and the Fast tier.
 - [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth): Claude sign-in. The Pi update
   workflow updates it hourly to its latest release.
-- [`pi-output-budget`](pi-output-budget/README.md): cuts long tool results to 16,000 characters and keeps the full text
-  for `read_artifact`; caps images at 1.5 MB.
-- [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries and briefs from the prompt cache,
-  and the project's rules for Pi's own summariser.
+- [`pi-output-budget`](pi-output-budget/README.md): Pi's own output limits (2,000 lines or 50 KB) for every tool, with
+  the full text saved to a file; images read at most 1.5 MB.
+- [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries and briefs from the prompt cache
+  while it is warm; Pi's own summary otherwise.
 - [`pi-session-memory`](pi-session-memory/README.md): frees memory held for compacted history in terminal Pi.
 - [`pi-context-window`](pi-context-window/README.md): `/context-window`, the model's window and compaction threshold.
 - [`pi-system-context`](pi-system-context/README.md): the computer's environment in the system prompt.
@@ -52,10 +52,11 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 
 ## Skills and prompts
 
-- [`pi-code-skills`](pi-code-skills/README.md): `code-review`, `test-writing` and `code-comments`.
-- [`pi-improve-skill`](pi-improve-skill/README.md): tooling for building and iterating on skills: benchmark rounds, and the
-  mining and benchmarks behind the code skills.
-- [`pi-browser`](pi-browser/README.md): `browse`, for operating Chrome through its DevTools extension.
+Skills live in Pi's skills folder (`~/.pi/agent/skills`), which Desk mirrors between the user's computers, not in this
+package.
+
+- [`pi-improve-skill`](pi-improve-skill/README.md): tooling for building and iterating on skills: the mining and
+  benchmarks behind the code skills.
 - [`pi-prompts`](pi-prompts/corrections.md): `/corrections` finds where the user corrected agents and proposes fixes.
 
 ## Shared code

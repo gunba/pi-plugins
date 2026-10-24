@@ -24,7 +24,7 @@ From this folder:
 | Review units | `cd <c> && node normalize.mjs` | `units.jsonl`, `changes.jsonl` |
 | Jev inputs | `cd <c> && node prepare.mjs` (second passes: `--ids <ids> --name <name>`) | `jev/<name>-in/` |
 | Jev labels | `classify.codemode.js` in Pi's codemode, with `CORPUS`, `NAME` and `QUESTIONS` set | `jev/<name>-out/` |
-| Pools and stats | `cd <c> && node build.mjs` | the skills' `references/*.jsonl`, `labelled.jsonl`, `stats.json` |
+| Pools and stats | `cd <c> && node build.mjs` | `~/.pi/agent/skills/<skill>/references/*.jsonl`, `labelled.jsonl`, `stats.json` |
 
 The second Jev passes label what each remark is about: `moves.json` for `code-review`; `test-moves.json`,
 `comment-moves.json` and `rebuttal.json` (why authors declined a remark) for `code-craft`. Their id lists come from the

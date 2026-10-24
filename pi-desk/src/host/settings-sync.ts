@@ -21,7 +21,8 @@ const HOME_FOLDERS = [".agents/skills"];
 /** Settings that name this computer's own paths, programs or network, or record what it has seen. */
 const LOCAL_SETTINGS = new Set(["extensions", "skills", "prompts", "themes", "lastChangelogVersion", "shellPath", "shellCommandPrefix",
 	"npmCommand", "externalEditor", "sessionDir", "httpProxy", "terminal", "images"]);
-const MAX_FILE = 1024 * 1024, MAX_ITEMS = 2000, TOMBSTONE_DAYS = 90;
+// Skills carry reference files of a megabyte or two.
+const MAX_FILE = 4 * 1024 * 1024, MAX_ITEMS = 2000, TOMBSTONE_DAYS = 90;
 const KEY = /^(agent|home|setting):(?!.*(?:^|\/)\.\.(?:\/|$))[^\0\\]{1,400}$/;
 const sha = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
 

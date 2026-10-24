@@ -62,7 +62,7 @@ From `pi-improve-skill/bench/code-review`:
 ```sh
 node cases.mjs select && node cases.mjs build 32   # after Jev answers "findable"
 node run.mjs --label base --model openai-codex/gpt-6.1-sol --thinking high
-node run.mjs --label skill --model openai-codex/gpt-6.1-sol --thinking high --skill ../../../pi-code-skills/skills/code-review
+node run.mjs --label skill --model openai-codex/gpt-6.1-sol --thinking high --skill ~/.pi/agent/skills/code-review
 node score.mjs prepare base skill        # then Jev: match.json and questions.json
 node judge.mjs --runs base,skill --model anthropic/claude-opus-5-5
 node score.mjs report base skill
@@ -167,14 +167,14 @@ From `pi-improve-skill/bench/code-craft`:
 ```sh
 node tests-cases.mjs
 node tests-run.mjs --label base --model openai-codex/gpt-6.1-sol --thinking high
-node tests-run.mjs --label skill --model openai-codex/gpt-6.1-sol --thinking high --skill ../../../pi-code-skills/skills/test-writing
+node tests-run.mjs --label skill --model openai-codex/gpt-6.1-sol --thinking high --skill ~/.pi/agent/skills/test-writing
 node tests-score.mjs --runs base,skill
 node tests-judge.mjs --runs base,skill
 node tests-report.mjs --runs base,skill
 
 node comments-cases.mjs 20
 node comments-run.mjs --label base
-node comments-run.mjs --label skill --skill ../../../pi-code-skills/skills/code-comments
+node comments-run.mjs --label skill --skill ~/.pi/agent/skills/code-comments
 node comments-judge.mjs --runs base,skill
 node comments-report.mjs --runs base,skill
 ```

@@ -47,13 +47,6 @@
       "./pi-system-one/index.ts",
       "./pi-command-guard/index.ts",
       "./pi-compaction-context/extensions/compaction-context.ts"
-    ],
-    "skills": [
-      "./pi-browser/skills/browse",
-      "./pi-improve-skill/skills/improve-skill",
-      "./pi-code-skills/skills/code-review",
-      "./pi-code-skills/skills/test-writing",
-      "./pi-code-skills/skills/code-comments"
     ]
   },
   "peerDependencies": {

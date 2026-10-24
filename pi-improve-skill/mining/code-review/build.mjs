@@ -10,12 +10,12 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { DATA_DIR } from "./config.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REFS = join(HERE, "..", "..", "..", "pi-code-skills", "skills", "code-review", "references");
+// The skill lives in Pi's skills folder, which Desk mirrors to the user's other computers.
+const REFS = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "skills", "code-review", "references");
 
 function readLabels(dir) {
   const out = new Map();
