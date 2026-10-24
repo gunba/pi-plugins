@@ -68,6 +68,16 @@ test("catalog uses the explicit native identity and pinned version in every scop
   });
 });
 
+test("catalog retains only the native intro from model instructions", async () => {
+  const intro = "You are Codex, an agent based on GPT-6.";
+  const metadata = await new Catalog(identity).model(id, url, headers("A"), undefined, async () => Response.json({
+    models: [{ slug: id, model_messages: { instructions_template: intro + "\n\n# Full native policy\nNot retained." } }],
+  }));
+  assert.equal(metadata.codex_intro, intro);
+  assert.equal(metadata.model_messages, undefined);
+  assert.equal(metadata.base_instructions, undefined);
+});
+
 test("native lookup uses the longest prefix, preserves the requested ID and detaches data", () => {
   const entries = [{ slug: "gpt", use_responses_lite: false },
     { slug: "gpt-6", use_responses_lite: true, service_tiers: [{ id: "priority" }] },

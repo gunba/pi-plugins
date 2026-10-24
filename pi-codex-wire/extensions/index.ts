@@ -9,7 +9,9 @@ import { responseReplay } from "./serializer.ts";
 import { Diagnostics, object, type JsonObject, type Profile } from "./diagnostics.ts";
 import { retainDiagnostics } from "./diagnostic-retention.ts";
 import { Protocol } from "./protocol.ts";
-import { CODEX_VERSION, codexIdentity, type Client } from "./identity.ts";
+import { PROTOCOL_REFERENCE_VERSION, codexIdentity, type Client, type Identity } from "./identity.ts";
+import { codexVersion, latestCodexVersion, versionedUserAgent } from "./version.ts";
+import { prependCodexIntro } from "./prompt.ts";
 import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
@@ -49,6 +51,7 @@ export default function codexWire(pi: ExtensionAPI): void {
   codexUsage(pi);
   requestTracing(pi);
   pi.registerFlag("codex-wire-client", { type: "string", description: "Codex client identity: cli or desktop (overrides saved client)" });
+  pi.registerFlag("codex-wire-version", { type: "string", description: "Explicit Codex core version override (default: latest official stable release)" });
   pi.registerFlag("codex-wire-desktop-version", { type: "string", description: "Desktop application version for the app-server User-Agent suffix" });
   pi.registerFlag("codex-wire-transport", { type: "string", default: "auto", description: "Wire transport: auto (WebSocket with SSE fallback) or sse" });
   pi.registerFlag("codex-wire-compression", { type: "string", default: "on", description: "Native request-compression feature: on (Codex default) or off" });
@@ -62,7 +65,6 @@ export default function codexWire(pi: ExtensionAPI): void {
   let protocol: Protocol | undefined;
   let diagnostics: Diagnostics | undefined;
   let beganTurn = false;
-  let catalog: Catalog | undefined;
   let lastRequest = "not tested";
   const directory = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "codex-wire");
   const pending = new Map<AbortController, string>();
@@ -84,7 +86,8 @@ export default function codexWire(pi: ExtensionAPI): void {
     ctx.ui.setStatus("codex-wire", `wire:${client}${fastMode !== "off" ? ` · fast:${fastMode}` : ""}`);
     if (!remote) return;
     const data: UiDetails = { summary: "Fast and Ultrafast request faster processing on eligible ChatGPT Codex models at higher credit use. Availability depends on the model and account; the backend can downgrade a request. Prewarming adds a full-prompt request; it is normally left off.",
-      fields: [{ label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode }],
+      fields: [{ label: "Last eligibility check", value: lastFastCheck }, { label: "Wire", value: mode },
+        { label: "Core version", value: protocol?.identity.version || "Latest stable (not yet resolved)" }],
       controls: remote.runCommand ? [
         { kind: "select", label: "Speed", value: fastMode, options: [{ value: "off", label: "Standard" }, { value: "on", label: "Fast" }, { value: "ultrafast", label: "Ultrafast" }],
           action: { id: "fast", label: "Change speed", interrupt: "resume" }, help: "Fast and Ultrafast use more credits. The selected model must advertise the requested tier." },
@@ -136,12 +139,19 @@ export default function codexWire(pi: ExtensionAPI): void {
     if (selectedTransport !== "auto" && selectedTransport !== "sse") throw new Error("codex-wire-transport must be auto or sse");
     const compression = pi.getFlag("codex-wire-compression") ?? "on";
     if (compression !== "on" && compression !== "off") throw new Error("codex-wire-compression must be on or off");
-    const identity = codexIdentity({
+    const identityOptions = {
       client: selectedClient,
       desktopVersion: pi.getFlag("codex-wire-desktop-version") as string | undefined,
       userAgent: pi.getFlag("codex-wire-user-agent") as string | undefined ?? readUserAgent(directory, selectedClient),
       originator: pi.getFlag("codex-wire-originator") as string | undefined,
-    });
+    };
+    const override = pi.getFlag("codex-wire-version");
+    const explicitVersion = override === undefined ? undefined : codexVersion(override);
+    const buildIdentity = (version: string) => codexIdentity({ ...identityOptions, version,
+      userAgent: versionedUserAgent(identityOptions.userAgent, version) });
+    // Protocols share this object. Resolve it before creating the catalog or sending headers.
+    const identity: Identity = explicitVersion ? buildIdentity(explicitVersion) : { originator: "", userAgent: "", version: "" };
+    let catalog: Catalog | undefined = explicitVersion ? new Catalog(identity) : undefined;
     stop(); mode = next; client = selectedClient; prewarm = selectedPrewarm; fastMode = selectedFast;
     lastFastCheck = "not checked"; lastRequest = "not tested";
     const currentLifetime = lifetime = new AbortController();
@@ -151,14 +161,13 @@ export default function codexWire(pi: ExtensionAPI): void {
     original = provider;
     diagnostics = new Diagnostics(join(directory, "logs", `${randomUUID()}.jsonl`),
       () => ctx.ui.notify("Codex wire diagnostics could not be written.", "warning"));
-    diagnostics.write({ kind: "run", profile: mode, referenceVersion: CODEX_VERSION, transport: selectedTransport,
+    diagnostics.write({ kind: "run", profile: mode, referenceVersion: PROTOCOL_REFERENCE_VERSION, transport: selectedTransport,
       compression, client, prewarm, rootSessionId: ctx.sessionManager.getSessionId() });
     // Housekeeping runs at activation, never inside a model request.
     void retainDiagnostics(join(directory, "logs")).catch(() => {
       if (!currentLifetime.signal.aborted) ctx.ui.notify("Codex Wire could not retire old diagnostics.", "warning");
     });
     if (identity) {
-      catalog = new Catalog(identity);
       const windows = ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "codex-wire-window");
       const lastWindow = windows.at(-1);
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
@@ -170,6 +179,18 @@ export default function codexWire(pi: ExtensionAPI): void {
       currentSessions.set(protocol.threadId, { protocol, transport });
     }
     const currentDiagnostics = diagnostics;
+    async function ensureIdentity(fetcher?: typeof fetch): Promise<void> {
+      if (identity.version) return;
+      const resolved = await latestCodexVersion(directory, fetcher);
+      currentLifetime.signal.throwIfAborted();
+      if (identity.version) return;
+      Object.assign(identity, buildIdentity(resolved.version));
+      catalog = new Catalog(identity);
+      currentDiagnostics.write({ kind: "identity", client, version: identity.version, source: resolved.source });
+      if (resolved.source === "stale-cache") {
+        ctx.ui.notify(`Codex release lookup unavailable; using last verified version ${resolved.version}.`, "warning");
+      }
+    }
     const primaryProtocol = protocol;
     const primarySession = protocol ? currentSessions.get(protocol.threadId) : undefined;
     const fallbackWarnings = new Set<string>();
@@ -283,6 +304,8 @@ export default function codexWire(pi: ExtensionAPI): void {
           const fetchSignal = init?.signal ? AbortSignal.any([requestSignal, init.signal]) : requestSignal;
           const headers = new Headers(init?.headers);
           headers.delete(SIDE_REQUEST_HEADER);
+          await ensureIdentity(options?.fetch);
+          fetchSignal.throwIfAborted();
           const metadata = await catalog!.model(model.id, String(url), headers, fetchSignal, options?.fetch);
           metadataForRequest = metadata;
           fetchSignal.throwIfAborted();
@@ -291,12 +314,15 @@ export default function codexWire(pi: ExtensionAPI): void {
             ctx.ui.notify("Selected model is unlisted. Using native Codex fallback capabilities; the requested model is unchanged.", "warning");
           }
           const source = structuredClone(body);
+          source.instructions = prependCodexIntro(source.instructions, metadata);
           // Pi's built-in low verbosity is a provider default, not a user choice.
           if (!(options && "textVerbosity" in options)) delete object(source.text).verbosity;
-          // Keep Pi's readable-summary default instead of replacing it with a catalog "none".
+          // Desk uses detailed summaries; terminal Pi keeps its provider default.
           // streamSimple may drop provider-specific options, so preserve an explicit caller choice here.
           if (options && "reasoningSummary" in options) {
             source.reasoning = { ...object(source.reasoning), summary: options.reasoningSummary };
+          } else if (ctx.mode === "rpc") {
+            source.reasoning = { ...object(source.reasoning), summary: "detailed" };
           }
           // Pi's Codex streamSimple rebuilds its options and drops serviceTier.
           // Apply the opt-in to the serialized request, before catalog validation.
@@ -386,12 +412,15 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (!auth.ok) throw new Error("Cannot resolve Codex compaction authentication.");
         const model = auth.baseUrl ? { ...selected, baseUrl: auth.baseUrl } : selected;
         const { url, headers } = codexRequestAuth(model.baseUrl, auth.apiKey, model.headers, auth.headers);
+        await ensureIdentity();
+        signal.throwIfAborted();
         const metadata = await catalog!.model(model.id, url, headers, signal);
         signal.throwIfAborted();
         if (session.compactContext !== operation.context) {
           session.transport.close(); session.protocol.beginTurn(operation.reason); session.compactContext = operation.context;
         }
         const source = compactInput(model, operation.context, operation.thinking);
+        source.instructions = prependCodexIntro(source.instructions, metadata);
         const tier = currentFast() === "ultrafast" ? "ultrafast" : "priority";
         if (fastMode !== "off" && operation.ctx.modelRegistry.isUsingOAuth(selected) && fastAvailable(metadata, model.id, tier)) {
           source.service_tier = tier;
@@ -517,7 +546,7 @@ export default function codexWire(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       if (!args.trim() || parts[0] === "status") {
-        ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nPrewarm: ${prewarm ? "on" : "off"}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
+        ctx.ui.notify(`Codex wire: ${mode === "off" ? "unavailable" : mode} (always enabled)\nClient: ${client}\nCore version: ${protocol?.identity.version || "latest stable (not yet resolved)"}\nPrewarm: ${prewarm ? "on" : "off"}\nLast request: ${lastRequest}${diagnostics ? `\n${diagnostics.path}` : ""}`, "info"); return;
       }
       if (!ctx.isIdle()) { ctx.ui.notify("Wait for Pi to finish before changing Codex wire settings.", "warning"); return; }
       if (parts[0] === "prewarm") {
@@ -543,8 +572,10 @@ export default function codexWire(pi: ExtensionAPI): void {
       if (parts[0] === "user-agent") {
         try {
           const userAgent = args.trim().slice("user-agent".length).trim();
-          codexIdentity({ client, desktopVersion: pi.getFlag("codex-wire-desktop-version") as string | undefined,
-            userAgent, originator: pi.getFlag("codex-wire-originator") as string | undefined });
+          const version = pi.getFlag("codex-wire-version") === undefined
+            ? (await latestCodexVersion(directory)).version : codexVersion(pi.getFlag("codex-wire-version"));
+          codexIdentity({ client, version, desktopVersion: pi.getFlag("codex-wire-desktop-version") as string | undefined,
+            userAgent: versionedUserAgent(userAgent, version), originator: pi.getFlag("codex-wire-originator") as string | undefined });
           saveUserAgent(directory, userAgent, client);
           ctx.ui.notify("Saved Codex wire User-Agent. Applies on the next activation, resume or reload.", "info");
         } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Cannot save Codex wire User-Agent", "error"); }

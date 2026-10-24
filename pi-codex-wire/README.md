@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-Protocol reference: **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
+The advertised core version follows the latest official stable [Codex release](https://github.com/openai/codex/releases/latest). The original implementation reference is **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -49,7 +49,7 @@ preference.
 
 CLI identity is the initial client selection. `/codex-wire client desktop` selects and saves Desktop identity; `/codex-wire client cli` switches back. `--codex-wire-client cli|desktop` overrides the saved client at startup. Both choices keep Wire enabled and use the same pinned protocol and Codex version header. On Windows and Linux, neither client needs a saved User-Agent profile.
 
-The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. This models Desktop initialization of Wire's pinned **0.159.1** app-server protocol; it does not claim to reproduce the installed Desktop binary's exact core version.
+The Desktop profile uses originator `Codex Desktop` and the native app-server User-Agent suffix `(Codex Desktop; 26.903.61454)`. The application version was read from the installed official Electron package, rather than its different Windows Store version. `--codex-wire-desktop-version` permits an explicitly selected application version. The native [initialization code](https://github.com/openai/codex/blob/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24/codex-rs/app-server/src/request_processors/initialize_processor.rs) defines the client-name/version suffix. The advertised core version is resolved independently from the application suffix. This emulates Desktop initialization; it does not claim to reproduce the installed Desktop binary or every feature of the latest core.
 
 Desktop identity applies to both catalog and inference requests. Switching clients discards the old catalog and connections. Conflicting Desktop originator overrides are rejected. This is request-identity emulation, not the Desktop runtime, its attestation or a guarantee of Desktop allowance treatment.
 
@@ -185,7 +185,7 @@ WebSocket reuse or continuation. Reconnects follow the same setting.
 
 On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. On Linux, Wire reads `lsb_release` (then `/etc/os-release`) and `uname -m` for the native OS/version/architecture fields. Terminal detection follows the native environment-only precedence and sanitization rules, including Windows Terminal and terminal hints under tmux. It does not launch Codex or terminal helpers.
 
-For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.159.1 (...) terminal"`. It must match the selected originator and pinned version. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
+For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.159.1 (...) terminal"`. It must match the selected originator. Wire refreshes the core-version prefix automatically while preserving the OS, terminal and client suffix. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
 
 You can save a verified native profile for this machine with
 `/codex-wire user-agent codex_cli_rs/0.159.1 (...) terminal`. The profile is stored
@@ -205,14 +205,17 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
 - Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Pi's named effort levels follow the 0.159.1 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
 - Wire owns the passive allowance footer and `/pi-usage`. Codex counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. Claude subscription windows use Pi's native response-header event for the official Anthropic OAuth endpoint. Each provider/account keeps a separate snapshot; late headers from a changed account are ignored. No polling, extra model requests or global WebSocket interception is installed. API token limits are not presented as subscription allowance. The footer handles a 7-day window reported as the primary window.
-- Normal turns retain Pi's `auto` reasoning-summary request instead of adopting a catalog default of `none`. Explicit caller choices and the model's supported-parameter flag still apply. The backend may omit a readable summary; encrypted replay state is preserved separately. Diagnostics record the requested summary mode, not its content.
+- Codex requests prepend the selected model’s native introduction from its catalog to Pi’s existing instructions. Only the opening paragraph is copied; tools, project instructions and the rest of Pi’s policy remain intact. Unlisted models use the neutral introduction `You are Codex.`. An existing matching introduction is not duplicated.
+- Desk (RPC) turns request `detailed` reasoning summaries; terminal Pi retains its `auto` default instead of adopting a catalog default of `none`. Explicit caller choices and the model's supported-parameter flag still apply. The backend may omit a readable summary; encrypted replay state is preserved separately. Diagnostics record the requested summary mode, not its content.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
-On the first model request, the plugin reads `/codex/models?client_version=0.159.1` using the existing account credential and the selected client identity. It keeps only capability fields, not model instructions. Catalogs and inference support can depend on this version: updating Pi's model list does not update Wire's pinned client identity.
+On the first model request after activation or reconnect, Wire resolves the latest stable release from `https://api.github.com/repos/openai/codex/releases/latest`. This public request sends no account credentials. A one-hour cache in `~/.pi/agent/codex-wire/latest-version.json` avoids a lookup for every conversation. The selected version stays fixed for that activation so an active connection and its model catalog agree. Reconnect or reload to refresh an expired version cache. If the release service is unavailable, Wire uses the last verified version with a warning; without a verified cache it stops before inference. `--codex-wire-version` permits an explicit compatibility override.
+
+That version is used consistently in the User-Agent, `version` header and `/codex/models?client_version=<version>` query. The catalog request uses the existing account credential and selected client identity. Wire keeps capability fields and the model’s native opening paragraph, not its complete instruction template. Diagnostics distinguish the implementation reference from the resolved identity version.
 
 GPT-6.1 Sol is discovered through Pi's native model catalog; run `pi update --models`
 to refresh it. No custom model definition is needed. Existing Desk workers need
-the updated runtime as well as the refreshed catalog. Updating the protocol pin
+the updated runtime as well as the refreshed catalog. Updating the advertised version
 does not enable Codex's experimental in-stream effort changes, numeric effort
 values, graceful-interrupt protocol, access programs or native tool execution.
 

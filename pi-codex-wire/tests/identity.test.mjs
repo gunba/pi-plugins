@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexIdentity, linuxRelease, linuxSystem, terminalToken, windowsSystem } from "../extensions/identity.ts";
+import { codexIdentity as nativeCodexIdentity, linuxRelease, linuxSystem, terminalToken, windowsSystem } from "../extensions/identity.ts";
 import { identity } from "./fixtures.mjs";
+
+const codexIdentity = options => nativeCodexIdentity({ version: identity.version, ...options });
 
 const system = { osType: "Windows", version: "10.0.26100", architecture: "x86_64" };
 

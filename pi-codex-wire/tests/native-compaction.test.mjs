@@ -96,7 +96,7 @@ async function harness(t, checkpoint, contextWindow) {
 		const kept = manager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "user");
 		manager.appendCompaction(CHECKPOINT_CAPTION, kept.id, 10000, { [CHECKPOINT]: checkpoint });
 	}
-	const flags = new Map([["codex-wire-client", "cli"], ["codex-wire-originator", identity.originator], ["codex-wire-user-agent", identity.userAgent], ["codex-wire-transport", "sse"], ["codex-wire-compression", "off"]]);
+	const flags = new Map([["codex-wire-version", identity.version], ["codex-wire-client", "cli"], ["codex-wire-originator", identity.originator], ["codex-wire-user-agent", identity.userAgent], ["codex-wire-transport", "sse"], ["codex-wire-compression", "off"]]);
 	const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings, noExtensions: true,
 		noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		additionalExtensionPaths: ["../extensions/index.ts", "../../pi-session-memory/extensions/session-memory.ts"]

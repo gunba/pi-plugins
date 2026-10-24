@@ -1,14 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { codexVersion } from "./version.ts";
 
-export const CODEX_VERSION = "0.159.1";
+export const PROTOCOL_REFERENCE_VERSION = "0.159.1";
 // Electron package.json version, not the Windows Store package version.
 export const DESKTOP_APP_VERSION = "26.903.61454";
 export type Client = "cli" | "desktop";
 export interface Identity { originator: string; userAgent: string; version: string }
 export interface NativeSystem { osType: string; version: string; architecture: string }
 export interface IdentityOptions {
+  version: string;
   client?: Client;
   desktopVersion?: string;
   userAgent?: string;
@@ -127,7 +129,8 @@ export function linuxSystem(): NativeSystem {
 }
 
 /** Pinned login/src/auth/default_client.rs. Full explicit profiles never use OS guesses. */
-export function codexIdentity(options: IdentityOptions = {}): Identity {
+export function codexIdentity(options: IdentityOptions): Identity {
+  const version = codexVersion(options.version);
   const env = options.env ?? process.env;
   const desktop = options.client === "desktop";
   const desktopVersion = options.desktopVersion ?? DESKTOP_APP_VERSION;
@@ -139,13 +142,13 @@ export function codexIdentity(options: IdentityOptions = {}): Identity {
   const originator = /^[\t\x20-\x7e]*$/.test(requested) ? requested : "codex_cli_rs";
   const suffix = desktop ? `Codex Desktop; ${desktopVersion}` : options.suffix?.trim();
   if (options.userAgent !== undefined) {
-    if (!options.userAgent.startsWith(`${originator}/${CODEX_VERSION} `) || !/^[\x20-\x7e]+$/.test(options.userAgent)) {
-      throw new Error(`codex-wire-user-agent must be a single-line ${originator}/${CODEX_VERSION} profile`);
+    if (!options.userAgent.startsWith(`${originator}/${version} `) || !/^[\x20-\x7e]+$/.test(options.userAgent)) {
+      throw new Error(`codex-wire-user-agent must be a single-line ${originator}/${version} profile`);
     }
     if (desktop && !options.userAgent.endsWith(` (${suffix})`)) throw new Error("Desktop User-Agent must include the selected Desktop application version suffix");
-    return { originator, version: CODEX_VERSION, userAgent: options.userAgent };
+    return { originator, version, userAgent: options.userAgent };
   }
   const system = options.system ?? (process.platform === "linux" ? linuxSystem() : windowsSystem());
-  const userAgent = `${originator}/${CODEX_VERSION} (${system.osType} ${system.version}; ${system.architecture}) ${terminalToken(env)}${suffix ? ` (${suffix})` : ""}`;
-  return { originator, version: CODEX_VERSION, userAgent: userAgent.replace(/[^\t\x20-\x7e]/gu, "_") };
+  const userAgent = `${originator}/${version} (${system.osType} ${system.version}; ${system.architecture}) ${terminalToken(env)}${suffix ? ` (${suffix})` : ""}`;
+  return { originator, version, userAgent: userAgent.replace(/[^\t\x20-\x7e]/gu, "_") };
 }

@@ -20,7 +20,7 @@ function harness(t, mode = "codex", savedDefault) {
   const directory = mkdtempSync(join(tmpdir(), "pi-wire-ext-"));
   const old = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = directory;
   t.after(() => { if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old; rmSync(directory, { recursive: true, force: true }); });
-  const events = new Map(), commands = new Map(), flags = new Map([["codex-wire", mode], ["codex-wire-transport", "sse"], ["codex-wire-user-agent", identity.userAgent]]);
+  const events = new Map(), commands = new Map(), flags = new Map([["codex-wire", mode], ["codex-wire-version", identity.version], ["codex-wire-transport", "sse"], ["codex-wire-user-agent", identity.userAgent]]);
   if (mode === null) flags.delete("codex-wire");
   if (savedDefault) {
     mkdirSync(join(directory, "codex-wire"), { recursive: true });
@@ -132,6 +132,66 @@ test("Codex requests readable summaries even when the catalog default is none", 
   assert.match(result.content[0].thinkingSignature, /OPAQUE/, "readable summaries do not replace replay state");
   await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoningSummary: "none", fetch: fetcher }).result();
   assert.equal(summaries[1], undefined, "an explicit caller choice still wins");
+  h.ctx.mode = "rpc";
+  await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoning: "medium", fetch: fetcher }).result();
+  assert.equal(summaries[2], "detailed", "Desk requests detailed summaries");
+  await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, reasoningSummary: "auto", fetch: fetcher }).result();
+  assert.equal(summaries[3], "auto", "Desk preserves an explicit summary choice");
+});
+
+test("latest release identity reaches both catalog and inference before any model request", async t => {
+  const h = harness(t), requests = [];
+  h.flags.delete("codex-wire-version");
+  await h.commands.get("codex-wire").handler("reconnect", h.ctx);
+  const fetcher = async (url, init) => {
+    requests.push(String(url));
+    const headers = new Headers(init.headers);
+    if (String(url).startsWith("https://api.github.com/")) {
+      assert.equal(headers.has("authorization"), false);
+      assert.equal(headers.has("chatgpt-account-id"), false);
+      return Response.json({ tag_name: "rust-v0.164.0", draft: false, prerelease: false });
+    }
+    assert.equal(headers.get("version"), "0.164.0");
+    assert.match(headers.get("user-agent"), /^codex_cli_rs\/0\.164\.0 /);
+    if (String(url).includes("/models?")) {
+      assert.equal(new URL(url).searchParams.get("client_version"), "0.164.0");
+      return Response.json({ models: [{ slug: model.id }] });
+    }
+    return new Response('data: {"type":"response.completed","response":{"id":"test","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher }).result();
+  assert.equal(result.stopReason, "stop", result.errorMessage);
+  assert.equal(requests.length, 3);
+  assert.match(requests[0], /api.github.com/);
+  assert.match(requests[1], /client_version=0.164.0/);
+});
+
+test("Desk sends the catalog's Codex introduction once and preserves Pi instructions", async t => {
+  const h = harness(t);
+  h.ctx.mode = "rpc";
+  const intro = "You are Codex, an agent based on GPT-6. You and the user share one workspace, and your job is to collaborate with them until their intended goal is completely handled.";
+  const piPrompt = "You are an expert coding assistant operating inside pi.\n\n<rules>Keep the project rules.</rules>";
+  const sent = [];
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id,
+      use_responses_lite: true, model_messages: { instructions_template: intro + "\n\n# Native-only policy\nDo not copy this section." } }] });
+    sent.push(decode(init));
+    return new Response('data: {"type":"response.completed","response":{"id":"intro","status":"completed","output":[]}}\n\n',
+      { headers: { "content-type": "text/event-stream" } });
+  };
+  for (const prompt of [piPrompt, intro + "\n\n" + piPrompt]) {
+    const result = await h.provider().streamSimple(model, { messages: [{ role: "system", content: prompt, timestamp: Date.now() }] },
+      { apiKey: jwt, reasoning: "medium", fetch: fetcher }).result();
+    assert.equal(result.stopReason, "stop", result.errorMessage);
+  }
+  for (const body of sent) {
+    const message = body.input.find(item => item.type === "message" && item.role === "developer");
+    assert.equal(message.content[0].text, intro + "\n\n" + piPrompt);
+    assert.equal(body.reasoning.summary, "detailed");
+    assert.equal(body.reasoning.effort, "medium");
+    assert.equal(body.instructions, undefined, "Lite receives its prompt as a developer message");
+  }
 });
 
 test("failed manual reactivation remains fail-closed rather than restoring stock Codex", async t => {
@@ -294,7 +354,7 @@ test("Desktop activates on Linux without a Desktop User-Agent profile and saves 
   const h = harness(t);
   h.flags.delete("codex-wire-user-agent");
   const directory = join(h.directory, "codex-wire");
-  const expected = codexIdentity({ client: "desktop" }).userAgent;
+  const expected = codexIdentity({ client: "desktop", version: identity.version }).userAgent;
   assert.equal(existsSync(join(directory, "user-agent-desktop")), false);
   await h.commands.get("codex-wire").handler("client desktop", h.ctx);
   assert.equal(readFileSync(join(directory, "client"), "utf8").trim(), "desktop");

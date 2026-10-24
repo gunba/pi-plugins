@@ -43,6 +43,8 @@ test("real noExtensions SDK children inherit mandatory Wire, identity and isolat
   const events = new Map();
   const entries = [];
   const flags = new Map([
+    // An explicit version: the test sends nothing to GitHub's release lookup.
+    ["codex-wire-version", "0.159.1"],
     ["codex-wire-transport", "sse"],
     ["codex-wire-user-agent", "codex_cli_rs/0.159.1 (Windows NT 10.0.26100; x86_64)"],
   ]);
