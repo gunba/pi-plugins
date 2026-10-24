@@ -106,9 +106,14 @@ dialog:not([open]) { display:none; }
 .tool-status.tool-running > span:first-child::before { content:""; display:inline-block; width:6px; height:6px; margin-right:6px; border-radius:50%; background:currentColor; }
 .tool-status.tool-error { color:var(--danger); }
 .live-output { padding:10px 12px; margin:0 0 12px; max-height:190px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.6 ui-monospace,monospace; background:var(--hover); border-radius:9px; }
-.copy-button { display:block; margin-left:auto; padding:5px 9px; font-size:11px; }
-.code-block { position:relative; border:1px solid var(--border); border-radius:9px; padding:6px; margin:12px 0; background:var(--hover); }
-.code-block pre { margin:5px 0 0 !important; border:0 !important; }
+.copy-button.icon-button { width:28px; height:28px; min-width:0; min-height:0; padding:6px; border-radius:6px; color:var(--muted); }
+.copy-button.icon-button:hover { background:var(--hover); color:var(--text); }
+.copy-button .ui-icon { width:15px; height:15px; }
+/* The code scrolls inside its box; the copy icon sits in its top corner, clear of the first line. */
+.code-block { position:relative; min-width:0; margin:12px 0; }
+.code-block pre { margin:0 !important; padding-right:44px !important; }
+.code-block > .copy-button { position:absolute; top:7px; right:7px; background:var(--code); box-shadow:0 0 0 6px var(--code), -10px 0 8px 2px var(--code); }
+@media (pointer:coarse) { .code-block > .copy-button.icon-button { width:36px; height:36px; } }
 .artifact-link { display:block; margin:8px 0; color:var(--accent); font-size:12px; }
 .artifact-dialog { width:min(1000px, calc(100vw - 24px)); height:min(850px, calc(100dvh - 24px)); max-height:calc(100dvh - 24px);
   padding:20px; border:1px solid var(--border); border-radius:16px; background:var(--surface); color:var(--text); overflow:hidden; }
@@ -699,11 +704,12 @@ details[open] > summary:before {
 }
 .message-user { margin-left:0; margin-right:auto; width:fit-content; min-width:min(160px, 100%); max-width:100%; }
 .message-user .message-heading { justify-content:flex-start; margin-bottom:7px; color:var(--muted); }
-.message-assistant > .message-body { padding-left:34px; display:grid; gap:8px; }
+/* minmax(0, 1fr): a wide code block or table scrolls in its own box instead of widening the message and the chat. */
+.message-assistant > .message-body { padding-left:34px; display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; }
 .message-assistant > .message-body > .tool-card { margin:0; }
 .message-trace-tail { margin-bottom:8px; }
 .message-activity { margin:0 0 8px 34px; }
-.message-activity > .message-body { padding-left:0; display:grid; gap:8px; }
+.message-activity > .message-body { padding-left:0; display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; }
 .message-activity .tool-card { margin:0; }
 .tool-pill .message-body { padding:0; font-size:12px; }
 .tool-pill > summary:hover { background:var(--hover); }
