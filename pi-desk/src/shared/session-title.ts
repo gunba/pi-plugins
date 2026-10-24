@@ -4,9 +4,9 @@ import { splitDictationNote } from "./dictation-note.ts";
 export function sessionTitle(name?: string, opening?: string): string {
 	return name?.trim() || opening?.replace(/\s+/g, " ").trim().slice(0, 100) || "New conversation";
 }
-export function openingMessage(entries: readonly unknown[]): string | undefined {
+export function openingMessage<Entry>(entries: readonly Entry[], full: (entry: Entry) => Entry = entry => entry): string | undefined {
 	for (const entry of entries) {
-		const value = entry as { type?: string; message?: { role?: string; content?: unknown } };
+		const value = full(entry) as { type?: string; message?: { role?: string; content?: unknown } };
 		if (value.type !== "message" || value.message?.role !== "user") continue;
 		const content = value.message.content;
 		const text = typeof content === "string" ? content : Array.isArray(content)

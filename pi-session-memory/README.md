@@ -1,67 +1,27 @@
 # pi-session-memory
 
-Bounds the memory retained by long-running Pi sessions after compaction.
+Frees the memory a long conversation holds for history that compaction has already summarised.
 
-Pi's session manager keeps every parsed JSONL entry resident so `/tree`, export,
-and exact replay can reach pre-compaction history. The model receives only the
-compaction-aware working context, but old messages, tool results, images, and
-summaries otherwise remain in the Node.js heap.
+Pi keeps every entry of a session in memory, so its tree view, export and replay can reach history from before a
+compaction. The model only ever sees the summary and what came after it, but old messages, tool results, images and
+summaries stay in the process. In a long conversation that is hundreds of megabytes.
 
-This extension prunes obsolete payload fields:
+After every compaction, when a compacted session starts, after tree navigation, and on `/session-memory prune`, this
+extension empties those old payloads in memory. It keeps each entry's IDs, links, role, usage and timestamps, the
+current branch's extension state, and the delivery markers of agent reports. What the model receives is unchanged,
+and the session file on disk stays complete; new entries append to it as usual.
 
-- after every successful compaction;
-- when an already-compacted session starts or tree navigation finishes; and
-- on demand with `/session-memory prune`.
+The released history is read back from the session file when it is needed:
 
-The current model context remains byte-for-byte unchanged. Current-branch custom
-entries remain available so extension state, including goals and todos, can
-continue. Message metadata, usage accounting, ids, parent links, labels, and
-session information also remain resident.
-
-Compacted subagent and party notifications retain only their `details.messageId`
-or batched `details.messageIds` delivery markers, not their content.
-`agent_inbox` (formerly `party_read`) tool results retain only `details.partyMessageIds`.
-Reload recovery uses these markers to distinguish delivered messages from
-genuinely pending reports.
-
-Pruning changes memory only. The append-only JSONL session file remains complete
-and new entries continue appending to it normally. In-memory sessions without a
-persisted archive are not pruned.
+- **Desk** shows old messages by reading them from the file (`archive.ts`: each line's position is indexed once, and
+  a message is one read), so scrolling back shows full history without holding it in memory.
+- **Tree navigation and forks** restore the released payloads in place first, after checking the session ID, entry
+  IDs, links and roles against the file. Navigation is cancelled if the file cannot supply them.
 
 ## Commands
 
-- `/session-memory` or `/session-memory status` — show status.
-- `/session-memory prune` — prune now if the session has compacted.
-- `/session-memory on|off` — toggle pruning for the current runtime.
+- `/session-memory` or `/session-memory status`: what has been released.
+- `/session-memory prune`: release now, if the session has compacted.
+- `/session-memory on|off`: turn releasing on or off for this process; `off` restores what was released.
 
-Pruning is enabled by default in the terminal. Set `PI_RESIDENT_SESSION_PRUNE=0`
-before starting Pi to disable it.
-
-## Hosted history
-
-Pruning pauses when an attached presentation supports native transcripts, including
-Desk and its child panes. These views read raw branch entries without entering
-Pi's terminal tree navigation. Clearing those entries would produce empty message
-bubbles and change measured row heights during history paging.
-
-At session start or reload, any previously released payloads are restored once
-from the matching archive. Subsequent compactions keep them resident; history
-paging does not repeatedly reopen the archive. The model still receives Pi's
-compaction-aware context, not the full display history. Commands report the pause
-and cannot enable destructive pruning while the transcript host is attached.
-
-This retains more native session data in memory. Desk still loads and renders only
-its bounded history window; it does not duplicate the complete archive in the
-browser.
-
-## Restoring history
-
-Before tree navigation or a native fork, released payloads are restored in place
-from the session archive. The session ID, entry IDs, parent links and message
-roles are checked before any payload is restored. Navigation is cancelled if
-the archive cannot supply the matching history. This restores checkpoint details
-as well as text, without rewriting JSONL or replacing the session tree.
-
-`/session-memory off` restores released payloads and disables further pruning.
-Use it before exporting complete history from a running process. Native
-compaction checkpoints in the active context are always retained.
+Set `PI_RESIDENT_SESSION_PRUNE=0` before starting Pi to turn it off.

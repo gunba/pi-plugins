@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
 import { existsSync, readFileSync } from "node:fs";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
-import { getPresentation } from "../../pi-ui/index.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -238,8 +237,7 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 	let enabled = enabledByEnvironment();
 	let lastReport: ResidentPruneReport | undefined;
 	let totalEstimatedBytesReleased = 0;
-	const historyAttached = () => getPresentation(pi)?.capabilities.includes("transcripts") === true;
-	const mode = () => !enabled ? "disabled" : historyAttached() ? "paused while transcript history is attached" : "enabled";
+	const mode = () => enabled ? "enabled" : "disabled";
 
 	const prune = (
 		ctx: {
@@ -248,7 +246,7 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		},
 		notify: boolean,
 	): ResidentPruneReport => {
-		const report = pruneCompactedSession(ctx.sessionManager, historyAttached());
+		const report = pruneCompactedSession(ctx.sessionManager);
 		lastReport = report;
 		totalEstimatedBytesReleased += report.estimatedBytesReleased;
 		if (notify && report.estimatedBytesReleased >= NOTICE_THRESHOLD_BYTES) {
@@ -260,8 +258,8 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		return report;
 	};
 
+	// Desk reads released history back from the session file (SessionArchive) when it is shown.
 	pi.on("session_start", (_event, ctx) => {
-		if (historyAttached()) restorePrunedSession(ctx.sessionManager);
 		if (enabled) prune(ctx, false);
 	});
 
@@ -287,14 +285,14 @@ export default function sessionMemory(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim().toLowerCase();
 			if (command === "on" || command === "off") {
-				if (command === "off" || historyAttached()) restorePrunedSession(ctx.sessionManager);
+				if (command === "off") restorePrunedSession(ctx.sessionManager);
 				enabled = command === "on";
 				if (enabled) prune(ctx, false);
 				ctx.ui.notify(`Resident session pruning ${mode()}`, "info");
 				return;
 			}
 			if (command === "prune") {
-				if (!enabled || historyAttached()) {
+				if (!enabled) {
 					ctx.ui.notify(`Resident session pruning is ${mode()}`, "warning");
 					return;
 				}

@@ -53,6 +53,7 @@ import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
+import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 
@@ -122,6 +123,8 @@ export class DeskEngine {
 	private opening?: { manager: SessionManager; text?: string };
 	private usageCache?: { manager: SessionManager; leaf: string | null; revision: number; value: SessionSnapshot["usage"] };
 	private branch?: { manager: SessionManager; read: () => ReturnType<SessionManager["getBranch"]> };
+	/** Entries with payloads pi-session-memory released, read back from the manager's session file. */
+	private full?: { manager: SessionManager; entry: (entry: SessionEntry) => SessionEntry };
 	private compacting?: SessionSnapshot["compacting"];
 	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
 	private briefCache?: { manager: SessionManager; leaf: string | null; value?: string };
@@ -369,7 +372,10 @@ export class DeskEngine {
 			return branch;
 		};
 		this.branch = { manager, read: current };
-		const feed = this.feed = new TranscriptFeed(this.transcript, current, () => this.presentation.generation, this.send, () => manager.getCwd());
+		const file = manager.getSessionFile(), archive = file ? new SessionArchive(file) : undefined;
+		this.full = { manager, entry: entry => withPayload(entry, archive) };
+		const feed = this.feed = new TranscriptFeed(this.transcript, current, () => this.presentation.generation, this.send, () => manager.getCwd(),
+			undefined, this.full.entry);
 		this.send({ type: "ui", snapshot: this.presentation.snapshot() });
 		this.send({ type: "history_ready", generation: this.presentation.generation });
 		return feed;
@@ -448,7 +454,7 @@ export class DeskEngine {
 		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
-			this.opening = { manager, text: openingMessage(manager.getEntries()) };
+			this.opening = { manager, text: openingMessage(manager.getEntries(), this.fullEntry(manager)) };
 		if (!this.usageCache || this.usageCache.manager !== manager || this.usageCache.leaf !== leaf || this.usageCache.revision !== this.usageRevision) {
 			const entries = manager.getEntries(), { usage } = reduceSessionUsage(entries);
 			const modelRuntime = this.runtime.services.modelRuntime;
@@ -486,6 +492,12 @@ export class DeskEngine {
 			compacting: this.compacting,
 			ui,
 		};
+	}
+
+	private fullEntry(manager: SessionManager): (entry: SessionEntry) => SessionEntry {
+		if (this.full?.manager === manager) return this.full.entry;
+		const file = manager.getSessionFile(), archive = file ? new SessionArchive(file) : undefined;
+		return entry => withPayload(entry, archive);
 	}
 
 	/** The reply of the latest brief pi-compaction-context saved ("pi-brief" entries) after the last user message. */
@@ -678,7 +690,7 @@ export class DeskEngine {
 			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value,
 				operation => this.change(operation, true));
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
-			case "sent_messages": return sentMessageTexts(session.sessionManager.getBranch());
+			case "sent_messages": return sentMessageTexts(session.sessionManager.getBranch(), 50, this.fullEntry(session.sessionManager));
 			case "note":
 				await session.sendCustomMessage({ customType: "pi-desk/closed", content: command.text, display: true }, { triggerTurn: false });
 				this.scheduleSnapshot(); return;

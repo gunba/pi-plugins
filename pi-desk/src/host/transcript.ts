@@ -292,7 +292,9 @@ export class Transcript {
 			blocks: ledger ? [{ type: "ledger", ledger }] : [{ type: "text", text: "The saved context breakdown cannot be displayed." }] };
 	}
 
-	history(branch: readonly SessionEntry[], position: HistoryPosition = {}, live?: unknown, liveId?: string, cwd?: string): Omit<HistoryPage, "generation"> {
+	/** `full` gives an entry with any payload pi-session-memory released from memory, read back from the session file. */
+	history(branch: readonly SessionEntry[], position: HistoryPosition = {}, live?: unknown, liveId?: string, cwd?: string,
+		full: (entry: SessionEntry) => SessionEntry = entry => entry): Omit<HistoryPage, "generation"> {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
@@ -308,7 +310,7 @@ export class Transcript {
 		// Walk only the requested window, rather than filtering every old entry.
 		while (cursor >= 0 && cursor < branch.length && messages.length < HISTORY_COUNT) {
 			const entry = branch[cursor]!;
-			const message = visible(entry) ? this.entry(entry, cursor, cwd) : undefined;
+			const message = visible(entry) ? this.entry(full(entry), cursor, cwd) : undefined;
 			if (message) {
 				const size = JSON.stringify(message).length;
 				if (messages.length && used + size > HISTORY_CHARACTERS) break;

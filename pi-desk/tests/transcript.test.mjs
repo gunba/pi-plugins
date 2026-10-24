@@ -7,38 +7,36 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sessionMemory from "../../pi-session-memory/extensions/session-memory.ts";
+import { SessionArchive, withPayload } from "../../pi-session-memory/extensions/archive.ts";
 import { PRESENTATION_DISCOVER } from "../../pi-ui/index.ts";
 
-test("a transcript host preserves and restores compacted user bodies without changing model context", () => {
+test("compacted history is released from memory under Desk too, and shown from the session file", () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-desk-history-"));
 	try {
-		for (const released of [false, true]) {
-			const manager = SessionManager.create(directory, directory);
-			const original = "Earlier request with its original content.";
-			const id = manager.appendMessage({ role: "user", content: [{ type: "text", text: original }], timestamp: 1 });
-			manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], timestamp: 2 });
-			const kept = manager.appendMessage({ role: "user", content: "Current request", timestamp: 3 });
-			manager.appendCompaction("Native summary", kept, 100);
-			const archive = readFileSync(manager.getSessionFile());
-			const context = structuredClone(manager.buildSessionContext());
-			let hosted = !released;
-			const hooks = {};
-			sessionMemory({
-				on: (name, fn) => { hooks[name] = fn; }, registerCommand() {},
-				events: { emit: (name, probe) => {
-					if (name === PRESENTATION_DISCOVER && hosted) probe.presentation = { version: 2, capabilities: ["transcripts"] };
-				} },
-			});
-			const ctx = { sessionManager: manager, ui: { notify() {} } };
-			if (released) { hooks.session_start({}, ctx); assert.deepEqual(manager.getEntry(id).message.content, []); }
-			hosted = true;
-			hooks.session_start({}, ctx);
-			hooks.session_compact({}, ctx);
-			const history = new Transcript().history(manager.getBranch());
-			assert.deepEqual(history.messages.find(message => message.entryId === id).blocks, [{ type: "text", text: original, truncated: false }]);
-			assert.deepEqual(manager.buildSessionContext(), context);
-			assert.deepEqual(readFileSync(manager.getSessionFile()), archive);
-		}
+		const manager = SessionManager.create(directory, directory);
+		const original = "Earlier request with its original content.";
+		const id = manager.appendMessage({ role: "user", content: [{ type: "text", text: original }], timestamp: 1 });
+		manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], timestamp: 2 });
+		const kept = manager.appendMessage({ role: "user", content: "Current request", timestamp: 3 });
+		manager.appendCompaction("Native summary", kept, 100);
+		const saved = readFileSync(manager.getSessionFile());
+		const context = structuredClone(manager.buildSessionContext());
+		const hooks = {};
+		sessionMemory({
+			on: (name, fn) => { hooks[name] = fn; }, registerCommand() {},
+			events: { emit: (name, probe) => { if (name === PRESENTATION_DISCOVER) probe.presentation = { version: 2, capabilities: ["transcripts"] }; } },
+		});
+		hooks.session_start({}, { sessionManager: manager, ui: { notify() {} } });
+		assert.deepEqual(manager.getEntry(id).message.content, [], "released while Desk is attached");
+		const archive = new SessionArchive(manager.getSessionFile());
+		const history = new Transcript().history(manager.getBranch(), {}, undefined, undefined, undefined, entry => withPayload(entry, archive));
+		assert.deepEqual(history.messages.find(message => message.entryId === id).blocks, [{ type: "text", text: original, truncated: false }]);
+		assert.deepEqual(manager.getEntry(id).message.content, [], "showing it does not bring it back into memory");
+		assert.deepEqual(manager.buildSessionContext(), context);
+		assert.deepEqual(readFileSync(manager.getSessionFile()), saved);
+		// Entries Pi appends after the file was first indexed are found too.
+		const later = manager.appendMessage({ role: "user", content: "Later request", timestamp: 4 });
+		assert.equal(archive.entry(later).message.content, "Later request");
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

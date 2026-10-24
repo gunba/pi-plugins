@@ -37,7 +37,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
   the full text saved to a file; images read at most 1.5 MB.
 - [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries and briefs from the prompt cache
   while it is warm; Pi's own summary otherwise.
-- [`pi-session-memory`](pi-session-memory/README.md): frees memory held for compacted history in terminal Pi.
+- [`pi-session-memory`](pi-session-memory/README.md): frees the memory held for compacted history; Desk reads it back
+  from the session file when shown.
 - [`pi-context-window`](pi-context-window/README.md): `/context-window`, the model's window and compaction threshold.
 - [`pi-system-context`](pi-system-context/README.md): the computer's environment in the system prompt.
 - [`pi-system-one`](pi-system-one/README.md): when to use classifier models such as Jev through codemode.

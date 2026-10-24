@@ -27,10 +27,12 @@ export class TranscriptFeed {
 	private readonly send: (event: WorkerMessage) => void;
 	private readonly source?: string;
 	private readonly cwd: () => string;
+	private readonly full: (entry: SessionEntry) => SessionEntry;
+	/** `full` gives an entry with any payload pi-session-memory released from memory, read back from the session file. */
 	constructor(transcript: Transcript, branch: () => readonly SessionEntry[], generation: () => string,
-		send: (event: WorkerMessage) => void, cwd: () => string, source?: string) {
+		send: (event: WorkerMessage) => void, cwd: () => string, source?: string, full: (entry: SessionEntry) => SessionEntry = entry => entry) {
 		this.transcript = transcript; this.branch = branch; this.generation = generation;
-		this.send = send; this.source = source; this.cwd = cwd;
+		this.send = send; this.source = source; this.cwd = cwd; this.full = full;
 	}
 	reset(): void {
 		this.epoch++; this.live = undefined; this.liveId = undefined;
@@ -186,7 +188,7 @@ export class TranscriptFeed {
 		const entryId = id.startsWith("entry:") ? id.slice(6) : this.aliases.get(id);
 		if (entryId) {
 			const branch = this.branch(), index = branch.findIndex(entry => entry.id === entryId);
-			if (index >= 0 && this.transcript.entry(branch[index]!, index, this.cwd())) return;
+			if (index >= 0 && this.transcript.entry(this.full(branch[index]!), index, this.cwd())) return;
 		}
 		if (id === this.liveId && this.live) { this.transcript.message(this.live, undefined, id, 0, this.cwd()); return; }
 		const result = id.startsWith("live:tool:") ? this.results.get(id.slice(10)) : undefined;
@@ -195,7 +197,7 @@ export class TranscriptFeed {
 	}
 	history(position: HistoryPosition = {}): HistoryPage {
 		if (this.closed) throw new Error("This transcript has closed.");
-		const page = this.transcript.history(this.branch(), position, this.live, this.liveId, this.cwd());
+		const page = this.transcript.history(this.branch(), position, this.live, this.liveId, this.cwd(), this.full);
 		if (!position.before && !page.after) page.messages.push(...this.tools.values());
 		return { ...page, generation: this.generation(), revision: this.revision,
 			messages: page.messages.map(message => ({ ...message, revision: this.revision })) };
