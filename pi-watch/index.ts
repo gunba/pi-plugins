@@ -18,10 +18,7 @@ export const WATCH_MESSAGE = "pi-watch/event";
 export const WATCH_CHANGED = "pi-watch/changed";
 
 const MAX_ACTIVE = 8;
-const DEFAULT_HOURS = 24, MAX_HOURS = 168;
-/** How far ahead a time watch may be set. */
-const MAX_WAIT_DAYS = 31;
-/** A time watch checks the clock this often, so a computer that slept still wakes the agent on time. */
+/** Times are checked against the clock this often, so a computer that slept still acts on time. */
 const CLOCK_MS = 60_000;
 /** A time watch reached later than this, because the conversation wasn't running, says so. */
 const LATE_MS = 5 * 60_000;
@@ -51,7 +48,8 @@ export interface WatchSpec {
 	wakeWhen?: string;
 	cwd: string;
 	created: number;
-	expires: number;
+	/** A time watch's time; a command watch's end, when the agent set hours (otherwise it runs until it ends or is stopped). */
+	expires?: number;
 	/** Watches run on the computer that started them; a conversation moved elsewhere does not take them along. */
 	computer: string;
 	/** The runner of an "output" watch, with its log and exit-status files. */
@@ -78,6 +76,8 @@ interface Active {
 	settle?: NodeJS.Timeout;
 	recent: string[];
 	finishing: boolean;
+	/** The next check of the clock, for a time watch or a command watch with an end. */
+	clock?: NodeJS.Timeout;
 	/** Hash of a "change" watch's latest output. */
 	last?: string;
 }
@@ -89,10 +89,10 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command, run like bash's. Without every, it runs in the background: its new output wakes you, and so does its end. With every, it is re-run and a change in its output wakes you." })),
-	every: Type.Optional(Type.Integer({ minimum: 5, maximum: 86_400, description: "Seconds between runs of command. The watch ends when it wakes you." })),
-	until: Type.Optional(Type.String({ description: `Instead of command: wake at this time, HH:MM (its next occurrence, this computer's time) or an ISO date and time, within ${MAX_WAIT_DAYS} days.` })),
+	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs of command. The watch ends when it wakes you." })),
+	until: Type.Optional(Type.String({ description: "Instead of command: wake at this time, HH:MM (its next occurrence, this computer's time) or an ISO date and time." })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output that shows this, in plain words (\"the build fails or finishes\"). A classifier judges each event." })),
-	hours: Type.Optional(Type.Number({ minimum: 0.05, maximum: MAX_HOURS, description: `How long a command watch lasts; default ${DEFAULT_HOURS}, at most ${MAX_HOURS}. A background command still running then is stopped.` })),
+	hours: Type.Optional(Type.Number({ minimum: 0.05, description: "How long a command watch may run; by default until it ends or you stop it. A background command still running then is stopped." })),
 	stop: Type.Optional(Type.String({ description: "ID of a watch to stop; its background command is stopped too." })),
 }, { additionalProperties: false });
 type Params = Static<typeof Parameters>;
@@ -109,7 +109,7 @@ export function describeWatch(spec: WatchSpec): string {
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
 }
 
-/** Milliseconds since the epoch for "HH:MM" (its next occurrence here) or an ISO date and time, within MAX_WAIT_DAYS. */
+/** Milliseconds since the epoch for "HH:MM" (its next occurrence here) or an ISO date and time. */
 export function parseTime(text: string, now = Date.now()): number {
 	const clock = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
 	let at: number;
@@ -123,7 +123,6 @@ export function parseTime(text: string, now = Date.now()): number {
 	} else at = Date.parse(text);
 	if (!Number.isFinite(at)) throw new Error(`${text} is not a time: give HH:MM or an ISO date and time.`);
 	if (at <= now) throw new Error(`${text} has passed.`);
-	if (at - now > MAX_WAIT_DAYS * 86_400_000) throw new Error(`${text} is more than ${MAX_WAIT_DAYS} days away.`);
 	return at;
 }
 
@@ -291,13 +290,14 @@ class Watches {
 			id: this.nextId(), mode: at !== undefined ? "time" : params.every !== undefined ? "change" : "output",
 			...(command ? { command } : {}), ...(params.every !== undefined ? { every: params.every } : {}), ...(at !== undefined ? { at } : {}),
 			...(wakeWhen ? { wakeWhen } : {}),
-			cwd: ctx.cwd, created: now, expires: at ?? now + (params.hours ?? DEFAULT_HOURS) * 3_600_000, computer: hostname(),
+			cwd: ctx.cwd, created: now, ...(at !== undefined ? { expires: at } : params.hours !== undefined ? { expires: now + params.hours * 3_600_000 } : {}),
+			computer: hostname(),
 		};
 		if (spec.mode === "output") this.launch(spec);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
 		this.arm(spec, undefined, false);
 		this.publish();
-		const ending = `It ends ${when(spec.expires)}.`, stop = `watch({stop: "${spec.id}"}) stops it.`;
+		const ending = spec.expires ? `It ends ${when(spec.expires)}.` : "It runs until it ends or you stop it.", stop = `watch({stop: "${spec.id}"}) stops it.`;
 		const text = spec.mode === "time" ? `Watching as ${spec.id}: you'll be woken ${describeWatch(spec)}.`
 			: spec.mode === "change" ? `Watching as ${spec.id}: ${describeWatch(spec)}. You'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}; the watch then ends. ${ending} ${stop}`
 			: `Watching as ${spec.id}: ${describeWatch(spec)}, output in ${spec.log}. You'll be woken ${wakeWhen ? "when its output shows that" : "with its new output"}, and when it ends. ${ending} ${stop}`;
@@ -306,7 +306,7 @@ class Watches {
 
 	private list(): string {
 		if (!this.active.size) return "No active watches.";
-		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${describeWatch(spec)}; ends ${when(spec.expires)}`).join("\n")}`;
+		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${describeWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}`).join("\n")}`;
 	}
 
 	private nextId(): string {
@@ -345,27 +345,37 @@ class Watches {
 			return;
 		}
 		if (spec.mode === "time") {
-			// Node's timers stop while a computer sleeps and cannot span more than 24.8 days, so the clock is checked instead.
-			const check = () => this.guard(() => {
-				const left = spec.at! - Date.now();
-				if (left > 0) { active.timers = [setTimeout(check, Math.min(left, CLOCK_MS))]; return; }
-				this.end(active, -left > LATE_MS ? `it was due ${when(spec.at!)}, while the conversation wasn't running`
-					: `it's ${when(spec.at!)}, the time you set`, { kill: false });
-			});
-			active.timers.push(setTimeout(check, 0));
+			this.at(active, spec.at!, late => this.end(active, late > LATE_MS ? `it was due ${when(spec.at!)}, while the conversation wasn't running`
+				: `it's ${when(spec.at!)}, the time you set`, { kill: false }));
 			return;
 		}
-		if (spec.expires <= now) {
-			this.end(active, "expired while the conversation wasn't running", { kill: true });
-			return;
+		if (spec.expires !== undefined) {
+			if (spec.expires <= now) {
+				this.end(active, "expired while the conversation wasn't running", { kill: true });
+				return;
+			}
+			this.at(active, spec.expires, () => this.end(active, "expired", { kill: true, output: active.recent.join("\n") }));
 		}
-		active.timers.push(setTimeout(() => this.guard(() => this.end(active, "expired", { kill: true, output: active.recent.join("\n") })), spec.expires - now));
 		if (spec.mode === "change") this.guard(() => this.poll(active));
 		else this.follow(active, restored);
 	}
 
+	/**
+	 * Runs `due` at `time` by the clock, with how late it is. Node's timers stop while a computer sleeps and cannot span
+	 * more than 24.8 days, so the clock is checked at least every CLOCK_MS instead.
+	 */
+	private at(active: Active, time: number, due: (late: number) => void): void {
+		const check = () => this.guard(() => {
+			const left = time - Date.now();
+			if (left > 0) active.clock = setTimeout(check, Math.min(left, CLOCK_MS));
+			else due(-left);
+		});
+		active.clock = setTimeout(check, 0);
+	}
+
 	private disarm(active: Active): void {
 		active.abort.abort();
+		if (active.clock) clearTimeout(active.clock);
 		for (const timer of active.timers) clearTimeout(timer);
 		if (active.settle) clearTimeout(active.settle);
 	}
@@ -545,7 +555,9 @@ class Watches {
 		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : []);
 		presentation.publish("pi-watch", specs.length ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
-			data: { items: specs.map(spec => ({ id: spec.id, title: describeWatch(spec), subtitle: `${spec.id} · ends ${when(spec.expires)}`,
+			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
+			data: { items: specs.map(spec => ({ id: spec.id, title: describeWatch(spec),
+				subtitle: spec.mode === "time" || !spec.expires ? spec.id : `${spec.id} · ends ${when(spec.expires)}`,
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
 			badges: [{ label: "Watching", value: String(specs.length), compact: true }],
 		} : undefined, Object.fromEntries(specs.map(spec => [`stop:${spec.id}`, () => this.stop(spec.id)])));

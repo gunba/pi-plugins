@@ -365,7 +365,7 @@ export class DeskHost {
 				managed.worker = undefined;
 				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
 					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key),
-					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined }) };
+					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined, watching: undefined }) };
 				managed.keepOnClose = undefined;
 			}
 			this.events.emit({ type: "session", session: managed.view });
@@ -389,6 +389,7 @@ export class DeskHost {
 			if (managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			const wakes = Math.min(...message.snapshot.views.flatMap(view => view.wakes ? [view.wakes] : []));
 			managed.view = { ...managed.view, ui: message.snapshot, wakes: Number.isFinite(wakes) ? wakes : undefined,
+				watching: message.snapshot.views.some(view => view.watching) || undefined,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
 		} else if (message.type === "detached") {
@@ -424,18 +425,19 @@ export class DeskHost {
 
 	/**
 	 * Reopens listed conversations that aren't running when one of their watches is due, such as after the computer
-	 * restarted or Jordan closed one keeping it in the sidebar; the watch then wakes the agent. One that fails to start
-	 * is tried again every 15 minutes while it stays listed.
+	 * restarted or the user closed one keeping it in the sidebar; the watch then wakes the agent. A conversation that
+	 * was watching for something is reopened too when its process was lost rather than closed, so its watches go on.
+	 * One that fails to start is tried again every 15 minutes while it stays listed.
 	 */
 	private wakeDue(): void {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return;
 		const now = Date.now();
 		for (const managed of this.sessions.values()) {
 			const { view } = managed;
-			const tried = this.wakeTried.get(view.key);
-			if (managed.worker || !view.wakes || view.wakes > now || !view.file || view.moved || !isOpenSession(view)
-				|| (tried?.wakes === view.wakes && tried.at > now - 15 * 60_000)) continue;
-			this.wakeTried.set(view.key, { wakes: view.wakes, at: now });
+			const tried = this.wakeTried.get(view.key), due = view.wakes && view.wakes <= now ? view.wakes : view.watching && view.interrupted ? 0 : undefined;
+			if (managed.worker || due === undefined || !view.file || view.moved || !isOpenSession(view)
+				|| (tried?.wakes === due && tried.at > now - 15 * 60_000)) continue;
+			this.wakeTried.set(view.key, { wakes: due, at: now });
 			try { this.createSession(view.cwd, view.file, managed); }
 			catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
 		}

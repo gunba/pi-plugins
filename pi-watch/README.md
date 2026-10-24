@@ -7,7 +7,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 |---|---|---|
 | `watch({command})` | the command, run in the background | with its new output, and when it ends |
 | `watch({command, every})` | the command, re-run every `every` seconds | when its output changes; the watch then ends |
-| `watch({until})` | the clock: `HH:MM` or an ISO date and time, within 31 days | at that time |
+| `watch({until})` | the clock: `HH:MM` or an ISO date and time | at that time |
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |
 
@@ -24,17 +24,20 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
   lines.
 - **Timing.** Events are delivered when the agent is idle, as one message that starts a turn. Events that arrive
   while the agent is working wait until it finishes, and are then delivered together.
-- **Lifetime.** A command watch lasts 24 hours by default (`hours`, at most 168). A background command still running
-  then is stopped. A time watch checks the clock every minute, so one set before a computer slept still wakes the agent
-  on time.
+- **Lifetime.** There is no time limit. A command watch runs until its command ends, it wakes the agent (a re-run
+  command), or the agent or the user stops it; `hours` gives it an end if the agent wants one, and a background command
+  still running then is stopped. A time can be any time ahead. Times are checked against the clock every minute, so a
+  computer that slept still acts on time.
 - **Restarts.** Background commands run under a small detached runner (`runner.mjs`). They keep running when Desk
   restarts or updates a conversation, or when its Pi process stops. Watches are recorded in the conversation, and are
   picked up again when it next starts: missed output is read from the log, and a time that has passed wakes the agent
   at once, saying when it was due.
-- **Closed conversations.** A time watch's view carries its time as `wakes`. Desk shows it in the sidebar ("Wakes Thu
-  09:00") and reopens a conversation that isn't running then: one closed but kept in the sidebar, or one left stopped
-  after the computer restarted. Closing a waiting conversation keeps it in the sidebar unless the user removes it, which
-  cancels the reopening.
+- **In Desk.** A time watch's view carries its time as `wakes`: the sidebar shows it ("Wakes Thu 09:00"), and Desk
+  reopens a conversation that isn't running then, whether it was closed and kept in the sidebar or left stopped when
+  the computer restarted. Closing a waiting conversation keeps it in the sidebar unless the user removes it, which
+  cancels the reopening. A command watch marks the view as `watching`: the sidebar shows "Watching", and Desk starts
+  the conversation again if its process was lost (the computer restarted, say). Closing it deliberately pauses its
+  watches ("Watch paused") until it is opened again.
 - **Moves.** A conversation moved to another computer doesn't take its watches along: they end with a note.
 - **Limits.** At most 8 watches can run at once in a conversation. `pi-plan` holds automatic plan rounds while any
   watch is active.

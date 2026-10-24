@@ -91,7 +91,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				core.inputs.interrupt(managed.view.key, "The conversation closed");
 				// Removing a conversation from the sidebar cancels Desk's reopening it for a watch.
 				managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
-					...(data.keep === true ? {} : { wakes: undefined }),
+					...(data.keep === true ? {} : { wakes: undefined, watching: undefined }),
 					snapshot: undefined, ui: undefined, inputs: core.inputs.pending(managed.view.key) };
 				core.persist(true);
 				core.emit({ type: "session", session: managed.view });

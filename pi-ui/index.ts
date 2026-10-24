@@ -57,6 +57,9 @@ export interface UiView {
 	/** When, in ms since the epoch, this view's owner next needs the conversation running. A host that closes or loses
 	 * the conversation's process shows this time and reopens the conversation then. */
 	wakes?: number;
+	/** The view's owner needs the conversation running to watch for something. A host that lost the conversation's
+	 * process without being asked to close it (the computer restarted, say) starts it again. */
+	watching?: boolean;
 	actions?: UiAction[];
 }
 export interface UiQuestion {

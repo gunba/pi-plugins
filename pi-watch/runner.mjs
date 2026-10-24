@@ -1,7 +1,7 @@
 // Runs one watched command, detached from Pi so the command outlives a restarted conversation (Desk restarts idle
 // conversations to update them). Output goes to the log file; when the command ends, its status goes to the exit file,
-// which pi-watch reads instead of waiting on the process. At the watch's expiry, or on SIGTERM, the command's whole
-// process tree is stopped.
+// which pi-watch reads instead of waiting on the process. At the watch's end, if it has one, or on SIGTERM, the
+// command's whole process tree is stopped.
 import { spawn } from "node:child_process";
 import { openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -39,5 +39,10 @@ function stop(reason) {
 
 child.once("error", error => end({ error: error.message }));
 child.once("exit", (code, signal) => end(stopping ? { stopped: stopping } : { code, signal }));
-setTimeout(() => stop("expired"), Math.max(0, spec.expires - Date.now()));
+// Without an end it runs until it ends or is stopped. The clock is checked each minute: Node's timers stop while a
+// computer sleeps and cannot span more than 24.8 days.
+if (spec.expires !== undefined) {
+	const check = () => { if (Date.now() >= spec.expires) stop("expired"); else setTimeout(check, Math.min(spec.expires - Date.now(), 60_000)).unref(); };
+	check();
+}
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => stop("stopped"));

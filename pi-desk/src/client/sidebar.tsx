@@ -133,7 +133,9 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
               aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
             <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
               <small className="session-metadata"><span className="session-activity" title={item.wakes ? `A watch wakes it ${new Date(item.wakes).toLocaleString()}${item.state === "closed" ? "; Desk reopens it then" : ""}` : undefined}>
-                {item.wakes && showsWake(sessionActivity(item)) ? wakeLabel(item.wakes) : activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+                {item.wakes && showsWake(sessionActivity(item)) ? wakeLabel(item.wakes)
+                  : item.watching && showsWake(sessionActivity(item)) ? item.state === "closed" && !item.interrupted ? "Watch paused" : "Watching"
+                  : activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
                 {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
                   <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />

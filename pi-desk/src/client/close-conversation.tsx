@@ -22,7 +22,8 @@ export function CloseConversationButton({ session, name, computer, connected, di
 			: wakes ? { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close until then", alternative: "Close and remove",
 				body: <><CloseSummary session={session} /><p className="muted">A watch is set to wake it {wakes}. Closed until then, it stays in the sidebar and Desk reopens it at that time. Removing it means Desk won't.</p></> }
 			: { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close and remove", alternative: "Close, keep in sidebar",
-				body: <><CloseSummary session={session} /><p className="muted">Keeping it in the sidebar stops Pi to free memory; open it later and choose Resume to carry on.</p></> });
+				body: <><CloseSummary session={session} /><p className="muted">Keeping it in the sidebar stops Pi to free memory; open it later and choose Resume to carry on.
+					{session.watching && " Its watches pause while it is closed and go on when you open it again."}</p></> });
 		if (!choice) return;
 		const keep = wakes && !sleeping ? choice === "accept" : choice === "alternative";
 		setPending(true); confirmed?.();
