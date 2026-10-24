@@ -15,9 +15,15 @@ export class Protocol {
   readonly threadId: string;
   readonly installationId: string;
   readonly identity: Identity;
+  /** How the thread's history began, in the turn metadata: "new", or "cold_resume" for a saved conversation reopened. */
+  readonly historyInitialization: "new" | "cold_resume";
   constructor(
     profile: Profile, threadId: string, installationId: string, identity: Identity, windowId = uuidv7(),
-  ) { this.profile = profile; this.threadId = threadId; this.sessionId = threadId; this.installationId = installationId; this.identity = identity; this.windowId = windowId; }
+    historyInitialization: "new" | "cold_resume" = "new",
+  ) {
+    this.profile = profile; this.threadId = threadId; this.sessionId = threadId; this.installationId = installationId;
+    this.identity = identity; this.windowId = windowId; this.historyInitialization = historyInitialization;
+  }
 
   getWindowId(): string { return this.windowId; }
   rotateWindow(): void { this.windowId = uuidv7(); this.beginTurn(); }
@@ -33,7 +39,7 @@ export class Protocol {
   private metadata(kind: "turn" | "prewarm" | "compaction"): JsonObject {
     return {
       installation_id: this.installationId, session_id: this.sessionId, thread_id: this.threadId,
-      turn_id: this.turnId, window_id: this.windowId, request_kind: kind,
+      turn_id: this.turnId, window_id: this.windowId, request_kind: kind, history_initialization: this.historyInitialization,
       thread_source: "user", sandbox: "none", turn_started_at_unix_ms: this.turnStarted,
       ...(kind === "compaction" && this.compactionReason === "manual" ? { compaction: {
         trigger: "manual", reason: "user_requested", implementation: "responses_compaction_v2",

@@ -172,7 +172,8 @@ export default function codexWire(pi: ExtensionAPI): void {
       const lastWindow = windows.at(-1);
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
       protocol = new Protocol(mode as Profile, ctx.sessionManager.getSessionId(), installationId(directory), identity,
-        typeof window === "string" ? window : undefined);
+        typeof window === "string" ? window : undefined,
+        ctx.sessionManager.getBranch().some(entry => entry.type === "message") ? "cold_resume" : "new");
       if (!window) pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });
       transport = new WireTransport(diagnostics, protocol, selectedTransport, globalThis.fetch, process.env,
         headers => pi.events.emit(ALLOWANCE_EVENT, headers), selectedPrewarm);
@@ -369,8 +370,9 @@ export default function codexWire(pi: ExtensionAPI): void {
           try {
             const replay = responseReplay(model, context, message);
             if (metadataForRequest.use_responses_lite === true) {
+              // Shaped as the next request will shape these items; without tools or instructions there is no prefix.
               const shaped = shapeModelBody({ model: model.id, input: replay, tools: [] }, metadataForRequest, currentProtocol!.threadId);
-              currentTransport.setReplayOutput(requestId, (shaped.input as unknown[]).slice(1));
+              currentTransport.setReplayOutput(requestId, shaped.input as unknown[]);
             } else currentTransport.setReplayOutput(requestId, replay);
           } catch {
             currentTransport.close();

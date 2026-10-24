@@ -271,7 +271,8 @@ for (const phase of ["prewarm", "stream"]) test(`expired WebSocket reconnects on
   assert.equal(connections.length, 2);
   assert.equal(connections[1][0].generate, false);
   assert.equal(connections[1][0].previous_response_id, undefined);
-  assert.deepEqual(connections[1][0].input, body.input);
+  // As in native Codex 0.164.0, a prewarm carries no conversation; the request after it continues from it.
+  assert.deepEqual(connections[1][0].input, []);
   assert.match(readFileSync(f.log, "utf8"), /"kind":"websocket-reconnect"/);
   assert.doesNotMatch(readFileSync(f.log, "utf8"), /"kind":"fallback"/);
 });
@@ -394,7 +395,8 @@ test("WebSocket prewarms per connection, continues across turns and renews warmu
   assert.equal(frames.length, 3);
   assert.equal(frames[0].generate, false);
   assert.equal(frames[1].previous_response_id, "resp_1");
-  assert.deepEqual(frames[1].input, []);
+  assert.deepEqual(frames[0].input, [], "the prewarm carries no conversation");
+  assert.deepEqual(frames[1].input, body.input, "the turn continues from the prewarm with the whole input");
   assert.equal(frames[1].client_metadata["x-codex-turn-state"], "PRIVATE ROUTING TOKEN");
   assert.equal(frames[2].previous_response_id, "resp_2");
   assert.equal(frames[2].client_metadata["x-codex-turn-state"], undefined);
@@ -689,7 +691,7 @@ for (const prewarm of [false, true]) for (const terminalOutput of ["full", "empt
     assert.equal(message.stopReason, "toolUse", message.errorMessage);
     const replay = convertResponsesMessages(model, { messages: [message] }, new Set(["openai-codex"]), { includeSystemPrompt: false })
       .filter(item => !["function_call_output", "custom_tool_call_output"].includes(item.type));
-    f.transport.setReplayOutput(requestId, shapeModelBody({ model: model.id, tools: [], input: replay }, metadata, f.protocol.threadId).input.slice(1));
+    f.transport.setReplayOutput(requestId, shapeModelBody({ model: model.id, tools: [], input: replay }, metadata, f.protocol.threadId).input);
     return message;
   }
   const message = await call("first");
@@ -701,6 +703,9 @@ for (const prewarm of [false, true]) for (const terminalOutput of ["full", "empt
   assert.equal(frames.at(-1).input.length, 1);
   assert.equal(frames.at(-1).input[0].type, "function_call_output");
   assert.equal(frames.at(-1).client_metadata.ws_request_header_x_openai_internal_codex_responses_lite, "true");
+  // Codex 0.164.0's field order: routing fields before the input.
+  assert.deepEqual(Object.keys(frames.at(-1)), ["type", "model", "stream", "previous_response_id", "input", "tool_choice",
+    "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata"]);
   assert.equal(readFileSync(f.log, "utf8").includes("PRIVATE ENCRYPTED REASONING"), false);
 });
 

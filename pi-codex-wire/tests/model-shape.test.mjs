@@ -113,10 +113,11 @@ test('native Lite prefix IDs hash visible payloads within the thread and survive
   const m = metadata({ use_responses_lite: true });
   const result = shapeModelBody(body(), m);
   // Independently calculated with Python uuid.uuid5 and insertion-ordered compact JSON.
-  assert.equal(result.input[0].id, 'at_c2e9c151-19d0-5d74-882c-e5d3926478f8');
+  assert.equal(result.input[0].id, 'at_356c3f46-84d2-56e1-a2a7-37febec73153');
   assert.equal(result.input[1].id, 'msg_7f21a37e-a281-5127-98df-0a8cbb5f585c');
   const reorderedTool = Object.fromEntries(Object.entries(tool()).reverse());
-  assert.notEqual(shapeModelBody(body({ tools: [reorderedTool] }), m).input[0].id, result.input[0].id);
+  // Tools are written in the native field order whatever order Pi gives them in.
+  assert.equal(shapeModelBody(body({ tools: [reorderedTool] }), m).input[0].id, result.input[0].id);
   assert.equal(shapeModelBody(body(), m).input[0].id, result.input[0].id);
   assert.equal(shapeModelBody(body(), m).input[1].id, result.input[1].id);
   assert.notEqual(shapeModelBody(body(), m, 'other-thread').input[0].id, result.input[0].id);
@@ -159,12 +160,33 @@ test('lite moves tools and instructions to input and retains native reasoning/in
   assert.deepEqual(result.include, ['reasoning.encrypted_content']);
   assert.deepEqual(result.reasoning, { effort: 'medium', summary: 'auto', context: 'all_turns' });
   assert.deepEqual(result.input[0], { type: 'additional_tools', id: result.input[0].id, role: 'developer', tools: [{ type: 'namespace', name: 'functions', description: '', tools: [{ ...tool(), strict: false }] }] });
-  assert.deepEqual(result.input[1], { type: 'message', id: result.input[1].id, role: 'developer', content: [{ type: 'input_text', text: 'Pi system' }] });
+  assert.deepEqual(result.input[1], { type: 'message', id: result.input[1].id, role: 'developer', content: [{ type: 'input_text', text: 'Pi system' }],
+    internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'], content_item_metadata: [{ provenance: { type: 'harness', hook: false } }] } });
   assert.equal(result.input[2].content[0].detail, undefined);
   assert.deepEqual(result.input[3], { ...input.input[1], namespace: 'functions' });
   assert.equal(result.input[4].output[0].detail, undefined);
   assert.equal(result.input[4].call_id, 'c');
   assert.equal(input.input[0].content[0].detail, 'high');
+});
+
+test('Codex 0.164 shape: instructions are a developer message for every model, and Pi\'s head tool item is the tool set', () => {
+  // Pi 1.4 declares the tools in an additional_tools item at the head of the input, and later ones as it loads tools.
+  const later = { type: 'additional_tools', role: 'developer', tools: [tool('grep')] };
+  const input = [{ type: 'additional_tools', role: 'developer', tools: [tool()] }, { role: 'user', content: 'hi' }, later];
+  const standard = shapeModelBody(body({ tools: [], input }), metadata());
+  assert.equal('instructions' in standard, false);
+  assert.deepEqual(standard.tools, [{ type: 'function', name: 'bash', description: 'Run', strict: false, parameters: { type: 'object', properties: {} } }]);
+  assert.deepEqual(Object.keys(standard.tools[0]), ['type', 'name', 'description', 'strict', 'parameters']);
+  assert.deepEqual(standard.input[0], { type: 'message', id: 'msg_7f21a37e-a281-5127-98df-0a8cbb5f585c', role: 'developer',
+    content: [{ type: 'input_text', text: 'Pi system' }], internal_chat_message_metadata_passthrough: { content_item_kinds: ['model.base_instructions'] } });
+  assert.deepEqual(standard.input.slice(1), [input[1], later]);
+  const lite = shapeModelBody(body({ tools: [], input }), metadata({ use_responses_lite: true }));
+  assert.deepEqual(lite.input.map(item => item.type ?? item.role), ['additional_tools', 'message', 'user', 'additional_tools']);
+  assert.equal(lite.input[0].id, 'at_356c3f46-84d2-56e1-a2a7-37febec73153', 'the same tool prefix as tools given at the top level');
+  assert.match(lite.input[3].id, /^at_/);
+  assert.equal(lite.input[3].tools[0].tools[0].name, 'grep');
+  // No tools and no instructions: no prefix at all.
+  assert.deepEqual(shapeModelBody(body({ tools: [], instructions: '', input: [input[1]] }), metadata({ use_responses_lite: true })).input, [input[1]]);
 });
 
 test('lite merges functions namespace, keeps custom names and output strings unchanged', () => {

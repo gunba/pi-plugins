@@ -1,6 +1,6 @@
-/** Native model shaping, pinned to openai/codex rust-v0.159.1.
- * https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24/codex-rs
- * Sources: core/src/client.rs; core/src/client_common.rs;
+/** Native model shaping, following openai/codex rust-v0.164.0 (build_responses_request).
+ * https://github.com/openai/codex/tree/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs
+ * Sources: core/src/client.rs; core/src/client_common.rs; core/src/context/base_instructions.rs;
  * codex-api/src/common.rs (serde omission matters);
  * tools/src/tool_spec.rs; protocol/src/openai_models.rs.
  * This module supports Pi's flat function/custom tools, including the native
@@ -61,8 +61,9 @@ function functionTool(value: unknown): ObjectValue {
   if (typeof tool.name !== "string" || !tool.name) throw new TypeError("Tool needs a name");
   if (tool.type === "function") {
     object(tool.parameters, "function parameters");
-    // Native ResponsesApiTool strict is a bool, not Pi's null.
-    tool.strict = false;
+    // Native ResponsesApiTool's field order; its strict is a bool, not Pi's null.
+    const { type, name, description, strict: _strict, parameters, ...rest } = tool;
+    return { type, name, ...(description !== undefined ? { description } : {}), strict: false, parameters, ...rest };
   }
   return tool;
 }
@@ -91,7 +92,7 @@ function toolCatalog(values: unknown[], lite: boolean): ObjectValue[] {
       position ??= output.length;
       members.push(...tools);
     } else {
-      output.push(tool);
+      output.push(tool.type === "namespace" ? { ...tool, tools } : tools[0]!);
     }
   }
   if (position !== undefined && members.length) {
@@ -109,7 +110,16 @@ function normalizeImages(content: unknown, lite: boolean, originalSupported: boo
     else if (item.detail === "original" && !originalSupported) item.detail = "high";
   }
 }
-function liteInput(value: unknown): ObjectValue {
+/** Base instructions as Codex sends them to every model: a developer message whose content is classified as such
+ * (BaseInstructionsFragment), with harness attribution that only Lite requests keep. The ID hashes the text within
+ * the thread, so it is the same on every request. */
+function baseInstructions(text: string, namespace: string, lite: boolean): ObjectValue {
+  return { type: "message", id: `msg_${uuid5(namespace, text)}`, role: "developer", content: [{ type: "input_text", text }],
+    internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"],
+      ...(lite ? { content_item_metadata: [{ provenance: { type: "harness", hook: false } }] } : {}) } };
+}
+
+function liteInput(value: unknown, namespace: string): ObjectValue {
   const item = object(value, "input item");
   if (item.type === "function_call" || item.type === "custom_tool_call") {
     if (item.namespace != null && item.namespace !== "functions") {
@@ -119,7 +129,10 @@ function liteInput(value: unknown): ObjectValue {
     // our catalog without changing name, call_id, arguments, or result pairing.
     item.namespace = "functions";
   } else if (item.type === "additional_tools") {
-    item.tools = toolCatalog(array(item.tools, "additional tools"), true);
+    // A later tool load (Pi's incremental additional_tools), identified as native history items are.
+    const tools = toolCatalog(array(item.tools, "additional tools"), true);
+    return { type: "additional_tools", id: typeof item.id === "string" ? item.id : `at_${uuid5(namespace, JSON.stringify(tools))}`,
+      role: item.role ?? "developer", tools };
   }
   return item;
 }
@@ -179,24 +192,27 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadI
   if (tier === undefined || tier === null || tier === "default" || !tiers.includes(tier as string)) {
     delete result.service_tier;
   }
-  const tools = toolCatalog(array(result.tools ?? [], "tools"), lite);
+  if (result.instructions != null && typeof result.instructions !== "string") throw new TypeError("instructions must be a string");
+  const namespace = uuid5("6ba7b812-9dad-11d1-80b4-00c04fd430c8", threadId);
+  let input = array(result.input ?? [], "input");
+  // Pi declares the request's tools in an additional_tools item at the head of the input (later items add tools it
+  // loads). Native Codex declares them in its own prefix (Lite) or as top-level tools, so the head item becomes that.
+  const head = input.length ? object(input[0], "input item") : undefined;
+  const declared = head?.type === "additional_tools" ? array(head.tools, "additional tools") : [];
+  if (head?.type === "additional_tools") input = input.slice(1);
+  const tools = toolCatalog([...array(result.tools ?? [], "tools"), ...declared], lite);
+  // The native CLI enables serde_json/preserve_order: hash the serialized visible payload.
+  const prefix: ObjectValue[] = [];
+  if (lite && tools.length) prefix.push({ type: "additional_tools", id: `at_${uuid5(namespace, JSON.stringify(tools))}`, role: "developer", tools });
+  if (result.instructions) prefix.push(baseInstructions(result.instructions as string, namespace, lite));
+  result.input = [...prefix, ...(lite ? input.map(item => liteInput(item, namespace)) : input)];
+  delete result.instructions; // 0.164.0 has no instructions field.
   if (lite) {
-    const input = array(result.input, "input").map(liteInput);
-    const namespace = uuid5("6ba7b812-9dad-11d1-80b4-00c04fd430c8", threadId);
-    // The native CLI enables serde_json/preserve_order: hash the serialized visible payload.
-    const prefix: ObjectValue[] = [{ type: "additional_tools", id: `at_${uuid5(namespace, JSON.stringify(tools))}`, role: "developer", tools }];
-    if (result.instructions != null && typeof result.instructions !== "string") {
-      throw new TypeError("instructions must be a string");
-    }
-    if (result.instructions) prefix.push({ role: "developer", type: "message", id: `msg_${uuid5(namespace, result.instructions as string)}`, content: [{ type: "input_text", text: result.instructions }] });
-    result.input = [...prefix, ...input];
-    delete result.instructions; // Empty native string is skipped by serde.
     delete result.tools;
     result.parallel_tool_calls = false;
   } else {
     result.tools = tools;
     result.parallel_tool_calls = result.parallel_tool_calls === true;
-    if (result.instructions === "") delete result.instructions;
   }
   return result;
 }

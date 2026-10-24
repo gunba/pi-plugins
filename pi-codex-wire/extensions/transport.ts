@@ -4,6 +4,7 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import WebSocket from "ws";
 import { Diagnostics, eventDiagnostics, object, allowanceHeaders, type JsonObject } from "./diagnostics.ts";
 import type { Compression } from "./compression.ts";
+import { nativeOrder } from "./request-order.ts";
 import { allowanceFromHeaders, allowanceFromEvent } from "./allowance.ts";
 import type { RequestTrace } from "./request-trace.ts";
 import { diagnosticEventType, HttpNetworkTrace, networkErrorCodes, observeWebSocketNetwork, responseRequestIds } from "./network-diagnostics.ts";
@@ -119,6 +120,20 @@ function applyContinuation(body: JsonObject, previous: Continuation | undefined,
   const baselineLength = (Array.isArray(previous.body.input) ? previous.body.input.length : 0)
     + (previous.expectedReplayOutput ?? previous.output).length;
   return { ...body, previous_response_id: previous.responseId, input: (body.input as unknown[]).slice(baselineLength) };
+}
+
+/**
+ * The input of a prewarm (generate: false), as Codex 0.164.0 sends it: a standard model's base-instructions message
+ * (its tools are top-level), and nothing for a Lite model, whose tools and instructions come with the turn.
+ */
+export function prewarmInput(body: JsonObject): unknown[] {
+  if (!Array.isArray(body.tools) || !Array.isArray(body.input)) return [];
+  const base = (item: unknown) => {
+    const kinds = object(object(item).internal_chat_message_metadata_passthrough).content_item_kinds;
+    return object(item).role === "developer" && Array.isArray(kinds) && kinds.includes("model.base_instructions");
+  };
+  const end = body.input.findIndex(item => !base(item));
+  return body.input.slice(0, end < 0 ? body.input.length : end);
 }
 
 function proxyFor(url: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -260,7 +275,9 @@ export class WireTransport {
   }
 
   private websocketResponse(socket: WebSocket, exchange: Exchange, prewarm: boolean, reconnects: number): Response {
-    const fullBody = prewarm ? { ...exchange.body, generate: false } : exchange.body;
+    // A prewarm sends only what native Codex 0.164.0 does; the request after it continues from it.
+    const sent = prewarm ? { ...exchange.body, input: prewarmInput(exchange.body) } : exchange.body;
+    const fullBody = prewarm ? { ...sent, generate: false } : exchange.body;
     const reason = continuationReason(fullBody, this.continuation);
     let attemptId = randomUUID();
     const body = this.hooks.websocketBody(applyContinuation(fullBody, this.continuation, reason));
@@ -374,7 +391,7 @@ export class WireTransport {
             this.diagnostics.request(retryBody, { ...exchange.trace, requestId: exchange.requestId, attemptId,
               inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
               transport: "websocket", retry: "missing-continuation", continuationReason: "missing-continuation" });
-            socket.send(JSON.stringify({ type: "response.create", ...retryBody }), sendError => {
+            socket.send(JSON.stringify(nativeOrder({ type: "response.create", ...retryBody })), sendError => {
               if (sendError) fail(new Error("Codex WebSocket retry failed"), "send-error");
             });
             return;
@@ -394,7 +411,7 @@ export class WireTransport {
             const response = object(event.response);
             const output = completedOutput.resolve(response.output);
             if (["response.completed", "response.done"].includes(String(event.type)) && typeof response.id === "string" && output !== undefined) {
-              this.continuation = { body: exchange.body, responseId: response.id, output, requestId: exchange.requestId };
+              this.continuation = { body: sent, responseId: response.id, output, requestId: exchange.requestId };
             } else this.continuation = undefined;
             this.diagnostics.write({ kind: "continuation-state", requestId: exchange.requestId,
               retained: !!this.continuation, outputItems: output?.length,
@@ -412,7 +429,7 @@ export class WireTransport {
         exchange.signal?.addEventListener("abort", aborted, { once: true });
         resetTimer();
         if (exchange.signal?.aborted) { aborted(); return; }
-        socket.send(JSON.stringify({ type: "response.create", ...body }), sendError => {
+        socket.send(JSON.stringify(nativeOrder({ type: "response.create", ...body })), sendError => {
           if (sendError) fail(new Error("Codex WebSocket send failed"), "send-error");
         });
       },
@@ -508,7 +525,7 @@ export class WireTransport {
     headers.delete("content-encoding");
     let body: string | Uint8Array;
     try {
-      const json = JSON.stringify(exchange.body);
+      const json = JSON.stringify(nativeOrder(exchange.body));
       body = json;
       if (exchange.compression === "zstd") {
         const compressionKey = zlib.constants.ZSTD_c_compressionLevel;

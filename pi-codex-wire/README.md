@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-The advertised core version follows the latest official stable [Codex release](https://github.com/openai/codex/releases/latest). The original implementation reference is **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
+The advertised core version follows the latest official stable [Codex release](https://github.com/openai/codex/releases/latest). Request bodies follow **Codex CLI 0.164.0**, commit [`6aaac694803004a63c6f393d153c96d22521a6b9`](https://github.com/openai/codex/tree/6aaac694803004a63c6f393d153c96d22521a6b9), checked against requests the official 0.164.0 binary sent to a local server. The original implementation reference is **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
 
 ## Installation and activation
 
@@ -176,10 +176,12 @@ These observations separate a local timeout or decoder failure from an
 interrupted transport. They cannot by themselves distinguish a backend failure
 from every possible network intermediary, or establish why the server stopped.
 
-Full-prompt WebSocket prewarming is **off by default**. `/codex-wire prewarm on|off`
-saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. This
-controls only the extra `generate:false` request, not Wire, Codex identity,
-WebSocket reuse or continuation. Reconnects follow the same setting.
+WebSocket prewarming is **off by default**. `/codex-wire prewarm on|off`
+saves the choice; `--codex-wire-prewarm on|off` overrides it at startup. As in
+Codex 0.164.0, the `generate:false` prewarm carries a standard model's base
+instructions and nothing for a Lite model; the turn after it continues from it
+with `previous_response_id`. This controls only the prewarm, not Wire, Codex
+identity, WebSocket reuse or continuation. Reconnects follow the same setting.
 
 `--codex-wire-compression on` matches Codex 0.159.1's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
@@ -203,7 +205,7 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - The server's one-hour WebSocket expiry triggers one internal reconnect when no model output has arrived. A fresh connection follows the selected prewarm setting and the request is replayed. Partial output is not replayed, cancellation still works during recovery, and an exhausted recovery is surfaced rather than retried by Pi's HTTP-fetch loop.
 - Native `x-codex-routing-hint` on HTTP requests and WebSocket handshakes, using the final model and explicitly selected service tier.
 - SSE fallback and feature-gated zstd request compression at level 3. Changing metadata does not force a full WebSocket input by itself.
-- Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. Lite tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Pi's named effort levels follow the 0.159.1 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
+- Native model-catalog shaping: supported service tiers, reasoning/verbosity fields, function strictness, and Responses Lite tool/instruction/image transformations. As in 0.164.0, every request leads with its routing fields (`model`, `stream`, `service_tier`, `previous_response_id`) before `input`, and base instructions travel as a developer message classified `model.base_instructions` for every model (with harness attribution on Lite), not an `instructions` field. Pi's head `additional_tools` item becomes the Lite tool prefix or a standard model's top-level `tools`; later ones (tools Pi loads) stay in place. Function tools use the native field order. Tool and instruction prefixes receive deterministic, thread-scoped UUIDv5 IDs. Pi's named effort levels follow the 0.159.1 rules; parallel calls follow the prompt and are disabled in Lite mode. Unsupported original image detail becomes high outside Lite; Lite omits image detail.
 - Wire owns the passive allowance footer and `/pi-usage`. Codex counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. Claude subscription windows use Pi's native response-header event for the official Anthropic OAuth endpoint. Each provider/account keeps a separate snapshot; late headers from a changed account are ignored. No polling, extra model requests or global WebSocket interception is installed. API token limits are not presented as subscription allowance. The footer handles a 7-day window reported as the primary window.
 - Codex requests prepend the selected model’s native introduction from its catalog to Pi’s existing instructions. Only the opening paragraph is copied; tools, project instructions and the rest of Pi’s policy remain intact. Unlisted models use the neutral introduction `You are Codex.`. An existing matching introduction is not duplicated.
 - Desk (RPC) turns request `detailed` reasoning summaries; terminal Pi retains its `auto` default instead of adopting a catalog default of `none`. Explicit caller choices and the model's supported-parameter flag still apply. The backend may omit a readable summary; encrypted replay state is preserved separately. Diagnostics record the requested summary mode, not its content.
