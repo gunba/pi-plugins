@@ -111,7 +111,8 @@ dialog:not([open]) { display:none; }
 .copy-button .ui-icon { width:15px; height:15px; }
 /* The code scrolls inside its box; the copy icon sits in its top corner, clear of the first line. */
 .code-block { position:relative; min-width:0; margin:12px 0; }
-.shown-html { display:block; width:100%; border:1px solid var(--border); border-radius:8px; background:#fff; }
+/* content-box: the height the page reports is its own; the border is outside it, so no inner scrollbar. */
+.shown-html { display:block; box-sizing:content-box; width:calc(100% - 2px); border:1px solid var(--border); border-radius:8px; background:#fff; }
 .code-block pre { margin:0 !important; padding-right:44px !important; }
 .code-block > .copy-button { position:absolute; top:7px; right:7px; background:var(--code); box-shadow:0 0 0 6px var(--code), -10px 0 8px 2px var(--code); }
 @media (pointer:coarse) { .code-block > .copy-button.icon-button { width:36px; height:36px; } }
