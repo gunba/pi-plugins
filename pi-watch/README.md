@@ -33,7 +33,7 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
   at once, saying when it was due.
 - **Closed conversations.** A time watch's view carries its time as `wakes`. Desk shows it in the sidebar ("Wakes Thu
   09:00") and reopens a conversation that isn't running then: one closed but kept in the sidebar, or one left stopped
-  after the computer restarted. Closing a waiting conversation keeps it in the sidebar unless Jordan removes it, which
+  after the computer restarted. Closing a waiting conversation keeps it in the sidebar unless the user removes it, which
   cancels the reopening.
 - **Moves.** A conversation moved to another computer doesn't take its watches along: they end with a note.
 - **Limits.** At most 8 watches can run at once in a conversation. `pi-plan` holds automatic plan rounds while any

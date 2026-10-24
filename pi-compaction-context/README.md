@@ -1,23 +1,16 @@
-# pi-compaction-context
+# Compaction context
 
-Carries Pi's loaded Markdown context files into compaction requests so the
-checkpoint writer sees the same project rules that guide normal turns.
+Writes summaries from the conversation's own prompt cache, and gives Pi's summariser the project's rules.
 
-The extension watches the system prompt metadata from normal turns, falls back
-to parsing the active prompt, and appends a bounded `<pi_compaction_context>`
-block to Pi's compaction and branch-summary requests. Summary lifecycle events
-identify these requests; ordinary model requests are left untouched. Injection
-uses provider system-instruction fields (Responses, Chat Completions, Anthropic,
-and Google generateContent). It leaves requests unchanged when those fields
-already contain the active rules. Unknown payload formats are left unchanged.
+- **Summary in place.** When a conversation compacts, the request it last sent is replayed byte for byte with one
+  message asking for the summary, so the provider reads the whole conversation from its prompt cache instead of
+  charging for it again. The summary uses Pi's format. Codex conversations use Codex Wire's own compaction instead.
+- **Rules for Pi's summariser.** When the in-place summary cannot be used (the cache has expired, or the model gave no
+  summary), Pi's own summary request runs, with a system prompt that does not include the project's `AGENTS.md` or
+  `CLAUDE.md`. This adds them, so the summary keeps the project's rules in view. Only summary and branch-summary
+  requests are changed; ordinary turns are not touched, so their prompt cache is unaffected.
+- **Briefs.** Desk's "What do I need to know?" brief is written the same way, from the cached request. While the user
+  is away, one is written after a turn that edited files or made many tool calls.
 
-This is summary-writer context, not periodic instruction reinjection. Pi 1.0
-persists prompt sections and tool declarations independently of the prose summary
-and checkpoints them at compaction. Normal turns retain those instructions without
-this extension. The extension helps the separate default summary writer, whose
-own system prompt does not include project rules. Codex Wire already passes the
-full active prompt to its native checkpoint request and does not depend on this
-helper for instruction retention.
-
-Use `/compaction-context` to inspect status, or `/compaction-context on|off` to
-toggle the extension for the current session.
+`/compaction-context` shows whether the last summary was written in place, and `/compaction-context on|off` turns the
+rules for Pi's summariser on or off for the current session.
