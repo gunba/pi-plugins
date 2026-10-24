@@ -3,7 +3,7 @@ import { constants, createReadStream } from "node:fs";
 import { chmod, copyFile, link, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { artifactPage, artifactSearch, artifactText, artifactVersion } from "./artifact-reader.ts";
-import { OUTPUT_CHARS, page } from "./text.ts";
+import { PAGE_CHARS } from "./text.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 
 const ID = /^sha256-[a-f0-9]{64}$/;
@@ -65,13 +65,13 @@ export class ArtifactStore {
     return artifactText(path, id);
   }
 
-  async readPage(id: string, offset = 0, length = OUTPUT_CHARS) {
+  async readPage(id: string, offset = 0, length = PAGE_CHARS) {
     const path = this.path(id);
     await this.prepareDirectory();
     return artifactPage(path, id, offset, length);
   }
 
-  async searchPage(id: string, query: string, offset = 0, length = OUTPUT_CHARS) {
+  async searchPage(id: string, query: string, offset = 0, length = PAGE_CHARS) {
     if (!query) throw new Error("Search query must not be empty");
     const path = this.path(id);
     await this.prepareDirectory();
@@ -111,14 +111,4 @@ export class ArtifactStore {
       return result;
     } finally { await rm(temporary, { force: true }); }
   }
-}
-
-export async function boundedText(store: ArtifactStore, text: string, length = OUTPUT_CHARS) {
-  const preview = page(text, 0, length);
-  if (preview.next_offset === null) return { content: [{ type: "text" as const, text }], details: { outputBudgeted: true } };
-  const artifact = await store.put(text);
-  return {
-    content: [{ type: "text" as const, text: `${preview.text}\n\n[Output truncated. Complete captured text: ${artifact}. Use read_artifact with offset=${preview.next_offset}. File: ${store.path(artifact)}]` }],
-    details: { outputBudgeted: true, outputArtifact: artifact, next_offset: preview.next_offset, total_chars: text.length },
-  };
 }

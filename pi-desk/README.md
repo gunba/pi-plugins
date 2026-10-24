@@ -607,7 +607,7 @@ within the inline-asset limit. Code blocks also have copy controls.
 Complete-output links open a paged viewer backed by `pi-output-budget`'s existing
 immutable artifact store. Next/previous, character offsets, case-sensitive line
 search and page copying work locally and through the encrypted relay. Offsets
-count UTF-16 characters, matching the native `read_artifact` tool. Only artifacts
+count UTF-16 characters. Only artifacts
 observed in that worker's transcript projection can be opened; opening an old
 message refreshes its reference. Reconnect does not download artifact bodies.
 Native integrity checks and maintenance ownership remain in the output plugin.

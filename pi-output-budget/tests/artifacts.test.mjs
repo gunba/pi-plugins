@@ -3,7 +3,7 @@ import test from "node:test";
 import { link, mkdtemp, open, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ArtifactStore, boundedText } from "../extensions/artifacts.ts";
+import { ArtifactStore } from "../extensions/artifacts.ts";
 import { literalMatches, page } from "../extensions/text.ts";
 
 test("immutable artifacts deduplicate, survive reopening and reject traversal/tampering", async t => {
@@ -11,8 +11,7 @@ test("immutable artifacts deduplicate, survive reopening and reject traversal/ta
   t.after(() => rm(directory, { recursive: true, force: true }));
   const store = new ArtifactStore(directory);
   const text = "snapshot\n".repeat(10_000);
-  const first = await boundedText(store, text, 100);
-  const id = first.details.outputArtifact;
+  const id = await store.put(text);
   assert.equal(await readFile(join(directory, ".gitignore"), "utf8"), "*\n");
   assert.equal(await store.put(text), id);
   const concurrent = await Promise.all(Array.from({ length: 12 }, () => store.put(text)));

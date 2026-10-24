@@ -15,7 +15,7 @@ type Entry = { type: string; customType?: string; data?: unknown; message?: { ro
 type Model = { provider: string; id: string; promptCache?: { short?: number; long?: number } };
 type Seen = { id: string; name: string; args: Record<string, unknown>; error: boolean };
 
-const SEARCHES = new Set(["grep", "find", "ls", "glob", "web_search", "web_fetch", "read_artifact", "view_image"]);
+const SEARCHES = new Set(["grep", "find", "ls", "glob", "web_search", "web_fetch", "view_image"]);
 const COMMANDS = new Set(["bash", "exec_command"]);
 const READS = new Set(["read"]);
 const WRITES = new Set(["write"]);

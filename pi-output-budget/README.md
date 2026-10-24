@@ -1,106 +1,32 @@
 # Output budgets
 
-This bundle policy reduces text admitted to model history without deleting old
-messages or making extra model calls to summarise results. SDK children install
-it explicitly; `noExtensions: true` still prevents unrelated extension discovery.
+Tool results follow Pi's own output limits everywhere: 2,000 lines or 50 KB.
 
-## Tools
+- **Pi's tools** (`read`, `bash`, PowerShell, `grep`, `find`, `ls`, codemode, MCP tools) cut their own output; their
+  results are left as Pi made them. When Pi saves a command's complete output to a temporary file, a copy is kept in
+  the output store, so Desk can show it after Pi deletes the file.
+- **Other tools' text results** are cut the way Pi's `read` cuts a file: the first 2,000 lines or 50 KB. The complete
+  text is saved under `~/.pi/agent/tool-output/`, and the notice names the file, so the model reads the rest with
+  `read` and an offset, as it would any file.
+- **Images** from `read` are shrunk to at most 1.5 MB each, within Pi's own limit of 2,000 pixels a side, because every
+  request resends every image in the conversation. The file on disk is untouched.
+- **Missing paths** in a failed `read`, `grep`, `ls`, `find`, `edit` or `write` get a hint naming files with that name
+  in the folders the conversation works in.
 
-- `read` retains native path resolution, cancellation and image processing.
-  Its text preview is 32,000 characters. `offset` and `limit` select source lines.
-  When truncated, the complete **requested range** is captured once in an
-  immutable artifact. `full: true` permits up to 128,000 characters in one result.
-  Images (PNG, JPEG, GIF, WebP; BMP is converted to PNG) are resized to the
-  model's limits and to at most 1.5 MB each, because every request resends every
-  image in the conversation. The file on disk is untouched.
-- `read_artifact` reads a captured artifact by ID. `offset` and `length` count
-  UTF-16 characters, not source lines. Always follow the returned `next_offset`
-  until it is `null` when completeness matters. Unicode pairs are not split.
-  `query` performs literal, case-sensitive line search over the full artifact;
-  paging then refers to the search results.
+Limits apply when a result is created. Earlier results are never rewritten, because changing earlier context breaks
+the provider's prompt cache.
 
-## Other tool results
+## Storage
 
-Text-only results longer than 16,000 characters are cut to that length, with
-the complete text in an artifact.
+Saved outputs live under `~/.pi/agent/tool-output` as `sha256-<hash>.txt`, private to the user. Identical outputs are
+stored once. They are never uploaded and do not expire on their own.
 
-Pi's own tools cut their output first: `bash` and `powershell` keep the last
-50 KB, `grep`, `find` and `ls` the first 50 KB, and `codemode` (its
-`max_output_tokens`) and MCP tools (20 KB) the start and end. Their results are
-cut again in the same place, so the two cuts act as one, and Pi's closing
-notice is kept. When Pi saved the complete output to a temporary file, that
-file is captured as an artifact, so it outlives Pi's cleanup; only that path in
-Pi's details is followed, never a path inside a tool's or server's payload.
-
-Results of other tools keep their first 16,000 characters. Native details, error
-state and nested model usage are preserved. Image blocks pass through untouched.
-Limits are characters, not claimed exact token counts.
-
-## Earlier results
-
-Budgets apply only when a result is created: preview caps, artifacts,
-`read_artifact`. Earlier results are never rewritten later
-in the conversation, because changing earlier context breaks the provider's
-prompt cache.
-
-## Storage and privacy
-
-Artifacts live under `~/.pi/agent/tool-output` (or the configured agent directory).
-They contain actual file or command output and may contain confidential data.
-They are local files, not Wire diagnostic records, and are not uploaded by the
-artifact store.
-The directory has its own ignore rule. Do not force-add these private artifacts
-to Git.
-
-SHA-256 IDs deduplicate identical content and verify integrity before retrieval.
-Retrieval caches a small index of byte and character positions, not the full
-text. Later pages read only the surrounding byte range. Changes to file identity,
-size, modification time, or change time invalidate the index and require another
-integrity check. Index storage is bounded to 64 entries and 16 MiB.
-Literal search results are captured as separate immutable artifacts so their
-later pages also avoid rescanning the original. Both references appear in the
-saved tool result. Searches stream through the source and write matching lines
-in bounded chunks, including when one line is very large. Concurrent requests
-for the same search share the scan. Line numbers, CRLF content and UTF-16 query
-semantics are preserved.
-
-Publication is atomic and does not overwrite an existing artifact. Complete
-native logs are copied and hashed as files rather than loaded into memory for
-archiving. Artifact files survive session compaction and native log cleanup.
-There is no automatic artifact expiry. The original source files are never modified.
-
-### Cleanup
-
-From the checkout, preview cleanup with:
+To remove outputs no saved conversation refers to, stop all Pi processes and run:
 
 ```sh
-node pi-output-budget/cleanup.mjs
+node pi-output-budget/cleanup.mjs           # preview
+node pi-output-budget/cleanup.mjs --apply   # delete
 ```
 
-It scans main and SDK-child session files, follows references between artifacts,
-and preserves reachable output. Captures less than a day old and their references
-also remain protected. Temporary capture files are never deleted. The preview
-reports counts and sizes, rather than orphan IDs that would become new references
-if the preview itself were saved in a session.
-
-After stopping all Pi processes, use `--apply` to remove the eligible files:
-
-```sh
-node pi-output-budget/cleanup.mjs --apply
-```
-
-`--agent-dir PATH` selects another agent directory. Add every custom session
-directory or file with repeated `--sessions PATH` arguments; this also covers
-session archives kept outside the default main/child directories.
-
-Source parsing, integrity checks and snapshot checks must all succeed before
-deletion starts. Unreadable, malformed, incomplete or changing source files
-prevent cleanup. Missing referenced IDs are counted separately: they already
-have no file in this store. Scanning uses the available CPU cores and runs only
-when this command is invoked.
-
-Pi holds a process-lifetime storage lease, including across extension reloads
-and SDK children. Applying cleanup refuses live or unidentified writers, and a
-maintenance lock prevents new producers entering during cleanup. PID reuse can
-conservatively delay cleanup until that process exits. Stop older Pi versions
-too: they predate these ownership records.
+`--agent-dir PATH` selects another agent directory, and `--sessions PATH` (repeatable) adds session folders kept
+elsewhere. Outputs less than a day old are kept, and cleanup refuses to run while a Pi process holds the store.

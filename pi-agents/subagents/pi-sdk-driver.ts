@@ -309,10 +309,9 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		// child-only capability. Only the caller may declare intrinsic tools.
 		const childOnlyTools = (input.intrinsicToolNames ?? (!toolInfo ? customToolNames : []))
 			.filter((name) => customToolNames.includes(name));
-		const fallbackHelpers = !toolInfo && input.descriptor.toolNames.includes("read") ? ["read_artifact"] : [];
 		const enabledTools = () => [...new Set([
 			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
-			...childOnlyTools, ...fallbackHelpers,
+			...childOnlyTools,
 		])];
 		const inheritedExtensions = await loadChildToolExtensions({
 			tools: toolInfo ?? [],

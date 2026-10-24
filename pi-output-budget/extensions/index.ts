@@ -1,25 +1,14 @@
-import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
-  createReadToolDefinition, detectSupportedImageMimeTypeFromFile, getAgentDir, SettingsManager,
+  createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, getAgentDir, SettingsManager, truncateHead,
   type ExtensionAPI, type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
-import { ArtifactStore, boundedText } from "./artifacts.ts";
-import { cutText, type Kept, MAX_CHARS, OUTPUT_CHARS, READ_CHARS } from "./text.ts";
+import { ArtifactStore } from "./artifacts.ts";
 import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
 import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
 import { SUPERSEDED, withoutSuperseded } from "./superseded.ts";
 import { editHint, gitRoot, missingPath, missingPathHint } from "./repair.ts";
-
-const readSchema = Type.Object({
-  path: Type.String(),
-  offset: Type.Optional(Type.Integer({ minimum: 1 })),
-  limit: Type.Optional(Type.Integer({ minimum: 1 })),
-  full: Type.Optional(Type.Boolean({ description: `Request a larger preview, up to ${MAX_CHARS} characters; excess remains retrievable.` })),
-}, { additionalProperties: false });
 
 export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
@@ -40,55 +29,41 @@ function imageCapped(ctx: ExtensionToolContext): ExtensionToolContext {
   return Object.create(ctx, { model: { value: { ...model, inputLimits: { ...model.inputLimits, images: { ...images, resize } } } } });
 }
 
-/**
- * Which part of its output each of Pi's own tools keeps when it cuts it: bash and PowerShell the last 50 KB, grep,
- * find and ls the first 50 KB, codemode (its max_output_tokens) and MCP tools (20 KB) the start and end. Their longer
- * results are cut to OUTPUT_CHARS in the same place, so the two cuts act as one.
- */
-const PI_CUTS: Record<string, Kept> = { bash: "end", powershell: "end", grep: "start", find: "start", ls: "start", codemode: "start and end" };
-const piCut = (tool: string): Kept | undefined => PI_CUTS[tool] ?? (tool.startsWith("mcp__") ? "start and end" : undefined);
+/** Pi's tools cut their own output (read, bash and PowerShell, grep, find and ls at 2000 lines or 50 KB; codemode
+ * and MCP tools at their own limits), so their results are left as Pi made them. */
+const piTool = (tool: string) => ["read", "bash", "powershell", "grep", "find", "ls", "codemode"].includes(tool) || tool.startsWith("mcp__");
 
-/** Use the native reader for path resolution, image processing, errors and cancellation. */
-export async function readSnapshot(id: string, params: Static<typeof readSchema>, signal: AbortSignal | undefined,
-  ctx: ExtensionToolContext, store: ArtifactStore, budget = params.full ? MAX_CHARS : READ_CHARS) {
-  let snapshot: Buffer | undefined;
-  let image = false;
-  const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
-  const native = createReadToolDefinition(ctx.cwd, {
-    autoResizeImages: settings.getImageAutoResize(),
-    resizeOptions: { maxBytes: IMAGE_BYTES },
-    operations: {
-      access: path => access(path, constants.R_OK),
-      readFile: async path => {
-        const value = await readFile(path, { signal });
-        snapshot = value;
-        return value;
-      },
-      detectImageMimeType: async path => {
-        const mime = await detectSupportedImageMimeTypeFromFile(path);
-        image = !!mime;
-        return mime;
-      },
-    },
-  });
-  let result;
-  try { result = await native.execute(id, params, signal, undefined, imageCapped(ctx)); }
-  catch (error) {
-    // Reading past the end is an answer, not a failure: there is nothing more.
-    const past = /Offset (\d+) is beyond end of file \((\d+) lines? total\)/.exec(error instanceof Error ? error.message : String(error));
-    if (!past) throw error;
-    return { content: [{ type: "text" as const, text: `[The file has ${past[2]} lines; offset ${past[1]} is past the end. Nothing more to read.]` }],
-      details: { sourcePath: params.path, firstLine: Number(past[1]), lastLine: Number(past[2]), capturedChars: 0 } };
+/** Pi's read, with images capped at IMAGE_BYTES. Its text output is Pi's own: 2000 lines or 50 KB, then offset. */
+export function readTool() {
+  const definition = createReadToolDefinition(process.cwd());
+  return { ...definition, async execute(id: string, params: Parameters<typeof definition.execute>[1], signal: AbortSignal | undefined,
+    update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext) {
+    const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
+    const native = createReadToolDefinition(ctx.cwd, { autoResizeImages: settings.getImageAutoResize(), resizeOptions: { maxBytes: IMAGE_BYTES } });
+    try { return await native.execute(id, params, signal, update, imageCapped(ctx)); }
+    catch (error) {
+      // Reading past the end is an answer, not a failure: there is nothing more.
+      const past = /Offset (\d+) is beyond end of file \((\d+) lines? total\)/.exec(error instanceof Error ? error.message : String(error));
+      if (!past) throw error;
+      return { content: [{ type: "text" as const, text: `[The file has ${past[2]} lines; offset ${past[1]} is past the end. Nothing more to read.]` }], details: undefined };
+    }
+  } };
+}
+
+/**
+ * A long text result of a tool that does not cut its own, cut where Pi's read cuts (its first 2000 lines or 50 KB),
+ * with the complete text saved where the model can read the rest with read. Undefined when it fits.
+ */
+export async function cutLikePi(text: string, store: ArtifactStore): Promise<{ text: string; artifact: string } | undefined> {
+  const cut = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+  if (!cut.truncated) return;
+  const artifact = await store.put(text), path = store.path(artifact);
+  if (cut.firstLineExceedsLimit) {
+    const start = Buffer.from(text, "utf8").subarray(0, DEFAULT_MAX_BYTES).toString("utf8").replace(/\uFFFD$/, "");
+    return { artifact, text: `${start}\n\n[Line 1 is ${formatSize(Buffer.byteLength(text.split("\n", 1)[0]!, "utf8"))}, over the ${formatSize(DEFAULT_MAX_BYTES)} limit; this is its start. Full output: ${path}]` };
   }
-  signal?.throwIfAborted();
-  if (image || snapshot === undefined) return result;
-  const lines = snapshot.toString("utf8").split("\n");
-  const start = (params.offset ?? 1) - 1;
-  const end = params.limit === undefined ? lines.length : Math.min(lines.length, start + params.limit);
-  const selected = lines.slice(start, end).join("\n");
-  const bounded = await boundedText(store, selected, budget);
-  if (end < lines.length) bounded.content[0]!.text += `\n\n[${lines.length - end} more source lines. Use read offset=${end + 1}. The artifact, if present, contains only the requested range.]`;
-  return { ...bounded, details: { ...bounded.details, sourcePath: params.path, firstLine: start + 1, lastLine: end, capturedChars: selected.length } };
+  const limit = cut.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : "";
+  return { artifact, text: `${cut.content}\n\n[Showing lines 1-${cut.outputLines} of ${cut.totalLines}${limit}. Full output: ${path}; read it with offset=${cut.outputLines + 1} to continue.]` };
 }
 
 /** Safe to install explicitly in SDK children; does not discover unrelated extensions. */
@@ -114,66 +89,27 @@ export default function outputBudget(pi: ExtensionAPI): void {
     } catch { hint = undefined; }
     if (hint) return { content: [...event.content, { type: "text" as const, text: `\n${hint}` }] };
   });
-  pi.registerTool({
-    name: "read", label: "read", parameters: readSchema,
-    description: `Read text or images with native path/image handling. Text previews are limited to ${READ_CHARS} characters; complete requested text ranges are archived when truncated. Use offset/limit for source lines, full=true for up to ${MAX_CHARS} characters, or read_artifact for the immutable captured remainder.`,
-    promptSnippet: "Read file contents",
-    execute: (id, params, signal, _update, ctx) => readSnapshot(id, params, signal, ctx, outputArtifactStore()),
-  });
-
-  pi.registerTool({
-    name: "read_artifact", label: "read_artifact",
-    description: "Read or search an immutable local tool-output artifact. Offsets count UTF-16 characters, not lines. Follow next_offset until null for complete coverage. query performs literal, case-sensitive line search; offsets then refer to the search results.",
-    parameters: Type.Object({
-      artifact: Type.String({ pattern: "^sha256-[a-f0-9]{64}$" }),
-      offset: Type.Optional(Type.Integer({ minimum: 0 })),
-      length: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_CHARS })),
-      query: Type.Optional(Type.String({ minLength: 1 })),
-    }, { additionalProperties: false }),
-    async execute(_id, params, signal) {
-      const store = outputArtifactStore();
-      signal?.throwIfAborted();
-      const result = params.query === undefined
-        ? await store.readPage(params.artifact, params.offset ?? 0, params.length ?? OUTPUT_CHARS)
-        : await store.searchPage(params.artifact, params.query, params.offset ?? 0, params.length ?? OUTPUT_CHARS);
-      signal?.throwIfAborted();
-      return {
-        content: [{ type: "text" as const, text: `${result.text}\n\n[${params.query === undefined ? "Artifact" : "Search results"}: ${result.total_chars} characters; next_offset=${result.next_offset ?? "null"}]` }],
-        details: { outputBudgeted: true, artifact: params.artifact, ...result, text: undefined },
-      };
-    },
-  });
+  pi.registerTool(readTool());
 
   pi.on("tool_result", async (event, ctx) => {
     const details = event.details as { fullOutputPath?: unknown; outputBudgeted?: boolean } | undefined;
     if (details?.outputBudgeted) return;
-    const keep = piCut(event.toolName);
-    // Only Pi's own spill files are followed, never a path a tool or server put in its payload.
-    const full = keep && typeof details?.fullOutputPath === "string" ? details.fullOutputPath : undefined;
-    const text = event.content.map(block => block.type === "text" ? block.text : "").join("\n");
-    const cut = event.content.every(block => block.type === "text") && text.length > OUTPUT_CHARS;
-    if (!cut && !full) return;
-    ctx.signal?.throwIfAborted();
     const store = outputArtifactStore();
-    let complete: string | undefined;
-    if (full) try { complete = await store.putFile(full); } catch { /* Reported below; Pi's own notice names the file. */ }
-    const result: { content: typeof event.content; details: Record<string, unknown> } = { content: [...event.content],
-      details: complete ? { full_output_artifact: complete } : {} };
-    if (cut && keep) {
-      const uncut = complete ?? await store.put(text);
-      result.content = [{ type: "text", text: `${cutText(text, keep, OUTPUT_CHARS)}\n\n[Cut to its ${keep}, ${OUTPUT_CHARS} of ${text.length} characters. ${complete ? "Complete output" : "Uncut text"}: ${uncut}; use read_artifact.]` }];
-      result.details = { ...result.details, outputBudgeted: true, ...(complete ? {} : { outputArtifact: uncut }) };
-    } else if (cut) {
-      const bounded = await boundedText(store, text);
-      result.content = bounded.content; result.details = { ...result.details, ...bounded.details };
-    } else if (complete) result.content.push({ type: "text", text: `[Complete output: ${complete}; use read_artifact.]` });
-    if (full && !complete) result.content.push({ type: "text", text: `[Could not archive the complete output; it is in ${full} until Pi deletes it.]` });
-    // Preserve native details (including complete-output paths), errors and nested usage.
-    const plainDetails = details == null || (typeof details === "object" && !Array.isArray(details)
-      && [Object.prototype, null].includes(Object.getPrototypeOf(details)));
-    return plainDetails
-      ? { content: result.content, details: { ...details, ...result.details } }
-      : { content: result.content };
+    if (piTool(event.toolName)) {
+      // Pi's own spill file is kept, so Desk can show the complete output after Pi deletes it; the result is Pi's.
+      // Only that path is followed, never a path a tool or server put in its payload.
+      if (typeof details?.fullOutputPath !== "string" || !details || Object.getPrototypeOf(details) !== Object.prototype) return;
+      try { return { details: { ...details, full_output_artifact: await store.putFile(details.fullOutputPath) } }; }
+      catch { return; }
+    }
+    if (!event.content.every(block => block.type === "text")) return;
+    ctx.signal?.throwIfAborted();
+    const cut = await cutLikePi(event.content.map(block => block.type === "text" ? block.text : "").join("\n"), store);
+    if (!cut) return;
+    const content = [{ type: "text" as const, text: cut.text }];
+    // Preserve native details, errors and nested usage.
+    const plain = details == null || (typeof details === "object" && !Array.isArray(details) && [Object.prototype, null].includes(Object.getPrototypeOf(details)));
+    return plain ? { content, details: { ...details, outputBudgeted: true, outputArtifact: cut.artifact } } : { content };
   });
 
   // context_with_system: only message content changes, so prompt and tool changes stay where they are.

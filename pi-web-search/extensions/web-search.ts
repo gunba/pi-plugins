@@ -14,7 +14,7 @@ import { renderSearchResult } from "./render.ts";
 export const ENDPOINT = "https://search.parallel.ai/mcp";
 const EXA = "https://api.exa.ai";
 const TIMEOUT_MS = 90_000;
-/** Excerpts kept per search result; the whole result is cut again by pi-output-budget. */
+/** Excerpts kept per search result. */
 const RESULT_CHARS = 1_500;
 /** Text kept per fetched page. */
 const PAGE_CHARS = 12_000;

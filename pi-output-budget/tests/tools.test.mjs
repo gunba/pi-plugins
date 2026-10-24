@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import extension, { readSnapshot } from "../extensions/index.ts";
+import extension, { readTool } from "../extensions/index.ts";
 import { ArtifactStore } from "../extensions/artifacts.ts";
 
 async function fixture(t) {
@@ -16,95 +16,67 @@ async function fixture(t) {
   });
   const tools = new Map(), handlers = new Map();
   extension({ registerTool: tool => tools.set(tool.name, tool), on: (name, fn) => handlers.set(name, fn) });
-  return { cwd, tools, handlers, ctx: { cwd, isProjectTrusted: () => false }, store: new ArtifactStore(join(cwd, "tool-output")) };
+  // The budget hook is the last tool_result handler registered.
+  return { cwd, tools, budget: handlers.get("tool_result"), ctx: { cwd, isProjectTrusted: () => false }, store: new ArtifactStore(join(cwd, "tool-output")) };
 }
+const lines = count => Array.from({ length: count }, (_, i) => `line ${i + 1}`).join("\n");
 
-test("read archives the exact requested range, including huge first lines", async t => {
+test("read is Pi's read: 2000 lines, then an offset to continue, and a plain answer past the end", async t => {
   const f = await fixture(t);
-  const text = "skip\n" + "🙂".repeat(30000) + "\nlast\noutside";
-  await writeFile(join(f.cwd, "large.txt"), text);
-  const result = await readSnapshot("id", { path: "large.txt", offset: 2, limit: 2 }, undefined, f.ctx, f.store);
-  assert.equal(await f.store.get(result.details.outputArtifact), "🙂".repeat(30000) + "\nlast");
-  assert.match(result.content[0].text, /read offset=4/);
-  assert.ok(result.content[0].text.length < 34000);
-  const full = await readSnapshot("full", { path: "large.txt", full: true }, undefined, f.ctx, f.store);
-  assert.equal(full.content[0].text, text);
+  await writeFile(join(f.cwd, "long.txt"), lines(2500));
+  const read = f.tools.get("read");
+  const result = await read.execute("id", { path: "long.txt" }, undefined, undefined, f.ctx);
+  assert.match(result.content[0].text, /line 2000\n\n\[Showing lines 1-2000 of 2500\. Use offset=2001 to continue\.\]$/);
+  assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["limit", "offset", "path"]);
+  const past = await read.execute("id", { path: "long.txt", offset: 3000 }, undefined, undefined, f.ctx);
+  assert.equal(past.content[0].text, "[The file has 2500 lines; offset 3000 is past the end. Nothing more to read.]");
 });
 
-test("output middleware preserves errors, usage, native metadata and full-read overrides", async t => {
-  const f = await fixture(t);
-  const event = {
-    toolName: "web_search", content: [{ type: "text", text: "x".repeat(30000) }],
-    details: { model: "openai-codex/search" }, isError: true, usage: { input: 123 },
-  };
-  const result = await f.handlers.get("tool_result")(event, f.ctx);
-  assert.equal(result.details.model, "openai-codex/search");
-  assert.equal(result.isError, undefined, "omitted patches preserve original isError");
-  assert.equal(result.usage, undefined, "omitted patches preserve native nested usage");
-  assert.equal(await f.store.get(result.details.outputArtifact), event.content[0].text);
-  assert.equal(await f.handlers.get("tool_result")({ ...event, details: { outputBudgeted: true } }, f.ctx), undefined);
-  assert.equal(await f.handlers.get("tool_result")({ ...event, content: [{ type: "image", data: "", mimeType: "image/png" }] }, f.ctx), undefined);
-  const arrayMetadata = await f.handlers.get("tool_result")({ ...event, details: ["native", "array"] }, f.ctx);
-  assert.equal(arrayMetadata.details, undefined, "non-record native details must not be reshaped");
-});
-
-test("cancelled file reads stop before returning evidence", async t => {
+test("cancelled reads stop", async t => {
   const f = await fixture(t);
   const controller = new AbortController(); controller.abort();
-  await assert.rejects(readSnapshot("id", { path: "none" }, controller.signal, f.ctx, f.store), /abort/i);
+  await assert.rejects(readTool().execute("id", { path: "none" }, controller.signal, undefined, f.ctx), /abort/i);
 });
 
-test("Pi's own tools are cut where Pi cuts them, keeping its notice, and its spill file outlives Pi", async t => {
+test("other tools' long text is cut like Pi's read, with the full text in a file read can open", async t => {
   const f = await fixture(t);
+  const text = lines(2500);
+  const result = await f.budget({ toolName: "web_fetch", content: [{ type: "text", text }], details: { model: "parallel" }, isError: true, usage: { input: 1 } }, f.ctx);
+  const path = f.store.path(result.details.outputArtifact);
+  assert.equal(result.content[0].text, `${lines(2000)}\n\n[Showing lines 1-2000 of 2500. Full output: ${path}; read it with offset=2001 to continue.]`);
+  assert.equal(await readFile(path, "utf8"), text);
+  assert.equal(result.details.model, "parallel");
+  assert.equal(result.isError, undefined, "omitted patches keep the original error flag");
+  assert.equal(result.usage, undefined, "omitted patches keep native nested usage");
+  // 50 KB comes first when lines are long.
+  const wide = await f.budget({ toolName: "web_fetch", content: [{ type: "text", text: Array.from({ length: 100 }, () => "x".repeat(1000)).join("\n") }] }, f.ctx);
+  assert.match(wide.content[0].text, /\n\n\[Showing lines 1-51 of 100 \(50\.0KB limit\)\. Full output: .+; read it with offset=52 to continue\.\]$/);
+  // One line over the limit: its start, and the file.
+  const line = await f.budget({ toolName: "web_fetch", content: [{ type: "text", text: "y".repeat(60_000) }] }, f.ctx);
+  assert.match(line.content[0].text, /^y{51200}\n\n\[Line 1 is 58\.6KB, over the 50\.0KB limit; this is its start\. Full output: /);
+});
+
+test("short results, images, results already cut and non-record details are left alone or kept whole", async t => {
+  const f = await fixture(t);
+  assert.equal(await f.budget({ toolName: "web_fetch", content: [{ type: "text", text: lines(10) }] }, f.ctx), undefined);
+  assert.equal(await f.budget({ toolName: "show", content: [{ type: "text", text: lines(3000) }, { type: "image", data: "", mimeType: "image/png" }] }, f.ctx), undefined);
+  assert.equal(await f.budget({ toolName: "web_fetch", content: [{ type: "text", text: lines(3000) }], details: { outputBudgeted: true } }, f.ctx), undefined);
+  const arrayDetails = await f.budget({ toolName: "web_fetch", content: [{ type: "text", text: lines(3000) }], details: ["native"] }, f.ctx);
+  assert.equal(arrayDetails.details, undefined, "non-record native details must not be reshaped");
+});
+
+test("Pi's own tools keep Pi's result; only its spill file is copied, for Desk", async t => {
+  const f = await fixture(t);
+  assert.equal(await f.budget({ toolName: "bash", content: [{ type: "text", text: lines(5000) }] }, f.ctx), undefined);
+  assert.equal(await f.budget({ toolName: "mcp__docs__search", content: [{ type: "text", text: lines(5000) }] }, f.ctx), undefined);
   const file = join(f.cwd, "bash-output.log");
-  const original = "complete\n".repeat(10000) + "tail evidence";
-  await writeFile(file, original);
-  // Pi kept the end of the output and named its spill file; the result is cut to its end again.
-  const kept = "line\n".repeat(10000) + "exit status 2";
-  const notice = `\n\n[Showing lines 4001-10001 of 10001 (50.0KB limit). Full output: ${file}]`;
-  const result = await f.handlers.get("tool_result")({
-    toolName: "bash", content: [{ type: "text", text: kept + notice }], details: { fullOutputPath: file },
-  }, f.ctx);
-  await rm(file);
-  const text = result.content[0].text;
-  assert.ok(text.startsWith("…") && text.length < 16_200);
-  assert.ok(text.includes(`exit status 2${notice}\n\n[Cut to its end, 16000 of ${(kept + notice).length} characters. Complete output: sha256-`));
-  assert.equal(await f.store.get(result.details.full_output_artifact), original);
-  const read = await f.tools.get("read_artifact").execute("read", { artifact: result.details.full_output_artifact, offset: original.length - 13 });
-  assert.match(read.content[0].text, /tail evidence/);
-  // grep keeps the start of its output; codemode and MCP tools the start and end.
-  const long = "a".repeat(10000) + "b".repeat(10000) + "\n\n[100 matches limit reached]";
-  const start = await f.handlers.get("tool_result")({ toolName: "grep", content: [{ type: "text", text: long }] }, f.ctx);
-  assert.match(start.content[0].text, /^a+b+…\n\n\[100 matches limit reached\]\n\n\[Cut to its start, /);
-  const both = await f.handlers.get("tool_result")({ toolName: "mcp__docs__search", content: [{ type: "text", text: long }] }, f.ctx);
-  assert.match(both.content[0].text, /^a+…b+\n\n\[100 matches limit reached\]\n\n\[Cut to its start and end, /);
-  assert.equal(await f.store.get(both.details.outputArtifact), long);
-});
-
-test("spill capture keeps images and follows only the spill path of Pi's own tools", async t => {
-  const f = await fixture(t);
-  const file = join(f.cwd, "mcp-image-caption.txt");
-  await writeFile(file, "complete caption");
-  const image = { type: "image", mimeType: "image/png", data: "native-image" };
-  const captured = await f.handlers.get("tool_result")({
-    toolName: "mcp__docs__render", content: [{ type: "text", text: "caption preview" }, image],
-    details: { fullOutputPath: file },
-  }, f.ctx);
-  assert.equal(captured.content[1], image);
-  assert.equal(await f.store.get(captured.details.full_output_artifact), "complete caption");
-  for (const event of [
-    { toolName: "mcp__docs__render", details: { structured: { fullOutputPath: file } } },
-    { toolName: "web_search", details: { fullOutputPath: file } },
-  ]) assert.equal(await f.handlers.get("tool_result")({ ...event, content: [{ type: "text", text: "small result" }] }, f.ctx), undefined);
-});
-
-test("a missing spill file is reported with the result", async t => {
-  const f = await fixture(t);
-  const result = await f.handlers.get("tool_result")({
-    toolName: "bash", content: [{ type: "text", text: "end of the output" }],
-    details: { fullOutputPath: join(f.cwd, "missing.log") },
-  }, f.ctx);
-  assert.equal(result.content[0].text, "end of the output");
-  assert.match(result.content[1].text, /Could not archive the complete output/);
-  assert.equal(result.details.full_output_artifact, undefined);
+  await writeFile(file, "complete output");
+  const content = [{ type: "text", text: `tail\n\n[Showing lines 4001-5000 of 5000. Full output: ${file}]` }];
+  const result = await f.budget({ toolName: "bash", content, details: { fullOutputPath: file, exitCode: 2 } }, f.ctx);
+  assert.equal(result.content, undefined);
+  assert.equal(result.details.exitCode, 2);
+  assert.equal(await f.store.get(result.details.full_output_artifact), "complete output");
+  // A spill path from another tool's payload, or a missing spill file, is not followed.
+  assert.equal(await f.budget({ toolName: "web_search", content: [{ type: "text", text: "small" }], details: { fullOutputPath: file } }, f.ctx), undefined);
+  assert.equal(await f.budget({ toolName: "bash", content, details: { fullOutputPath: join(f.cwd, "missing.log") } }, f.ctx), undefined);
 });
