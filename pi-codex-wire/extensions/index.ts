@@ -12,6 +12,9 @@ import { Protocol } from "./protocol.ts";
 import { PROTOCOL_REFERENCE_VERSION, codexIdentity, type Client, type Identity } from "./identity.ts";
 import { codexVersion, latestCodexVersion, versionedUserAgent } from "./version.ts";
 import { prependCodexIntro } from "./prompt.ts";
+import { itemHistory, type Turn } from "./history.ts";
+import { gitWorkspaces } from "./workspace.ts";
+import type { Workspace } from "./protocol.ts";
 import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
@@ -173,13 +176,22 @@ export default function codexWire(pi: ExtensionAPI): void {
       const window = object(lastWindow?.type === "custom" ? lastWindow.data : undefined).id;
       protocol = new Protocol(mode as Profile, ctx.sessionManager.getSessionId(), installationId(directory), identity,
         typeof window === "string" ? window : undefined,
-        ctx.sessionManager.getBranch().some(entry => entry.type === "message") ? "cold_resume" : "new");
+        ctx.sessionManager.getBranch().some(entry => entry.type === "message") ? "cold_resume" : "new",
+        // Each compaction window was recorded as it began; native windows are numbered from 0.
+        Math.max(0, windows.length - 1));
       if (!window) pi.appendEntry("codex-wire-window", { id: protocol.getWindowId() });
       transport = new WireTransport(diagnostics, protocol, selectedTransport, globalThis.fetch, process.env,
         headers => pi.events.emit(ALLOWANCE_EVENT, headers), selectedPrewarm);
       currentSessions.set(protocol.threadId, { protocol, transport });
     }
     const currentDiagnostics = diagnostics;
+    // The git workspace each turn reports, read once per turn, as native turn metadata is.
+    let workspaceTurn: string | undefined, workspaces: Promise<Record<string, Workspace> | undefined> = Promise.resolve(undefined);
+    function workspacesFor(turn: Turn | undefined): Promise<Record<string, Workspace> | undefined> {
+      if (!turn) return Promise.resolve(undefined);
+      if (workspaceTurn !== turn.id) { workspaceTurn = turn.id; workspaces = gitWorkspaces(ctx.cwd).catch(() => undefined); }
+      return workspaces;
+    }
     async function ensureIdentity(fetcher?: typeof fetch): Promise<void> {
       if (identity.version) return;
       const resolved = await latestCodexVersion(directory, fetcher);
@@ -219,8 +231,10 @@ export default function codexWire(pi: ExtensionAPI): void {
           entry.type === "custom" && entry.customType === SESSION_WINDOW_ENTRY
           && object(entry.data).threadId === threadId).at(-1);
         const window = object(saved?.type === "custom" ? saved.data : undefined).id;
+        const windows = ctx.sessionManager.getBranch().filter(entry => entry.type === "custom" && entry.customType === SESSION_WINDOW_ENTRY
+          && object(entry.data).threadId === threadId).length;
         const childProtocol = new Protocol(next as Profile, threadId, installationId(directory), identity,
-          typeof window === "string" ? window : undefined);
+          typeof window === "string" ? window : undefined, "new", Math.max(0, windows - 1));
         session = {
           protocol: childProtocol,
           transport: new WireTransport(currentDiagnostics, childProtocol, selectedTransport as "auto" | "sse",
@@ -246,6 +260,8 @@ export default function codexWire(pi: ExtensionAPI): void {
     function wrapped(model: Model<Api>, context: TranscriptContext, options: Options | undefined, simple: boolean) {
       const threadId = options?.sessionId ?? primaryThreadId;
       guardCheckpointContext(context, model.provider, threadId);
+      // Turns, times and IDs for the request's items, from Pi's messages (history.ts).
+      const history = itemHistory(context.messages, threadId);
       const call = (opts: Options) => simple ? provider!.streamSimple(model, context, opts as SimpleStreamOptions)
         : provider!.stream(model, context, opts);
       // Do not attach subscription credentials or Codex metadata to custom endpoints.
@@ -297,6 +313,8 @@ export default function codexWire(pi: ExtensionAPI): void {
           if (!session.beganTurn || session.turnKey !== turnKey) currentProtocol.beginTurn();
           session.turnKey = turnKey; session.beganTurn = true;
         }
+        // The turn this request belongs to, as its items record it.
+        if (!side) currentProtocol.setTurn(history.current);
         // Reuse Pi's mature serializer and event decoder. This selects the decoder's local SSE
         // interface; WireTransport independently chooses the actual network transport.
         opts.transport = "sse";
@@ -328,8 +346,13 @@ export default function codexWire(pi: ExtensionAPI): void {
           // Pi's Codex streamSimple rebuilds its options and drops serviceTier.
           // Apply the opt-in to the serialized request, before catalog validation.
           if (requestTier && source.service_tier === undefined) source.service_tier = requestTier;
-          const shaped = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId), context,
+          const shapedItems = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId, { history }), context,
             String(url));
+          currentProtocol.setRequest({ model: String(shapedItems.model), effort: object(shapedItems.reasoning).effort as string | undefined,
+            workspaces: side ? undefined : await workspacesFor(history.current) });
+          fetchSignal.throwIfAborted();
+          // Client metadata again, now that the turn, model, effort and workspace are known.
+          const shaped = currentProtocol.shapeBody(shapedItems);
           if (requestTier) {
             const available = fastAvailable(metadata, model.id, requestTier);
             lastFastCheck = shaped.service_tier === requestTier && available
@@ -369,11 +392,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (currentTransport && metadataForRequest && !["error", "aborted"].includes(message.stopReason)) {
           try {
             const replay = responseReplay(model, context, message);
-            if (metadataForRequest.use_responses_lite === true) {
-              // Shaped as the next request will shape these items; without tools or instructions there is no prefix.
-              const shaped = shapeModelBody({ model: model.id, input: replay, tools: [] }, metadataForRequest, currentProtocol!.threadId);
-              currentTransport.setReplayOutput(requestId, shaped.input as unknown[]);
-            } else currentTransport.setReplayOutput(requestId, replay);
+            // Shaped as the next request will shape these items, in this turn; without tools or instructions there is no prefix.
+            const shaped = shapeModelBody({ model: model.id, input: replay, tools: [] }, metadataForRequest, currentProtocol!.threadId,
+              { history, turn: history.current });
+            currentTransport.setReplayOutput(requestId, shaped.input as unknown[]);
           } catch {
             currentTransport.close();
             currentDiagnostics.write({ kind: "continuation-unavailable", requestId });
@@ -430,7 +452,10 @@ export default function codexWire(pi: ExtensionAPI): void {
         if (metadata.default_reasoning_summary !== undefined) {
           source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
         }
-        const body = replayCheckpoints(shapeModelBody(session.protocol.shapeBody(compactBody(source)), metadata, owner), operation.context, url);
+        const compactHistory = itemHistory(operation.context.messages, owner);
+        session.protocol.setRequest({ model: model.id, effort: object(source.reasoning).effort as string | undefined });
+        const body = session.protocol.shapeBody(replayCheckpoints(shapeModelBody(compactBody(source), metadata, owner,
+          { history: compactHistory }), operation.context, url));
         const outgoing = session.protocol.compactHeaders(headers, operation.reason);
         outgoing.delete("x-codex-routing-hint");
         const routingHint = requestRoutingHint(model.provider, url, headers, model.id, body.service_tier);

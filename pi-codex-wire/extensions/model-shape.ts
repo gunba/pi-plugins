@@ -8,6 +8,7 @@
  * and are rejected rather than silently dispatched to the wrong Pi tool.
  */
 import { createHash } from "node:crypto";
+import { annotateItems, uuid7, type ItemHistory, type Turn } from "./history.ts";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -113,13 +114,17 @@ function normalizeImages(content: unknown, lite: boolean, originalSupported: boo
 /** Base instructions as Codex sends them to every model: a developer message whose content is classified as such
  * (BaseInstructionsFragment), with harness attribution that only Lite requests keep. The ID hashes the text within
  * the thread, so it is the same on every request. */
-function baseInstructions(text: string, namespace: string, lite: boolean): ObjectValue {
-  return { type: "message", id: `msg_${uuid5(namespace, text)}`, role: "developer", content: [{ type: "input_text", text }],
-    internal_chat_message_metadata_passthrough: { content_item_kinds: ["model.base_instructions"],
+function baseInstructions(text: string, namespace: string, lite: boolean, first: Turn | undefined, threadId: string): ObjectValue {
+  // Lite records them in history at the first turn, with a time-ordered ID and that turn's metadata.
+  const recorded = lite && first;
+  return { type: "message", id: recorded ? `msg_${uuid7(first.started, `${threadId}:base:${text}`)}` : `msg_${uuid5(namespace, text)}`,
+    role: "developer", content: [{ type: "input_text", text }],
+    internal_chat_message_metadata_passthrough: { ...(recorded ? { turn_id: first.id, create_time: Math.round(first.started) / 1000 } : {}),
+      content_item_kinds: ["model.base_instructions"],
       ...(lite ? { content_item_metadata: [{ provenance: { type: "harness", hook: false } }] } : {}) } };
 }
 
-function liteInput(value: unknown, namespace: string): ObjectValue {
+function liteInput(value: unknown): ObjectValue {
   const item = object(value, "input item");
   if (item.type === "function_call" || item.type === "custom_tool_call") {
     if (item.namespace != null && item.namespace !== "functions") {
@@ -129,10 +134,9 @@ function liteInput(value: unknown, namespace: string): ObjectValue {
     // our catalog without changing name, call_id, arguments, or result pairing.
     item.namespace = "functions";
   } else if (item.type === "additional_tools") {
-    // A later tool load (Pi's incremental additional_tools), identified as native history items are.
-    const tools = toolCatalog(array(item.tools, "additional tools"), true);
-    return { type: "additional_tools", id: typeof item.id === "string" ? item.id : `at_${uuid5(namespace, JSON.stringify(tools))}`,
-      role: item.role ?? "developer", tools };
+    // A later tool load (Pi's incremental additional_tools); its ID comes with the history metadata.
+    return { type: "additional_tools", ...(typeof item.id === "string" ? { id: item.id } : {}), role: item.role ?? "developer",
+      tools: toolCatalog(array(item.tools, "additional tools"), true) };
   }
   return item;
 }
@@ -141,7 +145,8 @@ function liteInput(value: unknown, namespace: string): ObjectValue {
  * Returns a deep clone and retains the requested model ID.
  * Pi's existing explicit effort/verbosity wins; catalog defaults fill absence.
  */
-export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadId: string): ObjectValue {
+export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadId: string,
+  context?: { history: ItemHistory; turn?: Turn }): ObjectValue {
   if (typeof metadata.slug !== "string" || metadata.slug !== body.model) {
     throw new TypeError("Native model metadata.slug must exactly match body.model");
   }
@@ -202,10 +207,18 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadI
   if (head?.type === "additional_tools") input = input.slice(1);
   const tools = toolCatalog([...array(result.tools ?? [], "tools"), ...declared], lite);
   // The native CLI enables serde_json/preserve_order: hash the serialized visible payload.
+  // With Pi's messages (context), every item gets native history metadata (history.ts); Lite's prefix is recorded at
+  // the first turn as native history is.
+  const first = lite ? context?.history.first : undefined;
   const prefix: ObjectValue[] = [];
-  if (lite && tools.length) prefix.push({ type: "additional_tools", id: `at_${uuid5(namespace, JSON.stringify(tools))}`, role: "developer", tools });
-  if (result.instructions) prefix.push(baseInstructions(result.instructions as string, namespace, lite));
-  result.input = [...prefix, ...(lite ? input.map(item => liteInput(item, namespace)) : input)];
+  if (lite && tools.length) prefix.push({ type: "additional_tools", id: first ? `at_${uuid7(first.started, `${threadId}:at:${JSON.stringify(tools)}`)}`
+    : `at_${uuid5(namespace, JSON.stringify(tools))}`, role: "developer", tools });
+  if (result.instructions) prefix.push(baseInstructions(result.instructions as string, namespace, lite, first, threadId));
+  let items: ObjectValue[] = lite ? input.map(liteInput) : input.map(item => object(item, "input item"));
+  if (context) items = annotateItems(items, { threadId, lite, history: context.history, turn: context.turn });
+  if (lite) items = items.map(item => item.type === "additional_tools" && typeof item.id !== "string"
+    ? { type: "additional_tools", id: `at_${uuid5(namespace, JSON.stringify(item.tools))}`, role: item.role, tools: item.tools } : item);
+  result.input = [...prefix, ...items];
   delete result.instructions; // 0.164.0 has no instructions field.
   if (lite) {
     delete result.tools;
