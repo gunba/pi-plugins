@@ -42,7 +42,7 @@ broken: stop and tell Jordan what failed in one plain sentence.
    Its root service (`/usr/local/sbin/pi-desk-services-update`) takes only the version
    from Desk and installs the code from that GitHub release, checked against GitHub's
    digests. The `desk` account has no admin rights; root tasks use
-   `ssh pi-desk-perth-admin`.
+   `ssh pi-desk-perth-admin`, which needs Jordan's YubiKey (PIN and touch), so ask him.
 6. Tell Jordan the version, which computers run it, and which open
    conversations still need a restart to pick up plugin changes. Done.
 
