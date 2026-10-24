@@ -264,6 +264,38 @@ function ViewedImage({ session, asset, name, zoom }: { session: string; asset: s
 	</div>;
 }
 
+/**
+ * An HTML page the agent showed, live: Desk's sandbox page (public/sandbox.html) runs it with an opaque origin and no
+ * network access, and reports its height so the frame fits it.
+ */
+function HtmlPage({ session, file, large }: { session: string; file: FileReference; large?: boolean }) {
+	const origin = useReferenceQuery(), frame = useRef<HTMLIFrameElement>(null);
+	const [html, setHtml] = useState<string>(), [error, setError] = useState(""), [height, setHeight] = useState(160);
+	useEffect(() => {
+		const controller = new AbortController();
+		void (async () => {
+			try {
+				const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
+				if (info.kind !== "text") throw new Error("Not a text file.");
+				setHtml(await (await fileBlob(session, info, origin, controller.signal, () => {})).text());
+			} catch (error) { if (!controller.signal.aborted) setError(String(error)); }
+		})();
+		return () => controller.abort();
+	}, [session, file.id, origin]);
+	useEffect(() => {
+		const sized = (event: MessageEvent) => {
+			const data = event.data as { type?: unknown; height?: unknown } | null;
+			if (event.source !== frame.current?.contentWindow || data?.type !== "height" || typeof data.height !== "number" || !Number.isFinite(data.height)) return;
+			setHeight(Math.min(Math.max(Math.ceil(data.height), 60), large ? 4000 : 640));
+		};
+		addEventListener("message", sized);
+		return () => removeEventListener("message", sized);
+	}, [large]);
+	if (html === undefined) return <p className="muted">{error || "Loading page…"}</p>;
+	return <iframe ref={frame} className="shown-html" src="/sandbox.html" sandbox="allow-scripts" title={file.name} style={{ height }}
+		onLoad={() => frame.current?.contentWindow?.postMessage({ type: "render", html }, "*")} />;
+}
+
 function ShownEntry({ item, file, session, title, large }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean }) {
 	const where = item.path ? name(item.path) : title;
 	return <div className="shown-item">
@@ -273,6 +305,7 @@ function ShownEntry({ item, file, session, title, large }: { item: ShownItem; fi
 			{item.diff && <Stats added={item.diff.added} removed={item.diff.removed} />}</div>}
 		{item.unlisted && <p className="shown-warning" role="note"><Icon name="warning" />Desk found {item.unlisted.count} changed cell{item.unlisted.count === 1 ? "" : "s"} the agent did not mention: {item.unlisted.examples.join(", ")}{item.unlisted.count > item.unlisted.examples.length ? ", …" : ""}</p>}
 		{item.kind === "image" && file && <InlineImage session={session} file={file} zoom={large} />}
+		{item.kind === "html" && file && <HtmlPage session={session} file={file} large={large} />}
 		{item.changes && <DocumentChangesView changes={item.changes} where={where} />}
 		{item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
 		{item.preview && <PreviewView preview={item.preview} />}

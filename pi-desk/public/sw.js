@@ -43,8 +43,9 @@ self.addEventListener("activate", event => {
 });
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
+  // sandbox.html is a frame's page, not the app: answered by the server, with its own policy.
   if (url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/") ||
-      url.pathname === "/desk-account.json" || event.request.method !== "GET") return;
+      url.pathname === "/desk-account.json" || url.pathname === "/sandbox.html" || event.request.method !== "GET") return;
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     if (event.request.mode === "navigate" || url.pathname === "/") {

@@ -10,7 +10,7 @@ import { object, string } from "./commands.ts";
 import type { HostControl, HostStatus } from "./host-control.ts";
 import type { HostCore } from "./host-core.ts";
 import type { HostEvents } from "./host-events.ts";
-import { securityHeaders, serveClient } from "./static.ts";
+import { SANDBOX_PAGE, securityHeaders, serveClient } from "./static.ts";
 
 const json = (response: ServerResponse, code: number, value: unknown) => {
 	response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -102,6 +102,7 @@ export class HostHttp {
 				return;
 			}
 			if (request.method === "GET" && !url.pathname.startsWith("/api/")) {
+				if (url.pathname === SANDBOX_PAGE) securityHeaders(response, url.pathname);
 				await serveClient(this.clientDir, url.pathname, response);
 				return;
 			}

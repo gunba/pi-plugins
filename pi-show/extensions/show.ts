@@ -13,7 +13,7 @@ import type { DocumentChange, Shown, ShownItem } from "./types.ts";
 export type { DocumentChange, Shown, ShownItem };
 
 
-const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i, HTML = /\.html?$/i;
 const TEXT_LIMIT = 2 * 1024 * 1024, OFFICE_LIMIT = 64 * 1024 * 1024;
 const COMMAND_TOOLS = new Set(["bash", "powershell", "codemode"]);
 const EXTENSION = String.raw`\.(?:xlsx|xlsm|docx|docm|pptx|pptm)`;
@@ -216,7 +216,8 @@ export default function show(pi: ExtensionAPI) {
 		name: "show",
 		label: "Show",
 		description: "At key moments, show Jordan a result, work to review or what you changed in a file he uses; not routine steps. "
-			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show.",
+			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show. "
+			+ "An .html file is shown as a live page for tables, charts and other rich displays: inline scripts and styles run, nothing loads from the network.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -245,7 +246,8 @@ export default function show(pi: ExtensionAPI) {
 								notes.push(`${basename(path)}: Desk found ${missed.length} changed cell${missed.length === 1 ? "" : "s"} you did not list (${shown.unlisted.examples.join(", ")}${missed.length > 5 ? ", …" : ""}).`);
 							}
 						}
-					} else if (current.data && textual(current.data)) {
+					} else if (HTML.test(path) && current.data && textual(current.data)) shown.kind = "html";
+					else if (current.data && textual(current.data)) {
 						shown.kind = "text";
 						const text = current.data.toString("utf8"), first = base.first(path);
 						const diff = first !== undefined ? lineDiff(first?.toString("utf8") ?? "", text) : undefined;

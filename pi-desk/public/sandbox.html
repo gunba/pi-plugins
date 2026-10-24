@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Page shown by an agent</title>
+<script>
+// Desk's frame for an HTML page an agent shows. Its server sets a Content-Security-Policy that allows inline scripts and
+// styles but no network, and sandboxes it to an opaque origin, so the page cannot reach Desk, its storage or the
+// internet. Desk sends the page once the frame has loaded; the frame reports its height so Desk can size it.
+addEventListener("message", function render(event) {
+  if (event.source !== parent || !event.data || event.data.type !== "render" || typeof event.data.html !== "string") return;
+  removeEventListener("message", render);
+  document.open();
+  document.write(event.data.html);
+  document.close();
+  var report = function () { parent.postMessage({ type: "height", height: document.documentElement.scrollHeight }, "*"); };
+  new ResizeObserver(report).observe(document.documentElement);
+  addEventListener("load", report);
+  report();
+});
+</script>

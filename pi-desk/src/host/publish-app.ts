@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { remoteOrigins } from "../shared/relay-protocol.ts";
 import { RELEASE } from "../shared/release.ts";
 import { clientDirectory, inspectAppAssets } from "./app-assets.ts";
-import { contentSecurityPolicy } from "./static.ts";
+import { contentSecurityPolicy, SANDBOX_PAGE, SANDBOX_POLICY } from "./static.ts";
 import { accountConfiguration, type AccountConfiguration } from "../shared/account.ts";
 import { discoverAccount } from "./account-config.ts";
 
@@ -30,10 +30,13 @@ export async function publishApp(options: { account: AccountConfiguration; appOr
 		// Compressed: the app's script and stylesheet were sent whole (964 KB), 20 s on a plane before the page appeared.
 		"encode zstd gzip",
 		"header {",
-		`\tContent-Security-Policy ${quote(contentSecurityPolicy({ socketOrigin: socket.origin, accountOrigin: account.origin }))}`,
 		"\tX-Content-Type-Options nosniff", "\tReferrer-Policy no-referrer", "\tCross-Origin-Resource-Policy same-origin",
 		`\tStrict-Transport-Security ${quote("max-age=31536000")}`,
 		"}",
+		// The page that runs HTML an agent shows has its own policy; a second header would replace or join the app's.
+		`@app not path ${SANDBOX_PAGE}`,
+		`header @app Content-Security-Policy ${quote(contentSecurityPolicy({ socketOrigin: socket.origin, accountOrigin: account.origin }))}`,
+		`@sandbox path ${SANDBOX_PAGE}`, `header @sandbox Content-Security-Policy ${quote(SANDBOX_POLICY)}`,
 		"@config path /desk-account.json", "header @config Cache-Control no-store",
 		"@assets path /assets/*", `header @assets Cache-Control ${quote("public, max-age=31536000, immutable")}`,
 		"@pages not path /desk-account.json /assets/*", "header @pages Cache-Control no-cache",

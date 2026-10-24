@@ -6,12 +6,21 @@ const mime: Record<string, string> = {
 	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
 	".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json",
 };
-export function securityHeaders(response: ServerResponse): void {
+export function securityHeaders(response: ServerResponse, pathname?: string): void {
 	response.setHeader("X-Content-Type-Options", "nosniff");
 	response.setHeader("Referrer-Policy", "no-referrer");
 	response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-	response.setHeader("Content-Security-Policy", contentSecurityPolicy());
+	response.setHeader("Content-Security-Policy", pathname === SANDBOX_PAGE ? SANDBOX_POLICY : contentSecurityPolicy());
 }
+/** The page that runs HTML an agent shows (public/sandbox.html). */
+export const SANDBOX_PAGE = "/sandbox.html";
+/**
+ * Inline scripts and styles run, but nothing loads from or connects to anywhere, and the sandbox gives the page an
+ * opaque origin: it cannot reach Desk's storage or API. The app's own frame-src 'self' keeps the frame from being
+ * navigated to another site.
+ */
+export const SANDBOX_POLICY = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; "
+	+ "frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-scripts";
 export function contentSecurityPolicy(options: { socketOrigin?: string; accountOrigin?: string } = {}): string {
 	// The website also connects to a host on the browser's own computer directly (RemoteClient).
 	const connections = [options.socketOrigin, options.accountOrigin].filter(Boolean).map(origin => ` ${new URL(origin!).origin}`).join("")

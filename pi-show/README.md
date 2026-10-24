@@ -20,6 +20,8 @@ Agents call `show` at key moments, with a title, an optional Markdown note and u
 - images inline;
 - spreadsheets as a table of the range;
 - documents and decks as text;
+- HTML files as a live page, for tables, charts and other rich displays: its inline scripts and styles run in a
+  sandboxed frame with no network access and no access to Desk;
 - text files as an excerpt.
 
 For a file the conversation has changed, Desk shows its changes since the agent first touched it. When the agent lists spreadsheet changes, Desk checks them against the file and reports changed cells the agent did not mention, to the agent as well as to the user.
