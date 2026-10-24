@@ -174,8 +174,11 @@ function itemPreview(item: WorkItem): string {
 	if (item.block.type === "document") return item.block.change.summary;
 	if (item.block.type !== "diff") return "";
 	if (item.block.note) return item.block.note;
-	const lines = item.block.text.split("\n"), changed = lines.find(line => /^\+\s*\d+ \S/.test(line)) ?? lines.find(line => /^-\s*\d+ \S/.test(line));
-	return changed ? changed.replace(/^[+-]\s*\d+ /, "").trim().slice(0, 160) : item.block.text.split("\n")[0]!.slice(0, 160);
+	// Diff lines are "+ <line number> <text>"; the text keeps its own indentation, so a changed line may start with spaces.
+	const text = (line: string, sign: string) => line.startsWith(sign) ? line.replace(/^[+-]\s*\d+ /, "").trim() : "";
+	const lines = item.block.text.split("\n");
+	const changed = lines.map(line => text(line, "+")).find(Boolean) ?? lines.map(line => text(line, "-")).find(Boolean);
+	return (changed ?? lines[0]!).slice(0, 160);
 }
 /** Work an agent showed: its title and note stay in the conversation; the files open in the side pane. */
 export function ShownSummary({ item, time }: { item: WorkItem & { block: ShownBlock }; time?: ReactNode }) {
