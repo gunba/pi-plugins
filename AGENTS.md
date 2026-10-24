@@ -39,6 +39,10 @@ broken: stop and tell Jordan what failed in one plain sentence.
 5. The Perth server (`ssh pi-desk-perth`) publishes the website and installs the
    relay and account service from the Desk version it runs. After updating its host,
    `node pi-desk/manage/deploy.ts website` waits until the website serves the release.
+   Its root service (`/usr/local/sbin/pi-desk-services-update`) takes only the version
+   from Desk and installs the code from that GitHub release, checked against GitHub's
+   digests. The `desk` account has no admin rights; root tasks use
+   `ssh pi-desk-perth-admin`.
 6. Tell Jordan the version, which computers run it, and which open
    conversations still need a restart to pick up plugin changes. Done.
 
