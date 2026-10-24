@@ -1,9 +1,9 @@
 ---
 name: improve-skill
-description: "Build a skill from evidence or improve one: mine real examples of experts' work with Jev to learn what matters, write the skill as instructions, and improve it over rounds on benchmark cases, with held-out cases confirming the gains. Use when a skill should be built from data, or should do better on specific cases, especially slow, noisy or expert-judged ones."
+description: "Improve a skill's results on known benchmark cases over several rounds, with held-out cases confirming the gains, and keep the skill as instructions. Use when a skill should do better on specific cases, especially slow, noisy or expert-judged ones."
 ---
 
-# Build and improve a skill
+# Improve a skill
 
 ## What a skill contains
 
@@ -14,26 +14,12 @@ situations it applies to.
   "reviewers flag Y twice as often") do not go in the skill or in any file it loads. Turn a finding into the
   instruction it implies, scoped to its situation ("When a change does Y, do X"), and keep the instruction only if
   the benchmark shows it changes results.
-- **Evidence lives with the tool.** The corpus, its labels and tables, the benchmark results and `notes.md` are for
-  whoever improves the skill; keep them in the improvement run's files or this tool's `docs/`.
-- **Examples are fine** when they show how to do the thing: a real remark, a test or a comment that does it well, as
-  a reference the skill points to.
+- **Evidence stays with the run.** Scores, per-case results, the reasons behind each change and `notes.md` are for
+  whoever improves the skill next, not for the agent using it.
+- **Examples are fine** when they show how to do the thing: a worked case or a real piece of work done well, as a
+  reference the skill points to.
 
-## Building from data
-
-When a skill is new, or its scope is in question, learn what matters from real work before writing it.
-
-1. Collect experts' work together with its outcome: for code, maintainers' review remarks and whether the author acted
-   on them. `../../mining` collects review from GitHub, Gerrit and kernel.org lists; give a new kind of skill its own
-   corpus folder there.
-2. Label every item with Jev (TypeSafe's classifier, through Pi's `models.classify`): what it is about, how deep and
-   consequential it is, how concrete, and its outcome. Check a sample of the labels by hand before using them.
-3. Split by change into training and held-out sets. Use the training labels to decide what the skill covers and in
-   what order: the kinds of point that matter and are acted on most. Take the skill's examples from the training set
-   only; build benchmark cases from the held-out set.
-4. Write the skill as instructions (see above), then run the rounds below with and without it.
-
-## Improving in rounds
+## Rounds
 
 A driver script repeats rounds. Each round the task model does the bulk of the work, running the cases and explaining its own mistakes. Then a new reviewer session on the strongest model decides whether the last change helped and makes the next one. Reviewer sessions do not carry context from round to round; `notes.md` does.
 

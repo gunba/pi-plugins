@@ -53,7 +53,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 ## Skills and prompts
 
 - [`pi-code-skills`](pi-code-skills/README.md): `code-review`, `test-writing` and `code-comments`.
-- [`pi-improve-skill`](pi-improve-skill/README.md): builds skills from mined evidence and improves them on benchmarks.
+- [`pi-improve-skill`](pi-improve-skill/README.md): tooling for building and iterating on skills: benchmark rounds, and the
+  mining and benchmarks behind the code skills.
 - [`pi-browser`](pi-browser/README.md): `browse`, for operating Chrome through its DevTools extension.
 - [`pi-prompts`](pi-prompts/corrections.md): `/corrections` finds where the user corrected agents and proposes fixes.
 
