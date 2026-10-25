@@ -528,6 +528,8 @@ details[open] > summary:before {
   content:""; position:absolute; inset:-3px; border:1.5px solid transparent; border-top-color:var(--status-color); border-right-color:var(--status-color);
   border-radius:50%; animation:activity-orbit 1.8s linear infinite;
 }
+/* Idle, but waiting on agents, a watch or a wake time: a ring in the working colour. */
+.status-dot.background { --status-color:#5ca9ed; background:transparent; box-shadow:inset 0 0 0 2px var(--status-color); }
 .status-dot.waiting, .status-dot.attention { width:14px; height:16px; background:transparent; color:var(--input-needed); }
 .status-dot.waiting::after, .status-dot.attention::after { content:"?"; font:800 19px/1 system-ui; }
 .status-dot.error, .status-dot.failed { --status-color:#f07878; }
@@ -537,6 +539,8 @@ details[open] > summary:before {
 .top-actions > .session-close { position:static; transform:none; opacity:1; pointer-events:auto; }
 @media (max-width:700px) { .conversation-activity > span:last-child { display:none; } .conversation-activity { margin-right:0; } }
 .session-activity { font-weight: 600; color: var(--text); }
+.session-activity.session-background { display:inline-flex; align-items:center; gap:4px; color:#5ca9ed; }
+.session-background > .ui-icon { width:12px; height:12px; }
 .sidebar-hint {
   font-size: 12px;
   color: var(--muted);
@@ -727,6 +731,8 @@ details[open] > summary:before {
 .received-notice > summary > .ui-icon { color:var(--muted); flex:none; }
 .received-notice > summary > strong { font-size:12px; font-weight:500; overflow-wrap:anywhere; min-width:0; }
 .received-notice > summary > time { margin-left:auto; color:var(--muted); font-size:10px; white-space:nowrap; }
+.received-notice > summary > .notice-detail { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+.notice-watch > summary > .ui-icon { color:var(--accent); }
 .received-notice > .message-body { padding:0 14px 10px; font-size:12px; max-height:420px; overflow:auto; }
 .notice-schedule > .message-body { font-size:14px; }
 .notice-metadata { display:flex; flex-wrap:wrap; gap:12px; padding:0 14px 8px; font-size:12px; color:var(--muted); }
@@ -742,10 +748,19 @@ details[open] > summary:before {
 .tool-argument-preview { min-width:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:11px; }
 .tool-card > summary > time { color:var(--muted); font-size:10px; white-space:nowrap; }
 .tool-card > summary > .muted { white-space:nowrap; }
-.nested-tools ul { list-style:none; padding:4px 8px 8px; margin:0; }
-.nested-tools li { display:flex; gap:8px; padding:4px 0; font-size:12px; }
-.nested-tools li > span { flex:1; min-width:0; overflow-wrap:anywhere; }
-.nested-tools small { color:var(--muted); }
+/* A tool's own tool calls hang under its row, joined by a line. */
+.nested-calls { display:grid; grid-template-columns:minmax(0, 1fr); gap:1px; margin:-4px 0 0 14px; padding-left:8px; border-left:1px solid var(--border); font-size:12px; }
+.nested-call > summary, .nested-earlier > summary { display:flex; align-items:center; gap:8px; min-width:0; padding:3px 8px; border-radius:6px; list-style:none; cursor:pointer; }
+.nested-call > summary::-webkit-details-marker, .nested-earlier > summary::-webkit-details-marker { display:none; }
+.nested-call > summary:hover, .nested-earlier > summary:hover { background:var(--hover); }
+.nested-call > summary > strong { flex:none; font-weight:500; }
+.nested-call .tool-status { margin:0 0 0 auto; align-items:center; flex-wrap:nowrap; gap:6px; white-space:nowrap; font-size:10px; }
+.nested-call.nested-error > summary > strong { color:var(--danger); }
+.nested-call > pre { margin:2px 8px 6px; max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; color:var(--text); }
+.nested-call-error { margin:2px 8px 4px; color:var(--danger); white-space:pre-wrap; overflow-wrap:anywhere; }
+.nested-earlier > summary { color:var(--muted); font-size:11px; }
+.nested-earlier[open] { display:grid; grid-template-columns:minmax(0, 1fr); gap:1px; }
+.nested-calls > .muted { margin:2px 8px; font-size:11px; }
 .message-label {
   font-weight: 600;
 }
@@ -1158,6 +1173,9 @@ details[open] > summary:before {
 .usage-gauge.low .usage-gauge-value { color:#d08a2c; }
 .usage-gauge.critical .usage-gauge-value { color:var(--danger); }
 .composer-status-inline > .composer-badge { max-width:230px; overflow:hidden; text-overflow:ellipsis; }
+.composer-icon-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 6px; min-height:28px; border:0; background:transparent; color:var(--accent); font-variant-numeric:tabular-nums; }
+.composer-icon-badge:hover { background:var(--hover); }
+.composer-icon-badge > .ui-icon { width:15px; height:15px; }
 .composer-toggle { padding:3px 6px; min-height:28px; border-color:transparent; background:transparent; }
 .composer-toggle[aria-pressed=true] { color:var(--accent); background:var(--accent-soft); }
 .composer-toggle strong { font-weight:600; }

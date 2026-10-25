@@ -41,6 +41,18 @@ self.addEventListener("activate", event => {
   event.waitUntil(Promise.all([self.clients.claim(), caches.keys().then(keys =>
     Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))]));
 });
+// An open app asks whether a newer page is ready: the page is fetched, and its files cached, before the reply names
+// them. Reloading then opens the newer page from the cache.
+self.addEventListener("message", event => {
+  if (event.data?.type !== "check" || !event.ports[0]) return;
+  const port = event.ports[0];
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await refresh(cache, "/").catch(() => {});
+    const page = await cache.match("/");
+    port.postMessage({ assets: page && await complete(cache, page) ? assetsOf(await page.text()) : [] });
+  })());
+});
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   // sandbox.html is a frame's page, not the app: answered by the server, with its own policy.

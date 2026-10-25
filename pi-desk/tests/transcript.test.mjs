@@ -138,11 +138,11 @@ test("saved and live party notices retain their type and sender without duplicat
 	assert.equal(process.blocks[0].text, "*literal stdout*\nUse write_stdin session_id=123 once.");
 });
 
-test("nested skill reads retain bounded labels without projecting their arguments", () => {
+test("nested calls keep their skill labels, descriptions and bounded arguments", () => {
 	const transcript = new Transcript();
 	const projected = transcript.message({ role: "toolResult", toolName: "codemode", toolCallId: "skills", content: [],
 		nestedCalls: { complete: false, calls: [
-			{ name: "read", status: "ok", arguments: { path: "/private/skills/browse/SKILL.md", token: "SECRET" } },
+			{ name: "read", status: "ok", arguments: { path: "/private/skills/browse/SKILL.md", description: "Reading the browse skill." } },
 			{ name: "read", status: "error", arguments: { path: "C:\\Users\\Example\\skills\\imagegen\\SKILL.md" } },
 			{ name: "inspect_files", status: "ok", arguments: { requests: [{ path: "skills/review/SKILL.md" }, { path: "other.md" }] } },
 			{ name: "read", status: "unfinished", argumentsBytes: 9999 },
@@ -152,7 +152,13 @@ test("nested skill reads retain bounded labels without projecting their argument
 	assert.deepEqual(projected.nested.calls.map(call => call.skills), [["browse"], ["imagegen"], ["review"], undefined, undefined, undefined]);
 	assert.equal(projected.nested.complete, false);
 	assert.equal(projected.nested.calls[1].status, "error");
-	assert.doesNotMatch(JSON.stringify(projected), /SECRET|private|Users/);
+	assert.equal(projected.nested.calls[0].description, "Reading the browse skill.");
+	assert.equal(projected.nested.calls[3].arguments, undefined, "arguments Pi left out of its record");
+	// Each call's arguments are cut at 2,000 characters, and a result's together at 16,000.
+	const large = transcript.message({ role: "toolResult", toolName: "codemode", toolCallId: "large", content: [],
+		nestedCalls: { complete: true, calls: Array.from({ length: 10 }, () => ({ name: "bash", status: "ok", arguments: { command: "x".repeat(5_000) } })) } });
+	assert.deepEqual(large.nested.calls.map(call => call.arguments?.length ?? 0), [2_001, 2_001, 2_001, 2_001, 2_001, 2_001, 2_001, 2_001, 0, 0]);
+	assert.ok(large.nested.calls[0].arguments.endsWith("x\u2026"));
 });
 
 test("nested tool calls stay on their calling result instead of orphaning transcript rows", () => {
@@ -164,9 +170,10 @@ test("nested tool calls stay on their calling result instead of orphaning transc
 			result: { content: [{ type: "text", text: "fixture" }] } });
 		assert.deepEqual(feed.history().messages, []);
 		const message = transcript.message({ role: "toolResult", toolName: "codemode", toolCallId: "outer", content: [],
-			nestedCalls: { complete: false, calls: [{ id: "outer/1", name: "read", status: "ok", durationMs: 12,
-				arguments: { token: "private" }, error: "unprojected" }] } });
-		assert.deepEqual(message.nested, { complete: false, calls: [{ name: "read", status: "ok", seconds: .012 }] });
+			nestedCalls: { complete: false, calls: [{ id: "outer/1", name: "read", status: "error", durationMs: 12,
+				arguments: { path: "fixture", description: "Reading the fixture." }, error: "ENOENT" }] } });
+		assert.deepEqual(message.nested, { complete: false, calls: [{ name: "read", status: "error", seconds: .012,
+			description: "Reading the fixture.", arguments: '{\n  "path": "fixture",\n  "description": "Reading the fixture."\n}', error: "ENOENT" }] });
 	} finally { feed.close(); }
 });
 

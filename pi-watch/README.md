@@ -37,7 +37,12 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
   the computer restarted. Closing a waiting conversation keeps it in the sidebar unless the user removes it, which
   cancels the reopening. A command watch marks the view as `watching`: the sidebar shows "Watching", and Desk starts
   the conversation again if its process was lost (the computer restarted, say). Closing it deliberately pauses its
-  watches ("Watch paused") until it is opened again.
+  watches ("Watch paused") until it is opened again. The composer shows an eye with the number of watches, which opens
+  their list.
+- **Labels and wakes.** A watch takes its label from the description the agent gives its call (pi-ui's description
+  field), so the user sees what it is for. Each wake carries `details.events` (`WatchEvent`: the label, what happened,
+  the output, the command and the log) beside the agent's text; Desk titles the notice with the label and what
+  happened, and shows the output under it.
 - **Moves.** A conversation moved to another computer doesn't take its watches along: they end with a note.
 - **Limits.** At most 8 watches can run at once in a conversation. `pi-plan` holds automatic plan rounds while any
   watch is active.

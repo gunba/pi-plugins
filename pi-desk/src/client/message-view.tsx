@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useState } from "react";
 import Markdown from "react-markdown";
-import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
+import type { ChatBlock, ChatMessage, NestedCall } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { acquireAsset } from "./connection.ts";
@@ -100,6 +100,32 @@ function ToolStatus({ message }: { message?: ChatMessage }) {
 		{tool.exitCode !== undefined && <span>Exit {tool.exitCode}</span>}
 	</span>;
 }
+/** One row per tool call a tool made, under its row: what the model said each was for, and how it went. */
+function NestedCalls({ id, nested }: { id: string; nested: NonNullable<ChatMessage["nested"]> }) {
+	const row = (call: NestedCall, index: number) => {
+		const label = call.skills?.length ? call.skills.length === 1 ? "Read skill" : "Read skills" : call.name;
+		const detail = call.skills?.length ? call.skills.join(", ") : call.description ?? toolArgumentPreview(call.name, call.arguments);
+		return <Disclosure key={index} id={`nested:${id}:${index}`} className={`nested-call${call.status === "error" ? " nested-error" : ""}`}
+			summary={<><strong>{label}</strong>
+				<span className="tool-argument-preview">{call.description && !call.skills?.length ? <span className="tool-description">{detail}</span> : detail}</span>
+				<span className={`tool-status tool-${call.status === "running" ? "running" : call.status === "error" ? "error" : call.status === "unfinished" ? "interrupted" : "done"}`}>
+					{call.status === "running" ? <><span>Running</span>{call.started && <Elapsed started={call.started} />}</>
+						: call.status === "error" ? <span>Failed</span> : call.status === "unfinished" ? <span>Stopped</span> : null}
+					{call.status !== "running" && call.seconds !== undefined && <span>{call.seconds.toFixed(1)}s</span>}
+				</span></>}>
+			{call.error && <p className="nested-call-error">{call.error}</p>}
+			{call.arguments ? <pre>{call.arguments}</pre> : <p className="muted">The arguments were too large to keep.</p>}
+		</Disclosure>;
+	};
+	// Long scripts keep their latest calls in view, which include any still running.
+	const calls = nested.calls, hidden = calls.length > 8 ? calls.length - 6 : 0;
+	return <div className="nested-calls">
+		{hidden > 0 && <Disclosure id={`nested:${id}:earlier`} className="nested-earlier" summary={`${hidden} earlier call${hidden === 1 ? "" : "s"}`}>
+			{calls.slice(0, hidden).map(row)}</Disclosure>}
+		{calls.slice(hidden).map((call, index) => row(call, hidden + index))}
+		{calls.length >= 256 && <p className="muted">Calls after the first 256 were not recorded.</p>}
+	</div>;
+}
 function ToolPill({ owner, call, result, sessionKey, source }: {
 	owner: ChatMessage; call?: Extract<ChatBlock, { type: "toolCall" }>; result?: ChatMessage; sessionKey: string; source?: string;
 }) {
@@ -141,7 +167,8 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	// A file edit's result is its change: one row that opens it. Other tools keep their own row too.
 	if (items.length && !result?.isError && ["edit", "write", "apply_patch"].includes(name))
 		return <div className="tool-changes">{items.map((item, index) => <WorkChip key={item.id} item={item} status={index === items.length - 1 ? <ToolStatus message={result} /> : undefined} />)}</div>;
-	return items.length ? <>{pill}<div className="tool-changes">{items.map(item => <WorkChip key={item.id} item={item} />)}</div></> : pill;
+	const nested = result?.nested?.calls.length ? <NestedCalls id={call?.id ?? result!.toolCallId ?? result!.id} nested={result.nested} /> : null;
+	return items.length || nested ? <>{pill}{nested}{items.length > 0 && <div className="tool-changes">{items.map(item => <WorkChip key={item.id} item={item} />)}</div>}</> : pill;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
@@ -197,10 +224,6 @@ function MessageBody({ message, sessionKey, source, results, omitFile, omitChang
 	omitChanges?: boolean;
 }) {
 	return <div className="message-body">
-		{message.nested && <Disclosure id={`nested:${message.id}`} className="tool-card nested-tools"
-			summary={<><Icon name="layers" />{message.nested.calls.length} nested tool calls{!message.nested.complete && " · partial record"}</>}>
-			<ul>{message.nested.calls.map((call, index) => <li key={index}><span>{call.skills?.length ? `Read skill: ${call.skills.join(", ")}` : call.name}</span><small>{call.status}{call.seconds !== undefined && ` · ${call.seconds.toFixed(1)}s`}</small></li>)}</ul>
-		</Disclosure>}
 		{message.blocks.map((block, index) => {
 			if (!block || isEmptyText(block)) return null;
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
@@ -261,8 +284,8 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 		const notice = message.notice;
 		return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-received${faded}`}>
 			<Disclosure id={`notice:${message.id}`} className={`received-notice notice-${notice?.kind ?? "info"}`} initialOpen={!notice || notice.kind === "party" || notice.kind === "schedule" || notice.kind === "compaction"}
-				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : notice?.kind === "compaction" ? "layers" : "info"} />
-					<strong>{notice?.title ?? "Notification"}</strong>{time}</>}>
+				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : notice?.kind === "compaction" ? "layers" : notice?.kind === "watch" ? "eye" : "info"} />
+					<strong>{notice?.title ?? "Notification"}</strong>{notice?.detail && <span className="notice-detail">{notice.detail}</span>}{time}</>}>
 				{notice?.kind === "schedule" && <div className="notice-metadata">
 					<span title={new Date(notice.queuedAt!).toLocaleString()}>Queued {timeLabel(notice.queuedAt!)}</span>
 					<span title={new Date(notice.dueAt!).toLocaleString()}>Due {timeLabel(notice.dueAt!)}</span>

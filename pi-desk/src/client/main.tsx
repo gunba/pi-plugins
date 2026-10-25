@@ -6,6 +6,7 @@ import { AccountGate } from "./account-gate.tsx";
 import type { BrowserAccount } from "./account.ts";
 import { deployment, type Deployment } from "./bootstrap.ts";
 import { ApiError, initialize, dispose } from "./connection.ts";
+import { startUpdateChecks } from "./app-update.ts";
 import "./style.css";
 
 function Workspace({ account }: { account?: BrowserAccount }) {
@@ -37,5 +38,7 @@ function Entry() {
 			: <Loading label="Connecting to your workspace…" />}</main>;
 }
 createRoot(document.getElementById("root")!).render(<Entry />);
-if ("serviceWorker" in navigator)
+if ("serviceWorker" in navigator) {
   void navigator.serviceWorker.register("/sw.js").catch(() => {});
+  startUpdateChecks();
+}

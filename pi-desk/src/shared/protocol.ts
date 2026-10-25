@@ -7,6 +7,18 @@ import type { ControlStatus } from "./controls.ts";
 import type { ReleaseInfo } from "./release.ts";
 import type { InputStatus } from "./inputs.ts";
 
+/** A tool call another tool made: what the model said it was for, its arguments and how it went. */
+export interface NestedCall {
+	name: string; status: "running" | "ok" | "error" | "unfinished";
+	/** When a running call started, in ms since the epoch. */
+	started?: number;
+	seconds?: number; skills?: string[];
+	/** The call's description argument. */
+	description?: string;
+	/** Its arguments as indented JSON, cut short past the viewer's limits. */
+	arguments?: string;
+	error?: string;
+}
 export interface ViewSnapshot extends UiView {
 	id: string; revision: number; scope?: { id: string; label: string };
 	working?: string; actionError?: string;
@@ -97,10 +109,12 @@ export interface ChatMessage {
 	isError?: boolean;
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };
-	nested?: { complete: boolean; calls: { name: string; status: "ok" | "error" | "unfinished"; seconds?: number; skills?: string[] }[] };
+	/** Tool calls the tool made while it ran (a codemode script's calls), in order. Their results are not kept. */
+	nested?: { complete: boolean; calls: NestedCall[] };
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
-	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction"; title: string; queuedAt?: number; dueAt?: number };
+	/** detail: what happened, beside the title (a watch's event). */
+	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction" | "watch"; title: string; detail?: string; queuedAt?: number; dueAt?: number };
 	/** A saved summary that replaced earlier context: compaction, an encrypted Codex checkpoint, a model handoff or an abandoned branch. */
 	summary?: { kind: "compaction" | "checkpoint" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }

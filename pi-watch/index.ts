@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { getPresentation } from "../pi-ui/index.ts";
+import { callDescription } from "../pi-ui/tool-descriptions.ts";
 
 /** Session entries recording each watch: its start, what it last reported, and its end. Watches are rebuilt from them. */
 export const WATCH_ENTRY = "pi-watch/v1";
@@ -52,6 +53,8 @@ export interface WatchSpec {
 	expires?: number;
 	/** Watches run on the computer that started them; a conversation moved elsewhere does not take them along. */
 	computer: string;
+	/** What the watch is for, in the words of the description the agent gave its call; shown to the user. */
+	label?: string;
 	/** The runner of an "output" watch, with its log and exit-status files. */
 	pid?: number;
 	log?: string;
@@ -184,6 +187,24 @@ function message(spec: WatchSpec, note: string, output?: string): string {
 		spec.log ? `Full output: ${spec.log}` : ""].filter(Boolean).join("\n");
 }
 
+/** One event of a wake, for hosts to show the user (the agent reads the message text). */
+export interface WatchEvent {
+	id: string;
+	/** What the watch is for: its label, or what it watches. */
+	title: string;
+	/** What happened, in a few words: "New output", "Ended: it exited with code 1". */
+	status: string;
+	command?: string;
+	output?: string;
+	log?: string;
+}
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).replace(/[.:]$/, "");
+function watchEvent(spec: WatchSpec, status: string, output?: string): WatchEvent {
+	const title = spec.label ?? (spec.mode === "time" ? `Wake ${when(spec.at!)}` : describeWatch(spec));
+	return { id: spec.id, title, status: sentence(status), ...(spec.command ? { command: spec.command } : {}),
+		...(output?.trim() ? { output: clip(output.trim()) } : {}), ...(spec.log ? { log: spec.log } : {}) };
+}
+
 let swept = false;
 /** Removes the files of watches that ended more than a week ago. */
 function sweep(root: string): void {
@@ -204,7 +225,7 @@ class Watches {
 	private readonly ctx: ExtensionContext;
 	private readonly folder: string;
 	private readonly active = new Map<string, Active>();
-	private outbox: { id: string; text: string }[] = [];
+	private outbox: { id: string; text: string; event: WatchEvent }[] = [];
 	private retry?: NodeJS.Timeout;
 	private closed = false;
 
@@ -265,7 +286,7 @@ class Watches {
 		return next;
 	}
 
-	async call(params: Params, ctx: ExtensionContext): Promise<string> {
+	async call(params: Params, ctx: ExtensionContext, label?: string): Promise<string> {
 		const given = Object.entries(params).filter(([, value]) => value !== undefined).map(([key]) => key);
 		if (params.stop !== undefined) {
 			if (given.length > 1) throw new Error("stop takes no other parameters.");
@@ -291,7 +312,7 @@ class Watches {
 			...(command ? { command } : {}), ...(params.every !== undefined ? { every: params.every } : {}), ...(at !== undefined ? { at } : {}),
 			...(wakeWhen ? { wakeWhen } : {}),
 			cwd: ctx.cwd, created: now, ...(at !== undefined ? { expires: at } : params.hours !== undefined ? { expires: now + params.hours * 3_600_000 } : {}),
-			computer: hostname(),
+			computer: hostname(), ...(label ? { label } : {}),
 		};
 		if (spec.mode === "output") this.launch(spec);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
@@ -387,7 +408,8 @@ class Watches {
 		this.disarm(active);
 		if (options.kill && spec.pid && alive(spec.pid)) stopTree(spec.pid);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "end", id: spec.id, reason } satisfies WatchRecord);
-		if (options.tell !== false) this.send(spec.id, spec.mode === "time" ? `Watch ${spec.id}: ${reason}.` : message(spec, `ended: ${reason}.`, options.output));
+		if (options.tell !== false) this.send(spec, spec.mode === "time" ? `Watch ${spec.id}: ${reason}.` : message(spec, `ended: ${reason}.`, options.output),
+			spec.mode === "time" ? reason : `ended: ${reason}`, options.output);
 		this.publish();
 	}
 
@@ -493,17 +515,18 @@ class Watches {
 	private async consider(active: Active, output: string, note: string): Promise<boolean> {
 		if (this.closed || this.active.get(active.spec.id) !== active) return false;
 		const condition = active.spec.wakeWhen;
-		if (!condition) { this.send(active.spec.id, message(active.spec, note, output)); return true; }
+		if (!condition) { this.send(active.spec, message(active.spec, note, output), note, output); return true; }
 		try {
 			const matched = await this.judge(active.spec, condition, output);
 			active.failures = 0;
-			if (matched) this.send(active.spec.id, message(active.spec, note, output));
+			if (matched) this.send(active.spec, message(active.spec, note, output), note, output);
 			return matched;
 		} catch (error) {
 			if (isStale(error) || this.closed) throw error;
 			// A classifier outage must not hide events: wake anyway, and give up on the watch if it persists.
 			if (++active.failures >= 3) this.end(active, `its condition could not be checked: ${errorText(error)}`, { kill: true, output });
-			else this.send(active.spec.id, message(active.spec, `${note} (the condition could not be checked: ${errorText(error)})`, output));
+			else this.send(active.spec, message(active.spec, `${note} (the condition could not be checked: ${errorText(error)})`, output),
+				`${note.replace(/:$/, "")} (the condition could not be checked)`, output);
 			return true;
 		}
 	}
@@ -521,8 +544,9 @@ class Watches {
 		return answer?.type === "bool" && answer.probability >= 0.5;
 	}
 
-	private send(id: string, text: string): void {
-		this.outbox.push({ id, text });
+	/** Queues a wake: `text` for the agent, `status` and `output` for the user. */
+	private send(spec: WatchSpec, text: string, status: string, output?: string): void {
+		this.outbox.push({ id: spec.id, text, event: watchEvent(spec, status, output) });
 		this.flush();
 	}
 
@@ -536,7 +560,7 @@ class Watches {
 		const items = this.outbox;
 		this.outbox = [];
 		this.pi.sendMessage({ customType: WATCH_MESSAGE, content: items.map(item => item.text).join("\n\n"), display: true,
-			details: { watches: [...new Set(items.map(item => item.id))] } }, { deliverAs: "followUp", triggerTurn: true });
+			details: { watches: [...new Set(items.map(item => item.id))], events: items.map(item => item.event) } }, { deliverAs: "followUp", triggerTurn: true });
 	}
 
 	private stop(id: string): void {
@@ -556,10 +580,11 @@ class Watches {
 		presentation.publish("pi-watch", specs.length ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
 			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
-			data: { items: specs.map(spec => ({ id: spec.id, title: describeWatch(spec),
-				subtitle: spec.mode === "time" || !spec.expires ? spec.id : `${spec.id} · ends ${when(spec.expires)}`,
+			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec),
+				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : [])].join(" · "),
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
-			badges: [{ label: "Watching", value: String(specs.length), compact: true }],
+			badges: [{ label: "Watching", value: String(specs.length), icon: "eye", compact: true,
+				description: specs.map(spec => `${spec.id}: ${spec.label ?? describeWatch(spec)}`).join("\n") }],
 		} : undefined, Object.fromEntries(specs.map(spec => [`stop:${spec.id}`, () => this.stop(spec.id)])));
 	}
 }
@@ -574,16 +599,24 @@ export default function watch(pi: ExtensionAPI): void {
 	};
 	pi.on("session_start", (_event, ctx) => start(ctx));
 	pi.on("session_tree", (_event, ctx) => start(ctx));
-	pi.on("session_shutdown", () => { watches?.close(); watches = undefined; });
+	pi.on("session_shutdown", () => { watches?.close(); watches = undefined; labels.clear(); });
+	// The description a call carries (pi-ui/tool-descriptions.ts) is removed before the tool runs; it labels the watch.
+	const labels = new Map<string, string>();
+	pi.on("tool_call", event => {
+		const label = event.toolName === "watch" ? callDescription(event.input) : undefined;
+		if (label) labels.set(event.toolCallId, label.slice(0, 200));
+	});
 	pi.registerTool({
 		name: "watch",
 		label: "Watch",
 		description: "Wait without spending turns: start a watch, end your turn, and be woken with what happened. A watch runs a command in the background and wakes you with its output and when it ends; or re-runs a command every so often and wakes you when its output changes; or wakes you at a time. wake_when filters events. Use it instead of sleep loops, repeated checks or waiting on a long command. With no arguments it lists watches; stop ends one.",
 		parameters: Parameters,
 		executionMode: "sequential",
-		async execute(_id, params: Params, _signal, _update, ctx) {
+		async execute(id, params: Params, _signal, _update, ctx) {
+			const label = labels.get(id);
+			labels.delete(id);
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Watches are not ready in this conversation.");
-			const text = await watches.call(params, ctx);
+			const text = await watches.call(params, ctx, label);
 			return { content: [{ type: "text", text }], details: {} };
 		},
 	});

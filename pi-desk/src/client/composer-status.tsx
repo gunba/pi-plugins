@@ -80,7 +80,10 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 				onChange={async event => { const value = event.target.value; if (pending) return; setPending(true); try { await invoke(badge.view, control.action, value); } finally { setPending(false); } }}>
 				{control.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
 			</select>
-		</label> : <span className="composer-badge" key={key} title={badge.description ?? `${badge.label} ${badge.value}`}>{badge.label} {badge.value}</span>;
+		</label> : badge.icon ? <button type="button" key={key} className="composer-badge composer-icon-badge" disabled={!connected}
+			title={badge.description ?? `${badge.label} ${badge.value}`} aria-label={`${badge.label} ${badge.value}`}
+			onClick={() => { menu.close(); open(badge.view); }}><Icon name={badge.icon} />{badge.value}</button>
+		: <span className="composer-badge" key={key} title={badge.description ?? `${badge.label} ${badge.value}`}>{badge.label} {badge.value}</span>;
 	};
 	const listed = badges.map((badge, index) => ({ badge, index }));
 	return <div className="composer-status">

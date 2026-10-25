@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api } from "./connection.ts";
-import { activityLabel, sessionActivity, showsWake, wakeLabel } from "./activity.ts";
+import { activityLabel, backgroundWork, sessionActivity } from "./activity.ts";
+import { useAppUpdate } from "./app-update.ts";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { connectionLabel, connectionTone, isOffline } from "./connection-state.ts";
 import { VersionTag } from "./conversation-version.tsx";
@@ -46,7 +47,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
   /** A conversation was closed from its row. */
   closed: (key: string) => void;
 }) {
-  const dotSelected = selected === "dot", questsSelected = selected === "quests";
+  const dotSelected = selected === "dot", questsSelected = selected === "quests", appUpdate = useAppUpdate();
   /** The conversation being renamed. */
   const [renaming, setRenaming] = useState("");
   /** An off computer's conversations that another computer keeps copies of, to move elsewhere. */
@@ -127,15 +128,16 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
           <SidebarRename title={conversationTitle(item)} close={() => setRenaming("")}
             rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
         </div>;
+        const background = backgroundWork(item), activity = sessionActivity(item);
+        // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
+        const dot = background && (activity === "idle" || activity === "ready") ? "background" : activity;
         return <div className="session-row" key={item.key}>
           <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
-            <span className={`status-dot ${sessionActivity(item)}`} role="img"
-              aria-label={activityLabel(sessionActivity(item))} title={activityLabel(sessionActivity(item))} />
+            <span className={`status-dot ${dot}`} role="img"
+              aria-label={background?.label ?? activityLabel(activity)} title={background?.label ?? activityLabel(activity)} />
             <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
-              <small className="session-metadata"><span className="session-activity" title={item.wakes ? `A watch wakes it ${new Date(item.wakes).toLocaleString()}${item.state === "closed" ? "; Desk reopens it then" : ""}` : undefined}>
-                {item.wakes && showsWake(sessionActivity(item)) ? wakeLabel(item.wakes)
-                  : item.watching && showsWake(sessionActivity(item)) ? item.state === "closed" && !item.interrupted ? "Watch paused" : "Watching"
-                  : activityLabel(sessionActivity(item))}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+              <small className="session-metadata"><span className={`session-activity${background ? " session-background" : ""}`} title={background?.title}>
+                {background ? <><Icon name={background.icon} />{background.label}</> : activityLabel(activity)}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
                 {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
                   <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
@@ -166,6 +168,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     </nav>
     </div>
     <div className="sidebar-bottom">
+      {appUpdate && <button className="sidebar-update" title="It loads by itself when this tab has been out of sight for a few minutes."
+        onClick={() => location.reload()}><Icon name="refresh" /><span>New version of Desk: reload</span></button>}
       <button onClick={() => openSettings("general")}>
         <Icon name="settings" /><span>Settings</span>
       </button>

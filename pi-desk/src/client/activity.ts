@@ -1,4 +1,5 @@
 import type { SessionView } from "../shared/protocol.ts";
+import { agentInventory } from "./agent-inventory.ts";
 
 export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating" | "kept" | "controls">): string {
 	if (session.updating) return "updating";
@@ -37,3 +38,22 @@ export function wakeLabel(at: number, now = Date.now()): string {
 }
 /** States in which a pending wake says more than the activity itself. */
 export const showsWake = (state: string) => ["idle", "ready", "sleeping", "closed", "interrupted"].includes(state);
+
+/**
+ * What a conversation that isn't working is still waiting on: agents it started, a watch on a command, or a time a watch
+ * wakes it. Undefined when nothing is under way, or when its own activity (working, needs input) says more.
+ */
+export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & Pick<SessionView, "watching" | "wakes">):
+	{ icon: string; label: string; title: string } | undefined {
+	const activity = sessionActivity(session);
+	if (!showsWake(activity)) return;
+	const running = activity !== "sleeping" && activity !== "closed";
+	const agents = running ? agentInventory(session.ui?.views ?? []).current : [];
+	if (agents.length) return { icon: "party", label: agents.length === 1 ? "Agent working" : `${agents.length} agents working`,
+		title: `Waiting on ${agents.map(view => view.title).join(", ")}` };
+	if (session.wakes) return { icon: "clock", label: wakeLabel(session.wakes),
+		title: `A watch wakes it ${new Date(session.wakes).toLocaleString()}${session.state === "closed" ? "; Desk reopens it then" : ""}` };
+	const watches = session.ui?.views.find(view => view.id === "pi-watch")?.badges?.[0]?.description;
+	if (session.watching) return { icon: "eye", label: session.state === "closed" && !session.interrupted ? "Watch paused" : "Watching",
+		title: watches ? `Watching:\n${watches}` : "A watch wakes it when something happens" };
+}

@@ -4,7 +4,7 @@ import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
 import { COMPACTION_FAILURE_ENTRY } from "../../../pi-context-window/compaction-state.ts";
 import { readSkills } from "../shared/skill-activity.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { ChatBlock, ChatMessage, HistoryPage } from "../shared/protocol.ts";
+import type { ChatBlock, ChatMessage, HistoryPage, NestedCall } from "../shared/protocol.ts";
 import { LEDGER_ENTRY, readLedger } from "../../../pi-context-ledger/model.ts";
 import type { ArtifactStore } from "../../../pi-output-budget/extensions/artifacts.ts";
 import { LocalFiles } from "./local-files.ts";
@@ -15,6 +15,25 @@ import { HISTORY_CHARACTERS, HISTORY_COUNT, MESSAGE_TEXT_CHARACTERS, THINKING_CH
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === "object" ? value as RecordValue : {};
+
+/** Argument characters sent per nested call, and per tool result for all of its nested calls. */
+const NESTED_ARGUMENTS = 2_000, NESTED_ARGUMENTS_TOTAL = 16_000;
+/** A nested call as the viewer shows it, from Pi's record of it; `budget.left` is the argument text the message may still carry. */
+export function nestedCall(value: unknown, budget: { left: number }): NestedCall | undefined {
+	const call = record(value), status = String(call.status);
+	if (typeof call.name !== "string" || !["running", "ok", "error", "unfinished"].includes(status)) return;
+	const args = call.arguments && typeof call.arguments === "object" ? call.arguments : undefined;
+	const skills = readSkills(call.name, args), description = callDescription(args);
+	const json = args ? JSON.stringify(args, null, 2) : "", shown = json.slice(0, Math.min(NESTED_ARGUMENTS, budget.left));
+	budget.left -= shown.length;
+	return { name: call.name.slice(0, 200), status: status as NestedCall["status"],
+		...(typeof call.started === "number" ? { started: call.started } : {}),
+		...(skills.length ? { skills } : {}), ...(description ? { description } : {}),
+		...(shown ? { arguments: shown.length < json.length ? `${shown}…` : shown } : {}),
+		...(typeof call.error === "string" && call.error ? { error: call.error.slice(0, 500) } : {}),
+		...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) };
+}
+export const nestedBudget = () => ({ left: NESTED_ARGUMENTS_TOTAL });
 
 /** Assets are capabilities minted from observed output, not arbitrary filesystem paths. */
 export class Transcript {
@@ -194,14 +213,8 @@ export class Transcript {
 			: message.role === "toolResult" ? "tool" : "note";
 		const blocks: ChatBlock[] = [];
 		const nested = record(message.nestedCalls);
-		const nestedCalls = Array.isArray(nested.calls) ? nested.calls.slice(0, 256).flatMap(value => {
-			const call = record(value);
-			const skills = typeof call.name === "string" ? readSkills(call.name, call.arguments) : [];
-			return typeof call.name === "string" && ["ok", "error", "unfinished"].includes(String(call.status))
-				? [{ name: call.name.slice(0, 200), status: call.status as "ok" | "error" | "unfinished",
-					...(skills.length ? { skills } : {}),
-					...(typeof call.durationMs === "number" && Number.isFinite(call.durationMs) && call.durationMs >= 0 ? { seconds: call.durationMs / 1000 } : {}) }] : [];
-		}) : [];
+		const budget = nestedBudget();
+		const nestedCalls = Array.isArray(nested.calls) ? nested.calls.slice(0, 256).flatMap(value => nestedCall(value, budget) ?? []) : [];
 		const received = receivedNotice(message);
 		const content = typeof received.content === "string" ? [{ type: "text", text: received.content }]
 			: Array.isArray(received.content) ? received.content : [];

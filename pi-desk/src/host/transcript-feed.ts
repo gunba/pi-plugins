@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, HistoryPage, TranscriptEvent, WorkerMessage } from "../shared/protocol.ts";
-import { Transcript } from "./transcript.ts";
+import { Transcript, nestedBudget, nestedCall } from "./transcript.ts";
 import { MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS, type HistoryPosition } from "../shared/history.ts";
 
 /** Native message identity, persistence boundaries and bounded deltas for every conversation. */
@@ -19,6 +19,8 @@ export class TranscriptFeed {
 	private previews = new Map<number, number>();
 	private clipped = new Set<number>();
 	private argumentsSent = new Map<number, string>();
+	/** Nested calls of running tools, by the model-issued call's id, until Pi records them on its result. */
+	private nested = new Map<string, { calls: Map<string, Record<string, unknown>> }>();
 	private timer?: ReturnType<typeof setTimeout>;
 	private toolSequence = 0;
 	private readonly transcript: Transcript;
@@ -39,7 +41,34 @@ export class TranscriptFeed {
 		clearTimeout(this.timer); this.timer = undefined;
 		this.tools.clear(); this.dirtyTools.clear(); this.dirtyArguments.clear();
 		this.results.clear(); this.aliases.clear();
-		this.previews.clear(); this.clipped.clear(); this.argumentsSent.clear();
+		this.previews.clear(); this.clipped.clear(); this.argumentsSent.clear(); this.nested.clear();
+	}
+	/** The live nested calls of a model-issued call, as its message shows them. */
+	private nestedView(id: string): ChatMessage["nested"] | undefined {
+		const live = this.nested.get(id);
+		if (!live) return;
+		const budget = nestedBudget(), calls = [...live.calls.values()].flatMap(call => nestedCall(call, budget) ?? []);
+		return { complete: false, calls };
+	}
+	/** Nested calls run inside a model-issued call and have no transcript entry; they are shown on its row as they run. */
+	private nestedEvent(event: Extract<AgentSessionEvent, { type: "tool_execution_start" | "tool_execution_end" }> & { parentToolCallId: string }): void {
+		const root = event.parentToolCallId.split("/")[0]!, parent = this.tools.get(root);
+		if (!parent || parent.tool?.state !== "running") return;
+		let live = this.nested.get(root);
+		if (!live) this.nested.set(root, live = { calls: new Map() });
+		if (event.type === "tool_execution_start") {
+			if (live.calls.size >= 256) return;
+			live.calls.set(event.toolCallId, { name: event.toolName, status: "running", started: Date.now(), arguments: event.args });
+		} else {
+			const call = live.calls.get(event.toolCallId);
+			if (!call) return;
+			const content: { type?: string; text?: string }[] = Array.isArray(event.result?.content) ? event.result.content : [];
+			const text = content.flatMap(block => block?.type === "text" && typeof block.text === "string" ? [block.text] : []).join("\n");
+			live.calls.set(event.toolCallId, { ...call, status: event.isError ? "error" : "ok", started: undefined,
+				durationMs: event.durationMs ?? Date.now() - (call.started as number), ...(event.isError && text ? { error: text } : {}) });
+		}
+		this.tools.set(root, { ...parent, nested: this.nestedView(root) });
+		this.dirtyTools.add(root); this.soon();
 	}
 	close(): void { this.closed = true; this.reset(); }
 	private emit(event: TranscriptEvent): void {
@@ -80,7 +109,10 @@ export class TranscriptFeed {
 		// Nested calls have no native transcript entry. Their bounded record lives
 		// on the calling tool's result; treating them as roots leaves orphan rows.
 		if ((event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end")
-			&& event.parentToolCallId) return;
+			&& event.parentToolCallId) {
+			if (event.type !== "tool_execution_update") this.nestedEvent(event as typeof event & { parentToolCallId: string });
+			return;
+		}
 		const generation = this.generation(), epoch = this.epoch;
 		if (event.type === "tool_execution_start") {
 			if (this.tools.size >= 128) return;
@@ -102,6 +134,9 @@ export class TranscriptFeed {
 				toolCallId: event.toolCallId, isError: event.isError, timestamp: previous.timestamp };
 			this.results.set(event.toolCallId, result);
 			const message = this.transcript.message(result, undefined, previous.id, previous.order, this.cwd())!;
+			// Pi adds its record of the nested calls when the message is saved; until then, the live one.
+			if (!message.nested && previous.nested) message.nested = previous.nested;
+			this.nested.delete(event.toolCallId);
 			this.tools.set(event.toolCallId, message);
 			this.dirtyTools.delete(event.toolCallId);
 			this.emit({ type: "chat", generation, message: { ...message, revision: ++this.revision } });

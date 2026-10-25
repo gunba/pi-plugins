@@ -48,6 +48,8 @@ export interface UiView {
 	data: UiValue;
 	/** Compact, factual values owned by this view. Hosts may show them beside the conversation. */
 	badges?: { label: string; value: string; description?: string; compact?: boolean;
+		/** An icon hosts may draw in place of the label, which stays its accessible name: "eye" or "clock". Opening the badge opens this view. */
+		icon?: "eye" | "clock";
 		/** Action ID of a published toggle control for direct interaction. */
 		control?: string;
 		/** A remaining amount hosts may draw as a gauge, with value as its text alternative. */
