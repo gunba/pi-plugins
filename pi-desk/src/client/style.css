@@ -2180,7 +2180,7 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-title-field { flex:1; margin-left:-6px; font-weight:600; }
 .quest-title-field:hover, .quest-notes-field:hover, .quest-step-field:hover, .quest-step-add input:hover { border-color:var(--border); }
 .quest-title-field:focus, .quest-notes-field:focus, .quest-step-field:focus, .quest-step-add input:focus { border-color:var(--focus-border); background:var(--surface); outline:none; }
-.quest-notes-field { margin-left:-6px; resize:vertical; color:var(--muted); line-height:1.5; }
+.quest-notes-field { margin-left:-6px; resize:vertical; color:var(--muted); line-height:1.5; field-sizing:content; min-height:calc(1.5em + 6px); max-height:16em; }
 .quest-collapse { flex:none; width:24px; height:24px; padding:0; }
 .quest-collapse .ui-icon { width:14px; height:14px; transform:rotate(180deg); }
 .quest-steps-edit li { display:flex; align-items:center; gap:5px; }
