@@ -619,6 +619,7 @@ class Watches {
 		presentation.publish("pi-watch", specs.length || this.closing ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
 			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
+			...(specs.some(spec => spec.mode === "change") ? { watchEvery: Math.min(...specs.flatMap(spec => spec.mode === "change" ? [spec.every!] : [])) } : {}),
 			...(files.length ? { wakeFiles: files } : {}), ...(this.closing ? { close: true } : {}),
 			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec),
 				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : [])].join(" · "),

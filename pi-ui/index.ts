@@ -62,6 +62,9 @@ export interface UiView {
 	/** The view's owner needs the conversation running to watch for something. A host that lost the conversation's
 	 * process without being asked to close it (the computer restarted, say) starts it again. */
 	watching?: boolean;
+	/** How often, in seconds, the owner checks for something while watching, when it checks on a schedule (its shortest
+	 * interval). Hosts may show it beside watching. */
+	watchEvery?: number;
 	/** Files that change when this view's owner has news, such as a watched command's log and exit status. A host that
 	 * closed the conversation, keeping it listed, reopens it when one of them changes; removing it, the host deletes them,
 	 * and whatever writes them stops. */

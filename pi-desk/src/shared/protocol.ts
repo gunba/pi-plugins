@@ -146,6 +146,8 @@ export interface SessionView {
 	wakes?: number;
 	/** Its extensions are watching for something and need it running; Desk restarts it if its process was lost. */
 	watching?: boolean;
+	/** How often, in seconds, its watches check, when they check on a schedule (UiView.watchEvery). */
+	watchEvery?: number;
 	/** Closed and kept with files its extensions named to wake it (UiView.wakeFiles): each file's size and modification
 	 * time when it closed, and when the computer had started then. Desk reopens it when a file changes, or after the
 	 * computer restarted, which stopped the commands that write them. */

@@ -368,7 +368,7 @@ export class DeskHost {
 				const kept = managed.keepOnClose && !managed.replacing, sleeping = kept ? asleep(managed.view.ui) : undefined;
 				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
 					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key), asleep: sleeping, waiting: kept ? waiting(managed.view.ui) : undefined,
-					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined, watching: undefined }) };
+					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined, watching: undefined, watchEvery: undefined }) };
 				managed.keepOnClose = undefined;
 			}
 			this.events.emit({ type: "session", session: managed.view });
@@ -395,6 +395,7 @@ export class DeskHost {
 			const wakes = Math.min(...message.snapshot.views.flatMap(view => view.wakes ? [view.wakes] : []));
 			managed.view = { ...managed.view, ui: message.snapshot, wakes: Number.isFinite(wakes) ? wakes : undefined,
 				watching: message.snapshot.views.some(view => view.watching) || undefined,
+				watchEvery: Math.min(...message.snapshot.views.flatMap(view => view.watching && view.watchEvery ? [view.watchEvery] : [])) || undefined,
 			...(managed.view.ui && managed.view.ui.generation !== message.snapshot.generation
 				? { state: "starting" as const, snapshot: undefined, historyReady: false } : {}) };
 		} else if (message.type === "detached") {
