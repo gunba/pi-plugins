@@ -1,7 +1,16 @@
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ChatMessage } from "../shared/protocol.ts";
 
 type WatchEvent = { id?: unknown; title?: unknown; status?: unknown; command?: unknown; output?: unknown; log?: unknown };
 const text = (value: unknown, max: number) => typeof value === "string" ? value.slice(0, max) : "";
+/** A watch's log as a Markdown link the viewer opens (file-links.ts); the path as written when it isn't one. */
+function logLink(path: string): string {
+	try {
+		const href = pathToFileURL(path).href.replaceAll("(", "%28").replaceAll(")", "%29");
+		return `[${basename(path).replace(/[\\[\]]/g, "\\$&")}](${href})`;
+	} catch { return path; }
+}
 /** A watch's wake, titled by what the watch is for and what happened; its output and log follow (pi-watch's WatchEvent). */
 function watchNotice(details: unknown, content: unknown): { notice: NonNullable<ChatMessage["notice"]>; content: unknown } {
 	const record = details && typeof details === "object" ? details as { watches?: unknown; events?: unknown } : {};
@@ -10,14 +19,20 @@ function watchNotice(details: unknown, content: unknown): { notice: NonNullable<
 	// Wakes saved before watches described their events show the agent's text as it was.
 	if (!first || !text(first.title, 200)) {
 		const ids = Array.isArray(record.watches) ? record.watches.filter(id => typeof id === "string") : [];
-		return { notice: { kind: "watch", title: ids.length ? `Watch ${ids.join(", ")}` : "Watch" }, content };
+		// Their first line ends with what happened: "Watch w1 (…) ended: it exited with code 1.", "Watch w2: it's …, the time you set."
+		const first = typeof content === "string" ? content.split("\n", 1)[0]! : "";
+		const note = /\) (has new output|checked|changed|ended: .+?)[.:]?$/.exec(first)?.[1] ?? /^Watch [\w-]+: (.+?)\.?$/.exec(first)?.[1];
+		const plain = note?.replace(/^has new output/, "new output").replace(/^(checked|changed)$/, "output $1");
+		const detail = plain ? plain.charAt(0).toUpperCase() + plain.slice(1) : undefined;
+		return { notice: { kind: "watch", title: ids.length ? `Watch ${ids.join(", ")}` : "Watch", ...(detail ? { detail: detail.slice(0, 300) } : {}) },
+			content: typeof content === "string" ? content.replace(/^Full output: (.+)$/gm, (_line, path: string) => `Full output: ${logLink(path.trim())}`) : content };
 	}
 	const fence = (value: string) => "`".repeat(Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1)));
 	const body = events.map(event => {
 		const output = text(event.output, 8_000), command = text(event.command, 2_000), log = text(event.log, 1_000);
 		return [events.length > 1 ? `**${text(event.title, 200)}**: ${text(event.status, 300)}` : "",
 			output ? `${fence(output)}\n${output}\n${fence(output)}` : "",
-			command ? `Command: \`${command.replaceAll("`", "'")}\`` : "", log ? `Full output: ${log}` : ""].filter(Boolean).join("\n\n");
+			command ? `Command: \`${command.replaceAll("`", "'")}\`` : "", log ? `Full output: ${logLink(log)}` : ""].filter(Boolean).join("\n\n");
 	}).join("\n\n");
 	return { notice: { kind: "watch", title: `${text(first.title, 200)}${events.length > 1 ? ` and ${events.length - 1} more` : ""}`,
 		detail: text(first.status, 300) }, content: body };

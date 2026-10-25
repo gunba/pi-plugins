@@ -198,7 +198,11 @@ export interface WatchEvent {
 	output?: string;
 	log?: string;
 }
-const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).replace(/[.:]$/, "");
+/** A wake's note as the user reads it: "has new output:" is "New output", "changed:" is "Output changed". */
+const sentence = (note: string) => {
+	const text = note.replace(/[.:]$/, "").replace(/^has new output/, "new output").replace(/^(checked|changed)\b/, "output $1");
+	return text.charAt(0).toUpperCase() + text.slice(1);
+};
 function watchEvent(spec: WatchSpec, status: string, output?: string): WatchEvent {
 	const title = spec.label ?? (spec.mode === "time" ? `Wake ${when(spec.at!)}` : describeWatch(spec));
 	return { id: spec.id, title, status: sentence(status), ...(spec.command ? { command: spec.command } : {}),
