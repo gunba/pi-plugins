@@ -62,6 +62,12 @@ export interface UiView {
 	/** The view's owner needs the conversation running to watch for something. A host that lost the conversation's
 	 * process without being asked to close it (the computer restarted, say) starts it again. */
 	watching?: boolean;
+	/** Files that change when this view's owner has news, such as a watched command's log and exit status. A host that
+	 * closed the conversation, keeping it listed, reopens it when one of them changes; removing it, the host deletes them,
+	 * and whatever writes them stops. */
+	wakeFiles?: string[];
+	/** The view's owner asks the host to close the conversation, keeping it listed, once it is idle. */
+	close?: boolean;
 	actions?: UiAction[];
 }
 export interface UiQuestion {
@@ -98,6 +104,9 @@ export interface Presentation {
 	readonly suspended?: boolean;
 	/** False means optional model questions are unavailable, not answered or approved. */
 	readonly operatorAvailable?: boolean;
+	/** Set as the conversation closes, before its extensions shut down: "sleep" when the host keeps it listed and reopens it
+	 * when its views' wakeFiles change, so work that writes them goes on; "end" otherwise. */
+	readonly closing?: "sleep" | "end";
 	capabilities: readonly ("questions" | "details" | "work" | "scopes" | "transcripts" | "commands" | "conversations")[];
 	batch(update: () => void): void;
 	publish(id: string, view: UiView | undefined, actions?: Record<string, (value: UiValue) => unknown | Promise<unknown>>): void;

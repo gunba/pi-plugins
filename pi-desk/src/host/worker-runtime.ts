@@ -50,13 +50,13 @@ export async function serveWorker(directory: string, factory: (send: (message: W
 		if (engine && initialized && !nativeClosed) { try { snapshot = engine.snapshot(); } catch { /* Keep the last valid snapshot during a transition. */ } }
 		return { ...(snapshot ? { snapshot } : {}), runtime: { version: RELEASE.version, plugins: plugins.version, engine: RELEASE.engine, runtime: bootstrap.options.runtimeDirectory, unattended: true, sendNow: true, queueNow: true, queueCancel: true, brief: true }, controls: controls.snapshot(), ...(historyReady ? { historyReady } : {}), ...(initialGeneration ? { initialGeneration } : {}) };
 	};
-	const closeNative = async () => {
+	const closeNative = async (keep = false) => {
 		if (!engineJob) { nativeClosed = true; return; }
-		await (await engineJob).close();
+		await (await engineJob).close(keep);
 		nativeClosed = true;
 	};
 	const controls = new WorkerControls(() => ui?.generation ?? snapshot?.ui.generation ?? "", async (command, _id, generation) => {
-		if (command.kind === "close") return closeNative();
+		if (command.kind === "close") return closeNative(command.keep === true);
 		const current = await loadEngine();
 		const result = await current.command(generation, command);
 		endpoint?.publish({ type: "snapshot", snapshot: current.snapshot() });

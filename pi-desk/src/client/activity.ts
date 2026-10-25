@@ -54,6 +54,6 @@ export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & 
 	if (session.wakes) return { label: wakeLabel(session.wakes),
 		title: `A watch wakes it ${new Date(session.wakes).toLocaleString()}${session.state === "closed" ? "; Desk reopens it then" : ""}` };
 	const watches = session.ui?.views.find(view => view.id === "pi-watch")?.badges?.[0]?.description;
-	if (session.watching) return { label: session.state === "closed" && !session.interrupted ? "Watch paused" : "Watching",
+	if (session.watching) return { label: "Watching",
 		title: watches ? `Watching:\n${watches}` : "A watch wakes it when something happens" };
 }

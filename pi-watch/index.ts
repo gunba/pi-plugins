@@ -2,13 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
-import { getPresentation } from "../pi-ui/index.ts";
+import { getPresentation, type Presentation } from "../pi-ui/index.ts";
 import { callDescription } from "../pi-ui/tool-descriptions.ts";
 
 /** Session entries recording each watch: its start, what it last reported, and its end. Watches are rebuilt from them. */
@@ -31,7 +30,6 @@ const EVENT_CHARS = 4_000;
 const RECENT_LINES = 20;
 /** After a restart, missed output beyond this is left in the log rather than judged line by line. */
 const CATCH_UP_BYTES = 16_384;
-const RUN_LIMIT_MS = 120_000;
 /** Undelivered wakes wait this long between attempts while the agent is busy or the host holds the conversation. */
 const RETRY_MS = 2_000;
 const KEEP_FILES_MS = 8 * 86_400_000;
@@ -55,14 +53,18 @@ export interface WatchSpec {
 	computer: string;
 	/** What the watch is for, in the words of the description the agent gave its call; shown to the user. */
 	label?: string;
-	/** The runner of an "output" watch, with its log and exit-status files. */
+	/** The runner of a command watch, with its files: an "output" watch's log, a "change" watch's numbered latest
+	 * change, and the exit status of either. */
 	pid?: number;
 	log?: string;
+	change?: string;
 	exit?: string;
 }
 type WatchRecord =
 	| { op: "start"; watch: WatchSpec }
 	| { op: "seen"; id: string; offset: number }
+	/** A change watch's runner started again, after the computer restarted. */
+	| { op: "runner"; id: string; pid: number }
 	| { op: "end"; id: string; reason: string };
 
 interface Active {
@@ -81,8 +83,8 @@ interface Active {
 	finishing: boolean;
 	/** The next check of the clock, for a time watch or a command watch with an end. */
 	clock?: NodeJS.Timeout;
-	/** Hash of a "change" watch's latest output. */
-	last?: string;
+	/** When an "output" watch last recorded how far it has judged. */
+	saved: number;
 }
 
 const registryKey = Symbol.for("gunba.pi-watch.v1");
@@ -97,6 +99,7 @@ const Parameters = Type.Object({
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output that shows this, in plain words (\"the build fails or finishes\"). A classifier judges each event." })),
 	hours: Type.Optional(Type.Number({ minimum: 0.05, description: "How long a command watch may run; by default until it ends or you stop it. A background command still running then is stopped." })),
 	stop: Type.Optional(Type.String({ description: "ID of a watch to stop; its background command is stopped too." })),
+	close: Type.Optional(Type.Boolean({ description: "Close this conversation when this turn ends, for when nothing is left to do until a watch wakes it. Desk keeps it listed and reopens it then." })),
 }, { additionalProperties: false });
 type Params = Static<typeof Parameters>;
 
@@ -134,46 +137,13 @@ function alive(pid: number): boolean {
 }
 
 /** Stops a process tree: on Windows by ending the tree, elsewhere by asking the runner, which ends its command's group. */
-function stopTree(pid: number, group = false): void {
+function stopTree(pid: number): void {
 	if (process.platform === "win32") {
 		spawn(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)],
 			{ stdio: "ignore", windowsHide: true }).once("error", () => {});
 	} else {
-		try { process.kill(group ? -pid : pid, group ? "SIGKILL" : "SIGTERM"); } catch { /* already gone */ }
+		try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
 	}
-}
-
-/** Runs a command to completion; its output, followed by its exit status when that is not 0. */
-function runOnce(command: string, cwd: string, limitMs: number, signal: AbortSignal): Promise<string> {
-	const shell = getShellConfig(), viaStdin = shell.commandTransport === "stdin";
-	return new Promise(resolve => {
-		const child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, command], {
-			cwd, stdio: [viaStdin ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
-		if (viaStdin) child.stdin!.end(command);
-		let output = "", late = false;
-		const take = (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(-EVENT_CHARS * 4); };
-		child.stdout!.on("data", take);
-		child.stderr!.on("data", take);
-		const stop = () => { if (child.pid) stopTree(child.pid, true); };
-		const timer = setTimeout(() => { late = true; stop(); }, limitMs);
-		signal.addEventListener("abort", stop, { once: true });
-		const done = (status: string) => {
-			clearTimeout(timer);
-			signal.removeEventListener("abort", stop);
-			const text = output.trim();
-			resolve(status ? `${text}${text ? "\n" : ""}(${status})` : text);
-		};
-		child.once("error", error => done(`could not run: ${error.message}`));
-		child.once("close", code => done(late ? `stopped after ${Math.round(limitMs / 1000)} s` : code === 0 ? "" : `exit code ${code}`));
-	});
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-	return new Promise(resolve => {
-		const timer = setTimeout(done, ms);
-		function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
-		signal.addEventListener("abort", done, { once: true });
-	});
 }
 
 /** The signed-in classifier that judges wake_when: Jev when available. */
@@ -232,6 +202,10 @@ class Watches {
 	private outbox: { id: string; text: string; event: WatchEvent }[] = [];
 	private retry?: NodeJS.Timeout;
 	private closed = false;
+	/** The host's presentation, kept for reading how the conversation closes once it is shutting down. */
+	private presentation?: Presentation;
+	/** The agent asked for this conversation to close when its turn ends (watch's close). */
+	private closing = false;
 
 	constructor(pi: ExtensionAPI, ctx: ExtensionContext) {
 		this.pi = pi;
@@ -246,8 +220,9 @@ class Watches {
 		for (const entry of this.ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== WATCH_ENTRY) continue;
 			const record = entry.data as WatchRecord;
-			if (record.op === "start") specs.set(record.watch.id, record.watch);
+			if (record.op === "start") specs.set(record.watch.id, { ...record.watch });
 			else if (record.op === "end") { specs.delete(record.id); seen.delete(record.id); }
+			else if (record.op === "runner") { const spec = specs.get(record.id); if (spec) spec.pid = record.pid; }
 			// Older change watches recorded an output hash here rather than an offset; those are skipped.
 			else if (typeof record.offset === "number") seen.set(record.id, record.offset);
 		}
@@ -255,8 +230,14 @@ class Watches {
 		this.publish();
 	}
 
-	/** Stops following this conversation's watches. Background commands keep running and are picked up when it resumes. */
-	close(): void {
+	/**
+	 * Stops following this conversation's watches. Background commands keep running and are picked up when it resumes.
+	 * At shutdown, change watches' runners stop too, unless the host keeps the conversation to wake it on their news
+	 * (Presentation.closing "sleep"); they start again when it resumes.
+	 */
+	close(shutdown = false): void {
+		if (shutdown && this.presentation?.closing !== "sleep")
+			for (const { spec } of this.active.values()) if (spec.mode === "change" && spec.pid && alive(spec.pid)) stopTree(spec.pid);
 		this.closed = true;
 		for (const active of this.active.values()) this.disarm(active);
 		this.active.clear();
@@ -290,7 +271,26 @@ class Watches {
 		return next;
 	}
 
-	async call(params: Params, ctx: ExtensionContext, label?: string): Promise<string> {
+	async call(input: Params, ctx: ExtensionContext, label?: string): Promise<string> {
+		const { close, ...params } = input;
+		if (close) {
+			this.closing = true;
+			this.publish();
+		}
+		const closing = !close ? "" : this.active.size || params.command !== undefined || params.until !== undefined
+			? " This conversation closes when this turn ends; Desk reopens it when a watch has news."
+			: " This conversation closes when this turn ends. It has no watches, so it stays closed until the user opens it.";
+		if (close && Object.values(params).every(value => value === undefined)) return `${closing.trim()} ${this.list()}`;
+		return `${await this.start(params, ctx, label)}${closing}`;
+	}
+
+	keepOpen(): void {
+		if (!this.closing) return;
+		this.closing = false;
+		this.publish();
+	}
+
+	private async start(params: Omit<Params, "close">, ctx: ExtensionContext, label?: string): Promise<string> {
 		const given = Object.entries(params).filter(([, value]) => value !== undefined).map(([key]) => key);
 		if (params.stop !== undefined) {
 			if (given.length > 1) throw new Error("stop takes no other parameters.");
@@ -318,7 +318,7 @@ class Watches {
 			cwd: ctx.cwd, created: now, ...(at !== undefined ? { expires: at } : params.hours !== undefined ? { expires: now + params.hours * 3_600_000 } : {}),
 			computer: hostname(), ...(label ? { label } : {}),
 		};
-		if (spec.mode === "output") this.launch(spec);
+		if (spec.mode !== "time") this.launch(spec);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
 		this.arm(spec, undefined, false);
 		this.publish();
@@ -345,15 +345,17 @@ class Watches {
 	}
 
 	/** Starts an "output" watch's command under the detached runner. */
+	/** Starts a command watch's runner. A change watch's runner started again keeps its numbered changes. */
 	private launch(spec: WatchSpec): void {
 		mkdirSync(this.folder, { recursive: true });
-		const shell = getShellConfig(), file = join(this.folder, `${spec.id}.json`);
-		spec.log = join(this.folder, `${spec.id}.log`);
+		const shell = getShellConfig(), file = join(this.folder, `${spec.id}.json`), again = spec.pid !== undefined;
 		spec.exit = join(this.folder, `${spec.id}.exit`);
-		writeFileSync(spec.log, "");
+		if (spec.mode === "change") spec.change = join(this.folder, `${spec.id}.change`);
+		else { spec.log = join(this.folder, `${spec.id}.log`); writeFileSync(spec.log, ""); }
 		rmSync(spec.exit, { force: true });
+		if (spec.change && !again) rmSync(spec.change, { force: true });
 		writeFileSync(file, JSON.stringify({ shell: shell.shell, args: shell.args, transport: shell.commandTransport ?? "argv",
-			command: spec.command, cwd: spec.cwd, log: spec.log, exit: spec.exit, expires: spec.expires }));
+			command: spec.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires }));
 		const runner = spawn(process.execPath, [RUNNER, file], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true });
 		runner.unref();
 		if (!runner.pid) throw new Error("The command could not be started.");
@@ -361,7 +363,7 @@ class Watches {
 	}
 
 	private arm(spec: WatchSpec, offset: number | undefined, restored: boolean): void {
-		const active: Active = { spec, abort: new AbortController(), timers: [], queue: Promise.resolve(), failures: 0,
+		const active: Active = { spec, abort: new AbortController(), timers: [], queue: Promise.resolve(), failures: 0, saved: 0,
 			offset: offset ?? 0, decoder: new StringDecoder("utf8"), partial: "", pending: [], recent: [], finishing: false };
 		this.active.set(spec.id, active);
 		const now = Date.now();
@@ -381,7 +383,7 @@ class Watches {
 			}
 			this.at(active, spec.expires, () => this.end(active, "expired", { kill: true, output: active.recent.join("\n") }));
 		}
-		if (spec.mode === "change") this.guard(() => this.poll(active));
+		if (spec.mode === "change") this.followChanges(active);
 		else this.follow(active, restored);
 	}
 
@@ -471,7 +473,13 @@ class Watches {
 		const output = active.pending.join("\n"), offset = active.offset;
 		active.pending = [];
 		void this.chain(active, async () => {
-			if (await this.consider(active, output, "has new output:")) this.pi.appendEntry(WATCH_ENTRY, { op: "seen", id: active.spec.id, offset } satisfies WatchRecord);
+			// Output judged is recorded as seen, so a conversation reopened later does not judge it again: at once after a
+			// wake, otherwise at most once a minute.
+			const woke = await this.consider(active, output, "has new output:");
+			if (woke || Date.now() - active.saved > 60_000) {
+				active.saved = Date.now();
+				this.pi.appendEntry(WATCH_ENTRY, { op: "seen", id: active.spec.id, offset } satisfies WatchRecord);
+			}
 		});
 	}
 
@@ -494,25 +502,44 @@ class Watches {
 		void this.chain(active, () => this.end(active, how, { kill: false, output: active.recent.join("\n") }));
 	}
 
-	/** Re-runs a "change" watch's command, judging each new output, until it wakes the agent. */
-	private async poll(active: Active): Promise<void> {
-		const { spec, abort } = active;
-		while (!this.closed && this.active.get(spec.id) === active) {
-			const output = await runOnce(spec.command!, spec.cwd, Math.min(spec.every! * 1000, RUN_LIMIT_MS), abort.signal);
-			if (this.closed || this.active.get(spec.id) !== active) return;
-			const hash = createHash("sha256").update(output).digest("hex").slice(0, 16), previous = active.last;
-			if (hash !== previous) {
-				active.last = hash;
-				// The first run only sets the baseline, unless a condition can already be true.
-				if (previous !== undefined || spec.wakeWhen) {
-					if (await this.chain(active, () => this.consider(active, output, previous === undefined ? "checked:" : "changed:"))) {
-						this.end(active, "it woke you", { kill: false, tell: false });
-						return;
-					}
-				}
+	/**
+	 * Follows a "change" watch's runner, judging each change it records, until one wakes the agent. Its offset is the
+	 * number of the last change judged. A runner that is gone without an exit status (the computer restarted) is
+	 * started again.
+	 */
+	private followChanges(active: Active): void {
+		const { spec } = active;
+		// Watches from before change watches had a runner start one now.
+		if (!spec.change || !spec.pid) { this.launch(spec); this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: spec.pid! } satisfies WatchRecord); }
+		let judging = false;
+		const tick = () => this.guard(() => {
+			if (judging || this.active.get(spec.id) !== active) return;
+			let change: { number?: number; output?: string; first?: boolean } | undefined;
+			try { change = JSON.parse(readFileSync(spec.change!, "utf8")); } catch { /* none yet */ }
+			if (change && typeof change.number === "number" && change.number > active.offset) {
+				const { number, output = "", first } = change;
+				active.offset = number;
+				judging = true;
+				void this.chain(active, async () => {
+					// The first run only sets the baseline, unless a condition can already be true.
+					const woke = (!first || !!spec.wakeWhen) && await this.consider(active, output, first ? "checked:" : "changed:");
+					if (woke) this.end(active, "it woke you", { kill: true, tell: false });
+					else this.pi.appendEntry(WATCH_ENTRY, { op: "seen", id: spec.id, offset: number } satisfies WatchRecord);
+				}).finally(() => { judging = false; });
+				return;
 			}
-			await sleep(spec.every! * 1000, abort.signal);
-		}
+			let status: { stopped?: string; error?: string } | undefined;
+			try { status = JSON.parse(readFileSync(spec.exit!, "utf8")); } catch { /* still running, or gone without a word */ }
+			if (status && status.stopped !== "stopped") {
+				this.end(active, status.stopped === "expired" ? "it expired" : status.error ? `its command could not run: ${status.error}` : "its runner stopped", { kill: false });
+			} else if (status || !alive(spec.pid!)) {
+				// Stopped when the conversation last shut down, or gone with the computer: it starts again.
+				this.launch(spec);
+				this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: spec.pid! } satisfies WatchRecord);
+			}
+		});
+		active.timers.push(setInterval(tick, TAIL_MS));
+		tick();
 	}
 
 	/** Wakes the agent with an event when it meets the watch's condition. True when it woke the agent. */
@@ -579,16 +606,19 @@ class Watches {
 		this.pi.events.emit(WATCH_CHANGED, { sessionId: this.sessionId, count: specs.length });
 		if (this.ctx.hasUI) this.ctx.ui.setStatus("pi-watch", specs.length ? `watching ${specs.length}` : undefined);
 		const presentation = getPresentation(this.pi);
+		if (presentation) this.presentation = presentation;
 		if (!presentation || presentation.suspended) return;
 		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : []);
-		presentation.publish("pi-watch", specs.length ? {
+		const files = specs.flatMap(spec => spec.mode === "output" ? [spec.log!, spec.exit!] : spec.mode === "change" ? [spec.change!, spec.exit!] : []);
+		presentation.publish("pi-watch", specs.length || this.closing ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
 			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
+			...(files.length ? { wakeFiles: files } : {}), ...(this.closing ? { close: true } : {}),
 			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec),
 				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : [])].join(" · "),
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
-			badges: [{ label: "Watching", value: String(specs.length), icon: "eye", compact: true,
-				description: specs.map(spec => `${spec.id}: ${spec.label ?? describeWatch(spec)}`).join("\n") }],
+			...(specs.length ? { badges: [{ label: "Watching", value: String(specs.length), icon: "eye" as const, compact: true,
+				description: specs.map(spec => `${spec.id}: ${spec.label ?? describeWatch(spec)}`).join("\n") }] } : {}),
 		} : undefined, Object.fromEntries(specs.map(spec => [`stop:${spec.id}`, () => this.stop(spec.id)])));
 	}
 }
@@ -603,9 +633,11 @@ export default function watch(pi: ExtensionAPI): void {
 	};
 	pi.on("session_start", (_event, ctx) => start(ctx));
 	pi.on("session_tree", (_event, ctx) => start(ctx));
-	pi.on("session_shutdown", () => { watches?.close(); watches = undefined; labels.clear(); });
+	pi.on("session_shutdown", () => { watches?.close(true); watches = undefined; labels.clear(); });
 	// The description a call carries (pi-ui/tool-descriptions.ts) is removed before the tool runs; it labels the watch.
 	const labels = new Map<string, string>();
+	// A message from the user means they are here: a close the agent asked for earlier no longer applies.
+	pi.on("input", event => { if (event.source !== "extension") watches?.keepOpen(); });
 	pi.on("tool_call", event => {
 		const label = event.toolName === "watch" ? callDescription(event.input) : undefined;
 		if (label) labels.set(event.toolCallId, label.slice(0, 200));
@@ -613,7 +645,7 @@ export default function watch(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "watch",
 		label: "Watch",
-		description: "Wait without spending turns: start a watch, end your turn, and be woken with what happened. A watch runs a command in the background and wakes you with its output and when it ends; or re-runs a command every so often and wakes you when its output changes; or wakes you at a time. wake_when filters events. Use it instead of sleep loops, repeated checks or waiting on a long command. A time watch lasts: Desk reopens this conversation when it is due, even if it was closed or the computer restarted, so use it for work the user asks to be done later or regularly (every Sunday, say): when woken, do it and set the next time. With no arguments it lists watches; stop ends one.",
+		description: "Wait without spending turns: start a watch, end your turn, and be woken with what happened. A watch runs a command in the background and wakes you with its output and when it ends; or re-runs a command every so often and wakes you when its output changes; or wakes you at a time. wake_when filters events. Use it instead of sleep loops, repeated checks or waiting on a long command. Watches go on while this conversation is closed, and after the computer restarts: Desk reopens it when one has news, and closes it again when a turn it started is done. So use them for work the user asks to be done later, regularly (every Sunday, say: when woken, do it and set the next time) or when something happens (a new release, say: a command that re-runs, with wake_when). With no arguments it lists watches; stop ends one.",
 		parameters: Parameters,
 		executionMode: "sequential",
 		async execute(id, params: Params, _signal, _update, ctx) {

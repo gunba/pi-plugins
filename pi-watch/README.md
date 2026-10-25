@@ -10,6 +10,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 | `watch({until})` | the clock: `HH:MM` or an ISO date and time | at that time |
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |
+| `watch({close: true})` | | closes the conversation when this turn ends, to sleep until a watch wakes it (alone or with a new watch) |
 
 `wake_when` describes, in plain words, which events should wake the agent ("the build fails or finishes"). A
 classifier model judges each event: TypeSafe's Jev when signed in (`/login typesafe`), otherwise another signed-in
@@ -28,17 +29,23 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
   command), or the agent or the user stops it; `hours` gives it an end if the agent wants one, and a background command
   still running then is stopped. A time can be any time ahead. Times are checked against the clock every minute, so a
   computer that slept still acts on time.
-- **Restarts.** Background commands run under a small detached runner (`runner.mjs`). They keep running when Desk
-  restarts or updates a conversation, or when its Pi process stops. Watches are recorded in the conversation, and are
-  picked up again when it next starts: missed output is read from the log, and a time that has passed wakes the agent
-  at once, saying when it was due.
-- **In Desk.** A time watch's view carries its time as `wakes`: the sidebar shows it ("Wakes Thu 09:00"), and Desk
-  reopens a conversation that isn't running then, whether it was closed and kept in the sidebar or left stopped when
-  the computer restarted. Closing a waiting conversation keeps it in the sidebar unless the user removes it, which
-  cancels the reopening. A command watch marks the view as `watching`: the sidebar shows "Watching", and Desk starts
-  the conversation again if its process was lost (the computer restarted, say). Closing it deliberately pauses its
-  watches ("Watch paused") until it is opened again. The composer shows an eye with the number of watches, which opens
-  their list.
+- **Restarts.** Commands run under a small detached runner (`runner.mjs`): a background command once, writing its log
+  and exit status; a re-run command every `every` seconds, writing each changed output as a numbered change. A
+  background command keeps running when Desk restarts or updates a conversation, or when its Pi process stops. A re-run
+  command's runner stops with the process unless the conversation is going to sleep (below), and starts again with
+  the watch; one gone with a computer restart starts again too. Watches are recorded in the conversation, and are
+  picked up again when it next starts: missed output and changes are read from the runner's files, and a time that has
+  passed wakes the agent at once, saying when it was due. Output judged, waking the agent or not, is recorded as seen.
+- **Sleeping in Desk.** A conversation with watches can sleep: closed with no process, kept in the sidebar, its
+  watches going on. The user sleeps it with "Close until needed" (the default for a conversation with watches), the
+  agent with `close`. Desk reopens it when a watch has news: a time watch's time (the view's `wakes`), or a change to
+  a file a command watch's runner writes (the view's `wakeFiles`: a background command's log and exit status, a
+  re-run command's change file), at most every 15 minutes, and after a computer restart. The reopened conversation
+  judges the news with `wake_when` and wakes the agent or not; two minutes after it is at rest, Desk closes it again.
+  A message from the user keeps it open, and cancels an agent's `close`. Removing a sleeping conversation deletes its
+  runners' files, which ends a re-run command's runner. A command watch also marks the view as `watching`, so Desk
+  starts the conversation again if its process was lost while it was open. The sidebar shows "Watching" or "Wakes Thu
+  09:00"; the composer, an eye with the number of watches, which opens their list.
 - **Labels and wakes.** A watch takes its label from the description the agent gives its call (pi-ui's description
   field), so the user sees what it is for. Each wake carries `details.events` (`WatchEvent`: the label, what happened,
   the output, the command and the log) beside the agent's text; Desk titles the notice with the label and what

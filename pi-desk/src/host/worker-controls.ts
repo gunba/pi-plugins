@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import type { ControlCommand, ControlStatus } from "../shared/controls.ts";
+import type { CloseCommand, ControlCommand, ControlStatus } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 
-type Command = ControlCommand | { kind: "close" };
+type Command = ControlCommand | CloseCommand;
 
 /** Admission and outcomes remain in the actor when its host detaches. */
 export class WorkerControls {

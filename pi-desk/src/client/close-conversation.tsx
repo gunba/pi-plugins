@@ -15,17 +15,18 @@ export function CloseConversationButton({ session, name, computer, connected, di
 		if (!session.activation || !connected || disabled || pending || closing) return;
 		const sleeping = session.state === "closed" && session.kept;
 		const wakes = session.wakes ? new Date(session.wakes).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : undefined;
+		// What reopens it while it sleeps: a time a watch is set to, and news from a watched command.
+		const reopens = [wakes && `at ${wakes}`, session.watching && "when a watch has news"].filter(Boolean).join(" or ");
 		const choice = await confirmation.choose(sleeping
 			? { title: "Remove conversation?", context: `${computer} · ${name}`, accept: "Remove from sidebar",
-				body: <p>It is not running.{wakes && ` A watch is set to wake it ${wakes}; removing it means Desk won't reopen it then.`} Its history is kept and can be resumed from Resume.</p> }
-			// A conversation waiting on a watch is kept by default, so it stays in view until it wakes.
-			: wakes ? { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close until then", alternative: "Close and remove",
-				body: <><CloseSummary session={session} /><p className="muted">A watch is set to wake it {wakes}. Closed until then, it stays in the sidebar and Desk reopens it at that time. Removing it means Desk won't.</p></> }
+				body: <p>It is not running.{reopens && ` Desk reopens it ${reopens}; removing it ends its watches.`} Its history is kept and can be resumed from Resume.</p> }
+			// A conversation waiting on a watch sleeps by default: it stays in view, and its watches go on.
+			: reopens ? { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close until needed", alternative: "Close and remove",
+				body: <><CloseSummary session={session} /><p className="muted">Closed until needed, it stays in the sidebar and its watches go on: Desk reopens it {reopens}, and closes it again when the agent is done. Removing it ends its watches.</p></> }
 			: { title: "Close conversation?", context: `${computer} · ${name}`, accept: "Close and remove", alternative: "Close, keep in sidebar",
-				body: <><CloseSummary session={session} /><p className="muted">Keeping it in the sidebar stops Pi to free memory; open it later and choose Resume to carry on.
-					{session.watching && " Its watches pause while it is closed and go on when you open it again."}</p></> });
+				body: <><CloseSummary session={session} /><p className="muted">Keeping it in the sidebar stops Pi to free memory; open it later and choose Resume to carry on.</p></> });
 		if (!choice) return;
-		const keep = wakes && !sleeping ? choice === "accept" : choice === "alternative";
+		const keep = reopens && !sleeping ? choice === "accept" : choice === "alternative";
 		setPending(true); confirmed?.();
 		try {
 			await api(`/sessions/${session.key}/close`, { id: crypto.randomUUID(), activation: session.activation, ...(keep ? { keep: true } : {}) });

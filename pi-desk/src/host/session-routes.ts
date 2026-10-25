@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, rmSync } from "node:fs";
 import { isControl } from "../shared/controls.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
@@ -75,6 +75,8 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			core.attachments(key).check(input!.command.attachments ?? []);
 			if (input!.command.behavior === "now" && !managed.worker.runtime?.sendNow) throw new Error("This worker does not support Send now. Restart this conversation when idle to enable it.");
 			const accepted = core.inputs.admit(key, input!);
+			// The user is here: a conversation Desk woke for a watch stays open.
+			managed.sleepWhenIdle = undefined;
 			core.inputEvent(managed);
 			core.drainInputs(managed);
 			return reply({ accepted: true, input: accepted }, 202);
@@ -89,16 +91,18 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			if (string(data.activation, 100) !== managed.view.activation) throw new StaleGeneration();
 			if (!managed.worker) {
 				core.inputs.interrupt(managed.view.key, "The conversation closed");
-				// Removing a conversation from the sidebar cancels Desk's reopening it for a watch.
+				// Removing a conversation from the sidebar cancels Desk's reopening it for a watch. Deleting its wake files tells
+				// what writes them, which goes on while it sleeps, to stop (pi-ui UiView.wakeFiles).
+				if (data.keep !== true) for (const file of managed.view.asleep?.files ?? []) rmSync(file.path, { force: true });
 				managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
-					...(data.keep === true ? {} : { wakes: undefined, watching: undefined }),
+					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, asleep: undefined }),
 					snapshot: undefined, ui: undefined, inputs: core.inputs.pending(managed.view.key) };
 				core.persist(true);
 				core.emit({ type: "session", session: managed.view });
 				return reply({ accepted: true });
 			}
 			managed.keepOnClose = data.keep === true;
-			const result = await managed.worker.submitControl({ kind: "close" }, managed.worker.generation, string(data.id, 100));
+			const result = await managed.worker.submitControl({ kind: "close", ...(data.keep === true ? { keep: true } : {}) }, managed.worker.generation, string(data.id, 100));
 			if (result.control.state === "running") {
 				core.inputs.interrupt(managed.view.key, "The conversation is closing");
 				core.inputEvent(managed);

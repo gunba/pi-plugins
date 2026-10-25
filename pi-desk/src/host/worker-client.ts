@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSnapshot, WorkerCommand, WorkerInit, WorkerMessage, WorkerRequest, WorkerState, WorkerReceipt, WorkerRuntimeInfo } from "../shared/protocol.ts";
-import type { ControlCommand, ControlStatus } from "../shared/controls.ts";
+import type { CloseCommand, ControlCommand, ControlStatus } from "../shared/controls.ts";
 import { ReceiptConflict, StaleGeneration, WorkerCommandError, WorkerConnectionError } from "./worker-errors.ts";
 import { attachWorker, waitWorkerStopped, workerDirectory, type WorkerAttachment } from "./worker-registry.ts";
 
@@ -93,7 +93,7 @@ export class SessionWorker {
 		return promise;
 	}
 
-	submitControl(command: ControlCommand | { kind: "close" }, generation: string, id: string): Promise<{ accepted: true; control: ControlStatus }> {
+	submitControl(command: ControlCommand | CloseCommand, generation: string, id: string): Promise<{ accepted: true; control: ControlStatus }> {
 		return this.request({ type: "control", id, generation: command.kind === "close" ? "" : generation, command }) as Promise<{ accepted: true; control: ControlStatus }>;
 	}
 

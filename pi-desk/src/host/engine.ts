@@ -807,9 +807,11 @@ export class DeskEngine {
 		});
 	}
 
-	close(): Promise<void> {
+	/** keep: the conversation stays listed and sleeps (sleep.ts), which extensions read as Presentation.closing. */
+	close(keep = false): Promise<void> {
 		if (this.closeJob) return this.closeJob;
 		this.closed = true;
+		this.presentation.closing = keep ? "sleep" : "end";
 		this.handoffAbort?.abort(); this.starting.abort();
 		this.closeJob = Promise.resolve().then(async () => {
 			clearTimeout(this.snapshotTimer);

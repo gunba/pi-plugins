@@ -7,6 +7,8 @@ export const CONTROL_LABELS = {
 } as const;
 export type ControlKind = keyof typeof CONTROL_LABELS;
 export type ControlCommand = Extract<WorkerCommand, { kind: Exclude<ControlKind, "close"> }>;
+/** Closing a conversation; keep: it stays listed and sleeps, so its extensions leave their watches running. */
+export type CloseCommand = { kind: "close"; keep?: boolean };
 export interface ControlStatus {
 	id: string; kind: ControlKind; generation: string; started: number; ended?: number;
 	state: "running" | "completed" | "failed" | "interrupted"; error?: string;

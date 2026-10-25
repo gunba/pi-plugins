@@ -9,7 +9,7 @@ export function CloseSummary({ session }: { session: SessionView }) {
 		});
 	return <>
 		{/* The dialog's choices say whether it stays in the sidebar, so this describes only what closing does. */}
-		<p>Closing stops its Pi process and background work. Its history is kept, and Resume conversation reopens it.</p>
+		<p>Closing stops its Pi process{session.watching || session.wakes ? "" : " and background work"}. Its history is kept, and Resume conversation reopens it.</p>
 		<ul>
 			{session.state === "starting" && <li>Pi is still loading; close waits for startup and cleanup to finish.</li>}
 			{session.snapshot?.activity === "running" && <li>The current run will be stopped.</li>}

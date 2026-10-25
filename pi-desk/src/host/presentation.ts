@@ -51,6 +51,8 @@ export class DeskPresentation implements Presentation {
 	get operatorAvailable(): boolean { return !!this.settingOrigin.getStore()?.live() || this.availability(); }
 	setOperatorAvailability(available: () => boolean): void { this.availability = available; }
 	private retired = false;
+	/** Set as the conversation closes: "sleep" when it stays listed to be woken by its watches. */
+	closing?: "sleep" | "end";
 	private uiRevision = 0;
 	private presentationRevision = 0;
 	private readonly transcripts = new Set<UiTranscriptHandle>();
@@ -95,6 +97,7 @@ export class DeskPresentation implements Presentation {
 			version: 2,
 			get suspended() { return !current(); },
 			get operatorAvailable() { return host.operatorAvailable; },
+			get closing() { return host.closing; },
 			capabilities: this.capabilities,
 			...(resources ? { resources: () => { if (!current()) throw Error("The resource view belongs to a previous session."); return resources(); } } : {}),
 			batch: update => { if (current()) this.batch(update); },

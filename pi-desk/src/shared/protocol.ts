@@ -146,6 +146,10 @@ export interface SessionView {
 	wakes?: number;
 	/** Its extensions are watching for something and need it running; Desk restarts it if its process was lost. */
 	watching?: boolean;
+	/** Closed and kept with files its extensions named to wake it (UiView.wakeFiles): each file's size and modification
+	 * time when it closed, and when the computer had started then. Desk reopens it when a file changes, or after the
+	 * computer restarted, which stopped the commands that write them. */
+	asleep?: { files: { path: string; stamp: string }[]; boot: number };
 	/** Native state; presentation data is carried once in ui below. */
 	snapshot?: Omit<SessionSnapshot, "ui">;
 	/** Native history can be browsed before extensions finish starting. */
@@ -246,7 +250,7 @@ export type WorkerRequest =
 	| { type: "shutdown"; id: string; force?: boolean }
 	| { type: "describe"; id: string }
 	| { type: "receipt"; id: string; target: string; wait?: boolean }
-	| { type: "control"; id: string; generation: string; command: import("./controls.ts").ControlCommand | { kind: "close" } }
+	| { type: "control"; id: string; generation: string; command: import("./controls.ts").ControlCommand | import("./controls.ts").CloseCommand }
 	| { type: "command"; id: string; generation: string; command: WorkerCommand };
 export type TranscriptEvent =
 	| { type: "chat"; generation: string; message: ChatMessage; replaces?: string }

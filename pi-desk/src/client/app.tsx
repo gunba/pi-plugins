@@ -4,7 +4,7 @@ import { isControl } from "../shared/controls.ts";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import type { ChatMessage, HistoryPage, WorkerCommand } from "../shared/protocol.ts";
 import type { BrowserAccount } from "./account.ts";
-import { activityLabel, sessionActivity } from "./activity.ts";
+import { activityLabel, sessionActivity, wakeLabel } from "./activity.ts";
 import { agentInventory } from "./agent-inventory.ts";
 import { AgentPane } from "./agent-pane.tsx";
 import { useAttachments } from "./attachments.tsx";
@@ -543,8 +543,11 @@ export function App({ account }: { account?: BrowserAccount }) {
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && !canCompose && (
           <div className="connection-banner">
-            <span>Pi is not running. Resume to continue.</span>
-            <button disabled={!connected} onClick={() => void restartSession()}>{session.file ? "Resume" : "Retry"}</button>
+            {/* Asleep: closed and kept with something to wake it; Desk reopens it then. */}
+            <span>{session.state === "closed" && session.kept && (session.wakes || session.watching)
+              ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
+              : "Pi is not running. Resume to continue."}</span>
+            <button disabled={!connected} onClick={() => void restartSession()}>{session.state === "closed" && session.kept ? "Open" : session.file ? "Resume" : "Retry"}</button>
           </div>
         )}
         {host.directoryError && <div className="connection-banner" role="status">{host.directoryError}</div>}

@@ -12,7 +12,11 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	/** Keep it in the sidebar once its close completes. */
 	keepOnClose?: boolean;
 	/** Its process is being replaced: closing it is the first half of a restart, so it stays open and selected. */
-	replacing?: boolean }
+	replacing?: boolean;
+	/** Desk reopened it for a watch while it was closed; it closes again, kept, once it has been idle a while. */
+	sleepWhenIdle?: boolean;
+	/** When it was last seen idle while it may go back to sleep. */
+	idleSince?: number }
 
 /** The host's conversations and the operations on them that its other parts use; DeskHost (server.ts) provides it. */
 export interface HostCore {
