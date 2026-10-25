@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describeAgentTools } from "../../pi-ui/tool-descriptions.ts";
+import { describeAgentTools, describeSessionTools } from "../../pi-ui/tool-descriptions.ts";
 import {
 	createAgentSession,
 	createCodemodeExtension,
@@ -434,7 +434,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			throw error;
 		}
 		// Child calls carry a one-line description for the user, like the parent's.
-		describeAgentTools(session.agent.state as never);
+		describeAgentTools(session.agent.state as never); describeSessionTools(session);
 		const driver = new PiSdkChildDriver(session, extensionErrors, followups, presentation);
 		try {
 			session.setActiveToolsByName(enabledTools());

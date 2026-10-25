@@ -30,6 +30,22 @@ export function describeAgentTools(state: { tools: Tool[] }): void {
 	Object.defineProperty(state, "tools", { get: property.get, set, configurable: true, enumerable: property.enumerable });
 	state.tools = state.tools;
 }
+/** A tool map whose entries carry the description field, however they are added. */
+class DescribedTools<K> extends Map<K, Tool> {
+	override set(key: K, tool: Tool): this { return super.set(key, describedTool(tool)); }
+}
+/**
+ * Applies the description field to a Pi session's tool registry, now and whenever Pi rebuilds it. Calls that tools make
+ * (codemode scripts' tools.*) resolve against the registry rather than the agent's tools, so without this a call there
+ * that carries a description fails on tools that allow no other fields.
+ */
+export function describeSessionTools(session: object): void {
+	const property = Object.getOwnPropertyDescriptor(session, "_toolRegistry");
+	if (!property || !(property.value instanceof Map)) return;
+	let registry = new DescribedTools(property.value as Map<unknown, Tool>);
+	Object.defineProperty(session, "_toolRegistry", { configurable: true, enumerable: property.enumerable,
+		get: () => registry, set: (value: Map<unknown, Tool>) => { registry = new DescribedTools(value); } });
+}
 /** The description a call carries, if any. */
 export function callDescription(args: unknown): string | undefined {
 	const value = args && typeof args === "object" ? (args as Record<string, unknown>)[CALL_DESCRIPTION] : undefined;

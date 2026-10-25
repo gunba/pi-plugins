@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { describeAgentTools } from "../../../pi-ui/tool-descriptions.ts";
+import { describeAgentTools, describeSessionTools } from "../../../pi-ui/tool-descriptions.ts";
 import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
@@ -254,7 +254,7 @@ export class DeskEngine {
 			// Batch Desk steering at the native boundary without rewriting terminal preferences.
 			result.session.agent.steeringMode = "all";
 			// Every tool call carries a one-line description for the user (pi-ui tool-descriptions.ts).
-			describeAgentTools(result.session.agent.state as never);
+			describeAgentTools(result.session.agent.state as never); describeSessionTools(result.session);
 			context.attach(result.session); this.contexts.set(result.session, context);
 			activateNewTools(result.session, context.toolChoices());
 			this.queueGuards.set(result.session, new NativeQueueGuard(result.session, () => false));
