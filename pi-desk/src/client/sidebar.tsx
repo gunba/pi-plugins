@@ -136,8 +136,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
             <span className={`status-dot ${dot}`} role="img"
               aria-label={background?.label ?? activityLabel(activity)} title={background?.label ?? activityLabel(activity)} />
             <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
-              <small className="session-metadata"><span className={`session-activity${background ? " session-background" : ""}`} title={background?.title}>
-                {background ? <><Icon name={background.icon} />{background.label}</> : activityLabel(activity)}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+              <small className="session-metadata"><span className="session-activity" title={background?.title}>
+                {background?.label ?? activityLabel(activity)}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
                 {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
                   <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />

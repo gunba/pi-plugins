@@ -105,7 +105,7 @@ function NestedCalls({ id, nested }: { id: string; nested: NonNullable<ChatMessa
 	const row = (call: NestedCall, index: number) => {
 		const label = call.skills?.length ? call.skills.length === 1 ? "Read skill" : "Read skills" : call.name;
 		const detail = call.skills?.length ? call.skills.join(", ") : call.description ?? toolArgumentPreview(call.name, call.arguments);
-		return <Disclosure key={index} id={`nested:${id}:${index}`} className={`nested-call${call.status === "error" ? " nested-error" : ""}`}
+		return <Disclosure key={index} id={`nested:${id}:${index}`} className="nested-call"
 			summary={<><strong>{label}</strong>
 				<span className="tool-argument-preview">{call.description && !call.skills?.length ? <span className="tool-description">{detail}</span> : detail}</span>
 				<span className={`tool-status tool-${call.status === "running" ? "running" : call.status === "error" ? "error" : call.status === "unfinished" ? "interrupted" : "done"}`}>

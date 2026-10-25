@@ -5,7 +5,8 @@
  */
 export const CALL_DESCRIPTION = "description";
 // Plain JSON Schema: Pi's validator accepts it inside TypeBox and JSON Schema parameters alike.
-const FIELD = { type: "string", description: "One short sentence for the user: what this call does and why. Always include it." };
+// Codemode scripts call tools too, and the user sees those calls' descriptions under the script's row.
+const FIELD = { type: "string", description: "One short sentence for the user: what this call does and why. Always include it, also in calls from codemode scripts." };
 const WRAPPED = Symbol.for("pi.tool-description");
 
 type Tool = { name: string; parameters: unknown; execute: (id: string, params: never, ...rest: never[]) => unknown };
