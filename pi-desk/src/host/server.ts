@@ -29,7 +29,7 @@ import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { Attachments } from "./attachments.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
 import { isOpenSession } from "../shared/workspace.ts";
-import { SLEEP_AFTER_MS, asleep, atRest, hasNews } from "./sleep.ts";
+import { SLEEP_AFTER_MS, asleep, atRest, hasNews, waiting } from "./sleep.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { DotConnector } from "./dot-connector.ts";
@@ -365,9 +365,9 @@ export class DeskHost {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
 				// Kept, it sleeps: Desk reopens it when a file its watches write changes.
-				const sleeping = managed.keepOnClose && !managed.replacing ? asleep(managed.view.ui) : undefined;
+				const kept = managed.keepOnClose && !managed.replacing, sleeping = kept ? asleep(managed.view.ui) : undefined;
 				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
-					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key), asleep: sleeping,
+					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key), asleep: sleeping, waiting: kept ? waiting(managed.view.ui) : undefined,
 					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined, watching: undefined }) };
 				managed.keepOnClose = undefined;
 			}
@@ -706,7 +706,7 @@ export class DeskHost {
 			deskDirectory: this.options.dataDir ?? join(this.options.agentDir, "desk"),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
-			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined, asleep: undefined,
+			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);

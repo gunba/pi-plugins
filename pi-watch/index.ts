@@ -110,8 +110,14 @@ const clip = (text: string, max = EVENT_CHARS) => text.length <= max ? text : `â
 const when = (ms: number) => new Date(ms).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 const sizeOf = (file: string) => { try { return statSync(file).size; } catch { return 0; } };
 
+/** An interval in the largest unit that states it exactly: "6 hours", "5 minutes", "90 seconds". */
+export function interval(seconds: number): string {
+	const [count, unit] = seconds % 3600 === 0 ? [seconds / 3600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
+	return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
+
 export function describeWatch(spec: WatchSpec): string {
-	const what = spec.mode === "time" ? `at ${when(spec.at!)}` : spec.mode === "change" ? `\`${spec.command}\` every ${spec.every} s` : `\`${spec.command}\``;
+	const what = spec.mode === "time" ? `at ${when(spec.at!)}` : spec.mode === "change" ? `\`${spec.command}\` every ${interval(spec.every!)}` : `\`${spec.command}\``;
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
 }
 

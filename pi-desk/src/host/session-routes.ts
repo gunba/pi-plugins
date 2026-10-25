@@ -103,7 +103,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				// what writes them, which goes on while it sleeps, to stop (pi-ui UiView.wakeFiles).
 				if (data.keep !== true) for (const file of managed.view.asleep?.files ?? []) rmSync(file.path, { force: true });
 				managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
-					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, asleep: undefined }),
+					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, asleep: undefined, waiting: undefined }),
 					snapshot: undefined, ui: undefined, inputs: core.inputs.pending(managed.view.key) };
 				core.persist(true);
 				core.emit({ type: "session", session: managed.view });

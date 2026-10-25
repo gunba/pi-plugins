@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { uptime } from "node:os";
 import type { SessionView } from "../shared/protocol.ts";
+import type { UiDetails } from "../../../pi-ui/index.ts";
 
 /**
  * Conversations that sleep: closed and kept in the sidebar with no process running, reopened when one of their watches
@@ -19,6 +20,14 @@ const boot = () => Date.now() - uptime() * 1000;
 export function asleep(ui: SessionView["ui"]): SessionView["asleep"] {
 	const files = [...new Set(ui?.views.flatMap(view => view.wakeFiles ?? []) ?? [])];
 	return files.length ? { files: files.map(path => ({ path, stamp: stamp(path) })), boot: boot() } : undefined;
+}
+
+/** What a conversation closing now, kept, waits on, for the user to read while it sleeps: the items of the views that wake it. */
+export function waiting(ui: SessionView["ui"]): SessionView["waiting"] {
+	const items = (ui?.views ?? []).filter(view => view.wakes || view.watching || view.wakeFiles?.length)
+		.flatMap(view => (view.data as UiDetails | null)?.items ?? []).slice(0, 8)
+		.map(item => ({ title: item.title.slice(0, 200), ...(item.subtitle ? { detail: item.subtitle.slice(0, 400) } : {}) }));
+	return items.length ? items : undefined;
 }
 
 /** A sleeping conversation has news when a file changed, or when the computer restarted, which stopped its commands. */

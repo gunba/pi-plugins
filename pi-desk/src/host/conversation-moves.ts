@@ -76,7 +76,7 @@ export class ConversationMoves {
 			for (let wait = 0; wait < 600 && managed.worker === worker; wait++) await new Promise(resolve => setTimeout(resolve, 100));
 			if (managed.worker === worker) throw new Error("The conversation did not stop in time.");
 		}
-		managed.view = { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, asleep: undefined, ...(moved ? { moved } : {}) };
+		managed.view = { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, asleep: undefined, waiting: undefined, ...(moved ? { moved } : {}) };
 		this.core.persist(true); this.core.emit({ type: "session", session: managed.view });
 	}
 

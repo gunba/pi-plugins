@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
@@ -127,15 +127,22 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 
 	const row = (item: Item) => {
 		const { quest } = item, expanded = open === item.key, due = dueLabel(quest.due, today, !!quest.repeat) ?? scheduledLabel(quest.scheduled, today, item.resting), finished = !item.resting && quest.state === "done";
+		const editable = !finished && !item.resting;
 		return <li key={item.key} className={`quest quest-${quest.kind}${finished ? " done" : ""}${item.resting ? " resting" : ""}${finishing.includes(item.key) ? " finishing" : ""}${expanded ? " expanded" : ""}`}
-			draggable={!finished && !item.resting && !editing} onDragStart={() => { dragged.current = item.key; }} onDragOver={event => event.preventDefault()} onDrop={event => drop(item, event)}>
+			draggable={!finished && !item.resting && !editing && !expanded} onDragStart={() => { dragged.current = item.key; }} onDragOver={event => event.preventDefault()} onDrop={event => drop(item, event)}>
 			<button type="button" className="quest-check" aria-label={finished ? `Reopen ${quest.title}` : `Complete ${quest.title}`} title={finished ? "Ready to turn in. Click to reopen" : "Complete"}
 				disabled={!item.log.connected || item.resting} onClick={() => finished ? void run(item.log, { action: "reopen", id: quest.id }) : complete(item)}>
 				<QuestMarker quest={quest} finishing={finishing.includes(item.key)} resting={item.resting} /></button>
 			<div className="quest-body">
 				{editing === item.key ? <QuestEditor quest={quest} today={item.log.view.today} cancel={() => setEditing(undefined)}
 					save={fields => void run(item.log, { action: "update", id: quest.id, ...fields }).then(ok => { if (ok) setEditing(undefined); })} /> : <>
-					<button type="button" className="quest-title" aria-expanded={expanded} onClick={() => setOpen(expanded ? undefined : item.key)}>{quest.title}</button>
+					{/* An open quest is edited in place: its title, notes and steps save as they change. */}
+					{expanded && editable ? <div className="quest-title-row">
+						<QuestField className="quest-title quest-title-field" label="Quest title" value={quest.title} disabled={!item.log.connected}
+							save={value => { if (value) void run(item.log, { action: "update", id: quest.id, title: value }); }} />
+						<button type="button" className="icon-button quest-collapse" aria-label="Close quest" title="Close" onClick={() => setOpen(undefined)}><Icon name="chevron" /></button>
+					</div>
+					: <button type="button" className="quest-title" aria-expanded={expanded} onClick={() => setOpen(expanded ? undefined : item.key)}>{quest.title}</button>}
 					{quest.steps && !expanded && <ul className="quest-objectives">{quest.steps.slice(0, 6).map((step, index) =>
 						<li key={index} className={step.done ? "done" : ""}>- {step.title}{step.done && " (Complete)"}</li>)}
 						{quest.steps.length > 6 && <li>- {quest.steps.length - 6} more</li>}</ul>}
@@ -146,16 +153,21 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 						{item.log !== home && <span className="quest-computer">{item.log.name}</span>}
 					</div>
 					{expanded && <div className="quest-detail">
-						{quest.notes && <p className="quest-notes">{quest.notes}</p>}
-						{quest.steps && <ul className="quest-steps">{quest.steps.map((step, index) => <li key={index}>
-							<label><input type="checkbox" checked={step.done} disabled={finished || !item.log.connected} onChange={() => void run(item.log, { action: "update", id: quest.id,
-								steps: quest.steps!.map((other, at) => at === index ? { ...other, done: !other.done } : other) })} />{step.title}</label></li>)}</ul>}
+						{editable ? <>
+							<QuestField className="quest-notes-field" label="Notes" placeholder="Notes" multiline value={quest.notes ?? ""} disabled={!item.log.connected}
+								save={value => void run(item.log, { action: "update", id: quest.id, notes: value })} />
+							<QuestSteps steps={quest.steps ?? []} disabled={!item.log.connected} save={steps => void run(item.log, { action: "update", id: quest.id, steps })} />
+						</> : <>
+							{quest.notes && <p className="quest-notes">{quest.notes}</p>}
+							{quest.steps && <ul className="quest-steps">{quest.steps.map((step, index) => <li key={index} className={step.done ? "done" : ""}>{step.title}</li>)}</ul>}
+						</>}
 						{finished && <div className="quest-actions">
 							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => void run(item.log, { action: "turnin", id: quest.id })}><Icon name="check" />Turn in</button>
 							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => void run(item.log, { action: "reopen", id: quest.id })}>Reopen</button>
 						</div>}
 						{!finished && <div className="quest-actions">
-							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => setEditing(item.key)}><Icon name="edit" />Edit</button>
+							<button type="button" className="quiet-action" disabled={!item.log.connected} onClick={() => setEditing(item.key)}
+								title="Importance, due date and repeat"><Icon name="sliders" />Options</button>
 							{ask && item.log === home && <ActionMenu label={`Ask ${ask.name}`} actions={ASKS.map(({ id, label }) => ({ id, label }))} invoke={action => {
 								const choice = ASKS.find(entry => entry.id === action.id)!;
 								ask.send(`About my quest “${quest.title}” (quest id ${quest.id}): ${choice.prompt}`);
@@ -207,23 +219,66 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	</aside>;
 }
 
-function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: string; save: (fields: { title: string; notes: string; kind: QuestKind; due: string; scheduled: string; steps?: Quest["steps"]; repeat: QuestRepeat | null }) => void; cancel: () => void }) {
-	const [title, setTitle] = useState(quest.title), [notes, setNotes] = useState(quest.notes ?? ""), [kind, setKind] = useState(quest.kind);
+/** A field that saves when it loses focus or on Enter (Ctrl+Enter in notes), and puts its value back on Escape. */
+function QuestField({ value, save, label, placeholder, className, disabled, multiline }: {
+	value: string; save: (value: string) => void; label: string; placeholder?: string; className?: string; disabled?: boolean; multiline?: boolean;
+}) {
+	const [text, setText] = useState(value), reverting = useRef(false);
+	useEffect(() => setText(value), [value]);
+	const props = {
+		value: text, className, placeholder, disabled, "aria-label": label, maxLength: multiline ? 4000 : 300,
+		onChange: (event: { target: { value: string } }) => setText(event.target.value),
+		onBlur: () => { if (reverting.current) { reverting.current = false; return; } if (text.trim() !== value.trim()) save(text.trim()); },
+		onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+			if (event.key === "Escape") { reverting.current = true; setText(value); event.currentTarget.blur(); }
+			else if (event.key === "Enter" && (!multiline || event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.blur(); }
+		},
+	};
+	return multiline ? <textarea rows={Math.min(8, Math.max(1, text.split("\n").length))} {...props} /> : <input {...props} />;
+}
+
+/** A quest's steps as a checklist: tick, edit and remove each one, and add more with Enter. Saves the whole list on each change. */
+function QuestSteps({ steps, save, disabled }: { steps: NonNullable<Quest["steps"]>; save: (steps: NonNullable<Quest["steps"]>) => void; disabled?: boolean }) {
+	// Kept here too, so steps added in quick succession build on each other before the log reports them back.
+	const [items, setItems] = useState(steps), [adding, setAdding] = useState("");
+	const signature = JSON.stringify(steps);
+	useEffect(() => setItems(steps), [signature]);
+	const change = (next: NonNullable<Quest["steps"]>) => { setItems(next); save(next); };
+	return <ul className="quest-steps quest-steps-edit">
+		{items.map((step, index) => <li key={`${index}:${step.title}`} className={step.done ? "done" : ""}>
+			<input type="checkbox" checked={step.done} disabled={disabled} aria-label={`Done: ${step.title}`}
+				onChange={() => change(items.map((other, at) => at === index ? { ...other, done: !other.done } : other))} />
+			<QuestField className="quest-step-field" label="Step" value={step.title} disabled={disabled}
+				save={title => change(title ? items.map((other, at) => at === index ? { ...other, title } : other) : items.filter((_, at) => at !== index))} />
+			<button type="button" className="icon-button quest-step-remove" aria-label={`Remove ${step.title}`} title="Remove step" disabled={disabled}
+				onClick={() => change(items.filter((_, at) => at !== index))}><Icon name="close" /></button>
+		</li>)}
+		{items.length < 30 && <li className="quest-step-add"><span aria-hidden="true">+</span>
+			<input value={adding} placeholder="Add a step…" aria-label="Add a step" maxLength={300} disabled={disabled}
+				onChange={event => setAdding(event.target.value)}
+				onKeyDown={event => {
+					if (event.key !== "Enter") return;
+					event.preventDefault();
+					const title = adding.trim();
+					if (title) { change([...items, { title, done: false }]); setAdding(""); }
+				}} /></li>}
+	</ul>;
+}
+
+/** A quest's less frequent settings: importance, a due or scheduled date, and repeating. */
+function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: string; save: (fields: { kind: QuestKind; due: string; scheduled: string; repeat: QuestRepeat | null }) => void; cancel: () => void }) {
+	const [kind, setKind] = useState(quest.kind);
 	// One date: a deadline (due by) or the day it happens (scheduled on).
 	const [dateKind, setDateKind] = useState<"due" | "scheduled">(quest.scheduled ? "scheduled" : "due"), [due, setDue] = useState(quest.repeat ? "" : quest.scheduled ?? quest.due ?? "");
 	const [unit, setUnit] = useState<QuestRepeat["unit"] | "">(quest.repeat?.unit ?? ""), [every, setEvery] = useState(quest.repeat?.every ?? 1);
 	const [from, setFrom] = useState(quest.repeat?.from ?? today), [days, setDays] = useState<number[]>(quest.repeat?.weekdays ?? []);
 	const schedule: QuestRepeat | null = unit && /^\d{4}-\d{2}-\d{2}$/.test(from) ? { every: Math.max(1, Math.min(366, Math.round(every) || 1)), unit, from, ...(unit === "week" && days.length ? { weekdays: days } : {}) } : null;
 	const firstDue = schedule && (lastDue(schedule, today) === today ? today : nextDue(schedule, today));
-	const [steps, setSteps] = useState((quest.steps ?? []).map(step => step.title).join("\n"));
 	return <form className="quest-editor" onSubmit={event => {
 		event.preventDefault();
-		const lines = steps.split("\n").map(line => line.trim()).filter(Boolean);
-		save({ title, notes, kind: schedule ? "daily" : kind, due: schedule || dateKind !== "due" ? "" : due, scheduled: schedule || dateKind !== "scheduled" ? "" : due, repeat: schedule, steps: lines.map(line => ({ title: line, done: quest.steps?.find(step => step.title === line)?.done ?? false })) });
+		save({ kind: schedule ? "daily" : kind, due: schedule || dateKind !== "due" ? "" : due, scheduled: schedule || dateKind !== "scheduled" ? "" : due, repeat: schedule });
 	}}>
-		<input value={title} onChange={event => setTitle(event.target.value)} aria-label="Quest title" maxLength={200} autoFocus />
-		<textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Notes" aria-label="Notes" rows={2} />
-		<textarea value={steps} onChange={event => setSteps(event.target.value)} placeholder="Steps, one per line" aria-label="Steps" rows={2} />
+		<strong className="quest-editor-title">{quest.title}</strong>
 		<div className="quest-editor-row quest-repeat-row">
 			<select value={unit} onChange={event => setUnit(event.target.value as QuestRepeat["unit"] | "")} aria-label="Repeats">
 				<option value="">Doesn't repeat</option><option value="day">Repeats by day</option><option value="week">Repeats by week</option><option value="month">Repeats by month</option></select>

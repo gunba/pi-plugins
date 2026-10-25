@@ -430,9 +430,14 @@ details[open] > summary:before {
 .inline-question .dialog-actions { margin-top:14px; }
 .computer-heading small { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px;
   min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* The box clips its overflow (for long status text); the spinning ring draws 3px outside the dot, so it gets room. */
+.computer-heading small > .status-dot, .computer-card summary small > .status-dot { margin:3px; }
 .session-label-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .session-label-line > strong { flex:1; min-width:0; }
 .session-row { position:relative; }
+/* Conversations that aren't running (asleep or closed) follow the running ones, under a divider. */
+.session-row.first-resting { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+.session-row.first-resting::before { content:"Not running"; display:block; padding:0 10px 4px; color:var(--muted); font-size:10.5px; letter-spacing:.02em; }
 .session-row:hover .session-item:not(.selected) { background:var(--hover); }
 /* The row's buttons sit on its title line, which keeps room for them; the second line, with its marks, runs to the edge. */
 .session-close {
@@ -1496,6 +1501,10 @@ details[open] > summary:before {
   background: var(--sidebar);
 }
 .connection-banner > span { flex: 1; min-width: 0; }
+.sleep-waiting { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
+.sleep-waiting li { display: flex; gap: 8px; min-width: 0; }
+.sleep-waiting strong { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
+.sleep-waiting span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resume-model { display: flex; align-items: center; gap: 6px; flex: none; }
 .resume-model .field-picker { min-height: 30px; padding: 3px 10px; width: auto; }
 .older {
@@ -2163,7 +2172,25 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-notes { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); line-height:1.5; }
 .quest-steps { list-style:none; margin:0; padding:0; display:grid; gap:3px; }
 .quest-steps label { display:flex; align-items:flex-start; gap:7px; line-height:1.4; }
-.quest-steps input { width:14px; height:14px; margin:2px 0 0; padding:0; accent-color:var(--quest-gold); flex:none; }
+.quest-steps input[type=checkbox] { width:14px; height:14px; margin:0; padding:0; accent-color:var(--quest-gold); flex:none; }
+.quest-steps li.done { color:var(--muted); }
+/* An open quest edits in place: its fields read as text until hovered or focused. */
+.quest-title-row { display:flex; align-items:center; gap:2px; }
+.quest-title-field, .quest-notes-field, .quest-step-field, .quest-step-add input { width:100%; min-width:0; margin:0; padding:2px 5px; border:1px solid transparent; border-radius:5px; background:transparent; font:inherit; color:inherit; }
+.quest-title-field { flex:1; margin-left:-6px; font-weight:600; }
+.quest-title-field:hover, .quest-notes-field:hover, .quest-step-field:hover, .quest-step-add input:hover { border-color:var(--border); }
+.quest-title-field:focus, .quest-notes-field:focus, .quest-step-field:focus, .quest-step-add input:focus { border-color:var(--focus-border); background:var(--surface); outline:none; }
+.quest-notes-field { margin-left:-6px; resize:vertical; color:var(--muted); line-height:1.5; }
+.quest-collapse { flex:none; width:24px; height:24px; padding:0; }
+.quest-collapse .ui-icon { width:14px; height:14px; transform:rotate(180deg); }
+.quest-steps-edit li { display:flex; align-items:center; gap:5px; }
+.quest-steps-edit li.done .quest-step-field { color:var(--muted); }
+.quest-step-field { color:var(--quest-objective); }
+.quest-step-remove { flex:none; width:20px; height:20px; padding:0; opacity:0; }
+.quest-step-remove .ui-icon { width:12px; height:12px; }
+.quest-steps-edit li:hover .quest-step-remove, .quest-steps-edit li:focus-within .quest-step-remove { opacity:1; }
+.quest-step-add > span { width:14px; flex:none; text-align:center; color:var(--muted); }
+.quest-editor-title { font-size:12px; font-weight:600; }
 .quest-actions { display:flex; flex-wrap:wrap; align-items:center; gap:2px; margin-left:-8px; }
 .quest-actions .quiet-action { padding:4px 8px; font-size:11px; }
 .quest-editor { display:grid; gap:6px; }
@@ -2392,6 +2419,17 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .work-current-body .shown-image-frame { margin:8px 12px; }
 .work-current-body .shown-image-frame .shown-image { width:auto; height:auto; max-width:100%; max-height:calc(100cqh - 20px); }
 .work-list { flex:none; max-height:34%; overflow:auto; margin:0; padding:4px 0; list-style:none; border-top:1px solid var(--border); }
+/* Links the agent gave in its replies, newest first. */
+.work-links { flex:none; max-height:30%; overflow:auto; border-top:1px solid var(--border); padding:8px 0 6px; }
+.work-pane:not(:has(.work-current)) .work-links { flex:1; max-height:none; border-top:0; }
+.work-links h3 { display:flex; align-items:center; gap:8px; margin:0 0 4px; padding:0 18px; font-size:12px; font-weight:600; }
+.work-links h3 small { color:var(--muted); font-weight:400; font-variant-numeric:tabular-nums; }
+.work-links ol { list-style:none; margin:0; padding:0; }
+.work-links li { display:flex; align-items:center; gap:8px; min-width:0; padding:4px 18px; font-size:12px; }
+.work-links li:hover { background:var(--hover); }
+.work-links li > .ui-icon { flex:none; width:13px; height:13px; color:var(--muted); }
+.work-links li > a, .work-links li .file-link-wrap { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.work-links time { flex:none; margin-left:auto; color:var(--muted); font-size:10px; }
 .work-list-item { display:flex; align-items:center; gap:9px; width:100%; padding:6px 14px 6px 18px; border:0; border-radius:0; background:transparent; text-align:left; font-size:12px; }
 .work-list-item:hover { background:var(--hover); }
 .work-list-item[aria-current] { background:var(--accent-soft); box-shadow:inset 3px 0 var(--accent); }

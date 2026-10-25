@@ -10,10 +10,14 @@ import { Icon, ProviderIcon } from "./icons.tsx";
 import type { MoveRequest } from "./move-conversation.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import type { QuestLog } from "./quest-tracker.tsx";
+import type { SessionView } from "../shared/protocol.ts";
 import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
 
 /** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
+/** Running conversations first, then sleeping ones (kept with a watch to wake them), then the rest that aren't running. */
+const restRank = (item: SessionView) => item.state !== "closed" && item.state !== "failed" ? 0 : item.kept && (item.wakes || item.watching) ? 1 : 2;
+
 function SidebarRename({ title, rename, close }: { title: string; rename: (name: string) => Promise<unknown>; close: () => void }) {
   const [draft, setDraft] = useState(title), [saving, setSaving] = useState(false), [error, setError] = useState("");
   const save = async () => {
@@ -122,9 +126,11 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
         <button onClick={() => location.reload()}>Reload app</button></div>}
       {host.sessions.filter(item => item.computer === computer.id)
-        .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map(item => {
+        .sort((a, b) => restRank(a) - restRank(b) || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map((item, index, rows) => {
+        // A divider heads the conversations that aren't running.
+        const resting = index === rows.findIndex(row => restRank(row) > 0) ? " first-resting" : "";
         const renamable = computer.connected && item.state === "ready" && !!item.ui;
-        if (renaming === item.key && renamable) return <div className="session-row" key={item.key}>
+        if (renaming === item.key && renamable) return <div className={`session-row${resting}`} key={item.key}>
           <SidebarRename title={conversationTitle(item)} close={() => setRenaming("")}
             rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
         </div>;
@@ -133,7 +139,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
         const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
         // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
         const dot = background && (activity === "idle" || activity === "ready") ? "background" : activity;
-        return <div className="session-row" key={item.key}>
+        return <div className={`session-row${resting}`} key={item.key}>
           <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
             <span className={`status-dot ${dot}`} role="img"
               aria-label={background?.label ?? activityLabel(activity)} title={background?.label ?? activityLabel(activity)} />

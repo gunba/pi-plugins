@@ -150,6 +150,8 @@ export interface SessionView {
 	 * time when it closed, and when the computer had started then. Desk reopens it when a file changes, or after the
 	 * computer restarted, which stopped the commands that write them. */
 	asleep?: { files: { path: string; stamp: string }[]; boot: number };
+	/** Closed and kept, what it waits on: its watches as their views listed them when it closed. */
+	waiting?: { title: string; detail?: string }[];
 	/** The model and reasoning it last ran with, kept while it isn't running; Pi resumes it with them. */
 	lastModel?: { provider: string; id: string; name: string; thinking?: string };
 	/** Native state; presentation data is carried once in ui below. */

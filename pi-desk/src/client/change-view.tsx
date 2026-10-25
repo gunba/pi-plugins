@@ -143,6 +143,32 @@ export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
 		return [];
 	}));
 }
+/** A link the agent gave in a reply: a local file Desk can open, or a web page. */
+export type LinkItem = { key: string; at: number; message: string; label: string; url?: string; file?: FileReference };
+const LINK = /\[([^\]\n]{1,200})\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"*_`])/g;
+/** The links in the agent's replies in the loaded part of a conversation, each once, oldest first. */
+export function messageLinks(messages: readonly ChatMessage[]): LinkItem[] {
+	const found = new Map<string, LinkItem>();
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		for (const block of message.blocks) {
+			if (block?.type !== "text") continue;
+			for (const match of block.text.matchAll(LINK)) {
+				const target = match[2] ?? match[3]!, label = match[1]?.trim();
+				// The host resolved the message's local file links (file-links.ts); anything else counts only as a web address.
+				const file = message.links?.find(link => link.target === target)?.file;
+				const item: LinkItem | undefined = file ? { key: `file:${file.id}`, at: message.timestamp, message: message.id, label: label || file.name, file }
+					: /^https?:\/\//i.test(target) ? { key: target, at: message.timestamp, message: message.id, label: label && label !== target ? label : target.replace(/^https?:\/\/(www\.)?/i, ""), url: target }
+					: undefined;
+				if (!item) continue;
+				// A link given again moves to its latest mention.
+				found.delete(item.key); found.set(item.key, item);
+			}
+		}
+	}
+	return [...found.values()];
+}
+
 /** Opens an item: in the side pane when there is room, otherwise in the expanded view. */
 export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined);
 const itemTitle = (item: WorkItem) => item.block.type === "brief" ? "What do I need to know?" : item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
@@ -359,8 +385,8 @@ function ItemHeader({ item, session, children }: { item: WorkItem; session: stri
 }
 
 /** Beside the conversation: what the agent changed and showed, newest first, with the selected one open. */
-export function WorkPane({ items, selected, select, expand, close, session }: {
-	items: WorkItem[]; selected?: string; select: (id: string) => void; expand: (item: WorkItem) => void; close: () => void; session: string;
+export function WorkPane({ items, links, selected, select, expand, close, session }: {
+	items: WorkItem[]; links: LinkItem[]; selected?: string; select: (id: string) => void; expand: (item: WorkItem) => void; close: () => void; session: string;
 }) {
 	const newest = [...items].reverse(), current = newest.find(item => item.id === selected) ?? newest[0];
 	const width = useRef<HTMLElement>(null);
@@ -388,6 +414,15 @@ export function WorkPane({ items, selected, select, expand, close, session }: {
 				<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}
 				<time>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
 			</button></li>)}</ol>}
+		{links.length > 0 && <section className="work-links" aria-label="Links">
+			<h3>Links<small>{links.length}</small></h3>
+			<ol>{[...links].reverse().map(link => <li key={link.key}>
+				<Icon name={link.file ? "folder" : "globe"} />
+				{link.file ? <ReferenceContext value={{ message: link.message }}><FileLink session={session} file={link.file}>{link.label}</FileLink></ReferenceContext>
+					: <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>{link.label}</a>}
+				<time>{new Date(link.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+			</li>)}</ol>
+		</section>}
 	</aside>;
 }
 

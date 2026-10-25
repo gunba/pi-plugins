@@ -9,7 +9,7 @@ import { agentInventory } from "./agent-inventory.ts";
 import { AgentPane } from "./agent-pane.tsx";
 import { useAttachments } from "./attachments.tsx";
 import type { Brief, BriefState } from "./brief.tsx";
-import { WorkFocus, WorkModal, WorkPane, workItems, type WorkItem } from "./change-view.tsx";
+import { WorkFocus, WorkModal, WorkPane, messageLinks, workItems, type WorkItem } from "./change-view.tsx";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { useCommandCompletion } from "./command-completion.tsx";
 import { deskCommandHandlers } from "./command-handlers.ts";
@@ -217,6 +217,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   // The message box's recall of earlier messages (composer.tsx), kept across conversations.
   const recall = useRef<Recall | undefined>(undefined);
   const loadedWork = useMemo(() => workItems(messages), [messages]);
+  const loadedLinks = useMemo(() => messageLinks(messages), [messages]);
   // The reply "What do I need to know?" covers: the latest one with something written in it.
   // The reply that ends the turn: the last message, when it is Pi's and has text (not a stopped turn's tool call).
   const latestReply = useMemo(() => {
@@ -270,7 +271,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (newestWork.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
     }
   }, [selected, newestWork]);
-  const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length > 0 && (!panel || settings);
+  const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
   useEffect(() => {
     if (panel === "view" && focusedView === "subagents") setPanel("agents");
     if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
@@ -502,8 +503,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             {messagesView && <button type="button" className={`header-chip${panel === "view" && focusedView === "messages" ? " selected" : ""}`}
               title={(messagesView.data as UiDetails).summary ?? "Agent messages"} onClick={() => { setFocusedView("messages"); setPanel(panel === "view" && focusedView === "messages" ? undefined : "view"); }}>
               <Icon name="party" />Messages <b>{(messagesView.data as UiDetails).items!.length}</b></button>}
-            {wideWorkspace && paneItems.length > 0 && !dotSelected && !questsSelected && <button type="button" className="icon-button"
-              title={showWorkPane ? "Hide changes" : `Show changes (${paneItems.length})`} aria-label="Changes" aria-pressed={showWorkPane}
+            {wideWorkspace && paneItems.length + loadedLinks.length > 0 && !dotSelected && !questsSelected && <button type="button" className="icon-button"
+              title={showWorkPane ? "Hide changes" : `Show changes and links (${paneItems.length + loadedLinks.length})`} aria-label="Changes" aria-pressed={showWorkPane}
               onClick={() => { const hidden = showWorkPane; setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
               <Icon name="panel-right" /></button>}
             <button type="button" className="icon-button" title="Conversation settings" aria-label="Conversation settings" aria-pressed={settings}
@@ -547,7 +548,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             {/* Asleep: closed and kept with something to wake it; Desk reopens it then. */}
             <span>{session.state === "closed" && session.kept && (session.wakes || session.watching)
               ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
-              : "Pi is not running. Resume to continue."}</span>
+              : "Pi is not running. Resume to continue."}
+              {session.state === "closed" && session.kept && session.waiting && <ul className="sleep-waiting">{session.waiting.map((item, index) =>
+                <li key={index}><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}</li>)}</ul>}</span>
             {session.state === "closed" && session.kept && <ResumeModel sessions={host.sessions} session={session} disabled={!connected}
               change={choice => void api(`/sessions/${session.key}/restart`, { takeover: true, setup: choice, sleep: true }).catch(error => setError(errorText(error)))} />}
             <button disabled={!connected} onClick={() => void restartSession()}>{session.state === "closed" && session.kept ? "Open" : session.file ? "Resume" : "Retry"}</button>
@@ -635,7 +638,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         </>}
       </main>
       {dotSelected && wideWorkspace && questLogs.length > 0 && <div className="quest-rail">{questTracker}</div>}
-      {showWorkPane && <WorkPane items={paneItems} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
+      {showWorkPane && <WorkPane items={paneItems} links={loadedLinks} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
         close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
       {panel && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : visibleViews[0]?.title ?? "Details"}
