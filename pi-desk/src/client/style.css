@@ -754,7 +754,7 @@ details[open] > summary:before {
 .nested-call > summary, .nested-earlier > summary { display:flex; align-items:center; gap:8px; min-width:0; padding:3px 8px; border-radius:6px; list-style:none; cursor:pointer; }
 .nested-call > summary::-webkit-details-marker, .nested-earlier > summary::-webkit-details-marker { display:none; }
 .nested-call > summary:hover, .nested-earlier > summary:hover { background:var(--hover); }
-.nested-call > summary > strong { flex:none; font-weight:500; }
+.nested-call > summary > strong { flex:0 0 var(--nested-name, auto); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
 .nested-call .tool-status { margin:0 0 0 auto; align-items:center; flex-wrap:nowrap; gap:6px; white-space:nowrap; font-size:10px; }
 .nested-call > pre { margin:2px 8px 6px; max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; color:var(--text); }
 .nested-call-error { margin:2px 8px 4px; color:var(--danger); white-space:pre-wrap; overflow-wrap:anywhere; }

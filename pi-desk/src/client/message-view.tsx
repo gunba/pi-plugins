@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useState } from "react";
+import { createContext, memo, useContext, useState, type CSSProperties } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage, NestedCall } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
@@ -101,9 +101,12 @@ function ToolStatus({ message }: { message?: ChatMessage }) {
 	</span>;
 }
 /** One row per tool call a tool made, under its row: what the model said each was for, and how it went. */
+const nestedLabel = (call: NestedCall) => call.skills?.length ? call.skills.length === 1 ? "Read skill" : "Read skills" : call.name;
 function NestedCalls({ id, nested }: { id: string; nested: NonNullable<ChatMessage["nested"]> }) {
+	// One name column for every row, as wide as the longest name (up to a limit), so the descriptions line up.
+	const nameWidth = Math.min(24, Math.max(...nested.calls.map(call => nestedLabel(call).length)) + 1);
 	const row = (call: NestedCall, index: number) => {
-		const label = call.skills?.length ? call.skills.length === 1 ? "Read skill" : "Read skills" : call.name;
+		const label = nestedLabel(call);
 		const detail = call.skills?.length ? call.skills.join(", ") : call.description ?? toolArgumentPreview(call.name, call.arguments);
 		return <Disclosure key={index} id={`nested:${id}:${index}`} className="nested-call"
 			summary={<><strong>{label}</strong>
@@ -119,7 +122,7 @@ function NestedCalls({ id, nested }: { id: string; nested: NonNullable<ChatMessa
 	};
 	// Long scripts keep their latest calls in view, which include any still running.
 	const calls = nested.calls, hidden = calls.length > 8 ? calls.length - 6 : 0;
-	return <div className="nested-calls">
+	return <div className="nested-calls" style={{ "--nested-name": `${nameWidth}ch` } as CSSProperties}>
 		{hidden > 0 && <Disclosure id={`nested:${id}:earlier`} className="nested-earlier" summary={`${hidden} earlier call${hidden === 1 ? "" : "s"}`}>
 			{calls.slice(0, hidden).map(row)}</Disclosure>}
 		{calls.slice(hidden).map((call, index) => row(call, hidden + index))}
