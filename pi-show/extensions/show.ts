@@ -217,7 +217,9 @@ export default function show(pi: ExtensionAPI) {
 		label: "Show",
 		description: "At key moments, show Jordan a result, work to review or what you changed in a file he uses; not routine steps. "
 			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show. "
-			+ "An .html file is shown as a live page for tables, charts and other rich displays: inline scripts and styles run, nothing loads from the network.",
+			+ "An .html file is shown as a live page: inline scripts and styles run, nothing loads from the network. "
+			+ "When a result reads better as a table, chart or side-by-side comparison (measurements, before and after, options), "
+			+ "write it as a self-contained .html file in the temp folder and show that, rather than describing it in prose.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

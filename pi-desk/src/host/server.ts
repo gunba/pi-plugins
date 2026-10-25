@@ -380,8 +380,10 @@ export class DeskHost {
 		if (message.type === "snapshot") {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
+			const model = message.snapshot.model;
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
 				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", ...sessionDisplay(message.snapshot),
+				...(model ? { lastModel: { provider: model.provider, id: model.id, name: model.name, ...(message.snapshot.thinking ? { thinking: message.snapshot.thinking } : {}) } } : {}),
 				// The replacement process is up, so a restart onto a new version is over.
 				...(managed.view.updating && !managed.replacing ? { updating: undefined } : {}) };
 		} else if (message.type === "history_ready") {

@@ -129,6 +129,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
             rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
         </div>;
         const background = backgroundWork(item), activity = sessionActivity(item);
+        // A conversation that isn't running shows the model it resumes with.
+        const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
         // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
         const dot = background && (activity === "idle" || activity === "ready") ? "background" : activity;
         return <div className="session-row" key={item.key}>
@@ -139,9 +141,9 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
               <small className="session-metadata"><span className="session-activity" title={background?.title}>
                 {background?.label ?? activityLabel(activity)}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
-                {item.snapshot?.model && <span className="session-model" title={`${item.snapshot.model.name}${item.snapshot.thinking && item.snapshot.thinking !== "off" ? ` · ${item.snapshot.thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}`}>
-                  <ProviderIcon id={item.snapshot.model.provider} title={item.snapshot.model.name} />
-                  <span>{item.snapshot.model.provider === "anthropic" ? item.snapshot.model.name.replace(/^Claude\s+/i, "") : item.snapshot.model.name}</span></span>}</span></small></span>
+                {model && <span className="session-model" title={`${model.name}${thinking && thinking !== "off" ? ` · ${thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}${item.snapshot ? "" : " · resumes with these"}`}>
+                  <ProviderIcon id={model.provider} title={model.name} />
+                  <span>{model.provider === "anthropic" ? model.name.replace(/^Claude\s+/i, "") : model.name}</span></span>}</span></small></span>
           </button>
           {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${conversationTitle(item)}`} title="Rename (or double-click the name)"
             onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}

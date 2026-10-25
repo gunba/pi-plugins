@@ -18,6 +18,7 @@ import { Composer } from "./composer.tsx";
 import { draftKey, readDelivery } from "./composer-keys.ts";
 import { useConfirmation } from "./confirmation.tsx";
 import { api, ApiError, subscribe, onUpgrade } from "./connection.ts";
+import { ResumeModel } from "./new-model.tsx";
 import { connectionLabel, isOffline } from "./connection-state.ts";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
@@ -547,6 +548,8 @@ export function App({ account }: { account?: BrowserAccount }) {
             <span>{session.state === "closed" && session.kept && (session.wakes || session.watching)
               ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
               : "Pi is not running. Resume to continue."}</span>
+            {session.state === "closed" && session.kept && <ResumeModel sessions={host.sessions} session={session} disabled={!connected}
+              change={choice => void api(`/sessions/${session.key}/restart`, { takeover: true, setup: choice, sleep: true }).catch(error => setError(errorText(error)))} />}
             <button disabled={!connected} onClick={() => void restartSession()}>{session.state === "closed" && session.kept ? "Open" : session.file ? "Resume" : "Retry"}</button>
           </div>
         )}

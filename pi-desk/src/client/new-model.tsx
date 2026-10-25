@@ -15,8 +15,8 @@ export function rememberedModel(computer: string | undefined): ModelChoice {
 }
 export function rememberModel(computer: string | undefined, choice: ModelChoice): void { localStorage.setItem(key(computer), JSON.stringify(choice)); }
 
-function ReasoningMenu({ value, change, disabled }: { value: string; change: (value: string) => void; disabled: boolean }) {
-	const popover = useAnchoredPopover("new-conversation-reasoning", disabled, 200);
+function ReasoningMenu({ value, change, disabled, id = "new-conversation-reasoning" }: { value: string; change: (value: string) => void; disabled: boolean; id?: string }) {
+	const popover = useAnchoredPopover(id, disabled, 200);
 	return <>
 		<button ref={popover.trigger} type="button" className="field-picker" disabled={disabled} popoverTarget={popover.id}
 			aria-haspopup="listbox" aria-expanded={popover.open} aria-label={`Reasoning: ${levelName(value)}`}>
@@ -31,6 +31,26 @@ function ReasoningMenu({ value, change, disabled }: { value: string; change: (va
 				<span>{levelName(level)}</span>{level === value && <Icon name="check" />}</button>)}</div>}
 		</div>
 	</>;
+}
+
+/**
+ * The model and reasoning a conversation that isn't running resumes with. Changing them opens it to apply the change
+ * (change), after which Desk puts it back to sleep. Switching provider needs it open, as its history may have to be
+ * summarized first.
+ */
+export function ResumeModel({ sessions, session, disabled, change }: {
+	sessions: WorkspaceSession[]; session: WorkspaceSession; disabled: boolean; change: (value: Partial<ModelChoice>) => void;
+}) {
+	const source = sessions.find(item => item.computer === session.computer && item.snapshot?.models.length)?.snapshot, last = session.lastModel;
+	if (!source || !last) return null;
+	const chosen = source.models.find(model => model.provider === last.provider && model.id === last.id);
+	return <div className="resume-model">
+		<ModelPicker disabled={disabled} select={model => change({ model: `${model.provider}/${model.id}` })}
+			snapshot={{ id: `resume:${session.key}`, leaf: null, empty: false, activity: "idle", models: source.models,
+				modelSwitchConstraint: { provider: last.provider, portable: false, reason: "Open it to switch provider: its history may need summarizing first." },
+				model: { ...(chosen ?? last), images: false } }} />
+		<ReasoningMenu id={`resume-reasoning:${session.key}`} value={last.thinking ?? ""} disabled={disabled} change={reasoning => { if (reasoning) change({ reasoning }); }} />
+	</div>;
 }
 
 /** Model and reasoning for a new conversation, chosen with the same picker as the composer. */

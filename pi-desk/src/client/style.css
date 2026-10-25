@@ -1495,6 +1495,9 @@ details[open] > summary:before {
   color: var(--muted);
   background: var(--sidebar);
 }
+.connection-banner > span { flex: 1; min-width: 0; }
+.resume-model { display: flex; align-items: center; gap: 6px; flex: none; }
+.resume-model .field-picker { min-height: 30px; padding: 3px 10px; width: auto; }
 .older {
   display: block;
   margin: 0 auto 30px;

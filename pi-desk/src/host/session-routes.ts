@@ -44,7 +44,15 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				if (managed.worker && data.replace === true) return reply({ key: await core.replaceWorker(managed) }, 202);
 				if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
 				if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
-				return reply({ key: core.createSession(managed.view.cwd, managed.view.file, managed, data.takeover === true) }, 202);
+				// A sleeping conversation's model can be changed: it opens, takes the choice once ready, and sleeps again.
+				const setup = data.setup && typeof data.setup === "object" ? data.setup as Record<string, unknown> : undefined;
+				const choice = setup ? { ...(setup.model !== undefined ? { model: string(setup.model, 300) } : {}),
+					...(setup.reasoning !== undefined ? { reasoning: string(setup.reasoning, 20) } : {}) } : undefined;
+				const started = core.createSession(managed.view.cwd, managed.view.file, managed, data.takeover === true);
+				const opened = core.sessions.get(started);
+				if (opened && choice) opened.setup = choice;
+				if (opened && data.sleep === true) opened.sleepWhenIdle = true;
+				return reply({ key: started }, 202);
 			}
 			const command = commandFrom(data.command);
 			const activation = string(data.activation, 100);
