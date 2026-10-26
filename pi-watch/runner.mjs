@@ -93,7 +93,9 @@ if (spec.every) {
 	};
 	void loop().catch(error => end({ error: error instanceof Error ? error.message : String(error) }));
 } else {
-	const child = current = start(openSync(spec.log, "a"));
+	// Write mode, not append: on Windows an append-mode handle allows appending only, which MSYS programs (Git Bash)
+	// cannot write to. pi-watch has just created the log empty, and one handle serves both streams.
+	const child = current = start(openSync(spec.log, "w"));
 	child.once("error", error => end({ error: error.message }));
 	child.once("exit", (code, signal) => end(stopping ? { stopped: stopping } : { code, signal }));
 	// Without an end it runs until it ends or is stopped. The clock is checked each minute: Node's timers stop while a

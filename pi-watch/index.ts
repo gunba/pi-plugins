@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getShellConfig, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -354,7 +354,9 @@ class Watches {
 	/** Starts a command watch's runner. A change watch's runner started again keeps its numbered changes. */
 	private launch(spec: WatchSpec): void {
 		mkdirSync(this.folder, { recursive: true });
-		const shell = getShellConfig(), file = join(this.folder, `${spec.id}.json`), again = spec.pid !== undefined;
+		// The shell the bash tool uses: the configured shellPath, else Pi's default (on Windows, Git Bash or bash on PATH).
+		const settings = SettingsManager.create(this.ctx.cwd, getAgentDir(), { projectTrusted: this.ctx.isProjectTrusted() });
+		const shell = getShellConfig(settings.getShellPath()), file = join(this.folder, `${spec.id}.json`), again = spec.pid !== undefined;
 		spec.exit = join(this.folder, `${spec.id}.exit`);
 		if (spec.mode === "change") spec.change = join(this.folder, `${spec.id}.change`);
 		else { spec.log = join(this.folder, `${spec.id}.log`); writeFileSync(spec.log, ""); }
