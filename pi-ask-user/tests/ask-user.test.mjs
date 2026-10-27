@@ -24,6 +24,19 @@ test('Away reports an unanswered question without waiting or claiming user cance
  assert.ok(ask.renderResult(result, {}, theme));
 });
 
+test('an unanswered question says whether it timed out or was dismissed, not that the user refused', async () => {
+ const ask = request => { let tool; extension({registerTool: value => tool = value, events: {emit(_name, probe) { probe.presentation = {operatorAvailable: true, request}; }}}); return tool; };
+ // Desk answers null both when its timeout passes and when the user dismisses the question.
+ const timedOut = await ask((_form, {timeout}) => new Promise(resolve => setTimeout(() => resolve(null), timeout)))
+  .execute('id', {question: 'Restart the proxy?', options: ['Yes', 'No'], timeout: 200}, undefined, undefined, {hasUI: true, ui: {}});
+ assert.equal(timedOut.details.timedOut, true);
+ assert.equal(timedOut.content[0].text, 'No answer within 0 seconds, so the question closed. This is not a refusal; the user may not have seen it.');
+ const dismissed = await ask(async () => null)
+  .execute('id', {question: 'Restart the proxy?', options: ['Yes', 'No'], timeout: 60_000}, undefined, undefined, {hasUI: true, ui: {}});
+ assert.equal(dismissed.details.timedOut, undefined);
+ assert.equal(dismissed.content[0].text, 'The user closed the question without answering.');
+});
+
 test('aborted calls do not prompt', async () => {
  const signal = AbortSignal.abort();
  const result = await tool().execute('id', {question: 'Proceed?'}, signal, undefined, {});
