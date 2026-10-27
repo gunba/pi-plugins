@@ -52,7 +52,8 @@ import { NativeContext } from "./context.ts";
 import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
-import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
+import { promoteFollowUp, cancelQueued, queuedMessageIds, editQueued } from "./native-queue-order.ts";
+import { LearnMode } from "./learn.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
@@ -131,6 +132,7 @@ export class DeskEngine {
 	private full?: { manager: SessionManager; entry: (entry: SessionEntry) => SessionEntry };
 	private compacting?: SessionSnapshot["compacting"];
 	private contextCache?: { manager: SessionManager; leaf: string | null; value?: number };
+	private learning?: LearnMode;
 	private briefCache?: { manager: SessionManager; leaf: string | null; value?: string };
 	private measured?: { manager: SessionManager; leaf: string | null; revision: number; value?: number };
 	/** Why Desk itself started the current compaction; Pi reports those as manual. */
@@ -404,12 +406,17 @@ export class DeskEngine {
 		this.releaseManagers(session.sessionManager);
 		this.replacing = false;
 		this.unsubscribe?.();
+		await this.learning?.close();
 		this.running = false;
 		this.failed = false;
 		this.compacting = undefined;
 		const feed = this.openTranscript(session.sessionManager);
+		this.learning = this.learnMode(session, feed);
 		this.unsubscribe = session.subscribe(event => {
 			feed.event(event);
+			if (event.type === "turn_end" || event.type === "agent_settled") queueMicrotask(() => {
+				if (!this.closed && !this.transition && this.runtime?.session === session) this.learning?.progress();
+			});
 			if (event.type === "compaction_start") this.compacting = { reason: this.automaticCompaction ?? event.reason, started: Date.now() };
 			if (event.type === "agent_settled") setImmediate(() => void this.compactMeasuredContext(session));
 			if (event.type === "compaction_end") {
@@ -470,7 +477,8 @@ export class DeskEngine {
 			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
 		const cache = promptCache(session);
 		const defaults = session.settingsManager.getGlobalSettings();
-		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
+		const queued = (messages: readonly string[], queue: "steering" | "followUp") => ({ count: messages.length,
+			previews: messages.map(queuePreview), ids: queuedMessageIds(session, queue) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
 			this.opening = { manager, text: openingMessage(manager.getEntries(), this.fullEntry(manager)) };
@@ -501,16 +509,24 @@ export class DeskEngine {
 			],
 			commands: promptCommands(session, this.runtime.services.resourceLoader),
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({ id: model.id, provider: model.provider, name: model.name })),
-			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
+			queue: { steering: queued(session.getSteeringMessages(), "steering"), followUp: queued(session.getFollowUpMessages(), "followUp") },
 			...(cache ? { cache } : {}),
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent,
 				...("estimated" in context ? { estimated: true } : {}) } : undefined,
 			usage: this.usageCache.value,
 			contextFrom: this.contextFrom(manager, leaf),
 			brief: this.briefFor(manager, leaf),
+			learn: this.learning?.snapshot(),
 			compacting: this.compacting,
 			ui,
 		};
+	}
+
+	private learnMode(session: AgentSession, feed: TranscriptFeed): LearnMode {
+		return new LearnMode(session, this.fullEntry(session.sessionManager), entry => {
+			if (entry) feed.event({ type: "entry_appended", entry });
+			this.usageRevision++; this.scheduleSnapshot();
+		});
 	}
 
 	private fullEntry(manager: SessionManager): (entry: SessionEntry) => SessionEntry {
@@ -577,6 +593,7 @@ export class DeskEngine {
 			case "snapshot": return this.snapshot();
 			case "models": await this.refreshModels(); return this.snapshot();
 			case "native_read": return readNativeCommand(session, command.name, command.args);
+			case "learn": this.learning?.setEnabled(command.enabled); this.scheduleSnapshot(); return;
 			case "brief": {
 				// Written by pi-compaction-context from the conversation's own cached request; never part of the conversation.
 				const probe: { session: string; refresh?: boolean; result?: Promise<unknown> } = { session: session.sessionId, refresh: command.refresh };
@@ -675,6 +692,12 @@ export class DeskEngine {
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");
 				await this.change(async () => { session.setThinkingLevel(level); }, true);
 				return;
+			}
+			case "queue_read": return { text: editQueued(session, command.queue, command.id) };
+			case "queue_edit": {
+				const text = editQueued(session, command.queue, command.id, command);
+				this.scheduleSnapshot();
+				return { text };
 			}
 			case "queue_cancel": {
 				const waiting = command.queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();
@@ -790,7 +813,9 @@ export class DeskEngine {
 		this.transition = true;
 		this.send({ type: "snapshot", snapshot: this.snapshot() });
 		const job = Promise.resolve().then(async () => {
+			const learning = this.learning?.close();
 			if (resume) await session.abort();
+			await learning;
 			if (this.closed || this.runtime?.session !== session) throw new Error("This session is closing or changed.");
 			if (interrupt && !session.isIdle) throw new Error("Pi started another turn. Retry the setting change.");
 			return operation();
@@ -802,7 +827,10 @@ export class DeskEngine {
 			throw error;
 		}
 		finally {
-			this.transitionJob = undefined; this.transition = false; this.scheduleSnapshot();
+			this.transitionJob = undefined; this.transition = false;
+			if (!this.closed && !this.replacing && this.runtime?.session === session && this.feed)
+				this.learning = this.learnMode(session, this.feed);
+			this.scheduleSnapshot();
 			// Keep native queues, including image/custom content. Never auto-start idle work
 			// or add a second turn if an extension has already started one.
 			if (resume && !this.closed && !this.replacing && this.runtime?.session === session && session.isIdle)
@@ -836,6 +864,7 @@ export class DeskEngine {
 		this.closeJob = Promise.resolve().then(async () => {
 			clearTimeout(this.snapshotTimer);
 			this.unsubscribe?.();
+			const learning = this.learning?.close();
 			this.feed?.close();
 			this.presentation.close();
 			// Discovery/binding can still own a writer before the runtime is assigned.
@@ -849,6 +878,7 @@ export class DeskEngine {
 				void aborting.catch(() => {});
 				// Reload/replacement may still be creating the next runtime and owning its writer.
 				await this.transitionJob?.catch(() => {});
+				await learning;
 				// Native shutdown hooks can release tools whose abort is still settling.
 				try { await this.runtime?.dispose(); } finally { await aborting; }
 			}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { UiAction, UiConversation } from "../../../pi-ui/index.ts";
+import type { UiAction, UiConversation, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import type { ChatMessage, HistoryPage, SessionView, ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
 import { api } from "./connection.ts";
 import { useConfirmation } from "./confirmation.tsx";
@@ -14,6 +14,7 @@ import { WorkspaceActions } from "./workspace-actions.tsx";
 import { ActionMenu } from "./action-menu.tsx";
 import { Icon } from "./icons.tsx";
 import { activityLabel } from "./activity.ts";
+import { SettingControl } from "./settings-controls.tsx";
 
 const data = (view: ViewSnapshot) => view.data as UiConversation;
 const empty: CachedMessage[] = [];
@@ -35,12 +36,14 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	const selected = views.find(view => view.id === focused);
 	const matches = (row: AgentRow) => `${row.title} ${row.subtitle ?? ""} ${row.status}`.toLowerCase().includes(search.toLowerCase());
 	const currentRows = current.map(view => ({ id: view.id, title: view.title, subtitle: data(view).activity ?? data(view).subtitle, status: data(view).status, view }));
-	const manage = async (action: UiAction) => {
-		if (!historyView || !session.ui || !connected || historyView.working) return;
+	const limitView = session.ui?.views.find(view => view.id === "agent-limit" && !view.scope);
+	const slots = (historyView?.data as UiDetails | undefined)?.fields?.find(field => field.label === "Live agent slots")?.value;
+	const manage = async (action: UiAction, value?: UiValue, view = historyView) => {
+		if (!view || !session.ui || !connected || view.working) return;
 		if (action.destructive && !await confirmation.request({ title: `${action.label}?`, context, accept: action.label,
 			body: <p>Changes this conversation's agent launch settings. Existing agents keep their saved settings.</p> })) return;
 		try { await api(`/sessions/${session.key}/command`, { id: crypto.randomUUID(), generation: session.ui.generation,
-			command: { kind: "action", view: historyView.id, revision: historyView.revision, action: action.id } }); }
+			command: { kind: "action", view: view.id, revision: view.revision, action: action.id, value } }); }
 		catch (error) { reportDeskError(error); }
 	};
 	const open = async (row: AgentRow) => {
@@ -65,9 +68,11 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 		<p className="agent-parent">{context}</p>
 		<div className="agent-picker-heading">
 			<button type="button" aria-expanded={listing} onClick={() => setListing(!listing)}><Icon name="layers" />Browse agents <span>{total}</span><span aria-hidden="true">{listing ? "⌃" : "⌄"}</span></button>
-			<span className="muted">{connected ? `${current.length} current` : "Disconnected"}</span>
+			<span className="muted">{connected ? slots ? `${slots} live slots` : `${current.length} current` : "Disconnected"}</span>
 		</div>
 		{listing && historyView && <WorkspaceActions view={historyView} disabled={!connected || !!historyView.working} invoke={action => void manage(action)} />}
+		{listing && limitView && (limitView.data as UiDetails).controls?.map(control => <SettingControl key={control.action.id} control={control}
+			disabled={!connected || !!limitView.working} invoke={(action, value) => void manage(action, value, limitView)} />)}
 		{listing && <div className="agent-picker">
 			<div className="agent-filter"><input aria-label="Find an agent" placeholder="Find an agent" value={search} onChange={event => setSearch(event.target.value)} /></div>
 			<AgentList rows={currentRows.filter(matches)} focused={focused} label="Current agents" empty="No active or queued agents." open={row => void open(row)} />

@@ -58,8 +58,8 @@ type Finish = "insert" | "send" | "discard";
 type Phase = "idle" | "starting" | "recording" | "transcribing";
 
 /**
- * Dictate into a composer. The whole clip is transcribed by ElevenLabs when recording stops, so pauses to think
- * are included in billed audio. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
+ * Dictate into a composer. The whole clip is transcribed by ElevenLabs when recording stops; pauses count towards
+ * the billed audio. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
  * sends the draft with it, and Esc discards the clip. Holding Ctrl+Space records only while it is held.
  */
 export function DictationButton({ append, submit, disabled, report, computer }: {

@@ -13,6 +13,8 @@ import { acquireAsset, api } from "./connection.ts";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
 import { BriefView, type Brief } from "./brief.tsx";
+import { markdownPlugins } from "./markdown-links.ts";
+import { shownUrl } from "../../../pi-show/extensions/links.ts";
 
 type DiffBlock = Extract<ChatBlock, { type: "diff" }>;
 type DocumentBlock = Extract<ChatBlock, { type: "document" }>;
@@ -143,27 +145,24 @@ export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
 		return [];
 	}));
 }
-/** A link the agent gave in a reply: a local file Desk can open, or a web page. */
+/** A link in an agent reply or shown result: a local file Desk can open, or a web page. */
 export type LinkItem = { key: string; at: number; message: string; label: string; url?: string; file?: FileReference };
 const LINK = /\[([^\]\n]{1,200})\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"*_`])/g;
-/** The links in the agent's replies in the loaded part of a conversation, each once, oldest first. */
+/** Links in loaded replies and shown results, each once at its latest mention, oldest first. */
 export function messageLinks(messages: readonly ChatMessage[]): LinkItem[] {
 	const found = new Map<string, LinkItem>();
 	for (const message of messages) {
-		if (message.role !== "assistant") continue;
+		const add = (target: string, label?: string) => {
+			// The host resolved local file links; other destinations must be credential-free web addresses.
+			const file = message.links?.find(link => link.target === target)?.file, url = shownUrl(target);
+			const item: LinkItem | undefined = file ? { key: `file:${file.id}`, at: message.timestamp, message: message.id, label: label || file.name, file }
+				: url ? { key: url, at: message.timestamp, message: message.id, label: label && label !== target ? label : url.replace(/^https?:\/\/(www\.)?/i, ""), url } : undefined;
+			if (item) { found.delete(item.key); found.set(item.key, item); }
+		};
 		for (const block of message.blocks) {
-			if (block?.type !== "text") continue;
-			for (const match of block.text.matchAll(LINK)) {
-				const target = match[2] ?? match[3]!, label = match[1]?.trim();
-				// The host resolved the message's local file links (file-links.ts); anything else counts only as a web address.
-				const file = message.links?.find(link => link.target === target)?.file;
-				const item: LinkItem | undefined = file ? { key: `file:${file.id}`, at: message.timestamp, message: message.id, label: label || file.name, file }
-					: /^https?:\/\//i.test(target) ? { key: target, at: message.timestamp, message: message.id, label: label && label !== target ? label : target.replace(/^https?:\/\/(www\.)?/i, ""), url: target }
-					: undefined;
-				if (!item) continue;
-				// A link given again moves to its latest mention.
-				found.delete(item.key); found.set(item.key, item);
-			}
+			const text = block?.type === "shown" ? block.shown.note : block?.type === "text" && message.role === "assistant" ? block.text : undefined;
+			for (const match of text?.matchAll(LINK) ?? []) add(match[2] ?? match[3]!, match[1]?.trim());
+			if (block?.type === "shown") for (const item of block.shown.items) if (item.url) add(item.url, item.label);
 		}
 	}
 	return [...found.values()];
@@ -206,14 +205,29 @@ function itemPreview(item: WorkItem): string {
 	const changed = lines.map(line => text(line, "+")).find(Boolean) ?? lines.map(line => text(line, "-")).find(Boolean);
 	return (changed ?? lines[0]!).slice(0, 160);
 }
-/** Work an agent showed: its title and note stay in the conversation; the files open in the side pane. */
+function ShownNote({ note }: { note: string }) {
+	return <div className="markdown shown-note"><Markdown remarkPlugins={markdownPlugins()}
+		components={{ a: ({ href, children }) => {
+			const url = href && shownUrl(href);
+			return url ? <a href={url} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>;
+		} }}>{note}</Markdown></div>;
+}
+function ShownLink({ item }: { item: ShownItem }) {
+	const url = item.url && shownUrl(item.url);
+	return url ? <a className="shown-link" href={url} target="_blank" rel="noopener noreferrer" title={url}>
+		<Icon name="globe" /><span><strong>{item.label || new URL(url).hostname}</strong><small>{url}</small></span><span aria-hidden="true">↗</span>
+	</a> : <p className="muted">This link cannot be opened.</p>;
+}
+
+/** Shown notes and web links are directly readable; files open in the side pane. */
 export function ShownSummary({ item, time }: { item: WorkItem & { block: ShownBlock }; time?: ReactNode }) {
 	const open = useContext(WorkFocus), { shown } = item.block;
 	return <section className="shown-card">
 		<header><span className="shown-badge"><Icon name="preview" />Shown</span><strong>{shown.title}</strong>{time}
 			<span className="change-actions"><Reply text={() => shown.title} /></span></header>
-		{shown.note && <div className="markdown shown-note"><Markdown>{shown.note}</Markdown></div>}
-		{shown.items.length > 0 && <button type="button" className="work-chip shown-open" onClick={() => open(item)}>
+		{shown.note && <ShownNote note={shown.note} />}
+		{shown.items.filter(entry => entry.url).map((entry, index) => <ShownLink key={index} item={entry} />)}
+		{shown.items.some(entry => !entry.url) && <button type="button" className="work-chip shown-open" onClick={() => open(item)}>
 			<Icon name="layers" /><span>{shown.items.map(entry => entry.path ? name(entry.path) : entry.described ? "Described changes" : "").filter(Boolean).join(", ") || "Details"}</span>
 			{itemFacts(item)}<span className="work-chip-open" aria-hidden="true">›</span></button>}
 	</section>;
@@ -327,6 +341,7 @@ function HtmlPage({ session, file, large }: { session: string; file: FileReferen
 
 function ShownEntry({ item, file, session, title, large }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean }) {
 	const where = item.path ? name(item.path) : title;
+	if (item.url) return <ShownLink item={item} />;
 	return <div className="shown-item">
 		{item.path && <div className="shown-item-heading"><FileName session={session} path={item.path} file={file} />
 			{item.missing && <span className="error-text">not found</span>}
@@ -362,7 +377,8 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 		{block.change.preview && <PreviewView preview={block.change.preview} />}
 	</>;
 	return <>
-		{large && block.shown.note && <div className="markdown shown-note"><Markdown>{block.shown.note}</Markdown></div>}
+		{block.shown.note && <ShownNote note={block.shown.note} />}
+		{!block.shown.note && !block.shown.items.length && <p className="muted work-note">No details were provided for this result.</p>}
 		{block.shown.items.map((entry, index) => <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} />)}
 	</>;
 }

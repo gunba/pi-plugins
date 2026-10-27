@@ -64,7 +64,7 @@ export interface SessionSnapshot {
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string }[];
-	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
+	queue: { steering: { count: number; previews: string[]; ids?: (string | null)[] }; followUp: { count: number; previews: string[]; ids?: (string | null)[] } };
 	/** `estimated` when no provider-reported usage applies and the tokens are counted from characters. */
 	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
@@ -72,6 +72,8 @@ export interface SessionSnapshot {
 	compacting?: { reason: "manual" | "threshold" | "overflow" | "cache"; started: number };
 	/** The reply that "What do I need to know?" has already been written for, when no message has followed it. */
 	brief?: string;
+	/** Explanations saved outside the agent’s context; absent on older workers. */
+	learn?: import("./learn.ts").LearnState;
 	/** When the conversation's prompt cache was last used, and how long the provider keeps it after a use. */
 	cache?: { usedAt: number; ttlMs: number };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
@@ -114,7 +116,7 @@ export interface ChatMessage {
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 	/** detail: what happened, beside the title (a watch's event). */
-	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction" | "watch"; title: string; detail?: string; queuedAt?: number; dueAt?: number };
+	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction" | "watch" | "learn"; title: string; detail?: string; queuedAt?: number; dueAt?: number };
 	/** A saved summary that replaced earlier context: compaction, an encrypted Codex checkpoint, a model handoff or an abandoned branch. */
 	summary?: { kind: "compaction" | "checkpoint" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }
@@ -124,7 +126,7 @@ export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later). */
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; brief?: boolean }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; learn?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -142,7 +144,7 @@ export interface SessionView {
 	createdBy?: string;
 	/** It moved to another computer (teleport); it does not run here again. */
 	moved?: { to: string; at: number };
-	/** When its extensions next need it running (a watch set to a time). Desk reopens it then if it is listed but not running. */
+	/** Earliest extension deadline for reopening a listed conversation. The restored extension, not this hint, owns event delivery. */
 	wakes?: number;
 	/** Its extensions are watching for something and need it running; Desk restarts it if its process was lost. */
 	watching?: boolean;
@@ -232,6 +234,7 @@ export type WorkerCommand =
 	| { kind: "native_read"; name: string; args: string }
 	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
 	| { kind: "brief"; refresh?: boolean }
+	| { kind: "learn"; enabled: boolean }
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }
@@ -239,6 +242,8 @@ export type WorkerCommand =
 	| { kind: "sent_messages" }
 	/** Take one waiting message out of Pi's queue; it is never sent, and its whole text comes back to edit. */
 	| { kind: "queue_cancel"; queue: "steering" | "followUp"; index: number; text: string }
+	| { kind: "queue_read"; queue: "steering" | "followUp"; id: string }
+	| { kind: "queue_edit"; queue: "steering" | "followUp"; id: string; original: string; text: string }
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }

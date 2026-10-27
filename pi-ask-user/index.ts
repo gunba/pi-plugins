@@ -100,6 +100,8 @@ interface AskToolDetails {
    response: AskResponse | null;
    cancelled: boolean;
    unavailable?: boolean;
+   /** The question closed because its timeout passed, not because the user dismissed it. */
+   timedOut?: boolean;
 }
 
 type AskUIResult = AskResponse;
@@ -1450,7 +1452,7 @@ export default function(pi: ExtensionAPI) {
          allowComment: Type.Optional(
             Type.Boolean({ description: "Ask for an optional comment with the choice. Default false." }),
          ),
-         timeout: Type.Optional(Type.Number({ description: "Milliseconds before giving up; returns null." })),
+         timeout: Type.Optional(Type.Number({ description: "Milliseconds before the question closes unanswered. Leave it out unless an answer is only useful soon." })),
       }),
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1470,6 +1472,16 @@ export default function(pi: ExtensionAPI) {
             allowComment = false,
             timeout,
          } = params as AskParams;
+         // A question that ends unanswered says how it ended: a timeout or a stopped turn is not the user saying no.
+         const asked = Date.now();
+         const unanswered = () => {
+            const timedOut = !signal?.aborted && !!timeout && timeout > 0 && Date.now() - asked >= timeout - 100;
+            const text = signal?.aborted ? "The question was withdrawn because the turn stopped. The user did not answer it."
+               : timedOut ? `No answer within ${Math.round(timeout! / 1000)} seconds, so the question closed. This is not a refusal; the user may not have seen it.`
+               : "The user closed the question without answering.";
+            return { content: [{ type: "text" as const, text }],
+               details: { question, context: normalizedContext, options, response: null, cancelled: true, ...(timedOut ? { timedOut: true } : {}) } as AskToolDetails };
+         };
          const effectiveDisplayMode: AskDisplayMode = process.env.PI_ASK_USER_DISPLAY_MODE === "inline" ? "inline" : "overlay";
          const shortcuts: ResolvedAskShortcuts = {
             overlayToggle: resolveShortcut(process.env.PI_ASK_USER_OVERLAY_TOGGLE_KEY, DEFAULT_OVERLAY_TOGGLE_KEY),
@@ -1506,12 +1518,7 @@ export default function(pi: ExtensionAPI) {
             const answer = await ctx.ui.input(prompt, "Type your answer...", { signal, ...(timeout ? { timeout } : {}) });
             const response = signal?.aborted ? null : createFreeformResponse(answer);
 
-            if (!response) {
-               return {
-                  content: [{ type: "text", text: "User cancelled the question" }],
-                  details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-               };
-            }
+            if (!response) return unanswered();
 
             return {
                content: [{ type: "text", text: `User answered: ${formatResponseSummary(response)}` }],
@@ -1621,12 +1628,7 @@ export default function(pi: ExtensionAPI) {
          }
 
          if (signal?.aborted) result = null;
-         if (result === null) {
-            return {
-               content: [{ type: "text", text: "User cancelled the question" }],
-               details: { question, context: normalizedContext, options, response: null, cancelled: true } as AskToolDetails,
-            };
-         }
+         if (result === null) return unanswered();
 
          return {
             content: [{ type: "text", text: `User answered: ${formatResponseSummary(result)}` }],

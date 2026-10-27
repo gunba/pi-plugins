@@ -57,7 +57,7 @@ export function ServiceAccounts({ computer, name, connected, legacy }: { compute
 						<td>{total && total.calls > total.unknown ? `$${total.cost.toFixed(4)}` : "—"}</td><td>{total?.unknown || "—"}</td></tr>;
 				})}</tbody>
 			</table>
-			<p className="muted">API-price estimates, not invoices. Exa reports its estimate; model services use native usage; ElevenLabs uses audio duration and configured rates. Unknown charges are not counted as zero. Earlier or external usage is not reconstructed. Codemode model-service costs also appear in conversation totals; this table is not an additional-charge total.</p>
+			<p className="muted">Estimates at API prices, not invoices. Requests whose cost isn't known are counted separately, not as free. Classifier and image calls made from a conversation also count in its cost.</p>
 		</section>}
 	</>;
 }

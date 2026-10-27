@@ -497,7 +497,12 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {totalAgents > 0 && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
+            {!dotSelected && !questsSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
+              aria-pressed={!!session.snapshot?.learn?.enabled} aria-label="Learn mode" disabled={!connected || session.state !== "ready" || controlBusy}
+              title="Explain the theory behind recent work outside the agent’s context. Uses extra model calls."
+              onClick={() => run({ kind: "learn", enabled: !session.snapshot?.learn?.enabled })}>
+              Learn{session.snapshot?.learn?.writing ? " · writing…" : session.snapshot?.learn?.enabled ? " · on" : ""}</button>}
+            {(totalAgents > 0 || agentHistory) && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
               title={`${activeAgents} active · ${totalAgents} total`} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
               <span className={`status-dot ${activeAgents ? "running" : "idle"}`} />Agents <b>{totalAgents}</b></button>}
             {messagesView && <button type="button" className={`header-chip${panel === "view" && focusedView === "messages" ? " selected" : ""}`}
@@ -620,9 +625,16 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot && <NativeQueue queue={session.snapshot.queue}
+            {session.snapshot && <NativeQueue key={selected} queue={session.snapshot.queue}
+              edit={connected && session.state === "ready" && session.workerRuntime?.queueEdit
+                ? async (queue, id, change) => {
+                  const reply = await command<{ result: { text: string } }>(change
+                    ? { kind: "queue_edit", queue, id, ...change } : { kind: "queue_read", queue, id });
+                  return reply.result.text;
+                } : undefined}
+              keep={text => { const next = draft.trim() ? `${draft}\n\n${text}` : text; setDraft(next); localStorage.setItem(draftKey(selected), next); }}
               sendNow={connected && session.state === "ready" && session.workerRuntime?.queueNow
-                ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined}
+                ? (queue, index, text) => { setLatestRequest(value => value + 1); run({ kind: "queue_now", queue, index, text }); } : undefined}
               cancel={connected && session.state === "ready" && session.workerRuntime?.queueCancel
                 ? (queue, index, text) => void cancelWaiting(queue, index, text) : undefined} />}
             <Composer session={session} selected={selected} selectedRef={selectedRef} composerInput={composerInput} recall={recall} messages={messages}

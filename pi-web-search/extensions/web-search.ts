@@ -159,7 +159,8 @@ async function exa(path: string, body: Record<string, unknown>, key: string, sig
 	let payload: Record<string, unknown> | undefined;
 	try { payload = JSON.parse(text); } catch { /* The request may still have been charged. */ }
 	const cost = (payload?.costDollars as { total?: unknown } | undefined)?.total;
-	record(typeof cost === "number" ? cost : undefined);
+	// A request Exa refused (4xx) is not charged; any other reply without a cost may have been.
+	if (typeof cost === "number") record(cost); else if (response.status < 400 || response.status >= 500) record();
 	if (response.status === 401 || response.status === 403) throw new Error(`Exa refused this computer's API key (HTTP ${response.status}). Check it in Settings → Accounts & connections.`);
 	if (response.status === 402) throw new Error("Exa says the account is out of credit (HTTP 402). Add credit at dashboard.exa.ai.");
 	if (response.status === 429) throw new Error("Exa is rate-limiting requests right now. Try again shortly.");

@@ -17,6 +17,26 @@ classifier model judges each event: TypeSafe's Jev when signed in (`/login types
 classifier. A watch with `wake_when` can't be started without one. If the classifier fails during a watch, the event
 wakes the agent anyway with a note; after three failures in a row the watch ends.
 
+## Watch versus wake
+
+`watch` is the single subscription primitive. There is no separate `wake` tool or second scheduling store:
+
+- `command`, `every`, and `until` choose the event source; `wake_when` optionally filters command events with a classifier.
+- The watch owns its state in `pi-watch/v1` session entries. All three modes use the same pending-event delivery path, which starts a turn only when the agent is idle and has no pending input. Busy agents receive events later, batched together.
+- Desk's `wakes`, `watching`, and `wakeFiles` fields are process-lifecycle hints, not another task queue. If the conversation is closed but kept, Desk reopens it; the restored watch then decides what to deliver. Reopening a process is not itself an instruction to the model.
+- `agent_send({wake: true})` is a message-delivery option: act on this message when possible, reopening a closed recipient if necessary. It does not create a timer or watch. Secondary-agent reports use their parent runtime's delivery path for the same reason.
+- Historical `pi-work/wake-v1` and scheduler messages remain readable in Desk transcripts. Their readers do not register another waiting tool or run an old scheduler.
+
+### One-off, polling, and recurring work
+
+Use `watch({until: "09:00", close: true})` for a one-off wake at the next 09:00 on this computer. Use an ISO timestamp with an explicit offset when a particular date or time zone matters. `close` is optional and changes only whether Desk may close the conversation while it waits.
+
+Use `watch({command: "git ls-remote origin HEAD", every: 300})` to poll a programmatic event source. The first output establishes a baseline; a changed output wakes the agent and ends the watch. With `wake_when`, the classifier also evaluates the first result and can wake immediately if it already matches. `every` is the polling interval, **not** a recurring timer that starts a model turn on every tick.
+
+For recurring calendar work, use successive time watches through the same tool. On each wake, schedule the next occurrence before carrying out the current task, then end the turn when finished. This keeps future work scheduled even if the current task fails. It also lets the agent account for calendar dates and daylight-saving changes rather than treating a week as an elapsed-seconds timer. No cron job, OS task, or second wake primitive is needed.
+
+These watches wake conversations, not powered-off computers. The host must be running to reopen a conversation; an overdue time watch is delivered when it next resumes. Stopping a watch or removing its sleeping conversation cancels future automatic reopening.
+
 ## Behaviour
 
 - **Output.** A background command's output arriving within 2 seconds is judged as one event, and a wake carries at

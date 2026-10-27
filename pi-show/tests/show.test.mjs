@@ -9,6 +9,28 @@ import show, { mentionedDocuments } from "../extensions/show.ts";
 import { document, workbook, zip } from "./fixtures.mjs";
 
 
+test("show retains web links and notes without inventing empty file items", async t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-show-links-")), prior = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = join(directory, "agent");
+	const handlers = {}, tools = {};
+	show({ on: (name, handler) => { handlers[name] = handler; }, registerTool: tool => { tools[tool.name] = tool; } });
+	t.after(() => {
+		handlers.session_shutdown(); rmSync(directory, { recursive: true, force: true });
+		if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prior;
+	});
+	const ctx = { cwd: directory, sessionManager: { getSessionId: () => "links" } };
+	const execute = params => tools.show.execute("show", params, undefined, undefined, ctx);
+	assert.deepEqual((await execute({ title: "Review", items: [{ url: "https://example.com/pr/1", label: "Review changes" }] })).details.show,
+		{ title: "Review", items: [{ url: "https://example.com/pr/1", label: "Review changes" }] });
+	assert.deepEqual((await execute({ title: "Note", note: "[Review](https://example.com/pr/1)" })).details.show,
+		{ title: "Note", note: "[Review](https://example.com/pr/1)", items: [] });
+	for (const url of ["javascript:alert(1)", "file:///tmp/file", "https://user:secret@example.com", "/relative", "not a url"])
+		await assert.rejects(execute({ title: "Bad link", items: [{ url }] }), /HTTP or HTTPS URLs without embedded credentials/);
+	await assert.rejects(execute({ title: "Mixed", items: [{ url: "https://example.com", file: "file.txt" }] }), /not both/);
+	await assert.rejects(execute({ title: "Empty" }), /Provide a note/);
+	await assert.rejects(execute({ title: "Empty item", items: [{}] }), /Each item needs/);
+});
+
 test("spreadsheet changes are computed cell by cell, with formulas, and checked against the agent's own list", () => {
 	const before = workbook([{ name: "Totals", cells: `<c r="A1" t="s"><v>0</v></c><c r="B2"><v>1200</v></c><c r="B3"><f>B2*2</f><v>2400</v></c>` },
 		{ name: "Notes", cells: `<c r="A1" t="inlineStr"><is><t>Draft &amp; unchecked</t></is></c>` }], ["Client"]);
