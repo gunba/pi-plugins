@@ -26,6 +26,7 @@
     "extensions": [
       "./pi-session-ownership/index.ts",
       "./pi-desk/extensions/desk.ts",
+      "./pi-openai-images/index.ts",
       "./pi-codex-wire/extensions/index.ts",
       "./node_modules/@gotgenes/pi-anthropic-auth/src/index.ts",
       "./pi-message-timestamps/extensions/message-timestamps.ts",

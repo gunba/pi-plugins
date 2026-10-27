@@ -130,15 +130,15 @@ function columnName(index: number): string {
 /** "What do I need to know?": written on request, kept in the side pane while the conversation goes on. */
 export type BriefBlock = { type: "brief"; brief: Brief; working?: boolean; rewrite?: () => void };
 export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock | BriefBlock };
-/** Changes, shown work and images the agent viewed, in the loaded part of a conversation, oldest first. */
+/** Changes, shown work and images returned by tools, in the loaded part of a conversation, oldest first. */
 export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
 	return messages.flatMap(message => message.blocks.flatMap((block, index): WorkItem[] => {
 		const item = { id: `${message.id}:${index}`, at: message.timestamp, message: message.id };
 		if (block?.type === "diff" || block?.type === "document" || block?.type === "shown") return [{ ...item, block }];
-		// Images a tool returned (view_image, screenshots, image reads); the file block names the file when there is one.
+		// A file block names its image; otherwise the result may be a screenshot, a read, or a generated picture.
 		if (block?.type === "image" && message.role === "tool") {
 			const file = message.blocks.find(other => other?.type === "file");
-			return [{ ...item, block, title: file?.type === "file" ? file.file.name : message.toolName === "view_image" ? "Image" : "Screenshot" }];
+			return [{ ...item, block, title: file?.type === "file" ? file.file.name : "Image" }];
 		}
 		return [];
 	}));

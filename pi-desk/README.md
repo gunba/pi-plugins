@@ -99,6 +99,14 @@ disable tool selection and retain the provider's stop reason when a summary fail
 Live Claude authorization, refresh and inference still need
 account-owner acceptance before claiming end-to-end support.
 
+Image generation and editing use native codemode with
+[`pi-openai-images`](../pi-openai-images/README.md): GPT Image 2.5 Sunburst and Flare,
+through an OpenAI API key or the legacy ChatGPT Codex image service. The newer
+OpenAI **Sign in with ChatGPT** preview does not authorize image generation;
+unsupported credentials are not silently replaced with another billing method.
+Generated images appear in tool results. Reported token costs are API-equivalent
+estimates, not a ChatGPT subscription balance.
+
 ## Dot
 
 Dot appears above the computer groups in the sidebar. Selecting it opens the

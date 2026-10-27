@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates;
+let MessageView, DisclosureStates, workItems;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { workItems } from "./change-view.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,12 +22,17 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, workItems } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
 const render = (props, states = new Map()) => renderToStaticMarkup(createElement(DisclosureStates.Provider, { value: states },
 	createElement(MessageView, { sessionKey: "fixture", ...props })));
+
+test("generated image results are not labelled as screenshots", () => {
+	const generated = { ...message("generated", "tool", [{ type: "image", asset: "fixture", mimeType: "image/png" }]), toolName: "codemode" };
+	assert.deepEqual(workItems([generated]).map(item => item.title), ["Image"]);
+});
 
 test("closed tool output and thinking do not build their hidden Markdown bodies", () => {
 	const tool = message("tool", "tool", [{ type: "text", text: "HIDDEN_TOOL_BODY ".repeat(2000) }]);
