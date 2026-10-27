@@ -16,7 +16,7 @@ browser tools.
 account and rate-limited. Each call carries the conversation's session ID and model, which its free tier uses for
 rate limiting.
 
-**Exa** runs them instead on a computer with an Exa API key: Desk's Settings → Web search saves one in
+**Exa** runs them instead on a computer with an Exa API key: Desk's Settings → Accounts & connections saves one in
 `web-search.json` in Pi's agent folder (readable only by the user), or set `EXA_API_KEY`. Exa ranks higher in the
 Artificial Analysis Search Index and is billed per request: each query of a `web_search` is one search, with the goal
 passed as its objective, and the results are interleaved by rank; `web_fetch` reads pages through Exa's contents

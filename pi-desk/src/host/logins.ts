@@ -61,7 +61,7 @@ export class Logins {
 			return structuredClone(previous);
 		}
 		if ([...this.operations.values()].some(operation => pending(operation.state))) throw Error("Finish or cancel the current sign-in first.");
-		const operation: SignIn = { id, provider, type, created: new Date().toISOString(), state: "starting", message: "Starting sign-in…" };
+		const operation: SignIn = { id, provider, type, created: new Date().toISOString(), state: "starting", message: type === "api_key" ? "Preparing API key entry…" : "Starting sign-in…" };
 		this.operations.set(id, operation);
 		const active: Active = { controller: new AbortController(), work: Promise.resolve(), inputs: [] };
 		this.active.set(id, active);
@@ -96,7 +96,7 @@ export class Logins {
 					return this.prompt(operation, active, prompt);
 				},
 			});
-			this.finish(operation, { state: "completed", message: "Signed in. Every conversation on this computer and terminal Pi use this login." });
+			this.finish(operation, { state: "completed", message: operation.type === "api_key" ? "API key saved. Every conversation on this computer and terminal Pi use it." : "Signed in. Every conversation on this computer and terminal Pi use this login." });
 		} catch (error) {
 			const detail = active.inputs.reduce((text, input) => input ? text.replaceAll(input, "[redacted]") : text, error instanceof Error ? error.message : String(error));
 			if (error instanceof CredentialSynchronizationError && readStoredCredential(operation.provider, this.authPath))

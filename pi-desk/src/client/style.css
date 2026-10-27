@@ -2530,6 +2530,9 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 }
 
 .settings-row-value button .ui-icon { margin-right:6px; }
+.service-usage { overflow-x:auto; padding:12px; }
+.service-usage caption { text-align:left; padding-bottom:10px; color:var(--muted); font-size:12px; }
+.service-usage > p { font-size:12px; margin:12px 0 0; }
 .settings-inline-form { display:flex; flex:1; min-width:220px; gap:8px; align-items:center; margin:0; }
 .settings-inline-form input { flex:1; min-width:0; margin:0; }
 .settings-inline-form select { flex:none; margin:0; }

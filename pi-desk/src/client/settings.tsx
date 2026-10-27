@@ -14,8 +14,9 @@ import { LoginsPanel } from "./logins.tsx";
 
 import { EfficiencyPanel } from "./efficiency.tsx";
 import { ComputerPage, ConversationPage, Row } from "./settings-pages.tsx";
-import { DictationKey } from "./dictation.tsx";
-import type { UiAction } from "../../../pi-ui/index.ts";
+import { ServiceAccounts } from "./service-accounts.tsx";
+import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
+import { DetailsView } from "./details-view.tsx";
 import type { ViewSnapshot } from "../shared/protocol.ts";
 
 /** Desk's own pages, addressable with /settings <id>. Extension pages come from the conversation's views. */
@@ -23,14 +24,14 @@ export const settingsSections = [
 	{ id: "conversation", title: "Conversation" }, { id: "computer", title: "This computer" }, { id: "efficiency", title: "Efficiency" }, { id: "general", title: "Pi Desk" },
 	// Older page names, still accepted by /settings.
 	{ id: "context", title: "Conversation" }, { id: "tools", title: "Conversation" }, { id: "activity", title: "Conversation" }, { id: "usage", title: "Conversation" },
-	{ id: "accounts", title: "This computer" }, { id: "dictation", title: "This computer" }, { id: "availability", title: "This computer" }, { id: "computers", title: "Pi Desk" },
+	{ id: "web-search", title: "This computer" }, { id: "accounts", title: "This computer" }, { id: "dictation", title: "This computer" }, { id: "availability", title: "This computer" }, { id: "computers", title: "Pi Desk" },
 ];
 const ALIASES: Record<string, string> = { context: "conversation", tools: "conversation", activity: "conversation", usage: "conversation",
-	accounts: "computer", dictation: "computer", availability: "computer", computers: "general" };
+	accounts: "computer", dictation: "computer", "web-search": "computer", availability: "computer", computers: "general" };
 export const settingsPage = (id: string) => ALIASES[id] ?? id;
 const page = (id: string) => settingsSections.find(section => section.id === id)!;
 /** Extension views shown inside a Desk page rather than as their own. */
-export const MERGED_VIEWS = new Set(["context-window", "pi-usage", "desk-browser", "desk-mcp"]);
+export const MERGED_VIEWS = new Set(["context-window", "pi-usage", "desk-browser", "desk-mcp", "web-search"]);
 const VIEW_TITLES: Record<string, string> = { "pi-usage": "Usage", config: "Pi settings", "desk-mcp": "MCP servers", "codex-wire": "Codex", "desk-browser": "Chrome" };
 export interface SettingsGroup { label: string; detail?: string; items: { id: string; title: string }[] }
 
@@ -77,6 +78,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(error => setError(String(error))); };
 	const ui = session?.ui;
 	const section = settingsPage(requested), views = ui?.views ?? [];
+	const webSearch = views.find(view => view.id === "web-search" && !view.scope && view.kind === "details");
 	const act = (view: ViewSnapshot, action: UiAction | string, value?: unknown) =>
 		invoke({ kind: "action", view: view.id, revision: view.revision, action: typeof action === "string" ? action : action.id, value: value as never });
 	return <>
@@ -87,7 +89,9 @@ export function SettingsContent({ section: requested, host, account, session, co
 		{section === "computer" && <ComputerPage host={host} computer={computer} connected={connected} views={views} act={act}
 			availabilityRun={mode => run(api("/operator-availability", { mode }, computer?.id))}>
 			{{ accounts: <LoginsPanel key={computer?.id ?? "local"} computer={computer?.id} connected={connected} provider={providerHint} />,
-				dictation: <DictationKey key={computer?.id ?? "local"} computer={computer?.id} name={computer?.name ?? host.name} connected={connected} />,
+				services: <ServiceAccounts key={computer?.id ?? "local"} computer={computer?.id} name={computer?.name ?? host.name} connected={connected}
+					legacy={webSearch && <><DetailsView data={webSearch.data as UiDetails} disabled={!connected || !!webSearch.working} invoke={(action, value) => run(act(webSearch, action, value))} />
+						{webSearch.actions?.map(action => <button key={action.id} disabled={!connected || !!webSearch.working} onClick={() => run(act(webSearch, action))}>{action.label}</button>)}</>} />,
 				updates: !account && host.updates ? <Row label="Updates"><SoftwareUpdate computer={{ name: host.name, connected, updates: host.updates }} /></Row> : undefined }}
 		</ComputerPage>}
 		{section === "efficiency" && <EfficiencyPanel host={host} computer={computer} connected={connected} />}

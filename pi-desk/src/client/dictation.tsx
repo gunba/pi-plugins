@@ -59,7 +59,7 @@ type Phase = "idle" | "starting" | "recording" | "transcribing";
 
 /**
  * Dictate into a composer. The whole clip is transcribed by ElevenLabs when recording stops, so pauses to think
- * cost nothing. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
+ * are included in billed audio. Ctrl+Space starts recording; while it records, Ctrl+Space again adds the text to the draft, Enter
  * sends the draft with it, and Esc discards the clip. Holding Ctrl+Space records only while it is held.
  */
 export function DictationButton({ append, submit, disabled, report, computer }: {
@@ -96,6 +96,7 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 			return;
 		}
 		meter.listen(stream);
+		const recordedAt = performance.now();
 		const chunks: Blob[] = [], media = new MediaRecorder(stream, { mimeType: MIME, audioBitsPerSecond: 16_000 });
 		media.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
 		media.onstop = async () => {
@@ -113,10 +114,11 @@ export function DictationButton({ append, submit, disabled, report, computer }: 
 			try {
 				const clip = new Blob(chunks, { type: MIME });
 				const language = navigator.language?.slice(0, 2).toLowerCase();
-				const { text } = await api<{ text: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, ...(language ? { language } : {}), ...(peak !== undefined ? { peak } : {}) }, latest.current.computer ?? undefined);
+				const { text, usageWarning } = await api<{ text: string; usageWarning?: string }>("/dictation", { audio: await blobBase64(clip), mime: MIME, seconds: (performance.now() - recordedAt) / 1000, ...(language ? { language } : {}), ...(peak !== undefined ? { peak } : {}) }, latest.current.computer ?? undefined);
 				if (!text.trim()) latest.current.report("No speech was heard in that recording.");
 				else if (how === "send" && latest.current.submit) latest.current.submit(text.trim());
 				else latest.current.append(text.trim());
+				if (usageWarning) latest.current.report(usageWarning);
 			} catch (error) { latest.current.report(error instanceof Error ? error.message : String(error)); }
 			finally { setPhase("idle"); }
 		};
@@ -191,8 +193,12 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 export function DictationKey({ computer, name, connected }: { computer?: string; name: string; connected: boolean }) {
 	const [settings, setSettings] = useState<DictationSettings>();
 	const [key, setKey] = useState(""), [terms, setTerms] = useState("");
+	const [hourlyRate, setHourlyRate] = useState(""), [keytermRate, setKeytermRate] = useState("");
 	const [error, setError] = useState(""), [notice, setNotice] = useState(""), [working, setWorking] = useState(false);
-	const show = (value: DictationSettings) => { setSettings(value); setTerms(value.keyterms.join("\n")); };
+	const show = (value: DictationSettings) => {
+		setSettings(value); setTerms(value.keyterms.join("\n"));
+		setHourlyRate(String(value.hourlyRate ?? "")); setKeytermRate(String(value.keytermHourlyRate ?? ""));
+	};
 	useEffect(() => {
 		if (!connected) return;
 		let live = true;
@@ -207,20 +213,30 @@ export function DictationKey({ computer, name, connected }: { computer?: string;
 	};
 	const disabled = !connected || working || !settings;
 	return <section className="settings-group">
-		<Row label="ElevenLabs key" hint={`${name} sends each recorded clip to ElevenLabs Scribe. Browsers use the conversation's computer when it has a key, otherwise any connected computer that does. The key needs only speech-to-text access.`}>
+		<Row label="ElevenLabs" hint={`${name} sends each recorded clip to ElevenLabs Scribe. Browsers use the conversation's computer when it has a key, otherwise any connected computer that does. The key needs only speech-to-text access.`}>
 			<span className="muted">{!connected ? "disconnected" : !settings ? "…" : settings.configured ? "saved · dictation on" : "none · dictation off"}</span>
 			<form className="settings-inline-form" onSubmit={event => { event.preventDefault(); save({ key }, `Key saved on ${name}.`); }}>
-				<input type="password" aria-label={settings?.configured ? "Replace API key" : "API key"} autoComplete="off" spellCheck={false} maxLength={200}
+				<input type="password" aria-label="ElevenLabs API key" autoComplete="off" spellCheck={false} maxLength={200}
 					value={key} placeholder={settings?.configured ? "Replace key" : "sk_…"} disabled={disabled} onChange={event => setKey(event.target.value)} />
-				<button type="submit" disabled={disabled || !key.trim()}>Save</button>
+				<button type="submit" disabled={disabled || !key.trim()}>{settings?.configured ? "Replace API key" : "Save API key"}</button>
 			</form>
-			{settings?.configured ? <button className="quiet-action" disabled={disabled} onClick={() => save({ key: null }, `Key removed; dictation is off on ${name}.`)}>Remove</button>
+			{settings?.configured ? <button className="quiet-action" disabled={disabled} onClick={() => save({ key: null }, `Key removed; dictation is off on ${name}.`)}>Remove API key</button>
 				: <a className="quiet-action" href="https://elevenlabs.io/app/developers/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a>}
 		</Row>
 		{(error || notice) && <Row label=""><span className={error ? "error-text" : "muted"} role={error ? "alert" : "status"}>{error || notice}</span></Row>}
-		{settings?.configured && <Row label="Terms to recognise" hint="One per line, up to 100: names, products and jargon spelt your way. Any terms add about 20% to the cost.">
+		{settings?.configured && <Row label="Terms to recognise" hint="One per line, up to 100: names, products and jargon spelt your way. Any terms add to the cost; estimates use the configured keyterm rate.">
 			<textarea className="grow" aria-label="Terms to recognise" rows={3} spellCheck={false} value={terms} disabled={disabled} placeholder="One per line" onChange={event => setTerms(event.target.value)} />
 			<button disabled={disabled || terms === settings.keyterms.join("\n")} onClick={() => save({ keyterms: terms.split("\n") }, "Terms saved.")}>Save</button>
+		</Row>}
+		{settings?.configured && settings.hourlyRate !== undefined && <Row label="Cost estimates">
+			<details><summary>ElevenLabs rates</summary>
+				<p className="muted">Estimates use full audio duration, including silence. Set rates to match your plan; they do not reconcile invoices or credits. <a href="https://elevenlabs.io/pricing/api" target="_blank" rel="noopener noreferrer">Published pricing ↗</a></p>
+				<form className="settings-inline-form" onSubmit={event => { event.preventDefault(); save({ hourlyRate: Number(hourlyRate), keytermHourlyRate: Number(keytermRate) }, "Estimate rates saved."); }}>
+					<label>USD per audio hour<input type="number" min="0" max="1000" step="any" required value={hourlyRate} disabled={disabled} onChange={event => setHourlyRate(event.target.value)} /></label>
+					<label>Extra USD/hour with keyterms<input type="number" min="0" max="1000" step="any" required value={keytermRate} disabled={disabled} onChange={event => setKeytermRate(event.target.value)} /></label>
+					<button disabled={disabled || !hourlyRate.trim() || !keytermRate.trim()}>Save estimate rates</button>
+				</form>
+			</details>
 		</Row>}
 	</section>;
 }

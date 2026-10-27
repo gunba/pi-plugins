@@ -162,7 +162,7 @@ function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boole
 	</Row>;
 }
 export function ComputerPage({ host, computer, connected, children, views, act, availabilityRun }: {
-	host: WorkspaceState; computer?: Computer; connected: boolean; children: { accounts: ReactNode; dictation: ReactNode; updates?: ReactNode };
+	host: WorkspaceState; computer?: Computer; connected: boolean; children: { accounts: ReactNode; services: ReactNode; updates?: ReactNode };
 	views: ViewSnapshot[]; act: Act; availabilityRun: (mode: string) => void;
 }) {
 	const availability = computer ? computer.operatorAvailability : host.operatorAvailability;
@@ -187,9 +187,9 @@ export function ComputerPage({ host, computer, connected, children, views, act, 
 				})()}</span>
 			</Row>
 		</section>
-		<h3 className="settings-subheading">Logins</h3>
+		<h3 className="settings-subheading">Models & API keys</h3>
 		{children.accounts}
-		<h3 className="settings-subheading">Dictation</h3>
-		{children.dictation}
+		<h3 className="settings-subheading">API services</h3>
+		{children.services}
 	</div>;
 }

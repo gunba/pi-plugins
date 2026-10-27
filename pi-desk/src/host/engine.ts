@@ -53,6 +53,8 @@ import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
 import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
+import { ServiceUsage } from "../../../pi-service-usage/index.ts";
+import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
@@ -116,6 +118,8 @@ export class DeskEngine {
 	private handoffAbort?: AbortController;
 	private attachmentScope?: string;
 	private usageRevision = 0;
+	private serviceUsage?: ServiceUsage;
+	private serviceDrain?: () => Promise<void>;
 	/** The conversation's extension event bus, for requests to its plugins such as briefs. */
 	private events?: { emit(name: string, data: unknown): void };
 	private contexts = new WeakMap<AgentSession, NativeContext>();
@@ -180,6 +184,7 @@ export class DeskEngine {
 		this.presentation.setOperatorAvailability(() => operatorAvailability(operatorDirectory).mode === "present");
 		const pin = runtimePin(options.runtimeDirectory);
 		this.transcript = new Transcript(new ArtifactStore(join(agentDir, "tool-output")));
+		this.serviceUsage = new ServiceUsage(agentDir);
 		const cwd = realpathSync(options.cwd);
 		const settings = SettingsManager.create(cwd, agentDir);
 		let desktop = false;
@@ -206,6 +211,7 @@ export class DeskEngine {
 		// for resource discovery, project trust or extension startup.
 		this.openTranscript(manager);
 		const create: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+			await this.serviceDrain?.();
 			this.claim(sessionManager);
 			const settingsManager = SettingsManager.create(cwd, agentDir);
 			let context: NativeContext | undefined;
@@ -243,6 +249,7 @@ export class DeskEngine {
 			// Only native resource discovery keeps the read projection. Session
 			// settings and extension controls retain the original file-backed API.
 			services.settingsManager = settingsManager;
+			this.serviceDrain = trackServiceModels(services.modelRuntime, this.serviceUsage!, text => this.presentation.notify(text, "warning"));
 			context = new NativeContext(sessionManager, services.resourceLoader, pin ? [pin.root] : []);
 			services.resourceLoader = context.resources;
 			const saved = sessionManager.buildSessionProjection();
@@ -853,6 +860,7 @@ export class DeskEngine {
 				this.unsubscribe?.(); this.feed?.close();
 				this.releaseManagers();
 				this.reserved?.close(); this.reserved = undefined;
+				await this.serviceDrain?.(); this.serviceUsage?.close();
 			}
 		});
 		return this.closeJob;
