@@ -2490,6 +2490,8 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .settings-row { display:grid; grid-template-columns:150px minmax(0, 1fr); align-items:center; gap:14px; min-height:46px; padding:9px 16px; border-top:1px solid color-mix(in srgb, var(--border) 70%, transparent); font-size:13px; }
 .settings-group > .settings-row:first-child, .settings-group > :first-child .settings-row { border-top:0; }
 .settings-row-label { color:var(--muted); font-size:12.5px; }
+.settings-agent-limit > .setting-control { grid-template-columns:150px minmax(0, 1fr); gap:10px 14px; padding:9px 16px; border:0; }
+.settings-agent-limit > .setting-control > input { max-width:140px; }
 .settings-row-value { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
 .settings-row-value > .grow { flex:1; min-width:180px; }
 .settings-row-value select { width:auto; max-width:100%; }
@@ -2524,6 +2526,7 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .settings-actions { display:flex; flex-wrap:wrap; gap:8px; }
 @media (max-width:760px) {
   .settings-row { grid-template-columns:88px minmax(0, 1fr); gap:10px; padding:9px 12px; min-height:44px; }
+  .settings-agent-limit > .setting-control { grid-template-columns:88px minmax(0, 1fr); gap:10px; padding:9px 12px; }
   .settings-row-label:empty { display:none; }
   .settings-row:has(.settings-row-label:empty) { grid-template-columns:1fr; }
   .settings-page { gap:16px; }
