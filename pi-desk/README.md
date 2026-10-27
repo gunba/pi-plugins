@@ -488,6 +488,22 @@ controller admission. Uncertain replies retain the draft and exact request ID:
 requires confirmation; reconnect never sends automatically. Each view has its
 own action lock, so a launch dialog does not block another agent's controls.
 
+**Tasks** opens the workspace overview, also shown beside Dot on wide screens.
+The task list groups Today, To do, Upcoming and Completed. Tasks and all their
+subtasks use checkboxes whether details are open or closed; opening details
+adds title, notes, subtask and schedule editing. Completion is immediate; a
+completed task can be reopened or archived. Existing task storage, recurrence,
+working hours and agent notifications are unchanged. The `quest_*` tool names
+remain compatible, and Dot's `quest_log` still archives completed items when it
+reads them.
+
+The **Agents** tab lists open conversations and active or queued secondary agents
+across computers, with links to their existing conversation panels. **Watches**
+reads the existing watch views and descriptions retained for closed conversations;
+it does not create another scheduler. Offline rows are marked as last-known state.
+A count ending in `+` means a conversation reports pending work without individual
+watch details, so the total is a lower bound.
+
 Chat and detail views render GitHub-flavoured Markdown tables. Transcript errors
 appear at their recorded time rather than accumulating in a global banner.
 

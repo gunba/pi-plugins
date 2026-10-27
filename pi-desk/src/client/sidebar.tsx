@@ -36,7 +36,7 @@ function SidebarRename({ title, rename, close }: { title: string; rename: (name:
 }
 
 /**
- * The conversation list: Dot and the quest log, then each computer's conversations, with copies of an off computer's
+ * The conversation list: Dot and Tasks, then each computer's conversations, with copies of an off computer's
  * conversations to move elsewhere; a drawer on phones.
  */
 export function Sidebar({ open, close, host, connected, transportConnected, selected, sending, dot, questLogs, select, newConversation, resume, openSettings, move, report, closed }: {
@@ -72,7 +72,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
   const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
-  const openQuests = questLogs.reduce((count, log) => count + log.view.quests.filter(quest => quest.state === "open").length, 0);
+  const openQuests = questLogs.reduce((count, log) => count + log.view.quests.filter(quest => quest.state === "open").length + (log.view.upcoming?.length ?? 0), 0);
   return <Navigation open={open} close={close}>
     <div className="brand">
       <span className="brand-mark small">π</span>
@@ -90,10 +90,10 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     <div className="nav-label">Dots</div>
     <nav className="dot-list" aria-label="Dots">
       <DotNavigation dot={dot} selected={dotSelected} open={() => select("dot")} />
-      {questLogs.length > 0 && <button className={`session-item quest-navigation${questsSelected ? " selected" : ""}`} aria-current={questsSelected ? "page" : undefined}
+      <button className={`session-item quest-navigation${questsSelected ? " selected" : ""}`} aria-current={questsSelected ? "page" : undefined}
         onClick={() => select("quests")}>
-        <span className="quest-navigation-icon" aria-hidden="true">!</span>
-        <span><strong>Quests</strong><small>{openQuests ? `${openQuests} open` : "All clear"}</small></span></button>}
+        <span className="quest-navigation-icon" aria-hidden="true"><Icon name="plan" /></span>
+        <span><strong>Tasks</strong><small>{openQuests ? `${openQuests} open` : "Workspace overview"}</small></span></button>
     </nav>
     <div className="nav-label">
       Computers <span>{computers.length}</span>
