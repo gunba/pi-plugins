@@ -1,5 +1,6 @@
 import type { Presentation, UiAction, UiConversation, UiDetails, UiValue, UiView, UiTranscriptHandle } from "../../pi-ui/index.ts";
 import type { ConversationModelPermissions } from "./model-permissions.ts";
+import { DEFAULT_MAX_ACTIVE, parseActiveLimit } from "./limits.ts";
 import type { ParentInvocation, RuntimeChildSnapshot, SubagentRuntime, ThinkingLevel } from "./subagent-runtime.ts";
 
 /** Human controls use the runtime's existing authority and admission paths. */
@@ -111,12 +112,21 @@ export class SubagentPresentation {
 			this.transcripts.set(child.id, this.remote.registerTranscript(this.runtime.transcript(child.id)));
 		}
 		const present = new Set(shown.map(child => `agent:${child.id}`));
-		for (const id of this.signatures.keys()) if (id !== "subagents" && !present.has(id)) {
+		for (const id of this.signatures.keys()) if (id !== "subagents" && id !== "agent-limit" && !present.has(id)) {
 			this.remote.publish(id, undefined); this.signatures.delete(id);
 			const child = id.slice("agent:".length);
 			this.transcripts.get(child)?.close(); this.transcripts.delete(child);
 		}
 		for (const child of shown) this.child(child);
+		// Agent activity changes the history view revision frequently. Keep settings separate so saves do not race it.
+		this.publish("agent-limit", { kind: "details", surface: "settings", title: "Agent limit", data: { controls: [{
+			kind: "text", label: "Live agent limit", value: String(this.runtime.maxActive), action: { id: "limit", label: "Save agent limit" },
+			help: `Default ${DEFAULT_MAX_ACTIVE}. Shared by all secondary agents and descendants in this conversation. Changes apply immediately; lowering it does not stop existing agents. More agents use more memory and provider quota.`,
+		}] } }, { limit: value => {
+			this.check();
+			this.runtime.setMaxActive(parseActiveLimit(value));
+			this.refresh();
+		} });
 		const callbacks: Record<string, (value: UiValue) => Promise<void>> = {};
 		const action = (id: string, label: string, run: () => unknown | Promise<unknown>, destructive = false): UiAction => {
 			callbacks[id] = async () => {
@@ -139,6 +149,7 @@ export class SubagentPresentation {
 		const details: UiDetails = {
 			summary: `${children.length} agents · ${children.filter(child => ["running", "waiting"].includes(child.state)).length} active`,
 			fields: [
+				{ label: "Live agent slots", value: `${this.runtime.activeSlots} / ${this.runtime.maxActive}` },
 				{ label: "Launch model", value: this.model ?? "Inherit parent" },
 				{ label: "Launch thinking", value: this.thinking ?? "Inherit parent" },
 				{ label: "Model override permission", value: permission },

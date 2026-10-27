@@ -156,10 +156,11 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	useEffect(() => {
 		if (lastLatestRequest.current !== latestRequest && connected) {
 			lastLatestRequest.current = latestRequest;
-			if (live) { virtualizer.scrollToEnd(); setAtEnd(true); }
-			else void load();
+			// A send supersedes an in-flight reading-position restore. Reuse the
+			// measured restoration path so queue/composer reflow cannot leave us above the tail.
+			void load();
 		}
-	}, [latestRequest]);
+	}, [latestRequest, connected]);
 	useLayoutEffect(() => {
 		const position = target.current;
 		if (!position || !page) return;

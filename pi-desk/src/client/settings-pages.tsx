@@ -8,6 +8,7 @@ import { ControlHistory } from "./control-status.tsx";
 import { DraftRecovery } from "./draft-recovery.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { toolAvailability } from "./tool-availability.ts";
+import { SettingControl } from "./settings-controls.tsx";
 import type { Computer, WorkspaceState } from "./workspace.ts";
 
 const tokens = (value: number) => value >= 1_000_000 ? `${+(value / 1_000_000).toFixed(value % 1_000_000 ? 2 : 0)}M` : value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
@@ -32,7 +33,7 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 	const [error, setError] = useState("");
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); };
 	const snapshot = session.snapshot, ui = session.ui, view = (id: string) => views.find(item => item.id === id && !item.scope);
-	const window = view("context-window"), usageView = view("pi-usage");
+	const window = view("context-window"), usageView = view("pi-usage"), agentLimit = view("agent-limit");
 	const ready = session.state === "ready" && !!ui, locked = busy || !connected;
 	return <div className="settings-page">
 		{error && <p className="error-text" role="alert">{error}</p>}
@@ -53,6 +54,11 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 		</section>
 		{ready && <ContextGroup session={session} window={window} machine={{ id: computer?.id, name: computer?.name ?? host.name, threshold: computer ? computer.cacheCompaction : host.cacheCompaction }}
 			locked={locked || settingBusy} invoke={invoke} act={act} run={run} />}
+		{ready && agentLimit && <section className="settings-group settings-agent-limit">
+			{(agentLimit.data as UiDetails).controls?.map(control => <SettingControl key={control.action.id} control={control}
+				disabled={!connected || !!agentLimit.working}
+				invoke={(action, value) => run(act(agentLimit, action, value))} />)}
+		</section>}
 		{snapshot?.usage && <SpendGroup usage={snapshot.usage} allowances={usageView} />}
 		<section className="settings-group settings-more">
 			{snapshot && <Disclosure id={`settings:${session.key}:tools`} className="settings-disclosure" summary={<><span>Tools and extensions</span>
