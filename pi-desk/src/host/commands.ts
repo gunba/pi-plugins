@@ -48,7 +48,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			return { kind: data.kind, id: string(data.id, 64), offset: Number(data.offset), base64: string(data.base64, CHUNK_BYTES / 3 * 4) };
 		case "upload_finish": return { kind: data.kind, id: string(data.id, 64), ...(typeof data.sha256 === "string" && /^[a-f0-9]{64}$/.test(data.sha256) ? { sha256: data.sha256 } : {}) };
 		case "upload_discard": return { kind: data.kind, id: string(data.id, 64) };
-		case "snapshot": case "abort": case "reload": case "context_inspect": return { kind: data.kind };
+		case "snapshot": case "models": case "abort": case "reload": case "context_inspect": return { kind: data.kind };
 		case "context_read": return { kind: data.kind, path: string(data.path, 8000) };
 		case "context_update":
 			if (!["tool", "skill", "instruction"].includes(String(data.resource)) || typeof data.included !== "boolean") throw Error("Invalid context choice.");

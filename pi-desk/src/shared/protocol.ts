@@ -210,6 +210,8 @@ export interface WorkerInit {
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
 	| { kind: "snapshot" }
+	/** Refresh the model catalogs, as Pi does when its model picker opens; answers with the snapshot. */
+	| { kind: "models" }
 	| { kind: "context_inspect" }
 	| { kind: "context_read"; path: string }
 	| ({ kind: "context_update" } & import("./context.ts").ContextChange)

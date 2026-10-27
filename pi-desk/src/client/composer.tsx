@@ -152,7 +152,7 @@ export function Composer({ session, selected, selectedRef, composerInput, recall
         {session.snapshot && <>
         <ModelPicker snapshot={session.snapshot} disabled={settingBusy || !connected || session.state !== "ready"}
           select={(model, context) => run({ kind: "model", provider: model.provider, id: model.id, ...(context ? { context } : {}) })}
-          accounts={accounts} history={history} />
+          accounts={accounts} history={history} refresh={() => void command({ kind: "models" }).catch(() => {})} />
         <div className="composer-preferences">{modelPreferences}</div>
         </>}
       </div>

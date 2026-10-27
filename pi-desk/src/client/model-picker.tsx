@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { useAnchoredPopover } from "./anchored-popover.ts";
 import type { SessionSnapshot, WorkerCommand } from "../shared/protocol.ts";
 import { Icon, ProviderIcon } from "./icons.tsx";
@@ -11,15 +11,18 @@ const providerNames: Record<string, string> = {
 	anthropic: "Anthropic", "openai-codex": "OpenAI Codex", openai: "OpenAI API",
 	google: "Google", "google-gemini-cli": "Google Gemini", "github-copilot": "GitHub Copilot",
 };
-export function ModelPicker({ snapshot, disabled, select, accounts, history }: {
+export function ModelPicker({ snapshot, disabled, select, accounts, history, refresh }: {
 	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
 	/** Omitted where the sign-in and history links do not apply, such as a conversation not yet created. */
 	accounts?: (provider: string) => void; history?: () => void;
+	/** Asks for newly released models when the menu opens; the list updates when they arrive. */
+	refresh?: () => void;
 }) {
 	const [query, setQuery] = useState(""), [active, setActive] = useState("");
 	const selected = snapshot.model, constraint = snapshot.modelSwitchConstraint;
 	const popover = useAnchoredPopover(`${snapshot.id}/${selected?.provider}/${selected?.id}`, disabled);
 	const { id: menuId, trigger, panel: menu, open, close } = popover;
+	useEffect(() => { if (open) refresh?.(); }, [open]);
 	const contextAware = constraint !== undefined;
 	const provider = selected?.provider ?? "", label = providerNames[provider] ?? provider;
 	const compactName = provider === "anthropic" ? selected?.name.replace(/^Claude\s+/i, "") : selected?.name;

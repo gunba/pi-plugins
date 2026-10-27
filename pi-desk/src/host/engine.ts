@@ -282,7 +282,19 @@ export class DeskEngine {
 		await this.bind(this.runtime.session);
 		if (this.closed) throw new Error("Session startup was cancelled.");
 		for (const diagnostic of this.runtime.diagnostics) this.presentation.notify(diagnostic.message, diagnostic.type);
+		// Pi refreshes model catalogs at startup only in its terminal mode; Desk does it here, in the background.
+		void this.refreshModels().catch(() => {});
 		return this.snapshot();
+	}
+
+	/**
+	 * Refreshes the model catalogs over the network, within each provider's freshness limits, and reports the new list.
+	 * Desk does this at startup and when the model picker opens, where Pi's terminal mode does.
+	 */
+	private async refreshModels(): Promise<void> {
+		if (!this.runtime || this.closed) return;
+		await this.runtime.services.modelRuntime.refresh({ allowNetwork: true });
+		if (!this.closed) this.scheduleSnapshot();
 	}
 
 	private claim(manager: SessionManager): void {
@@ -556,6 +568,7 @@ export class DeskEngine {
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
+			case "models": await this.refreshModels(); return this.snapshot();
 			case "native_read": return readNativeCommand(session, command.name, command.args);
 			case "brief": {
 				// Written by pi-compaction-context from the conversation's own cached request; never part of the conversation.
