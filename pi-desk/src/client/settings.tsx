@@ -30,7 +30,7 @@ const ALIASES: Record<string, string> = { context: "conversation", tools: "conve
 export const settingsPage = (id: string) => ALIASES[id] ?? id;
 const page = (id: string) => settingsSections.find(section => section.id === id)!;
 /** Extension views shown inside a Desk page rather than as their own. */
-export const MERGED_VIEWS = new Set(["context-window", "pi-usage", "desk-browser", "desk-mcp"]);
+export const MERGED_VIEWS = new Set(["context-window", "pi-usage", "desk-browser", "desk-mcp", "agent-limit"]);
 const VIEW_TITLES: Record<string, string> = { "pi-usage": "Usage", config: "Pi settings", "desk-mcp": "MCP servers", "codex-wire": "Codex", "desk-browser": "Chrome" };
 export interface SettingsGroup { label: string; detail?: string; items: { id: string; title: string }[] }
 
