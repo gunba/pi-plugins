@@ -139,6 +139,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 					throw new Error("Cancel or finish pending messages before changing this session.");
 				return reply({ result: await managed.worker.submitControl(command, string(data.generation, 100), string(data.id, 100)) }, 202);
 			}
+			if (command.kind === "learn" && !managed.worker.runtime?.learn) throw new Error("Restart this conversation to use learn mode.");
 			if (command.kind === "queue_cancel" && !managed.worker.runtime?.queueCancel) throw new Error("Restart this conversation to cancel waiting messages.");
 			const result = await managed.worker.command(command, string(data.generation, 100), string(data.id, 100));
 			return reply({ result: result ?? null });

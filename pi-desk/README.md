@@ -210,6 +210,16 @@ prompts. An interrupted session can be resumed or closed; its composer is unavai
 until Pi starts again. A message from another agent with `wake` reopens a closed
 conversation, which then starts on it; other messages wait until it runs again.
 
+**Learn mode** is a per-conversation switch in the header and Conversation settings.
+It explains a useful concept behind recent work, rather than narrating the tool
+calls. Explanations use the conversation's model in separate, tool-free requests,
+at most once every 90 seconds when there is new activity. Only a bounded copy of
+public messages and tool activity is sent; thinking blocks are excluded. The
+setting and notes survive reopening. Notes appear in the transcript but never
+enter the working agent's model context or compaction summaries. Turning the
+switch off cancels pending explanations. Each note shows its API-price cost,
+which also contributes to conversation spend.
+
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
 name filtering, hidden-folder controls and optional direct path entry. Recent

@@ -41,6 +41,13 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 				{move && <button className="quiet-action" disabled={busy} onClick={move}>Move to another computer…</button>}</Row>
 			<Row label="Model">{snapshot?.model ? <span>{snapshot.model.name}{snapshot.thinking && snapshot.thinking !== "off" ? ` · ${snapshot.thinking} reasoning` : ""}</span> : <span className="muted">Not started</span>}</Row>
 			{session.workerRuntime && <Row label="Version"><span>Desk {session.workerRuntime.version} · Pi {session.workerRuntime.engine}</span></Row>}
+			{session.workerRuntime?.learn && <Row label="Learn mode" hint="Periodic explanations of the ideas behind recent work. Separate model calls incur usage; explanations never enter the working agent’s context.">
+				<input type="checkbox" role="switch" aria-label="Learn mode" checked={!!snapshot?.learn?.enabled} disabled={!ready || !connected}
+					onChange={event => run(invoke({ kind: "learn", enabled: event.target.checked }))} />
+				<span className="muted">Explain concepts about every 90 seconds of new activity, outside agent context. Extra model usage applies.</span>
+				{snapshot?.learn?.writing && <span role="status">Writing an explanation…</span>}
+				{snapshot?.learn?.error && <span className="error-text" role="alert">{snapshot.learn.error}</span>}
+			</Row>}
 			<Row label="Pinned"><input type="checkbox" role="switch" aria-label="Pin conversation" checked={!!session.pinned} disabled={locked}
 				onChange={event => run(api(`/sessions/${session.key}/metadata`, { generation: ui?.generation, pinned: event.target.checked }))} /></Row>
 		</section>

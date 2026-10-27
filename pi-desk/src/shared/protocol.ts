@@ -72,6 +72,8 @@ export interface SessionSnapshot {
 	compacting?: { reason: "manual" | "threshold" | "overflow" | "cache"; started: number };
 	/** The reply that "What do I need to know?" has already been written for, when no message has followed it. */
 	brief?: string;
+	/** Explanations saved outside the agent’s context; absent on older workers. */
+	learn?: import("./learn.ts").LearnState;
 	/** When the conversation's prompt cache was last used, and how long the provider keeps it after a use. */
 	cache?: { usedAt: number; ttlMs: number };
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
@@ -114,7 +116,7 @@ export interface ChatMessage {
 	feedback?: import("./feedback.ts").Feedback;
 	links?: { target: string; file: FileReference }[];
 	/** detail: what happened, beside the title (a watch's event). */
-	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction" | "watch"; title: string; detail?: string; queuedAt?: number; dueAt?: number };
+	notice?: { kind: "party" | "process" | "work" | "agent" | "schedule" | "compaction" | "watch" | "learn"; title: string; detail?: string; queuedAt?: number; dueAt?: number };
 	/** A saved summary that replaced earlier context: compaction, an encrypted Codex checkpoint, a model handoff or an abandoned branch. */
 	summary?: { kind: "compaction" | "checkpoint" | "handoff" | "branch"; tokensBefore?: number; cost?: number; model?: string };
 }
@@ -124,7 +126,7 @@ export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later). */
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; brief?: boolean }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; brief?: boolean; learn?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -232,6 +234,7 @@ export type WorkerCommand =
 	| { kind: "native_read"; name: string; args: string }
 	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
 	| { kind: "brief"; refresh?: boolean }
+	| { kind: "learn"; enabled: boolean }
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }
 	| { kind: "queue_now"; queue: "steering" | "followUp"; index: number; text: string }
