@@ -64,7 +64,7 @@ export interface SessionSnapshot {
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string }[];
-	queue: { steering: { count: number; previews: string[] }; followUp: { count: number; previews: string[] } };
+	queue: { steering: { count: number; previews: string[]; ids?: (string | null)[] }; followUp: { count: number; previews: string[]; ids?: (string | null)[] } };
 	/** `estimated` when no provider-reported usage applies and the tokens are counted from characters. */
 	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */
@@ -124,7 +124,7 @@ export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later). */
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; brief?: boolean }
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -239,6 +239,8 @@ export type WorkerCommand =
 	| { kind: "sent_messages" }
 	/** Take one waiting message out of Pi's queue; it is never sent, and its whole text comes back to edit. */
 	| { kind: "queue_cancel"; queue: "steering" | "followUp"; index: number; text: string }
+	| { kind: "queue_read"; queue: "steering" | "followUp"; id: string }
+	| { kind: "queue_edit"; queue: "steering" | "followUp"; id: string; original: string; text: string }
 	| { kind: "answer"; id: string; answer: unknown }
 	| { kind: "action"; view: string; revision: number; action: string; value?: UiValue }
 	| { kind: "name"; name: string }

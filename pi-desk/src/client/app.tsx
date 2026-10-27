@@ -620,9 +620,15 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot && <NativeQueue queue={session.snapshot.queue}
+            {session.snapshot && <NativeQueue key={selected} queue={session.snapshot.queue}
+              edit={connected && session.state === "ready" && session.workerRuntime?.queueEdit
+                ? async (queue, id, change) => {
+                  const reply = await command<{ result: { text: string } }>(change
+                    ? { kind: "queue_edit", queue, id, ...change } : { kind: "queue_read", queue, id });
+                  return reply.result.text;
+                } : undefined}
               sendNow={connected && session.state === "ready" && session.workerRuntime?.queueNow
-                ? (queue, index, text) => run({ kind: "queue_now", queue, index, text }) : undefined}
+                ? (queue, index, text) => { setLatestRequest(value => value + 1); run({ kind: "queue_now", queue, index, text }); } : undefined}
               cancel={connected && session.state === "ready" && session.workerRuntime?.queueCancel
                 ? (queue, index, text) => void cancelWaiting(queue, index, text) : undefined} />}
             <Composer session={session} selected={selected} selectedRef={selectedRef} composerInput={composerInput} recall={recall} messages={messages}
