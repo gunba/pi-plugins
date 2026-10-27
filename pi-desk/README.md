@@ -38,6 +38,15 @@ Install this repository as a personal Pi package, restart Pi, and run
 and `/desk open` opens it. Use `/desk` for management; see
 [installation and updates](UPDATING.md) for migration and platform prerequisites.
 
+## Conversation search
+
+Agents can use [`conversation_search` and `conversation_read`](../pi-conversation-search/README.md)
+to recall retained native histories, including secondary-agent work, through a
+computer that keeps copies. The index combines full-text search with local CPU
+embeddings; no embedding API key is needed. Search text follows the original
+files' retention, not recovery copies' separate 30-day window. The guide covers
+sharing, exclusions, coverage gaps, resource use, and the trust boundary.
+
 ## Models and accounts
 
 Desk uses Pi's native providers, including Anthropic API keys and Claude Pro/Max

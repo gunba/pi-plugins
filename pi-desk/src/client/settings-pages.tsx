@@ -158,18 +158,17 @@ function SpendGroup({ usage, allowances }: { usage: NonNullable<NonNullable<Sess
 	</section>;
 }
 
-/** One computer's shared settings on one page. */
-/** This computer's conversation-copy switches (teleport): send its conversations, and keep other computers'. */
+/** Recovery copies and conversation search share the same publishing and hosting switches. */
 function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boolean; send: boolean; copies: unknown[] }; computer?: string; connected: boolean }) {
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
 	const set = (change: { hold?: boolean; send?: boolean }) => {
 		setBusy(true); setError("");
 		void api("/teleport/settings", change, computer).catch(failure => setError(failure instanceof Error ? failure.message : String(failure))).finally(() => setBusy(false));
 	};
-	return <Row label="Conversation copies" hint="Each conversation is copied, as it is written, to the computers that keep copies, so it can be moved to another computer and resumed there even when this one is off. Copies go 30 days after their conversation was last active.">
+	return <Row label="Conversation copies and search" hint="Recovery copies let conversations move while a computer is off; they expire after 30 inactive days. Updated hosts also share searchable history with these switches. Search text follows the original files' retention, including older and secondary histories. Hosting search downloads a 288 MB local CPU model; no paid embedding API is used.">
 		{teleport ? <>
 			<label className="settings-check"><input type="checkbox" checked={teleport.send} disabled={!connected || busy} onChange={event => set({ send: event.target.checked })} />Send this computer's conversations</label>
-			<label className="settings-check"><input type="checkbox" checked={teleport.hold} disabled={!connected || busy} onChange={event => set({ hold: event.target.checked })} />Keep copies of other computers' conversations{teleport.hold ? ` (${teleport.copies.length} kept)` : ""}</label>
+			<label className="settings-check"><input type="checkbox" checked={teleport.hold} disabled={!connected || busy} onChange={event => set({ hold: event.target.checked })} />Keep copies and host conversation search{teleport.hold ? ` (${teleport.copies.length} recovery copies)` : ""}</label>
 		</> : <span className="muted">Update Desk on this computer to use conversation copies.</span>}
 		{error && <span className="error-text" role="alert">{error}</span>}
 	</Row>;

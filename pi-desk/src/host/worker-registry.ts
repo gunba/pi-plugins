@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { uptime } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
@@ -141,7 +141,8 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 			cwd: options.cwd, detached: true, windowsHide: true, stdio: "ignore",
 			// Conversations here are paced by a person, so pauses often outlast a 5-minute prompt cache and the
 			// whole context is written again; a 1-hour cache costs more per write but avoids most of those.
-			env: { PI_CACHE_RETENTION: "long", ...environment, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
+			env: { PI_CACHE_RETENTION: "long", ...environment, PI_DESK_DATA_DIR: dirname(dirname(directory)),
+				...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
 		});
 		let spawnError: Error | undefined;
 		child.once("error", error => {

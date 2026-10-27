@@ -7,6 +7,7 @@ import type { AccountConnection } from "./account-connection.ts";
 import type { AgentOperations } from "./agent-operations.ts";
 import { mcpServerCommands, workerHasRunningCommands } from "./automatic-updates.ts";
 import { object, string } from "./commands.ts";
+import type { ConversationSearch } from "./conversation-search.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
 import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
@@ -37,6 +38,7 @@ interface ApiHost {
 	folders(): Folders;
 	saved(): SavedSessionIndex;
 	teleport(): Teleport | undefined;
+	search?(): ConversationSearch | undefined;
 	account: AccountConnection;
 	agents: AgentOperations;
 	moves: ConversationMoves;
@@ -68,6 +70,15 @@ export class HostApi {
 			if (request.method !== "GET" && (this.core.held || this.core.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.core.state());
+			if (url.pathname === "/api/conversations/search" && request.method === "POST") {
+				const search = this.host.search?.();
+				if (!search) return reply({ error: "Conversation search is unavailable on this host." }, 503);
+				if (JSON.stringify(data).length > 16_000) throw Error("Conversation search request is too large.");
+				const result = await search.request(data, data.server === undefined ? undefined : string(data.server, 200));
+				if (typeof device === "string" ? device !== "operator" && !this.host.access().hasDevice(device) : !device.authorized())
+					return reply({ error: "Device access is no longer authorized." }, 401);
+				return reply(result);
+			}
 			const response = await this.workspace(url, request, data) ?? await this.dot(url, request, data) ?? await this.computer(url, request, data)
 				?? await sessionRoute(this.core, this.host.saved, url, request, data);
 			if (response) return response;
