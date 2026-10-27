@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates;
+let MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, ShownSummary, messageLinks } from "./change-view.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,12 +22,46 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
 const render = (props, states = new Map()) => renderToStaticMarkup(createElement(DisclosureStates.Provider, { value: states },
 	createElement(MessageView, { sessionKey: "fixture", ...props })));
+
+test("note-only show results retain their body and safe links in the compact viewer", () => {
+	const item = { id: "shown", message: "tool", at: 0, block: { type: "shown", files: [], shown: {
+		title: "Pull request", note: "[Review PR](https://github.com/gunba/pi-plugins/pull/20) — ready for review.", items: [],
+	} } };
+	for (const large of [false, true]) {
+		const html = renderToStaticMarkup(createElement(WorkBody, { item, session: "fixture", large }));
+		assert.match(html, /ready for review/);
+		assert.match(html, /href="https:\/\/github.com\/gunba\/pi-plugins\/pull\/20"/);
+		assert.match(html, /target="_blank"/);
+		assert.match(html, /rel="noopener noreferrer"/);
+	}
+});
+
+test("shown link items have direct controls in chat and viewers without embedding the page", () => {
+	const item = { id: "shown", message: "tool", at: 0, block: { type: "shown", files: [null], shown: {
+		title: "Pull request", items: [{ url: "https://github.com/gunba/pi-plugins/pull/20", label: "Review PR" }],
+	} } };
+	for (const component of [ShownSummary, WorkBody]) {
+		const html = renderToStaticMarkup(createElement(component, { item, session: "fixture" }));
+		assert.match(html, /href="https:\/\/github.com\/gunba\/pi-plugins\/pull\/20"/);
+		assert.match(html, /Review PR/);
+		assert.match(html, /target="_blank"/);
+		assert.doesNotMatch(html, /<iframe/);
+	}
+	assert.deepEqual(messageLinks([message("tool", "tool", [item.block])]), [{
+		key: "https://github.com/gunba/pi-plugins/pull/20", at: 0, message: "tool", label: "Review PR", url: "https://github.com/gunba/pi-plugins/pull/20",
+	}]);
+	for (const url of ["javascript:alert(1)", "file:///etc/passwd", "https://secret@example.com/", "/internal"]) {
+		item.block.shown.items[0].url = url;
+		assert.doesNotMatch(renderToStaticMarkup(createElement(WorkBody, { item, session: "fixture" })), /href=/);
+		assert.deepEqual(messageLinks([message("tool", "tool", [item.block])]), []);
+	}
+});
 
 test("closed tool output and thinking do not build their hidden Markdown bodies", () => {
 	const tool = message("tool", "tool", [{ type: "text", text: "HIDDEN_TOOL_BODY ".repeat(2000) }]);
