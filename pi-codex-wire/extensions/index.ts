@@ -20,7 +20,7 @@ import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
 import codexUsage from "./usage.ts";
 import { Catalog } from "./catalog.ts";
-import { shapeModelBody, normalizeLiteEvent } from "./model-shape.ts";
+import { shapeModelBody, responseNormalizer } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
   readFast, savedFast, saveFast, type FastMode } from "./settings.ts";
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
@@ -370,7 +370,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             url: String(url), body: shaped, headers: outgoing,
             signal: fetchSignal, fetcher: options?.fetch,
             compression: requestCompression(compression === "on", model.provider, String(url), headers),
-            normalizeEvent: metadata.use_responses_lite === true ? normalizeLiteEvent : undefined,
+            normalizeEvent: responseNormalizer(metadata.use_responses_lite === true),
             requestId, side, timeoutMs: options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 300_000,
             trace,
             onFallback: () => ctx.ui.notify(

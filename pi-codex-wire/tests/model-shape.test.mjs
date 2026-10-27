@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared';
-import { shapeModelBody as shape, normalizeLiteEvent } from '../extensions/model-shape.ts';
+import { shapeModelBody as shape, normalizeLiteEvent, responseNormalizer } from '../extensions/model-shape.ts';
 const shapeModelBody = (body, metadata, threadId = 'test-thread') => shape(body, metadata, threadId);
 
 const metadata = (extra = {}) => ({ slug: 'test', default_reasoning_level: 'medium', supports_reasoning_summary_parameter: true, support_verbosity: true, default_verbosity: 'medium', service_tiers: [{ id: 'default', is_default: true }, { id: 'priority' }], ...extra });
@@ -56,6 +56,42 @@ test('real Pi serializer replays saved apply_patch calls with valid custom IDs a
     assert.equal(result.find(item => item.type === 'custom_tool_call_output').call_id, call.call_id);
     assert.equal(messages[0].content[0].id, id);
   }
+});
+
+test('response IDs survive added/done pairs, interleaving, and a new response', () => {
+  const normalize = responseNormalizer(false);
+  const added = (index, item) => normalize(freeze({ type: 'response.output_item.added', output_index: index, item })).item;
+  const done = (index, item) => normalize(freeze({ type: 'response.output_item.done', output_index: index, item })).item;
+  const message = added(0, { type: 'message', id: '' });
+  const call = added(1, { type: 'custom_tool_call', id: null, call_id: 'call_custom' });
+  assert.match(message.id, /^msg_[0-9a-f-]{14}7[0-9a-f-]{21}$/);
+  assert.match(call.id, /^ctc_[0-9a-f-]{14}7[0-9a-f-]{21}$/);
+  assert.equal(done(0, { type: 'message' }).id, message.id);
+  assert.equal(done(1, { type: 'custom_tool_call', call_id: 'call_custom' }).id, call.id);
+  assert.equal(added(2, { type: 'function_call', id: 'fc_server' }).id, 'fc_server');
+  assert.equal(done(2, { type: 'function_call' }).id, 'fc_server');
+  assert.equal(done(3, { type: 'message', id: 'msg_server' }).id, 'msg_server');
+  assert.match(done(4, { type: 'reasoning' }).id, /^rs_[0-9a-f-]{14}7[0-9a-f-]{21}$/);
+  assert.deepEqual(done(5, { type: 'future_item' }), { type: 'future_item' });
+  const delta = { type: 'response.output_text.delta', output_index: 0, delta: 'parity' };
+  assert.equal(normalize(delta), delta);
+  normalize({ type: 'response.created', response: { id: 'new_response' } });
+  assert.notEqual(added(0, { type: 'message' }).id, message.id);
+});
+
+test('response ID normalization preserves Lite namespace checks and raw completion snapshots', () => {
+  const normalize = responseNormalizer(true);
+  const event = freeze({ type: 'response.output_item.added', output_index: 0,
+    item: { type: 'function_call', namespace: 'functions', call_id: 'call_1' } });
+  const item = normalize(event).item;
+  assert.equal(item.namespace, undefined);
+  assert.equal(item.call_id, 'call_1');
+  assert.match(item.id, /^fc_/);
+  assert.equal(event.item.id, undefined);
+  assert.throws(() => normalize({ ...event, item: { ...event.item, namespace: 'other' } }), /non-functions/);
+  assert.deepEqual(normalize({ type: 'response.completed', response: { output: [event.item] } }), {
+    type: 'response.completed', response: { output: [{ type: 'function_call', call_id: 'call_1' }] },
+  });
 });
 
 test('native defaults, encrypted reasoning include, strict false, no mutation', () => {
