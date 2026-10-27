@@ -210,6 +210,8 @@ prompts. An interrupted session can be resumed or closed; its composer is unavai
 until Pi starts again. A message from another agent with `wake` reopens a closed
 conversation, which then starts on it; other messages wait until it runs again.
 
+**Waiting and scheduled work** use the single `watch` tool. “Wake” describes starting a turn with an event, or reopening a kept conversation so its watch can deliver one; it is not another scheduler. `agent_send` has a `wake` delivery option, not a timer. See [watch versus wake](../pi-watch/README.md#watch-versus-wake) for one-off, polling, classifier-filtered, and recurring work.
+
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
 name filtering, hidden-folder controls and optional direct path entry. Recent
@@ -457,6 +459,14 @@ enforces direct-parent messaging and ancestor interruption, just as the terminal
 tools do. Stop targets that agent's current work, not every descendant; queued
 tasks remain saved. `/subagents` manages launches and model permissions, and
 `/subagents <id>` opens that agent's pane. The terminal dashboard is unchanged.
+
+Secondary agents default to **32 live slots per conversation tree**. Change
+**Live agent limit** in **Settings & tools → Conversation** or **Agents → Browse
+agents**. The setting is saved in that conversation's native history and applies
+immediately, including to descendants. Raising it releases queued work; lowering
+it does not stop existing agents. Opening and cleanup use slots too. Separate
+primary conversations have separate limits. Older conversations need the updated
+extension loaded before the control appears.
 
 Drafts are separate for each agent on this browser. Inline sends wait for native
 controller admission. Uncertain replies retain the draft and exact request ID:

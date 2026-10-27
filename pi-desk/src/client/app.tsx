@@ -497,7 +497,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {totalAgents > 0 && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
+            {(totalAgents > 0 || agentHistory) && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
               title={`${activeAgents} active · ${totalAgents} total`} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
               <span className={`status-dot ${activeAgents ? "running" : "idle"}`} />Agents <b>{totalAgents}</b></button>}
             {messagesView && <button type="button" className={`header-chip${panel === "view" && focusedView === "messages" ? " selected" : ""}`}
@@ -627,6 +627,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     ? { kind: "queue_edit", queue, id, ...change } : { kind: "queue_read", queue, id });
                   return reply.result.text;
                 } : undefined}
+              keep={text => { const next = draft.trim() ? `${draft}\n\n${text}` : text; setDraft(next); localStorage.setItem(draftKey(selected), next); }}
               sendNow={connected && session.state === "ready" && session.workerRuntime?.queueNow
                 ? (queue, index, text) => { setLatestRequest(value => value + 1); run({ kind: "queue_now", queue, index, text }); } : undefined}
               cancel={connected && session.state === "ready" && session.workerRuntime?.queueCancel

@@ -8,5 +8,4 @@ Shared helpers for the plugins that run agents.
 - `nativePromptPreparing(sessionManager)` (`native-queue.ts`) is true while Pi is admitting a prompt, when `isIdle()`
   is still true, so other plugins don't start a competing turn.
 
-There is no waiting tool. Agents wait with `watch` (pi-watch), and reports from secondary agents wake the conversation
-that started them (pi-agents).
+This package registers neither a waiting tool nor a wake tool. Agents subscribe with [`watch`](../pi-watch/README.md#watch-versus-wake); waking is event delivery, not another subscription. Reports from secondary agents wake the conversation that started them through pi-agents, without creating a timer.

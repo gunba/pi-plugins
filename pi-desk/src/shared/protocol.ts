@@ -142,7 +142,7 @@ export interface SessionView {
 	createdBy?: string;
 	/** It moved to another computer (teleport); it does not run here again. */
 	moved?: { to: string; at: number };
-	/** When its extensions next need it running (a watch set to a time). Desk reopens it then if it is listed but not running. */
+	/** Earliest extension deadline for reopening a listed conversation. The restored extension, not this hint, owns event delivery. */
 	wakes?: number;
 	/** Its extensions are watching for something and need it running; Desk restarts it if its process was lost. */
 	watching?: boolean;
