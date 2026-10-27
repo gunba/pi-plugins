@@ -1062,6 +1062,7 @@ details[open] > summary:before {
 .queue-cancel { flex:none; display:inline-grid; place-items:center; width:22px; height:22px; padding:3px; border:0; border-radius:6px; background:transparent; color:var(--muted); }
 .queue-cancel .ui-icon { width:12px; height:12px; }
 .queue-cancel:hover { color:var(--danger); background:var(--hover); }
+.queue-group li > .queue-edit { flex:1; min-width:0; margin:0; padding:2px 6px; font:inherit; line-height:inherit; resize:none; field-sizing:content; max-height:12em; }
 .queue-group li > .queue-send-now { margin-left:auto; flex:none; align-self:center; padding:2px 6px; }
 .queue-group li + li { border-top:1px solid var(--border); margin-top:6px; padding-top:6px; }
 .agent-activity-bar { display: flex; gap: 12px; align-items: center; flex-shrink: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; padding: 9px 28px; text-align: left; font-size: 12px; }

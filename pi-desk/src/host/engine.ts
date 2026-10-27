@@ -52,7 +52,7 @@ import { NativeContext } from "./context.ts";
 import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
-import { promoteFollowUp, cancelQueued } from "./native-queue-order.ts";
+import { promoteFollowUp, cancelQueued, queuedMessageIds, editQueued } from "./native-queue-order.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
@@ -463,7 +463,8 @@ export class DeskEngine {
 			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
 		const cache = promptCache(session);
 		const defaults = session.settingsManager.getGlobalSettings();
-		const queued = (messages: readonly string[]) => ({ count: messages.length, previews: messages.slice(0, 12).map(queuePreview) });
+		const queued = (messages: readonly string[], queue: "steering" | "followUp") => ({ count: messages.length,
+			previews: messages.map(queuePreview), ids: queuedMessageIds(session, queue) });
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
 			this.opening = { manager, text: openingMessage(manager.getEntries(), this.fullEntry(manager)) };
@@ -494,7 +495,7 @@ export class DeskEngine {
 			],
 			commands: promptCommands(session, this.runtime.services.resourceLoader),
 			models: this.runtime.services.modelRuntime.getAvailableSnapshot().map(model => ({ id: model.id, provider: model.provider, name: model.name })),
-			queue: { steering: queued(session.getSteeringMessages()), followUp: queued(session.getFollowUpMessages()) },
+			queue: { steering: queued(session.getSteeringMessages(), "steering"), followUp: queued(session.getFollowUpMessages(), "followUp") },
 			...(cache ? { cache } : {}),
 			context: context ? { tokens: context.tokens, contextWindow: context.contextWindow, percent: context.percent,
 				...("estimated" in context ? { estimated: true } : {}) } : undefined,
@@ -668,6 +669,12 @@ export class DeskEngine {
 				if (!level) throw new Error("Reasoning level is unavailable for this model.");
 				await this.change(async () => { session.setThinkingLevel(level); }, true);
 				return;
+			}
+			case "queue_read": return { text: editQueued(session, command.queue, command.id) };
+			case "queue_edit": {
+				const text = editQueued(session, command.queue, command.id, command);
+				this.scheduleSnapshot();
+				return { text };
 			}
 			case "queue_cancel": {
 				const waiting = command.queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();
