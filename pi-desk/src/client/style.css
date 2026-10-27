@@ -738,7 +738,7 @@ details[open] > summary:before {
 .notice-schedule > .message-body { font-size:14px; }
 .notice-metadata { display:flex; flex-wrap:wrap; gap:12px; padding:0 14px 8px; font-size:12px; color:var(--muted); }
 .received-notice .markdown > :first-child { margin-top:0; }
-.notice-party { border-left:2px solid var(--accent); }
+.notice-party, .notice-learn { border-left:2px solid var(--accent); }
 .notice-compaction { border-left:2px solid var(--danger); }
 .tool-pill .tool-argument-preview .file-link { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tool-output { padding:4px 14px 12px; max-height:560px; overflow:auto; }
