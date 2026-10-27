@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker;
+let MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker, workItems;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, ShownSummary, messageLinks } from "./change-view.tsx"; export { QuestTracker } from "./quest-tracker.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { QuestTracker } from "./quest-tracker.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,7 +22,7 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker, workItems } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
@@ -75,6 +75,11 @@ test("collapsed tasks show every subtask as a checkbox, including the seventh", 
 	const checkboxes = [...html.matchAll(/<input[^>]*type="checkbox"[^>]*>/g)].map(([input]) => ({ input, title: /aria-label="Done: ([^"]+)"/.exec(input)?.[1] })).filter(item => item.title);
 	assert.deepEqual(checkboxes.map(({ input, title }) => ({ title, done: /\bchecked=""/.test(input) })), steps);
 	assert.doesNotMatch(html, /1 more/);
+});
+
+test("generated image results are not labelled as screenshots", () => {
+	const generated = { ...message("generated", "tool", [{ type: "image", asset: "fixture", mimeType: "image/png" }]), toolName: "codemode" };
+	assert.deepEqual(workItems([generated]).map(item => item.title), ["Image"]);
 });
 
 test("closed tool output and thinking do not build their hidden Markdown bodies", () => {
