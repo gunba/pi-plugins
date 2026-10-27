@@ -322,7 +322,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 			<DotAvatar image={view.avatar} />
 			<div className="conversation-heading"><span>Dot · {dot.status}</span><strong>{name}</strong></div>
 			<div className="top-actions dot-actions">
-				{openQuests && <button className="subtle-button" onClick={openQuests}>Quests</button>}
+				{openQuests && <button className="subtle-button" onClick={openQuests}>Tasks</button>}
 				{ready && <button className="subtle-button" aria-expanded={showConnection} onClick={() => setShowConnection(value => !value)}>Connection</button>}
 			</div>
 		</header>

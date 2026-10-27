@@ -40,6 +40,7 @@ import { useNewConversation } from "./new-conversation.tsx";
 import { PendingInputs } from "./pending-inputs.tsx";
 import { PlanHeader } from "./plan-header.tsx";
 import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
+import { TasksOverview } from "./tasks-overview.tsx";
 import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
 import { ResumeConversation } from "./resume.tsx";
 import { SettingsLayout, SettingsContent, settingsGroups, settingsPage, MERGED_VIEWS } from "./settings.tsx";
@@ -449,9 +450,15 @@ export function App({ account }: { account?: BrowserAccount }) {
     ? host.computers.flatMap(computer => computer.quests ? [{ computer: computer.id, name: computer.name, view: computer.quests, connected: computer.connected }] : [])
     : host.quests ? [{ name: host.name, view: host.quests, connected }] : [];
   const agentSession = (id: string) => host.sessions.find(item => (item.snapshot?.id ?? item.agentId) === id);
-  const questTracker = <QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? conversationTitle(found) : undefined; }}
+  const questTracker = <TasksOverview host={host} connected={connected}
+    tasks={questLogs.reduce((count, log) => count + log.view.quests.filter(item => item.state === "open").length + (log.view.upcoming?.length ?? 0), 0)}
+    open={(item, target) => {
+      setSelected(item.key); setSidebar(false); setPanel(target?.agent ? "agents" : target?.view ? "view" : undefined);
+      if (target?.view) setFocusedView(target.view);
+      if (target?.agent) { localStorage.setItem(`pi-desk:agent-selection:${item.key}`, target.agent); setFocusedAgent(target.agent); setAgentHistoryOpen(false); }
+    }}><QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? conversationTitle(found) : undefined; }}
     openAgent={id => { const found = agentSession(id); if (found) { setSelected(found.key); setPanel(undefined); setSidebar(false); } }}
-    ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} />;
+    ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} /></TasksOverview>;
   return (
     <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
       open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
@@ -466,13 +473,13 @@ export function App({ account }: { account?: BrowserAccount }) {
         move={setMoving} report={setError} closed={key => { if (selectedRef.current === key) setPanel(undefined); }} />
       <main className={`main${dotSelected ? " main-dot" : questsSelected ? " main-quests" : ""}`} data-primary-focus tabIndex={-1}>
         {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)}
-          openQuests={questLogs.length && !wideWorkspace ? () => { setSelected("quests"); setPanel(undefined); } : undefined} />
+          openQuests={!wideWorkspace ? () => { setSelected("quests"); setPanel(undefined); } : undefined} />
         : questsSelected ? <>
           <header className="topbar">
             <button className="icon-button mobile-nav" aria-label="Open navigation" onClick={() => setSidebar(true)}>☰</button>
-            <div className="conversation-heading"><span>{questLogs.length > 1 ? `${questLogs.length} computers` : questLogs[0]?.name ?? host.name}</span><strong>Quests</strong></div>
+            <div className="conversation-heading"><span>{questLogs.length > 1 ? `${questLogs.length} computers` : questLogs[0]?.name ?? host.name}</span><strong>Tasks</strong></div>
           </header>
-          <div className="quest-page">{questLogs.length ? questTracker : <p className="muted">The quest log needs Desk 0.5.63 or later on a connected computer.</p>}</div>
+          <div className="quest-page">{questTracker}</div>
         </> : <>
         <header className="topbar">
           <button
@@ -637,7 +644,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
         </>}
       </main>
-      {dotSelected && wideWorkspace && questLogs.length > 0 && <div className="quest-rail">{questTracker}</div>}
+      {dotSelected && wideWorkspace && <div className="quest-rail">{questTracker}</div>}
       {showWorkPane && <WorkPane items={paneItems} links={loadedLinks} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
         close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
       {panel && (
