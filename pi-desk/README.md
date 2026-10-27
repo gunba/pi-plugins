@@ -210,6 +210,8 @@ prompts. An interrupted session can be resumed or closed; its composer is unavai
 until Pi starts again. A message from another agent with `wake` reopens a closed
 conversation, which then starts on it; other messages wait until it runs again.
 
+**Waiting and scheduled work** use the single `watch` tool. “Wake” describes starting a turn with an event, or reopening a kept conversation so its watch can deliver one; it is not another scheduler. `agent_send` has a `wake` delivery option, not a timer. See [watch versus wake](../pi-watch/README.md#watch-versus-wake) for one-off, polling, classifier-filtered, and recurring work.
+
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
 name filtering, hidden-folder controls and optional direct path entry. Recent
