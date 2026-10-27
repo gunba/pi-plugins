@@ -18,14 +18,15 @@ export function TasksOverview({ host, connected, tasks, children, open }: {
 	const computer = (session: WorkspaceSession) => host.computers?.find(item => item.id === session.computer);
 	const online = (session: WorkspaceSession) => host.computers ? computer(session)?.connected === true : connected;
 	const location = (session: WorkspaceSession) => computer(session)?.name ?? host.name;
-	const agents: ActivityRow[] = host.sessions.flatMap(owner => [
+	// Closed conversations are not at work; those still waiting on a watch are listed under Watches.
+	const agents: ActivityRow[] = host.sessions.filter(owner => owner.state !== "closed").flatMap(owner => [
 		{ id: owner.key, title: conversationTitle(owner), detail: backgroundWork(owner)?.label, status: activityLabel(sessionActivity(owner)), owner },
-		...(owner.state === "closed" ? [] : agentInventory(owner.ui?.views ?? []).current.map(view => {
+		...agentInventory(owner.ui?.views ?? []).current.map(view => {
 			const data = view.data as UiConversation;
 			return { id: `${owner.key}:${view.id}`, title: view.title, detail: data.activity ?? data.subtitle, status: activityLabel(data.status), owner, agent: view.id };
-		})),
+		}),
 	]);
-	agents.sort((a, b) => Number(!online(a.owner) || a.owner.state === "closed") - Number(!online(b.owner) || b.owner.state === "closed"));
+	agents.sort((a, b) => Number(!online(a.owner)) - Number(!online(b.owner)));
 	const watches: ActivityRow[] = host.sessions.flatMap(owner => {
 		const views = (owner.ui?.views ?? []).filter(view => view.kind === "details" && (view.id === "pi-watch" || view.id.endsWith("/pi-watch")));
 		// Closed workers lose their live views; the host preserves the watch descriptions when it closes them.

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { NoticeBatcher } from "./notice-batcher.ts";
+import { DEFAULT_MAX_ACTIVE, parseActiveLimit } from "./limits.ts";
 import { historicalTaskName, resolveTaskPath, validateTaskName } from "./task-names.ts";
 import { FOLLOWUP_MESSAGE, type FollowupInput } from "./followup-delivery.ts";
 import type { PresentationScope, UiTranscriptSource } from "../../pi-ui/index.ts";
@@ -38,7 +39,7 @@ export const CONTROL_ENTRY = "pi-subagents/control-v1";
 const REPORTS_ARRIVED = "Reports from your agents arrived; they are above. Carry on with your task.";
 export const DESCRIPTOR_VERSION = 2;
 export const DEFAULT_MAX_DEPTH = 3;
-export const DEFAULT_MAX_ACTIVE = 8;
+export { DEFAULT_MAX_ACTIVE } from "./limits.ts";
 export const DEFAULT_OPEN_TIMEOUT_MS = 30_000;
 export const MAX_PARENT_NOTICE_BYTES = 32 * 1024;
 
@@ -205,6 +206,8 @@ export interface RuntimeHost {
 	isProjectTrusted(): boolean;
 	getRootStatus?(): "running" | "idle";
 	recordRootLaunch(childId: string): void;
+	/** Persist before admission changes; throwing leaves the current limit unchanged. */
+	recordActiveLimit?(maxActive: number): void;
 	/** Queue a root notice and return true only when that exact notice is already durable in the root branch. */
 	deliverRootNotice(notice: ParentNotice): boolean;
 	recordBackgroundUsage?(childId: string, messageId: string, usage: Usage): void;
@@ -888,7 +891,10 @@ function openWithCancellation(open: () => Promise<ChildDriver>, signal: AbortSig
 export class SubagentRuntime {
 	readonly rootAuthority: Authority;
 	readonly maxDepth: number;
-	readonly maxActive: number;
+	private activeLimit: number;
+	get maxActive(): number { return this.activeLimit; }
+	/** Includes opening and cleanup, even when no model is streaming. */
+	get activeSlots(): number { return this.activeCount(); }
 	private readonly openTimeoutMs: number;
 	private readonly records = new Map<string, ChildRecord>();
 	private readonly closingChildren = new Set<string>();
@@ -920,10 +926,8 @@ export class SubagentRuntime {
 		this.maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
 		if (!Number.isSafeInteger(this.maxDepth) || this.maxDepth < 0)
 			throw new Error("maxDepth must be a non-negative safe integer");
-		this.maxActive = options.maxActive ?? DEFAULT_MAX_ACTIVE;
+		this.activeLimit = parseActiveLimit(options.maxActive ?? DEFAULT_MAX_ACTIVE);
 		this.openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
-		if (!Number.isSafeInteger(this.maxActive) || this.maxActive < 1)
-			throw new Error("maxActive must be a positive safe integer");
 		if (!Number.isSafeInteger(this.openTimeoutMs) || this.openTimeoutMs < 1)
 			throw new Error("openTimeoutMs must be a positive safe integer");
 		this.sessionDir = options.sessionDir ??
@@ -1587,6 +1591,20 @@ export class SubagentRuntime {
 	private activeCount(): number {
 		return [...this.records.values()].filter((record) => record.activation || record.opening || record.pump || record.disposing
 			|| this.openingFiles.has(record.manager.getSessionFile()!)).length;
+	}
+
+	/**
+	 * Changes future admission, not existing agents; raising the limit releases queued work.
+	 * Invalid values, shutdown and persistence failures throw before the limit changes.
+	 */
+	setMaxActive(value: number): void {
+		if (this.closing) throw new Error("The agent runtime is closing.");
+		const limit = parseActiveLimit(value);
+		if (limit === this.activeLimit) return;
+		this.host.recordActiveLimit?.(limit);
+		this.activeLimit = limit;
+		for (const record of this.records.values()) if (record.queue.length) this.startPump(record);
+		this.emit();
 	}
 
 	private requireCapacity(): void {

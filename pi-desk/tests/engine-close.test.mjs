@@ -27,14 +27,15 @@ test("overlapping shutdown callers await the same cleanup, including failure", a
 
 test("close aborts active work but retains lifecycle ownership until a transition finishes", async () => {
 	const engine = new DeskEngine(() => {});
-	let release, disposed = false, aborted = false, ended = false;
+	let release, entered, disposed = false, aborted = false, ended = false;
+	const started = new Promise(resolve => { entered = resolve; });
 	engine.snapshot = () => ({});
 	engine.runtime = {
 		session: { isIdle: true, isCompacting: false, abortCompaction() {}, abortBranchSummary() {}, abort: async () => { aborted = true; } },
 		dispose: async () => { disposed = true; },
 	};
-	const transition = engine.change(() => new Promise(resolve => { release = resolve; }));
-	await Promise.resolve();
+	const transition = engine.change(() => new Promise(resolve => { release = resolve; entered(); }));
+	await started;
 	const closing = engine.close().then(() => { ended = true; });
 	await new Promise(setImmediate);
 	assert.equal(aborted, true);
@@ -46,6 +47,25 @@ test("close aborts active work but retains lifecycle ownership until a transitio
 	assert.equal(disposed, true);
 	assert.equal(ended, true);
 	await assert.rejects(engine.change(async () => assert.fail("A closed runtime must not start another transition")), /closing/);
+});
+
+test("close aborts native work while a learning request is still settling", async () => {
+	const engine = new DeskEngine(() => {});
+	let release, disposed = false, aborted = false, learningClosed = false;
+	const settled = new Promise(resolve => { release = resolve; });
+	engine.learning = { close: async () => { learningClosed = true; await settled; } };
+	engine.runtime = {
+		session: { abortCompaction() {}, abortBranchSummary() {}, abort: async () => { aborted = true; } },
+		dispose: async () => { disposed = true; },
+	};
+	const closing = engine.close();
+	try {
+		await new Promise(setImmediate);
+		assert.equal(learningClosed, true);
+		assert.equal(aborted, true, "side-request cleanup must not delay aborting the main task");
+		assert.equal(disposed, false, "the learning request still owns the session manager");
+	} finally { release(); await closing; }
+	assert.equal(disposed, true);
 });
 
 test("explicit Stop starts a native turn for stranded steering, but never during closure", async () => {

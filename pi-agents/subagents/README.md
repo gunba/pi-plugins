@@ -140,8 +140,24 @@ Skills remain native Pi resources: advertisements describe available skills, and
 content is read on demand. Desk labels observed `SKILL.md` reads, including nested
 codemode calls; that label is not proof that the model followed the skill.
 
-Defaults are depth 3, eight live child activations per root and a 30-second opening
-deadline. Opening and disposal consume capacity. Cancellation cannot forcibly
+Defaults are depth 3, **32 live child activations per root conversation** and a
+30-second opening deadline.
+
+Set the **Live agent limit** in Desk's **Settings & tools → Conversation**, or in
+**Agents → Browse agents**. The terminal equivalent is `/subagents limit 64`;
+`/subagents limit` shows the current value and occupied slots. Limits must be
+positive whole numbers. The limit is shared by every secondary agent and
+descendant under that root, not by unrelated primary conversations.
+
+Changes take effect immediately and are saved as native conversation metadata,
+outside model messages. Raising the limit admits waiting work; lowering it leaves
+existing agents running and limits new activations until enough slots are free.
+The override survives resume and branch navigation. New conversations without an
+override use 32. More agents can increase memory use, cost and provider rate-limit
+pressure. After updating, restart an older conversation when its agents are idle
+to load these controls.
+
+Opening and disposal consume capacity. Cancellation cannot forcibly
 stop arbitrary synchronous provider code; late drivers are disposed before their
 opening slot is released. These limits do not establish acceptable cold-start
 performance on every computer.
@@ -201,6 +217,7 @@ Model-hidden native entries include:
 - `pi-subagents/control-v1`: explicit parking/resume state.
 - `pi-subagents/maintenance-v1` in the root: hold, final cursor proofs and release.
 - `pi-subagents/launch-v1`: branch-aware ownership.
+- `pi-subagents/active-limit-v1`: the conversation-wide live-agent limit.
 - `pi-subagents/settlement-v1`: pending/acknowledged message and result outbox.
 - `pi-subagents/notice-received-v1`: destination admission before context append.
 - `pi-subagents/usage-v1` in the root: deduplicated background charges.

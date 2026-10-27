@@ -43,6 +43,7 @@ import { ensureWorkUi, type WorkUiSource } from "../../pi-work-ui/index.ts";
 import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
 import { SubagentPresentation } from "./presentation.ts";
+import { ACTIVE_LIMIT_ENTRY, parseActiveLimit, savedActiveLimit } from "./limits.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -361,6 +362,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			...(getPresentation(pi)?.createScope ? {
 				createPresentation: descriptor => getPresentation(pi)!.createScope!(descriptor.childSessionId, descriptor.label),
 			} : {}),
+			recordActiveLimit(maxActive) { pi.appendEntry(ACTIVE_LIMIT_ENTRY, { maxActive }); },
 			recordRootLaunch(childId: string) {
 				launches.add(childId);
 				pi.appendEntry(LAUNCH_ENTRY, {
@@ -417,6 +419,7 @@ export default function subagents(pi: ExtensionAPI): void {
 					},
 					mode,
 				),
+			{ maxActive: savedActiveLimit(ctx.sessionManager.getEntries()) },
 		);
 		runtime = created;
 		if (remote?.capabilities.includes("details")) {
@@ -491,6 +494,14 @@ export default function subagents(pi: ExtensionAPI): void {
 	});
 
 	const handleSubagents = async (args: string, ctx: ExtensionContext): Promise<void> => {
+			if (/^limit(?:\s|$)/.test(args.trim())) {
+				try {
+					const value = args.trim().slice("limit".length).trim(), active = requireRuntime();
+					if (value) active.setMaxActive(parseActiveLimit(value));
+					ctx.ui.notify(`Live agent limit: ${active.maxActive} for this conversation, including descendants. ${active.activeSlots} slots in use.`, "info");
+				} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning"); }
+				return;
+			}
 			if (/^permissions(?:\s|$)/.test(args.trim())) {
 				if (!modelPermissions) throw new Error("subagent runtime is not initialized");
 				const action = args.trim().split(/\s+/).slice(1).join(" ") || "status";
@@ -571,7 +582,7 @@ export default function subagents(pi: ExtensionAPI): void {
 			}
 	};
 	pi.registerCommand("subagents", {
-		description: "Inspect subagents; permissions [status|allow|revoke] controls conversation-level model and thinking overrides",
+		description: "Inspect subagents; limit [number] sets the conversation agent limit; permissions [status|allow|revoke] controls model and thinking overrides",
 		handler: handleSubagents,
 	});
 }

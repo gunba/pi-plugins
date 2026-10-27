@@ -166,7 +166,7 @@ export class DeskHost {
 	async start(): Promise<{ origin: string; pairingUrl: string }> {
 		const directory = this.options.dataDir ?? join(this.options.agentDir, "desk");
 		this.directory = directory;
-		this.dictation = new Dictation(directory);
+		this.dictation = new Dictation(directory, this.options.agentDir);
 		this.updates.load();
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		this.hostLease = new SessionLease(join(directory, "host"));

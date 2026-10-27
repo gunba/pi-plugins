@@ -47,17 +47,19 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		try { const saved = JSON.parse(localStorage.getItem("pi-desk:tasks-collapsed") ?? "[]"); return Array.isArray(saved) ? saved.filter(id => typeof id === "string") : []; }
 		catch { return []; }
 	});
-	const [saving, setSaving] = useState(false), pending = useRef(false);
+	// Changes are sent one at a time, in order, so a quick second change (a tick after editing notes) is neither lost nor reordered.
+	const sending = useRef<Promise<unknown>>(Promise.resolve());
 	const dragged = useRef<string | undefined>(undefined);
 	useEffect(() => { localStorage.setItem("pi-desk:tasks-collapsed", JSON.stringify(collapsed)); }, [collapsed]);
 	if (!home) return <aside className="quest-tracker"><p className="muted">Connect a computer with task support to see your list.</p></aside>;
 
 	const run = async (log: QuestLog, command: QuestCommand) => {
-		if (pending.current || !log.connected) return false;
-		pending.current = true; setSaving(true); setError(""); setNotice("");
-		try { await api("/quests", { command }, log.computer); return true; }
+		if (!log.connected) return false;
+		setError(""); setNotice("");
+		const send = sending.current.then(() => api("/quests", { command }, log.computer));
+		sending.current = send.catch(() => {});
+		try { await send; return true; }
 		catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); return false; }
-		finally { pending.current = false; setSaving(false); }
 	};
 	const items: Item[] = logs.flatMap(log => log.view.quests.map(quest => ({ quest, log, key: `${log.computer ?? "local"}:${quest.id}` })));
 	const active = items.filter(item => item.quest.state === "open");
@@ -84,7 +86,7 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		const { quest, log } = item, expanded = open === item.key, finished = !item.resting && quest.state === "done";
 		// A resting repeat still holds the previous occurrence's steps until the next due day.
 		const restingRepeat = !!item.resting && !!quest.repeat;
-		const editable = !finished && !restingRepeat, disabled = !log.connected || saving;
+		const editable = !finished && !restingRepeat, disabled = !log.connected;
 		const due = finished ? undefined : dueLabel(quest.due, log.view.today, !!quest.repeat) ?? scheduledLabel(quest.scheduled, log.view.today, item.resting);
 		return <li key={item.key} className={`quest${finished ? " done" : ""}${expanded ? " expanded" : ""}`}
 			draggable={!disabled && !finished && !item.resting && !editing && !expanded}
@@ -135,10 +137,10 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 			<span className="muted">{active.length + upcoming.length} open · {completed.length} completed</span>
 			<button type="button" className="icon-button" aria-label="Working hours" aria-expanded={hoursOpen} onClick={() => setHoursOpen(value => !value)}><Icon name="clock" /></button>
 		</header>
-		{hoursOpen && <fieldset className="quest-settings" disabled={!home.connected || saving}><QuestHoursEditor log={home} ask={ask} save={hours => void run(home, { action: "hours", hours })} /></fieldset>}
+		{hoursOpen && <fieldset className="quest-settings" disabled={!home.connected}><QuestHoursEditor log={home} ask={ask} save={hours => void run(home, { action: "hours", hours })} /></fieldset>}
 		<form className="quest-add" onSubmit={add}>
-			<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a task…" aria-label="New task" maxLength={200} disabled={!home.connected || saving} />
-			<button type="submit" disabled={!title.trim() || !home.connected || saving}>Add</button>
+			<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Add a task…" aria-label="New task" maxLength={200} disabled={!home.connected} />
+			<button type="submit" disabled={!title.trim() || !home.connected}>Add</button>
 		</form>
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{notice && <p className="muted" role="status">{notice}</p>}

@@ -210,6 +210,22 @@ prompts. An interrupted session can be resumed or closed; its composer is unavai
 until Pi starts again. A message from another agent with `wake` reopens a closed
 conversation, which then starts on it; other messages wait until it runs again.
 
+**Waiting and scheduled work** use the single `watch` tool. “Wake” describes starting a turn with an event, or reopening a kept conversation so its watch can deliver one; it is not another scheduler. `agent_send` has a `wake` delivery option, not a timer. See [watch versus wake](../pi-watch/README.md#watch-versus-wake) for one-off, polling, classifier-filtered, and recurring work.
+
+**Learn mode** is a per-conversation switch in the header and Conversation settings.
+It explains a useful concept behind recent work, rather than narrating the tool
+calls. Explanations use the conversation's model in separate, tool-free requests,
+at most once every 90 seconds when there is new activity. Only a bounded copy of
+public messages and tool activity is sent; thinking blocks are excluded. The
+setting and notes survive reopening. Notes appear in the transcript but never
+enter the working agent's model context or compaction summaries. Turning the
+switch off cancels pending explanations. Each note shows its API-price cost,
+which also contributes to conversation spend.
+
+**Accounts & connections** groups native model logins and API keys with Exa web search and ElevenLabs dictation. TypeSafe uses Pi's own credential store; API-key controls say Add, Replace, or Remove API key rather than Sign in. Older `/settings dictation` and `/settings web-search` links open this page.
+
+**Service usage** on that page shows requests, estimated USD, and requests whose cost is unknown, per computer. Exa estimates come from its responses; classifier and image costs come from native usage in new Desk workers and SDK children. ElevenLabs estimates use full audio duration and editable hourly rates. Earlier or external usage is not reconstructed, and estimates are not provider invoices. Codemode model-service costs are already part of conversation totals; background classifier calls may appear only in this table. See [service accounting](../pi-service-usage/README.md) for coverage and storage.
+
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
 name filtering, hidden-folder controls and optional direct path entry. Recent
@@ -457,6 +473,14 @@ enforces direct-parent messaging and ancestor interruption, just as the terminal
 tools do. Stop targets that agent's current work, not every descendant; queued
 tasks remain saved. `/subagents` manages launches and model permissions, and
 `/subagents <id>` opens that agent's pane. The terminal dashboard is unchanged.
+
+Secondary agents default to **32 live slots per conversation tree**. Change
+**Live agent limit** in **Settings & tools → Conversation** or **Agents → Browse
+agents**. The setting is saved in that conversation's native history and applies
+immediately, including to descendants. Raising it releases queued work; lowering
+it does not stop existing agents. Opening and cleanup use slots too. Separate
+primary conversations have separate limits. Older conversations need the updated
+extension loaded before the control appears.
 
 Drafts are separate for each agent on this browser. Inline sends wait for native
 controller admission. Uncertain replies retain the draft and exact request ID:

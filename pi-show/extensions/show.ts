@@ -9,6 +9,7 @@ import { encodeContent, filtered, readVersion } from "./content.ts";
 import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells, type OfficeDocument } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
 import type { DocumentChange, Shown, ShownItem } from "./types.ts";
+import { shownUrl } from "./links.ts";
 
 export type { DocumentChange, Shown, ShownItem };
 
@@ -104,6 +105,8 @@ const SHOW_PARAMETERS = Type.Object({
 	note: Type.Optional(Type.String({ description: "Markdown" })),
 	items: Type.Optional(Type.Array(Type.Object({
 		file: Type.Optional(Type.String()),
+		url: Type.Optional(Type.String({ maxLength: 8000, description: "Web link, instead of file" })),
+		label: Type.Optional(Type.String({ maxLength: 200, description: "Link label" })),
 		focus: Type.Optional(Type.String({ description: "Sheet!range, text to start at, or lines 40-80" })),
 		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }))),
 	}))),
@@ -216,7 +219,7 @@ export default function show(pi: ExtensionAPI) {
 		name: "show",
 		label: "Show",
 		description: "At key moments, show Jordan a result, work to review or what you changed in a file he uses; not routine steps. "
-			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show. "
+			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show. Use items with url and label for links to open. "
 			+ "An .html file is shown as a live page: inline scripts and styles run, nothing loads from the network. "
 			+ "When a result reads better as a table, chart or side-by-side comparison (measurements, before and after, options), "
 			+ "write it as a self-contained .html file in the temp folder and show that, rather than describing it in prose.",
@@ -226,6 +229,13 @@ export default function show(pi: ExtensionAPI) {
 			const base = store(ctx), notes: string[] = [];
 			const items = (params.items ?? []).slice(0, 12).map((item): ShownItem => {
 				const shown: ShownItem = {};
+				if (item.url !== undefined) {
+					if (item.file || item.focus || item.changes?.length) throw new Error("Use a web link or a file/change item, not both.");
+					const url = shownUrl(item.url);
+					if (!url) throw new Error("Links must be HTTP or HTTPS URLs without embedded credentials.");
+					return { url, ...(item.label?.trim() ? { label: clip(item.label.trim(), 200) } : {}) };
+				}
+				if (!item.file && !item.changes?.length) throw new Error("Each item needs a file, web link, or described changes.");
 				if (item.changes?.length) shown.described = item.changes.slice(0, 100).map(change => ({ where: clip(change.where, 300),
 					...(change.before !== undefined ? { before: clip(change.before, 2000) } : {}), ...(change.after !== undefined ? { after: clip(change.after, 2000) } : {}) }));
 				if (!item.file) return shown;
@@ -266,6 +276,7 @@ export default function show(pi: ExtensionAPI) {
 				}
 				return shown;
 			});
+			if (!items.length && !params.note?.trim()) throw new Error("Provide a note, file, web link, or described changes to show.");
 			const result: Shown = { title: clip(params.title, 200), ...(params.note ? { note: clip(params.note, 20_000) } : {}), items };
 			return { content: [{ type: "text", text: [`Shown to Jordan in Desk: ${result.title}.`, ...notes].join("\n") }], details: { show: result } };
 		},
