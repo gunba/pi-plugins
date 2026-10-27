@@ -222,6 +222,10 @@ enter the working agent's model context or compaction summaries. Turning the
 switch off cancels pending explanations. Each note shows its API-price cost,
 which also contributes to conversation spend.
 
+**Accounts & connections** groups native model logins and API keys with Exa web search and ElevenLabs dictation. TypeSafe uses Pi's own credential store; API-key controls say Add, Replace, or Remove API key rather than Sign in. Older `/settings dictation` and `/settings web-search` links open this page.
+
+**Service usage** on that page shows requests, estimated USD, and requests whose cost is unknown, per computer. Exa estimates come from its responses; classifier and image costs come from native usage in new Desk workers and SDK children. ElevenLabs estimates use full audio duration and editable hourly rates. Earlier or external usage is not reconstructed, and estimates are not provider invoices. Codemode model-service costs are already part of conversation totals; background classifier calls may appear only in this table. See [service accounting](../pi-service-usage/README.md) for coverage and storage.
+
 **Project folder** opens the same folder browser in New conversation and Resume.
 It browses the selected computer, with breadcrumbs, parent/home navigation,
 name filtering, hidden-folder controls and optional direct path entry. Recent

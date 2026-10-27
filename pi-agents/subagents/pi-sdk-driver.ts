@@ -31,6 +31,8 @@ import type {
 } from "./subagent-runtime.ts";
 import { undispatchedNotices } from "./subagent-runtime.ts";
 import { reduceSessionUsage } from "../../pi-session-usage/index.ts";
+import { ServiceUsage } from "../../pi-service-usage/index.ts";
+import { trackServiceModels } from "../../pi-service-usage/models.ts";
 import type { PresentationScope } from "../../pi-ui/index.ts";
 
 type AgentMessage = AgentSession["messages"][number];
@@ -141,9 +143,13 @@ class PiSdkChildDriver implements ChildDriver {
 	private readonly presentation?: PresentationScope;
 	private readonly queueGuard: NativeQueueGuard;
 	private readonly followups: FollowupDelivery;
+	private readonly serviceUsage: ServiceUsage;
+	private readonly settleServices: () => Promise<void>;
 
-	constructor(session: AgentSession, extensionErrors: string[], followups: FollowupDelivery, presentation?: PresentationScope) {
+	constructor(session: AgentSession, extensionErrors: string[], followups: FollowupDelivery, agentDir: string, presentation?: PresentationScope) {
 		this.session = session;
+		this.serviceUsage = new ServiceUsage(agentDir);
+		this.settleServices = trackServiceModels(session.modelRuntime, this.serviceUsage, text => console.error(text));
 		this.followups = followups;
 		this.extensionErrors = extensionErrors;
 		this.presentation = presentation;
@@ -255,7 +261,10 @@ class PiSdkChildDriver implements ChildDriver {
 				const failures = this.extensionErrors.slice(priorErrors);
 				if (failures.length) throw new Error(`Child shutdown failed: ${failures.join("; ")}`);
 			}
-			finally { this.presentation?.close(); this.session.dispose(); }
+			finally {
+				this.presentation?.close(); this.session.dispose();
+				await this.settleServices(); this.serviceUsage.close();
+			}
 		})();
 		return this.disposal;
 	}
@@ -435,7 +444,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 		}
 		// Child calls carry a one-line description for the user, like the parent's.
 		describeAgentTools(session.agent.state as never); describeSessionTools(session);
-		const driver = new PiSdkChildDriver(session, extensionErrors, followups, presentation);
+		const driver = new PiSdkChildDriver(session, extensionErrors, followups, this.host.agentDir, presentation);
 		try {
 			session.setActiveToolsByName(enabledTools());
 			await session.bindExtensions({ mode: presentation ? "rpc" : "json",

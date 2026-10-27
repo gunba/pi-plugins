@@ -9,6 +9,8 @@ import { mcpServerCommands, workerHasRunningCommands } from "./automatic-updates
 import { object, string } from "./commands.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
 import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
+import { ServiceUsage } from "../../../pi-service-usage/index.ts";
+import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
 import type { DotConnector } from "./dot-connector.ts";
 import type { DotConnection } from "./dot.ts";
 import type { EfficiencyReports } from "./efficiency.ts";
@@ -164,12 +166,24 @@ export class HostApi {
 			updates.refresh();
 			return reply({ accepted: true }, 202);
 		}
+		if (url.pathname === "/api/services" && request.method === "GET") {
+			const usage = new ServiceUsage(this.core.options.agentDir);
+			try { return reply({ exa: exaSettings(this.core.options.agentDir), usage: usage.snapshot() }); }
+			finally { usage.close(); }
+		}
+		if (url.pathname === "/api/services/exa" && request.method === "POST") {
+			if (exaSettings(this.core.options.agentDir).environment) throw new Error("EXA_API_KEY is set in this computer’s environment. Change it there instead.");
+			const key = data.key === null ? undefined : string(data.key, 2000).trim();
+			if (data.key !== null && !key) throw new Error("Enter an Exa API key.");
+			saveExaKey(key, this.core.options.agentDir); return reply(exaSettings(this.core.options.agentDir));
+		}
 		if (url.pathname === "/api/dictation" && request.method === "POST") {
 			const dictation = this.host.dictation();
 			if (!dictation?.available) return reply({ error: "Dictation is not set up on this computer." }, 409);
 			const audio = Buffer.from(string(data.audio, Math.ceil(MAX_DICTATION_BYTES * 4 / 3) + 4), "base64");
 			const language = typeof data.language === "string" && /^[a-z]{2}$/.test(data.language) ? data.language : undefined;
-			const mime = typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", result = await dictation.transcribe(audio, mime, language);
+			const seconds = typeof data.seconds === "number" && Number.isFinite(data.seconds) && data.seconds >= 0 && data.seconds <= 600 ? data.seconds : undefined;
+			const mime = typeof data.mime === "string" ? data.mime.slice(0, 100) : "audio/webm", result = await dictation.transcribe(audio, mime, language, seconds);
 			// Sizes only, never the words: enough to tell a silent or truncated clip from a transcription problem.
 			console.error(`Dictation: ${audio.length} bytes of ${mime}${typeof data.peak === "number" ? `, peak level ${data.peak.toFixed(3)}` : ""} → ${result.text.length} characters.`);
 			return reply(result);

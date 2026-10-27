@@ -194,7 +194,7 @@ export interface HostState { release: ReleaseInfo; operatorAvailability?: import
 	dictation?: boolean;
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 /** A computer's dictation settings as the settings page sees them; the ElevenLabs key never leaves the computer. */
-export interface DictationSettings { configured: boolean; keyterms: string[] }
+export interface DictationSettings { configured: boolean; keyterms: string[]; hourlyRate?: number; keytermHourlyRate?: number }
 export type HostEvent =
 	| { type: "state"; state: HostState }
 	| { type: "session"; session: SessionView }
