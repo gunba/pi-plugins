@@ -460,6 +460,14 @@ tools do. Stop targets that agent's current work, not every descendant; queued
 tasks remain saved. `/subagents` manages launches and model permissions, and
 `/subagents <id>` opens that agent's pane. The terminal dashboard is unchanged.
 
+Secondary agents default to **32 live slots per conversation tree**. Change
+**Live agent limit** in **Settings & tools → Conversation** or **Agents → Browse
+agents**. The setting is saved in that conversation's native history and applies
+immediately, including to descendants. Raising it releases queued work; lowering
+it does not stop existing agents. Opening and cleanup use slots too. Separate
+primary conversations have separate limits. Older conversations need the updated
+extension loaded before the control appears.
+
 Drafts are separate for each agent on this browser. Inline sends wait for native
 controller admission. Uncertain replies retain the draft and exact request ID:
 **Check delivery** asks for that same result, not another message. A new send
