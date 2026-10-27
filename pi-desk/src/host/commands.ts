@@ -75,6 +75,12 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			return { kind: data.kind, id: string(data.id, 80), offset: Number(data.offset), origin: origin(),
 				query: data.query === undefined ? undefined : string(data.query, 1000) };
 		case "name": return { kind: data.kind, name: string(data.name, 300) };
+		case "queue_read": case "queue_edit": {
+			if (data.queue !== "steering" && data.queue !== "followUp") throw new Error("Invalid queue.");
+			const entry = { queue: data.queue, id: string(data.id, 100) } as const;
+			return data.kind === "queue_read" ? { kind: data.kind, ...entry }
+				: { kind: data.kind, ...entry, original: string(data.original), text: string(data.text) };
+		}
 		case "queue_now": case "queue_cancel":
 			if (data.queue !== "steering" && data.queue !== "followUp") throw new Error("Invalid queue.");
 			if (!Number.isSafeInteger(data.index) || Number(data.index) < 0 || Number(data.index) > 10_000) throw new Error("Invalid queue position.");
@@ -93,6 +99,9 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			if (!Number.isSafeInteger(data.revision) || Number(data.revision) < 0) throw new Error("Invalid view revision.");
 			return { kind: data.kind, view: string(data.view, 200), revision: Number(data.revision),
 				action: string(data.action, 200), value: data.value as UiValue | undefined };
+		case "learn":
+			if (typeof data.enabled !== "boolean") throw new Error("Invalid learn mode setting.");
+			return { kind: "learn", enabled: data.enabled };
 		case "brief": return { kind: "brief", ...(data.refresh === true ? { refresh: true } : {}) };
 		case "native": case "native_read":
 			return { kind: data.kind, name: string(data.name, 100), args: string(data.args, 10_000) };

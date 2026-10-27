@@ -1,14 +1,15 @@
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { getPresentation } from "../../pi-ui/index.ts";
 import { renderSearchResult } from "./render.ts";
+import { exaKey, saveExaKey } from "./settings.ts";
+import { recordServiceUsage } from "../../pi-service-usage/index.ts";
+export { exaKey } from "./settings.ts";
 
 /**
  * Web search and page reading for every model. Parallel's search service (its MCP server, free without an account)
- * runs them unless this computer has an Exa API key, saved from Desk's Settings → Web search into web-search.json in
+ * runs them unless this computer has an Exa API key, saved from Desk's Accounts & connections into web-search.json in
  * Pi's agent folder, or set as EXA_API_KEY. Then Exa runs them.
  */
 export const ENDPOINT = "https://search.parallel.ai/mcp";
@@ -35,22 +36,6 @@ type Page = { url: string; title?: string; publish_date?: string; excerpts?: str
 type Failure = { url?: string; error?: string; message?: string; error_type?: string; http_status_code?: number | null };
 type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
 export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
-
-const settingsFile = () => join(getAgentDir(), "web-search.json");
-/** This computer's Exa API key, read on every call so a key saved in Settings applies at once. */
-export function exaKey(): string | undefined {
-	if (process.env.EXA_API_KEY?.trim()) return process.env.EXA_API_KEY.trim();
-	try {
-		const key = JSON.parse(readFileSync(settingsFile(), "utf8"))?.exaApiKey;
-		return typeof key === "string" && key.trim() ? key.trim() : undefined;
-	} catch { return undefined; }
-}
-function saveExaKey(key: string | undefined): void {
-	const file = settingsFile();
-	if (!key) { rmSync(file, { force: true }); return; }
-	writeFileSync(`${file}.tmp`, `${JSON.stringify({ exaApiKey: key }, null, 2)}\n`, { mode: 0o600 });
-	renameSync(`${file}.tmp`, file);
-}
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -108,7 +93,7 @@ export class McpClient {
 			return this.call(tool, args, signal, true);
 		}
 		if (response.status === 429) throw new Error("Parallel's free search is rate-limited right now. Try again shortly; "
-			+ "an Exa API key in Settings → Web search moves this computer's searches to Exa.");
+			+ "an Exa API key in Settings → Accounts & connections moves this computer's searches to Exa.");
 		if (!response.ok) throw new Error(`Parallel search failed: HTTP ${response.status} ${body.slice(0, 300)}`);
 		const reply = message(body, response.headers.get("content-type") ?? "", id);
 		if (reply?.error) throw new Error(`Parallel search failed: ${reply.error.message ?? JSON.stringify(reply.error)}`);
@@ -162,13 +147,26 @@ function fetchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
 }
 
 async function exa(path: string, body: Record<string, unknown>, key: string, signal: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Record<string, unknown>> {
-	const response = await fetchImpl(`${EXA}${path}`, { method: "POST", signal, headers: { "content-type": "application/json", "x-api-key": key }, body: JSON.stringify(body) });
-	const text = await response.text();
-	if (response.status === 401 || response.status === 403) throw new Error(`Exa refused this computer's API key (HTTP ${response.status}). Check it in Settings → Web search.`);
+	let response: Response, text: string;
+	const record = (cost?: number) => {
+		const warning = recordServiceUsage(getAgentDir(), { service: "exa", operation: path.slice(1), cost, estimated: true });
+		if (warning) console.error(warning);
+	};
+	try {
+		response = await fetchImpl(`${EXA}${path}`, { method: "POST", signal, headers: { "content-type": "application/json", "x-api-key": key }, body: JSON.stringify(body) });
+		text = await response.text();
+	} catch (error) { record(); throw error; }
+	let payload: Record<string, unknown> | undefined;
+	try { payload = JSON.parse(text); } catch { /* The request may still have been charged. */ }
+	const cost = (payload?.costDollars as { total?: unknown } | undefined)?.total;
+	// A request Exa refused (4xx) is not charged; any other reply without a cost may have been.
+	if (typeof cost === "number") record(cost); else if (response.status < 400 || response.status >= 500) record();
+	if (response.status === 401 || response.status === 403) throw new Error(`Exa refused this computer's API key (HTTP ${response.status}). Check it in Settings → Accounts & connections.`);
 	if (response.status === 402) throw new Error("Exa says the account is out of credit (HTTP 402). Add credit at dashboard.exa.ai.");
 	if (response.status === 429) throw new Error("Exa is rate-limiting requests right now. Try again shortly.");
 	if (!response.ok) throw new Error(`Exa failed: HTTP ${response.status} ${text.slice(0, 300)}`);
-	try { return JSON.parse(text); } catch { throw new Error(`Exa returned something unexpected: ${text.slice(0, 300)}`); }
+	if (!payload || typeof payload !== "object") throw new Error(`Exa returned something unexpected: ${text.slice(0, 300)}`);
+	return payload;
 }
 type ExaPage = { url: string; title?: string | null; publishedDate?: string | null; highlights?: string[]; text?: string };
 const exaPage = (page: ExaPage): Page => ({ url: page.url, ...(page.title ? { title: page.title } : {}), ...(page.publishedDate ? { publish_date: page.publishedDate.slice(0, 10) } : {}),
@@ -216,7 +214,7 @@ export async function fetchPages(params: FetchParams, signal: AbortSignal | unde
 	return fetchText({ pages: payload.results ?? [], failures: failures(payload) });
 }
 
-/** Desk's Settings → Web search: which service runs the tools on this computer, and the Exa key that switches to Exa. */
+/** Exa settings for terminal and older Desk clients; current Desk merges them into Accounts & connections. */
 function publishSettings(pi: ExtensionAPI): void {
 	const remote = getPresentation(pi);
 	if (!remote?.capabilities.includes("details") || remote.suspended) return;

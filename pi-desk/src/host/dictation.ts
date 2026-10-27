@@ -2,6 +2,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { atomicJson } from "../../manage/store.ts";
 import type { DictationSettings } from "../shared/protocol.ts";
+import { recordServiceUsage } from "../../../pi-service-usage/index.ts";
 
 /**
  * How this computer transcribes dictation: an ElevenLabs API key, kept in dictation.json in Desk's data folder.
@@ -13,6 +14,9 @@ interface DictationConfig {
 	model?: string;
 	/** Names and terms to favour, such as product names. ElevenLabs charges more for clips sent with any. */
 	keyterms?: string[];
+	/** USD per audio hour, used only for labeled cost estimates. */
+	hourlyRate?: number;
+	keytermHourlyRate?: number;
 }
 /** Clips are limited to what fits one request: about five minutes of speech at 16 kbit/s. */
 export const MAX_DICTATION_BYTES = 800_000;
@@ -42,7 +46,8 @@ function failure(status: number, body: unknown): string {
 
 export class Dictation {
 	private file: string;
-	constructor(dataDir: string) { this.file = join(dataDir, "dictation.json"); }
+	private agentDir: string;
+	constructor(dataDir: string, agentDir = dataDir) { this.file = join(dataDir, "dictation.json"); this.agentDir = agentDir; }
 
 	private config(): DictationConfig | undefined {
 		try {
@@ -53,7 +58,7 @@ export class Dictation {
 	get available(): boolean { return !!this.config(); }
 	settings(): DictationSettings {
 		const config = this.config();
-		return { configured: !!config, keyterms: config?.keyterms ?? [] };
+		return { configured: !!config, keyterms: config?.keyterms ?? [], hourlyRate: config?.hourlyRate ?? 0.22, keytermHourlyRate: config?.keytermHourlyRate ?? 0.05 };
 	}
 
 	/** Save a key, terms or both; a null key turns dictation off on this computer. */
@@ -63,12 +68,18 @@ export class Dictation {
 			throw new Error("Paste the API key from ElevenLabs, without spaces.");
 		const current = this.config(), key = typeof data.key === "string" ? data.key.trim() : current?.key;
 		if (!key) throw new Error("Enter an ElevenLabs API key.");
-		atomicJson(this.file, { ...current, key, keyterms: data.keyterms === undefined ? current?.keyterms ?? [] : dictationTerms(data.keyterms) });
+		const rates: Partial<DictationConfig> = {};
+		for (const name of ["hourlyRate", "keytermHourlyRate"] as const) if (data[name] !== undefined) {
+			const value = data[name];
+			if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1000) throw new Error("Enter a rate between $0 and $1,000 per hour.");
+			rates[name] = value;
+		}
+		atomicJson(this.file, { ...current, ...rates, key, keyterms: data.keyterms === undefined ? current?.keyterms ?? [] : dictationTerms(data.keyterms) });
 		return this.settings();
 	}
 
 	/** Transcribe one recorded clip. */
-	async transcribe(audio: Buffer, mime: string, language?: string): Promise<{ text: string }> {
+	async transcribe(audio: Buffer, mime: string, language?: string, recordedSeconds?: number): Promise<{ text: string; usageWarning?: string }> {
 		const config = this.config();
 		if (!config) throw new Error("Dictation is not set up on this computer.");
 		if (!audio.length) throw new Error("The recording was empty.");
@@ -81,14 +92,20 @@ export class Dictation {
 		form.append("no_verbatim", "true");
 		if (language) form.append("language_code", language);
 		for (const term of config.keyterms ?? []) form.append("keyterms", term);
+		const charge = (seconds?: number) => recordServiceUsage(this.agentDir, { service: "elevenlabs", operation: config.model ?? MODEL,
+			seconds, estimated: true, ...(seconds === undefined ? {} : { cost: seconds / 3600 * ((config.hourlyRate ?? 0.22) + (config.keyterms?.length ? config.keytermHourlyRate ?? 0.05 : 0)) }) });
 		let response: Response;
 		try { response = await fetch(ENDPOINT, { method: "POST", headers: { "xi-api-key": config.key }, body: form, signal: AbortSignal.timeout(CLIP_MS) }); }
 		catch (error) {
+			const warning = charge(); if (warning) console.error(warning);
 			throw new Error(error instanceof Error && error.name === "TimeoutError" ? "Transcription took too long."
 				: `ElevenLabs could not be reached: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		const body = await response.json().catch(() => undefined) as { text?: unknown } | undefined;
-		if (!response.ok) throw new Error(failure(response.status, body));
-		return { text: typeof body?.text === "string" ? body.text.trim() : "" };
+		const body = await response.json().catch(() => undefined) as { text?: unknown; audio_duration_secs?: unknown } | undefined;
+		const duration = typeof body?.audio_duration_secs === "number" ? body.audio_duration_secs : recordedSeconds;
+		const seconds = typeof duration === "number" && Number.isFinite(duration) && duration >= 0 ? duration : undefined;
+		const usageWarning = charge(response.ok ? seconds : undefined);
+		if (!response.ok) { if (usageWarning) console.error(usageWarning); throw new Error(failure(response.status, body)); }
+		return { text: typeof body?.text === "string" ? body.text.trim() : "", ...(usageWarning ? { usageWarning } : {}) };
 	}
 }

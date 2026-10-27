@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { callDescription } from "../../../pi-ui/tool-descriptions.ts";
 import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
+import { LEARN_NOTE } from "../shared/learn.ts";
 import { COMPACTION_FAILURE_ENTRY } from "../../../pi-context-window/compaction-state.ts";
 import { readSkills } from "../shared/skill-activity.ts";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -282,6 +283,14 @@ export class Transcript {
 			role: "custom", customType: entry.customType, details: entry.details,
 			content: entry.content, display: entry.display, timestamp: Date.parse(entry.timestamp),
 		}, entry.id, undefined, order, cwd);
+		if (entry.type === "custom" && entry.customType === LEARN_NOTE) {
+			const data = record(entry.data);
+			if (typeof data.markdown !== "string" || !data.markdown) return;
+			const cost = typeof data.cost === "number" && Number.isFinite(data.cost) ? ` · $${data.cost.toFixed(4)}` : "";
+			return { id: `entry:${entry.id}`, entryId: entry.id, revision: 0, order, role: "note", timestamp: Date.parse(entry.timestamp), complete: true,
+				notice: { kind: "learn", title: "Learn", detail: `Outside agent context${cost}` },
+				blocks: [{ type: "text", text: data.markdown.slice(0, 12_000) }] };
+		}
 		if (entry.type === "custom" && entry.customType === FEEDBACK_ENTRY) {
 			const data = record(entry.data);
 			if (typeof data.id !== "string" || typeof data.text !== "string" ||
@@ -311,7 +320,7 @@ export class Transcript {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
-			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY, COMPACTION_FAILURE_ENTRY].includes(entry.customType)
+			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY, COMPACTION_FAILURE_ENTRY, LEARN_NOTE].includes(entry.customType)
 			|| entry.type === "compaction" || entry.type === "branch_summary";
 		const anchor = position.before ?? position.after ?? position.from;
 		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;

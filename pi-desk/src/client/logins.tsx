@@ -46,10 +46,10 @@ export function LoginsPanel({ computer, connected, provider: hint }: { computer?
 			{signedIn.map(provider => <Row key={provider.id} label={provider.name}
 				hint="Every conversation on this computer, and terminal Pi, uses this login.">
 				<span className="grow">{provider.signedIn!.identity?.replace(/ · Account [0-9a-f-]{36}$/, "") ?? (provider.signedIn!.type === "api_key" ? "API key" : "Signed in")}</span>
-				{provider.types.includes(provider.signedIn!.type) && <button className="quiet-action" disabled={locked} onClick={() => void signIn(provider.id, provider.signedIn!.type)}>Sign in again</button>}
-				<button className="quiet-action" disabled={locked} onClick={() => void run(() => api("/logins/sign-out", { provider: provider.id }, computer))}>Sign out</button>
+				{provider.types.includes(provider.signedIn!.type) && <button className="quiet-action" disabled={locked} onClick={() => void signIn(provider.id, provider.signedIn!.type)}>{provider.signedIn!.type === "api_key" ? "Replace API key" : "Sign in again"}</button>}
+				<button className="quiet-action" disabled={locked} onClick={() => void run(() => api("/logins/sign-out", { provider: provider.id }, computer))}>{provider.signedIn!.type === "api_key" ? "Remove API key" : "Sign out"}</button>
 			</Row>)}
-			{!!others.length && <Row label={signedIn.length ? "Another provider" : "Sign in"}>
+			{!!others.length && <Row label={signedIn.length ? "Another provider" : "Add provider"}>
 				<form className="settings-inline-form" onSubmit={event => { event.preventDefault(); if (chosen && type) void signIn(chosen.id, type); }}>
 					<select aria-label="Provider" value={chosen?.id ?? ""} disabled={locked} onChange={event => { setChoice(event.target.value); setMethod("oauth"); }}>
 						{others.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
@@ -57,7 +57,7 @@ export function LoginsPanel({ computer, connected, provider: hint }: { computer?
 					{chosen && chosen.types.length > 1 && <select aria-label="Sign-in method" value={type} disabled={locked} onChange={event => setMethod(event.target.value as ProviderAuthType)}>
 						{chosen.types.map(item => <option key={item} value={item}>{item === "oauth" ? chosen.subscription ? "Subscription" : "Sign in" : "API key"}</option>)}
 					</select>}
-					<button type="submit" disabled={locked || !type}>Sign in</button>
+					<button type="submit" disabled={locked || !type}>{type === "api_key" ? "Add API key" : "Sign in"}</button>
 				</form>
 			</Row>}
 		</>}
@@ -81,11 +81,11 @@ export function SignInProgress({ operation, disabled, cancel, answer }: { operat
 		</div>}
 		{operation.links?.map(link => <a className="quiet-action" key={link.url} href={link.url} target="_blank" rel="noopener noreferrer">{link.label} ↗</a>)}
 		{copyError && <p className="error-text" role="alert">{copyError}</p>}
-		{operation.prompt && <SignInPrompt key={operation.prompt.id} prompt={operation.prompt} disabled={disabled} answer={answer} />}
-		<button disabled={disabled} onClick={() => void cancel()}>Cancel sign-in</button>
+		{operation.prompt && <SignInPrompt key={operation.prompt.id} prompt={operation.prompt} apiKey={operation.type === "api_key"} disabled={disabled} answer={answer} />}
+		<button disabled={disabled} onClick={() => void cancel()}>{operation.type === "api_key" ? "Cancel key entry" : "Cancel sign-in"}</button>
 	</div>;
 }
-function SignInPrompt({ prompt, disabled, answer }: { prompt: NonNullable<SignIn["prompt"]>; disabled: boolean;
+function SignInPrompt({ prompt, disabled, answer, apiKey }: { prompt: NonNullable<SignIn["prompt"]>; disabled: boolean; apiKey: boolean;
 	answer: (prompt: string, value: string) => Promise<unknown>;
 }) {
 	const [value, setValue] = useState(prompt.kind === "select" ? prompt.options?.[0]?.id ?? "" : "");
@@ -93,6 +93,6 @@ function SignInPrompt({ prompt, disabled, answer }: { prompt: NonNullable<SignIn
 		<label className="grow">{prompt.message}{prompt.kind === "select" ? <select value={value} disabled={disabled} onChange={event => setValue(event.target.value)}>
 			{prompt.options?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
 		</select> : <input type={prompt.kind === "secret" ? "password" : "text"} autoComplete="off" value={value} disabled={disabled} placeholder={prompt.placeholder} onChange={event => setValue(event.target.value)} />}</label>
-		<button type="submit" disabled={disabled || !value.trim()}>Continue</button>
+		<button type="submit" disabled={disabled || !value.trim()}>{apiKey ? "Save API key" : "Continue"}</button>
 	</form>;
 }
