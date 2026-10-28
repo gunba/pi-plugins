@@ -304,7 +304,8 @@ class Watches {
 		if (params.stop !== undefined) {
 			if (given.length > 1) throw new Error("stop takes no other parameters.");
 			const active = this.active.get(params.stop.trim());
-			if (!active) throw new Error(`There is no active watch ${params.stop}. ${this.list()}`);
+			// Usually it ended on its own before the stop arrived; the goal (it is not running) holds either way.
+			if (!active) return `${params.stop} is not running. ${this.list()}`;
 			this.end(active, "you stopped it", { kill: true, tell: false });
 			return `Stopped ${active.spec.id}${active.spec.pid ? " and its command" : ""}. ${this.list()}`;
 		}
