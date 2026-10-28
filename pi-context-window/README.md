@@ -14,7 +14,8 @@ The larger setting applies to the active model only. It writes
 `~/.pi/agent/models.json` and a model-specific `reserveTokens` to
 `~/.pi/agent/settings.json`. Other model and provider settings are preserved.
 Pi refreshes the selected model and reloads its settings after a change;
-other running Pi sessions should `/reload` before using the new limit.
+other running Pi sessions on that model take the new limit when they next finish
+their work.
 
 On ChatGPT-backed Codex sessions, Pi's automatic compaction trigger invokes
 the native Codex checkpoint through `pi-codex-wire`; this modal does not

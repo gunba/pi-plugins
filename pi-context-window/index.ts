@@ -62,17 +62,29 @@ function contextSettings(ctx: ExtensionContext) {
 	const lines = [
 		`Context · ${provider}/${id}`,
 		`This session: ${tokens(model.contextWindow)} tokens`,
-		...(override !== undefined && override !== model.contextWindow ? [`Saved: ${tokens(override)} tokens; reload to apply it.`] : []),
+		...(override !== undefined && override !== model.contextWindow ? [`Saved: ${tokens(override)} tokens; applies when this conversation next finishes its work.`] : []),
 		enabled ? `${checkpoint} · ${projectReserve !== undefined ? "workspace override" : "model/global reserve"}` : checkpoint,
 		...(extended ? ["OpenAI model capacity: 1,050,000; Codex catalog may choose a lower default."] : []),
 	];
 	return { model, provider, id, override, reserve, settings, projectReserve, enabled, extended, mechanism, lines, effectiveReserve };
 }
 
-/** A saved budget above what the model accepts is lowered to its limit and applied to this conversation. */
+/**
+ * A saved budget above what the model accepts is lowered to its limit and applied to this conversation. A budget saved
+ * from another conversation is applied here too: a conversation already running kept its old window, and compacted
+ * only near it (a week had 3,600 Opus requests above 500k tokens after a 500k budget was saved).
+ */
 async function enforceCapacity(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const model = ctx.model;
-	if (!model || model.contextWindow <= modelCapacity(model)) return;
+	if (!model) return;
+	if (model.contextWindow <= modelCapacity(model)) {
+		const saved = configuredWindow(readWindowFiles().models, model.provider, model.id);
+		if (saved === undefined || saved === model.contextWindow || saved > modelCapacity(model)) return;
+		await ctx.modelRegistry.refresh({ providers: [model.provider], allowNetwork: false });
+		const current = ctx.modelRegistry.find(model.provider, model.id);
+		if (current?.contextWindow === saved && ctx.model?.provider === model.provider && ctx.model.id === model.id && ctx.isIdle()) await pi.setModel(current);
+		return;
+	}
 	const { provider, id } = model, limit = modelCapacity(model), files = readWindowFiles();
 	await writeWindowPreset({ provider, modelId: id, window: limit, reserve: configuredReserve(files.settings, provider, id) });
 	await ctx.modelRegistry.refresh({ providers: [provider], allowNetwork: false });
@@ -100,11 +112,11 @@ export default function contextWindow(pi: ExtensionAPI): void {
 			context = { capacity: modelCapacity(current.model), limit: current.model.contextWindow };
 			data = { summary: current.lines.join("\n"), fields: [
 				{ label: "Current conversation", value: usage?.tokens == null ? "Not measured yet" : `${tokens(usage.tokens)} tokens${usage.percent == null ? "" : ` · ${usage.percent.toFixed(1)}%`}` },
-				{ label: "Capacity", value: "Applies to this model. Other running sessions need reload after a change." },
+				{ label: "Capacity", value: "Applies to this model. Other conversations on it take a change when they next finish their work." },
 			], controls: [{ kind: "range", label: "Context budget", value: current.model.contextWindow,
 				min: Math.max(4096, current.effectiveReserve + 1), max: context.capacity, step: 1,
 				used: usage?.tokens, unit: "tokens", disabled: current.projectReserve !== undefined,
-				help: "Choose how much of the model's window Pi can use. Applying refreshes this conversation's model settings; other conversations are unchanged.",
+				help: "Choose how much of the model's window Pi can use. Applying refreshes this conversation's model settings; other conversations take it when they next finish their work.",
 				action: { id: "set-window", label: "Apply budget", interrupt: "resume" } }] };
 		} catch (error) { data = { summary: error instanceof Error ? error.message : String(error) }; }
 		remote.publish("context-window", { kind: "details", surface: "settings", title: "Context capacity", data, context,
