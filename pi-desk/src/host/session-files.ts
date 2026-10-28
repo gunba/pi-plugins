@@ -44,7 +44,7 @@ export class SessionCatalog {
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
-			pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}), ...(view.wakes ? { wakes: view.wakes } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}),
+			pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}), ...(view.wakes ? { wakes: view.wakes } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}), ...(view.finished ? { finished: view.finished } : {}), ...(view.seen ? { seen: view.seen } : {}),
 			controls: view.controls, activation: view.activation,
 		}));
 		atomicJson(this.file, { version: 1, sessions: records }, { compact: true });

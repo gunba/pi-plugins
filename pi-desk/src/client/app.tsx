@@ -43,6 +43,7 @@ import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
 import { TasksOverview } from "./tasks-overview.tsx";
 import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
 import { trackUse } from "./presence.ts";
+import { useFinishedBadge, useSeen } from "./finished.ts";
 import { useNoticeLinks, useSharedTask } from "./notice-links.ts";
 import { ResumeConversation } from "./resume.tsx";
 import { SettingsLayout, SettingsContent, settingsGroups, settingsPage, MERGED_VIEWS } from "./settings.tsx";
@@ -190,6 +191,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [state.host?.sessions]);
   useEffect(askForNotificationsOnFirstClick, []);
   useEffect(trackUse, []);
+  useSeen(session);
+  useFinishedBadge(state.host?.sessions);
   useQuestionAlerts(state.host?.sessions, selected, key => { setSelected(key); setSidebar(false); setPanel(undefined); }, conversationTitle);
   useNoticeLinks(state.host?.sessions, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
   useSharedTask(state.host, dot.id, key => { setSelected(key); setSidebar(false); setPanel(undefined); });

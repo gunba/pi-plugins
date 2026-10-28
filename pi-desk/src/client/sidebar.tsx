@@ -11,6 +11,7 @@ import type { MoveRequest } from "./move-conversation.tsx";
 import { OsIcon } from "./os-icon.tsx";
 import type { QuestLog } from "./quest-tracker.tsx";
 import type { SessionView } from "../shared/protocol.ts";
+import { unseen } from "../shared/attention.ts";
 import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
 
@@ -135,17 +136,19 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
             rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
         </div>;
         const background = backgroundWork(item), activity = sessionActivity(item);
+        // Finished since anyone looked: nothing will wake it, so it waits for the user (shared/attention.ts).
+        const fresh = unseen(item) && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
+        const label = background?.label ?? (fresh && activity !== "error" ? "Finished" : activityLabel(activity));
         // A conversation that isn't running shows the model it resumes with.
         const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
         // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
-        const dot = background && (activity === "idle" || activity === "ready") ? "background" : activity;
+        const dot = background && (activity === "idle" || activity === "ready") ? "background" : fresh && activity !== "error" ? "finished" : activity;
         return <div className={`session-row${resting}`} key={item.key}>
-          <button className={`session-item ${selected === item.key ? "selected" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
-            <span className={`status-dot ${dot}`} role="img"
-              aria-label={background?.label ?? activityLabel(activity)} title={background?.label ?? activityLabel(activity)} />
+          <button className={`session-item ${selected === item.key ? "selected" : ""}${fresh ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
+            <span className={`status-dot ${dot}`} role="img" aria-label={label} title={label} />
             <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
               <small className="session-metadata"><span className="session-activity" title={background?.title}>
-                {background?.label ?? activityLabel(activity)}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+                {label}</span><span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
                 <span className="session-marks"><VersionTag session={item} computer={computer} />
                 {model && <span className="session-model" title={`${model.name}${thinking && thinking !== "off" ? ` · ${thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}${item.snapshot ? "" : " · resumes with these"}`}>
                   <ProviderIcon id={model.provider} title={model.name} />

@@ -49,6 +49,7 @@ import { HostEvents } from "./host-events.ts";
 import { HostHttp } from "./host-http.ts";
 import { HostQuests } from "./host-quests.ts";
 import { HostUpdates } from "./host-updates.ts";
+import { settle } from "../shared/attention.ts";
 
 /**
  * Desk's host on this computer: its conversations, each run by an independent worker process, their inputs and saved
@@ -440,7 +441,12 @@ export class DeskHost {
 				this.updates.refresh();
 			});
 		}
-		else { this.events.emit({ type: "worker", key, message }); return; }
+		else {
+			// A turn ended, perhaps faster than snapshots are sent; the next snapshot says whether it finished (shared/attention.ts).
+			if (message.type === "event" && (message.event as { type?: string }).type === "agent_end") managed.settling = true;
+			this.events.emit({ type: "worker", key, message }); return;
+		}
+		settle(managed);
 		this.events.emit({ type: "session", session: managed.view });
 		this.persist();
 		if (message.type === "snapshot") {

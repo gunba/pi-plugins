@@ -6,15 +6,26 @@ const ua = navigator.userAgent;
 const device = /Android/.test(ua) ? (/Mobile/.test(ua) ? "Android phone" : "Android tablet") : /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad"
 	: /Windows/.test(ua) ? "Windows" : /Macintosh/.test(ua) ? "Mac" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "a browser";
 
+let lastUsed = 0;
+const listeners = new Set<() => void>();
+/** When Desk was last used in this window, as trackUse counts use, to the minute. */
+export const lastUse = (): number => lastUsed;
+/** Calls `listener` when use resumes after a minute or more without it, as when the user comes back. */
+export function onUse(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener); }; }
+
 /**
  * Tells the computers when Desk was last used in this window: a click, a key, scrolling, touching it, or bringing it to
  * the front. A window merely left open on a screen does not keep its user present.
  */
 export function trackUse(): () => void {
 	const window_ = crypto.randomUUID();
-	let used = document.visibilityState === "visible" && document.hasFocus() ? Date.now() : 0;
+	let used = lastUsed = document.visibilityState === "visible" && document.hasFocus() ? Date.now() : 0;
 	const report = () => { if (used) reportUse(window_, used, device); };
-	const use = () => { const now = Date.now(); if (now - used < STEP) return; used = now; report(); };
+	const use = () => {
+		const now = Date.now(); if (now - used < STEP) return;
+		used = lastUsed = now; report();
+		for (const listener of listeners) listener();
+	};
 	const moved = () => { if (document.hasFocus()) use(); };
 	const shown = () => { if (document.visibilityState === "visible") use(); };
 	const events = ["pointerdown", "keydown", "wheel", "touchstart", "focus"] as const;

@@ -16,7 +16,9 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	/** Desk reopened it for a watch while it was closed; it closes again, kept, once it has been idle a while. */
 	sleepWhenIdle?: boolean;
 	/** When it was last seen idle while it may go back to sleep. */
-	idleSince?: number }
+	idleSince?: number;
+	/** It has worked since it was last marked finished (shared/attention.ts settle). */
+	settling?: boolean }
 
 /** The host's conversations and the operations on them that its other parts use; DeskHost (server.ts) provides it. */
 export interface HostCore {

@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { activityLabel, backgroundWork, sessionActivity, wakeLabel } from "./activity.ts";
 import { agentInventory } from "./agent-inventory.ts";
+import { unseen } from "../shared/attention.ts";
 import { conversationTitle, type WorkspaceSession, type WorkspaceState } from "./workspace.ts";
 
 interface ActivityRow { id: string; title: string; detail?: string; status: string; owner: WorkspaceSession; view?: string; agent?: string; approximate?: boolean }
@@ -20,7 +21,8 @@ export function TasksOverview({ host, connected, tasks, children, open }: {
 	const location = (session: WorkspaceSession) => computer(session)?.name ?? host.name;
 	// Closed conversations are not at work; those still waiting on a watch are listed under Watches.
 	const agents: ActivityRow[] = host.sessions.filter(owner => owner.state !== "closed").flatMap(owner => [
-		{ id: owner.key, title: conversationTitle(owner), detail: backgroundWork(owner)?.label, status: activityLabel(sessionActivity(owner)), owner },
+		{ id: owner.key, title: conversationTitle(owner), detail: backgroundWork(owner)?.label,
+			status: unseen(owner) && !backgroundWork(owner) && ["idle", "ready"].includes(sessionActivity(owner)) ? "Finished" : activityLabel(sessionActivity(owner)), owner },
 		...agentInventory(owner.ui?.views ?? []).current.map(view => {
 			const data = view.data as UiConversation;
 			return { id: `${owner.key}:${view.id}`, title: view.title, detail: data.activity ?? data.subtitle, status: activityLabel(data.status), owner, agent: view.id };

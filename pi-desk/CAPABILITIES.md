@@ -16,6 +16,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
 | Questions | Native forms with a question chooser, drafts, deadlines and child attribution; mobile dialogs stay above the composer and within the keyboard viewport |
 | Presence and notifications | Away after 15 minutes without use of Desk on any device, shown under **Settings → This computer**; **Settings → Pi Desk → Notifications** sends questions, finished work and due tasks to a phone while away, during working hours |
+| Finished conversations | Sidebar and Tasks mark a conversation **Finished** when its turn ends with nothing left to wake it, until someone looks at it on any device; the installed app's icon counts them |
 | Slash commands | The installed worker’s full Pi catalog plus registered extension/template/skill commands and browser handlers; parameters and qualified aliases retained, unbridged capabilities labelled |
 | Resource failures | Startup banner and extension inventory; failed loads block prompts |
 | Reconnect and uncertain delivery | Durable receipts and operation outcomes; no blind retries |
@@ -48,6 +49,17 @@ any other. While away, during working hours (Tasks), each computer sends
 notifications for questions, conversations that finish or stop on an error, and
 tasks due today to the browsers that turned notifications on; on Android, yes/no
 and two-choice questions can be answered from the notification.
+
+A conversation is finished when its turn ends with nothing left to wake it: no
+question waits, no watch or scheduled wake is set, and no agent it started is
+still working. A turn that ends while it waits on any of those is not finished;
+the conversation goes on by itself. The sidebar and Tasks mark it **Finished**
+until it is open on screen in a window used within the last two minutes, on any
+device; that clears the mark everywhere. Merely resuming a conversation does not
+mark it, and conversations started by another agent report to that agent
+instead. The installed app shows how many are finished on its icon where the
+platform supports badges. The finished notification sent while away follows the
+same rule, so a watch waking a conversation for a check-in does not notify.
 
 ## Plugin paths
 

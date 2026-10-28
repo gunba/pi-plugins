@@ -41,8 +41,8 @@ async function lastReply(file: string | undefined): Promise<{ text?: string; err
 }
 
 /**
- * Notices to the user's phone while they are away, during their working hours: a conversation's question, its turn
- * finishing or stopping on an error, and tasks due today. Questions wait for an answer either way; on Android a
+ * Notices to the user's phone while they are away, during their working hours: a conversation's question, its
+ * finishing or stopping on an error with nothing left to wake it (shared/attention.ts), and tasks due today. Questions wait for an answer either way; on Android a
  * yes/no or two-choice question can be answered from the notification.
  */
 export class AwayNotices {
@@ -51,7 +51,9 @@ export class AwayNotices {
 	 * leaves is sent then. */
 	private questions = new Map<string, { view: SessionView; interaction: string; form: Form }>();
 	private sent = new Set<string>();
-	private running = new Set<string>();
+	/** Each conversation's finished mark already considered, by key; marks from before this host started are not news. */
+	private finished = new Map<string, number>();
+	private readonly started = Date.now();
 	/** Tasks sent today, by date and id. */
 	private due = new Set<string>();
 	private timer: ReturnType<typeof setInterval>;
@@ -83,12 +85,11 @@ export class AwayNotices {
 			this.questions.set(id, { view, interaction: item.id, form: item.form });
 		}
 		for (const id of this.questions.keys()) if (id.startsWith(prefix) && !live.has(id)) { this.questions.delete(id); this.sent.delete(id); }
-		if (view.state !== "ready") { this.running.delete(view.key); return; }
+		// A turn that ends with a watch, a wake or agents still working is not finished: the conversation goes on by itself.
+		if (!view.finished || view.finished < this.started || this.finished.get(view.key) === view.finished) return;
+		this.finished.set(view.key, view.finished);
+		if (!this.sending) return;
 		const activity = view.snapshot?.activity;
-		if (activity === "running" || activity === "waiting") { this.running.add(view.key); return; }
-		if (!this.running.delete(view.key)) return;
-		// A question asked as the turn ended has its own notice; agents' helpers report to the agent that started them.
-		if (!this.sending || live.size || view.createdBy) return;
 		void lastReply(view.file ?? view.snapshot?.file).then(reply => {
 			const failed = activity === "error" || !!reply?.error;
 			this.send({ title: `${name(view)} ${failed ? "stopped" : "finished"}`, body: excerpt(reply?.error ?? reply?.text ?? view.error ?? ""),

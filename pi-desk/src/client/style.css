@@ -538,6 +538,7 @@ details[open] > summary:before {
 .status-dot.waiting, .status-dot.attention { width:14px; height:16px; background:transparent; color:var(--input-needed); }
 .status-dot.waiting::after, .status-dot.attention::after { content:"?"; font:800 19px/1 system-ui; }
 .status-dot.error, .status-dot.failed { --status-color:#f07878; }
+.status-dot.finished { --status-color:var(--accent); }
 .status-dot.closed, .status-dot.offline, .status-dot.interrupted, .status-dot.aborted, .status-dot.sleeping { --status-color:var(--muted); opacity:.65; }
 @keyframes activity-orbit { to { transform:rotate(360deg); } }
 .conversation-activity { display:flex; align-items:center; gap:9px; margin-right:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
@@ -737,6 +738,13 @@ details[open] > summary:before {
 .received-notice > summary > strong { font-size:12px; font-weight:500; overflow-wrap:anywhere; min-width:0; }
 .received-notice > summary > time { margin-left:auto; color:var(--muted); font-size:10px; white-space:nowrap; }
 .received-notice > summary > .notice-detail { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+/* On a phone what happened goes under a long title, not squeezed beside it to a few letters. */
+@media (max-width:700px) {
+  .received-notice > summary { display:grid; grid-template-columns:auto auto minmax(0, 1fr) auto; gap:2px 8px; }
+  .received-notice > summary::before { margin-right:1px; }
+  .received-notice > summary > time { grid-row:1; grid-column:4; }
+  .received-notice > summary > .notice-detail { grid-row:2; grid-column:3 / 5; }
+}
 .received-notice > .message-body { padding:0 14px 10px; font-size:12px; max-height:420px; overflow:auto; }
 .notice-schedule > .message-body { font-size:14px; }
 .notice-metadata { display:flex; flex-wrap:wrap; gap:12px; padding:0 14px 8px; font-size:12px; color:var(--muted); }
@@ -1877,6 +1885,8 @@ details[open] > summary:before {
 .dot-navigation .dot-avatar { width:30px; height:30px; }
 .dot-navigation .dot-navigation-label { flex:1; min-width:0; }
 .dot-navigation.has-unread strong { color:var(--text); font-weight:700; }
+.session-item.unseen .session-label-line > strong { color:var(--text); font-weight:700; }
+.session-item.unseen .session-activity { color:var(--accent); }
 .session-item.dot-navigation .dot-unread-count { flex:none; min-width:23px; padding:3px 6px; border-radius:6px; background:var(--accent); color:var(--bg); font-size:11px; font-weight:700; text-align:center; }
 .dot-new-messages { flex:none; display:flex; align-items:center; justify-content:center; gap:12px; padding:9px 16px; border:0; border-bottom:1px solid var(--border); background:var(--accent-soft); color:var(--text); font-size:12px; font-weight:600; }
 .dot-new-messages:hover { background:var(--hover); }
@@ -2054,8 +2064,7 @@ details[open] > summary:before {
   .budget-entry { flex-wrap:wrap; }
   .setting-control .budget-entry > input[type="number"] { width:125px; flex-basis:125px; }
   .message-assistant > .message-body { padding-left:0; }
-  .message-assistant > .message-actions { padding-left:0; }
-  .message-activity, .message-received, .message-summary { margin-left:0; }
+  .message-activity, .message-received { margin-left:0; }
 }
 
 .computer-storage-error { margin:4px 8px 8px; color:var(--danger); font-size:12px; }
@@ -2082,6 +2091,7 @@ details[open] > summary:before {
 .message-actions { display:flex; margin-top:4px; }
 .message-actions:empty { display:none; }
 .message-assistant > .message-actions { padding-left:34px; }
+@media (max-width:600px) { .message-assistant > .message-actions { padding-left:0; } }
 .summary-footer .message-copy { margin-left:auto; }
 .message-copy { display:inline-flex; align-items:center; gap:4px; padding:3px 6px; border:0; background:none; color:var(--muted); font-size:11px; opacity:0; }
 .message-copy .ui-icon { width:14px; height:14px; }
@@ -2094,6 +2104,7 @@ details[open] > summary:before {
 .message-summarised { opacity:.55; transition:opacity .15s; }
 .message-summarised:hover, .message-summarised:focus-within { opacity:1; }
 .message-summary { margin:16px 0 20px 34px; }
+@media (max-width:600px) { .message-summary { margin-left:0; } }
 .summary-card { border:1px dashed var(--accent); border-radius:9px; background:var(--surface); font-size:12px; }
 .summary-card > summary { display:flex; align-items:center; gap:8px; padding:10px 12px; }
 .summary-card > summary > .ui-icon { color:var(--accent); flex:none; }

@@ -91,7 +91,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 		}
 		return reply({ error: "Unknown input operation." }, 404);
 	}
-	const control = /^\/api\/sessions\/([a-f0-9-]+)\/(close|metadata)$/.exec(url.pathname);
+	const control = /^\/api\/sessions\/([a-f0-9-]+)\/(close|metadata|seen)$/.exec(url.pathname);
 	if (control && request.method === "POST") {
 		const managed = core.sessions.get(control[1]!);
 		if (!managed) throw new Error("Unknown session.");
@@ -116,6 +116,9 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				core.inputEvent(managed);
 			}
 			return reply(result, 202);
+		} else if (control[2] === "seen") {
+			// Someone looked at it, here or on another device; its finished mark clears everywhere.
+			managed.view = { ...managed.view, seen: Date.now() };
 		} else {
 			if (managed.worker && data.generation !== managed.view.ui?.generation) throw new StaleGeneration();
 			managed.view = { ...managed.view, pinned: data.pinned === true };

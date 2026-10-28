@@ -156,6 +156,10 @@ export interface SessionView {
 	asleep?: { files: { path: string; stamp: string }[]; boot: number };
 	/** Closed and kept, what it waits on: its watches as their views listed them when it closed. */
 	waiting?: { title: string; detail?: string }[];
+	/** When its turn ended with nothing left to wake it, so it waits for the user (shared/attention.ts); cleared when it works again. */
+	finished?: number;
+	/** When someone last looked at it, on any device. */
+	seen?: number;
 	/** The model and reasoning it last ran with, kept while it isn't running; Pi resumes it with them. */
 	lastModel?: { provider: string; id: string; name: string; thinking?: string };
 	/** Native state; presentation data is carried once in ui below. */
