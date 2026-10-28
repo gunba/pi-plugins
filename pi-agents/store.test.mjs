@@ -88,7 +88,12 @@ test("a conversation Desk restarts re-registers while marked restarting and rece
 test("message validation, ambiguity, full inboxes and receipt ownership", t => {
 	const { a } = fixture(t);
 	for (const id of ["first", "peer-a", "peer-b"]) a.register(id, id, id);
-	assert.throws(() => a.send("first", "first", "peer", "ambiguous", false), /unambiguous/);
+	assert.throws(() => a.send("first", "first", "peer", "ambiguous", false), { message: "More than one agent ID starts with peer. Choose one from agent_list." });
+	assert.throws(() => a.send("first", "first", "missing", "unknown", false), { message: "No agent has the ID missing. Choose an agent ID from agent_list." });
+	// Other computers list only open conversations; a closed one there was reported as an ambiguous ID.
+	const remote = "01a17166-31d8-7058-b86a-6679dc1cb3af@0f74b546-03e1-49b3-93ab-f4f7bcc161dc";
+	assert.throws(() => a.send("first", "first", remote, "closed", false),
+		{ message: `${remote} is not open on its computer. A conversation on another computer can be messaged only while it is open there.` });
 	for (const text of ["", " \t\n"]) assert.throws(() => a.send("first", "first", "peer-a", text, false), /non-whitespace/);
 	const sent = a.send("first", "first", "peer-a", "private", false);
 	a.admit("peer-b", "peer-b", [sent.id]);
@@ -213,7 +218,7 @@ test("direct history is participant-only and exact IDs take precedence over pref
 	assert.equal(a.pending("peer-long", "peer-long").length, 0);
 	assert.equal(a.history("observer", "observer").messages.length, 0);
 	assert.equal(a.history("peer", "peer").messages[0].text, "Private note");
-	assert.throws(() => a.send("a", "a", "a", "self", true), /unambiguous/);
+	assert.throws(() => a.send("a", "a", "a", "self", true), /No agent has the ID a\./);
 });
 test("upgrading a party database keeps direct messages and receipts and drops group state", t => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-party-upgrade-"));

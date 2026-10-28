@@ -476,7 +476,11 @@ export class PartyStore {
 		const exact = peers.find(peer => peer.session === target);
 		if (exact) return exact;
 		const matches = peers.filter(peer => peer.session.startsWith(target));
-		if (matches.length !== 1) throw Error("Choose an unambiguous agent ID from agent_list.");
+		if (matches.length > 1) throw Error(`More than one agent ID starts with ${target}. Choose one from agent_list.`);
+		// Other computers list only their open conversations, so a closed one there is unknown here.
+		if (!matches.length) throw Error(target.includes("@")
+			? `${target} is not open on its computer. A conversation on another computer can be messaged only while it is open there.`
+			: `No agent has the ID ${target}. Choose an agent ID from agent_list.`);
 		return matches[0];
 	}
 	send(session: string, owner: string, target: string, text: string, wake: boolean, files: MessageFile[] = []): PartyMessage {
