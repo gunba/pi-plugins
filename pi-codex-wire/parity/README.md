@@ -43,7 +43,10 @@ that touch requests. The conversation sleeps in between: no process runs, and th
 | `~/codex-parity/baseline` | The Codex tag Wire last matched, such as `rust-v0.164.0`. |
 | `~/codex-parity/reports/<tag>/` | One folder per release: `report.md` and the patches. |
 
-Perth cannot push to GitHub, so changes reach Jordan as patches.
+Perth can push to `gunba/pi-plugins` through its repository-scoped SSH deploy key. Keep `origin` on
+`git@github.com:gunba/pi-plugins.git`; the upstream Codex clone stays read-only over HTTPS. The deploy key does not
+provide GitHub API access. Use an already authorized environment to open draft PRs; do not start an account-wide
+GitHub device login for unattended parity work. Without API access, publish the branch and provide its compare link.
 
 ## When a release wakes you
 
@@ -85,9 +88,14 @@ Perth cannot push to GitHub, so changes reach Jordan as patches.
      - what is left out and why;
      - the prompt-cache impact;
      - the test and capture results.
-   - Write the patches beside it: `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
-   - Add a quest for Jordan: "Review the Codex Wire parity patch for <tag>". Name the computer (pi-desk-perth) and the
-     folder. Any Desk agent can fetch the files from there with `agent_send`.
+   - Push the branch: `git -C ~/codex-parity/pi-plugins push -u origin parity/<tag>`.
+   - Open a draft PR against `main` when GitHub API access is available. Include the changes, exclusions, cache impact
+     and validation results in its description. Otherwise provide
+     `https://github.com/gunba/pi-plugins/compare/main...parity/<tag>?expand=1`; a compare link is not an open PR.
+   - Put the PR or compare link in the report. Patches remain an optional fallback:
+     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
+   - Add a quest for Jordan to review the PR, or the published branch if no PR was opened. Include its link, the
+     computer (pi-desk-perth), and the evidence folder. Any Desk agent can fetch local files with `agent_send`.
    - If nothing needs to change, the report says so and no quest is added.
 7. **Move on.** Write the new tag to `~/codex-parity/baseline`, switch the clean checkout back to `main` so the next
    wake can pull it, set the same watch again, and end your turn.
