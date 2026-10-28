@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
 import { compactionFailure, compactionHeld, compactionKey, measuredContextTokens } from "../../../pi-context-window/compaction-state.ts";
 import { promptCacheState } from "../../../pi-context-window/prompt-cache.ts";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
 	createAgentSessionServices,
 	createAgentSessionFromServices,
@@ -20,7 +20,6 @@ import {
 	type SessionEntry,
 	SettingsManager,
 	type AgentSession,
-	type ModelRuntime,
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	type LoadExtensionsResult,

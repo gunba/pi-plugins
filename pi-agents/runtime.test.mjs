@@ -54,7 +54,7 @@ function harness(t, session, branch = [], child = false) {
 			return result;
 		},
 		command: args => commands.get("inbox").handler(args, ctx),
-		// The agent tools live in pi-subagents and reach these conversations through pi-party's primary operations.
+		// The agent tools live in the subagent runtime and reach these conversations through the primary operations.
 		call: async (name, input = {}) => {
 			if (tools.has(name)) return tools.get(name).execute("fixture", input, undefined, undefined, ctx);
 			const agents = primaryAgents(session), json = value => ({ content: [{ type: "text", text: JSON.stringify(value) }], details: {} });

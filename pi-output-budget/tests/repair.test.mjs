@@ -23,8 +23,8 @@ test("a path from the wrong folder gets the place it exists, and a wrong folder 
 	assert.equal(await missingPathHint(join(root, "pi-output-budget", "extensions", "store.ts"), root, []),
 		`Not found at ${join(root, "pi-output-budget", "extensions", "store.ts")}. Files named store.ts in ${root}: ${join("pi-party", "store.ts")}.`);
 	assert.equal(await missingPathHint("nothing-like-it.ts", root, []), undefined);
-	assert.equal(missingPath("read", "ENOENT: no such file or directory, access '/x/y.ts'", {}), "/x/y.ts");
-	assert.equal(missingPath("grep", "Path not found: /x/z", {}), "/x/z");
+	assert.equal(missingPath("ENOENT: no such file or directory, access '/x/y.ts'", {}), "/x/y.ts");
+	assert.equal(missingPath("Path not found: /x/z", {}), "/x/z");
 });
 
 test("an edit that did not match gets the closest region with line numbers; a repeated one gets each line", t => {

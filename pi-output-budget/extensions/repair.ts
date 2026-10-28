@@ -82,7 +82,7 @@ export function editHint(error: string, input: Record<string, unknown>, cwd: str
 }
 
 /** The path a failed call could not find, from its error and arguments. */
-export function missingPath(toolName: string, error: string, input: Record<string, unknown>): string | undefined {
+export function missingPath(error: string, input: Record<string, unknown>): string | undefined {
 	const named = /ENOENT: no such file or directory, \w+ '([^']+)'|Path not found: (.+)$|Failed to read file (?:to update )?(.+?)(?::|$)/m.exec(error);
 	if (!named) return;
 	const path = (named[1] ?? named[2] ?? named[3])?.trim();

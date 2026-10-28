@@ -1,7 +1,6 @@
 import { closeSync, existsSync, openSync, readSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionView } from "../shared/protocol.ts";
-import { isOpenSession } from "../shared/workspace.ts";
 import { atomicJson } from "../../manage/store.ts";
 
 export function parseSessionHeader(text: string): { cwd: string; id: string } {

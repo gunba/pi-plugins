@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { SEARCH_MAX_SOURCES, type SearchSource } from "../shared/conversation-search.ts";
+import { SEARCH_MAX_SOURCES } from "../shared/conversation-search.ts";
 import { extractSearchEntry, nativeSearchHeader } from "./search-extract.ts";
 import { nativeRangeHash, nativeSearchHeaderLine, nativeSearchRecords } from "./search-native-file.ts";
 import { LOCAL_SEARCH_SCOPE, SearchStore, type IndexedEntry, type SearchFileState } from "./search-store.ts";

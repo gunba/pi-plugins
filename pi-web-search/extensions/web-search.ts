@@ -37,8 +37,6 @@ type Failure = { url?: string; error?: string; message?: string; error_type?: st
 type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
 export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
 
-const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-
 /** One JSON-RPC message from a response, which the server sends as JSON or as a server-sent event stream. */
 function message(body: string, type: string, id: number): { result?: unknown; error?: { message?: string } } | undefined {
 	if (!/event-stream/.test(type)) return body.trim() ? JSON.parse(body) : undefined;

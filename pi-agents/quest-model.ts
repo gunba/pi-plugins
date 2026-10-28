@@ -86,19 +86,6 @@ export function isReady(quest: Quest): boolean { return quest.state === "done" &
 
 export function isToday(quest: Quest, today: string): boolean { return quest.kind === "daily" || !!quest.due && quest.due <= today || !!quest.scheduled && quest.scheduled <= today; }
 
-/** Consecutive working days ending today (or yesterday, if nothing is done yet today) with a completion. */
-export function questStreak(completedDays: Iterable<string>, hours: QuestHours, at = Date.now()): number {
-	const done = new Set(completedDays);
-	let streak = 0, day = new Date(`${localTime(at, hours.timeZone).date}T12:00:00Z`), first = true;
-	for (let guard = 0; guard < 400; guard++, day = new Date(day.getTime() - 86_400_000)) {
-		const date = day.toISOString().slice(0, 10), working = hours.days.includes(day.getUTCDay());
-		if (done.has(date)) streak++;
-		else if (working && !first) break;
-		first = false;
-	}
-	return streak;
-}
-
 // Schedules work on whole calendar dates (days since 1970-01-01, a Thursday), so time zones and daylight saving cannot skew them.
 const dayNumber = (date: string) => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10))) / 86_400_000;
 const dateOf = (day: number) => new Date(day * 86_400_000).toISOString().slice(0, 10);

@@ -203,7 +203,7 @@ export default function party(pi: ExtensionAPI): void {
 		providePrimaryAgents(session, primary); stopped = false; armed = false; preparingPrompt = false; signature = "";
 		source = ui.source("messages");
 		safely(() => {
-			const self = database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
+			database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
 			// Messages that asked to wake it while it was closed start a turn now, as they would have had it been idle.
 			wakeAfter = 0;
 			if (!child) { armed = true; database().setDelivery(session, owner, armed); }
@@ -359,7 +359,7 @@ export default function party(pi: ExtensionAPI): void {
 			...(recipient.state === "restarting" ? { note: "This agent is restarting onto a new Desk version. The message is kept and delivered when it is back, usually within a minute." }
 				: recipient.state === "offline" ? { note: "This agent is not running. The message is kept and delivered when its conversation is next opened." } : {}) };
 	};
-	/** Desk conversations for the agent tools, which pi-subagents defines (pi-party/primary.ts). */
+	/** Desk conversations for the agent tools, which the subagent runtime defines (primary.ts). */
 	const primary: PrimaryAgents = {
 		async start(request, toolCallId, abort, context) {
 			if (!context.hasUI) throw Error("Starting a primary agent needs Jordan's approval in Pi's interface.");

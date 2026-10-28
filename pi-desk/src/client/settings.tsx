@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrowserAccount } from "./account.ts";
-import { api } from "./connection.ts";
 import { Computers, SoftwareUpdate } from "./computers.tsx";
 
 import { Devices } from "./devices.tsx";

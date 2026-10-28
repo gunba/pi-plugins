@@ -2,9 +2,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Primary agents are conversations in Jordan's Desk, on any of his computers, that he can open and talk to; secondary
- * agents are helpers a conversation starts in the background (pi-subagents). The agent tools are defined with the
- * subagent runtime, which knows the caller in every session, and reach primary agents through the operations the
- * party side provides for its conversation.
+ * agents are helpers a conversation starts in the background (subagents/). The agent tools are defined with the
+ * subagent runtime, which knows the caller in every session, and reach primary agents through the operations this
+ * package provides for its conversation.
  */
 export interface PrimaryAgents {
 	/** Starts a conversation once Jordan approves it here; `copy` gives it this conversation so far. */

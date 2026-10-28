@@ -67,6 +67,6 @@ The snippets in the adapter derive from those MIT-licensed artifacts. No complet
 A version/hash mismatch fails closed. Before changing the Jiti dependency, audit the new evaluator's routing/cache/interop paths, update the exact patches and fingerprints, and rerun both suites:
 
 ```sh
-node --test pi-subagents/tests/child-tool-extensions.test.mjs pi-subagents/loader/tests/isolated-jiti.test.mjs
+node --test pi-agents/tests/child-tool-extensions.test.mjs pi-agents/loader/tests/isolated-jiti.test.mjs
 npm run typecheck
 ```

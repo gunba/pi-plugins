@@ -83,7 +83,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
     const error = event.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
     let hint: string | undefined;
     try {
-      const path = ["read", "grep", "ls", "find", "edit", "write"].includes(event.toolName) ? missingPath(event.toolName, error, input) : undefined;
+      const path = ["read", "grep", "ls", "find", "edit", "write"].includes(event.toolName) ? missingPath(error, input) : undefined;
       hint = path ? await missingPathHint(path, ctx.cwd, roots) : undefined;
       if (!hint && event.toolName === "edit") hint = editHint(error, input, ctx.cwd);
     } catch { hint = undefined; }

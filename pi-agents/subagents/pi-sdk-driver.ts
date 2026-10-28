@@ -141,7 +141,6 @@ class PiSdkChildDriver implements ChildDriver {
 	private disposal?: Promise<void>;
 	private readonly noticeIds = new Set<string>();
 	private readonly presentation?: PresentationScope;
-	private readonly queueGuard: NativeQueueGuard;
 	private readonly followups: FollowupDelivery;
 	private readonly serviceUsage: ServiceUsage;
 	private readonly settleServices: () => Promise<void>;
@@ -154,7 +153,8 @@ class PiSdkChildDriver implements ChildDriver {
 		this.extensionErrors = extensionErrors;
 		this.presentation = presentation;
 		// Install before bindExtensions emits session_start, including deferred custom context.
-		this.queueGuard = new NativeQueueGuard(session, () => !!this.presentation?.suspended);
+		// Installs itself on the session (prompt admission while held for an update); nothing here reads it.
+		new NativeQueueGuard(session, () => !!this.presentation?.suspended);
 	}
 
 	get sessionFile(): string | undefined {
