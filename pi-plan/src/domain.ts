@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { planSteps, type PlanStep } from "./steps.ts";
 
-export type PlanPhase = "active" | "paused" | "blocked" | "complete";
 export type PlanActivation = "armed" | "disarmed";
 export interface PlanRef { id: string; revision: number }
 export interface PlanBlockReason { code: string; message: string }
@@ -205,7 +204,8 @@ function phaseSnapshot(current: PlanSnapshot, phase: "active" | "paused" | "comp
 	return { id: current.id, revision: current.revision + 1, ...structuredClone(definition(current)), phase };
 }
 export function planCreate(state: PlanFoldState, request: CreatePlanRequest, id: string, now: number, defaultMaxRounds: number): PlannedPlanChange {
-	if (state.plan && state.plan.phase !== "complete") throw new PlanError("an unfinished plan already exists", "PLAN_ALREADY_EXISTS");
+	if (state.plan && state.plan.phase !== "complete") throw new PlanError("an unfinished plan already exists: change it with update_plan "
+		+ "(action edit replaces its objective and steps), or complete it first", "PLAN_ALREADY_EXISTS");
 	if (!id || state.seenPlanIds.has(id)) throw new Error("plan id must be fresh and non-empty");
 	const plan: PlanSnapshot = { id, revision: 1, objective: normalizeObjective(request.objective),
 		steps: planSteps(request.steps === undefined ? [] : request.steps, true),
@@ -233,16 +233,17 @@ export function planPause(state: PlanFoldState, ref: PlanRef, now: number): Plan
 }
 export function planResume(state: PlanFoldState, ref: PlanRef, now: number, activation: PlanActivation): PlannedPlanChange {
 	const current = expectRef(state, ref);
-	if (!["active", "paused", "blocked"].includes(current.phase)
-		|| (current.phase === "active" && (!current.autoContinue || activation === "armed"))
-		|| (current.autoContinue && state.roundsStarted >= current.maxRounds))
-		throw new PlanError("plan cannot resume from its current state or round budget", "PLAN_INVALID_TRANSITION");
+	if (current.phase === "complete") throw new PlanError("a complete plan cannot resume; create a new one", "PLAN_INVALID_TRANSITION");
+	if (current.phase === "active" && (!current.autoContinue || activation === "armed")) throw new PlanError("the plan is already running", "PLAN_INVALID_TRANSITION");
+	if (current.autoContinue && state.roundsStarted >= current.maxRounds)
+		throw new PlanError(`the plan has used its ${current.maxRounds} automatic rounds; raise max_rounds (action edit) to resume`, "PLAN_INVALID_TRANSITION");
 	return snapshotChange(state, "resume", phaseSnapshot(current, "active"), now, current.autoContinue ? "armed" : "disarmed");
 }
 export function planComplete(state: PlanFoldState, ref: PlanRef, now: number): PlannedPlanChange {
 	const current = expectRef(state, ref);
 	if (current.phase === "complete") throw new PlanError("plan is already complete", "PLAN_INVALID_TRANSITION");
-	if (current.steps.some(step => step.status !== "completed")) throw new PlanError("complete the remaining steps before completing the plan", "PLAN_UNFINISHED_STEPS");
+	if (current.steps.some(step => step.status !== "completed")) throw new PlanError("complete the remaining steps before completing the plan: "
+		+ "send complete with the final steps, each marked completed, in the same call", "PLAN_UNFINISHED_STEPS");
 	return snapshotChange(state, "complete", phaseSnapshot(current, "complete"), now, "disarmed");
 }
 export function planBlock(state: PlanFoldState, ref: PlanRef, reason: PlanBlockReason, now: number): PlannedPlanChange {

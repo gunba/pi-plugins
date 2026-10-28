@@ -124,6 +124,18 @@ test("complete accepts the final steps in the same call; open steps still block 
 	await h.emit("session_shutdown");
 });
 
+test("an edit that changes nothing, or a resume of a running plan, returns the plan without a new revision", async () => {
+	// In a week of sessions, 6 update_plan calls failed as empty edits (models looking at the plan) and 8 as resumes.
+	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
+	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }] });
+	const before = await read(h);
+	const shown = JSON.parse((await update(h, { action: "edit" })).content[0].text);
+	assert.equal(shown.plan.revision, before.revision);
+	assert.equal(JSON.parse((await update(h, { action: "resume" })).content[0].text).plan.revision, before.revision);
+	assert.equal((await read(h)).revision, before.revision);
+	await h.emit("session_shutdown");
+});
+
 test("an active plan untouched for 25 of the model's tool calls is recalled in the next result, and again while it stays untouched", async () => {
 	// Past 300k tokens of context the gap between plan updates doubled: nothing showed the model its plan but its own old calls.
 	const h = createExtensionHarness(); await h.start();

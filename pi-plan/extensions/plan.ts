@@ -197,9 +197,16 @@ class PlanController {
 			planRef = { id: edited.id, revision: edited.revision };
 		} else if (params.action !== "edit" && Object.keys(replacements).length) throw new Error("Definition fields are only valid with action edit or complete.");
 		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
+		// An edit that changes nothing is how models look at the plan (there is no read tool): it returns the plan.
+		if (params.action === "edit" && !Object.keys(replacements).length) return this.store.get();
 		if (params.action === "edit") return this.store.edit(planRef, replacements);
 		if (params.action === "pause") return this.store.pause(planRef);
-		if (params.action === "resume") return this.store.resume(planRef);
+		if (params.action === "resume") {
+			const current = this.store.get();
+			// Resuming a plan that is already running changes nothing.
+			if (current?.phase === "active" && (!current.autoContinue || current.activation === "armed")) return current;
+			return this.store.resume(planRef);
+		}
 		const current = this.store.get();
 		if (!current) throw new Error("No current plan.");
 		const automaticRound = this.attempt?.admitted && this.attempt.planId === current.id && this.attempt.round === current.roundsStarted;
