@@ -85,8 +85,12 @@ export class SearchScanner {
 		const previous = this.store.files(), missing: string[] = [];
 		for (const saved of previous) if (healthy.some(root => inside(root, saved.file)) && !candidates.has(saved.file)) missing.push(saved.id);
 		const extra = new Set([...this.options.files.map(normalize), ...previous.map(file => file.file)]);
-		for (const path of extra) {
+		for (const listed of extra) {
 			check();
+			// A listed file can name a walked one by another route (a symlink, a Windows short name such as RUNNER~1);
+			// compare real paths, or it is indexed twice and escapes the ignored roots. A symlinked file itself stays excluded.
+			const link = (await lstat(listed).catch(() => undefined))?.isSymbolicLink();
+			const path = link ? listed : normalize(await realpath(listed).catch(() => listed));
 			if (ignore(path)) { const saved = this.store.file(path); if (saved) missing.push(saved.id); continue; }
 			if (candidates.has(path) || [...roots].some(root => inside(root, path))) continue;
 			try {
