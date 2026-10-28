@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.29.205",
+  "version": "0.29.206",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
