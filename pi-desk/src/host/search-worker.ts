@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { parentPort, workerData } from "node:worker_threads";
 import { SEARCH_ORIGIN, type SearchCoverage, type SearchPassage, type SearchRequest, type SearchResponse, type SearchSource } from "../shared/conversation-search.ts";
 import { SearchEmbedder } from "./search-embedder.ts";
 import { SearchScanner, type SearchScannerOptions } from "./search-scanner.ts";
@@ -24,9 +23,16 @@ export interface SearchWorkerState {
 	coverage: SearchCoverage;
 }
 
-const port = parentPort;
-if (!port) throw Error("Conversation search must run in its dedicated worker.");
-const options = workerData as SearchWorkerOptions, store = new SearchStore(join(options.directory, "index.sqlite"));
+// A child process of the host, so that native inference cannot take the host down and runs at the lowest priority.
+const send = process.send?.bind(process);
+if (!send) throw Error("Conversation search must run in its dedicated worker.");
+const port = { postMessage: (message: unknown) => { if (process.connected) send(message); } };
+// The host sends the options first; commands that arrive before setup finishes wait their turn.
+const early: unknown[] = [];
+let receive = (message: unknown) => { early.push(message); };
+process.on("message", message => receive(message));
+const options = await new Promise<SearchWorkerOptions>(resolve => { receive = message => { receive = later => { early.push(later); }; resolve(message as SearchWorkerOptions); }; });
+const store = new SearchStore(join(options.directory, "index.sqlite"));
 let config: SearchWorkerConfig = { capture: false, semantic: false, share: true, scanner: options.scanner };
 let revision = 0, closing = false, embedding = false, recentQuery = 0, backgroundError: string | undefined;
 let notification: ReturnType<typeof setTimeout> | undefined, maintenance: ReturnType<typeof setInterval>;
@@ -101,9 +107,13 @@ maintenance = setInterval(() => {
 	try { store.maintenance(); backgroundError = undefined; kick(); changed(true); }
 	catch (error) { backgroundError = error instanceof Error ? error.message : String(error); changed(); }
 }, 60_000); maintenance.unref();
-port.on("message", (message: { id: number; command: SearchWorkerCommand }) => {
+receive = raw => {
+	const message = raw as { id: number; command: SearchWorkerCommand };
 	void handle(message.command).then(result => {
-		port.postMessage({ id: message.id, result }); if (message.command.action === "close") port.close();
+		port.postMessage({ id: message.id, result }); if (message.command.action === "close") process.disconnect();
 	}, error => { port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }); });
-});
+};
+for (const message of early.splice(0)) receive(message);
+// Without the host there is nobody to answer; leave rather than keep indexing.
+process.once("disconnect", () => { void handle({ action: "close" }).catch(() => {}).finally(() => process.exit(0)); });
 port.postMessage({ type: "ready" });

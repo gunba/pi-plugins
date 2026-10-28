@@ -32,6 +32,7 @@ export interface ConversationSearchOptions {
 export class ConversationSearch {
 	private readonly options: ConversationSearchOptions;
 	private worker?: SearchWorkerClient;
+	private workerStarted = 0;
 	private binding?: SearchBinding;
 	private peers = new Map<string, Peer>();
 	private queries = new Map<string, Awaiting>();
@@ -66,14 +67,21 @@ export class ConversationSearch {
 	}
 	private configure(): Promise<void> {
 		if (this.closed) return Promise.reject(Error("Conversation search is closed."));
+		// A worker that stopped (killed, out of memory, a native crash) is replaced, at most once a minute so a crash loop stays cheap.
+		if (this.worker?.failed && Date.now() - this.workerStarted >= 60_000) {
+			this.error(this.worker.failed); this.worker = undefined; this.configSignature = ""; this.snapshot = undefined;
+		}
 		const settings = this.settings(), role = this.options.settings(), scanner = this.options.scanner();
 		const config: SearchWorkerConfig = { computer: this.options.self() || hostname(), capture: !!this.binding || this.localRequested, semantic: role.hold && settings.semantic,
 			share: role.send, ...(role.hold && this.binding ? { scope: indexScope(this.binding) } : {}), scanner: { ...scanner, exclude: settings.exclude } };
 		const signature = JSON.stringify(config);
 		if (signature === this.configSignature) return this.configWork;
 		this.configSignature = signature;
-		this.worker ??= new SearchWorkerClient({ directory: this.options.directory, modelDirectory: this.options.modelDirectory,
-			proxy: this.options.proxy, scanner: config.scanner }, local => { this.snapshot = undefined; if (local) this.binding?.flush(); });
+		if (!this.worker) {
+			this.workerStarted = Date.now();
+			this.worker = new SearchWorkerClient({ directory: this.options.directory, modelDirectory: this.options.modelDirectory,
+				proxy: this.options.proxy, scanner: config.scanner }, local => { this.snapshot = undefined; if (local) this.binding?.flush(); });
+		}
 		const worker = this.worker;
 		this.configWork = this.configWork.catch(() => {}).then(async () => {
 			await worker.call({ action: "configure", config }); this.snapshot = undefined;

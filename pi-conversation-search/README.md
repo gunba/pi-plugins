@@ -54,7 +54,8 @@ routing relay does not index it. The chosen search host is trusted with decrypte
 history, just as a computer keeping recovery copies is trusted with those copies.
 Its search database lives under `<Desk data directory>/search/index.sqlite`.
 
-Source capture and inference run in a dedicated worker, not the host UI loop.
+Source capture and inference run in a separate process at the lowest CPU priority, so a
+crash or a long backfill cannot stop or slow the host; Desk restarts it if it stops.
 Capture starts with the authenticated workspace connection, or an explicit local
 search. Native files are checked periodically; indexing is not a synchronous view
 of every running agent. Older hosts without this capability and computers that

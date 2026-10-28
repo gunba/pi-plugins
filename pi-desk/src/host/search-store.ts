@@ -366,7 +366,9 @@ export class SearchStore {
 		const ranked = [...scores].sort((a, b) => b[1] - a[1]), where = this.filter(scope, request.filters), hits: SearchHit[] = [], perSession = new Map<string, number>();
 		const overflow: SearchHit[] = [];
 		for (const [id] of ranked) {
-			const row = this.sql(`SELECT p.*,c.hash,c.text,s.session,s.title,s.project,s.kind ${this.join} WHERE p.chunk=? AND ${where.sql} ORDER BY p.at DESC,p.ordinal DESC LIMIT 1`)
+			// Without the hint SQLite picks a scope index and scans every passage in the workspace for each hit.
+			const row = this.sql(`SELECT p.*,c.hash,c.text,s.session,s.title,s.project,s.kind FROM passages p INDEXED BY passages_chunk JOIN chunks c ON c.id=p.chunk
+				JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.chunk=? AND ${where.sql} ORDER BY p.at DESC,p.ordinal DESC LIMIT 1`)
 				.get(id, ...where.parameters) as unknown as Parameters<SearchStore["hit"]>[0] | undefined;
 			if (!row) continue;
 			const hit = this.hit(row, scope), count = perSession.get(hit.session) ?? 0;
@@ -380,7 +382,8 @@ export class SearchStore {
 	/** Expand along searchable parent links; at a branch split, stop instead of mixing mutually exclusive continuations. */
 	read(request: Extract<SearchRequest, { action: "read" }>, scope: QueryScope, coverage: SearchCoverage): SearchResponse {
 		const where = this.scopeWhere(scope);
-		const focus = this.sql(`SELECT p.*,c.text,c.hash,s.session,s.title,s.project,s.kind ${this.join} WHERE p.ref=? AND ${where.sql} ORDER BY s.updated DESC,p.id DESC LIMIT 1`)
+		const focus = this.sql(`SELECT p.*,c.text,c.hash,s.session,s.title,s.project,s.kind FROM passages p INDEXED BY passages_ref JOIN chunks c ON c.id=p.chunk
+			JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.ref=? AND ${where.sql} ORDER BY s.updated DESC,p.id DESC LIMIT 1`)
 			.get(request.reference, ...where.parameters) as unknown as Parameters<SearchStore["hit"]>[0] | undefined;
 		if (!focus) throw Error("That passage is no longer retained or is outside this search workspace.");
 		const entries = [focus.entry]; let parent = focus.parent, split = false;

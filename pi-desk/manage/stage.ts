@@ -31,6 +31,19 @@ export interface StageOptions {
 	dependencies?: VerifiedDependencies;
 }
 
+/**
+ * onnxruntime-node ships its libraries for every platform and architecture, about 300 MB; a runtime needs only its own
+ * folder. Without this every computer would download all of them.
+ */
+async function pruneForeignBinaries(app: string): Promise<void> {
+	const bin = join(app, "node_modules", "onnxruntime-node", "bin");
+	for (const napi of await readdir(bin).catch(() => [] as string[])) for (const platform of await readdir(join(bin, napi))) {
+		if (platform !== process.platform) { await rm(join(bin, napi, platform), { recursive: true, force: true }); continue; }
+		for (const arch of await readdir(join(bin, napi, platform)))
+			if (arch !== process.arch) await rm(join(bin, napi, platform, arch), { recursive: true, force: true });
+	}
+}
+
 /** Borrow only declared build tools; never link or modify the checkout's node_modules directory. */
 async function withBuildDependencies(source: string, app: string, temporary: string, build: () => Promise<void>): Promise<void> {
 	const pkg = JSON.parse(await readFile(join(app, "package.json"), "utf8"));
@@ -151,6 +164,7 @@ export async function stageRuntime(options: StageOptions): Promise<RuntimeReleas
 			progress("Preparing protected credential storage");
 			await run(app, [npm, "rebuild", "keytar", "--ignore-scripts=false"]);
 		}
+		await pruneForeignBinaries(app);
 		progress("Checking staged runtime");
 		await run(app, [join(app, "dist", "host", "cli.js"), "--help"]);
 		await run(app, ["--input-type=module", "-e", 'import {createRequire} from "node:module"; createRequire(process.cwd()+"/package.json")("keytar");']);
