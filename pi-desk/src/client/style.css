@@ -455,10 +455,10 @@ details[open] > summary:before {
 .session-close:hover:not(:disabled) { color:var(--danger); background:var(--surface); }
 @media (hover:none), (pointer:coarse) {
   .session-close { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:2px; top:50%; }
-  .session-rename { opacity:1; pointer-events:auto; min-width:40px; min-height:40px; right:44px; top:50%; }
+  /* Touch renames from the conversation's own title, so the name keeps the room. */
+  .session-rename { display:none; }
   .session-row:has(.session-close) .session-label-line { padding-right:0; }
   .session-row:has(.session-close) .session-item { padding-right:44px; }
-  .session-row:has(.session-rename) .session-item { padding-right:88px; }
 }
 .session-item {
   display: flex;
@@ -511,7 +511,8 @@ details[open] > summary:before {
 .version-banner > .ui-icon { flex:none; width:16px; height:16px; color:#d08a2c; }
 .version-banner > span { flex:1; min-width:0; }
 .version-banner > button { flex:none; white-space:nowrap; }
-@media (max-width: 760px) { .version-banner { margin:0 16px 10px; flex-wrap:wrap; } }
+/* On a phone the button goes under the text, in line with it, rather than squeezing it into a column. */
+@media (max-width: 760px) { .version-banner { margin:0 16px 10px; flex-wrap:wrap; } .version-banner > span { flex-basis:calc(100% - 26px); } .version-banner > button { margin-left:26px; } }
 /* The folder gives way first (flex-shrink 3), then the model's name. */
 .session-marks { flex:0 1 auto; min-width:0; max-width:60%; margin-left:auto; padding-left:6px; display:inline-flex; align-items:center; gap:6px; }
 .session-metadata .session-model { display:inline-flex; align-items:center; gap:4px; min-width:0; }
@@ -722,6 +723,8 @@ details[open] > summary:before {
 .tool-pill .message-body { padding:0; font-size:12px; }
 .tool-pill > summary:hover { background:var(--hover); }
 .tool-pill .tool-status { margin:0 0 0 auto; align-items:center; flex-wrap:nowrap; gap:6px; white-space:nowrap; font-size:10px; }
+/* On a phone a finished call shows only its time, leaving the room to what it was for; other states keep their word. */
+@media (max-width:700px) { .tool-pill .tool-status.tool-done > span:first-child { display:none; } }
 .thinking-pill > summary > .ui-icon { color:var(--muted); }
 .thinking-count { display:inline-flex; align-items:center; line-height:1; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
 .thinking-pill .tool-status { margin:0; align-items:center; flex-wrap:nowrap; gap:6px; line-height:1; }
@@ -755,6 +758,8 @@ details[open] > summary:before {
 .nested-call > summary::-webkit-details-marker, .nested-earlier > summary::-webkit-details-marker { display:none; }
 .nested-call > summary:hover, .nested-earlier > summary:hover { background:var(--hover); }
 .nested-call > summary > strong { flex:0 0 var(--nested-name, auto); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+/* A long tool name (an MCP tool's, say) mustn't leave its row's description a few letters on a phone. */
+@media (max-width:700px) { .nested-call > summary > strong { flex-basis:min(var(--nested-name, 40%), 40%); } }
 .nested-call .tool-status { margin:0 0 0 auto; align-items:center; flex-wrap:nowrap; gap:6px; white-space:nowrap; font-size:10px; }
 .nested-call > pre { margin:2px 8px 6px; max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; color:var(--text); }
 .nested-call-error { margin:2px 8px 4px; color:var(--danger); white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -1195,15 +1200,17 @@ details[open] > summary:before {
 .composer-status-menu .composer-select { justify-content:space-between; }
 .composer-status-menu .composer-select select { max-width:180px; }
 .composer-overflow-preferences { display:none; gap:8px; align-items:center; margin-top:12px; }
+.composer-overflow-preferences > span { color:var(--muted); }
+.composer-overflow-preferences > select { order:1; }
+.composer-overflow-preferences > .model-default { order:2; margin-left:auto; }
 .composer-shortcuts { color:var(--muted); font-size:11px; line-height:1.5; }
 .composer-shortcuts { margin:12px 0 0; padding-top:12px; border-top:1px solid var(--border); }
 @container composer (max-width:640px) {
-  /* Phones: the model controls take the row and the status is its menu button alone. */
+  /* Phones: the model name takes the row; reasoning, the default star and the status move into the status menu. */
   .composer-status-inline { display:none; }
-  .composer-preferences .model-default { display:none; }
-  .composer-preferences select { width:52px; max-width:52px; min-height:36px; padding-inline:3px; }
+  .composer-preferences { display:none; }
   .composer-overflow-preferences { display:flex; }
-  .composer-overflow-preferences select { display:none; }
+  .send-controls { gap:4px; }
   .model-controls { flex:1; }
   .model-picker-group { flex:1; }
   .model-picker { min-height:36px; padding-inline:3px; gap:4px; }
@@ -1211,10 +1218,6 @@ details[open] > summary:before {
   .model-picker-chevron { display:none; }
   .composer-status { flex:none; min-width:36px; }
   .composer-status-trigger { width:36px; gap:3px; }
-}
-@container composer (max-width:300px) {
-  .composer-preferences { display:none; }
-  .composer-overflow-preferences select { display:block; }
 }
 @media (pointer:coarse) { .composer-toggle, .composer-context, .composer-status-trigger { min-height:40px; } .sidebar-actions > button { min-height:40px; } }
 .question-banner {
@@ -1562,11 +1565,17 @@ details[open] > summary:before {
   .conversation-heading {
     flex: 1;
   }
+  .conversation-heading > span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .conversation-heading > strong {
     font-size: 13px;
     max-width: 47vw;
   }
   .top-actions {
+    flex: none;
     gap: 3px;
   }
   .conversation {
@@ -1835,7 +1844,7 @@ details[open] > summary:before {
 .settings-content .panel-section-heading h3, .settings-content .panel-section-heading .panel-actions { margin:0; }
 .detail-item { padding:16px 0; border-top:1px solid var(--border); }
 .detail-item-heading { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:6px 12px; }
-.detail-item-heading > div { flex:1 1 150px; min-width:0; overflow-wrap:anywhere; }
+.detail-item-heading > div { flex:1 1 260px; min-width:0; overflow-wrap:anywhere; }
 .detail-item-heading strong { display:block; font-size:14px; line-height:1.5; }
 .detail-item-heading small { display:block; color:var(--muted); margin-top:4px; font-size:12px; overflow-wrap:anywhere; }
 .detail-status { flex:0 1 auto; max-width:100%; padding:3px 7px; border-radius:4px; background:var(--hover); color:var(--muted); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
@@ -1920,7 +1929,7 @@ details[open] > summary:before {
 .dot-draft-file-info { display:flex; flex-direction:column; gap:3px; min-width:0; flex:1; max-width:380px; }
 .dot-draft-file-info small { color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }
 .dot-draft-file button { flex-shrink:0; }
-@media (max-width:800px) { .dot-topbar { height:auto; flex-wrap:wrap; } .dot-topbar .dot-actions { flex-basis:100%; justify-content:flex-start; } }
+@media (max-width:800px) { .dot-topbar { height:auto; flex-wrap:wrap; padding-block:12px 10px; row-gap:10px; } .dot-topbar .dot-actions { flex-basis:100%; justify-content:flex-start; } }
 .dot-draft-file button { padding:2px 5px; border:0; background:transparent; }
 @media (max-width:700px) {
   .dot-actions { gap:4px; }
@@ -2045,7 +2054,8 @@ details[open] > summary:before {
   .budget-entry { flex-wrap:wrap; }
   .setting-control .budget-entry > input[type="number"] { width:125px; flex-basis:125px; }
   .message-assistant > .message-body { padding-left:0; }
-  .message-activity { margin-left:0; }
+  .message-assistant > .message-actions { padding-left:0; }
+  .message-activity, .message-received, .message-summary { margin-left:0; }
 }
 
 .computer-storage-error { margin:4px 8px 8px; color:var(--danger); font-size:12px; }
@@ -2562,4 +2572,5 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .move-form label { display:flex; flex-direction:column; gap:5px; font-size:12.5px; color:var(--muted); }
 .move-form select, .move-form input { font:inherit; color:var(--text); }
 .move-actions { display:flex; justify-content:flex-end; gap:8px; }
-.settings-check { display:inline-flex; align-items:center; gap:7px; margin-right:14px; }
+.settings-check { display:inline-flex; align-items:flex-start; gap:7px; margin-right:14px; }
+.settings-check > input { flex:none; width:auto; margin:2px 0 0; }

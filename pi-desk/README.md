@@ -697,8 +697,8 @@ pinned and bundled into the client. It is not a host or terminal dependency.
 Markdown file links, local images, patch paths and supported tool path fields
 open in the associated application on the file's computer. The link's tooltip
 names that destination. Hover or keyboard-focus a link to reveal its folder,
-download a copy here, or open Preview. On phones, the primary action downloads
-here. Relative paths use that conversation's native working
+download a copy here, or open Preview. On phones, tapping a link opens Preview,
+which can download it. Relative paths use that conversation's native working
 directory, including child conversations. Encoded filenames, file URLs and
 `#L123` line references are supported. Submitted attachments show their original
 names. These are display projections; native messages and model input do not

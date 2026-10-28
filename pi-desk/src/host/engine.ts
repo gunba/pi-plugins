@@ -374,7 +374,7 @@ export class DeskEngine {
 		if (policy !== "ask") return policy === "always";
 		const answer = await this.presentation.request({
 			kind: "question", title: "Trust this project?",
-			context: `${cwd}\nProject extensions run with your account's permissions.`,
+			context: `${cwd}\n\nProject extensions run with your account's permissions.`,
 			options: [{ title: "Trust and remember" }, { title: "Trust once" }, { title: "Skip project resources" }],
 			allowMultiple: false, allowFreeform: false, allowComment: false,
 		});

@@ -102,7 +102,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		<div ref={menu.panel} id={menu.id} popover="auto" className="composer-status-menu" role="dialog" aria-label="Conversation status and options"
 			onBeforeToggle={menu.beforeToggle} onToggle={menu.toggle} onKeyDown={menu.keyDown}>
 			<div className="composer-status-heading" tabIndex={-1} data-autofocus><strong>{connected ? state : "Disconnected"}</strong><span>{computer}</span></div>
-			<div className="composer-overflow-preferences">{preferences}</div>
+			<div className="composer-overflow-preferences"><span>Reasoning</span>{preferences}</div>
 			<div className="composer-status-section">{contextControl}{badges.map(badgeControl)}</div>
 			<p className="composer-shortcuts">{shortcutHint}</p>
 		</div>

@@ -53,16 +53,17 @@ export function FileLink({ session, file, children }: { session: string; file: F
 		finally { setPending(false); }
 	};
 	return <span className="file-link-wrap">
-		<button type="button" className="file-link" disabled={pending} title={mobile ? "Download here" : `Open on ${computer}`}
-			onClick={event => { event.stopPropagation(); void action(mobile ? "download" : "open"); }}>{children ?? file.name}</button>
-		<span className="file-link-actions">
+		{/* On a phone a tap previews: Open and Show folder would act on the computer, not the phone, and the preview has Download. */}
+		<button type="button" className="file-link" disabled={pending} title={mobile ? "Preview file" : `Open on ${computer}`}
+			onClick={event => { event.stopPropagation(); if (mobile) setOpen(true); else void action("open"); }}>{children ?? file.name}</button>
+		{!mobile && <span className="file-link-actions">
 			<button type="button" className="icon-button" disabled={pending} aria-label={`Show containing folder on ${computer}`} title={`Show containing folder on ${computer}`}
 				onClick={event => { event.stopPropagation(); void action("reveal"); }}><Icon name="folder" /></button>
 			<button type="button" className="icon-button" disabled={pending} aria-label="Download here" title="Download here"
 				onClick={event => { event.stopPropagation(); void action("download"); }}><Icon name="download" /></button>
 			<button type="button" className="icon-button" aria-label="Preview file" title="Preview file"
 				onClick={event => { event.stopPropagation(); setOpen(true); }}><Icon name="preview" /></button>
-		</span>
+		</span>}
 		{pending && <span className="file-action-status" role="status">{status}</span>}
 		{!pending && status && <span className="file-action-status">{status}</span>}
 		{error && <span className="file-action-error" role="alert">{error}<button className="icon-button" aria-label="Dismiss file error" onClick={event => { event.stopPropagation(); setError(""); }}><Icon name="close" /></button></span>}

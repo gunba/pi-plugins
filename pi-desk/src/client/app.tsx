@@ -509,17 +509,18 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {!dotSelected && !questsSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
+            {!phone && !dotSelected && !questsSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
               aria-pressed={!!session.snapshot?.learn?.enabled} aria-label="Learn mode" disabled={!connected || session.state !== "ready" || controlBusy}
               title="Explain the theory behind recent work outside the agent’s context. Uses extra model calls."
               onClick={() => run({ kind: "learn", enabled: !session.snapshot?.learn?.enabled })}>
               Learn{session.snapshot?.learn?.writing ? " · writing…" : session.snapshot?.learn?.enabled ? " · on" : ""}</button>}
-            {(totalAgents > 0 || agentHistory) && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
+            {!phone && (totalAgents > 0 || agentHistory) && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
               title={`${activeAgents} active · ${totalAgents} total`} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
               <span className={`status-dot ${activeAgents ? "running" : "idle"}`} />Agents <b>{totalAgents}</b></button>}
             {messagesView && <button type="button" className={`header-chip${panel === "view" && focusedView === "messages" ? " selected" : ""}`}
+              aria-label={`Messages: ${(messagesView.data as UiDetails).items!.length}`}
               title={(messagesView.data as UiDetails).summary ?? "Agent messages"} onClick={() => { setFocusedView("messages"); setPanel(panel === "view" && focusedView === "messages" ? undefined : "view"); }}>
-              <Icon name="party" />Messages <b>{(messagesView.data as UiDetails).items!.length}</b></button>}
+              <Icon name="party" />{!phone && "Messages "}<b>{(messagesView.data as UiDetails).items!.length}</b></button>}
             {wideWorkspace && paneItems.length + loadedLinks.length > 0 && !dotSelected && !questsSelected && <button type="button" className="icon-button"
               title={showWorkPane ? "Hide changes" : `Show changes and links (${paneItems.length + loadedLinks.length})`} aria-label="Changes" aria-pressed={showWorkPane}
               onClick={() => { const hidden = showWorkPane; setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
@@ -546,7 +547,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           </div>
         )}
         <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (phone || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
-        {phone && totalAgents > 0 && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
+        {phone && (totalAgents > 0 || agentHistory) && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}

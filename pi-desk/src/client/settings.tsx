@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrowserAccount } from "./account.ts";
 import { api } from "./connection.ts";
 import { Computers, SoftwareUpdate } from "./computers.tsx";
@@ -49,6 +49,14 @@ export function settingsGroups({ session, computer, views }: { session?: string;
 export function SettingsLayout({ active, groups, choose, children, enabled = true }: {
 	active: string; groups: SettingsGroup[]; choose: (id: string) => void; children: ReactNode; enabled?: boolean;
 }) {
+	const tabs = useRef<HTMLElement>(null);
+	// The phone tab row scrolls sideways; keep the open page's tab in view, as when settings open on a later page.
+	useEffect(() => {
+		const row = tabs.current, tab = row?.querySelector<HTMLElement>("[aria-current]");
+		if (!row || !tab) return;
+		const left = tab.getBoundingClientRect().left - row.getBoundingClientRect().left + row.scrollLeft;
+		row.scrollLeft = left - (row.clientWidth - tab.offsetWidth) / 2;
+	}, [active, enabled]);
 	if (!enabled) return <>{children}</>;
 	const group = groups.find(group => group.items.some(item => item.id === active)), item = group?.items.find(item => item.id === active);
 	return <div className="settings-layout">
@@ -59,7 +67,7 @@ export function SettingsLayout({ active, groups, choose, children, enabled = tru
 					onClick={() => choose(section.id)}><SectionIcon id={section.id} /><span>{section.title}</span></button>)}
 			</div>)}
 		</nav>
-		<nav className="settings-mobile-nav" aria-label="Settings sections">{groups.flatMap(group => group.items).map(section =>
+		<nav ref={tabs} className="settings-mobile-nav" aria-label="Settings sections">{groups.flatMap(group => group.items).map(section =>
 			<button key={section.id} type="button" aria-current={active === section.id ? "page" : undefined} onClick={() => choose(section.id)}>{section.title}</button>)}</nav>
 		<div className="settings-content">
 			{item && <header className="settings-page-heading"><span>{group!.label === "This conversation" ? group!.detail : group!.label}</span><h2>{item.title}</h2></header>}
