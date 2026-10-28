@@ -15,7 +15,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
 | Questions | Native forms with a question chooser, drafts, deadlines and child attribution; mobile dialogs stay above the composer and within the keyboard viewport |
-| Operator availability | **Settings → General → Availability**: Present or Away on the selected computer |
+| Presence and notifications | Away after 15 minutes without use of Desk on any device, shown under **Settings → This computer**; **Settings → Pi Desk → Notifications** sends questions, finished work and due tasks to a phone while away, during working hours |
 | Slash commands | The installed worker’s full Pi catalog plus registered extension/template/skill commands and browser handlers; parameters and qualified aliases retained, unbridged capabilities labelled |
 | Resource failures | Startup banner and extension inventory; failed loads block prompts |
 | Reconnect and uncertain delivery | Durable receipts and operation outcomes; no blind retries |
@@ -40,15 +40,14 @@ not loaded in Desk.
 
 ## Unattended work
 
-Availability defaults to **Present** and is saved per computer. **Away** makes
-new optional agent questions return an unanswered result immediately, including
-questions from subagents. It does not supply answers or grant permission.
-Required confirmations stay pending. Existing questions are retained; forms
-opened explicitly from Settings remain usable.
-
-Availability is read by the worker, independently of browser visibility or host
-attachment. Older workers without this capability need an individual idle
-restart; Settings identifies them.
+Each open Desk window tells every computer when it was last used (a click, key,
+scroll, touch or bringing it to the front). A computer counts the user away once
+no window on any device has been used for 15 minutes; a window merely left open
+does not count. Questions asked while the user is away wait for an answer like
+any other. While away, during working hours (Tasks), each computer sends
+notifications for questions, conversations that finish or stop on an error, and
+tasks due today to the browsers that turned notifications on; on Android, yes/no
+and two-choice questions can be answered from the notification.
 
 ## Plugin paths
 

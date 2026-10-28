@@ -12,7 +12,7 @@ export interface Computer {
 	presence?: HostPresence;
 	diagnostics?: { interruptions: number; last?: ConnectionInterruption };
 	relay?: HostState["relay"];
-	operatorAvailability?: HostState["operatorAvailability"];
+	operator?: HostState["operator"];
 	release?: HostState["release"];
 	updates?: HostState["updates"];
 	storageError?: string;

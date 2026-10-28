@@ -24,7 +24,8 @@ import { Logins, adoptSavedLogins, retireSavedLogins } from "./logins.ts";
 import { SettingsSync } from "./settings-sync.ts";
 import { UpdateCheckpoints } from "./checkpoints.ts";
 import { liveSupervisor } from "./login-supervisor.ts";
-import { operatorAvailability } from "./operator.ts";
+import { Presence } from "./presence.ts";
+import { AwayNotices } from "./away-notices.ts";
 import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { Attachments } from "./attachments.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
@@ -106,6 +107,8 @@ export class DeskHost {
 	private readonly quests: HostQuests;
 	private readonly efficiency: EfficiencyReports;
 	private readonly api: HostApi;
+	private presence?: Presence;
+	private readonly notices: AwayNotices;
 	private readonly http: HostHttp;
 	private server = createServer((request, response) => { void this.http.handle(request, response); });
 
@@ -151,10 +154,14 @@ export class DeskHost {
 				return remove;
 			} });
 		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties });
+		this.notices = new AwayNotices({ present: () => !!this.presence?.present, quests: () => this.quests.view, computer: () => this.account.identity?.device.id,
+			send: async notice => { await this.account.identity?.notify(notice); } });
+		this.events.watch(event => this.notices.observe(event));
 		this.efficiency = new EfficiencyReports({ agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, directory: () => this.directory, closing: () => this.closing });
 		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot,
 			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
-			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events });
+			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events,
+			presence: () => this.presence });
 		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
 			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn,
 			stop: preserveWorkers => {
@@ -172,6 +179,7 @@ export class DeskHost {
 		this.dictation = new Dictation(directory, this.options.agentDir);
 		this.updates.load();
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		this.presence = new Presence(directory, () => this.events.emit({ type: "state", state: this.state() }));
 		this.hostLease = new SessionLease(join(directory, "host"));
 		try {
 			this.runtime = assertRuntimeHost(directory);
@@ -291,7 +299,7 @@ export class DeskHost {
 			});
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
-			clearInterval(this.heartbeat);
+			clearInterval(this.heartbeat); this.presence?.close(); this.notices.close();
 			this.updates.close();
 			await this.saved?.close();
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
@@ -331,7 +339,7 @@ export class DeskHost {
 	}
 
 	state(): HostState {
-		return { release: RELEASE, operatorAvailability: operatorAvailability(this.directory), name: hostname(), platform: process.platform, cwd: this.options.cwd,
+		return { release: RELEASE, operator: this.presence?.view, name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
 			parties: this.parties?.snapshot, relay: this.account.status, updates: this.updates.state, storageError: this.storageError, quests: this.quests.view,
 			...(this.dictation?.available ? { dictation: true } : {}),
@@ -780,7 +788,7 @@ export class DeskHost {
 		try { await this.logins?.close(); } catch (error) { errors.push(error); }
 		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
-		clearInterval(this.heartbeat); this.packageUpdates?.close();
+		clearInterval(this.heartbeat); this.packageUpdates?.close(); this.presence?.close(); this.notices.close();
 		this.updates.close();
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }

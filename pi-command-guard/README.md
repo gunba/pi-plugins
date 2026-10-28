@@ -27,7 +27,7 @@ read scripts, or execute a command to decide whether to admit it.
   to 16 KiB and four nested layers; it is not a full shell or language interpreter.
 - Approval applies to the exact current call and working directory, not later
   commands. Cancellation, timeout, context replacement and unavailable UI do not
-  grant approval. Desk's Away setting does not grant required confirmations.
+  grant approval. Being away from Desk does not grant required confirmations.
 
 A `pass` result means no drive/Git wipe rule matched, **not that the command is safe**. This is
 mistake prevention, not a security boundary. It does not analyze whole programs,

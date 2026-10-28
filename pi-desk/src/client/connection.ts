@@ -39,7 +39,7 @@ function workspace(): WorkspaceState {
 			id, name: remote.device.name, cwd: remote.state?.cwd ?? "", connected: remote.client.connected, connection: remote.client.state, loaded: !!remote.state,
 			latency: remote.client.latency, direct: remote.client.direct,
 			platform: remote.state?.platform, epoch: remote.epoch, error: remote.client.error, relay: remote.state?.relay,
-			release: remote.state?.release, operatorAvailability: remote.state?.operatorAvailability, updates: remote.state?.updates, storageError: remote.state?.storageError, parties: remote.state?.parties, quests: remote.state?.quests, dictation: remote.state?.dictation, cacheCompaction: remote.state?.cacheCompaction, settingsSync: remote.state?.settingsSync, teleport: remote.state?.teleport, diagnostics: remote.client.diagnostics,
+			release: remote.state?.release, operator: remote.state?.operator, updates: remote.state?.updates, storageError: remote.state?.storageError, parties: remote.state?.parties, quests: remote.state?.quests, dictation: remote.state?.dictation, cacheCompaction: remote.state?.cacheCompaction, settingsSync: remote.state?.settingsSync, teleport: remote.state?.teleport, diagnostics: remote.client.diagnostics,
 			presence: { online: remote.device.online, seen: remote.device.seen, checked: remote.checked },
 		})).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
 	};
@@ -77,7 +77,7 @@ function reconcile(devices: AccountDirectory["devices"]): void {
 			} else emit({ ...event, key: sessionKey(id, event.key) }, accepted);
 		}, () => {
 			// A new connection missed events while it was down, so views reload; the client tells only real ones.
-			remote.epoch = client.established;
+			remote.epoch = client.established; reported.delete(id);
 			emitWorkspace();
 		});
 	}
@@ -169,6 +169,20 @@ function body<T>(result: ApiResponse): T {
 	if (result.status >= 400) throw new ApiError(result.status, (result.body as { error?: string }).error ?? "Request failed.");
 	return result.body as T;
 }
+/** The last use each computer was told of (presence.ts); cleared when its connection is new, as the host may have restarted. */
+const reported = new Map<string, number>();
+/** Tells every connected computer when this window was last used, once per change. */
+export function reportUse(window: string, used: number, device: string): void {
+	const send = (id: string, request: () => Promise<unknown>) => {
+		if (reported.get(id) === used) return;
+		reported.set(id, used);
+		// A computer on an older Desk does not know the route; it is told again once its connection is new.
+		void request().catch(() => {});
+	};
+	const body = () => ({ window, ago: Date.now() - used, device });
+	if (mode === "local") send("local", () => api("/presence", body()));
+	else for (const [id, remote] of remotes) if (remote.client.connected) send(id, () => remote.client.request({ path: "/api/presence", method: "POST", body: body() }));
+}
 export async function api<T>(path: string, data?: unknown, computer?: string): Promise<T> {
 	try {
 		if (!mode) throw new ApiError(401, "Workspace access is not active.");
@@ -247,7 +261,7 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 			}
 			receive(event);
 		};
-		source.onopen = () => connection(true);
+		source.onopen = () => { reported.delete("local"); connection(true); };
 		source.onerror = () => connection(false);
 	};
 	// Account connections pause themselves (RemoteClient). The local event stream likewise stays open while the app is

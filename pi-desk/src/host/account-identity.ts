@@ -10,6 +10,7 @@ import {
 	type AccountConfiguration, type DeviceKey, type MembershipPeer, type MembershipLease,
 } from "../shared/account.ts";
 import { accountProof } from "../shared/account-proof.ts";
+import type { PushNotice } from "../account/push.ts";
 import { AccountNetwork } from "./account-network.ts";
 import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
 import { AccountSignInRequired } from "./account-errors.ts";
@@ -134,6 +135,10 @@ export class NativeAccountIdentity {
 	}
 	heartbeat(connected: boolean): Promise<unknown> {
 		return this.request(`/devices/${this.device.id}/heartbeat`, { connected });
+	}
+	/** A notification for the owner's browsers that receive them (account push.ts). */
+	notify(notice: PushNotice): Promise<unknown> {
+		return this.request(`/devices/${this.device.id}/notify`, notice as unknown as Record<string, unknown>);
 	}
 	async signOut(): Promise<void> {
 		// Revoke before removing the key; offline failure must not pretend remote access was revoked.

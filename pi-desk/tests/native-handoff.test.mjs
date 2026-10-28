@@ -83,10 +83,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	const queued = await waitSnapshot(worker, state => state.queue.steering.count === 2 && state.queue.followUp.count === 1);
 	const child = JSON.parse(readFileSync(join(root, "child.json")));
 	const before = readFileSync(snapshot.file), generation = worker.generation;
-	const availability = await first.api.handle("operator", { method: "POST", path: "/api/operator-availability", body: { mode: "away" } });
-	assert.equal(availability.status, 200, JSON.stringify(availability.body));
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "native-before");
-	assert.equal(first.state().operatorAvailability.mode, "away");
 	first.persist(true);
 	assert.deepEqual(await activatePreparedRuntime(home, target, "native-handoff"), { release: "0.5.24", startup: "launcher" });
 	process.kill(child.pid, 0); process.kill(child.owner, 0);
@@ -95,7 +92,6 @@ test("native SDK queues and a pending tool question survive a public host handof
 	next.recoverUpdateReferences = () => { next.runtime = target; next.runtimeHome = home; return recover(); };
 	next.updates.scheduleCheck = () => {};
 	await next.start();
-	assert.equal(next.state().operatorAvailability.mode, "away");
 	const adopted = await next.waitForSession(key); await next.restoreUpdateJob;
 	const after = await adopted.worker.command({ kind: "snapshot" });
 	assert.equal(after.id, snapshot.id); assert.equal(after.file, snapshot.file);
@@ -118,7 +114,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 
 test("registered SDK subagent, queued follow-up and scoped question survive host replacement without recovery inference", { timeout: 120000 }, async t => {
 	const root = mkdtempSync(join(tmpdir(), "desk-subagent-handoff-")), data = join(root, "desk"), home = join(root, "runtime");
-	mkdirSync(data); mkdirSync(home); writeFileSync(join(root, "sdk-subagent-fixture"), "");
+	mkdirSync(data); mkdirSync(home);
 	const subagents = fileURLToPath(new URL("../../pi-agents/subagents/subagents.ts", import.meta.url));
 	const childModule = fileURLToPath(new URL("./fixtures/handoff-subagent-worker.mjs", import.meta.url));
 	writeFileSync(join(root, "settings.json"), JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-haiku-4-5",
@@ -169,7 +165,6 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	const childBefore = readFileSync(child.file), rootBefore = readFileSync(snapshot.file);
 	const callsBefore = readFileSync(join(root, "subagent-model-calls.json")), generation = worker.generation;
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "subagent-before");
-	assert.equal((await first.api.handle("operator", { method: "POST", path: "/api/operator-availability", body: { mode: "away" } })).status, 200);
 	first.persist(true);
 	assert.deepEqual(await activatePreparedRuntime(home, target, "subagent-handoff"), { release: "0.5.24", startup: "launcher" });
 	process.kill(child.pid, 0); process.kill(child.owner, 0);
@@ -190,7 +185,6 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "subagent-after");
 	await adopted.worker.command({ kind: "answer", id: question.id, answer: { kind: "freeform", text: "Confirmed" } });
 	await waitSnapshot(adopted.worker, state => state.activity === "idle" && !state.ui.interactions.length && !state.ui.views.some(view => view.kind === "conversation" && view.data.active));
-	assert.equal(JSON.parse(readFileSync(join(root, "child-unavailable.json"))).code, "operator_unavailable");
 	const calls = JSON.parse(readFileSync(join(root, "subagent-model-calls.json")));
 	assert.equal(calls[snapshot.id].length, 2); assert.equal(calls[child.session].length, 2);
 	assert.equal(JSON.stringify(calls[child.session].at(-1)).split("QUEUED CHILD FOLLOWUP").length - 1, 1);

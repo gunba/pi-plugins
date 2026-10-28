@@ -106,7 +106,7 @@ export interface Presentation {
 	version: 2;
 	/** The host is holding this session for maintenance. Autonomous producers keep their pending work. */
 	readonly suspended?: boolean;
-	/** False means optional model questions are unavailable, not answered or approved. */
+	/** False while the user is away: no window of Desk has been used for a while. Questions still wait for an answer. */
 	readonly operatorAvailable?: boolean;
 	/** Set as the conversation closes, before its extensions shut down: "sleep" when the host keeps it listed and reopens it
 	 * when its views' wakeFiles change, so work that writes them goes on; "end" otherwise. */

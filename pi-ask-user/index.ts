@@ -1492,10 +1492,6 @@ export default function(pi: ExtensionAPI) {
          const normalizedContext = context ? displayText(context).trim() || undefined : undefined;
 
          const presentation = getPresentation(pi);
-         if (presentation?.operatorAvailable === false) {
-            return { content: [{ type: "text", text: "User is away. No answer was requested or provided." }], isError: true,
-               details: { question, context: normalizedContext, options, response: null, unavailable: true } };
-         }
          if (!ctx.hasUI || !ctx.ui) {
             const optionText = options.length > 0 ? `\n\nOptions:\n${formatOptionsForMessage(options)}` : "";
             const freeformHint = allowFreeform ? "\n\nYou can also answer freely." : "";
@@ -1611,10 +1607,6 @@ export default function(pi: ExtensionAPI) {
                );
             }
          } catch (error) {
-            if ((error as { code?: string })?.code === "operator_unavailable") {
-               return { content: [{ type: "text", text: "User is away. No answer was requested or provided." }], isError: true,
-                  details: { question, context: normalizedContext, options, response: null, unavailable: true } };
-            }
             const message =
                error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
             return {
@@ -1678,6 +1670,7 @@ export default function(pi: ExtensionAPI) {
             return new Text(theme.fg("muted", waitingText), 0, 0);
          }
 
+         // Results from before Desk 0.5.219, when a question asked while the user was away was refused.
          if (details?.unavailable) return new Text(theme.fg("muted", "User is away · unanswered"), 0, 0);
          if (!details || details.cancelled || !details.response) {
             return new Text(theme.fg("warning", "Cancelled"), 0, 0);

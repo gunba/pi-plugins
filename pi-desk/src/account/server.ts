@@ -8,8 +8,21 @@ import {
 import { AccountProofs } from "../shared/account-proof.ts";
 import { AccountError, DeviceAuthority, GoogleOwner, ownerSettings, randomToken, type OwnerSettings } from "./identity.ts";
 import { AccountStore } from "./store.ts";
+import { PushService, type PushNotice } from "./push.ts";
 
 const MAX_BODY = 16 * 1024;
+const text = (value: unknown, max: number) => typeof value === "string" ? value.slice(0, max) : undefined;
+/** A computer's notice, cut to what a notification shows; the service worker reads only these fields. */
+function notice(value: Record<string, unknown>): PushNotice {
+	const title = text(value.title, 120), tag = text(value.tag, 200);
+	if (!title || !tag) throw new AccountError(400, "invalid_notice");
+	const actions = Array.isArray(value.actions) ? value.actions.slice(0, 2).map(item => ({ action: text(object(item).action, 40) ?? "", title: text(object(item).title, 40) ?? "" }))
+		.filter(item => item.action && item.title) : undefined;
+	const answers = value.answers === undefined ? undefined : object(value.answers);
+	return { title, tag, ...(text(value.body, 600) ? { body: text(value.body, 600) } : {}), ...(text(value.session, 200) ? { session: text(value.session, 200) } : {}),
+		...(value.urgency === "high" ? { urgency: "high" as const } : {}), ...(actions?.length ? { actions } : {}),
+		...(answers ? { answers: answers as PushNotice["answers"] } : {}) };
+}
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new AccountError(400, "invalid_request");
 	return value as Record<string, unknown>;
@@ -57,6 +70,9 @@ async function form(request: IncomingMessage): Promise<URLSearchParams> {
 export class AccountServer {
 	readonly config: AccountConfiguration;
 	private store: AccountStore;
+	private push: PushService;
+	/** Notices each computer may still send now; refilled over time (notify). */
+	private notices = new Map<string, { left: number; at: number }>();
 	private authority: DeviceAuthority;
 	private google: GoogleOwner;
 	private proofs = new AccountProofs();
@@ -70,8 +86,8 @@ export class AccountServer {
 		void this.handle(request, response);
 	});
 
-	private constructor(config: AccountConfiguration, store: AccountStore, authority: DeviceAuthority, google: GoogleOwner) {
-		this.config = config; this.store = store; this.authority = authority; this.google = google;
+	private constructor(config: AccountConfiguration, store: AccountStore, authority: DeviceAuthority, google: GoogleOwner, push: PushService) {
+		this.config = config; this.store = store; this.authority = authority; this.google = google; this.push = push;
 		this.server.requestTimeout = 20_000;
 		this.server.headersTimeout = 10_000;
 		this.server.keepAliveTimeout = 5000;
@@ -82,7 +98,8 @@ export class AccountServer {
 		const config = accountConfiguration(options.config);
 		const authority = await DeviceAuthority.open(config, options.signingKey);
 		const store = await AccountStore.open(options.directory, config);
-		return new AccountServer(config, store, authority, google ?? new GoogleOwner(ownerSettings(options.owner)));
+		const push = await PushService.open(options.directory, config.origin);
+		return new AccountServer(config, store, authority, google ?? new GoogleOwner(ownerSettings(options.owner)), push);
 	}
 	async listen(port: number, address = "127.0.0.1"): Promise<number> {
 		await new Promise<void>((resolve, reject) => {
@@ -169,6 +186,9 @@ ${refresh ? `<meta http-equiv="refresh" content="1;url=${escapeHtml(refresh)}">`
 			this.active++; admitted = true;
 			if (request.method === "GET" && url.pathname === "/config") {
 				this.reply(response, 200, this.config); return;
+			}
+			if (request.method === "GET" && url.pathname === "/push") {
+				this.reply(response, 200, { key: this.push.publicKey }); return;
 			}
 			if (request.method === "GET" && url.pathname === "/.well-known/jwks.json") {
 				this.reply(response, 200, { keys: [this.authority.publicKey] }); return;
@@ -259,13 +279,13 @@ ${refresh ? `<meta http-equiv="refresh" content="1;url=${escapeHtml(refresh)}">`
 					...(typeof returnTo === "string" ? { returnTo: `${returnTo}/` } : {}) });
 				this.reply(response, 202, { approve: `${this.config.origin}/enrol/${pendingKey}`, code, expires }); return;
 			}
-			const route = /^\/devices\/([^/]+)\/(credential|heartbeat|lease|rename|revoke)$/.exec(url.pathname);
+			const route = /^\/devices\/([^/]+)\/(credential|heartbeat|lease|rename|revoke|push|notify)$/.exec(url.pathname);
 			if (!route) throw new AccountError(404, "not_found");
 			const deviceId = id(route[1]);
 			const device = await this.device(request, url, input.raw);
 			// Any of the owner's devices may rename or remove an enrolment; device operations are its own.
 			if (route[2] === "revoke") {
-				await this.store.revoke(deviceId); this.reply(response, 200, { revoked: true }); return;
+				await this.store.revoke(deviceId); await this.push.forget([deviceId]); this.reply(response, 200, { revoked: true }); return;
 			}
 			if (route[2] === "rename") {
 				await this.store.rename(deviceId, input.value.name); this.reply(response, 200, { renamed: true }); return;
@@ -279,6 +299,24 @@ ${refresh ? `<meta http-equiv="refresh" content="1;url=${escapeHtml(refresh)}">`
 				if (typeof input.value.connected !== "boolean") throw new AccountError(400, "invalid_heartbeat");
 				await this.store.touch(deviceId, input.value.connected);
 				this.reply(response, 200, { accepted: true }); return;
+			}
+			if (route[2] === "push") {
+				// A browser registers (or with null, removes) where its notifications go; `test` sends it one now.
+				if (device.kind !== "browser") throw new AccountError(403, "browser_required");
+				const subscribed = await this.push.subscribe(deviceId, input.value.subscription ?? null);
+				const sent = subscribed && input.value.test === true
+					? await this.push.send([deviceId], { title: "Pi Desk", body: "Notifications reach this device.", tag: "test" }) : 0;
+				this.reply(response, 200, { subscribed, sent }); return;
+			}
+			if (route[2] === "notify") {
+				if (device.kind !== "host") throw new AccountError(403, "host_required");
+				// A computer that sends notices in a loop must not flood the phone: 20 at once, then one every 30 seconds.
+				const now = Date.now(), bucket = this.notices.get(deviceId) ?? { left: 20, at: now };
+				bucket.left = Math.min(20, bucket.left + (now - bucket.at) / 30_000); bucket.at = now; this.notices.set(deviceId, bucket);
+				if (bucket.left < 1) { response.setHeader("Retry-After", "30"); throw new AccountError(429, "too_many_notices"); }
+				bucket.left--;
+				const browsers = this.store.snapshot().devices.filter(item => item.kind === "browser" && item.revoked === undefined).map(item => item.id);
+				this.reply(response, 200, { sent: await this.push.send(browsers, notice(input.value)) }); return;
 			}
 			if (!Array.isArray(input.value.peers) || input.value.peers.length > 32) throw new AccountError(400, "invalid_peers");
 			const party = input.value.purpose === "party";

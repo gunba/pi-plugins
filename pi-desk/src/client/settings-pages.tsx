@@ -173,18 +173,18 @@ function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boole
 		{error && <span className="error-text" role="alert">{error}</span>}
 	</Row>;
 }
-export function ComputerPage({ host, computer, connected, children, views, act, availabilityRun }: {
+export function ComputerPage({ host, computer, connected, children, views, act }: {
 	host: WorkspaceState; computer?: Computer; connected: boolean; children: { accounts: ReactNode; services: ReactNode; updates?: ReactNode };
-	views: ViewSnapshot[]; act: Act; availabilityRun: (mode: string) => void;
+	views: ViewSnapshot[]; act: Act;
 }) {
-	const availability = computer ? computer.operatorAvailability : host.operatorAvailability;
+	const operator = computer ? computer.operator : host.operator;
+	const lastUse = operator?.used ? new Date(operator.used).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : undefined;
 	const connections = ["desk-browser", "desk-mcp"].flatMap(id => views.filter(view => view.id === id && !view.scope));
 	return <div className="settings-page">
 		<section className="settings-group">
-			<Row label="When away" hint="Away keeps optional questions from pausing work. Required approvals still wait for you.">
-				<select disabled={!connected || !availability} value={availability?.mode ?? "present"} onChange={event => availabilityRun(event.target.value)} aria-label="When you're away">
-					<option value="present">I'm here: agents may ask optional questions</option><option value="away">I'm away: agents keep working</option>
-				</select></Row>
+			<Row label="You" hint="You count as away after 15 minutes without using Desk on any device. While you're away, questions and finished work go to your phone during working hours.">
+				<span className="muted">{!operator ? "Update Desk on this computer to tell when you're away."
+					: operator.present ? `Here · using Desk on ${operator.device}` : lastUse ? `Away · last used ${lastUse} on ${operator.device}` : "Away"}</span></Row>
 			{connections.map(view => <Row key={view.id} label={view.id === "desk-browser" ? "Chrome" : "MCP servers"}>
 				{(view.actions ?? []).map(action => <button key={action.id} className="quiet-action" disabled={!connected || !!view.working} onClick={() => void act(view, action)}>{action.label}</button>)}
 				{view.working && <span className="muted">{view.working}…</span>}

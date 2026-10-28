@@ -21,7 +21,7 @@ import type { HostEvents } from "./host-events.ts";
 import type { HostQuests } from "./host-quests.ts";
 import type { HostUpdates } from "./host-updates.ts";
 import type { Logins } from "./logins.ts";
-import { setOperatorAvailability } from "./operator.ts";
+import type { Presence } from "./presence.ts";
 import type { RemoteAccess } from "./relay-connector.ts";
 import { CatalogChanged, type SavedSessionIndex } from "./saved-sessions.ts";
 import { sessionRoute } from "./session-routes.ts";
@@ -46,6 +46,7 @@ interface ApiHost {
 	quests: HostQuests;
 	efficiency: EfficiencyReports;
 	events: HostEvents;
+	presence(): Presence | undefined;
 }
 
 /**
@@ -264,11 +265,12 @@ export class HostApi {
 			path: url.searchParams.get("path") ?? undefined, query: url.searchParams.get("query") ?? undefined,
 			hidden: url.searchParams.get("hidden") === "1", offset: url.searchParams.has("offset") ? Number(url.searchParams.get("offset")) : undefined,
 		}));
-		if (url.pathname === "/api/operator-availability" && request.method === "POST") {
-			if (data.mode !== "present" && data.mode !== "away") throw Error("Choose Present or Away.");
-			const value = setOperatorAvailability(this.core.directory, data.mode);
-			this.core.emit({ type: "state", state: this.core.state() });
-			return reply(value);
+		if (url.pathname === "/api/presence" && request.method === "POST") {
+			const ago = Number(data.ago);
+			if (!Number.isFinite(ago)) throw Error("Invalid presence report.");
+			const presence = this.host.presence()!;
+			presence.report(string(data.window, 100), ago, string(data.device, 60));
+			return reply({ present: presence.present });
 		}
 		return undefined;
 	}

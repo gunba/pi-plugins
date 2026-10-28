@@ -10,7 +10,7 @@ export function operatorAvailability(directory: string): OperatorAvailability {
 	if (!value || !["present", "away"].includes(value.mode)) throw new Error("Invalid operator availability.");
 	return { mode: value.mode };
 }
+/** Written by the host's presence (presence.ts) when the user arrives or leaves. */
 export function setOperatorAvailability(directory: string, mode: OperatorMode): OperatorAvailability {
-	if (!["present", "away"].includes(mode)) throw new Error("Choose Present or Away.");
 	const value = { mode }; atomicJson(join(directory, "operator.json"), value); return value;
 }

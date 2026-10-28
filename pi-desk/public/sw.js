@@ -53,6 +53,28 @@ self.addEventListener("message", event => {
     port.postMessage({ assets: page && await complete(cache, page) ? assetsOf(await page.text()) : [] });
   })());
 });
+// Notifications from the account service (account push.ts) while the user is away. Clicking one opens the app at its
+// conversation; on Android, an action button also answers the question it asks (client notice-links.ts).
+self.addEventListener("push", event => {
+  let notice;
+  try { notice = event.data?.json(); } catch { /* shown as a plain notice below */ }
+  if (!notice?.title) notice = { title: "Pi Desk", tag: "notice" };
+  event.waitUntil(self.registration.showNotification(notice.title, {
+    body: notice.body ?? "", tag: notice.tag, data: notice, renotify: true,
+    ...(notice.actions ? { actions: notice.actions } : {}), ...(notice.urgency === "high" ? { requireInteraction: true } : {}),
+  }));
+});
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const notice = event.notification.data ?? {}, chosen = event.action && notice.answers?.[event.action];
+  const message = { type: "notice", session: notice.session, ...(chosen ? { answer: chosen } : {}) };
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const app = windows.find(client => new URL(client.url).origin === location.origin);
+    if (app) { await app.focus().catch(() => {}); app.postMessage(message); return; }
+    await self.clients.openWindow(`/?notice=${encodeURIComponent(JSON.stringify(message))}`);
+  })());
+});
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   // sandbox.html is a frame's page, not the app: answered by the server, with its own policy.

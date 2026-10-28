@@ -15,6 +15,7 @@ import { LoginsPanel } from "./logins.tsx";
 import { EfficiencyPanel } from "./efficiency.tsx";
 import { ComputerPage, ConversationPage, Row } from "./settings-pages.tsx";
 import { ServiceAccounts } from "./service-accounts.tsx";
+import { PhoneNotifications } from "./phone-notifications.tsx";
 import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
 import { DetailsView } from "./details-view.tsx";
 import type { ViewSnapshot } from "../shared/protocol.ts";
@@ -86,8 +87,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 		{section === "conversation" && (session ? <ConversationPage session={session} computer={computer} host={host} views={views} connected={connected} busy={busy}
 			settingBusy={settingBusy} invoke={invoke} act={act} available={host.sessions.map(item => item.key)} restore={restore} move={move} />
 			: <p className="muted">Select a conversation to see its settings.</p>)}
-		{section === "computer" && <ComputerPage host={host} computer={computer} connected={connected} views={views} act={act}
-			availabilityRun={mode => run(api("/operator-availability", { mode }, computer?.id))}>
+		{section === "computer" && <ComputerPage host={host} computer={computer} connected={connected} views={views} act={act}>
 			{{ accounts: <LoginsPanel key={computer?.id ?? "local"} computer={computer?.id} connected={connected} provider={providerHint} />,
 				services: <ServiceAccounts key={computer?.id ?? "local"} computer={computer?.id} name={computer?.name ?? host.name} connected={connected}
 					legacy={webSearch && <><DetailsView data={webSearch.data as UiDetails} disabled={!connected || !!webSearch.working} invoke={(action, value) => run(act(webSearch, action, value))} />
@@ -101,6 +101,8 @@ export function SettingsContent({ section: requested, host, account, session, co
 					setTheme(event.target.value); document.documentElement.dataset.theme = event.target.value;
 					localStorage.setItem("pi-desk:theme", event.target.value);
 				}}><option value="dark">Dark</option><option value="light">Light</option></select></Row>
+				<Row label="Notifications" hint="While you're away (no use of Desk on any device for 15 minutes), during your working hours, agents' questions, finished work and tasks due today come here. On Android, yes/no and two-choice questions can be answered from the notification.">
+					<PhoneNotifications account={account} /></Row>
 				<Row label="Version"><span>App {RELEASE.version}{(computer?.release ?? (!host.computers ? host.release : undefined))
 					? <span className="muted"> · {computer?.name ?? host.name}: Desk {(computer?.release ?? host.release).version}, Pi {(computer?.release ?? host.release).engine}</span> : null}</span>
 					<button className="quiet-action" onClick={() => location.reload()}><Icon name="refresh" />Reload app</button></Row>

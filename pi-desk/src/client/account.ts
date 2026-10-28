@@ -134,6 +134,12 @@ export class BrowserAccount {
 		if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
 		return this.device = device;
 	}
+	/** Registers where this browser's notifications go (null: none); `test` sends one now (account push.ts). */
+	async push(subscription: PushSubscriptionJSON | null, test = false): Promise<{ subscribed: boolean; sent: number }> {
+		return this.request(`/devices/${(await this.identity()).id}/push`, { subscription, test });
+	}
+	/** The workspace's push key, which a subscription is bound to. */
+	async pushKey(): Promise<string> { return (await this.request<{ key: string }>("/push")).key; }
 	/** Every request is signed with this browser's device key. */
 	async request<T>(path: string, input?: Record<string, unknown>): Promise<T> {
 		if (this.closed || this.markedOut()) throw new BrowserSignInRequired();

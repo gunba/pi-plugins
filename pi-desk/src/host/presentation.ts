@@ -293,8 +293,6 @@ export class DeskPresentation implements Presentation {
 		if (this.retired || options.signal?.aborted) return Promise.resolve(null);
 		const origin = this.settingOrigin.getStore();
 		const settings = origin?.live() ? { id: origin.id, title: origin.title } : undefined;
-		if (!settings && form.kind !== "confirm" && !this.operatorAvailable)
-			return Promise.reject(Object.assign(new Error("User is away. No answer was requested or provided."), { code: "operator_unavailable" }));
 		const id = randomUUID();
 		const timeout = options.timeout && options.timeout > 0 ? Math.min(options.timeout, 2_147_483_647) : undefined;
 		return new Promise(resolve => {

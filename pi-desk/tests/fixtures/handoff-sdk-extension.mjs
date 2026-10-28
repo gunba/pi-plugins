@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 
 export default function (pi) {
 	pi.registerTool({ name: "handoff_fixture", label: "Fixture", description: "Offline lifecycle fixture.",
@@ -13,11 +13,6 @@ export default function (pi) {
 			try {
 				const answer = await ctx.ui.input("Lifecycle fixture", "", { signal });
 				writeFileSync(join(ctx.cwd, "answer.json"), JSON.stringify({ answer }));
-				if (existsSync(join(ctx.cwd, "sdk-subagent-fixture"))) {
-					try { await ctx.ui.input("Optional child question", "", { signal }); throw new Error("Away must not open another question."); }
-					catch (error) { if (error.code !== "operator_unavailable") throw error;
-						writeFileSync(join(ctx.cwd, "child-unavailable.json"), JSON.stringify({ code: error.code })); }
-				}
 				return { content: [{ type: "text", text: `Fixture answer: ${answer}` }], details: {} };
 			} finally {
 				const ended = once(child, "exit"); child.kill(); await ended;
