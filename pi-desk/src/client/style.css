@@ -2150,37 +2150,39 @@ details[open] > summary:before {
 .quest:hover { background:var(--hover); }
 .quest[draggable=true] { cursor:grab; }
 .quest-body { flex:1; min-width:0; }
-.quest-title { display:block; width:100%; padding:0; border:0; background:transparent; text-align:left; font-size:13px; line-height:1.45; color:var(--text); overflow-wrap:anywhere; }
-.quest-title:hover { background:transparent; color:var(--accent); }
+/* Fields read as plain text until focused, wrap like the text they replace, and take their type size from the rule for that text. */
+.quest-field { display:block; min-width:0; margin:-1px -4px; padding:1px 4px; border:1px solid transparent; border-radius:5px; background:transparent;
+  font:inherit; line-height:inherit; color:inherit; resize:none; overflow:hidden; field-sizing:content; }
+.quest-field:hover:not(:disabled) { border-color:var(--border); }
+.quest-field:focus { border-color:var(--focus-border); background:var(--surface); box-shadow:none; }
+.quest-field::placeholder { color:var(--muted); }
+.quest-title-row { display:flex; align-items:flex-start; gap:4px; }
+.quest-title-row .action-menu { margin-top:-3px; opacity:0; }
+.quest:hover .quest-title-row .action-menu, .quest:focus-within .quest-title-row .action-menu, .quest-title-row .action-menu[open] { opacity:1; }
+@media (hover:none) { .quest-title-row .action-menu { opacity:1; } }
+.quest-title { flex:1; min-width:0; font-size:13px; line-height:1.45; color:var(--text); overflow-wrap:anywhere; }
+.quest.done .quest-title { text-decoration:line-through; color:var(--muted); }
+.quest-notes { margin:3px 0 0; font-size:12px; line-height:1.5; color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; }
+textarea.quest-notes { width:calc(100% + 8px); margin:2px -4px -1px; max-height:16em; overflow:auto; }
+.quest-steps { list-style:none; margin:6px 0 0; padding:0; display:grid; gap:4px; font-size:12px; line-height:1.45; }
+.quest-steps li { display:flex; align-items:flex-start; gap:7px; min-width:0; }
+.quest-steps input[type=checkbox] { width:14px; height:14px; margin:2px 0 0; padding:0; flex:none; accent-color:var(--accent); }
+.quest-step { flex:1; min-width:0; color:var(--text); overflow-wrap:anywhere; }
+.quest-steps li.done .quest-step { color:var(--muted); text-decoration:line-through; }
+.quest-step-new { padding-right:33px; }
+.quest-step-new input[type=checkbox] { opacity:.4; }
+.quest-step-remove { flex:none; display:grid; place-items:center; width:26px; height:18px; padding:0; border:0; border-radius:4px; background:transparent; color:var(--muted); opacity:0; }
+.quest-step-remove .ui-icon { width:11px; height:11px; }
+.quest-steps li:hover .quest-step-remove, .quest-steps li:focus-within .quest-step-remove { opacity:1; }
+.quest-step-remove:hover { color:var(--danger); background:var(--hover); }
+@media (hover:none) { .quest-step-remove { opacity:1; } }
+.quest-body > .quest-settings { margin-top:8px; }
 .quest-meta { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:2px; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
 .quest-meta:empty { display:none; }
 .quest-due.today { color:var(--accent); }
 .quest-due.overdue { color:var(--danger); }
 .quest-source { padding:0; border:0; background:transparent; color:var(--accent); font-size:11px; }
 button.quest-source:hover { background:transparent; text-decoration:underline; }
-.quest-detail { display:grid; gap:6px; margin-top:6px; font-size:12px; }
-.quest-notes { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); line-height:1.5; }
-.quest-steps { list-style:none; margin:8px 0 0; padding:0; display:grid; gap:6px; font-size:12px; }
-.quest-steps label { display:flex; align-items:flex-start; min-width:0; gap:7px; line-height:1.4; }
-.quest-steps input[type=checkbox] { width:14px; height:14px; margin:2px 0 0; padding:0; accent-color:var(--accent); flex:none; }
-.quest-steps li.done { color:var(--muted); }
-.quest-title-row { display:flex; align-items:center; gap:2px; }
-.quest-title-field, .quest-notes-field, .quest-step-field, .quest-step-add input { width:100%; min-width:0; margin:0; padding:2px 5px; border:1px solid transparent; border-radius:5px; background:transparent; font:inherit; color:inherit; }
-.quest-title-field { flex:1; margin-left:-6px; font-weight:600; }
-.quest-title-field:hover, .quest-notes-field:hover, .quest-step-field:hover, .quest-step-add input:hover { border-color:var(--border); }
-.quest-title-field:focus, .quest-notes-field:focus, .quest-step-field:focus, .quest-step-add input:focus { border-color:var(--focus-border); background:var(--surface); outline:none; }
-.quest-notes-field { margin-left:-6px; resize:vertical; color:var(--muted); line-height:1.5; field-sizing:content; min-height:calc(1.5em + 6px); max-height:16em; }
-.quest-collapse { flex:none; width:24px; height:24px; padding:0; }
-.quest-collapse .ui-icon { width:14px; height:14px; transform:rotate(180deg); }
-.quest-steps li { display:flex; align-items:flex-start; min-width:0; gap:5px; }
-.quest-steps li.done .quest-step-field { color:var(--muted); }
-.quest-step-field { color:var(--text); }
-.quest-step-remove { flex:none; width:20px; height:20px; padding:0; color:var(--muted); }
-.quest-step-remove .ui-icon { width:12px; height:12px; }
-.quest-step-add > span { width:14px; flex:none; text-align:center; color:var(--muted); }
-.quest-editor-title { font-size:12px; font-weight:600; }
-.quest-actions { display:flex; flex-wrap:wrap; align-items:center; gap:2px; margin-left:-8px; }
-.quest-actions .quiet-action { padding:4px 8px; font-size:11px; }
 .quest-editor { display:grid; gap:6px; }
 .quest-editor input, .quest-editor textarea, .quest-editor select { width:100%; margin:0; padding:6px 8px; font-size:12px; }
 .quest-editor-row { display:flex; align-items:center; gap:6px; }
@@ -2214,9 +2216,6 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .tasks-activity-row small { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
 .tasks-activity-detail { color:var(--muted); white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
 .quest-check { width:16px; height:16px; flex:none; margin:2px 0 0; accent-color:var(--accent); }
-.quest.done .quest-title { text-decoration:line-through; color:var(--muted); }
-.quest-steps label span { overflow-wrap:anywhere; }
-.quest-steps li.done label span { text-decoration:line-through; }
 .quest-settings { min-width:0; margin:0; padding:0; border:0; }
 .dictation { position:relative; display:inline-flex; align-items:center; }
 .dictation-button.listening { color:#fff; background:var(--danger); border-color:var(--danger); animation:dictation-pulse 1.4s ease-in-out infinite; }
@@ -2229,7 +2228,7 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .quest-page { flex:1; min-height:0; display:flex; width:100%; max-width:820px; margin:0 auto; }
 .quest-page .quest-tracker { padding:8px 28px 24px; gap:14px; }
 .quest-page .quest-title { font-size:14.5px; }
-.quest-page .quest-meta, .quest-page .quest-detail { font-size:12px; }
+.quest-page .quest-meta { font-size:12px; }
 .quest-page .quest { padding:8px 8px; }
 .quest-page .quest-add input { font-size:14px; padding:10px 12px; }
 @media (max-width: 760px) { .quest-page .quest-tracker { padding:8px 16px 20px; } }

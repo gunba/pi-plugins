@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent, type FormEvent, type Keybo
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { ActionMenu } from "./action-menu.tsx";
+import type { UiAction } from "../../../pi-ui/index.ts";
 import { isReady, isToday, lastDue, nextDue, repeatLabel, type QuestRepeat, QUEST_KIND_NAMES, QUEST_KINDS, type Quest, type QuestCommand, type QuestKind, type QuestView } from "../shared/quests.ts";
 
 /** One computer's quest log as the browser sees it. */
@@ -42,7 +43,9 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 }) {
 	const home = logs.find(log => log.computer === primary) ?? logs[0];
 	const [error, setError] = useState(""), [title, setTitle] = useState(""), [notice, setNotice] = useState("");
-	const [open, setOpen] = useState<string>(), [editing, setEditing] = useState<string>(), [hoursOpen, setHoursOpen] = useState(false);
+	// Tasks are edited where they are; these say which task shows its add-subtask field, an empty notes field, or the schedule form.
+	const [adding, setAdding] = useState<string>(), [noting, setNoting] = useState<string>(), [editing, setEditing] = useState<string>();
+	const [focused, setFocused] = useState<string>(), [hoursOpen, setHoursOpen] = useState(false);
 	const [collapsed, setCollapsed] = useState<string[]>(() => {
 		try { const saved = JSON.parse(localStorage.getItem("pi-desk:tasks-collapsed") ?? "[]"); return Array.isArray(saved) ? saved.filter(id => typeof id === "string") : []; }
 		catch { return []; }
@@ -83,52 +86,60 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 		void run(moving.log, { action: "move", id: moving.quest.id, before: target?.quest.id });
 	};
 	const row = (item: Item) => {
-		const { quest, log } = item, expanded = open === item.key, finished = !item.resting && quest.state === "done";
+		const { quest, log } = item, finished = !item.resting && quest.state === "done";
 		// A resting repeat still holds the previous occurrence's steps until the next due day.
 		const restingRepeat = !!item.resting && !!quest.repeat;
 		const editable = !finished && !restingRepeat, disabled = !log.connected;
 		const due = finished ? undefined : dueLabel(quest.due, log.view.today, !!quest.repeat) ?? scheduledLabel(quest.scheduled, log.view.today, item.resting);
-		return <li key={item.key} className={`quest${finished ? " done" : ""}${expanded ? " expanded" : ""}`}
-			draggable={!disabled && !finished && !item.resting && !editing && !expanded}
+		const update = (fields: Omit<Extract<QuestCommand, { action: "update" }>, "action" | "id">) => run(log, { action: "update", id: quest.id, ...fields });
+		const actions: UiAction[] = finished ? [{ id: "archive", label: "Archive" }] : [
+			...(editable ? [{ id: "add-step", label: "Add subtask" }, ...(quest.notes ? [] : [{ id: "edit-notes", label: "Add notes" }])] : []),
+			{ id: "mode", label: "Schedule & priority" },
+			...(ask && log === home ? ASKS.map(({ id, label }) => ({ id: `ask:${id}`, label: `Ask ${ask.name}: ${label}` })) : []),
+			{ id: "abandon", label: "Remove task", destructive: true },
+		];
+		const act = (action: UiAction) => {
+			if (action.id === "add-step") setAdding(item.key);
+			else if (action.id === "edit-notes") setNoting(item.key);
+			else if (action.id === "mode") setEditing(item.key);
+			else if (action.id === "archive") void run(log, { action: "turnin", id: quest.id });
+			else if (action.id === "abandon") void run(log, { action: "abandon", id: quest.id });
+			else if (ask) {
+				const choice = ASKS.find(entry => `ask:${entry.id}` === action.id)!;
+				ask.send(`About my task “${quest.title}” (quest id ${quest.id}): ${choice.prompt}`);
+				setNotice(`Asked ${ask.name}`);
+			}
+		};
+		return <li key={item.key} className={`quest${finished ? " done" : ""}`}
+			// A row being typed in is not dragged, so its text can be selected.
+			draggable={!disabled && !finished && !item.resting && focused !== item.key && editing !== item.key}
+			onFocus={event => { if (event.target instanceof HTMLTextAreaElement) setFocused(item.key); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFocused(undefined); }}
 			onDragStart={() => { dragged.current = item.key; }} onDragOver={event => event.preventDefault()} onDrop={event => drop(item, event)}>
 			<input type="checkbox" className="quest-check" checked={finished} disabled={disabled || restingRepeat}
 				aria-label={`${finished ? "Reopen" : "Complete"} ${quest.title}`} title={restingRepeat ? "Available on the next due day" : undefined}
 				onChange={() => void run(log, { action: finished ? "reopen" : "complete", id: quest.id })} />
 			<div className="quest-body">
-				{editing === item.key ? <fieldset className="quest-settings" disabled={disabled}><QuestEditor quest={quest} today={log.view.today} cancel={() => setEditing(undefined)}
-					save={fields => void run(log, { action: "update", id: quest.id, ...fields }).then(ok => { if (ok) setEditing(undefined); })} /></fieldset> : <>
-					{expanded && editable ? <div className="quest-title-row">
-						<QuestField className="quest-title quest-title-field" label="Task title" value={quest.title} disabled={disabled}
-							save={value => { if (value) void run(log, { action: "update", id: quest.id, title: value }); }} />
-						<button type="button" className="icon-button quest-collapse" aria-label="Close task details" onClick={() => setOpen(undefined)}><Icon name="chevron" /></button>
-					</div> : <button type="button" className="quest-title" aria-expanded={expanded} onClick={() => setOpen(expanded ? undefined : item.key)}>{quest.title}</button>}
-					<div className="quest-meta">
-						{quest.repeat && <span>{repeatLabel(quest.repeat)}{item.resting && quest.next ? ` · next ${shortDate(quest.next)}` : ""}</span>}
-						{due && <span className={`quest-due ${due.tone}`}>{due.text}</span>}
-						{quest.source.kind === "agent" && quest.source.id && <button type="button" className="quest-source" title="Open the conversation that added this"
-							onClick={() => openAgent(quest.source.id!)}>{agentName(quest.source.id) ?? quest.source.label ?? "Agent"}</button>}
-						{logs.length > 1 && <span>{log.name}</span>}
-						{!log.connected && <span>Offline · last known</span>}
-					</div>
-					{(!!quest.steps?.length || expanded && editable) && <QuestSteps steps={quest.steps ?? []} editing={expanded && editable} disabled={disabled || !editable}
-						save={steps => run(log, { action: "update", id: quest.id, steps })} />}
-					{expanded && <div className="quest-detail">
-						{editable ? <QuestField className="quest-notes-field" label="Notes" placeholder="Notes" multiline value={quest.notes ?? ""} disabled={disabled}
-							save={value => void run(log, { action: "update", id: quest.id, notes: value })} /> : quest.notes && <p className="quest-notes">{quest.notes}</p>}
-						<div className="quest-actions">
-							{finished ? <button type="button" className="quiet-action" disabled={disabled}
-								onClick={() => void run(log, { action: "turnin", id: quest.id })}>Archive</button> : <>
-								<button type="button" className="quiet-action" disabled={disabled} onClick={() => setEditing(item.key)}><Icon name="sliders" />Schedule & priority</button>
-								{ask && log === home && <ActionMenu label={`Ask ${ask.name}`} actions={ASKS.map(({ id, label }) => ({ id, label }))} invoke={action => {
-									const choice = ASKS.find(entry => entry.id === action.id)!;
-									ask.send(`About my task “${quest.title}” (quest id ${quest.id}): ${choice.prompt}`);
-									setNotice(`Asked ${ask.name}`);
-								}} />}
-								<button type="button" className="quiet-action" disabled={disabled} onClick={() => void run(log, { action: "abandon", id: quest.id })}>Remove task</button>
-							</>}
-						</div>
-					</div>}
-				</>}
+				<div className="quest-title-row">
+					{editable ? <QuestField className="quest-title" label="Task title" value={quest.title} disabled={disabled}
+						save={value => { if (value) void update({ title: value }); }} /> : <span className="quest-title">{quest.title}</span>}
+					{!disabled && <ActionMenu label="Task actions" actions={actions} invoke={act} />}
+				</div>
+				<div className="quest-meta">
+					{quest.repeat && <span>{repeatLabel(quest.repeat)}{item.resting && quest.next ? ` · next ${shortDate(quest.next)}` : ""}</span>}
+					{due && <span className={`quest-due ${due.tone}`}>{due.text}</span>}
+					{quest.source.kind === "agent" && quest.source.id && <button type="button" className="quest-source" title="Open the conversation that added this"
+						onClick={() => openAgent(quest.source.id!)}>{agentName(quest.source.id) ?? quest.source.label ?? "Agent"}</button>}
+					{logs.length > 1 && <span>{log.name}</span>}
+					{!log.connected && <span>Offline · last known</span>}
+				</div>
+				{(quest.notes || noting === item.key) && (editable
+					? <QuestField className="quest-notes" label="Notes" placeholder="Notes" multiline value={quest.notes ?? ""} disabled={disabled}
+						autoFocus={noting === item.key} done={() => setNoting(undefined)} save={value => void update({ notes: value })} />
+					: <p className="quest-notes">{quest.notes}</p>)}
+				{(!!quest.steps?.length || adding === item.key) && <QuestSteps steps={quest.steps ?? []} editable={editable} disabled={disabled}
+					adding={adding === item.key} stopAdding={() => setAdding(undefined)} save={steps => update({ steps })} />}
+				{editing === item.key && <fieldset className="quest-settings" disabled={disabled}><QuestEditor quest={quest} today={log.view.today} cancel={() => setEditing(undefined)}
+					save={fields => void update(fields).then(ok => { if (ok) setEditing(undefined); })} /></fieldset>}
 			</div>
 		</li>;
 	};
@@ -159,29 +170,32 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 	</aside>;
 }
 
-/** A field that saves when it loses focus or on Enter (Ctrl+Enter in notes), and puts its value back on Escape. */
-function QuestField({ value, save, label, placeholder, className, disabled, multiline }: {
-	value: string; save: (value: string) => void; label: string; placeholder?: string; className?: string; disabled?: boolean; multiline?: boolean;
+/**
+ * Text that is edited where it is shown: it looks like the text around it until it is focused. It saves when it loses
+ * focus or on Enter (Ctrl+Enter in notes), and puts its value back on Escape. done is called whenever it loses focus.
+ */
+function QuestField({ value, save, done, label, placeholder, className, disabled, multiline, autoFocus }: {
+	value: string; save: (value: string) => void; done?: () => void; label: string; placeholder?: string; className?: string; disabled?: boolean; multiline?: boolean; autoFocus?: boolean;
 }) {
 	const [text, setText] = useState(value), reverting = useRef(false);
 	useEffect(() => setText(value), [value]);
-	const props = {
-		value: text, className, placeholder, disabled, "aria-label": label, maxLength: multiline ? 4000 : 300,
-		onChange: (event: { target: { value: string } }) => setText(event.target.value),
-		onBlur: () => { if (reverting.current) { reverting.current = false; return; } if (text.trim() !== value.trim()) save(text.trim()); },
-		onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+	return <textarea rows={1} value={text} className={`quest-field ${className ?? ""}`} placeholder={placeholder} disabled={disabled} autoFocus={autoFocus}
+		aria-label={label} maxLength={multiline ? 4000 : 300} spellCheck={multiline}
+		onChange={event => setText(multiline ? event.target.value : event.target.value.replace(/\n/g, " "))}
+		onBlur={() => { if (reverting.current) reverting.current = false; else if (text.trim() !== value.trim()) save(text.trim()); done?.(); }}
+		onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
 			if (event.key === "Escape") { reverting.current = true; setText(value); event.currentTarget.blur(); }
 			else if (event.key === "Enter" && (!multiline || event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.blur(); }
-		},
-	};
-	return multiline ? <textarea rows={Math.min(8, Math.max(1, text.split("\n").length))} {...props} /> : <input {...props} />;
+		}} />;
 }
 
-/** The checklist remains interactive while task details are closed. Editing adds title and removal controls. */
-function QuestSteps({ steps, save, disabled, editing }: {
-	steps: NonNullable<Quest["steps"]>; save: (steps: NonNullable<Quest["steps"]>) => Promise<boolean>; disabled?: boolean; editing: boolean;
+/** A task's checklist, ticked and edited in place; clearing a subtask's text or its × removes it. */
+function QuestSteps({ steps, save, disabled, editable, adding, stopAdding }: {
+	steps: NonNullable<Quest["steps"]>; save: (steps: NonNullable<Quest["steps"]>) => Promise<boolean>; disabled?: boolean; editable: boolean;
+	adding: boolean; stopAdding: () => void;
 }) {
-	const [items, setItems] = useState(steps), [adding, setAdding] = useState("");
+	// Kept here too, so changes made in quick succession build on each other before the list reports them back.
+	const [items, setItems] = useState(steps), [draft, setDraft] = useState(""), discarding = useRef(false);
 	const signature = JSON.stringify(steps);
 	useEffect(() => setItems(steps), [signature]);
 	const change = async (next: NonNullable<Quest["steps"]>) => {
@@ -190,26 +204,27 @@ function QuestSteps({ steps, save, disabled, editing }: {
 	};
 	return <ul className="quest-steps">
 		{items.map((step, index) => <li key={`${index}:${step.title}`} className={step.done ? "done" : ""}>
-			<label>
-				<input type="checkbox" checked={step.done} disabled={disabled} aria-label={`Done: ${step.title}`}
-					onChange={() => void change(items.map((other, at) => at === index ? { ...other, done: !other.done } : other))} />
-				{!editing && <span>{step.title}</span>}
-			</label>
-			{editing && <>
-				<QuestField className="quest-step-field" label="Subtask" value={step.title} disabled={disabled}
+			<input type="checkbox" checked={step.done} disabled={disabled || !editable} aria-label={`Done: ${step.title}`}
+				onChange={() => void change(items.map((other, at) => at === index ? { ...other, done: !other.done } : other))} />
+			{editable ? <>
+				<QuestField className="quest-step" label="Subtask" value={step.title} disabled={disabled}
 					save={title => void change(title ? items.map((other, at) => at === index ? { ...other, title } : other) : items.filter((_, at) => at !== index))} />
-				<button type="button" className="icon-button quest-step-remove" aria-label={`Remove ${step.title}`} title="Remove subtask" disabled={disabled}
+				<button type="button" className="quest-step-remove" aria-label={`Remove ${step.title}`} title="Remove subtask" disabled={disabled}
 					onClick={() => void change(items.filter((_, at) => at !== index))}><Icon name="close" /></button>
-			</>}
+			</> : <span className="quest-step">{step.title}</span>}
 		</li>)}
-		{editing && items.length < 30 && <li className="quest-step-add"><span aria-hidden="true">+</span>
-			<input value={adding} placeholder="Add a subtask…" aria-label="Add a subtask" maxLength={300} disabled={disabled}
-				onChange={event => setAdding(event.target.value)}
+		{adding && items.length < 30 && <li className="quest-step-new"><input type="checkbox" disabled aria-hidden="true" tabIndex={-1} />
+			<textarea rows={1} className="quest-field quest-step" autoFocus value={draft} placeholder="Subtask" aria-label="Add a subtask" maxLength={300} disabled={disabled}
+				onChange={event => setDraft(event.target.value.replace(/\n/g, " "))}
+				// Leaving the field keeps what was typed, like every other field here; Escape discards it.
+				onBlur={() => { if (draft.trim() && !discarding.current) void change([...items, { title: draft.trim(), done: false }]); discarding.current = false; setDraft(""); stopAdding(); }}
 				onKeyDown={event => {
+					if (event.key === "Escape") { event.preventDefault(); discarding.current = true; event.currentTarget.blur(); return; }
 					if (event.key !== "Enter") return;
 					event.preventDefault();
-					const title = adding.trim();
-					if (title) void save([...items, { title, done: false }]).then(ok => { if (ok) { setItems([...items, { title, done: false }]); setAdding(""); } });
+					const title = draft.trim();
+					// Enter adds it and leaves the field open for the next one.
+					if (title) { setDraft(""); void change([...items, { title, done: false }]); } else event.currentTarget.blur();
 				}} /></li>}
 	</ul>;
 }
@@ -227,7 +242,6 @@ function QuestEditor({ quest, today, save, cancel }: { quest: Quest; today: stri
 		event.preventDefault();
 		save({ kind: schedule ? "daily" : kind, due: schedule || dateKind !== "due" ? "" : due, scheduled: schedule || dateKind !== "scheduled" ? "" : due, repeat: schedule });
 	}}>
-		<strong className="quest-editor-title">{quest.title}</strong>
 		<div className="quest-editor-row quest-repeat-row">
 			<select value={unit} onChange={event => setUnit(event.target.value as QuestRepeat["unit"] | "")} aria-label="Repeats">
 				<option value="">Doesn't repeat</option><option value="day">Repeats by day</option><option value="week">Repeats by week</option><option value="month">Repeats by month</option></select>

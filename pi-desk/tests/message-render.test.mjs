@@ -63,7 +63,7 @@ test("shown link items have direct controls in chat and viewers without embeddin
 	}
 });
 
-test("collapsed tasks show every subtask as a checkbox, including the seventh", t => {
+test("tasks show every subtask as a checkbox, including the seventh", t => {
 	const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 	Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => null } });
 	t.after(() => { if (storage) Object.defineProperty(globalThis, "localStorage", storage); else delete globalThis.localStorage; });
