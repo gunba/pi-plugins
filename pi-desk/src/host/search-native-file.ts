@@ -8,24 +8,25 @@ export interface NativeSearchRecord {
 	end: number;
 	data?: Buffer;
 	oversize: boolean;
-	prefixHash: string;
+	/** SHA-256 of the record's bytes, newline included. */
+	hash: string;
 }
-/** Verify the entire committed prefix: inode, size and boundary samples cannot detect an in-place edit followed by an append. */
-export async function nativePrefixHash(file: FileHandle, length: number, signal: AbortSignal, progress?: (bytes: number) => void): Promise<Hash> {
-	const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, length)));
-	for (let position = 0; position < length;) {
+/** SHA-256 of bytes [start, end) of the file. */
+export async function nativeRangeHash(file: FileHandle, start: number, end: number, signal: AbortSignal, progress?: (bytes: number) => void): Promise<string> {
+	const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, end - start)));
+	for (let position = start; position < end;) {
 		signal.throwIfAborted();
-		const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, length - position), position);
-		if (!bytesRead) throw Error("The native history changed while its indexed prefix was being checked.");
+		const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, end - position), position);
+		if (!bytesRead) throw Error("The native history changed while its indexed records were being checked.");
 		hash.update(buffer.subarray(0, bytesRead)); position += bytesRead; progress?.(bytesRead);
 	}
-	return hash;
+	return hash.digest("hex");
 }
 /** Stream complete JSONL records from a fixed-size snapshot without buffering an oversized image-bearing line. The caller owns the file handle. */
-export async function* nativeSearchRecords(file: FileHandle, start: number, end: number, hash: Hash, signal: AbortSignal,
+export async function* nativeSearchRecords(file: FileHandle, start: number, end: number, signal: AbortSignal,
 	progress?: (bytes: number) => void): AsyncGenerator<NativeSearchRecord> {
 	if (start >= end) return;
-	let position = start, lineStart = start, bytes = 0, oversize = false, parts: Buffer[] = [];
+	let position = start, lineStart = start, bytes = 0, oversize = false, parts: Buffer[] = [], hash: Hash = createHash("sha256");
 	for (let readAt = start; readAt < end;) {
 		signal.throwIfAborted();
 		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, end - readAt));
@@ -40,8 +41,8 @@ export async function* nativeSearchRecords(file: FileHandle, start: number, end:
 			else if (!oversize) parts.push(part);
 			if (newline >= 0) {
 				const data = oversize ? undefined : parts.length === 1 ? parts[0] : Buffer.concat(parts, bytes);
-				yield { start: lineStart, end: position, ...(data ? { data } : {}), oversize, prefixHash: hash.copy().digest("hex") };
-				lineStart = position; parts = []; bytes = 0; oversize = false;
+				yield { start: lineStart, end: position, ...(data ? { data } : {}), oversize, hash: hash.digest("hex") };
+				lineStart = position; parts = []; bytes = 0; oversize = false; hash = createHash("sha256");
 			}
 			from = through;
 		}

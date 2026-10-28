@@ -4,7 +4,7 @@ import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SEARCH_MAX_SOURCES, type SearchSource } from "../shared/conversation-search.ts";
 import { extractSearchEntry, nativeSearchHeader } from "./search-extract.ts";
-import { nativePrefixHash, nativeSearchHeaderLine, nativeSearchRecords } from "./search-native-file.ts";
+import { nativeRangeHash, nativeSearchHeaderLine, nativeSearchRecords } from "./search-native-file.ts";
 import { LOCAL_SEARCH_SCOPE, SearchStore, type IndexedEntry, type SearchFileState } from "./search-store.ts";
 
 export interface SearchScannerOptions { roots: string[]; secondaryRoot: string; files: string[]; exclude: string[]; ignoreRoots?: string[] }
@@ -150,8 +150,16 @@ export class SearchScanner {
 			if (excluded.has(header.session) || !!root && excluded.has(root)) { if (saved) this.store.removeFiles([saved.id]); return; }
 			const id = createHash("sha256").update(path).digest("hex"), previous = this.store.source(LOCAL_SEARCH_SCOPE, "local", id);
 			let reset = !saved || !previous || !old || info.dev !== old.dev || info.ino !== old.ino || info.size < saved.offset;
-			let hash = await nativePrefixHash(file, reset ? 0 : saved!.offset, this.abort.signal, bytes => { this.status.bytes += bytes; }); check();
-			if (!reset && hash.copy().digest("hex") !== saved!.anchor) { reset = true; hash = createHash("sha256"); }
+			// Native history is appended to, and Pi's rewrites (format migrations) change every record, so checking the
+			// last indexed record is enough to notice one. Re-reading everything indexed before appending cost a
+			// 500 MB conversation half a second of hashing every scan while it was growing.
+			if (!reset && saved!.offset > 0) {
+				const at = /^(\d+):([0-9a-f]{64})$/.exec(saved!.anchor), from = at ? Number(at[1]) : 0;
+				// Indexes written before 0.5.219 hold a digest of the whole indexed prefix; one more full check converts them.
+				const expected = at ? at[2] : saved!.anchor;
+				reset = from >= saved!.offset || await nativeRangeHash(file, from, saved!.offset, this.abort.signal, bytes => { this.status.bytes += bytes; }) !== expected;
+				check();
+			}
 			if (reset) { saved = undefined; old = undefined; }
 			const current: Stamp = { dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, skipped: old?.skipped ?? 0 };
 			let state: SearchFileState = { file: path, id, stamp: JSON.stringify(current), offset: saved?.offset ?? 0,
@@ -166,7 +174,7 @@ export class SearchScanner {
 					...(current.skipped ? { warning: `${current.skipped} invalid or larger-than-64-MiB native records were omitted.` } : {}) });
 				entries = []; batchBytes = 0; this.changed();
 			};
-			for await (const row of nativeSearchRecords(file, state.offset, info.size, hash, this.abort.signal, bytes => { this.status.bytes += bytes; })) {
+			for await (const row of nativeSearchRecords(file, state.offset, info.size, this.abort.signal, bytes => { this.status.bytes += bytes; })) {
 				check();
 				if (row.oversize) current.skipped++;
 				else if (row.data) {
@@ -180,7 +188,7 @@ export class SearchScanner {
 						entries.push(extracted.entry);
 					}
 				}
-				state = { ...state, offset: row.end, ordinal: state.ordinal + 1, anchor: row.prefixHash };
+				state = { ...state, offset: row.end, ordinal: state.ordinal + 1, anchor: `${row.start}:${row.hash}` };
 				batchBytes += row.end - row.start;
 				if (entries.length >= 64 || batchBytes >= 512 * 1024) flush(false);
 			}
