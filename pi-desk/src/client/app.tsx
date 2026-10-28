@@ -234,41 +234,66 @@ export function App({ account }: { account?: BrowserAccount }) {
     return last?.role === "assistant" && last.blocks.some(block => block?.type === "text" && !!block.text.trim()) ? last.id : undefined;
   }, [messages]);
   // "What do I need to know?": written in the background, so the conversation stays usable; it opens beside the
-  // conversation when it is ready, and stays there for its reply.
+  // conversation when it is ready, and stays there for its reply. Kept by conversation and reply.
   const [briefs, setBriefs] = useState<Record<string, BriefState>>({});
   // "Move to another computer" (teleport): the conversation being moved, while its window is open.
   const [moving, setMoving] = useState<MoveRequest>();
-  const briefState = latestReply && briefs[selected]?.reply === latestReply ? briefs[selected] : undefined;
-  const briefItem: WorkItem | undefined = briefState?.brief ? { id: `brief:${briefState.reply}`, at: briefState.brief.created, message: briefState.reply,
-    block: { type: "brief", brief: briefState.brief, working: briefState.working, rewrite: () => writeBrief(true) } } : undefined;
-  function writeBrief(refresh = false) {
-    const key = selected, reply = latestReply;
-    if (!reply || briefs[key]?.working && briefs[key]?.reply === reply) return;
-    setBriefs(all => ({ ...all, [key]: { ...(all[key]?.reply === reply ? all[key] : {}), reply, working: true, error: undefined } }));
-    command<{ result?: Brief }>({ kind: "brief", ...(refresh ? { refresh: true } : {}) }).then(({ result }) => {
+  const briefSlot = (reply: string) => `${selected}\n${reply}`;
+  const briefWork = (state: BriefState): WorkItem | undefined => state.brief ? { id: `brief:${state.reply}`, at: state.brief.created, message: state.reply,
+    block: { type: "brief", brief: state.brief, working: state.working, rewrite: () => writeBrief(state.reply, true) } } : undefined;
+  // Every brief written here for this conversation's replies is listed beside it, not only the latest reply's.
+  const briefItems = Object.entries(briefs).flatMap(([slot, state]) => slot.startsWith(`${selected}\n`) ? briefWork(state) ?? [] : []);
+  // Each reply that ends a turn (before the next message from the user or an event, or last), with whether the turn,
+  // from the user's message before it, changed files. These offer "What do I need to know?" and "Review the changes".
+  const turns = useMemo(() => {
+    const changing = new Set(loadedWork.filter(item => item.block.type === "diff" || item.block.type === "document").map(item => item.message));
+    const ends = new Map<string, { changed: boolean; opening?: ChatMessage }>();
+    const list = messages.filter(message => !message.feedback);
+    let opening: ChatMessage | undefined, changed = false;
+    list.forEach((message, index) => {
+      if (message.role === "user") { opening = message; changed = false; return; }
+      if (changing.has(message.id)) changed = true;
+      const next = list[index + 1];
+      // An earlier reply is named to the worker by its session entry; without one the worker would brief the latest.
+      if (message.role === "assistant" && (!next || (next.role === "user" || next.role === "note") && !!message.entryId) && message.blocks.some(block => block?.type === "text" && !!block.text.trim()))
+        ends.set(message.id, { changed, opening });
+    });
+    return ends;
+  }, [messages, loadedWork]);
+  function writeBrief(reply: string, refresh = false) {
+    const key = selected, slot = briefSlot(reply), entry = messages.find(message => message.id === reply)?.entryId;
+    if (briefs[slot]?.working) return;
+    setBriefs(all => ({ ...all, [slot]: { ...all[slot], reply, working: true, error: undefined } }));
+    command<{ result?: Brief }>({ kind: "brief", ...(entry && session?.workerRuntime?.briefReply ? { reply: entry } : {}), ...(refresh ? { refresh: true } : {}) }).then(({ result }) => {
       if (!result?.markdown) throw new Error("No brief came back.");
-      setBriefs(all => ({ ...all, [key]: { reply, working: false, brief: result } }));
+      setBriefs(all => ({ ...all, [slot]: { reply, working: false, brief: result } }));
       if (selectedRef.current === key) openWork({ id: `brief:${reply}`, at: result.created, message: reply, block: { type: "brief", brief: result } });
     }).catch(failure => {
-      setBriefs(all => ({ ...all, [key]: { ...all[key], reply, working: false, error: errorText(failure) } }));
+      setBriefs(all => ({ ...all, [slot]: { ...all[slot], reply, working: false, error: errorText(failure) } }));
       if (selectedRef.current === key) setError(`The brief could not be written: ${errorText(failure)}`);
     });
   }
-  // "Review the changes": offered when the turn changed files; the request goes in as a message of its own.
-  const turnChangedFiles = useMemo(() => {
-    let start = messages.length - 1;
-    while (start >= 0 && !(messages[start]!.role === "user" && !messages[start]!.feedback)) start--;
-    const after = new Set(messages.slice(start + 1).map(message => message.id));
-    return loadedWork.some(item => (item.block.type === "diff" || item.block.type === "document") && after.has(item.message));
-  }, [messages, loadedWork]);
-  async function requestReview() {
+  /** Opens a reply's brief, written here before, or writes it; a brief kept in the conversation comes back without a new one being written. */
+  function openBrief(reply: string) {
+    const state = briefs[briefSlot(reply)], item = state && !state.working ? briefWork(state) : undefined;
+    if (item) openWork(item); else writeBrief(reply);
+  }
+  // "Review the changes": offered when the turn changed files; the request goes in as a message of its own. An
+  // earlier turn is named by its first and last messages, since "your last turn" would be another one.
+  async function requestReview(reply: string) {
     if (!session?.activation) return;
+    const excerpt = (message?: ChatMessage) => {
+      const text = (message?.blocks ?? []).flatMap(block => block?.type === "text" ? [block.text] : []).join(" ").replace(/\s+/g, " ").trim();
+      return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+    };
+    const turn = turns.get(reply), last = messages.find(message => message.id === reply);
+    const text = reply === latestReply ? REVIEW_REQUEST : `Use the code-review skill to review the changes you made in the turn that ${turn?.opening ? `began with my message "${excerpt(turn.opening)}" and ` : ""}ended with your reply "${excerpt(last)}". Review the code as it is now. Check each finding against the code before you report it, and don't change anything yet.`;
     try {
       await api(`/sessions/${selected}/inputs`, { id: crypto.randomUUID(), activation: session.activation, generation: session.ui?.generation,
-        command: { kind: "prompt", text: REVIEW_REQUEST } });
+        command: { kind: "prompt", text } });
     } catch (error) { setError(errorText(error)); }
   }
-  const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItem ? [briefItem] : []];
+  const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItems];
   const newestWork = loadedWork.at(-1);
   const workSeen = useRef<{ session: string; newest?: string }>({ session: "" });
   useEffect(() => {
@@ -468,11 +493,20 @@ export function App({ account }: { account?: BrowserAccount }) {
     openAgent={id => { const found = agentSession(id); if (found) { setSelected(found.key); setPanel(undefined); setSidebar(false); } }}
     ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} /></TasksOverview>;
   return (
-    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{ reply: busy || session?.snapshot?.activity !== "idle" ? undefined : latestReply,
-      open: session?.ui && connected && !closing && session.workerRuntime?.brief ? () => { if (briefItem && !briefState?.working) openWork(briefItem); else writeBrief(); } : undefined,
-      // The snapshot names the reply by its session entry; transcript messages carry that as "entry:<id>".
-      state: briefState?.working ? "writing" : briefState?.brief || session?.snapshot?.brief && latestReply === `entry:${session.snapshot.brief}` ? "ready" : undefined,
-      review: turnChangedFiles && session?.activation && connected && !closing ? () => void requestReview() : undefined }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
+    <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{
+      // Offered while Pi is idle: a brief is saved in the conversation, and a review is a message of its own.
+      ...(!busy && session?.snapshot?.activity === "idle" && connected && !closing ? {
+        latest: latestReply, turns,
+        // Older workers brief only the latest reply.
+        open: session?.ui && session.workerRuntime?.brief ? (reply: string) => { if (reply === latestReply || session.workerRuntime?.briefReply) openBrief(reply); } : undefined,
+        earlier: !!session?.workerRuntime?.briefReply,
+        review: session?.activation ? (reply: string) => void requestReview(reply) : undefined,
+      } : {}),
+      // The snapshot names the latest reply's brief by its session entry; transcript messages carry that as "entry:<id>".
+      state: (reply: string) => {
+        const state = briefs[briefSlot(reply)];
+        return state?.working ? "writing" : state?.brief || reply === latestReply && session?.snapshot?.brief && latestReply === `entry:${session.snapshot.brief}` ? "ready" : undefined;
+      } }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Sidebar open={sidebar} close={() => setSidebar(false)} host={host} connected={connected} transportConnected={transportConnected}
         selected={selected} sending={sending} dot={dot} questLogs={questLogs} select={key => { setSelected(key); setSidebar(false); setPanel(undefined); }}

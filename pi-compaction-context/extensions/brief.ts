@@ -30,7 +30,8 @@ export type Brief = {
 	/** Written without being asked, after a substantial turn while the user was away. */
 	auto?: boolean;
 };
-export type BriefProbe = { session: string; refresh?: boolean; signal?: AbortSignal; result?: Promise<Brief> };
+/** reply: the session entry of the reply to brief, ending an earlier turn; the latest reply when absent. */
+export type BriefProbe = { session: string; reply?: string; refresh?: boolean; signal?: AbortSignal; result?: Promise<Brief> };
 
 export const BRIEF_PROMPT = `[Brief for the user] Pause the task. Do not call any tools and do not continue the work. Write a one-page brief for the user about your most recent turn: everything from their latest message up to your final reply above. They will read it instead of the conversation, to understand what happened compared with what they asked for, and what needs them.
 
@@ -83,13 +84,14 @@ export function withReplyAndQuestion(payload: unknown, api: string, reply: strin
 		return { ...body, contents: [...body.contents, ...reply ? [{ role: "model", parts: [{ text: reply }] }] : [], { role: "user", parts: [{ text: question }] }] };
 }
 
-/** The latest assistant reply that has text, and a brief already written for it, if any. */
-function latest(branch: readonly Entry[]): { reply?: Entry; kept?: Brief } {
+/** The reply to brief, the latest assistant reply with text unless `id` names one, and a brief already written for it. */
+function target(branch: readonly Entry[], id?: string): { reply?: Entry; kept?: Brief } {
 	let reply: Entry | undefined;
 	for (let index = branch.length - 1; index >= 0 && !reply; index--) {
 		const entry = branch[index]!;
-		if (entry.type === "message" && entry.message?.role === "assistant" && text(entry.message.content)) reply = entry;
+		if ((!id || entry.id === id) && entry.type === "message" && entry.message?.role === "assistant" && text(entry.message.content)) reply = entry;
 	}
+	if (id && !reply) throw Error("That reply is not on this conversation's current branch.");
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		if (entry.type === "custom" && entry.customType === BRIEF_ENTRY && (entry.data as Brief | undefined)?.reply === (reply?.id ?? null)) return { reply, kept: entry.data as Brief };
@@ -100,19 +102,24 @@ function latest(branch: readonly Entry[]): { reply?: Entry; kept?: Brief } {
 /** Thrown when a cache-only brief would need the conversation sent again at full price. */
 export const NOT_CACHED = "The conversation's cached request can't be reused.";
 
-/** Writes the brief on the latest reply, or returns the one already written. cacheOnly refuses the transcript route. */
+/**
+ * Writes the brief on a reply, the latest unless `reply` names an earlier one, or returns the one already written.
+ * Only the latest reply can reuse the conversation's cached request; an earlier one is briefed from a copy of the
+ * conversation up to that reply, sent in full. cacheOnly refuses that transcript route.
+ */
 export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | undefined, save: (brief: Brief) => void,
-	options: { refresh?: boolean; signal?: AbortSignal; cacheOnly?: boolean; auto?: boolean } = {}): Promise<Brief> {
+	options: { reply?: string; refresh?: boolean; signal?: AbortSignal; cacheOnly?: boolean; auto?: boolean } = {}): Promise<Brief> {
 	const model = ctx.model;
 	if (!model) throw Error("This conversation has no model yet.");
 	const branch = ctx.sessionManager.getBranch() as unknown as Entry[];
-	const { reply, kept } = latest(branch);
+	const { reply, kept } = target(branch, options.reply);
 	if (kept && !options.refresh) return { ...kept, reused: true };
 	const replyText = reply ? text(reply.message!.content) : "";
 	const ids = branch.map(entry => entry.id), modelKey = `${model.provider}/${model.id}`;
 	// The cached request applies when it is this model's, the cache is not known to have expired, and the reply came
 	// after it (the reply is then exactly what the request produced).
-	const replayable = sent && sent.model === modelKey && !cacheExpired(model, branch as never)
+	const latestReply = target(branch).reply;
+	const replayable = sent && sent.model === modelKey && !cacheExpired(model, branch as never) && reply?.id === latestReply?.id
 		&& (!reply || ids.indexOf(reply.id) > (sent.leaf ? ids.indexOf(sent.leaf) : -1));
 	const payload = replayable ? withReplyAndQuestion(JSON.parse(sent!.payload), sent!.api, replyText, BRIEF_PROMPT) : undefined;
 	if (options.cacheOnly && !payload) throw Error(NOT_CACHED);
@@ -126,7 +133,8 @@ export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | unde
 			{ signal: options.signal, sessionId: ctx.sessionManager.getSessionId(), headers, onPayload: () => payload });
 	} else {
 		const entries = ctx.sessionManager.getEntries() as never;
-		const conversation = serializeConversation(convertToLlm(buildSessionContext(entries, ctx.sessionManager.getLeafId()).messages));
+		// Up to the reply, so an earlier turn is "your most recent turn" in the brief question.
+		const conversation = serializeConversation(convertToLlm(buildSessionContext(entries, reply?.id ?? ctx.sessionManager.getLeafId()).messages));
 		result = await ctx.modelRegistry.complete(model, { systemPrompt: BRIEF_SYSTEM,
 			messages: [{ role: "user", content: `<conversation>\n${conversation}\n</conversation>\n\n${BRIEF_PROMPT}`, timestamp: Date.now() }] },
 			{ signal: options.signal, headers });

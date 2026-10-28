@@ -125,8 +125,8 @@ export interface HistoryPage { messages: ChatMessage[]; before?: string; after?:
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
 }
-/** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later). */
-export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; learn?: boolean }
+/** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later); briefReply: on any turn, not only the latest (0.5.224). */
+export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; briefReply?: boolean; learn?: boolean }
 export interface SessionView {
 	key: string;
 	/** Native Pi identity, distinct from the Desk workspace key. */
@@ -236,8 +236,9 @@ export type WorkerCommand =
 	/** A note shown in the conversation without starting a turn: the agent that started it closed it. */
 	| { kind: "note"; text: string }
 	| { kind: "native_read"; name: string; args: string }
-	/** "What do I need to know?": a brief on the latest turn, written outside the conversation; refresh writes it again. */
-	| { kind: "brief"; refresh?: boolean }
+	/** "What do I need to know?": a brief on a turn, written outside the conversation; refresh writes it again. reply, the
+	 * session entry of the reply ending an earlier turn (workers with briefReply); the latest turn when absent. */
+	| { kind: "brief"; reply?: string; refresh?: boolean }
 	| { kind: "learn"; enabled: boolean }
 	| { kind: "native"; name: string; args: string }
 	| { kind: "abort" }

@@ -535,18 +535,21 @@ export class DeskEngine {
 		return entry => withPayload(entry, archive);
 	}
 
-	/** The reply of the latest brief pi-compaction-context saved ("pi-brief" entries) after the last user message. */
+	/** The latest reply, when pi-compaction-context saved a brief on it ("pi-brief" entries, which can also cover earlier turns) after the last user message. */
 	private briefFor(manager: SessionManager, leaf: string | null): string | undefined {
 		if (this.briefCache?.manager === manager && this.briefCache.leaf === leaf) return this.briefCache.value;
 		const branch = this.branch?.manager === manager ? this.branch.read() : manager.getBranch();
+		const briefed = new Set<unknown>();
 		let value: string | undefined;
 		for (let at = branch.length - 1; at >= 0; at--) {
 			const entry = branch[at]!;
 			if (entry.type === "message" && entry.message.role === "user") break;
-			if (entry.type !== "custom" || entry.customType !== "pi-brief") continue;
-			const reply = (entry.data as { reply?: unknown } | undefined)?.reply;
-			value = typeof reply === "string" ? reply : undefined;
-			break;
+			if (entry.type === "custom" && entry.customType === "pi-brief") briefed.add((entry.data as { reply?: unknown } | undefined)?.reply);
+			// The latest assistant message with text, as pi-compaction-context picks the reply to brief.
+			if (entry.type === "message" && entry.message.role === "assistant" && entry.message.content.some(part => part.type === "text" && part.text.trim())) {
+				if (briefed.has(entry.id)) value = entry.id;
+				break;
+			}
 		}
 		this.briefCache = { manager, leaf, value };
 		return value;
@@ -596,7 +599,7 @@ export class DeskEngine {
 			case "learn": this.learning?.setEnabled(command.enabled); this.scheduleSnapshot(); return;
 			case "brief": {
 				// Written by pi-compaction-context from the conversation's own cached request; never part of the conversation.
-				const probe: { session: string; refresh?: boolean; result?: Promise<unknown> } = { session: session.sessionId, refresh: command.refresh };
+				const probe: { session: string; reply?: string; refresh?: boolean; result?: Promise<unknown> } = { session: session.sessionId, reply: command.reply, refresh: command.refresh };
 				this.events?.emit("pi:brief", probe);
 				if (!probe.result) throw Error("Briefs need the pi-compaction-context plugin, which this conversation has not loaded.");
 				const brief = await probe.result;

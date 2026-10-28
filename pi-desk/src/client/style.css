@@ -2101,6 +2101,9 @@ details[open] > summary:before {
 .message-copy:disabled { opacity:0; }
 .message:hover .message-copy:disabled { opacity:.4; }
 @media (hover:none) { .message-copy:disabled { opacity:0; } }
+/* An earlier turn's brief being written, or written, stays in view like the latest reply's button. */
+.message-copy.brief-writing, .message-copy.brief-writing:disabled, .message-copy.brief-ready { opacity:1; color:var(--accent); }
+.message-copy.brief-writing { cursor:progress; }
 .message-summarised { opacity:.55; transition:opacity .15s; }
 .message-summarised:hover, .message-summarised:focus-within { opacity:1; }
 .message-summary { margin:16px 0 20px 34px; }

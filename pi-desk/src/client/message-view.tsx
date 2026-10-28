@@ -55,25 +55,37 @@ function CopyMarkdown({ message, sessionKey }: { message: ChatMessage; sessionKe
 }
 /** Rewinds the conversation to a message; unavailable (undefined) while Pi is working. */
 export const RewindContext = createContext<{ rewind?: (message: ChatMessage) => void }>({});
-/** The latest reply in the open conversation, which offers "What do I need to know?". */
-/** review: asks the agent to review the turn's changes with the code-review skill, when the turn changed files. */
-export const BriefContext = createContext<{ reply?: string; open?: () => void; state?: "writing" | "ready"; review?: () => void }>({});
-function LatestBrief({ id }: { id: string }) {
-	// Only conversations whose Desk version writes briefs offer one.
-	const { reply, open, review } = useContext(BriefContext);
-	return reply === id ? <>{open && <BriefButton />}{review && <ReviewButton />}</> : null;
+/**
+ * What replies that end a turn offer, while Pi is idle: "What do I need to know?" (open: write or open the brief on
+ * that turn) and, for a turn that changed files, "Review the changes". The latest reply shows them as buttons; earlier
+ * ones as icons beside copy and rewind, where the worker can brief an earlier turn (earlier).
+ */
+export const BriefContext = createContext<{ latest?: string; turns?: ReadonlyMap<string, { changed: boolean }>; earlier?: boolean;
+	open?: (reply: string) => void; review?: (reply: string) => void; state?: (reply: string) => "writing" | "ready" | undefined }>({});
+function TurnTools({ id }: { id: string }) {
+	const { latest, turns, earlier, open, review } = useContext(BriefContext);
+	const turn = turns?.get(id), compact = id !== latest;
+	if (!turn || compact && !earlier) return null;
+	return <>{open && <BriefButton id={id} compact={compact} />}{review && turn.changed && <ReviewButton id={id} compact={compact} />}</>;
 }
-function BriefButton() {
-	const { open, state } = useContext(BriefContext);
+function BriefButton({ id, compact }: { id: string; compact: boolean }) {
+	const { open, state: stateOf } = useContext(BriefContext);
+	const state = stateOf?.(id);
+	const label = state === "writing" ? "Writing the brief…" : state === "ready" ? "Read the brief" : "What do I need to know?";
 	// Written in the background; the conversation stays usable and the brief opens beside it when it is ready.
-	return <button type="button" className={`brief-button${state ? ` brief-${state}` : ""}`} disabled={!open || state === "writing"} onClick={() => open?.()}
-		title="A one-page brief on this turn, written outside the conversation">
-		<Icon name="info" />{state === "writing" ? "Writing the brief…" : state === "ready" ? "Read the brief" : "What do I need to know?"}</button>;
+	return compact
+		? <button type="button" className={`message-copy${state ? ` brief-${state}` : ""}`} disabled={state === "writing"} onClick={() => open?.(id)}
+			aria-label={label} title={`${label} A one-page brief on this turn, written outside the conversation from a copy of it up to this reply`}><Icon name="info" /></button>
+		: <button type="button" className={`brief-button${state ? ` brief-${state}` : ""}`} disabled={state === "writing"} onClick={() => open?.(id)}
+			title="A one-page brief on this turn, written outside the conversation"><Icon name="info" />{label}</button>;
 }
-function ReviewButton() {
+function ReviewButton({ id, compact }: { id: string; compact: boolean }) {
 	const { review } = useContext(BriefContext);
-	return <button type="button" className="brief-button" onClick={() => review?.()} title="Ask Pi to review this turn's changes with the code-review skill, reporting first">
-		<Icon name="code" />Review the changes</button>;
+	return compact
+		? <button type="button" className="message-copy" onClick={() => review?.(id)} aria-label="Review the changes"
+			title="Review the changes: ask Pi to review this turn's changes with the code-review skill, reporting first"><Icon name="code" /></button>
+		: <button type="button" className="brief-button" onClick={() => review?.(id)} title="Ask Pi to review this turn's changes with the code-review skill, reporting first">
+			<Icon name="code" />Review the changes</button>;
 }
 function RewindButton({ message }: { message: ChatMessage }) {
 	const { rewind } = useContext(RewindContext);
@@ -311,7 +323,7 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 				: <MessageBody message={message} sessionKey={sessionKey} source={source} results={results} />}
 			{!activityOnly && !thinking && <div className="message-actions"><CopyMarkdown message={message} sessionKey={sessionKey} />
 				{!source && message.entryId && (message.role === "user" || message.role === "assistant") && message.complete !== false && <RewindButton message={message} />}
-				{!source && message.role === "assistant" && <LatestBrief id={message.id} />}</div>}
+				{!source && message.role === "assistant" && <TurnTools id={message.id} />}</div>}
 		</article>
 	</ReferenceContext>;
 }

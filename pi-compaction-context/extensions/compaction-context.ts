@@ -42,7 +42,7 @@ export default function compactionContext(pi: ExtensionAPI): void {
     const probe = raw as BriefProbe;
     const ctx = probe && typeof probe === "object" ? contexts.get(probe.session) : undefined;
     if (!ctx) return;
-    probe.result = writeBrief(ctx, sent.get(probe.session), brief => pi.appendEntry(BRIEF_ENTRY, brief), { refresh: probe.refresh, signal: probe.signal });
+    probe.result = writeBrief(ctx, sent.get(probe.session), brief => pi.appendEntry(BRIEF_ENTRY, brief), { reply: probe.reply, refresh: probe.refresh, signal: probe.signal });
   });
   let turnRequest = false, lastInPlace = "not tried yet";
   pi.on("context_with_system", () => { turnRequest = true; });

@@ -15,6 +15,7 @@ and controls; it does not run a second agent or copy plugin stores.
 | Name, pin, branch, fork, compact and reload | Inline title rename; other controls in conversation settings |
 | Close worker | Header or sidebar close action with confirmation; saved native history remains |
 | Questions | Native forms with a question chooser, drafts, deadlines and child attribution; mobile dialogs stay above the composer and within the keyboard viewport |
+| Briefs and reviews | Every reply that ends a turn offers **What do I need to know?** and, when the turn changed files, **Review the changes**: buttons on the latest reply, icons beside copy and rewind on earlier ones. A brief on an earlier turn is written from the conversation up to that reply, without the prompt cache |
 | Presence and notifications | Away after 15 minutes without use of Desk on any device, shown under **Settings → This computer**; **Settings → Pi Desk → Notifications** sends questions, finished work and due tasks to a phone while away, during working hours |
 | Finished conversations | Sidebar and Tasks mark a conversation **Finished** when its turn ends with nothing left to wake it, until someone looks at it on any device; the installed app's icon counts them |
 | Slash commands | The installed worker’s full Pi catalog plus registered extension/template/skill commands and browser handlers; parameters and qualified aliases retained, unbridged capabilities labelled |

@@ -102,7 +102,7 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 		case "learn":
 			if (typeof data.enabled !== "boolean") throw new Error("Invalid learn mode setting.");
 			return { kind: "learn", enabled: data.enabled };
-		case "brief": return { kind: "brief", ...(data.refresh === true ? { refresh: true } : {}) };
+		case "brief": return { kind: "brief", ...(data.reply !== undefined ? { reply: string(data.reply, 100) } : {}), ...(data.refresh === true ? { refresh: true } : {}) };
 		case "native": case "native_read":
 			return { kind: data.kind, name: string(data.name, 100), args: string(data.args, 10_000) };
 		case "prompt":
