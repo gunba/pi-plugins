@@ -6,6 +6,7 @@ import { ActionMenu } from "./action-menu.tsx";
 import { Modal } from "./surfaces.tsx";
 import { DOT_FILE_COUNT, type DotInput, type DotMessage, type DotSnapshot, type DotUpload, type DotDownload } from "../shared/dot.ts";
 import { stageDotFiles, saveDotDownload } from "./dot-files.ts";
+import { dotMarkdown } from "./dot-markdown.ts";
 import { DotAgentAccess } from "./dot-agent-access.tsx";
 import type { Computer } from "./workspace.ts";
 import { api } from "./connection.ts";
@@ -371,7 +372,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 								{said.dictated && <span className="dictated-badge" title="Dictated. Steve was told speech recognition may have misheard some words."><Icon name="mic" />Dictated</span>}
 							</div>
 							<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}
-								components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{said.text}</Markdown></div>
+								components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{dotMarkdown(said.text)}</Markdown></div>
 								{message.attachments.map((attachment, index) => attachment.downloadable
 									? <button type="button" className="dot-attachment" key={attachment.id ?? index} disabled={!ready || busy}
 										onClick={() => void dot.download(message.id, attachment.id)}>{attachment.name} ↓</button>
@@ -382,7 +383,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				})}
 				{dot.optimistic.map(input => <article className="message message-user dot-local-message" key={input.id}>
 					<div className="message-heading"><strong>You</strong><time dateTime={input.created}>{new Date(input.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
-					<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{splitDictationNote(input.text).text}</Markdown></div>
+					<div className="message-body"><div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{dotMarkdown(splitDictationNote(input.text).text)}</Markdown></div>
 						{input.attachments.map(file => <span className="dot-attachment" key={file.id}>{file.name}</span>)}
 					</div>
 					<div className={`dot-delivery ${input.state}`} role="status">
