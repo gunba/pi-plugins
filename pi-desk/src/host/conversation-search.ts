@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { record } from "../../../pi-agents/network.ts";
-import { SEARCH_BATCH_BYTES, SEARCH_BATCH_ROWS, SEARCH_MAX_SOURCES, SEARCH_ORIGIN, SEARCH_SERVER, SEARCH_SYNC,
+import { SEARCH_BATCH_BYTES, SEARCH_BATCH_ROWS, SEARCH_MAX_SOURCES, SEARCH_SERVER, SEARCH_SYNC,
 	searchId, searchInteger, searchPassage, searchRequest, searchResponse, searchSource, searchText,
 	type SearchPacket, type SearchPassage, type SearchRequest, type SearchResponse, type SearchSource } from "../shared/conversation-search.ts";
 import type { SearchScannerOptions } from "./search-scanner.ts";
@@ -17,7 +17,9 @@ export interface SearchBinding { scope: string; computers(): SearchComputer[]; s
 type Inventory = { snapshot: string; ids: string[]; offset: number; scanned: number };
 type Pull = { id: string; source: SearchSource; after: number; at: number };
 type Peer = { epoch?: string; incoming?: Inventory; allowed: Set<string>; received: boolean; sent?: string; outgoing?: Inventory;
-	versions: Map<string, number>; advertised: Set<string>; wanted: Map<string, SearchSource>; pending?: Pull; tail: Promise<void>; queued: number; hosting?: boolean };
+	versions: Map<string, number>; advertised: Set<string>; wanted: Map<string, SearchSource>; pending?: Pull; tail: Promise<void>; queued: number; hosting?: boolean;
+	/** Offers received and not yet handled, newest version of each source, and the epoch they came in, while a pass to handle them is queued. */
+	offered: Map<string, SearchSource>; offering?: string };
 type Awaiting = { computer: string; binding: SearchBinding; request: SearchRequest; resolve(value: SearchResponse): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 export interface ConversationSearchOptions {
 	directory: string;
@@ -94,7 +96,7 @@ export class ConversationSearch {
 	}
 	private peer(id: string): Peer {
 		let peer = this.peers.get(id);
-		if (!peer) this.peers.set(id, peer = { allowed: new Set(), received: false, versions: new Map(), advertised: new Set(), wanted: new Map(), tail: Promise.resolve(), queued: 0 });
+		if (!peer) this.peers.set(id, peer = { allowed: new Set(), received: false, versions: new Map(), advertised: new Set(), wanted: new Map(), tail: Promise.resolve(), queued: 0, offered: new Map() });
 		return peer;
 	}
 	disconnected(id: string): void {
@@ -161,10 +163,26 @@ export class ConversationSearch {
 		if (packet.type === "search-query") {
 			void this.answer(packet, binding, send); return Promise.resolve();
 		}
+		if (packet.type === "search-offer") {
+			// After its inventory a computer offers every conversation it has, 32 at a time and faster than they can be
+			// indexed: offers are merged here and handled in one queued pass, so they cannot fill the queue.
+			if (peer.offering && peer.offering !== packet.epoch) return Promise.reject(Error("A search source changed epoch without reconnecting."));
+			for (const source of packet.sources) if ((peer.offered.get(source.id)?.version ?? -1) <= source.version) peer.offered.set(source.id, source);
+			if (peer.offering) return Promise.resolve();
+			if (peer.queued >= 64) return Promise.reject(Error("Too many queued search packets."));
+			peer.offering = packet.epoch;
+			return this.enqueue(id, peer, binding, () => {
+				const sources = [...peer.offered.values()]; peer.offered.clear(); peer.offering = undefined;
+				return this.sync(id, peer, { type: "search-offer", epoch: packet.epoch, sources }, binding, send);
+			});
+		}
+		return this.enqueue(id, peer, binding, () => this.sync(id, peer, packet, binding, send));
+	}
+	private enqueue(id: string, peer: Peer, binding: SearchBinding, task: () => Promise<void>): Promise<void> {
 		if (++peer.queued > 64) { peer.queued--; return Promise.reject(Error("Too many queued search packets.")); }
 		const work = peer.tail.then(async () => {
 			if (this.binding !== binding || this.peers.get(id) !== peer) return;
-			await this.configure(); await this.sync(id, peer, packet, binding, send);
+			await this.configure(); await task();
 		}).catch(error => { this.error(error); }).finally(() => { peer.queued--; });
 		peer.tail = work; return work;
 	}

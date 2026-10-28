@@ -104,3 +104,18 @@ test("a search packet that fails validation does not close the connection to its
 			passages: [{ sequence: 1, entry: "entry", ordinal: 0, start: 0, role: "narrator", text: "text" }] }, async () => {}), undefined);
 	} finally { await search.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("a computer's burst of search offers after its inventory does not close the connection", async () => {
+	// 2783 conversations arrive as 87 offers in under a second; past 64 queued packets the server rejected them.
+	const directory = mkdtempSync(join(tmpdir(), "desk-search-offers-"));
+	const search = new ConversationSearch({ directory, scanner: () => ({ roots: [], secondaryRoot: join(directory, "children"), files: [], exclude: [] }),
+		settings: () => ({ hold: true, send: false }), self: () => "self" });
+	search.bind({ scope: "scope", computers: () => [], send: async () => {}, flush: () => {} });
+	try {
+		const offers = Array.from({ length: 100 }, (_, batch) => search.receive("peer", { type: "search-offer", epoch: "epoch",
+			sources: Array.from({ length: 32 }, (_, index) => ({ id: `source-${batch}-${index}`, version: 1, generation: "generation", cursor: 1,
+				complete: true, session: "session", file: "file", title: "", project: "", kind: "primary", updated: 1 })) }, async () => {}));
+		const settled = await Promise.allSettled(offers);
+		assert.deepEqual(settled.filter(result => result.status === "rejected").map(result => String(result.reason)), []);
+	} finally { await search.close(); rmSync(directory, { recursive: true, force: true }); }
+});
