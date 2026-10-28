@@ -20,6 +20,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
   background helpers that report back. Also the user's quest list.
 - [`pi-ask-user`](pi-ask-user/index.ts): the `ask_user` tool (a fork of `pi-ask-user` 0.11.2 without its decision-gate
   skill).
+- [`pi-conversation-search`](pi-conversation-search/README.md): search retained conversations across computers,
+  with local embeddings, source references, and source-matched retention.
 - [`pi-plan`](pi-plan/README.md): one objective and checklist per branch, with optional automatic continuation.
 - [`pi-show`](pi-show/README.md): `show` presents results in Desk, including live HTML pages; file changes are
   computed for text, spreadsheets, documents and decks.

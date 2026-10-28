@@ -36,6 +36,7 @@
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
       "./pi-session-memory/extensions/session-memory.ts",
+      "./pi-conversation-search/index.ts",
       "./pi-fast-footer/extensions/fast-footer.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-context-window/index.ts",

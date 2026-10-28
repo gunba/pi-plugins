@@ -34,6 +34,8 @@ import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { DotConnector } from "./dot-connector.ts";
 import { Dictation } from "./dictation.ts";
+import { ConversationSearch } from "./conversation-search.ts";
+import { configuredSessionDirectory } from "./session-directories.ts";
 import { Teleport } from "./teleport.ts";
 import { DotConnection } from "./dot.ts";
 import { AccountConnection } from "./account-connection.ts";
@@ -67,6 +69,7 @@ export class DeskHost {
 	private packageUpdates?: PackageUpdates;
 	/** Conversation copies kept away from their computer, and moving conversations between computers (teleport.ts). */
 	private teleport?: Teleport;
+	private search?: ConversationSearch;
 	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
 	private adoption?: Promise<unknown>;
 	private checkpoints?: UpdateCheckpoints;
@@ -138,9 +141,9 @@ export class DeskHost {
 		this.moves = new ConversationMoves(this.core, { teleport: () => this.teleport, parties: () => this.parties, network: () => this.account.network,
 			self: () => this.account.identity?.device.id, moving: session => this.partyOperations?.moving(session) });
 		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
-			teleport: () => this.teleport, moves: this.moves });
+			teleport: () => this.teleport, search: () => this.search, moves: this.moves });
 		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
-			settingsSync: () => this.settingsSync, teleport: () => this.teleport, connector: () => this.dotConnector,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, connector: () => this.dotConnector,
 			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
 			request: (access, request) => this.api.handle(access, request),
 			watch: handler => {
@@ -150,7 +153,7 @@ export class DeskHost {
 		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties });
 		this.efficiency = new EfficiencyReports({ agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, directory: () => this.directory, closing: () => this.closing });
 		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot,
-			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport,
+			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
 			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events });
 		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
 			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn,
@@ -186,6 +189,15 @@ export class DeskHost {
 				movedAway: (session, move) => { void this.moves.retire(session, move); },
 				release: session => this.moves.release(session),
 			});
+			this.search = new ConversationSearch({ directory: join(directory, "search"), proxy: this.options.proxy,
+				settings: () => this.teleport!.settings, self: () => this.account.identity?.device.id ?? "",
+				scanner: () => {
+					const secondaryRoot = join(this.options.agentDir, "subagents", "sessions");
+					const configured = configuredSessionDirectory(this.options.cwd, this.options.agentDir, this.options.sessionDir);
+					// Recovery copies cannot authorize retaining an original after its source deletes it.
+					return { roots: [join(this.options.agentDir, "sessions"), secondaryRoot, ...configured ? [configured] : []], secondaryRoot,
+						ignoreRoots: [join(directory, "teleport", "copies")], files: [...this.sessions.values()].flatMap(({ view }) => view.snapshot?.file ?? view.file ?? []).sort(), exclude: [] };
+				} });
 			this.adoption = adoptSavedLogins(directory, this.options.agentDir)
 				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
 				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
@@ -285,7 +297,7 @@ export class DeskHost {
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
 			this.inputs?.close();
 			this.inputs = undefined;
-			this.account.close();
+			this.account.close(); await this.search?.close();
 			this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
@@ -771,6 +783,7 @@ export class DeskHost {
 		clearInterval(this.heartbeat); this.packageUpdates?.close();
 		this.updates.close();
 		this.account.close();
+		try { await this.search?.close(); } catch (error) { errors.push(error); }
 		try { this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		this.events.end();

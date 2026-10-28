@@ -5,6 +5,7 @@ import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi
 import type { PartyOperations } from "../../../pi-agents/operations.ts";
 import { MESSAGE_PARTS } from "../../../pi-agents/store.ts";
 import { RELEASE } from "../shared/release.ts";
+import type { ConversationSearch } from "./conversation-search.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
 import type { HostCore, ManagedSession, ModelChoice } from "./host-core.ts";
 import type { Parties } from "./parties.ts";
@@ -43,6 +44,7 @@ interface AgentHost {
 	operations(): PartyOperations | undefined;
 	network(): PartyNetwork | undefined;
 	teleport(): Teleport | undefined;
+	search?(): ConversationSearch | undefined;
 	moves: ConversationMoves;
 }
 
@@ -59,7 +61,7 @@ export class AgentOperations {
 	computer(): PartyComputer {
 		const teleport = this.host.teleport();
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : []] };
+			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [], ...this.host.search?.()?.operations() ?? []] };
 	}
 
 	/** Carry out the requests agents on this computer have made of it. */
