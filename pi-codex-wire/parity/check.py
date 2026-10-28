@@ -17,7 +17,7 @@ import json, os, re, subprocess, sys, urllib.error, urllib.request
 HOME = os.path.expanduser("~/codex-parity")
 REPO = os.path.join(HOME, "codex")
 LIMIT = 3_800
-# Where Codex 0.164.0 builds model requests: bodies, headers, turn and client metadata, input items, tool
+# Where Codex 0.165.0 builds model requests: bodies, headers, turn and client metadata, input items, tool
 # declarations, the websocket transport, remote compaction and authentication. Revisit when Codex moves them.
 PATHS = [
     "codex-rs/core/src/client.rs", "codex-rs/core/src/client_common.rs", "codex-rs/core/src/client_tool_metadata.rs",
@@ -25,9 +25,13 @@ PATHS = [
     ":(glob)codex-rs/core/src/compact_remote*.rs", "codex-rs/core/src/context_manager",
     "codex-rs/codex-api/src/requests", "codex-rs/codex-api/src/endpoint/responses.rs",
     ":(glob)codex-rs/codex-api/src/endpoint/responses_websocket*", "codex-rs/codex-api/src/responses_headers.rs",
-    "codex-rs/codex-api/src/sse/responses.rs", "codex-rs/codex-api/src/auth.rs", "codex-rs/codex-api/src/provider.rs",
+    "codex-rs/codex-api/src/sse/responses.rs", "codex-rs/codex-api/src/sse/responses_error.rs",
+    "codex-rs/codex-api/src/error.rs", "codex-rs/codex-api/src/api_bridge.rs",
+    "codex-rs/codex-api/src/auth.rs", "codex-rs/codex-api/src/provider.rs",
+    "codex-rs/model-provider/src", "codex-rs/models-manager/src",
     "codex-rs/protocol/src/models.rs", "codex-rs/protocol/src/models", "codex-rs/protocol/src/openai_models.rs",
-    "codex-rs/protocol/src/openai_models", "codex-rs/login/src/auth/default_client.rs", "codex-rs/tools/src/tool_spec.rs",
+    "codex-rs/protocol/src/openai_models", "codex-rs/protocol/src/response_item_id.rs",
+    "codex-rs/login/src/auth", "codex-rs/tools/src/tool_spec.rs",
 ]
 SKIP = re.compile(r"(^|/)tests?(/|\.rs$)|_tests?\.rs$|\.snap$")
 # Changed lines that say what goes over the wire.

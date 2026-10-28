@@ -43,7 +43,10 @@ that touch requests. The conversation sleeps in between: no process runs, and th
 | `~/codex-parity/baseline` | The Codex tag Wire last matched, such as `rust-v0.164.0`. |
 | `~/codex-parity/reports/<tag>/` | One folder per release: `report.md` and the patches. |
 
-Perth cannot push to GitHub, so changes reach Jordan as patches.
+Perth can push to `gunba/pi-plugins` through its repository-scoped SSH deploy key. Keep `origin` on
+`git@github.com:gunba/pi-plugins.git`; the upstream Codex clone stays read-only over HTTPS. The deploy key does not
+provide GitHub API access. Use an already authorized environment to open draft PRs; do not start an account-wide
+GitHub device login for unattended parity work. Without API access, publish the branch and provide its compare link.
 
 ## When a release wakes you
 
@@ -75,8 +78,9 @@ Perth cannot push to GitHub, so changes reach Jordan as patches.
 5. **Implement the free changes** on the branch.
    - Update the version and commit references in `pi-codex-wire/README.md` ("Request bodies follow Codex CLI …").
    - Run `node --test pi-codex-wire/tests/*.test.mjs`.
-   - Run the whole suite from the repository root: `npm ci` once, then
-     `env -u PI_DESK_RUNTIME npm test -- --test-concurrency=2`.
+   - Install pinned dependencies once: `npm ci` and `npm --prefix pi-desk ci`. Desk is not a root workspace,
+     but its tests are included in the whole suite.
+   - Run the whole suite from the repository root: `env -u PI_DESK_RUNTIME npm test -- --test-concurrency=2`.
 6. **Deliver.**
    - Write `~/codex-parity/reports/<tag>/report.md`:
      - what changed in Codex;
@@ -84,13 +88,36 @@ Perth cannot push to GitHub, so changes reach Jordan as patches.
      - what is left out and why;
      - the prompt-cache impact;
      - the test and capture results.
-   - Write the patches beside it: `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
-   - Add a quest for Jordan: "Review the Codex Wire parity patch for <tag>". Name the computer (pi-desk-perth) and the
-     folder. Any Desk agent can fetch the files from there with `agent_send`.
+   - Push the branch: `git -C ~/codex-parity/pi-plugins push -u origin parity/<tag>`.
+   - Open a draft PR against `main` when GitHub API access is available. Include the changes, exclusions, cache impact
+     and validation results in its description. Otherwise provide
+     `https://github.com/gunba/pi-plugins/compare/main...parity/<tag>?expand=1`; a compare link is not an open PR.
+   - Put the PR or compare link in the report. Patches remain an optional fallback:
+     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
+   - Add a quest for Jordan to review the PR, or the published branch if no PR was opened. Include its link, the
+     computer (pi-desk-perth), and the evidence folder. Any Desk agent can fetch local files with `agent_send`.
    - If nothing needs to change, the report says so and no quest is added.
-7. **Move on.** Write the new tag to `~/codex-parity/baseline`, set the same watch again, and end your turn.
+7. **Move on.** Write the new tag to `~/codex-parity/baseline`, switch the clean checkout back to `main` so the next
+   wake can pull it, set the same watch again, and end your turn.
 
 ## Captures
+
+The reusable capture runner uses fake credentials and a loopback-only server; it never forwards proxy traffic.
+Run it from the repository root after installing dependencies (Node, Python 3, OpenSSL and `pi` must be on PATH):
+
+```sh
+git -C ~/codex-parity/codex show <tag>:codex-rs/models-manager/models.json > /tmp/codex-models.json
+node pi-codex-wire/parity/run-captures.mjs /path/to/codex /tmp/codex-models.json /path/to/captures <version>
+python3 -B pi-codex-wire/parity/compare-captures.py /path/to/captures > /path/to/comparison.json
+```
+
+The version is a plain number such as `0.165.0`. The runner covers standard and Lite first turns, tool continuation,
+prewarm, missing response IDs, cold resume and terminal model-not-found errors over WebSocket and SSE. Its
+`summary.json` records the scratch folder. The comparison checks saved IDs and reports field-order, client/turn
+metadata, input-item shape and header-name differences; inspect those differences and header values before reporting
+parity. Native `exec` identity, API-key versus fake ChatGPT authentication, disabled native analytics and the extra
+native upgrade attempt in SSE cases are fixture differences. Raw captures contain full requests; use no real credentials.
+Compaction and release-specific cases still need separate captures when affected.
 
 This is how Codex 0.164.0 parity was checked. Keep any tooling you build in this folder, so the next release reuses it.
 

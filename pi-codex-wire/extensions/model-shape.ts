@@ -1,5 +1,5 @@
-/** Native model shaping, following openai/codex rust-v0.164.0 (build_responses_request).
- * https://github.com/openai/codex/tree/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs
+/** Native model shaping, following openai/codex rust-v0.165.0 (build_responses_request).
+ * https://github.com/openai/codex/tree/360319d8dee62d87e2d59fc0c21805d79519cfed/codex-rs
  * Sources: core/src/client.rs; core/src/client_common.rs; core/src/context/base_instructions.rs;
  * codex-api/src/common.rs (serde omission matters);
  * tools/src/tool_spec.rs; protocol/src/openai_models.rs.
@@ -8,6 +8,7 @@
  * and are rejected rather than silently dispatched to the wrong Pi tool.
  */
 import { createHash } from "node:crypto";
+import { uuidv7 } from "@earendil-works/pi-ai";
 import { annotateItems, uuid7, type ItemHistory, type Turn } from "./history.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -228,6 +229,35 @@ export function shapeModelBody(body: ObjectValue, metadata: ObjectValue, threadI
     result.parallel_tool_calls = result.parallel_tool_calls === true;
   }
   return result;
+}
+
+const responseIdPrefixes = new Map([
+  ["additional_tools", "at"], ["message", "msg"], ["agent_message", "amsg"], ["reasoning", "rs"],
+  ["local_shell_call", "lsh"], ["function_call", "fc"], ["tool_search_call", "tsc"],
+  ["function_call_output", "fco"], ["custom_tool_call", "ctc"], ["custom_tool_call_output", "ctco"],
+  ["tool_search_output", "tso"], ["web_search_call", "ws"], ["image_generation_call", "ig"],
+  ["compaction", "cmp"], ["context_compaction", "cmp"],
+]);
+
+/** One normalizer per exchange. Missing output IDs are minted on receipt, before Pi persists them,
+ * and reused for the matching done event. Existing IDs and saved history are never rewritten.
+ * Indexing keeps interleaved output items separate; Lite namespaces still undergo executor validation.
+ */
+export function responseNormalizer(lite: boolean): (event: ObjectValue) => ObjectValue {
+  const ids = new Map<unknown, string>();
+  return event => {
+    if (event.type === "response.created") ids.clear();
+    const result = lite ? normalizeLiteEvent(event) : event;
+    if (result.type !== "response.output_item.added" && result.type !== "response.output_item.done") return result;
+    const item = object(result.item, "response item");
+    const prefix = responseIdPrefixes.get(String(item.type));
+    if (!prefix) return result;
+    if (typeof item.id === "string" && item.id) { ids.set(result.output_index, item.id); return result; }
+    if (item.id != null && item.id !== "") return result;
+    const id = ids.get(result.output_index) ?? `${prefix}_${uuidv7()}`;
+    ids.set(result.output_index, id);
+    return { ...result, item: { ...item, id } };
+  };
 }
 
 /** Normalize native lite events before Pi's shared parser; names and IDs remain

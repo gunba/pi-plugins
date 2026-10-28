@@ -139,6 +139,46 @@ test("Codex requests readable summaries even when the catalog default is none", 
   assert.equal(summaries[3], "auto", "Desk preserves an explicit summary choice");
 });
 
+for (const lite of [false, true]) test(`idless provider output keeps native IDs across saved replay (Lite=${lite})`, async t => {
+  const h = harness(t), requests = [];
+  const items = [
+    { type: "reasoning", summary: [], encrypted_content: "opaque" },
+    { type: "message", id: "", role: "assistant", content: [{ type: "output_text", text: "Working." }], phase: "commentary" },
+    { type: "function_call", id: null, call_id: "call_idless", name: "bash", arguments: '{"command":"printf parity"}' },
+  ];
+  const fetcher = async (url, init) => {
+    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id, use_responses_lite: lite }] });
+    requests.push(decode(init));
+    const events = [{ type: "response.created", response: { id: "idless" } }];
+    if (requests.length === 1) items.forEach((item, output_index) => {
+      events.push({ type: "response.output_item.added", output_index, item });
+      events.push({ type: "response.output_item.done", output_index, item });
+    });
+    events.push({ type: "response.completed", response: { id: "idless", status: "completed", output: [] } });
+    return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  };
+  const user = { role: "user", content: "Check parity", timestamp: 1000 };
+  const result = await h.provider().streamSimple(model, { messages: [user] }, { apiKey: jwt, fetch: fetcher }).result();
+  assert.equal(result.stopReason, "toolUse", result.errorMessage);
+  const saved = JSON.parse(JSON.stringify(result));
+  const reasoningId = JSON.parse(saved.content[0].thinkingSignature).id;
+  const messageId = JSON.parse(saved.content[1].textSignature).id;
+  const callId = saved.content[2].id.split("|")[1];
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+  for (const [id, prefix] of [[reasoningId, "rs"], [messageId, "msg"], [callId, "fc"]]) assert.match(id, new RegExp(`^${prefix}_${uuid}$`));
+  const context = { messages: [user, saved, { role: "toolResult", toolCallId: saved.content[2].id,
+    toolName: "bash", content: [{ type: "text", text: "parity" }], timestamp: 2000, isError: false }] };
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const replay = await h.provider().streamSimple(model, context, { apiKey: jwt, fetch: fetcher }).result();
+    assert.equal(replay.stopReason, "stop", replay.errorMessage);
+    const input = requests.at(-1).input;
+    assert.equal(input.find(item => item.type === "reasoning").id, reasoningId);
+    assert.equal(input.find(item => item.role === "assistant").id, messageId);
+    assert.equal(input.find(item => item.type === "function_call").id, callId);
+    assert.equal(input.find(item => item.type === "function_call_output").call_id, "call_idless");
+  }
+});
+
 test("latest release identity reaches both catalog and inference before any model request", async t => {
   const h = harness(t), requests = [];
   h.flags.delete("codex-wire-version");
