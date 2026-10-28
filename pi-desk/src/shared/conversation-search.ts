@@ -169,7 +169,8 @@ export function searchPassage(value: unknown): SearchPassage {
 		ordinal: searchInteger(item.ordinal, 0, Number.MAX_SAFE_INTEGER, "entry ordinal"), start: searchInteger(item.start, 0, Number.MAX_SAFE_INTEGER, "passage offset"),
 		role: item.role as SearchRole, ...(item.tool === undefined ? {} : { tool: searchText(item.tool, 200, "tool name") }),
 		...(item.at === undefined ? {} : { at: searchInteger(item.at, 0, 8.64e15, "entry time") }),
-		text: searchText(item.text, SEARCH_PASSAGE_CHARS, "passage text") };
+		// Blank in indexes written before NUL characters were replaced: their text reads back only up to the first NUL.
+		text: searchText(item.text, SEARCH_PASSAGE_CHARS, "passage text", true) };
 }
 /** Peer replies remain untrusted data even though their computer belongs to the workspace owner. */
 export function searchResponse(value: unknown): SearchResponse {

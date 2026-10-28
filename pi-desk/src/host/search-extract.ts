@@ -35,9 +35,13 @@ function textContent(value: unknown): string {
 		return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
 	}).join("\n");
 }
-/** Non-overlapping passages preserve code and offsets. Whitespace-only spans have no searchable evidence. */
-export function searchPieces(text: string): { start: number; text: string }[] {
-	const result: { start: number; text: string }[] = [];
+/**
+ * Non-overlapping passages preserve code and offsets. Whitespace-only spans have no searchable evidence. NUL characters
+ * (binary or UTF-16 tool output) become spaces: SQLite text reads back only up to the first NUL, which left passages
+ * blank or cut short when exported.
+ */
+export function searchPieces(raw: string): { start: number; text: string }[] {
+	const result: { start: number; text: string }[] = [], text = raw.replaceAll("\0", " ");
 	for (let start = 0; start < text.length;) {
 		let end = Math.min(text.length, start + SEARCH_PASSAGE_CHARS);
 		if (end < text.length) {

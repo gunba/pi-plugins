@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { SearchStore } from "../src/host/search-store.ts";
 import { SearchScanner } from "../src/host/search-scanner.ts";
 import { SEARCH_EMBEDDING_DIMENSIONS } from "../src/host/search-embedder.ts";
+import { ConversationSearch } from "../src/host/conversation-search.ts";
+import { searchPassage } from "../src/shared/conversation-search.ts";
 
 const hash = text => createHash("sha256").update(text).digest("hex");
 
@@ -64,4 +66,41 @@ test("late embeddings cannot attach to replacement text or resurrect a deleted s
 		assert.equal(store.coverage(scope, "ready").passages, 0);
 		assert.equal(store.coverage(scope, "ready").embedded_passages, 0);
 	} finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("tool output with NUL characters exports passages another computer accepts", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "desk-search-nul-")), file = join(directory, "native.jsonl");
+	// UTF-16 text read as bytes, and binary output that starts with NUL: SQLite text reads back only up to the first NUL.
+	writeFileSync(file, [
+		{ type: "session", version: 3, id: "binary", cwd: directory },
+		{ type: "message", id: "utf16", message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: "c\0o\0m\0p\0a\0n\0y\0" }] } },
+		{ type: "message", id: "binary", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "\0\0\0/Game/Data" }] } },
+		{ type: "message", id: "padding", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "\0\0\0\0" }] } },
+	].map(row => JSON.stringify(row) + "\n").join(""));
+	const store = new SearchStore(join(directory, "index.sqlite"));
+	const scanner = new SearchScanner(store, { roots: [directory], secondaryRoot: join(directory, "children"), files: [file], exclude: [] }, () => {});
+	try {
+		await scanner.scan();
+		const [source] = store.localSources();
+		const passages = store.export(source.id, source.generation, 0, source.cursor, 256, 512 * 1024);
+		assert.deepEqual(passages.map(passage => [passage.entry, passage.text]), [["utf16", "c o m p a n y "], ["binary", "   /Game/Data"]]);
+		for (const passage of passages) assert.deepEqual(searchPassage(passage), passage);
+	} finally { await scanner.close(); store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("passages left blank by older indexes are accepted", () => {
+	const passage = { sequence: 1, entry: "entry", ordinal: 0, start: 0, role: "tool", tool: "read", text: "" };
+	assert.deepEqual(searchPassage(passage), passage);
+});
+
+test("a search packet that fails validation does not close the connection to its computer", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "desk-search-packet-"));
+	const search = new ConversationSearch({ directory, scanner: () => ({ roots: [], secondaryRoot: join(directory, "children"), files: [], exclude: [] }),
+		settings: () => ({ hold: true, send: false }), self: () => "self" });
+	search.bind({ scope: "scope", computers: () => [], send: async () => {}, flush: () => {} });
+	try {
+		// Rejecting closes the connection, and agent messages, settings and copies with it.
+		assert.equal(await search.receive("peer", { type: "search-data", id: "fetch", source: "source", generation: "generation", after: 0, cursor: 1,
+			passages: [{ sequence: 1, entry: "entry", ordinal: 0, start: 0, role: "narrator", text: "text" }] }, async () => {}), undefined);
+	} finally { await search.close(); rmSync(directory, { recursive: true, force: true }); }
 });

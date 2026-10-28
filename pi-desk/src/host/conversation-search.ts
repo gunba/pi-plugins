@@ -152,7 +152,11 @@ export class ConversationSearch {
 	receive(id: string, raw: unknown, send: Send): Promise<void> {
 		const binding = this.binding;
 		if (!binding || this.closed) return Promise.reject(Error("The search workspace is not connected."));
-		const packet = this.packet(raw), peer = this.peer(id);
+		// A packet this computer can't accept is reported in search status; rejecting it would close the connection to
+		// that computer, and agent messages, settings and copies with it, on every reconnect.
+		let packet: SearchPacket;
+		try { packet = this.packet(raw); } catch (error) { this.error(error); return Promise.resolve(); }
+		const peer = this.peer(id);
 		if (packet.type === "search-result") { this.result(id, packet, binding); return Promise.resolve(); }
 		if (packet.type === "search-query") {
 			void this.answer(packet, binding, send); return Promise.resolve();
