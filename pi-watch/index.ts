@@ -212,10 +212,13 @@ class Watches {
 	private presentation?: Presentation;
 	/** The agent asked for this conversation to close when its turn ends (watch's close). */
 	private closing = false;
+	/** Between agent_start and agent_end: an event can join the run at its next step. */
+	private readonly running: () => boolean;
 
-	constructor(pi: ExtensionAPI, ctx: ExtensionContext) {
+	constructor(pi: ExtensionAPI, ctx: ExtensionContext, running: () => boolean) {
 		this.pi = pi;
 		this.ctx = ctx;
+		this.running = running;
 		this.sessionId = ctx.sessionManager.getSessionId();
 		this.folder = join(getAgentDir(), "watch", this.sessionId);
 	}
@@ -589,17 +592,23 @@ class Watches {
 		this.flush();
 	}
 
-	/** Delivers waiting events as one message, starting a turn; while the agent is busy they wait for it to finish. */
+	/**
+	 * Delivers waiting events as one message. While the agent is working they join its run at the next step, so it knows
+	 * before it answers; held until its turn ended, they would start a turn of their own about what it had already seen.
+	 * Otherwise, once it is idle with no input waiting, they start a turn.
+	 */
 	private flush(): void {
 		if (this.closed || !this.outbox.length || this.retry) return;
-		if (getPresentation(this.pi)?.suspended || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) {
+		const suspended = getPresentation(this.pi)?.suspended, running = !suspended && this.running();
+		if (!running && (suspended || !this.ctx.isIdle() || this.ctx.hasPendingMessages())) {
 			this.retry = setTimeout(() => { this.retry = undefined; this.guard(() => this.flush()); }, RETRY_MS);
 			return;
 		}
 		const items = this.outbox;
 		this.outbox = [];
 		this.pi.sendMessage({ customType: WATCH_MESSAGE, content: items.map(item => item.text).join("\n\n"), display: true,
-			details: { watches: [...new Set(items.map(item => item.id))], events: items.map(item => item.event) } }, { deliverAs: "followUp", triggerTurn: true });
+			details: { watches: [...new Set(items.map(item => item.id))], events: items.map(item => item.event) } },
+			{ deliverAs: running ? "steer" : "followUp", triggerTurn: true });
 	}
 
 	private stop(id: string): void {
@@ -633,16 +642,19 @@ class Watches {
 }
 
 export default function watch(pi: ExtensionAPI): void {
-	let watches: Watches | undefined;
+	let watches: Watches | undefined, running = false;
 	const start = (ctx: ExtensionContext) => {
 		watches?.close();
-		watches = new Watches(pi, ctx);
+		watches = new Watches(pi, ctx, () => running);
 		watches.restore();
 		sweep(join(getAgentDir(), "watch"));
 	};
 	pi.on("session_start", (_event, ctx) => start(ctx));
 	pi.on("session_tree", (_event, ctx) => start(ctx));
 	pi.on("session_shutdown", () => { watches?.close(true); watches = undefined; labels.clear(); });
+	// Pi drains a run's steering before agent_end and continues for any queued after; later events wait for idle.
+	pi.on("agent_start", () => { running = true; });
+	pi.on("agent_end", () => { running = false; });
 	// The description a call carries (pi-ui/tool-descriptions.ts) is removed before the tool runs; it labels the watch.
 	const labels = new Map<string, string>();
 	// A message from the user means they are here: a close the agent asked for earlier no longer applies.

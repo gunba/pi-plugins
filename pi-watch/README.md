@@ -22,7 +22,7 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
 `watch` is the single subscription primitive. There is no separate `wake` tool or second scheduling store:
 
 - `command`, `every`, and `until` choose the event source; `wake_when` optionally filters command events with a classifier.
-- The watch owns its state in `pi-watch/v1` session entries. All three modes use the same pending-event delivery path, which starts a turn only when the agent is idle and has no pending input. Busy agents receive events later, batched together.
+- The watch owns its state in `pi-watch/v1` session entries. All three modes use the same pending-event delivery path: while the agent is working, events join its run at the next step; otherwise they start a turn once the agent is idle with no pending input.
 - Desk's `wakes`, `watching`, and `wakeFiles` fields are process-lifecycle hints, not another task queue. If the conversation is closed but kept, Desk reopens it; the restored watch then decides what to deliver. Reopening a process is not itself an instruction to the model.
 - `agent_send({wake: true})` is a message-delivery option: act on this message when possible, reopening a closed recipient if necessary. It does not create a timer or watch. Secondary-agent reports use their parent runtime's delivery path for the same reason.
 - Historical `pi-work/wake-v1` and scheduler messages remain readable in Desk transcripts. Their readers do not register another waiting tool or run an old scheduler.
@@ -43,8 +43,10 @@ These watches wake conversations, not powered-off computers. The host must be ru
   most 4,000 characters of it. The full output stays in the log file named in the result, under
   `~/.pi/agent/watch/<session>/`. When the command ends, the agent is always woken with its exit status and last 20
   lines.
-- **Timing.** Events are delivered when the agent is idle, as one message that starts a turn. Events that arrive
-  while the agent is working wait until it finishes, and are then delivered together.
+- **Timing.** An event that arrives while the agent is working joins its run at the next step, after the tool calls
+  under way, so the agent knows before it answers and the event does not start a turn of its own later. An event
+  that arrives once the run is over, or while Desk holds the conversation, starts a turn when the agent is idle with no
+  input waiting; events waiting together are delivered as one message.
 - **Lifetime.** There is no time limit. A command watch runs until its command ends, it wakes the agent (a re-run
   command), or the agent or the user stops it; `hours` gives it an end if the agent wants one, and a background command
   still running then is stopped. A time can be any time ahead. Times are checked against the clock every minute, so a
