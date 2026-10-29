@@ -548,9 +548,9 @@ export function App({ account }: { account?: BrowserAccount }) {
             </span>}
             {!phone && !dotSelected && !questsSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
               aria-pressed={!!session.snapshot?.learn?.enabled} aria-label="Learn mode" disabled={!connected || session.state !== "ready" || controlBusy}
-              title="Explain the theory behind recent work outside the agent’s context. Uses extra model calls."
+              title={`Learn mode${session.snapshot?.learn?.writing ? ": writing an explanation…" : session.snapshot?.learn?.enabled ? ": on" : ""}. Explains the theory behind recent work outside the agent’s context. Uses extra model calls.`}
               onClick={() => run({ kind: "learn", enabled: !session.snapshot?.learn?.enabled })}>
-              Learn{session.snapshot?.learn?.writing ? " · writing…" : session.snapshot?.learn?.enabled ? " · on" : ""}</button>}
+              <Icon name="learn" /></button>}
             {!phone && (totalAgents > 0 || agentHistory) && <button type="button" className={`header-chip${panel === "agents" ? " selected" : ""}`} aria-pressed={panel === "agents"}
               title={`${activeAgents} active · ${totalAgents} total`} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
               <span className={`status-dot ${activeAgents ? "running" : "idle"}`} />Agents <b>{totalAgents}</b></button>}

@@ -22,6 +22,7 @@ const paths: Record<string, ReactNode> = {
 	plug: <><path d="M9 3v5m6-5v5M7 8h10v3a5 5 0 0 1-10 0Zm5 8v5" /></>,
 	usage: <><path d="M12 3v9h9A9 9 0 1 1 12 3Z" /><path d="M16 3a7 7 0 0 1 5 5h-5Z" /></>,
 	code: <><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-11-2 14" /></>,
+	learn: <><path d="M21.42 10.92a1 1 0 0 0-.02-1.84L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.83l8.57 3.91a2 2 0 0 0 1.66 0Z" /><path d="M22 10v6M6 12.5V16a6 3 0 0 0 12 0v-3.5" /></>,
 	sliders: <><path d="M4 7h4m4 0h8M4 17h8m4 0h4" /><circle cx="10" cy="7" r="2" /><circle cx="14" cy="17" r="2" /></>,
 	"panel-right": <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /><path d="M17.5 8h1M17.5 11h1" /></>,
 	layers: <><path d="m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 4 9-4" /></>,
