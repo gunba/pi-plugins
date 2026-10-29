@@ -3,9 +3,9 @@ import { ClientHandshake, ChannelVersionError, type ChannelIdentity } from "../s
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
-import { socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent } from "../shared/relay-protocol.ts";
-import type { HostEvent, SessionView } from "../shared/protocol.ts";
-import { applySessionChanges } from "../shared/session-patch.ts";
+import { socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent, type StatePatchEvent } from "../shared/relay-protocol.ts";
+import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
+import { applySessionChanges, applyStateChanges } from "../shared/session-patch.ts";
 import { API_VERSION, apiMatches, upgradeMessage } from "../shared/release.ts";
 import { interruptionReason, type ConnectionInterruption, type ConnectionState } from "./connection-state.ts";
 
@@ -68,6 +68,7 @@ export class RemoteClient {
 	private backoff = 1000;
 	/** Each conversation as last received, which its changes apply to. */
 	private sessions = new Map<string, SessionView>();
+	private lastState?: HostState;
 	/** When anything last arrived from the computer. */
 	private heard = 0;
 	private received = 0;
@@ -271,7 +272,7 @@ export class RemoteClient {
 				this.sentCredential = handshake.offer.credential;
 				this.refresh = setInterval(maintain, 20_000);
 				this.expiry = setInterval(() => { if (!this.valid(socket)) socket.close(4004, "Authorization expired"); }, 1000);
-				await session.channel.send({ type: "hello", api: API_VERSION, features: ["session-patch"] } satisfies RemotePayload);
+				await session.channel.send({ type: "hello", api: API_VERSION, features: ["session-patch", "session-patch-2"] } satisfies RemotePayload);
 			}).catch(error => {
 				if (error instanceof ChannelVersionError) this.deny(426, error.message);
 				else socket.close(4002, "Invalid host response");
@@ -363,18 +364,21 @@ export class RemoteClient {
 		} else if (message.type === "event") {
 			if (message.sequence !== this.received + 1) throw new Error("Unexpected event sequence.");
 			this.received++;
-			const wire = message.event as HostEvent | SessionPatchEvent;
+			const wire = message.event as HostEvent | SessionPatchEvent | StatePatchEvent;
 			// A conversation this browser already has may come as its changes alone; the app always sees whole conversations.
 			let event: HostEvent;
 			if (wire.type === "session_patch") {
 				const before = this.sessions.get(wire.key);
 				if (!before) throw new Error("A conversation change arrived before the conversation.");
 				event = { type: "session", session: applySessionChanges(before, wire.changes) };
+			} else if (wire.type === "state_patch") {
+				if (!this.lastState) throw new Error("A workspace change arrived before the workspace.");
+				event = { type: "state", state: applyStateChanges(this.lastState, wire.changes, this.sessions) };
 			} else event = wire;
 			if (event.type === "state" && !apiMatches(event.state.release?.api)) {
 				this.deny(426, upgradeMessage("This computer", event.state.release?.api)); return;
 			}
-			if (event.type === "state") this.sessions = new Map(event.state.sessions.map(session => [session.key, session]));
+			if (event.type === "state") { this.lastState = event.state; this.sessions = new Map(event.state.sessions.map(session => [session.key, session])); }
 			else if (event.type === "session") this.sessions.set(event.session.key, event.session);
 			for (const handler of this.handlers) handler(event, this.received);
 		} else if (message.type === "response" && validId(message.id)) {

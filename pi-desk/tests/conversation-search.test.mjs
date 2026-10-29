@@ -68,6 +68,21 @@ test("late embeddings cannot attach to replacement text or resurrect a deleted s
 	} finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("a blank passage is never offered for embedding, so it cannot stall the passages after it", () => {
+	// On the search server, one blank passage among the newest 16 failed every batch: nothing newer was embedded.
+	const directory = mkdtempSync(join(tmpdir(), "desk-search-blank-")), store = new SearchStore(join(directory, "index.sqlite"));
+	try {
+		const file = { file: join(directory, "a.jsonl"), id: "a", stamp: "fixture", offset: 0, ordinal: 0, anchor: "", seen: "scan" };
+		const source = store.registerFile(file, { id: "a", session: "a", title: "a", project: directory, kind: "primary", updated: 1 }, false);
+		store.append({ ...file, offset: 100, ordinal: 3 }, source.generation, [
+			{ id: "one", ordinal: 1, passages: [{ start: 0, role: "assistant", text: "Searchable text." }] },
+			{ id: "two", ordinal: 2, passages: [{ start: 0, role: "assistant", text: "   " }] },
+		], { complete: true });
+		assert.deepEqual(store.pending({ local: true }).map(item => item.text), ["Searchable text."]);
+		assert.equal(store.coverage({ local: true }, "indexing").semantic_passages, 1);
+	} finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("tool output with NUL characters exports passages another computer accepts", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "desk-search-nul-")), file = join(directory, "native.jsonl");
 	// UTF-16 text read as bytes, and binary output that starts with NUL: SQLite text reads back only up to the first NUL.

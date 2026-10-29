@@ -1,3 +1,4 @@
+import { localNumber } from "./local-format.ts";
 import { useEffect, useId, useState, type CSSProperties } from "react";
 import type { UiAction, UiControl, UiValue } from "../../../pi-ui/index.ts";
 
@@ -45,7 +46,7 @@ export function ContextMeter({ capacity, limit, used }: { capacity: number; limi
 	const percent = (value: number) => `${Math.min(100, Math.max(0, value / Math.max(1, capacity) * 100))}%`;
 	return <span className={`context-meter${used != null && used > limit ? " over-budget" : ""}`}
 		role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={capacity} aria-valuenow={used ?? 0}
-		aria-valuetext={`${used == null ? "Usage not measured" : `${used.toLocaleString()} tokens used`}; budget ${limit.toLocaleString()}; capacity ${capacity.toLocaleString()}`}
+		aria-valuetext={`${used == null ? "Usage not measured" : `${localNumber(used)} tokens used`}; budget ${localNumber(limit)}; capacity ${localNumber(capacity)}`}
 		style={{ "--context-used": percent(used ?? 0), "--context-limit": percent(limit) } as CSSProperties}>
 		<span className="context-allowed" /><span className="context-used" /><span className="context-stop" />
 	</span>;

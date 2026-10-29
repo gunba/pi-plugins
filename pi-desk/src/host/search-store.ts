@@ -256,11 +256,13 @@ export class SearchStore {
 	}
 	/** Enforce known expiries offline. Empty source metadata prevents expired inventory members appearing as unfinished imports. */
 	expire(now = Date.now()): void {
+		// One source at a time through passages_entry: a single DELETE over every passage read the whole table each minute.
 		const removed = this.transaction(() => {
-			const result = this.sql(`DELETE FROM passages WHERE EXISTS(SELECT 1 FROM sources s
-				WHERE s.scope=passages.scope AND s.computer=passages.computer AND s.id=passages.source AND s.expires IS NOT NULL AND s.expires<=?)`).run(now);
-			this.sql("UPDATE sources SET cursor=0,complete=1 WHERE expires IS NOT NULL AND expires<=?").run(now);
-			return result.changes;
+			let changes = 0;
+			for (const source of this.sql("SELECT scope,computer,id FROM sources WHERE expires IS NOT NULL AND expires<=?").all(now) as { scope: string; computer: string; id: string }[])
+				changes += Number(this.sql("DELETE FROM passages WHERE scope=? AND computer=? AND source=?").run(source.scope, source.computer, source.id).changes);
+			this.sql("UPDATE sources SET cursor=0,complete=1 WHERE expires IS NOT NULL AND expires<=? AND (cursor<>0 OR complete=0)").run(now);
+			return changes;
 		});
 		if (removed) this.collect();
 	}
@@ -275,7 +277,8 @@ export class SearchStore {
 	}
 	pending(scope: QueryScope, limit = 8): { id: number; hash: string; text: string }[] {
 		const where = this.filter(scope, undefined, "conversation");
-		return this.sql(`SELECT c.id,c.hash,c.text FROM chunks c WHERE (c.vector IS NULL OR c.model<>?)
+		// Blank text (a passage cut at a NUL, say) cannot be embedded, and one in a batch failed the whole batch every time.
+		return this.sql(`SELECT c.id,c.hash,c.text FROM chunks c WHERE (c.vector IS NULL OR c.model<>?) AND trim(c.text)<>''
 			AND c.id IN (${this.eligible(where.sql)}) ORDER BY c.id DESC LIMIT ?`)
 			.all(SEARCH_EMBEDDING_MODEL, ...where.parameters, limit) as unknown as { id: number; hash: string; text: string }[];
 	}
@@ -291,18 +294,23 @@ export class SearchStore {
 			}
 		});
 	}
+	/** The oldest completed scan among the computers in scope; undefined before any. */
+	lastScan(scope: QueryScope): number | undefined {
+		const scanned = [scope.local ? Number(this.get("scanned") ?? 0) : 0, scope.remote ? Number(this.sql("SELECT min(scanned) AS scanned FROM inventories WHERE scope=?").get(scope.remote)?.scanned ?? 0) : 0].filter(Boolean);
+		return scanned.length ? Math.min(...scanned) : undefined;
+	}
 	coverage(scope: QueryScope, semantic: SearchCoverage["semantic"], error?: string): SearchCoverage {
 		const where = this.scopeWhere(scope), filter = this.filter(scope, undefined, "conversation");
 		const sources = this.sql(`SELECT count(*) AS sources,coalesce(sum(cursor),0) AS passages,coalesce(sum(complete=0),0) AS pending_sources,
 			coalesce(sum(warning IS NOT NULL),0) AS warnings FROM sources s WHERE ${where.sql}`).get(...where.parameters)!;
-		const vectors = this.sql(`SELECT count(DISTINCT c.id) AS semantic_passages,count(DISTINCT CASE WHEN c.model=? AND c.vector IS NOT NULL THEN c.id END) AS embedded_passages
+		const vectors = this.sql(`SELECT count(DISTINCT CASE WHEN trim(c.text)<>'' THEN c.id END) AS semantic_passages,count(DISTINCT CASE WHEN c.model=? AND c.vector IS NOT NULL THEN c.id END) AS embedded_passages
 			${this.join} WHERE ${filter.sql}`).get(SEARCH_EMBEDDING_MODEL, ...filter.parameters)!;
 		const missing = scope.remote ? Number(this.sql(`SELECT count(*) AS count FROM inventory_sources i WHERE i.scope=? AND NOT EXISTS
 			(SELECT 1 FROM sources s WHERE s.scope=i.scope AND s.computer=i.computer AND s.id=i.source)`).get(scope.remote)!.count) : 0;
-		const scanned = [scope.local ? Number(this.get("scanned") ?? 0) : 0, scope.remote ? Number(this.sql("SELECT min(scanned) AS scanned FROM inventories WHERE scope=?").get(scope.remote)?.scanned ?? 0) : 0].filter(Boolean);
+		const scanned = this.lastScan(scope);
 		return { sources: Number(sources.sources) + missing, pending_sources: Number(sources.pending_sources) + missing, warnings: Number(sources.warnings),
 			passages: Number(sources.passages), semantic_passages: Number(vectors.semantic_passages), embedded_passages: Number(vectors.embedded_passages),
-			...(scanned.length ? { last_scan: Math.min(...scanned) } : {}), semantic, ...(error ? { semantic_error: error.slice(0, 300) } : {}) };
+			...(scanned !== undefined ? { last_scan: scanned } : {}), semantic, ...(error ? { semantic_error: error.slice(0, 300) } : {}) };
 	}
 	private lexical(query: string, scope: QueryScope, filters: SearchFilters, role: "conversation" | "tool"): number[] {
 		const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}_]{2,80}/gu) ?? [])].slice(0, 32);

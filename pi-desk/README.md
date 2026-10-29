@@ -198,6 +198,14 @@ node dist/host/cli.js serve --cwd /path/to/project
 reports extensions, tools and commands, then shuts down. It does not request
 model inference. Run it against a trusted project to include project resources.
 
+`npm run bench` (after `npm run build`) measures what does not depend on the
+machine: the bytes a browser receives on a seeded two-minute workload over the
+local stream, the relay and compact patches; the client bundle's size; and the
+search store's expiry and last-scan work against one full read of its passages.
+CI runs it with `--check` against `bench/baseline.json` and fails when a metric
+is worse than the baseline allows. After an intended change, `--update` writes
+the new baseline; commit it with the change.
+
 `serve` listens on `127.0.0.1:8910`. Use `open --local` for a local recovery link.
 Use `--port` to select another port and `--data-dir` for isolated development
 state. This command runs in the foreground; `start` detaches instead.

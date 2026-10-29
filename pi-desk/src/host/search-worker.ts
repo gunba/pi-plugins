@@ -20,7 +20,8 @@ export interface SearchWorkerState {
 	epoch: string;
 	sources: SearchSource[];
 	scanner: SearchScanner["status"];
-	coverage: SearchCoverage;
+	/** When the computers in scope last finished a scan. Full coverage counts every passage, too slow to send on every change. */
+	lastScan?: number;
 }
 
 // A child process of the host, so that native inference cannot take the host down and runs at the lowest priority.
@@ -91,7 +92,7 @@ async function handle(command: SearchWorkerCommand): Promise<unknown> {
 			changed(true); kick(); return;
 		}
 		case "scan": await scanner.scan(); return;
-		case "state": return { epoch: store.epoch, sources: store.localSources(), scanner: scanner.status, coverage: coverage() } satisfies SearchWorkerState;
+		case "state": { const lastScan = store.lastScan(scope()); return { epoch: store.epoch, sources: store.localSources(), scanner: scanner.status, ...(lastScan !== undefined ? { lastScan } : {}) } satisfies SearchWorkerState; }
 		case "inventory": store.inventory(command.scope, command.computer, command.epoch, command.snapshot, command.sources, command.scanned); changed(); return;
 		case "offer": { const result = store.offer(command.scope, command.computer, command.source); changed(); return result; }
 		case "import": { const result = store.import(command.scope, command.computer, command.source, command.after, command.passages); changed(); kick(); return result; }

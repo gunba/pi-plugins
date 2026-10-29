@@ -1,3 +1,4 @@
+import { HOUR_MINUTE, localDateTime, localTime } from "./local-format.ts";
 import { useEffect, useState, type ReactNode } from "react";
 import type { UiAction, UiDetails, UiValue } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot } from "../shared/protocol.ts";
@@ -42,7 +43,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 		const live = snapshot?.activity === "running", left = live ? cache.ttlMs : Math.max(0, cache.usedAt + cache.ttlMs - now);
 		const expires = new Date(cache.usedAt + cache.ttlMs);
 		const title = live ? "Prompt cache: kept warm while Pi works."
-			: left ? `Prompt cache: expires at ${expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} unless a message is sent.\nAfter that, the next message pays to cache the whole conversation again.`
+			: left ? `Prompt cache: expires at ${localTime(expires, HOUR_MINUTE)} unless a message is sent.\nAfter that, the next message pays to cache the whole conversation again.`
 			: "Prompt cache: expired. The next message pays to cache the whole conversation again.";
 		return <span className={`usage-gauge usage-gauge-cache${left ? "" : " expired"}`} title={title}>
 			<span className="usage-gauge-label">Cache</span>
@@ -58,8 +59,8 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	const usageBadge = (badge: typeof badges[number], index: number) => {
 		const meter = gauge(badge)!, percent = Math.max(0, Math.min(100, meter.value / Math.max(1, meter.max) * 100));
 		const reset = meter.resetsAt ? new Date(meter.resetsAt) : undefined, until = reset ? countdown(reset.getTime() - now) : /· resets in (.+)$/.exec(badge.value)?.[1];
-		const resetText = reset ? ` · resets ${reset.toDateString() === new Date().toDateString() ? reset.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-			: reset.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : (/· (resets in .+)$/.exec(badge.value)?.[1] ? ` · ${/· (resets in .+)$/.exec(badge.value)![1]}` : "");
+		const resetText = reset ? ` · resets ${reset.toDateString() === new Date().toDateString() ? localTime(reset, HOUR_MINUTE)
+			: localDateTime(reset, { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : (/· (resets in .+)$/.exec(badge.value)?.[1] ? ` · ${/· (resets in .+)$/.exec(badge.value)![1]}` : "");
 		const kind = badge.label === "5h" ? " usage-gauge-session" : /^week/i.test(badge.label) ? " usage-gauge-week" : "";
 		return <span className={`usage-gauge${kind}${percent <= 10 ? " critical" : percent <= 25 ? " low" : ""}`} key={`${badge.view.id}/${index}`}
 			title={`${badge.label === "Weekly" ? "Weekly" : `${badge.label}`} allowance: ${Math.round(percent)}% left${resetText}${badge.description ? `\n${badge.description}` : ""}`}>

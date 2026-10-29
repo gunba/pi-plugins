@@ -1,3 +1,4 @@
+import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
 import { createContext, memo, useContext, useState, type CSSProperties } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage, NestedCall } from "../shared/protocol.ts";
@@ -96,12 +97,12 @@ function RewindButton({ message }: { message: ChatMessage }) {
 /** Time of day, with the date when it is not today. */
 function timeLabel(timestamp: number): string {
 	if (!timestamp) return "";
-	const date = new Date(timestamp), now = new Date(), time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	const date = new Date(timestamp), now = new Date(), time = localTime(date, HOUR_MINUTE);
 	if (date.toDateString() === now.toDateString()) return time;
-	return `${date.toLocaleDateString([], { day: "numeric", month: "short", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) })}, ${time}`;
+	return `${localDate(date, { day: "numeric", month: "short", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) })}, ${time}`;
 }
 function Time({ timestamp }: { timestamp: number }) {
-	return timestamp ? <time dateTime={new Date(timestamp).toISOString()} title={new Date(timestamp).toLocaleString()}>{timeLabel(timestamp)}</time> : null;
+	return timestamp ? <time dateTime={new Date(timestamp).toISOString()} title={localDateTime(timestamp)}>{timeLabel(timestamp)}</time> : null;
 }
 function ToolStatus({ message }: { message?: ChatMessage }) {
 	const tool = message?.tool;
@@ -302,8 +303,8 @@ function MessageRow({ message, sessionKey, source, results, thinking, traceConti
 				summary={<><Icon name={notice?.kind === "party" || notice?.kind === "agent" ? "party" : notice?.kind === "process" ? "terminal" : notice?.kind === "work" ? "activity" : notice?.kind === "schedule" ? "clock" : notice?.kind === "compaction" ? "layers" : notice?.kind === "watch" ? "eye" : "info"} />
 					<strong>{notice?.title ?? "Notification"}</strong>{notice?.detail && <span className="notice-detail">{notice.detail}</span>}{time}</>}>
 				{notice?.kind === "schedule" && <div className="notice-metadata">
-					<span title={new Date(notice.queuedAt!).toLocaleString()}>Queued {timeLabel(notice.queuedAt!)}</span>
-					<span title={new Date(notice.dueAt!).toLocaleString()}>Due {timeLabel(notice.dueAt!)}</span>
+					<span title={localDateTime(notice.queuedAt!)}>Queued {timeLabel(notice.queuedAt!)}</span>
+					<span title={localDateTime(notice.dueAt!)}>Due {timeLabel(notice.dueAt!)}</span>
 				</div>}
 				<MessageBody message={message} sessionKey={sessionKey} source={source} />
 			</Disclosure>

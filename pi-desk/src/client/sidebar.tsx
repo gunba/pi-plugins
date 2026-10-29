@@ -1,3 +1,4 @@
+import { localDateTime } from "./local-format.ts";
 import { useState } from "react";
 import { api } from "./connection.ts";
 import { activityLabel, backgroundWork, sessionActivity } from "./activity.ts";
@@ -163,7 +164,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       })}
       {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
         (keptFor(computer).length > 0 ? <>{keptFor(computer).filter(copy => copy.open || closedShown.has(computer.id!)).map(copy => <div className="session-row kept-copy" key={copy.session}>
-          <span className="kept-copy-name" title={`${copy.cwd} · last active ${new Date(copy.updated).toLocaleString()}`}>
+          <span className="kept-copy-name" title={`${copy.cwd} · last active ${localDateTime(copy.updated)}`}>
             <strong>{copy.title || folderName(copy.cwd)}</strong><small>{folderName(copy.cwd)} · {new Date(copy.updated).toLocaleDateString([], { day: "numeric", month: "short" })}</small></span>
           <button type="button" className="quiet-action" onClick={() => move({ source: computer as Computer, session: copy.session, title: copy.title || folderName(copy.cwd), cwd: copy.cwd })}>Move…</button>
         </div>)}

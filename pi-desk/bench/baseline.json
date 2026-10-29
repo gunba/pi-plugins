@@ -1,0 +1,10 @@
+{
+	"wire_local_kb_per_minute": 17950,
+	"wire_relay_kb_per_minute": 2765,
+	"wire_compact_kb_per_minute": 960,
+	"bundle_js_kb": 928,
+	"bundle_js_gzip_kb": 285,
+	"bundle_css_gzip_kb": 25,
+	"search_expiry_vs_scan": 0.009,
+	"search_last_scan_vs_scan": 0.001
+}

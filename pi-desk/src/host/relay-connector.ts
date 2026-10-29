@@ -8,9 +8,9 @@ import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../s
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
 import { EventDelivery, EventWindow } from "./event-window.ts";
-import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent } from "../shared/relay-protocol.ts";
-import type { HostEvent, SessionView } from "../shared/protocol.ts";
-import { sessionChanges } from "../shared/session-patch.ts";
+import { remoteOrigins, socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent, type StatePatchEvent } from "../shared/relay-protocol.ts";
+import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
+import { sessionChanges, stateChanges } from "../shared/session-patch.ts";
 import { API_VERSION, RELEASE, apiMatches } from "../shared/release.ts";
 import { AccountSignInRequired } from "./account-errors.ts";
 import { MAX_NETWORK_PACKET } from "../../../pi-agents/network.ts";
@@ -21,17 +21,25 @@ interface Peer {
 	leaseUntil: number; ownExpires: number; sentCredential?: string; handshaking: boolean; renewing: boolean;
 	/** A browser on this computer connected straight to the host; otherwise frames go through the relay. */
 	local?: WebSocket;
-	/** The browser applies conversation changes alone; `sent` is what it was last sent of each conversation. */
-	patches?: boolean; sent?: Map<string, SessionView>;
+	/**
+	 * The browser applies conversation changes alone; `sent` is what it was last sent of each conversation. A compact
+	 * browser ("session-patch-2") also takes compact changes and the workspace state as changes against `state`.
+	 */
+	patches?: boolean; compact?: boolean; sent?: Map<string, SessionView>; state?: HostState;
 }
-/** An event as this browser receives it: a conversation it already has comes as its changes. */
-function forBrowser(peer: Peer, event: HostEvent): HostEvent | SessionPatchEvent {
+/** An event as this browser receives it: a conversation or state it already has comes as its changes. */
+function forBrowser(peer: Peer, event: HostEvent): HostEvent | SessionPatchEvent | StatePatchEvent {
 	if (!peer.patches || !peer.sent) return event;
-	if (event.type === "state") { peer.sent = new Map(event.state.sessions.map(session => [session.key, session])); return event; }
+	if (event.type === "state") {
+		const changes = peer.compact && peer.state ? stateChanges(peer.state, event.state, peer.sent) : undefined;
+		peer.sent = new Map(event.state.sessions.map(session => [session.key, session]));
+		if (peer.compact) peer.state = event.state;
+		return changes ? { type: "state_patch", changes } : event;
+	}
 	if (event.type !== "session") return event;
 	const before = peer.sent.get(event.session.key);
 	peer.sent.set(event.session.key, event.session);
-	return before ? { type: "session_patch", key: event.session.key, changes: sessionChanges(before, event.session) } : event;
+	return before ? { type: "session_patch", key: event.session.key, changes: sessionChanges(before, event.session, [], peer.compact) } : event;
 }
 export interface RemoteAccess { id: string; authorized: () => boolean }
 export interface HostAccount extends ChannelIdentity {
@@ -359,7 +367,9 @@ export class RelayConnector {
 				this.drop(peer.id, true, 4003); return;
 			}
 			peer.ready = true; clearTimeout(peer.timer);
-			if (!peer.initiator && Array.isArray(message.features) && message.features.includes("session-patch")) { peer.patches = true; peer.sent = new Map(); }
+			if (!peer.initiator && Array.isArray(message.features) && message.features.includes("session-patch")) {
+				peer.patches = true; peer.sent = new Map(); peer.compact = message.features.includes("session-patch-2");
+			}
 			if (!peer.initiator) await peer.channel!.send({ type: "ready", release: RELEASE, ping: true,
 				...(this.options.direct && !peer.local ? { direct: { port: this.options.direct, platform: process.platform } } : {}) } satisfies RemotePayload);
 			if (!this.valid(peer)) return;

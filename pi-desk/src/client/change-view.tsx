@@ -1,3 +1,4 @@
+import { HOUR_MINUTE, localTime } from "./local-format.ts";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
@@ -428,7 +429,7 @@ export function WorkPane({ items, links, selected, select, expand, close, sessio
 		{newest.length > 1 && <ol className="work-list">{newest.map(item => <li key={item.id}>
 			<button type="button" className="work-list-item" aria-current={item === current ? "true" : undefined} onClick={() => select(item.id)}>
 				<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}
-				<time>{new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+				<time>{localTime(item.at, HOUR_MINUTE)}</time>
 			</button></li>)}</ol>}
 		{links.length > 0 && <section className="work-links" aria-label="Links">
 			<h3>Links<small>{links.length}</small></h3>
@@ -436,7 +437,7 @@ export function WorkPane({ items, links, selected, select, expand, close, sessio
 				<Icon name={link.file ? "folder" : "globe"} />
 				{link.file ? <ReferenceContext value={{ message: link.message }}><FileLink session={session} file={link.file}>{link.label}</FileLink></ReferenceContext>
 					: <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>{link.label}</a>}
-				<time>{new Date(link.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+				<time>{localTime(link.at, HOUR_MINUTE)}</time>
 			</li>)}</ol>
 		</section>}
 	</aside>;

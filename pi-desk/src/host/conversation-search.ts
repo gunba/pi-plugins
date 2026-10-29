@@ -119,7 +119,7 @@ export class ConversationSearch {
 				const sources = this.options.settings().send ? state.sources : [], ids = sources.map(source => source.id).sort();
 				const snapshot = createHash("sha256").update(`${state.epoch}\0${Math.floor(Date.now() / 300_000)}\0${ids.join("\0")}`).digest("hex");
 				if (peer.sent !== snapshot) {
-					if (peer.outgoing?.snapshot !== snapshot) peer.outgoing = { snapshot, ids, offset: 0, scanned: state.coverage.last_scan ?? 0 };
+					if (peer.outgoing?.snapshot !== snapshot) peer.outgoing = { snapshot, ids, offset: 0, scanned: state.lastScan ?? 0 };
 					const outgoing = peer.outgoing;
 					for (let batch = 0; batch < 4; batch++) {
 						const page = outgoing.ids.slice(outgoing.offset, outgoing.offset + 256), done = outgoing.offset + page.length === outgoing.ids.length;

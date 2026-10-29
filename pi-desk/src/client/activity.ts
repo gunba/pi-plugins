@@ -1,3 +1,4 @@
+import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { agentInventory } from "./agent-inventory.ts";
 
@@ -32,9 +33,9 @@ export function activityLabel(state: string): string {
 
 /** When a conversation's watch wakes it: the time today, the weekday and time within a week, otherwise the date and time. */
 export function wakeLabel(at: number, now = Date.now()): string {
-	const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	const time = localTime(at, HOUR_MINUTE);
 	if (new Date(at).toDateString() === new Date(now).toDateString()) return `Wakes ${time}`;
-	return `Wakes ${new Date(at).toLocaleDateString([], at - now < 6 * 86_400_000 ? { weekday: "short" } : { day: "numeric", month: "short" })} ${time}`;
+	return `Wakes ${localDate(at, at - now < 6 * 86_400_000 ? { weekday: "short" } : { day: "numeric", month: "short" })} ${time}`;
 }
 /** States in which a pending wake says more than the activity itself. */
 export const showsWake = (state: string) => ["idle", "ready", "sleeping", "closed", "interrupted"].includes(state);
@@ -58,7 +59,7 @@ export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & 
 	if (agents.length) return { label: agents.length === 1 ? "Agent working" : `${agents.length} agents working`,
 		title: `Waiting on ${agents.map(view => view.title).join(", ")}` };
 	if (session.wakes) return { label: wakeLabel(session.wakes),
-		title: `A watch wakes it ${new Date(session.wakes).toLocaleString()}${session.state === "closed" ? "; Desk reopens it then" : ""}` };
+		title: `A watch wakes it ${localDateTime(session.wakes)}${session.state === "closed" ? "; Desk reopens it then" : ""}` };
 	// Running, its watches are listed by its view; asleep, by what Desk kept when it closed.
 	const watches = session.ui?.views.find(view => view.id === "pi-watch")?.badges?.[0]?.description
 		?? session.waiting?.map(item => `${item.title}${item.detail ? `: ${item.detail}` : ""}`).join("\n");
