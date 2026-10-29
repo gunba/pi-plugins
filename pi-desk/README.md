@@ -520,7 +520,7 @@ sleep. Tasks stay available while any other computer is off. Agents and the Dot
 connector on other computers use it through their own Desk, and a task can be
 read or changed only while the workspace server is connected. Tasks a computer
 kept before it moved to the workspace server once it connects. An agent is told
-on its own computer when Jordan finishes a task it added, and a closed
+on its own computer when the user finishes a task it added, and a closed
 conversation wakes for the message. An account without a workspace server keeps
 a task list on each computer.
 
