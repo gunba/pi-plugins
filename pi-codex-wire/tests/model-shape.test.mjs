@@ -94,6 +94,22 @@ test('response ID normalization preserves Lite namespace checks and raw completi
   });
 });
 
+test('policy capacity normalization preserves event data and leaves other errors alone', () => {
+  const normalize = responseNormalizer(false);
+  const event = freeze({ type: 'response.failed', sequence_number: 7, response: { id: 'resp_policy', status: 'failed',
+    error: { code: 'policy_capacity_unavailable', message: 'model is at capacity', headers: { 'Retry-After': '0', 'x-request-id': 'req_capture' } } } });
+  assert.equal(normalize(event), event);
+  const unadvised = freeze({ ...event, response: { ...event.response, error: { ...event.response.error, headers: { 'x-request-id': 'req_capture' } } } });
+  assert.deepEqual(normalize(unadvised), { ...unadvised, response: { ...unadvised.response, error: { ...unadvised.response.error,
+    message: 'Policy-restricted capacity is unavailable. Please try again later.' } } });
+  assert.equal(event.response.error.message, 'model is at capacity');
+  for (const untouched of [
+    { type: 'error', error: event.response.error },
+    { type: 'response.failed', response: { error: { code: 'server_is_overloaded', message: 'model is at capacity' } } },
+    { type: 'response.failed', response: { error: { code: 'model_not_found', message: 'Not found' } } },
+  ]) assert.equal(normalize(untouched), untouched);
+});
+
 test('native defaults, encrypted reasoning include, strict false, no mutation', () => {
   const input = freeze(body({ temperature: 0.7 }));
   const model = freeze(metadata());
