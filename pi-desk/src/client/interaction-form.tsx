@@ -65,7 +65,7 @@ export function InteractionForm({ interaction, questions = [], choose, owner = "
 			: form.kind === "question" ? <>
 				{form.context && <div className="question-context"><Markdown remarkPlugins={markdownPlugins()}>{form.context}</Markdown></div>}
 				<div className="choices">
-					{form.options.map((option, index) => <label className={`choice ${choices.includes(option.title) && !freeform ? "chosen" : ""}`} key={index}>
+					{form.options.map((option, index) => <label className={`choice ${choices.includes(option.title) && !freeform ? "chosen" : ""}`} key={index} title={option.description}>
 						<input type={form.allowMultiple ? "checkbox" : "radio"} name="choice" checked={!freeform && choices.includes(option.title)} onChange={() => {
 							setFreeform(false);
 							setChoices(form.allowMultiple
@@ -78,10 +78,10 @@ export function InteractionForm({ interaction, questions = [], choose, owner = "
 						<input type="radio" name="choice" checked={freeform} onChange={() => setFreeform(true)} /><span>Write an answer</span>
 					</label>}
 				</div>
-				{freeform && <textarea data-autofocus aria-label="Your answer" value={text} onChange={event => setText(event.target.value)} placeholder="Your answer…" rows={4} />}
+				{freeform && <textarea data-autofocus aria-label="Your answer" value={text} onChange={event => setText(event.target.value)} placeholder="Your answer…" rows={1} />}
 				{form.allowComment && !freeform && <label>
 					Comment <span className="muted">(optional)</span>
-					<textarea value={text} onChange={event => setText(event.target.value)} rows={2} />
+					<textarea value={text} onChange={event => setText(event.target.value)} rows={1} />
 				</label>}
 			</>
 			: <textarea data-autofocus aria-label={form.title} value={text} onChange={event => setText(event.target.value)} placeholder={form.placeholder}

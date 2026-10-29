@@ -1385,18 +1385,24 @@ details[open] > summary:before {
 @media(max-width:760px) { .question-modal textarea, .question-modal input, .question-modal select { font-size:16px; } }
 .question-scroll { min-height:0; overflow:auto; overscroll-behavior:contain; overflow-wrap:anywhere; }
 .question-scroll .question-owner { font-size:11px; margin:0 0 8px; }
-.question-scroll .choices { gap:6px; margin:10px 0; }
-.question-scroll .choice { padding:9px 10px; gap:9px; border-radius:7px; }
-.question-scroll .choice > span { min-width:0; }
+.question-scroll .choices { gap:4px; margin:8px 0; }
+/* One row per option: its description is cut to a line until the option is chosen. */
+.question-scroll .choice { padding:6px 10px; gap:9px; border-radius:7px; align-items:center; }
+.question-scroll .choice > span { min-width:0; display:flex; align-items:baseline; gap:8px; }
+.question-scroll .choice strong { flex:0 1 auto; min-width:0; }
+.question-scroll .choice small { flex:1 1 0; min-width:0; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.question-scroll .choice.chosen > span { flex-wrap:wrap; }
+.question-scroll .choice.chosen small { flex-basis:100%; white-space:normal; }
 .question-scroll .question-context { max-height:min(24dvh,160px); line-height:1.5; }
-.question-scroll textarea { min-height:64px; max-height:min(40dvh,280px); }
+/* Answers start as one line and grow with what is typed. */
+.question-scroll textarea { min-height:0; field-sizing:content; max-height:min(40dvh,280px); resize:none; }
 .question-form > .dialog-actions { position:static; flex:none; margin-top:10px; padding:10px 0 0; border-top:1px solid var(--border); background:var(--surface); }
 .inline-question { overflow:hidden; padding:12px; }
 .inline-question > header { flex:none; }
 @media (max-width:480px), (max-height:600px) {
   .question-modal { padding:12px; }
   .question-modal .panel-title h2 { font-size:14px; }
-  .question-scroll .choice { padding:7px 9px; }
+  .question-scroll .choice { padding:5px 9px; }
   .question-form > .dialog-actions { gap:6px; margin-top:8px; padding-top:8px; }
 }
 .modal select {
