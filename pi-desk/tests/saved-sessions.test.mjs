@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -164,4 +164,35 @@ test("Windows project casing shares one scan and includes mixed-case headers in 
 	assert.equal(same.progress.id, first.progress.id);
 	assert.equal(same.progress.state, "ready");
 	assert.equal(same.matched, 1);
+});
+
+test("a relisting rereads only changed files and shows the time of their new messages", async t => {
+	const root = await mkdtemp(join(tmpdir(), "desk-catalog-")), source = join(root, "sessions"), data = join(root, "index");
+	await mkdir(source); await mkdir(data);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const file = join(source, "talk.jsonl"), line = entry => JSON.stringify(entry) + "\n";
+	const message = (role, text, timestamp) => ({ type: "message", id: text, parentId: null, timestamp: new Date(timestamp).toISOString(),
+		message: { role, content: [{ type: "text", text }], timestamp } });
+	await writeFile(file, line({ type: "session", version: 3, id: "talk", cwd: root, timestamp: "2026-10-01T00:00:00.000Z" })
+		+ line(message("user", "Start", Date.UTC(2026, 9, 1, 1))));
+	const quiet = join(source, "quiet.jsonl");
+	await writeFile(quiet, line({ type: "session", version: 3, id: "quiet", cwd: root, timestamp: "2026-09-01T00:00:00.000Z" }));
+	const written = new Date("2026-09-01T00:00:00Z");
+	await utimes(quiet, written, written);
+	const catalog = new SavedSessionIndex(data, root, root, source);
+	try {
+		const first = await complete(catalog);
+		assert.deepEqual(first.sessions.map(item => [item.id, item.modified, item.messageCount]),
+			[["talk", "2026-10-01T01:00:00.000Z", 1], ["quiet", "2026-09-01T00:00:00.000Z", 0]]);
+		// A file with the same size and modification time is not read again: its earlier row stands.
+		await writeFile(quiet, line({ type: "session", version: 3, id: "qu1et", cwd: root, timestamp: "2026-09-01T00:00:00.000Z" }));
+		await utimes(quiet, written, written);
+		const handle = await open(file, "a");
+		await handle.write(line(message("assistant", "Reply", Date.UTC(2026, 9, 29, 8))));
+		await handle.close();
+		const second = await complete(catalog, { refresh: true });
+		assert.deepEqual(second.sessions.map(item => [item.id, item.modified, item.messageCount, item.firstMessage]),
+			[["talk", "2026-10-29T08:00:00.000Z", 2, "Start"], ["quiet", "2026-09-01T00:00:00.000Z", 0, "(no messages)"]]);
+		assert.ok(second.sessions.every(item => !("stamp" in item)));
+	} finally { await catalog.close(); }
 });

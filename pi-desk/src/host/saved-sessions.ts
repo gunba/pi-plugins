@@ -96,7 +96,8 @@ export class SavedSessionIndex {
 			const built = new URL("./catalog-worker.js", import.meta.url);
 			const worker = new Worker(existsSync(built) ? built : new URL("./catalog-worker.ts", import.meta.url), {
 				workerData: { cwd: view.cwd, baseCwd: this.cwd, agentDir: this.agentDir,
-					sessionDir: this.sessionDir, directories: this.knownDirectories() },
+					sessionDir: this.sessionDir, directories: this.knownDirectories(),
+					previous: (this.db.prepare("SELECT data FROM saved WHERE scope=?").all(view.scope) as { data: string }[]).map(row => row.data) },
 				env: { ...process.env, PI_CODING_AGENT_DIR: this.agentDir },
 				resourceLimits: { maxOldGenerationSizeMb: 512 },
 			});
@@ -180,7 +181,9 @@ export class SavedSessionIndex {
 		let characters = 0;
 		for (const row of rows) {
 			if (sessions.length && characters + row.data.length > 128_000) break;
-			characters += row.data.length; sessions.push(JSON.parse(row.data));
+			// The stamp (size and modification time) only tells the next listing which files changed.
+			const { stamp: _stamp, ...session } = JSON.parse(row.data) as SavedSession & { stamp?: string };
+			characters += row.data.length; sessions.push(session);
 		}
 		return { sessions, total, matched, offset, revision: view.revision, scanned: view.scanned, warning: view.warning,
 			progress: { ...view.progress }, ...(offset + sessions.length < matched ? { next: offset + sessions.length } : {}) };
