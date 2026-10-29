@@ -465,9 +465,13 @@ Desk account/local recovery records and referenced attachments remain. The insta
 to overwrite or delete a foreign service/task with the same name.
 
 Startup failures appear in `doctor`, service/task status, `host.log` and, when
-available, `login-error.txt`. There is no automatic crash-restart loop and no
-forced process-tree termination. A subsequent start restores references, not
-active workers or tool requests.
+available, `login-error.txt`. On Linux the service starts the host again 10
+seconds after a crash or kill, including one by `systemd-oomd`, at most five
+times in five minutes; a clean exit or `systemctl stop` is left alone. Each
+release rewrites an installed unit that an earlier one wrote differently. The
+Windows logon task does not restart a host that exits. There is no forced
+process-tree termination. A restart restores references, not active workers or
+tool requests.
 
 Managed users can instead use `/desk login`; its detached controller performs
 the stop/change/start sequence after confirmation. It does not apply an unrelated

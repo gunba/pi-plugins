@@ -19,6 +19,8 @@ export function unitText(c: LoginConfig): string {
 	return `# ${marker(c)}
 [Unit]
 Description=Pi Desk
+StartLimitIntervalSec=300
+StartLimitBurst=5
 [Service]
 Type=exec
 ExecStart=${command} login-run --data-dir ${unitQuote(c.directory)}
@@ -26,7 +28,10 @@ ExecStop=${command} stop --host-only --data-dir ${unitQuote(c.directory)}
 KillMode=process
 SendSIGKILL=no
 TimeoutStopSec=45
-Restart=no
+# After any crash or kill, including systemd-oomd's, which on-failure does not restart; not after a clean exit.
+Restart=always
+RestartPreventExitStatus=0
+RestartSec=10
 [Install]
 WantedBy=default.target
 `;
@@ -103,6 +108,14 @@ export async function installManager(c: LoginConfig): Promise<void> {
 	writeFileSync(c.unit!, unitText(c), { flag: "wx", mode: 0o600 });
 	await systemctl("daemon-reload");
 	await systemctl("enable", `${c.name}.service`);
+}
+/** Rewrites this installation's unit when an earlier release wrote it differently; systemd applies it on reload. */
+export async function refreshManager(c: LoginConfig): Promise<void> {
+	if (c.platform !== "linux" || !ownUnit(c)) return;
+	const text = unitText(c);
+	if (readFileSync(c.unit!, "utf8") === text) return;
+	writeFileSync(c.unit!, text, { mode: 0o600 });
+	await systemctl("daemon-reload");
 }
 export async function startManager(c: LoginConfig): Promise<void> {
 	const status = await managerStatus(c);

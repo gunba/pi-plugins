@@ -135,6 +135,10 @@ async function main(): Promise<void> {
 			proxy: values.proxy });
 		const started = await host.start();
 		console.log(`Pi Desk: ${started.origin}`);
+		// The service unit is written at install; each release brings an installed one up to date.
+		const login = (await import("./login-config.ts")).readLoginConfig(directory);
+		if (login) void (await import("./login-manager.ts")).refreshManager(login)
+			.catch(error => console.error("The login-start unit could not be updated:", error instanceof Error ? error.message : String(error)));
 		if (!values.background) console.log("Use pi-desk open for the workspace, or open --local for loopback recovery.");
 		if (values.background && process.connected) process.send?.({ type: "ready" }, () => {});
 		const close = () => { void host.close().catch(() => {}); };
