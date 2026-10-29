@@ -129,7 +129,6 @@ export function QuestTracker({ logs, primary, agentName, openAgent, ask }: {
 					{due && <span className={`quest-due ${due.tone}`}>{due.text}</span>}
 					{quest.source.kind === "agent" && quest.source.id && <button type="button" className="quest-source" title="Open the conversation that added this"
 						onClick={() => openAgent(quest.source.id!)}>{agentName(quest.source.id) ?? quest.source.label ?? "Agent"}</button>}
-					{logs.length > 1 && <span>{log.name}</span>}
 					{!log.connected && <span>Offline · last known</span>}
 				</div>
 				{(quest.notes || noting === item.key) && (editable

@@ -21,7 +21,8 @@ Model tools:
   `max_rounds`. Continuation defaults to false.
 - `update_plan` takes an `action` and changes the current plan. Edit changes only
   supplied fields; `steps` replaces the complete list. Other actions are pause,
-  resume, complete and blocked. An update that would replace the objective or steps
+  resume, complete and blocked; objective or steps sent with one of these are
+  applied first, in the same call. An update that would replace the objective or steps
   is refused once, with the current plan, when the plan changed since the model last
   saw it (in Desk, say), so it can't overwrite a change it hasn't seen.
 
@@ -30,8 +31,10 @@ extension event bus with a probe object, whose `plan` is then set.
 
 Step states are pending, in_progress and completed. Parallel active steps are
 allowed; normalized step content must be unique. Steps persist across turns.
-Outstanding steps prevent completion, but finishing every step does not by
-itself prove the objective complete.
+A plan can complete with steps still open; they keep their recorded states.
+Finishing every step does not by itself prove the objective complete.
+`create_plan` while a plan is unfinished completes that plan, as it stands, and
+starts the new one.
 
 ## Continuation
 

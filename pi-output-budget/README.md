@@ -12,6 +12,10 @@ Tool results follow Pi's own output limits everywhere: 2,000 lines or 50 KB.
   request resends every image in the conversation. The file on disk is untouched.
 - **Missing paths** in a failed `read`, `grep`, `ls`, `find`, `edit` or `write` get a hint naming files with that name
   in the folders the conversation works in.
+- **Failed edits** get the closest region of the file, with line numbers, or the line of each occurrence when the
+  text is not unique.
+- **A shell killed by its own `pkill -f`** (exit 143; the pattern matches the command's own shell) gets a hint to
+  kill by process ID instead.
 
 Limits apply when a result is created. Earlier results are never rewritten, because changing earlier context breaks
 the provider's prompt cache.

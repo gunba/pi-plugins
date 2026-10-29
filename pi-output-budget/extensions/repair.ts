@@ -69,7 +69,7 @@ export function editHint(error: string, input: Record<string, unknown>, cwd: str
 	const read = (path: string) => { try { const full = resolve(cwd, path); return statSync(full).size <= 4 << 20 ? readFileSync(full, "utf8") : undefined; } catch { return; } };
 	const edits = Array.isArray(input.edits) ? input.edits as { oldText?: unknown }[] : typeof input.oldText === "string" ? [{ oldText: input.oldText }] : [];
 	const missing = /Could not find (?:edits\[(\d+)\]|the exact text) in (.+?)\. The old ?[tT]ext must match/.exec(error);
-	const duplicate = /Found (\d+) occurrences of (?:edits\[(\d+)\]|the text) in (.+?)\. Each oldText must be unique/.exec(error);
+	const duplicate = /Found (\d+) occurrences of (?:edits\[(\d+)\]|the text) in (.+?)\. (?:Each oldText|The text) must be unique/.exec(error);
 	if ((missing || duplicate) && typeof input.path === "string") {
 		const content = read(input.path), which = Number((missing ? missing[1] : duplicate![2]) ?? 0), text = edits[which]?.oldText;
 		if (content === undefined || typeof text !== "string") return;
@@ -79,6 +79,18 @@ export function editHint(error: string, input: Record<string, unknown>, cwd: str
 		}
 		return closestRegion(content, text);
 	}
+}
+
+/**
+ * A hint for a shell that killed itself: `pkill -f PATTERN` (or kill over `pgrep -f`) also matches the shell running
+ * the command, whose own command line holds PATTERN, so the shell dies with SIGTERM (exit 143) and the rest never runs.
+ */
+export function selfKillHint(error: string, input: Record<string, unknown>): string | undefined {
+	if (!/exited with code 143\b/.test(error) || typeof input.command !== "string") return;
+	if (!/\b(?:pkill|pgrep)\b[^;&|\n]*\s-[a-z]*f/.test(input.command)) return;
+	return "Exit 143: this shell was killed by its own pkill/pgrep -f, whose pattern also matches this command line. "
+		+ "Find the process IDs first (`pgrep -af PATTERN` in its own call), then kill them by ID, "
+		+ "or write the pattern so it cannot match itself, e.g. `pkill -f '[n]ode server.mjs'`.";
 }
 
 /** The path a failed call could not find, from its error and arguments. */

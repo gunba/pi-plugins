@@ -148,7 +148,6 @@ export function applyPlanChange(state: PlanFoldState, change: PlanChange): void 
 				: change.operation === "resume" ? ["active", "paused", "blocked"].includes(current.phase) && next.phase === "active"
 					&& (!next.autoContinue || state.roundsStarted < next.maxRounds)
 				: change.operation === "complete" ? current.phase !== "complete" && next.phase === "complete"
-					&& next.steps.every(step => step.status === "completed")
 				: current.phase === "active" && next.phase === "blocked";
 			if (!valid) throw new Error(`invalid ${change.operation} transition`);
 		}
@@ -169,7 +168,7 @@ export function restorePlanCheckpoint(change: PlanChange): PlanFoldState {
 	const valid = change.operation === "edit"
 		|| change.operation === "pause" && next.phase === "paused"
 		|| change.operation === "resume" && next.phase === "active" && (!next.autoContinue || change.roundsStarted < next.maxRounds)
-		|| change.operation === "complete" && next.phase === "complete" && next.steps.every(step => step.status === "completed")
+		|| change.operation === "complete" && next.phase === "complete"
 		|| change.operation === "block" && next.phase === "blocked";
 	if (!valid) throw new Error("plan checkpoint does not match its operation");
 	state.plan = structuredClone(next); state.roundsStarted = change.roundsStarted;
@@ -241,9 +240,8 @@ export function planResume(state: PlanFoldState, ref: PlanRef, now: number, acti
 }
 export function planComplete(state: PlanFoldState, ref: PlanRef, now: number): PlannedPlanChange {
 	const current = expectRef(state, ref);
+	// Unfinished steps stay as recorded: the model judges whether the objective is met, and the steps show what was left.
 	if (current.phase === "complete") throw new PlanError("plan is already complete", "PLAN_INVALID_TRANSITION");
-	if (current.steps.some(step => step.status !== "completed")) throw new PlanError("complete the remaining steps before completing the plan: "
-		+ "send complete with the final steps, each marked completed, in the same call", "PLAN_UNFINISHED_STEPS");
 	return snapshotChange(state, "complete", phaseSnapshot(current, "complete"), now, "disarmed");
 }
 export function planBlock(state: PlanFoldState, ref: PlanRef, reason: PlanBlockReason, now: number): PlannedPlanChange {

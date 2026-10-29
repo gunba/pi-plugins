@@ -8,7 +8,7 @@ import { acquireArtifactAccess } from "./ownership.ts";
 import { capAnthropicImages } from "./image-budget.ts";
 import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
 import { SUPERSEDED, withoutSuperseded } from "./superseded.ts";
-import { editHint, gitRoot, missingPath, missingPathHint } from "./repair.ts";
+import { editHint, gitRoot, missingPath, missingPathHint, selfKillHint } from "./repair.ts";
 
 export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
@@ -86,6 +86,7 @@ export default function outputBudget(pi: ExtensionAPI): void {
       const path = ["read", "grep", "ls", "find", "edit", "write"].includes(event.toolName) ? missingPath(error, input) : undefined;
       hint = path ? await missingPathHint(path, ctx.cwd, roots) : undefined;
       if (!hint && event.toolName === "edit") hint = editHint(error, input, ctx.cwd);
+      if (!hint && event.toolName === "bash") hint = selfKillHint(error, input);
     } catch { hint = undefined; }
     if (hint) return { content: [...event.content, { type: "text" as const, text: `\n${hint}` }] };
   });

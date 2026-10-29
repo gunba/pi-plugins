@@ -51,8 +51,8 @@ test("one manual plan retains steps across native turns and branch restoration",
 
 test("steps and continuation use one exact revision; ordinary edits never silently arm restored work", () => {
 	const h = harness(), created = h.store.create({ objective: "Ship", steps });
-	assert.throws(() => h.store.complete(ref(created)), /remaining steps/);
-	assert.equal(h.branch().length, 1, "invalid completion never appends a corrupt transition");
+	assert.throws(() => h.store.resume(ref(created)), /already running/);
+	assert.equal(h.branch().length, 1, "an invalid transition never appends a corrupt change");
 	const enabled = h.store.edit(ref(created), { autoContinue: true });
 	assert.equal(enabled.activation, "armed");
 	assert.throws(() => h.store.edit(ref(created), { objective: "stale edit" }), /current id and revision/);

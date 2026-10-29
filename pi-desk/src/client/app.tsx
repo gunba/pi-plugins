@@ -519,7 +519,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         : questsSelected ? <>
           <header className="topbar">
             <button className="icon-button mobile-nav" aria-label="Open navigation" onClick={() => setSidebar(true)}>☰</button>
-            <div className="conversation-heading"><span>{questLogs.length > 1 ? `${questLogs.length} computers` : questLogs[0]?.name ?? host.name}</span><strong>Tasks</strong></div>
+            <div className="conversation-heading"><strong>Tasks</strong></div>
           </header>
           <div className="quest-page">{questTracker}</div>
         </> : <>

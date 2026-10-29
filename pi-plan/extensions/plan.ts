@@ -191,11 +191,11 @@ class PlanController {
 	}
 	private control(params: UpdateParams, planRef: PlanRef): PlanView | undefined {
 		const replacements = definition(params);
-		// Completing with the final steps (often all marked completed) applies them first, in one call.
-		if (params.action === "complete" && Object.keys(replacements).length) {
+		// Definition fields sent with another action (complete with the final steps, say) are applied first, in one call.
+		if (params.action !== "edit" && Object.keys(replacements).length) {
 			const edited = this.store.edit(planRef, replacements);
 			planRef = { id: edited.id, revision: edited.revision };
-		} else if (params.action !== "edit" && Object.keys(replacements).length) throw new Error("Definition fields are only valid with action edit or complete.");
+		}
 		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
 		// An edit that changes nothing is how models look at the plan (there is no read tool): it returns the plan.
 		if (params.action === "edit" && !Object.keys(replacements).length) return this.store.get();

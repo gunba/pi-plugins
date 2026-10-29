@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closestRegion, editHint, missingPath, missingPathHint, occurrenceLines } from "../extensions/repair.ts";
+import { closestRegion, editHint, missingPath, missingPathHint, occurrenceLines, selfKillHint } from "../extensions/repair.ts";
 
 function repository(t) {
 	const root = mkdtempSync(join(tmpdir(), "repair-"));
@@ -40,4 +40,15 @@ test("an edit that did not match gets the closest region with line numbers; a re
 	writeFileSync(dup, "import a;\nreturn x;\nfoo();\nreturn x;\n");
 	assert.equal(editHint(`Found 2 occurrences of edits[0] in ${dup}. Each oldText must be unique. Please provide more context to make it unique.`,
 		{ path: dup, edits: [{ oldText: "return x;" }] }, root), "It occurs at lines 2, 4. Include nearby lines to pick one.");
+	assert.equal(editHint(`Found 2 occurrences of the text in ${dup}. The text must be unique. Please provide more context to make it unique.`,
+		{ path: dup, oldText: "return x;" }, root), "It occurs at lines 2, 4. Include nearby lines to pick one.");
+});
+
+test("a shell killed by its own pkill -f or pgrep -f is explained", () => {
+	// 27 of 32 bash calls that exited 143 in two weeks had killed their own shell this way.
+	const killed = "(no output)\n\nCommand exited with code 143";
+	for (const command of ['pkill -f "node github.mjs"; sleep 1; ls', 'for p in $(pgrep -f "gpt-6-sol"); do kill $p; done'])
+		assert.match(selfKillHint(killed, { command }), /^Exit 143: this shell was killed by its own pkill\/pgrep -f/);
+	assert.equal(selfKillHint(killed, { command: "pkill node; killall -q node" }), undefined);
+	assert.equal(selfKillHint("Command exited with code 1", { command: 'pkill -f "node github.mjs"' }), undefined);
 });

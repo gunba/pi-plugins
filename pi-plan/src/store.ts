@@ -48,9 +48,21 @@ export class PlanStore {
 		}
 	}
 	get(): PlanView | undefined { this.assertHealthy(); return planView(this.state, this.activation); }
+	/**
+	 * A new plan supersedes an unfinished one, which is completed with its steps as recorded. The new plan is checked
+	 * against the completed state first, so a request that would fail changes nothing.
+	 */
 	create(request: CreatePlanRequest): PlanView {
 		this.assertHealthy();
-		return this.commit(planCreate(this.state, request, this.newId(), this.now(), this.defaultMaxRounds));
+		const current = this.state.plan;
+		if (!current || current.phase === "complete")
+			return this.commit(planCreate(this.state, request, this.newId(), this.now(), this.defaultMaxRounds));
+		const completed = planComplete(this.state, { id: current.id, revision: current.revision }, this.now());
+		const after = clonePlanFoldState(this.state);
+		applyPlanChange(after, decodePlanChange(completed.change));
+		const created = planCreate(after, request, this.newId(), this.now(), this.defaultMaxRounds);
+		this.commitChange(completed);
+		return this.commit(created);
 	}
 	edit(ref: PlanRef, request: EditPlanRequest): PlanView {
 		this.assertHealthy(); return this.commit(planEdit(this.state, ref, request, this.now(), this.activation));

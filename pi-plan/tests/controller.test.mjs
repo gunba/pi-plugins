@@ -106,21 +106,29 @@ test("tool argument preparation rejects coercion and invalid conditional fields"
 	for (const input of [{ objective: 7 }, { steps: [{ content: false, status: "pending" }] }, { auto_continue: "true" }, { max_rounds: "3" }])
 		assert.throws(() => preparePlanArguments(input));
 	const h = createExtensionHarness(); await h.start(); await create(h, { auto_continue: false });
-	await assert.rejects(update(h, { action: "pause", steps: [] }), /only valid with action edit/);
 	await assert.rejects(update(h, { action: "edit", blocked_reason: "not editing" }), /only valid with action blocked/);
 	await h.emit("session_shutdown");
 });
 
-test("complete accepts the final steps in the same call; open steps still block it", async () => {
-	// 54 update_plan calls failed with "Definition fields are only valid with action edit".
+test("complete records open steps; definition fields apply with any action; create supersedes an unfinished plan", async () => {
+	// In two weeks of sessions, 27 update_plan calls failed as completions with open steps, 9 as definition fields sent
+	// with pause, resume or blocked, and 15 create_plan calls as an unfinished plan already existing.
 	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
 	await executeTool(h, "create_plan", { objective: "Ship", steps: [{ content: "Build", status: "in_progress" }] });
-	await assert.rejects(update(h, { action: "complete", steps: [{ content: "Build", status: "in_progress" }] }), /complete the remaining steps/);
-	await update(h, { action: "complete", steps: [{ content: "Build", status: "completed" }] });
-	const plan = await read(h);
+	await update(h, { action: "pause", objective: "Ship it", steps: [{ content: "Build", status: "completed" }, { content: "Release", status: "pending" }] });
+	let plan = await read(h);
+	assert.equal(plan.phase, "paused"); assert.equal(plan.objective, "Ship it");
+	assert.deepEqual(plan.steps.map(step => step.status), ["completed", "pending"]);
+	await update(h, { action: "complete" });
+	plan = await read(h);
 	assert.equal(plan.phase, "complete");
-	assert.deepEqual(plan.steps.map(step => step.status), ["completed"]);
-	await assert.rejects(update(h, { action: "pause", steps: [] }), /only valid with action edit or complete/);
+	assert.deepEqual(plan.steps.map(step => step.status), ["completed", "pending"]);
+	await executeTool(h, "create_plan", { objective: "Next", steps: [{ content: "Plan", status: "pending" }] });
+	await executeTool(h, "create_plan", { objective: "Replacement", steps: [{ content: "Do", status: "in_progress" }] });
+	plan = await read(h);
+	assert.equal(plan.objective, "Replacement"); assert.equal(plan.phase, "active"); assert.equal(plan.revision, 1);
+	const changes = h.branch.filter(entry => entry.customType === "pi-plan-change/v1").map(entry => [entry.data.operation, entry.data.plan?.objective]);
+	assert.deepEqual(changes.slice(-3), [["create", "Next"], ["complete", "Next"], ["create", "Replacement"]]);
 	await h.emit("session_shutdown");
 });
 
