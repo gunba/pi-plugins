@@ -1,3 +1,5 @@
+import { appendFileSync, renameSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { launchOperation } from "../../manage/operations.ts";
 import type { ProviderAuthType } from "../shared/logins.ts";
 import type { QuestActor, QuestCommand } from "../shared/quests.ts";
@@ -270,6 +272,19 @@ export class HostApi {
 			presence.report(string(data.window, 100), ago, string(data.device, 60));
 			return reply({ present: presence.present });
 		}
+		if (url.pathname === "/api/client-error" && request.method === "POST") {
+			recordClientError(join(this.core.options.dataDir ?? join(this.core.options.agentDir, "desk"), "client-errors.log"), data);
+			return reply({ recorded: true });
+		}
 		return undefined;
 	}
+}
+
+/** Errors that stopped a Desk window, one JSON line each, so a crash on a phone can be read on the computer. */
+function recordClientError(path: string, data: Record<string, unknown>): void {
+	const text = (value: unknown, max: number) => typeof value === "string" ? value.slice(0, max) : undefined;
+	const line = JSON.stringify({ at: new Date().toISOString(), release: text(data.release, 40), device: text(data.device, 300),
+		message: text(data.message, 2_000), stack: text(data.stack, 8_000), component: text(data.component, 8_000) });
+	try { if (statSync(path).size > 1_000_000) renameSync(path, `${path}.1`); } catch { /* No log yet. */ }
+	appendFileSync(path, `${line}\n`);
 }

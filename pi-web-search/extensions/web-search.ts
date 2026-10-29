@@ -2,6 +2,7 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { getPresentation } from "../../pi-ui/index.ts";
+import { isLocalUrl, readDirect } from "./direct.ts";
 import { renderSearchResult } from "./render.ts";
 import { exaKey, saveExaKey } from "./settings.ts";
 import { recordServiceUsage } from "../../pi-service-usage/index.ts";
@@ -10,7 +11,8 @@ export { exaKey } from "./settings.ts";
 /**
  * Web search and page reading for every model. Parallel's search service (its MCP server, free without an account)
  * runs them unless this computer has an Exa API key, saved from Desk's Accounts & connections into web-search.json in
- * Pi's agent folder, or set as EXA_API_KEY. Then Exa runs them.
+ * Pi's agent folder, or set as EXA_API_KEY. Then Exa runs them. Pages the service could not read, and local network
+ * addresses it cannot reach, are read from this computer.
  */
 export const ENDPOINT = "https://search.parallel.ai/mcp";
 const EXA = "https://api.exa.ai";
@@ -32,7 +34,7 @@ export const FETCH_PARAMETERS = Type.Object({
 type SearchParams = Static<typeof SEARCH_PARAMETERS>;
 type FetchParams = Static<typeof FETCH_PARAMETERS>;
 
-type Page = { url: string; title?: string; publish_date?: string; excerpts?: string[]; full_content?: string };
+type Page = { url: string; title?: string; publish_date?: string; excerpts?: string[]; full_content?: string; direct?: boolean };
 type Failure = { url?: string; error?: string; message?: string; error_type?: string; http_status_code?: number | null };
 type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
 export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
@@ -115,10 +117,10 @@ function clip(text: string, max: number): string {
 }
 
 const FAILURES: Record<string, string> = { connect_error: "could not connect", http_error: "the site returned an error", timeout: "timed out" };
-function failures(payload: Payload): string[] {
+function failures(payload: Payload): Unread[] {
 	return (payload.errors ?? []).map(error => {
 		const reason = error.message ?? error.error ?? FAILURES[error.error_type ?? ""] ?? error.error_type ?? "could not be read";
-		return `${error.url ?? "?"}: ${reason}${error.http_status_code ? ` (HTTP ${error.http_status_code})` : ""}`;
+		return { url: error.url ?? "?", reason: `${reason}${error.http_status_code ? ` (HTTP ${error.http_status_code})` : ""}` };
 	});
 }
 
@@ -126,20 +128,21 @@ const callerArgs = (ctx: ExtensionContext) => ({ session_id: ctx.sessionManager.
 const timed = (signal: AbortSignal | undefined) => AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(TIMEOUT_MS)]);
 
 /** The search results and fetch failures both services come down to. */
-type Found = { pages: Page[]; failures: string[] };
+type Unread = { url: string; reason: string };
+type Found = { pages: Page[]; failures: Unread[] };
 
 function searchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
 	const lines = pages.map((page, index) => [`${index + 1}. ${page.title?.trim() || page.url}`, `   ${page.url}${page.publish_date ? ` · ${page.publish_date}` : ""}`,
 		...page.excerpts?.length ? [clip(page.excerpts.join("\n…\n"), RESULT_CHARS).replace(/^/gm, "   ")] : []].join("\n"));
-	const text = [pages.length ? lines.join("\n\n") : "No results.", ...failures.length ? [failures.join("\n")] : [],
+	const text = [pages.length ? lines.join("\n\n") : "No results.", ...failures.length ? [failures.map(({ url, reason }) => `${url}: ${reason}`).join("\n")] : [],
 		...pages.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
 	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
 }
 
 function fetchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
-	const sections = pages.map(page => [`## ${page.title?.trim() || page.url}`, page.url,
+	const sections = pages.map(page => [`## ${page.title?.trim() || page.url}`, page.direct ? `${page.url} · read from this computer` : page.url,
 		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
-	const text = [...sections, ...failures.length ? [failures.map(line => `Could not read ${line}`).join("\n")] : []].join("\n\n") || "Nothing was read.";
+	const text = [...sections, ...failures.length ? [failures.map(({ url, reason }) => `Could not read ${url}: ${reason}`).join("\n")] : []].join("\n\n") || "Nothing was read.";
 	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
 		...(failures.length ? { errors: failures.length } : {}) } };
 }
@@ -191,8 +194,8 @@ async function exaFetch(params: FetchParams, key: string, signal: AbortSignal): 
 		: params.goal ? { highlights: { query: params.goal, maxCharacters: 4_000 } } : { text: { maxCharacters: PAGE_CHARS } } }, key, signal);
 	const statuses = (reply.statuses ?? []) as { id: string; status: string; error?: { tag?: string; httpStatusCode?: number | null } }[];
 	return { pages: ((reply.results ?? []) as ExaPage[]).map(exaPage),
-		failures: statuses.filter(status => status.status !== "success").map(status =>
-			`${status.id}: ${status.error?.tag ?? "could not be read"}${status.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : ""}`) };
+		failures: statuses.filter(status => status.status !== "success").map(status => ({ url: status.id,
+			reason: `${status.error?.tag ?? "could not be read"}${status.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : ""}` })) };
 }
 
 export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
@@ -205,11 +208,29 @@ export async function search(params: SearchParams, signal: AbortSignal | undefin
 export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
 	const invalid = params.urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
 	if (invalid.length) throw new Error(`Not http(s) URLs: ${invalid.join(", ")}`);
-	const key = exaKey();
-	if (key) return fetchText(await exaFetch(params, key, timed(signal)));
-	const payload = parse(await mcp.call("web_fetch", { urls: params.urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
-		...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal)));
-	return fetchText({ pages: payload.results ?? [], failures: failures(payload) });
+	const urls = params.urls.filter(url => !isLocalUrl(url));
+	let found: Found = { pages: [], failures: [] };
+	if (urls.length) try {
+		const key = exaKey();
+		if (key) found = await exaFetch({ ...params, urls }, key, timed(signal));
+		else {
+			const payload = parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
+				...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal)));
+			found = { pages: payload.results ?? [], failures: failures(payload) };
+		}
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		found.failures = urls.map(url => ({ url, reason: (error as Error).message }));
+	}
+	// Sites that turn away crawlers' data-centre addresses often answer this computer.
+	const unread = [...params.urls.filter(isLocalUrl).map(url => ({ url, reason: "" })), ...found.failures];
+	const direct = await Promise.all(unread.map(async ({ url, reason }) => ({ url, reason, read: await readDirect(url, timed(signal)) })));
+	for (const { url, reason, read } of direct) {
+		if (typeof read !== "string") found.pages.push({ url: read.url, ...(read.title ? { title: read.title } : {}), full_content: read.text, direct: true });
+	}
+	found.failures = direct.filter(item => typeof item.read === "string")
+		.map(({ url, reason, read }) => ({ url, reason: reason ? `${reason}; from this computer, ${read}` : read as string }));
+	return fetchText(found);
 }
 
 /** Exa settings for terminal and older Desk clients; current Desk merges them into Accounts & connections. */
@@ -247,7 +268,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "web_fetch",
 		label: "Web fetch",
-		description: "Read web pages, PDFs and other files by URL, including pages that need JavaScript: excerpts focused on the goal, or the whole text. For pages behind a sign-in, use the browser tools.",
+		description: "Read web pages, PDFs and other files by URL, including pages that need JavaScript: excerpts focused on the goal, or the whole text. Pages the search service cannot read, and local network addresses, are read from this computer. For pages behind a sign-in or a bot check, use the browser tools.",
 		promptSnippet: "Read web pages",
 		parameters: FETCH_PARAMETERS,
 		renderResult: renderSearchResult,

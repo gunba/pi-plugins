@@ -183,6 +183,11 @@ export function reportUse(window: string, used: number, device: string): void {
 	if (mode === "local") send("local", () => api("/presence", body()));
 	else for (const [id, remote] of remotes) if (remote.client.connected) send(id, () => remote.client.request({ path: "/api/presence", method: "POST", body: body() }));
 }
+/** Tells every connected computer about an error that stopped this window; computers on older releases ignore it. */
+export function reportCrash(report: Record<string, string | undefined>): void {
+	if (mode === "local") void api("/client-error", report).catch(() => {});
+	else for (const remote of remotes.values()) if (remote.client.connected) void remote.client.request({ path: "/api/client-error", method: "POST", body: report }).catch(() => {});
+}
 export async function api<T>(path: string, data?: unknown, computer?: string): Promise<T> {
 	try {
 		if (!mode) throw new ApiError(401, "Workspace access is not active.");

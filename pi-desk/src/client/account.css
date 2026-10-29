@@ -10,5 +10,6 @@
 }
 .account-page h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); margin: 0; }
 .account-page p { max-width: 34rem; margin: 0; line-height: 1.6; }
+.crash-page pre { max-width: min(46rem, 100%); max-height: 40vh; overflow: auto; margin: 0; padding: 10px; font-size: 11px; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .account-page button { min-height: 44px; padding: .8rem 1.4rem; }
 .account-page .error-text { overflow-wrap: anywhere; }

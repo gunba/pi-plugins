@@ -7,7 +7,11 @@ Two tools for every model:
 | `web_search` | `goal` (what to find, as a sentence) and `queries` (1–5 short keyword searches) | Ranked pages with dated excerpts that usually answer the goal |
 | `web_fetch` | `urls` (up to 20), optional `goal`, optional `full` | Excerpts focused on the goal, or each page's whole text, and which pages could not be read and why |
 
-Pages that need JavaScript, PDFs and sites behind bot checks are read by the service. Pages behind a sign-in need the
+Pages that need JavaScript, PDFs and sites behind bot checks are read by the service. Pages the service cannot read,
+such as sites that turn away its data-centre addresses, are then requested from this computer, and so are local
+network addresses (loopback, private ranges, Tailscale, `.local` and names without a dot), which the service cannot
+reach. Such a request does not run JavaScript; it returns the text of the page's `<main>` or `<article>`, or its body,
+with the result marked "read from this computer". Pages behind a sign-in or a bot check that needs a browser need the
 browser tools.
 
 ## Service
