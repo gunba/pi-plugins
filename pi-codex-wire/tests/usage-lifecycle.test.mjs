@@ -31,7 +31,7 @@ async function harness(t) {
     }
     rmSync(directory, { recursive: true, force: true });
   });
-  async function load({ failClear = false, mode = "print", oauth = false } = {}) {
+  async function load({ failClear = false, mode = "print", oauth = false, registry = { isUsingOAuth: () => oauth, refresh: async () => {} } } = {}) {
     const loader = new DefaultResourceLoader({
       cwd: directory, agentDir: directory, eventBus: bus, settingsManager: SettingsManager.inMemory(),
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -40,7 +40,7 @@ async function harness(t) {
     await loader.reload();
     const result = loader.getExtensions();
     assert.deepEqual(result.errors, []);
-    const runner = new ExtensionRunner(result.extensions, result.runtime, directory, SessionManager.inMemory(directory), { isUsingOAuth: () => oauth });
+    const runner = new ExtensionRunner(result.extensions, result.runtime, directory, SessionManager.inMemory(directory), registry);
     let model = { id: "offline", api: "openai-codex-responses", provider: "openai-codex" };
     runner.bindCore({ getThinkingLevel: () => "off" }, { getContextUsage: () => undefined, getModel: () => model });
     const statuses = [], errors = [];
@@ -125,6 +125,27 @@ test("API-key Claude headers and another session's response do not replace allow
   await other.runner.emit({ type: "after_provider_response", status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.9" } });
   assert.equal(other.statuses.at(-1), undefined);
   assert.match(parent.statuses.at(-1), /80%/);
+});
+
+test("a conversation re-reads a login changed elsewhere when its responses contradict it", async t => {
+  // Switching Claude from subscription to API key and back in Desk hid the allowance in running conversations:
+  // each kept the API-key login type it had read, while its requests already used the subscription.
+  const h = await harness(t), login = { stored: true, read: false, refreshes: 0 };
+  const instance = await h.load({ registry: { isUsingOAuth: () => login.read, refresh: async () => { login.refreshes++; login.read = login.stored; } } });
+  await instance.runner.emit({ type: "session_start", reason: "new" });
+  await instance.select({ id: "claude-fixture", provider: "anthropic", api: "anthropic-messages", baseUrl: "https://api.anthropic.com" });
+  const reset = String(Math.floor(Date.now() / 1000) + 3600);
+  await instance.runner.emit({ type: "after_provider_response", status: 200, headers: {
+    "anthropic-ratelimit-unified-5h-utilization": "0.4", "anthropic-ratelimit-unified-5h-reset": reset } });
+  assert.equal(login.refreshes, 1);
+  assert.match(instance.statuses.at(-1), /60%/);
+  login.stored = false;
+  await instance.runner.emit({ type: "after_provider_response", status: 200, headers: {} });
+  assert.equal(login.refreshes, 2);
+  assert.equal(instance.statuses.at(-1), undefined);
+  await instance.runner.emit({ type: "after_provider_response", status: 529, headers: {} });
+  await instance.runner.emit({ type: "after_provider_response", status: 200, headers: {} });
+  assert.equal(login.refreshes, 2, "a record that agrees with the response is not re-read");
 });
 
 test("late old-runner request cannot poison the replacement usage timer", async t => {

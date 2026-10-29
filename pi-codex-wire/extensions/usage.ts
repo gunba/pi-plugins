@@ -537,10 +537,19 @@ export default function codexUsage(pi: ExtensionAPI): void {
     updateUsageStatus(ctx, state);
   });
 
-  pi.on("after_provider_response", (event, ctx) => {
-    if (state.disposed || contextUsageSource(ctx) !== "claude") return;
+  pi.on("after_provider_response", async (event, ctx) => {
+    const model = ctx.model;
+    if (state.disposed || !model || currentUsageSource(model, true) !== "claude") return;
     const snapshot = parseUsageHeaders(event.headers, "claude");
-    if (snapshot) recordSnapshot(snapshot, state);
+    // Desk and terminal Pi sign in from other processes, and a running conversation keeps the login type it last read
+    // while its requests already use the new login. Subscription windows on a response while that record says API key,
+    // or a successful response without them while it says subscription, mean the record is out of date.
+    if (event.status >= 200 && event.status < 300 && !!snapshot !== ctx.modelRegistry.isUsingOAuth(model)) {
+      await ctx.modelRegistry.refresh({ providers: [model.provider], allowNetwork: false });
+      if (state.disposed) return;
+      updateUsageStatus(ctx, state);
+    }
+    if (snapshot && contextUsageSource(ctx) === "claude") recordSnapshot(snapshot, state);
   });
 
   pi.on("model_select", (_event, ctx) => {
