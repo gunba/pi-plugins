@@ -43,9 +43,9 @@ test("one computer keeps the quest log for all, takes the others' quests and ans
 	assert.equal(laptop.quests.view, undefined, "only the computer that keeps the log shows it");
 
 	// An agent on the laptop uses the log as before, through the laptop's Desk.
-	new PartyOperations(join(laptop.dir, "party")).touchHost();
+	const operations = new PartyOperations(join(laptop.dir, "party"));
+	operations.touchHost(); operations.close();
 	const calls = new QuestCalls(join(laptop.dir, "party"));
-	t.after(() => calls.close());
 	const log = calls.remote();
 	const [view, added] = await Promise.all([log.view(), log.apply({ kind: "agent", id: WORKER, label: "Worker" }, { action: "add", title: "Sign the letter" }), pump()]);
 	assert.equal(view.quests.find(quest => quest.id === old.id || quest.title === "Review the BAS draft").source.id, WORKER, "the laptop sees its agent as its own");
@@ -57,6 +57,7 @@ test("one computer keeps the quest log for all, takes the others' quests and ans
 	laptop.store.release(WORKER, OWNER);
 	await server.quests.log().apply({ kind: "you" }, { action: "complete", id: moved.id });
 	await pump();
+	calls.close();
 	const [notice] = laptop.store.pending(WORKER, OWNER);
 	assert.match(notice.text, /^Jordan completed the quest you added: “Review the BAS draft”/);
 });
