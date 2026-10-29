@@ -193,7 +193,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   useEffect(trackUse, []);
   useSeen(session);
   useFinishedBadge(state.host?.sessions);
-  useQuestionAlerts(state.host?.sessions, selected, key => { setSelected(key); setSidebar(false); setPanel(undefined); }, conversationTitle);
+  useQuestionAlerts(state.host?.sessions, selected, conversationTitle);
   useNoticeLinks(state.host?.sessions, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
   useSharedTask(state.host, dot.id, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
   const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };

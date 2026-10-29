@@ -21,7 +21,8 @@ function Workspace({ account }: { account?: BrowserAccount }) {
 		});
 		return () => { active = false; dispose(); };
 	}, [account, attempt]);
-	if (ready) return <App account={account} />;
+	// Inside the workspace, so a crash in the app leaves the connections up to report it.
+	if (ready) return <Crash><App account={account} /></Crash>;
 	return <main className="account-page"><div className="brand-mark">π</div><h1>Pi Desk</h1>
 		{error ? <><p role="alert">{error}</p><button onClick={() => setAttempt(value => value + 1)}>Try again</button></>
 			: <Loading label="Opening your workspace…" />}</main>;
