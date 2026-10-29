@@ -71,19 +71,6 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			return pinnedIndex < 0 || indices.includes(pinnedIndex) ? indices : [...indices, pinnedIndex].sort((a, b) => a - b);
 		}, [pinnedIndex]),
 	});
-	// One callback for every row: an inline ref was a new function each render, so React re-ran it for every row on
-	// every update, measuring each row again. Its ResizeObserver already measures rows whose size changes.
-	const measureRow = useCallback((element: HTMLDivElement | null) => {
-		const id = element?.dataset.chatId;
-		if (element && id && !mountedRows.current.has(element)) {
-			mountedRows.current.add(element);
-			const states = details.current.get(id);
-			if (states) element.querySelectorAll<HTMLDetailsElement>("details:not([data-disclosure])").forEach((node, index) => {
-				if (states[index] !== undefined && node.open !== states[index]) node.open = states[index]!;
-			});
-		}
-		virtualizer.measureElement(element);
-	}, [virtualizer]);
 	const persist = () => {
 		clearTimeout(timer.current);
 		const position = capture.current();
@@ -337,7 +324,16 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				{virtualizer.getVirtualItems().map(row => {
 					const message = visible[row.index];
 					return <div className="virtual-row" key={row.key} data-index={row.index} data-chat-entry={message?.entryId} data-chat-id={message?.id}
-						ref={measureRow}
+						ref={element => {
+							if (element && message && !mountedRows.current.has(element)) {
+								mountedRows.current.add(element);
+								const states = details.current.get(message.id);
+								if (states) element.querySelectorAll<HTMLDetailsElement>("details:not([data-disclosure])").forEach((node, index) => {
+									if (states[index] !== undefined && node.open !== states[index]) node.open = states[index]!;
+								});
+							}
+							virtualizer.measureElement(element);
+						}}
 						onFocusCapture={() => { if (message) setPinned(message.id); }}
 						onClickCapture={event => {
 							if (message && (event.target as HTMLElement).closest(".file-link,.artifact-link,summary")) {
