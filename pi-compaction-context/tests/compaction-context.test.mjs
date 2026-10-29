@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import extension from '../extensions/compaction-context.ts';
+import extension, { HISTORY_NOTE } from '../extensions/compaction-context.ts';
 
 test('compaction is the next turn of the same conversation: the last payload is replayed with one summary request', async () => {
  const hooks = {};
@@ -49,4 +49,20 @@ test('compaction is the next turn of the same conversation: the last payload is 
  assert.equal(await hooks.session_before_compact(event, { ...ctx, model: { ...ctx.model, id: 'claude-sonnet-5' } }), undefined);
  branch[1].message.timestamp = Date.now() - 600_000;
  assert.equal(await hooks.session_before_compact(event, ctx), undefined);
+});
+
+test('after a compaction the conversation is told its earlier history is searchable, once, when it can search', () => {
+ // Summaries lose details the full history has; nothing told a compacted conversation it could still look them up.
+ for (const tools of [['read', 'conversation_search'], ['read']]) {
+  const hooks = {}, sent = [];
+  extension({ on: (name, fn) => hooks[name] = fn, registerCommand() {}, getAllTools: () => tools.map(name => ({ name })),
+   sendMessage: (message, options) => sent.push({ message, options }) });
+  hooks.session_compact({ reason: 'threshold', fromExtension: true }, { sessionManager: { getSessionId: () => '01a11efb-961f-7166-8384-2911659fc2a9' } });
+  if (!tools.includes('conversation_search')) { assert.deepEqual(sent, []); continue; }
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].message.customType, HISTORY_NOTE);
+  assert.equal(sent[0].message.display, false);
+  assert.deepEqual(sent[0].options, { triggerTurn: false }, 'the note never wakes the conversation');
+  assert.match(sent[0].message.content, /conversation_search with session "01a11efb-961f-7166-8384-2911659fc2a9"/);
+ }
 });

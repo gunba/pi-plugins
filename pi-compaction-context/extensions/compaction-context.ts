@@ -3,6 +3,10 @@ import { inPlaceBlocker, summarizeInPlace, type SentRequest } from "./in-place.t
 import { BRIEF_ENTRY, BRIEF_EVENT, writeBrief, type BriefProbe } from "./brief.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
 
+/** The note after a compaction saying where the detail its summary left out can still be found. */
+export const HISTORY_NOTE = "pi-history-note";
+export const historyNote = (session: string) => `[Earlier history] The full conversation before this summary is kept. For a detail the summary lacks, such as an exact command, value, path or error, use conversation_search with session "${session}" (a memory tool; load it with tool_search if needed), then conversation_read to see the passage in context.`;
+
 /** Tool calls that make a turn worth a brief written without being asked, when it changed no files. */
 const AUTO_BRIEF_CALLS = 8;
 
@@ -60,6 +64,13 @@ export default function compactionContext(pi: ExtensionAPI): void {
       }
     } else lastInPlace = `not used: ${blocker}`;
     // Otherwise Pi writes the summary itself, unchanged.
+  });
+  // A summary keeps less than the conversation it replaces; the conversation stays searchable (the "memory tax", arXiv
+  // 2610.34073). Sent once, right after the summary (at the end of a running turn), so later requests read it from the
+  // prompt cache unchanged; it never starts a turn.
+  pi.on("session_compact", (_event, ctx) => {
+    if (!pi.getAllTools().some(tool => tool.name === "conversation_search")) return;
+    pi.sendMessage({ customType: HISTORY_NOTE, content: historyNote(ctx.sessionManager.getSessionId()), display: false }, { triggerTurn: false });
   });
   pi.on("session_shutdown", (_event, ctx) => { sent.delete(ctx.sessionManager.getSessionId()); contexts.delete(ctx.sessionManager.getSessionId()); releaseBrief?.(); });
   pi.on("before_provider_request", (event, ctx) => {
