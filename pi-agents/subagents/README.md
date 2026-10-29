@@ -8,7 +8,7 @@ model runtime and native history. Children share the working directory, not a sa
 
 | Tool | Behavior with secondary agents |
 |---|---|
-| `agent_start({task, name, context?, model?, reasoning?})` | Starts asynchronously. Returns `{agent, id, kind}` (its task path and native ID) after durable admission, not completion. |
+| `agent_start({task, name, context?, model?, reasoning?, wake?})` | Starts asynchronously. Returns `{agent, id, kind}` (its task path and native ID) after durable admission, not completion. |
 | `agent_send({to, message, wake?})` | With `wake` (the default), gives the agent more work: an active one receives it at a safe boundary, an idle one starts a turn. `wake: false` sends information for its next turn. A message to an agent's own parent or ancestor is a report. Returns `{queued}`. |
 | `agent_list({})` | Lists the registered tree, with task paths, native IDs and statuses, under `secondary`. |
 | `agent_stop({agent})` | Interrupts the current turn or initialization. Returns `{stopped, previous_status}`. Root and self targets are rejected. |
@@ -27,8 +27,11 @@ excluded. Bounded copies begin at an instruction boundary, not midway through a 
 ```
 
 Final results go to the parent automatically. A working parent reads them at its next model call; an idle parent is
-woken by them, and so is an idle secondary agent whose own agents report. `agent_send` handles interim communication
-in either direction; there is no separate `report` tool.
+woken by them, and so is an idle secondary agent whose own agents report. Agents started with `wake: "all"` are the
+exception: while any of a parent's `wake: "all"` agents still owes a result, routine reports from them join its
+transcript without waking it, so the last one to finish wakes it once with all of them. Failures, questions and
+urgent reports still wake it at once, and the setting is saved with the agent. `agent_send` handles interim
+communication in either direction; there is no separate `report` tool.
 
 Discovery distinguishes `running` (active), `idle` (resident or queued) and `ready` (cold but resumable). Missing or
 invalid histories appear as diagnostics. A known cold target is not opened by information messages, discovery or

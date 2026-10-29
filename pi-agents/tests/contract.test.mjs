@@ -81,7 +81,7 @@ test("agent_start requires a task and a name and tells primary from secondary ag
 		await harness.handlers.get("session_start")[0]({}, harness.ctx);
 		const tool = harness.tools.find((tool) => tool.name === "agent_start");
 		const schema = tool.parameters;
-		assert.deepEqual(Object.keys(schema.properties), ["task", "name", "primary", "context", "computer", "cwd", "model", "reasoning"]);
+		assert.deepEqual(Object.keys(schema.properties), ["task", "name", "primary", "context", "computer", "cwd", "model", "reasoning", "wake"]);
 		assert.deepEqual(schema.required, ["task", "name"]);
 		assert.equal(schema.additionalProperties, false);
 		assert.match(tool.description, /background/i);

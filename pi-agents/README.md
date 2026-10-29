@@ -11,7 +11,7 @@ Lets a conversation start and talk to other agents.
 
 | Tool | Purpose |
 |---|---|
-| `agent_start` | Start an agent with a task. Secondary by default, with `context` `copy` (the conversation so far), `fresh`, or a number of recent turns. `primary: true` starts a conversation instead, with an optional `computer`, `cwd`, `model` and `reasoning`. |
+| `agent_start` | Start an agent with a task. Secondary by default, with `context` `copy` (the conversation so far), `fresh`, or a number of recent turns. `wake: "all"` holds an idle parent's wake until the last such agent finishes. `primary: true` starts a conversation instead, with an optional `computer`, `cwd`, `model` and `reasoning`. |
 | `agent_send` | Message an agent by ID, or a secondary agent by path. `wake` (default) starts an idle agent on the message, and reopens a closed primary one; `files` sends copies to a primary agent's computer. |
 | `agent_list` | This conversation's secondary agents, and primary agents and computers: `query` finds them by name, folder or description, `offline` adds closed ones. |
 | `agent_stop` | Interrupt a secondary agent's turn (it keeps its work), or close a primary agent this conversation started. |

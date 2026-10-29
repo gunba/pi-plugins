@@ -482,3 +482,27 @@ test("interrupting initialization preserves an immediately accepted follow-up ta
 	assert.equal(opening.signal.aborted, true);
 	assert.equal(normal.promptLog[0].message, "next");
 });
+
+test("reports from agents started with wake all wait until the last of them settles", async (t) => {
+	const factory = new FakeDriverFactory(blockingPrompt);
+	const h = createHarness({ factory });
+	t.after(h.cleanup);
+	const start = (description, wake) => h.runtime.start({ description, prompt: "work", context: "fresh", runInBackground: true, parent: h.parent(), ...(wake ? { wake } : {}) });
+	const first = await start("first", "all"), second = await start("second", "all"), single = await start("single");
+	await waitUntil(() => factory.opens.length === 3 && factory.opens.every(driver => driver.isRunning));
+	const [one, two, three] = factory.opens;
+	const held = () => h.runtime.holdsReports(h.host.rootSessionId, h.notices.slice(-1));
+	one.pending.resolve(completedOutcome("A"));
+	await waitUntil(() => h.notices.length === 1);
+	assert.equal(h.notices[0].childId, first.subagentId);
+	assert.equal(held(), true, "the second agent still owes a result");
+	three.pending.resolve(completedOutcome("C"));
+	await waitUntil(() => h.notices.length === 2);
+	assert.equal(h.notices[1].childId, single.subagentId);
+	assert.equal(held(), false, "an agent started without wake all reports as before");
+	two.pending.resolve(completedOutcome("B"));
+	await waitUntil(() => h.notices.length === 3);
+	assert.equal(h.notices[2].childId, second.subagentId);
+	assert.equal(held(), false, "the last of them wakes the parent");
+	assert.equal(h.runtime.holdsReports(h.host.rootSessionId, [{ ...h.notices[0], priority: "urgent" }]), false);
+});

@@ -337,7 +337,8 @@ export default function subagents(pi: ExtensionAPI): void {
 		notices = new NoticeBatcher((batch) => {
 			// A working conversation reads reports at its next model call; an idle one is woken by them, unless Jordan's
 			// prompt is being prepared, which then reads them.
-			const idle = ctx.isIdle() && !ctx.hasPendingMessages() && !nativePromptPreparing(ctx.sessionManager);
+			const idle = ctx.isIdle() && !ctx.hasPendingMessages() && !nativePromptPreparing(ctx.sessionManager)
+				&& !created?.holdsReports(ctx.sessionManager.getSessionId(), batch);
 			pi.sendMessage({
 				customType: "pi-subagents/notice",
 				content: noticeBatchContent(batch),

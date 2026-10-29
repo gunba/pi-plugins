@@ -75,6 +75,8 @@ export type ChildDescriptor = {
 	thinkingLevel: ThinkingLevel;
 	toolNames: string[];
 	forkBoundaryEntryId?: string;
+	/** "all": routine reports don't wake the parent while another such agent of it still owes a result (holdsReports). */
+	wake?: "all";
 };
 
 export type RunStopReason =
@@ -168,6 +170,7 @@ export type StartRequest = {
 	parent: ParentInvocation;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	wake?: "all";
 	signal?: AbortSignal;
 };
 
@@ -477,6 +480,7 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 			"thinkingLevel",
 			"toolNames",
 			"forkBoundaryEntryId",
+			"wake",
 		]),
 		"descriptor",
 	);
@@ -507,6 +511,7 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 		throw new Error("descriptor parentSessionFile is invalid");
 	if (forkBoundaryEntryId !== undefined && typeof forkBoundaryEntryId !== "string")
 		throw new Error("descriptor forkBoundaryEntryId is invalid");
+	if (value.wake !== undefined && value.wake !== "all") throw new Error("descriptor wake is invalid");
 	return {
 		version: DESCRIPTOR_VERSION,
 		projectTrusted: value.projectTrusted,
@@ -528,6 +533,7 @@ export function parseDescriptor(value: unknown): ChildDescriptor {
 		thinkingLevel: parseThinkingLevel(value.thinkingLevel),
 		toolNames: [...(value.toolNames as string[])],
 		...(forkBoundaryEntryId ? { forkBoundaryEntryId } : {}),
+		...(value.wake === "all" ? { wake: "all" as const } : {}),
 	};
 }
 
@@ -1331,6 +1337,7 @@ export class SubagentRuntime {
 				thinkingLevel: selection.thinkingLevel,
 				toolNames: normalizeToolNames(request.parent.toolNames),
 				...(forkBoundaryEntryId ? { forkBoundaryEntryId } : {}),
+				...(request.wake === "all" ? { wake: "all" as const } : {}),
 			};
 			manager.appendCustomEntry(DESCRIPTOR_ENTRY, descriptor);
 			manager.appendCustomEntry(TASK_NAME_ENTRY, { name: taskName });
@@ -1523,8 +1530,20 @@ export class SubagentRuntime {
 		// ACK each individual notice only after its inbox receipt is durable.
 		parent.manager.appendCustomEntry(NOTICE_ENTRY, notice);
 		this.batchFor(parent).add(notice);
-		if (this.records.has(notice.childId) && this.agentPath(notice.childId).startsWith(`${this.agentPath(parentId)}/`)) this.wakeForReports(parent);
+		if (this.records.has(notice.childId) && this.agentPath(notice.childId).startsWith(`${this.agentPath(parentId)}/`)
+			&& !this.holdsReports(parentId, [notice])) this.wakeForReports(parent);
 		return true;
+	}
+
+	/**
+	 * Whether these reports should reach parentId without waking it: each is a routine one from an agent started with
+	 * wake "all", and an agent of that parent started so still owes a result. The last one to settle wakes it once,
+	 * with every report in its transcript; urgent reports, questions and failures wake it at once.
+	 */
+	holdsReports(parentId: string, notices: readonly ParentNotice[]): boolean {
+		const held = (notice: ParentNotice) => (notice.priority ?? "routine") === "routine" && this.records.get(notice.childId)?.descriptor.wake === "all";
+		return notices.length > 0 && notices.every(held) && [...this.records.values()].some(record =>
+			record.descriptor.parentSessionId === parentId && record.descriptor.wake === "all" && record.pendingSettlement);
 	}
 
 	/**
