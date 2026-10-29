@@ -24,6 +24,13 @@ export interface PartyComputer { name: string; platform: string; version: string
 export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string }; error?: string }
 export type PartyPacket =
 	| { type: "directory"; agents: NetworkMember[]; computer?: PartyComputer }
+	/** Jordan's quest log, kept by one computer for the account (quest-log.ts). */
+	| { type: "quest-calls"; calls: unknown[] }
+	| { type: "quest-replies"; replies: unknown[] }
+	| { type: "quest-import"; quests: unknown[] }
+	| { type: "quest-imported"; ids: string[] }
+	| { type: "quest-notices"; notices: { id: number; agent: string; text: string }[] }
+	| { type: "quest-notices-taken"; ids: number[] }
 	| { type: "presence" }
 	| { type: "messages"; messages: PartyMessage[] }
 	| { type: "receipts"; receipts: DeliveryReceipt[] }

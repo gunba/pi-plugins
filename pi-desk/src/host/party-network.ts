@@ -1,6 +1,8 @@
 import type { PartyStore } from "../../../pi-agents/store.ts";
 import { partyComputer, record, uuid, type PartyComputer, type PartyPacket, type PartyOperation, type OperationResult } from "../../../pi-agents/network.ts";
 import type { PartyOperations } from "../../../pi-agents/operations.ts";
+import { QUEST_LOG, QUEST_NOTICES } from "../../../pi-agents/quest-log.ts";
+import type { HostQuests } from "./host-quests.ts";
 import { SEARCH_PACKET_TYPES, type SearchPacket } from "../shared/conversation-search.ts";
 import type { ConversationSearch, SearchBinding } from "./conversation-search.ts";
 import type { SettingsSync } from "./settings-sync.ts";
@@ -30,8 +32,13 @@ export class PartyNetwork {
 	private searchBinding?: SearchBinding;
 	/** When this computer last asked each computer for a file part, while waiting for it. */
 	private asking = new Map<string, number>();
-	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport, search?: ConversationSearch) {
-		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport;
+	private quests?: HostQuests;
+	/** Computers sent a batch of this computer's old quests, or of notices for their agents, not taken yet. */
+	private handing = new Set<string>();
+	private noticing = new Set<string>();
+	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport, search?: ConversationSearch,
+		quests?: HostQuests) {
+		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport; this.quests = quests;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
 		this.search = search;
@@ -57,7 +64,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.asking.delete(id);
+		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.asking.delete(id); this.handing.delete(id); this.noticing.delete(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -80,6 +87,17 @@ export class PartyNetwork {
 			if (messages.length) await send({ type: "messages", messages });
 			const operations = this.lifecycle?.operations.outgoing(id);
 			if (operations?.length) await send({ type: "operations", operations });
+			// The quest log's calls, and the quests this computer kept before, go to the computer that keeps it.
+			if (this.quests && this.quests.server()?.id === id && this.announced.get(id)?.operations.includes(QUEST_LOG)) {
+				const calls = this.quests.outgoing();
+				if (calls.length) await send({ type: "quest-calls", calls });
+				const quests = this.handing.has(id) ? [] : this.quests.leftover();
+				if (quests.length) { this.handing.add(id); await send({ type: "quest-import", quests }); }
+			}
+			if (this.quests && !this.noticing.has(id) && this.announced.get(id)?.operations.includes(QUEST_NOTICES)) {
+				const notices = this.quests.notices(id);
+				if (notices.length) { this.noticing.add(id); await send({ type: "quest-notices", notices }); }
+			}
 			// Pi settings go only to computers that say they mirror them; older ones would refuse the packet.
 			if (this.sync && this.announced.get(id)?.operations.includes("settings")) {
 				const manifest = this.sync.manifest(), signature = JSON.stringify(manifest);
@@ -127,6 +145,38 @@ export class PartyNetwork {
 			return;
 		}
 		if (packet.type === "presence") { this.store.touchComputer(id); return; }
+		if (this.quests && packet.type === "quest-calls") {
+			if (!Array.isArray(packet.calls) || packet.calls.length > 16) throw Error("Invalid quest calls.");
+			const quests = this.quests, replies = [];
+			for (const call of packet.calls) replies.push(await quests.serve(id, call).catch(() => ({ id: String((call as { id?: unknown })?.id), error: "Invalid quest call." })));
+			await this.peers.get(id)?.({ type: "quest-replies", replies }); return;
+		}
+		if (this.quests && packet.type === "quest-replies") {
+			if (!Array.isArray(packet.replies) || packet.replies.length > 16) throw Error("Invalid quest replies.");
+			for (const reply of packet.replies) this.quests.settle(reply);
+			return;
+		}
+		if (this.quests && packet.type === "quest-import") {
+			// A batch that cannot be taken is left with its sender (sent again after a reconnect); the link stays up.
+			let ids: string[];
+			try { ids = this.quests.take(id, packet.quests); }
+			catch (error) { console.error(`Quests from another computer could not be taken: ${error instanceof Error ? error.message : String(error)}`); return; }
+			await this.peers.get(id)?.({ type: "quest-imported", ids }); return;
+		}
+		if (this.quests && packet.type === "quest-notices") {
+			if (!Array.isArray(packet.notices) || packet.notices.length > 16) throw Error("Invalid quest notices.");
+			for (const notice of packet.notices) this.quests.deliver(String(notice.agent), String(notice.text).slice(0, 4000));
+			this.changed();
+			await this.peers.get(id)?.({ type: "quest-notices-taken", ids: packet.notices.map(notice => Number(notice.id)) }); return;
+		}
+		if (this.quests && packet.type === "quest-notices-taken") {
+			if (!Array.isArray(packet.ids)) throw Error("Invalid quest notice receipt.");
+			this.noticing.delete(id); this.quests.noticesTaken(id, packet.ids.map(Number)); return;
+		}
+		if (this.quests && packet.type === "quest-imported") {
+			if (!Array.isArray(packet.ids)) throw Error("Invalid quest receipt.");
+			this.handing.delete(id); this.quests.taken(packet.ids.map(String)); this.changed(); return;
+		}
 		if (packet.type === "directory") {
 			const computer = partyComputer(packet.computer);
 			if (computer) { this.announced.set(id, computer); this.store.setComputerOperations(id, computer.operations, computer.name, computer.platform); this.search?.announced(id, computer.operations); }

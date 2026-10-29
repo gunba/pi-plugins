@@ -210,15 +210,13 @@ export class HostApi {
 			}
 		}
 		const quests = this.host.quests;
-		if (url.pathname === "/api/quests" && quests.store) {
+		if (url.pathname === "/api/quests" && quests.keeps()) {
 			if (request.method === "POST") {
 				const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
-				const quest = quests.store.apply(by, command);
-				if (quest) quests.finished(quest, by);
-				quests.refresh();
+				const quest = await quests.log().apply(by, command);
 				return reply({ quest: quest ?? null, quests: quests.view });
 			}
-			return reply(quests.store.view());
+			return reply(await quests.log().view());
 		}
 		if (url.pathname === "/api/cache-compaction" && request.method === "POST") {
 			const threshold = data.threshold === null || data.threshold === undefined ? undefined : Number(data.threshold);

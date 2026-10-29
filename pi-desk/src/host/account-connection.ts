@@ -17,6 +17,7 @@ import { PartyNetwork } from "./party-network.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import type { SettingsSync } from "./settings-sync.ts";
 import type { ConversationSearch } from "./conversation-search.ts";
+import type { HostQuests } from "./host-quests.ts";
 import type { Teleport } from "./teleport.ts";
 
 /** How often a host checks the account service for a moved relay. */
@@ -28,6 +29,7 @@ interface AccountHost {
 	settingsSync(): SettingsSync | undefined;
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
+	quests?(): HostQuests | undefined;
 	connector(): DotConnector | undefined;
 	computer(): PartyComputer;
 	execute(computer: string, request: PartyOperation): Promise<OperationResult["result"]>;
@@ -135,7 +137,7 @@ export class AccountConnection {
 				if (this.core.closing || revision !== this.revision) return;
 				parties.networkChanged(); this.core.refreshParties();
 			}, { operations: this.host.operations(), execute: (computer, request) => this.host.execute(computer, request) }, this.host.computer(),
-				this.host.settingsSync(), this.host.teleport(), this.host.search?.());
+				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.());
 			this.partyNetwork = network;
 			this.relayConnector = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.core.options.proxy, direct: Number(new URL(this.core.origin).port),
 				request: (access, request) => this.host.request(access, request),

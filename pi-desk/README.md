@@ -514,6 +514,16 @@ working hours and agent notifications are unchanged. The `quest_*` tool names
 remain compatible, and Dot's `quest_log` still archives completed items when it
 reads them.
 
+One computer keeps the task list for the whole account: the one that keeps
+conversation copies (the workspace server), which stays up when the others
+sleep. Tasks stay available while any other computer is off. Agents and the Dot
+connector on other computers use it through their own Desk, and a task can be
+read or changed only while the workspace server is connected. Tasks a computer
+kept before it moved to the workspace server once it connects. An agent is told
+on its own computer when Jordan finishes a task it added, and a closed
+conversation wakes for the message. An account without a workspace server keeps
+a task list on each computer.
+
 The **Agents** tab lists open conversations and active or queued secondary agents
 across computers, with links to their existing conversation panels. **Watches**
 reads the existing watch views and descriptions retained for closed conversations;

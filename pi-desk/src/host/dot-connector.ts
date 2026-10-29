@@ -5,7 +5,7 @@ import { LEASE_MS, type PartyStore } from "../../../pi-agents/store.ts";
 import { atomicJson } from "../../manage/store.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConnectorRequest, ConnectorResponse } from "./relay-connector.ts";
-import type { QuestStore } from "../../../pi-agents/quests.ts";
+import type { QuestLog } from "../../../pi-agents/quest-log.ts";
 import { nativeId, type PartyComputer } from "../../../pi-agents/network.ts";
 import type { PartyOperations } from "../../../pi-agents/operations.ts";
 import { isToday, localTime, repeatLabel, QUEST_KINDS, type Quest, type QuestActor, type QuestCommand } from "../../../pi-agents/quest-model.ts";
@@ -94,8 +94,8 @@ export class DotConnector {
 	notices?: { ready: () => boolean; post: (text: string) => boolean };
 	private wakeable?: boolean;
 	private noticeAt = 0;
-	/** Jordan's quest log on this computer, and what to do when a quest is finished. */
-	quests?: { store: QuestStore; finished: (quest: Quest, by: QuestActor) => void };
+	/** Jordan's quest log, here or on the computer that keeps it. */
+	quests?: () => QuestLog;
 	/** Starting and reopening conversations through Desk's party operations, here and on Jordan's other computers. */
 	conversations?: {
 		operations: () => PartyOperations | undefined; here: () => PartyComputer; folders: () => string[];
@@ -421,7 +421,7 @@ export class DotConnector {
 		}
 		if (name === "read_messages")
 			return text({ unread: this.unread(), ...(args.history === true ? { recent: this.store.history(agent, owner).messages.map(message => this.shape(message)) } : {}) });
-		if (name.startsWith("quest_")) return text(this.quest(name, args));
+		if (name.startsWith("quest_")) return text(await this.quest(name, args));
 		if (name === "list_computers") return text(this.computers().map(({ id, ...computer }) => ({ id, ...computer })));
 		if (name === "create_conversation" || name === "resume_conversation") return text(await this.conversation(name, args));
 		throw new Error(`Unknown tool ${name}.`);
@@ -439,18 +439,18 @@ export class DotConnector {
 			...(message.recipient_label ? { to: message.recipient_label } : {}), at: new Date(message.created).toISOString(), message: message.text };
 	}
 
-	private quest(name: string, args: Record<string, unknown>): unknown {
+	private async quest(name: string, args: Record<string, unknown>): Promise<unknown> {
 		if (!this.quests) throw new Error("The quest log is not available on this computer.");
-		const { store, finished } = this.quests, by: QuestActor = { kind: "dot", label: LABEL };
+		const store = this.quests(), by: QuestActor = { kind: "dot", label: LABEL };
 		const brief = (quest: Quest) => ({ id: quest.id, title: quest.title, ...(quest.notes ? { notes: quest.notes } : {}), ...(quest.due ? { due: quest.due } : {}), ...(quest.scheduled ? { scheduled: quest.scheduled } : {}),
 			...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
 			...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 			added_by: quest.source.kind === "you" ? "Jordan" : quest.source.kind === "dot" ? "you" : quest.source.label ?? "an agent" });
 		if (name === "quest_log") {
-			const view = store.view(), { changed, events } = store.changesSince("dot", actor => actor.kind !== "dot");
+			const view = await store.view(), { changed, events } = await store.changesSince("dot");
 			// Reading the log turns in everything Jordan has finished, like handing quests back to the quest giver.
-			const finished = store.ready();
-			if (finished.length) store.apply(by, { action: "turnin" });
+			const finished = await store.ready();
+			if (finished.length) await store.apply(by, { action: "turnin" });
 			const open = view.quests.filter(quest => quest.state === "open"), hours = view.hours;
 			const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], now = localTime(Date.now(), hours.timeZone);
 			return {
@@ -476,14 +476,16 @@ export class DotConnector {
 		}
 		if (name === "quest_add") {
 			if (!Array.isArray(args.quests) || !args.quests.length) throw new Error("Give at least one quest.");
-			return { added: (args.quests as Record<string, unknown>[]).map(item => brief(store.apply(by, { action: "add", ...item } as QuestCommand)!)) };
+			const added: unknown[] = [];
+			for (const item of args.quests as Record<string, unknown>[]) added.push(brief((await store.apply(by, { action: "add", ...item } as QuestCommand))!));
+			return { added };
 		}
 		if (name === "quest_update") {
 			const id = String(args.id), { move_to: move, id: _id, ...fields } = args;
-			let quest = Object.keys(fields).length ? store.apply(by, { action: "update", id, ...fields } as QuestCommand) : store.get(id);
+			let quest = Object.keys(fields).length ? await store.apply(by, { action: "update", id, ...fields } as QuestCommand) : await store.get(id);
 			if (typeof move === "string" && move) {
-				const open = store.view().quests.filter(item => item.state === "open" && item.id !== id);
-				quest = store.apply(by, { action: "move", id, before: move === "top" ? open[0]?.id : move === "bottom" ? undefined : move });
+				const open = (await store.view()).quests.filter(item => item.state === "open" && item.id !== id);
+				quest = await store.apply(by, { action: "move", id, before: move === "top" ? open[0]?.id : move === "bottom" ? undefined : move });
 			}
 			if (!quest) throw new Error(`No quest has the id ${id}.`);
 			return { updated: brief(quest) };
@@ -491,8 +493,7 @@ export class DotConnector {
 		if (name === "quest_complete") {
 			const outcome = args.outcome, id = String(args.id);
 			if (!["done", "abandoned", "reopen"].includes(String(outcome))) throw new Error("outcome is done, abandoned or reopen.");
-			const quest = store.apply(by, { action: outcome === "done" ? "complete" : outcome === "abandoned" ? "abandon" : "reopen", id })!;
-			finished(quest, by);
+			const quest = (await store.apply(by, { action: outcome === "done" ? "complete" : outcome === "abandoned" ? "abandon" : "reopen", id }))!;
 			return { [outcome === "reopen" ? "reopened" : outcome === "done" ? "completed" : "abandoned"]: brief(quest) };
 		}
 		throw new Error(`Unknown tool ${name}.`);

@@ -7,6 +7,7 @@ import test from "node:test";
 import { PartyStore } from "../../pi-agents/store.ts";
 import { DotConnector } from "../src/host/dot-connector.ts";
 import { QuestStore } from "../../pi-agents/quests.ts";
+import { LocalQuestLog } from "../../pi-agents/quest-log.ts";
 import { partyDelivery } from "../../pi-agents/availability.ts";
 
 const base = "https://relay.example/connector/11111111-1111-1111-1111-111111111111";
@@ -131,15 +132,15 @@ test("upgrading from the secret-URL connector keeps the Dot's agent identity and
 	assert.equal(store.member("22222222-2222-2222-2222-222222222222").label, "Steve (Dot)");
 });
 
-test("quest_log reports a repeating quest that is not due today as not due yet", t => {
+test("quest_log reports a repeating quest that is not due today as not due yet", async t => {
 	const dir = mkdtempSync(join(tmpdir(), "dot-connector-quests-")), store = new PartyStore(join(dir, "party")), quests = new QuestStore(join(dir, "party"));
 	const connector = new DotConnector(dir, store, "fedora");
-	connector.quests = { store: quests, finished: () => {} };
+	connector.quests = () => new LocalQuestLog(quests);
 	t.after(() => { connector.close(); quests.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
 	const today = quests.view().today, tomorrow = (new Date(`${today}T12:00:00Z`).getUTCDay() + 1) % 7;
 	// Steve's Anastrozole case: weekly on other days, added before its first due date and never done.
 	quests.apply({ kind: "dot", label: "Steve" }, { action: "add", title: "Anastrozole", repeat: { unit: "week", weekdays: [tomorrow] } });
-	const log = connector.quest("quest_log", {});
+	const log = await connector.quest("quest_log", {});
 	const [entry] = log.repeating;
 	assert.equal(log.today.length, 0);
 	assert.match(entry.status, /^not due until \d{4}-\d{2}-\d{2}$/);

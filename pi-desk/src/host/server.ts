@@ -147,14 +147,15 @@ export class DeskHost {
 		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
 			teleport: () => this.teleport, search: () => this.search, moves: this.moves });
 		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
-			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, connector: () => this.dotConnector,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, quests: () => this.quests, connector: () => this.dotConnector,
 			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
 			request: (access, request) => this.api.handle(access, request),
 			watch: handler => {
 				const remove = this.events.addBrowser(handler); handler({ type: "state", state: this.state() });
 				return remove;
 			} });
-		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties });
+		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties,
+			computer: () => this.account.identity?.device.id });
 		this.notices = new AwayNotices({ present: () => !!this.presence?.present, quests: () => this.quests.view, computer: () => this.account.identity?.device.id,
 			send: async notice => { await this.account.identity?.notify(notice); } });
 		this.events.watch(event => this.notices.observe(event));
@@ -241,10 +242,10 @@ export class DeskHost {
 			this.partyOperations = new PartyOperations(join(this.options.agentDir, "party"));
 			this.partyOperations.startHost(); this.agents.flushLocal();
 			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moves.failed(request, computer, response.error); };
-			const quests = this.quests.open(this.options.agentDir);
+			this.quests.open(this.options.agentDir);
 			this.quests.refresh();
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
-			this.dotConnector.quests = { store: quests, finished: (quest, by) => this.quests.finished(quest, by) };
+			this.dotConnector.quests = () => this.quests.log();
 			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
 			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.agents.computer(),
 				computers: () => this.account.network?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };

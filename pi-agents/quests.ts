@@ -61,7 +61,8 @@ export class QuestStore {
 				created INTEGER NOT NULL, updated INTEGER NOT NULL, completed INTEGER);
 			CREATE TABLE IF NOT EXISTS quest_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, actor TEXT NOT NULL,
 				action TEXT NOT NULL, quest TEXT NOT NULL, title TEXT NOT NULL);
-			CREATE TABLE IF NOT EXISTS quest_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+			CREATE TABLE IF NOT EXISTS quest_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+			CREATE TABLE IF NOT EXISTS quest_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, computer TEXT NOT NULL, agent TEXT NOT NULL, text TEXT NOT NULL, created INTEGER NOT NULL);`);
 		const columns = new Set((this.db.prepare("PRAGMA table_info(quests)").all() as { name: string }[]).map(row => row.name));
 		if (!columns.has("repeat")) this.db.exec("ALTER TABLE quests ADD COLUMN repeat TEXT");
 		if (!columns.has("scheduled")) this.db.exec("ALTER TABLE quests ADD COLUMN scheduled TEXT");
@@ -155,6 +156,48 @@ export class QuestStore {
 	ready(): Quest[] {
 		return (this.db.prepare("SELECT * FROM quests WHERE state='done' AND (turned_in IS NULL OR turned_in<completed) ORDER BY completed").all() as Record<string, unknown>[])
 			.map(row => this.row(row)!);
+	}
+
+	/** Quests in the log, oldest first, a batch at a time: for moving them to the computer that keeps Jordan's log. */
+	batch(limit = 50): Quest[] {
+		return (this.db.prepare("SELECT * FROM quests ORDER BY created,id LIMIT ?").all(limit) as Record<string, unknown>[]).map(row => this.row(row)!);
+	}
+	remove(ids: string[]): void {
+		this.tx(() => { for (const id of ids) this.db.prepare("DELETE FROM quests WHERE id=?").run(id); });
+		this.notify();
+	}
+	/**
+	 * Quests another computer kept until now, added to this log with their history: open ones after its own, and an id
+	 * already taken here replaced. source names the computer's agents as this log does. Returns the ids given.
+	 */
+	take(quests: unknown[], source: (actor: QuestActor) => QuestActor): string[] {
+		const taken = this.tx(() => quests.map(value => {
+			const quest = value as Quest, state = quest.state;
+			if (typeof quest?.id !== "string" || !["open", "done", "abandoned"].includes(state) || !Number.isSafeInteger(quest.created)) throw Error("Invalid quest.");
+			const id = this.get(quest.id) ? randomBytes(3).toString("hex") : quest.id;
+			const last = (this.db.prepare("SELECT MAX(position) AS p FROM quests WHERE state='open'").get() as { p: number | null }).p;
+			this.db.prepare(`INSERT INTO quests (id,title,notes,kind,state,due,steps,source,notify,position,created,updated,completed,repeat,scheduled,turned_in)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, text(quest.title, 200, "title"), optionalText(quest.notes, 4000) ?? null, kind(quest.kind) ?? "side", state,
+				date(quest.due) ?? null, quest.steps?.length ? JSON.stringify(steps(quest.steps)) : null, JSON.stringify(source(quest.source)), quest.notify ? 1 : 0,
+				(last ?? 0) + 1, quest.created, Number(quest.updated) || quest.created, quest.completed ?? null, quest.repeat ? JSON.stringify(quest.repeat) : null,
+				date(quest.scheduled, "scheduled") ?? null, quest.turnedIn ?? null);
+			return quest.id;
+		}));
+		this.notify();
+		return taken;
+	}
+
+	/** A message for an agent on another computer about a quest it added, kept until that computer takes it. */
+	queueNotice(computer: string, agent: string, text: string): void {
+		this.db.prepare("INSERT INTO quest_notices (computer,agent,text,created) VALUES (?,?,?,?)").run(computer, agent, text, Date.now());
+		this.notify();
+	}
+	notices(computer: string): { id: number; agent: string; text: string }[] {
+		this.db.prepare("DELETE FROM quest_notices WHERE created<?").run(Date.now() - 30 * 86_400_000);
+		return this.db.prepare("SELECT id,agent,text FROM quest_notices WHERE computer=? ORDER BY id LIMIT 16").all(computer) as { id: number; agent: string; text: string }[];
+	}
+	dropNotices(computer: string, ids: number[]): void {
+		for (const id of ids) this.db.prepare("DELETE FROM quest_notices WHERE computer=? AND id=?").run(computer, id);
 	}
 
 	/** Changes made by others since this reader's last look, and whether anything changed at all. Moves the reader's mark. */

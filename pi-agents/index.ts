@@ -15,6 +15,7 @@ import { getPresentation } from "../pi-ui/index.ts";
 import { PartyPresentation } from "./presentation.ts";
 import { PartyOperations } from "./operations.ts";
 import { QuestStore } from "./quests.ts";
+import { LocalQuestLog, QuestCalls, type QuestLog } from "./quest-log.ts";
 import { isReady, isToday, repeatLabel, QUEST_KINDS, type Quest } from "./quest-model.ts";
 import { agentId, nativeId } from "./network.ts";
 import { partyForkPoint } from "./fork.ts";
@@ -67,7 +68,9 @@ export default function party(pi: ExtensionAPI): void {
 	const signal = () => { writeFileSync(join(directory, "changed"), randomUUID(), { mode: 0o600 }); };
 	const operations = () => { database(); return lifecycle ??= new PartyOperations(directory); };
 	let questStore: QuestStore | undefined;
-	const quests = () => questStore ??= new QuestStore(directory);
+	let questCalls: QuestCalls | undefined;
+	// Kept on the computer that keeps it for the whole account, or here when none does.
+	const quests = (): QuestLog => (questCalls ??= new QuestCalls(directory)).remote() ?? new LocalQuestLog(questStore ??= new QuestStore(directory));
 	const member = () => store?.member(session);
 	const syncFlight = () => {
 		if (!store || member()?.owner !== owner) return;
@@ -226,7 +229,7 @@ export default function party(pi: ExtensionAPI): void {
 		providePrimaryAgents(session, undefined);
 		stopped = true; armed = false; preparingPrompt = false; stopTransport();
 		try { store?.release(session, owner); }
-		finally { questStore?.close(); questStore = undefined; lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
+		finally { questStore?.close(); questStore = undefined; questCalls?.close(); questCalls = undefined; lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
 	});
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
@@ -456,16 +459,16 @@ export default function party(pi: ExtensionAPI): void {
 			repeat: Type.Optional(repeatSchema),
 			notify: Type.Optional(Type.Boolean({ description: "Default true." })) }),
 		async execute(_id, params) {
-			const quest = quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
+			const quest = await quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
 			return result({ added: questJson(quest!) });
 		},
 	});
 	pi.registerTool({
 		name: "quest_list", label: "Read Jordan's quest log", ...QUESTS,
-		description: "Read Jordan's quest log on this computer: open, finished but not turned in, and upcoming quests.",
+		description: "Read Jordan's quest log: open, finished but not turned in, and upcoming quests.",
 		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
 		async execute(_id, params) {
-			const view = quests().view();
+			const view = await quests().view();
 			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
 			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
 			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
@@ -482,8 +485,9 @@ export default function party(pi: ExtensionAPI): void {
 			state: Type.Optional(StringEnum(["open", "done", "abandoned"] as const)) }),
 		async execute(_id, params) {
 			const by = { kind: "agent" as const, id: session, label: label() }, { id, state, ...fields } = params;
-			let quest = Object.keys(fields).length ? quests().apply(by, { action: "update", id, ...fields }) : quests().get(id);
-			if (state) quest = quests().apply(by, { action: state === "done" ? "complete" : state === "abandoned" ? "abandon" : "reopen", id });
+			const log = quests();
+			let quest = Object.keys(fields).length ? await log.apply(by, { action: "update", id, ...fields }) : await log.get(id);
+			if (state) quest = await log.apply(by, { action: state === "done" ? "complete" : state === "abandoned" ? "abandon" : "reopen", id });
 			if (!quest) throw Error(`No quest has the id ${id}.`);
 			return result({ quest: questJson(quest) });
 		},

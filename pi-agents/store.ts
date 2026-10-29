@@ -163,7 +163,10 @@ export class PartyStore {
 		return this.db.prepare("SELECT * FROM members WHERE heartbeat>? ORDER BY heartbeat DESC,session LIMIT ?")
 			.all(this.now() - LEASE_MS, NETWORK_LIMIT) as unknown as Member[];
 	}
-	networkDirectory(): NetworkMember[] { return networkMembers(this.localMembers(), this.now(), LEASE_MS); }
+	/** Conversations other computers may message; local services such as the quest log's sender are not among them. */
+	networkDirectory(): NetworkMember[] {
+		return networkMembers(this.localMembers().filter(member => member.kind === "session" || member.kind === "child"), this.now(), LEASE_MS);
+	}
 	setNetworkScope(scope: string): void {
 		this.tx(() => {
 			const old = this.db.prepare("SELECT value FROM network_meta WHERE key='scope'").get() as { value: string } | undefined;

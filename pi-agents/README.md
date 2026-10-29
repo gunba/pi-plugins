@@ -32,7 +32,8 @@ Agents panel show the same.
 ## Quests
 
 `quest_add`, `quest_list` and `quest_update` (loaded with `tool_search`) keep the user's list of things only they can
-do: add, read, and change the quests the agent added.
+do: add, read, and change the quests the agent added. The list is kept by the computer that keeps conversation copies,
+and agents on other computers reach it through their Desk (`quest-log.ts`).
 
 ## Storage
 
