@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { applySessionChanges, applyStateChanges, sessionChanges, stateChanges } from "../src/shared/session-patch.ts";
 import { SearchStore } from "../src/host/search-store.ts";
+import { SEARCH_EMBEDDING_DIMENSIONS } from "../src/host/search-embedder.ts";
 
 const root = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const baselineFile = join(root, "bench", "baseline.json");
@@ -110,7 +111,8 @@ function bundle() {
 
 /**
  * The search store's routine work against one full read of its passages, the same measure on any machine: expiry runs
- * every minute and the host asks for the last scan on every change, so neither may read every passage.
+ * every minute, and the host asks for the last scan and the worker for passages to embed on every change, so none of
+ * them may read every passage.
  */
 function search() {
 	const directory = mkdtempSync(join(tmpdir(), "desk-bench-search-")), store = new SearchStore(join(directory, "index.sqlite"));
@@ -123,8 +125,10 @@ function search() {
 		}
 		const median = run => { const times = []; for (let i = 0; i < 9; i++) { const t = performance.now(); run(); times.push(performance.now() - t); } return times.sort((a, b) => a - b)[4]; };
 		const scan = median(() => store.db.prepare("SELECT sum(length(p.entry)) FROM passages p").get());
-		const scope = { local: true };
-		return { search_expiry_vs_scan: +(median(() => store.expire()) / scan).toFixed(3), search_last_scan_vs_scan: +(median(() => store.lastScan(scope)) / scan).toFixed(3) };
+		const scope = { local: true }, vector = new Float32Array(SEARCH_EMBEDDING_DIMENSIONS); vector[0] = 1;
+		for (let batch; (batch = store.pending(scope, 4096)).length;) store.putVectors(batch.map(item => ({ id: item.id, hash: item.hash, vector })));
+		return { search_expiry_vs_scan: +(median(() => store.expire()) / scan).toFixed(3), search_last_scan_vs_scan: +(median(() => store.lastScan(scope)) / scan).toFixed(3),
+			search_pending_vs_scan: +(median(() => store.pending(scope, 16)) / scan).toFixed(3) };
 	} finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 }
 

@@ -6,5 +6,6 @@
 	"bundle_js_gzip_kb": 285,
 	"bundle_css_gzip_kb": 25,
 	"search_expiry_vs_scan": 0.009,
-	"search_last_scan_vs_scan": 0.001
+	"search_last_scan_vs_scan": 0.001,
+	"search_pending_vs_scan": 0.013
 }

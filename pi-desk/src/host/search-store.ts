@@ -53,11 +53,21 @@ export class SearchStore {
 				CREATE INDEX IF NOT EXISTS passages_time ON passages(at);
 				CREATE INDEX IF NOT EXISTS passages_natural ON passages(scope,computer,source,chunk) WHERE role<>'tool';
 				CREATE INDEX IF NOT EXISTS chunks_embedded ON chunks(model) WHERE vector IS NOT NULL;
+				CREATE TABLE IF NOT EXISTS embed_queue (chunk INTEGER PRIMARY KEY);
 				CREATE TABLE IF NOT EXISTS inventories (scope TEXT NOT NULL, computer TEXT NOT NULL, epoch TEXT NOT NULL, snapshot TEXT NOT NULL,
 					scanned INTEGER NOT NULL, PRIMARY KEY(scope,computer));
 				CREATE TABLE IF NOT EXISTS inventory_sources (scope TEXT NOT NULL, computer TEXT NOT NULL, source TEXT NOT NULL,
 					PRIMARY KEY(scope,computer,source), FOREIGN KEY(scope,computer) REFERENCES inventories(scope,computer) ON DELETE CASCADE);`);
 			this.epoch = this.get("epoch") ?? randomUUID(); this.set("epoch", this.epoch);
+			// Conversation chunks that lack this model's embedding. Finding them in chunks read the whole table (most
+			// chunks are tool output, never embedded) each time anything changed; an index made before the queue, or for
+			// another model, fills it once.
+			if (this.get("embed_queue") !== SEARCH_EMBEDDING_MODEL) this.transaction(() => {
+				this.db.exec("DELETE FROM embed_queue");
+				this.sql(`INSERT OR IGNORE INTO embed_queue SELECT DISTINCT p.chunk FROM passages p INDEXED BY passages_natural JOIN chunks c ON c.id=p.chunk
+					WHERE p.role<>'tool' AND (c.vector IS NULL OR c.model<>?)`).run(SEARCH_EMBEDDING_MODEL);
+				this.set("embed_queue", SEARCH_EMBEDDING_MODEL);
+			});
 		} catch (error) { this.db.close(); throw error; }
 	}
 	private sql(text: string): StatementSync {
@@ -133,6 +143,7 @@ export class SearchStore {
 		this.sql("INSERT INTO passages(scope,computer,source,seq,ref,entry,parent,ordinal,start,role,tool,at,chunk) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
 			.run(scope, computer, source.id, passage.sequence, reference, passage.entry, passage.parent ?? null, passage.ordinal, passage.start,
 				passage.role, passage.tool ?? null, passage.at ?? null, chunk);
+		if (passage.role !== "tool") this.sql("INSERT OR IGNORE INTO embed_queue SELECT id FROM chunks WHERE id=? AND (vector IS NULL OR model<>?)").run(chunk, SEARCH_EMBEDDING_MODEL);
 	}
 	/** Atomically persist new complete entries, their searchable ancestry, and the byte cursor that acknowledges them. */
 	append(file: SearchFileState, generation: string, entries: IndexedEntry[], update: { title?: string; root?: string; kind?: SearchSource["kind"]; complete: boolean; warning?: string }): SearchSource {
@@ -250,7 +261,7 @@ export class SearchStore {
 	}
 	private collect(): void {
 		const removed = this.sql("SELECT id FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM passages p WHERE p.chunk=c.id)").all() as { id: number }[];
-		this.transaction(() => { for (const { id } of removed) this.sql("DELETE FROM chunks WHERE id=?").run(id); });
+		this.transaction(() => { for (const { id } of removed) { this.sql("DELETE FROM chunks WHERE id=?").run(id); this.sql("DELETE FROM embed_queue WHERE chunk=?").run(id); } });
 		for (const { id } of removed) this.vectors.delete(id);
 		this.db.exec("PRAGMA incremental_vacuum(4096)");
 	}
@@ -278,8 +289,9 @@ export class SearchStore {
 	pending(scope: QueryScope, limit = 8): { id: number; hash: string; text: string }[] {
 		const where = this.filter(scope, undefined, "conversation");
 		// Blank text (a passage cut at a NUL, say) cannot be embedded, and one in a batch failed the whole batch every time.
-		return this.sql(`SELECT c.id,c.hash,c.text FROM chunks c WHERE (c.vector IS NULL OR c.model<>?) AND trim(c.text)<>''
-			AND c.id IN (${this.eligible(where.sql)}) ORDER BY c.id DESC LIMIT ?`)
+		return this.sql(`SELECT c.id,c.hash,c.text FROM embed_queue q JOIN chunks c ON c.id=q.chunk WHERE (c.vector IS NULL OR c.model<>?) AND trim(c.text)<>''
+			AND EXISTS(SELECT 1 FROM passages p INDEXED BY passages_chunk JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source
+			WHERE p.chunk=q.chunk AND ${where.sql}) ORDER BY q.chunk DESC LIMIT ?`)
 			.all(SEARCH_EMBEDDING_MODEL, ...where.parameters, limit) as unknown as { id: number; hash: string; text: string }[];
 	}
 	/** SQLite can reuse a deleted row ID; completion must still identify the exact text that was embedded. */
@@ -290,7 +302,7 @@ export class SearchStore {
 				const saved = this.sql(`UPDATE chunks SET vector=?,model=? WHERE id=? AND hash=? AND EXISTS(SELECT 1 FROM passages p JOIN sources s
 					ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.chunk=chunks.id AND (s.expires IS NULL OR s.expires>?))`)
 					.run(Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength), SEARCH_EMBEDDING_MODEL, id, hash, Date.now());
-				if (saved.changes) this.cache(id, vector);
+				if (saved.changes) { this.cache(id, vector); this.sql("DELETE FROM embed_queue WHERE chunk=?").run(id); }
 			}
 		});
 	}
