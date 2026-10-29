@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCapture } from "./capture-server.mjs";
 
-const [binary, catalogPath, outputPath, version] = process.argv.slice(2);
+const [binary, catalogPath, outputPath, version, selectedScenarios] = process.argv.slice(2);
 if (!version) throw new Error("Usage: node run-captures.mjs <codex-binary> <models.json> <output-directory> <version>");
 const output = resolve(outputPath);
 mkdirSync(output, { recursive: true });
@@ -92,7 +92,9 @@ async function capture(client, lite, scenario) {
 // Each lane has isolated credentials, ports, and histories; lanes share no mutable fixtures.
 const summaries = (await Promise.all([false, true].flatMap(lite => ["native", "wire"].map(async client => {
   const results = [];
-  for (const scenario of ["tool", "missing-ids", "model-not-found", "missing-ids-sse", "model-not-found-sse"]) results.push(await capture(client, lite, scenario));
+  const scenarios = selectedScenarios?.split(",") ?? ["tool", "missing-ids", "model-not-found", "missing-ids-sse", "model-not-found-sse",
+    "policy-capacity", "policy-capacity-retry", "policy-capacity-sse", "policy-capacity-retry-sse"];
+  for (const scenario of scenarios) results.push(await capture(client, lite, scenario));
   return results;
 })))).flat();
 writeFileSync(join(output, "summary.json"), JSON.stringify({ scratch, summaries }, null, 2) + "\n");

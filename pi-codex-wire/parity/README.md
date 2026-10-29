@@ -111,8 +111,9 @@ node pi-codex-wire/parity/run-captures.mjs /path/to/codex /tmp/codex-models.json
 python3 -B pi-codex-wire/parity/compare-captures.py /path/to/captures > /path/to/comparison.json
 ```
 
-The version is a plain number such as `0.165.0`. The runner covers standard and Lite first turns, tool continuation,
-prewarm, missing response IDs, cold resume and terminal model-not-found errors over WebSocket and SSE. Its
+The version is a plain number such as `0.166.0`. The runner covers standard and Lite first turns, tool continuation,
+prewarm, missing response IDs, cold resume, terminal model-not-found errors, and policy-capacity failures with and
+without retry advice over WebSocket and SSE. An optional fifth argument selects comma-separated scenarios. Its
 `summary.json` records the scratch folder. The comparison checks saved IDs and reports field-order, client/turn
 metadata, input-item shape and header-name differences; inspect those differences and header values before reporting
 parity. Native `exec` identity, API-key versus fake ChatGPT authentication, disabled native analytics and the extra

@@ -9,7 +9,8 @@ ROOT = pathlib.Path(sys.argv[1])
 SUMMARY = json.loads((ROOT / "summary.json").read_text())["summaries"]
 assert SUMMARY, "No capture scenarios completed"
 for row in SUMMARY:
-    expected = 1 if row["name"].startswith("native-") and "model-not-found" in row["name"] else 0
+    terminal = "model-not-found" in row["name"] or "policy-capacity" in row["name"] and "policy-capacity-retry" not in row["name"]
+    expected = 1 if row["name"].startswith("native-") and terminal else 0
     assert row["code"] == expected and row["signal"] is None, row
     if "missing-ids" in row["name"]:
         assert row.get("resume") == {"code": 0, "signal": None}, row
@@ -96,5 +97,22 @@ for native_path in sorted(ROOT.glob("native-*.jsonl")):
                 assert any(row.get("type") == "message_end" and row.get("message", {}).get("stopReason") == "error" and row["message"]["errorMessage"] == "Capture model is unavailable." for row in events)
         assert sum(body.get("generate") is not False for body in left) == 1
         result["checks"].append(name + ": terminal model_not_found, no inference retry")
+    if "policy-capacity" in name:
+        advised = "policy-capacity-retry" in name
+        for client, bodies in [("native", left), ("wire", right)]:
+            assert sum(body.get("generate") is not False for body in bodies) == (2 if advised else 1), (client, name)
+            assert all(body["model"] == "gpt-6-astra" for body in bodies), (client, name)
+            events = load(ROOT / (client + "-" + name + ".stdout"))
+            if client == "native":
+                if advised:
+                    assert any(row.get("type") == "turn.completed" for row in events), name
+                else:
+                    assert any(row.get("type") == "turn.failed" and row["error"]["message"] == "Policy-restricted capacity is unavailable. Please try again later." for row in events), name
+            else:
+                messages = [row["message"] for row in events if row.get("type") == "message_end" and row.get("message", {}).get("role") == "assistant"]
+                assert messages[-1]["stopReason"] == ("stop" if advised else "error"), name
+                if not advised:
+                    assert messages[-1]["errorMessage"] == "Policy-restricted capacity is unavailable. Please try again later.", name
+        result["checks"].append(name + ": retry only with server advice; no model switch")
     result["pairs"].append({"name": name, "requests_per_client": len(left), "differences": differences})
 print(json.dumps(result, indent=2))

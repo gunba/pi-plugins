@@ -9,7 +9,7 @@ import { WebSocketServer } from "ws";
 export async function startCapture({ catalog, log, key, cert, scenario = "tool", sse = false }) {
   const records = [];
   const record = value => { records.push(value); appendFileSync(log, JSON.stringify(value) + "\n"); };
-  let sequence = 0, toolSent = false;
+  let sequence = 0, toolSent = false, policyFailed = false;
   function events(body) {
     const id = `resp_capture_${++sequence}`;
     if (body.generate === false) return [
@@ -19,12 +19,19 @@ export async function startCapture({ catalog, log, key, cert, scenario = "tool",
     if (scenario === "model-not-found") return [{ type: "response.failed", response: {
       id, status: "failed", error: { code: "model_not_found", message: "Capture model is unavailable." },
     } }];
+    if (scenario.startsWith("policy-capacity") && !policyFailed) {
+      policyFailed = true;
+      return [{ type: "response.failed", response: { id, status: "failed", error: {
+        code: "policy_capacity_unavailable", message: "Selected model is at capacity. Please try a different model.",
+        ...(scenario === "policy-capacity-retry" ? { headers: { "Retry-After": "0" } } : {}),
+      } } }];
+    }
     const flatten = tools => (tools ?? []).flatMap(tool => tool.type === "namespace" ? flatten(tool.tools) : [tool]);
     const tools = flatten([...(body.tools ?? []), ...(body.input ?? []).filter(item => item.type === "additional_tools").flatMap(item => item.tools)]);
     const shell = tools.find(tool => ["exec_command", "bash"].includes(tool.name));
     const output = [];
     if (scenario === "missing-ids") output.push({ type: "reasoning", summary: [], encrypted_content: "capture-reasoning" });
-    if (!toolSent && scenario !== "text" && shell) {
+    if (!toolSent && scenario !== "text" && !scenario.startsWith("policy-capacity") && shell) {
       toolSent = true;
       output.push({ type: "function_call", name: shell.name, ...(catalog.models[0].use_responses_lite ? { namespace: "functions" } : {}),
         call_id: "call_capture", arguments: JSON.stringify(
