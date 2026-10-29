@@ -14,6 +14,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { ensureWorkCoordination } from "../../pi-work-coordination/index.ts";
+import { lazyMcpTransports } from "../lazy-mcp.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
 import { noticeBatch, noticeBatchContent } from "./notice-batcher.ts";
 import { FollowupDelivery, type FollowupInput } from "./followup-delivery.ts";
@@ -352,7 +353,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			extensionFactories: [
 				{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
 				{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
-				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
+				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension({ createTransport: await lazyMcpTransports() }) },
 				...(presentation ? [{ name: "child-presentation", factory: (pi: ExtensionAPI) => presentation.install(pi) }] : []),
 				{ name: "work-coordination", factory: (pi) => ensureWorkCoordination(pi, { child: true }) },
 				{ name: "followup-delivery", factory: (pi) => followups.install(pi) },

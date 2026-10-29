@@ -58,6 +58,7 @@ import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
+import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
 const queuePreview = (text: string) => text.length > 300 ? `${text.slice(0, 300)}…` : text;
 const modelContextCache = new WeakMap<SessionManager, { leaf: string | null; constraint: SessionSnapshot["modelSwitchConstraint"] }>();
@@ -223,7 +224,7 @@ export class DeskEngine {
 					extensionFactories: [
 						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
 						{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
-						{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
+						{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension({ createTransport: await lazyMcpTransports() }) },
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);
 						installIntegrations(pi);

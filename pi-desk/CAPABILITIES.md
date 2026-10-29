@@ -40,6 +40,13 @@ Desk loads the public SDK factories for Codemode, tool search and MCP. The CLI's
 llama.cpp management extension is not exported through that SDK interface and is
 not loaded in Desk.
 
+Conversations and secondary agents start a stdio MCP server only when a request
+needs it. A session connects with the server's last `initialize` and `tools/list`
+answers, cached under `~/.pi/agent/mcp-cache` for a day; a tool call, resource
+read or other request starts the process, and the process stops after 10 minutes
+with nothing in flight. State a server keeps in its process, such as a kwin-mcp
+session, ends with it. HTTP servers connect as in Pi.
+
 ## Unattended work
 
 Each open Desk window tells every computer when it was last used (a click, key,
