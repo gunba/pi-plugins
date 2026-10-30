@@ -45,8 +45,10 @@ that touch requests. The conversation sleeps in between: no process runs, and th
 
 Perth can push to `gunba/pi-plugins` through its repository-scoped SSH deploy key. Keep `origin` on
 `git@github.com:gunba/pi-plugins.git`; the upstream Codex clone stays read-only over HTTPS. The deploy key does not
-provide GitHub API access. Use an already authorized environment to open draft PRs; do not start an account-wide
-GitHub device login for unattended parity work. Without API access, publish the branch and provide its compare link.
+provide GitHub API access. Every parity change is delivered as a draft PR, then handed to **Pi Desk Developer** for
+review and merge. Use an already authorized environment to open the PR; if Perth has only SSH access, ask that agent
+to create the PR for the pushed branch and return its URL. Do not start an account-wide GitHub device login for
+unattended parity work. A pushed branch or compare link is not a completed handoff.
 
 ## When a release wakes you
 
@@ -89,14 +91,15 @@ GitHub device login for unattended parity work. Without API access, publish the 
      - the prompt-cache impact;
      - the test and capture results.
    - Push the branch: `git -C ~/codex-parity/pi-plugins push -u origin parity/<tag>`.
-   - Open a draft PR against `main` when GitHub API access is available. Include the changes, exclusions, cache impact
-     and validation results in its description. Otherwise provide
-     `https://github.com/gunba/pi-plugins/compare/main...parity/<tag>?expand=1`; a compare link is not an open PR.
-   - Put the PR or compare link in the report. Patches remain an optional fallback:
-     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
-   - Add a quest for Jordan to review the PR, or the published branch if no PR was opened. Include its link, the
-     computer (pi-desk-perth), and the evidence folder. Any Desk agent can fetch local files with `agent_send`.
-   - If nothing needs to change, the report says so and no quest is added.
+   - Open a draft PR against `main`, using an already authorized environment or Pi Desk Developer's help. Include
+     the changes, exclusions, cache impact and validation results in its description. Obtain the actual PR URL.
+   - Put the PR URL in the report. Patches may be retained beside the evidence with
+     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`, but do not replace the PR.
+   - Notify **Pi Desk Developer** with the PR URL, head commit, test results and limitations, prompt-cache impact,
+     and evidence location on pi-desk-perth. That agent owns review and merge. Use `agent_list` to find it and
+     `agent_send` to deliver the handoff or supporting files.
+   - Do not add a routine parity-review quest for Jordan. Ask him only for a concrete decision or access that the
+     agents cannot resolve. If nothing needs to change, write the report without opening a PR or adding a quest.
 7. **Move on.** Write the new tag to `~/codex-parity/baseline`, switch the clean checkout back to `main` so the next
    wake can pull it, set the same watch again, and end your turn.
 
