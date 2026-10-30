@@ -70,3 +70,12 @@ test("cancelling an unconfirmed Dot send fences late admission across restart", 
 		await restored.close();
 	} finally { await dot.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("only Dot's own routes are refused on a workspace computer that does not keep copies", async () => {
+	const { isDotPath, refusesDot } = await import("../src/host/host-api.ts");
+	for (const path of ["/api/sessions/abc/messages", "/api/state", "/api/storage", "/api/dotfiles"]) assert.equal(isDotPath(path), false, path);
+	for (const path of ["/api/dot", "/api/dot/connector", "/api/dot/inputs"]) assert.equal(isDotPath(path), true, path);
+	assert.equal(refusesDot(true, false), true);
+	assert.equal(refusesDot(true, true), false);
+	assert.equal(refusesDot(false, false), false);
+});

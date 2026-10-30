@@ -124,9 +124,9 @@ export class HostApi {
 
 	/** The Dot conversation, its files, and the connector that lets the Dot reach agents. */
 	private async dot(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
-		// In a workspace, Dot and its connector run only on the server that keeps conversation copies (client dot-conversation.tsx).
-		const teleport = this.host.teleport();
-		if (this.host.account.identity && teleport && !teleport.settings.hold) return reply({ error: "Dot runs on your workspace server, the computer that keeps conversation copies." }, 409);
+		if (!isDotPath(url.pathname)) return undefined;
+		if (refusesDot(!!this.host.account.identity, this.host.teleport()?.settings.hold ?? false))
+			return reply({ error: "Dot runs on your workspace server, the computer that keeps conversation copies." }, 409);
 		if (url.pathname === "/api/dot/connector") {
 			const connector = this.host.connector();
 			const view = () => ({ enabled: connector.enabled, url: connector.enabled ? this.host.account.connectorUrl() : undefined, relay: this.host.account.status?.state ?? "offline",
@@ -291,3 +291,8 @@ function recordClientError(path: string, data: Record<string, unknown>): void {
 	try { if (statSync(path).size > 1_000_000) renameSync(path, `${path}.1`); } catch { /* No log yet. */ }
 	appendFileSync(path, `${line}\n`);
 }
+
+/** The Dot conversation's and connector's routes; every other request passes on to the next router. */
+export const isDotPath = (pathname: string): boolean => pathname === "/api/dot" || pathname.startsWith("/api/dot/");
+/** In a workspace, Dot runs only on the server that keeps conversation copies (client dot-conversation.tsx). */
+export const refusesDot = (workspace: boolean, holdsCopies: boolean): boolean => workspace && !holdsCopies;
