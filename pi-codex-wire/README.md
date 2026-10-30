@@ -58,7 +58,7 @@ Desktop identity applies to both catalog and inference requests. Switching clien
 If an established WebSocket closes, errors, fails to send or times out before
 completion, Wire surfaces the failure and selects HTTPS/SSE for subsequent calls
 on that routing session. Pi's existing retry policy decides whether to try again;
-Wire neither replays the interrupted stream nor adds or resets retries. This
+For these transport failures, Wire neither replays the interrupted stream nor adds or resets retries. This
 applies to ordinary responses and summaries, including failures after partial
 output. Model, effort, prompt and tool content stay unchanged.
 
@@ -81,6 +81,32 @@ event counts, idle time and maximum event gaps without recording output text.
 A socket termination before completion is reported as an interrupted response
 stream, not simply `terminated`. These timings describe received traffic, not
 the model's compute time or the location of a network fault.
+
+## Capacity recovery
+
+Pi agents can run unattended. When a stream fails with `policy_capacity_unavailable`
+before any output item, text, reasoning or tool-call data arrives, Wire waits and
+resends the identical request internally. The failed attempts are hidden from
+Pi's decoder; the model, request IDs, history, tools and cache keys stay unchanged.
+
+There are at most four resends. Valid `Retry-After` seconds or HTTP dates in the
+stream error's headers set the wait, capped at ten minutes. Without valid advice,
+the waits are 30, 60, 120 and 240 seconds: 7.5 minutes total. Scheduled waits also
+have a ten-minute total ceiling; if advice will not fit the remaining budget,
+recovery ends rather than resending early. These are wait budgets, not limits on
+time spent receiving a model response.
+
+Stop, steering, shutdown and response-body cancellation interrupt the wait.
+Output already received prevents any capacity resend. Exhaustion returns an
+error stating the time waited, with wording Pi does not classify as retryable,
+so Pi's own retries cannot multiply the capacity budget. Each new request,
+including a tool follow-up after success, starts with a fresh budget.
+
+Diagnostics record each wait's attempt, planned delay, advice source, actual
+elapsed wait and cancellation, plus the reason recovery stopped. They contain no
+prompt, raw error text or credentials. Other transient and HTTP-status errors
+retain Pi's retry policy. This bounded capacity recovery deliberately differs
+from interactive Codex, which fails without retry advice; it never switches models.
 
 ## Native compaction
 
@@ -130,7 +156,8 @@ configured model metadata and authentication.
 
 Compaction shares Wire's WebSocket/SSE transport, compression, idle deadlines,
 allowance observations and cancellation. Prewarming is skipped for compaction.
-Pi's configured caller retry budget and backoff still apply. An interrupted
+The capacity-recovery exception above also applies to compaction; other errors
+retain Pi's configured caller retry budget and backoff. An interrupted
 WebSocket is not replayed immediately; the caller's next attempt uses SSE.
 Errors explicitly cancel Pi's compaction hook, preventing prose fallback.
 Usage is recorded when the response supplies counters; absent usage stays unknown.
@@ -211,7 +238,7 @@ reload. An explicit `--codex-wire-user-agent` overrides the saved profile. CLI a
 - Wire owns the passive allowance footer and `/pi-usage`. Codex counters from WebSocket upgrades, stream events and SSE responses pass through `pi-codex-wire:allowance`; only allowlisted counters and plan labels cross the event bus. Claude subscription windows use Pi's native response-header event for the official Anthropic OAuth endpoint. Each provider/account keeps a separate snapshot; late headers from a changed account are ignored. No polling, extra model requests or global WebSocket interception is installed. API token limits are not presented as subscription allowance. The footer handles a 7-day window reported as the primary window.
 - Codex requests prepend the selected model’s native introduction from its catalog to Pi’s existing instructions. Only the opening paragraph is copied; tools, project instructions and the rest of Pi’s policy remain intact. Unlisted models use the neutral introduction `You are Codex.`. An existing matching introduction is not duplicated.
 - Desk (RPC) turns request `detailed` reasoning summaries; terminal Pi retains its `auto` default instead of adopting a catalog default of `none`. Explicit caller choices and the model's supported-parameter flag still apply. The backend may omit a readable summary; encrypted replay state is preserved separately. Diagnostics record the requested summary mode, not its content.
-- Streamed `policy_capacity_unavailable` failures without valid `Retry-After` advice use Codex 0.166.0's terminal message, so overload wording cannot trigger an unadvised Pi retry. Server-advised failures keep Pi's existing handling, retry budget and backoff; Wire does not add a retry loop or switch models. HTTP-status retries remain owned by Pi.
+- Streamed `policy_capacity_unavailable` failures use bounded, abortable [capacity recovery](#capacity-recovery) before output, deliberately differing from native Codex for unattended agents. Other errors retain Pi's retry policy.
 - Pi's existing serializer and model-event decoder handle tools and reasoning. As in Codex 0.165.0, missing or empty output-item IDs receive type-prefixed UUIDv7s before Pi saves the response. Added/done events share the ID, and replay retains it; existing server IDs and saved history are not rewritten. The adapter locally envelopes WebSocket events as SSE for that decoder; network WebSocket frames remain JSON. When history is replayed under a different tool-call type, incompatible optional item IDs are omitted; call/result links and saved messages remain unchanged.
 
 On the first model request after activation or reconnect, Wire resolves the latest stable release from `https://api.github.com/repos/openai/codex/releases/latest`. This public request sends no account credentials. A one-hour cache in `~/.pi/agent/codex-wire/latest-version.json` avoids a lookup for every conversation. The selected version stays fixed for that activation so an active connection and its model catalog agree. Reconnect or reload to refresh an expired version cache. If the release service is unavailable, Wire uses the last verified version with a warning; without a verified cache it stops before inference. `--codex-wire-version` permits an explicit compatibility override.

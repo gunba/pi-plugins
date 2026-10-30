@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
 import { buildSessionProjection, createEventBus } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/index.ts";
 import { identity } from "./fixtures.mjs";
@@ -54,30 +53,6 @@ function decode(init) {
   if (encoding === "gzip") return JSON.parse(gunzipSync(init.body).toString());
   return JSON.parse(init.body);
 }
-
-for (const lite of [false, true]) test(`policy capacity retries require server advice (Lite=${lite})`, async t => {
-  const h = harness(t);
-  let headers;
-  const fetcher = async url => {
-    if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id, use_responses_lite: lite }] });
-    const error = { code: "policy_capacity_unavailable", message: "Selected model is at capacity. Please try a different model.", headers };
-    return new Response(`data: ${JSON.stringify({ type: "response.failed", response: { id: "capacity", status: "failed", error } })}\n\n`,
-      { headers: { "content-type": "text/event-stream" } });
-  };
-  for (const [advice, retry] of [[undefined, false], [{ "retry-after-ms": "0" }, false], [{ "Retry-After": "invalid" }, false],
-    [{ "Retry-After": "-1" }, false], [{ "Retry-After": "0.5" }, false], [{ "Retry-After": ["0"] }, false],
-    [{ "Retry-After": "18446744073709551615" }, false], [{ "Retry-After": "Thu, 31 Feb 2000 12:00:00 GMT" }, false],
-    [{ "Retry-After": "0" }, true], [{ "rEtRy-AfTeR": 1 }, true],
-    [{ "Retry-After": "Sun, 06 Nov 1994 08:49:37 GMT" }, true], [{ "Retry-After": "Sunday, 06-Nov-94 08:49:37 GMT" }, true],
-    [{ "Retry-After": "Sun Nov  6 08:49:37 1994" }, true]]) {
-    headers = advice;
-    const result = await h.provider().streamSimple(model, { messages: [] }, { apiKey: jwt, fetch: fetcher, maxRetries: 0 }).result();
-    assert.equal(result.stopReason, "error");
-    assert.equal(result.errorMessage, retry ? "Selected model is at capacity. Please try a different model."
-      : "Policy-restricted capacity is unavailable. Please try again later.");
-    assert.equal(isRetryableAssistantError(result), retry, JSON.stringify(advice));
-  }
-});
 
 test("Codex controls and wire status disappear on a Claude model", async t => {
   const h = harness(t), views = [], statuses = [];

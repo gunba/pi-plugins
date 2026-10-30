@@ -9,15 +9,17 @@ import { WebSocketServer } from "ws";
 import { Diagnostics } from "../extensions/diagnostics.ts";
 import { Protocol } from "../extensions/protocol.ts";
 import { WireTransport } from "../extensions/transport.ts";
+import { CapacityRecovery, capacityRetryAfter } from "../extensions/errors.ts";
 import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { shapeModelBody, normalizeLiteEvent } from "../extensions/model-shape.ts";
+import { shapeModelBody, normalizeLiteEvent, responseNormalizer } from "../extensions/model-shape.ts";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
 import { identity } from "./fixtures.mjs";
 import { zstdDecompressSync } from "node:zlib";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import requestTracing, { requestTrace } from "../extensions/request-trace.ts";
 
-async function fixture(t, mode = "auto", handler, prewarm = true) {
+async function fixture(t, mode = "auto", handler, prewarm = true, capacitySchedule) {
   const directory = mkdtempSync(join(tmpdir(), "pi-wire-test-"));
   const log = join(directory, "log.jsonl");
   const server = createServer(handler);
@@ -26,9 +28,10 @@ async function fixture(t, mode = "auto", handler, prewarm = true) {
   const protocol = new Protocol("codex", "thread", "install", identity);
   const allowances = [];
   // These legacy recovery fixtures explicitly exercise opt-in prewarming.
-  const transport = new WireTransport(new Diagnostics(log), protocol, mode, fetch, {}, headers => allowances.push(headers), prewarm);
+  const diagnostics = new Diagnostics(log);
+  const transport = new WireTransport(diagnostics, protocol, mode, fetch, {}, headers => allowances.push(headers), prewarm, capacitySchedule);
   t.after(() => { transport.close(); server.closeAllConnections(); server.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { server, url, protocol, transport, log, allowances };
+  return { server, url, protocol, transport, log, allowances, diagnostics };
 }
 
 const body = { model: "gpt-6-astra", input: [{ role: "user", content: "PRIVATE PROMPT" }], tools: [], store: false, stream: true };
@@ -38,6 +41,179 @@ function exchange(f, overrides = {}) { return { url: f.url, body: f.protocol.sha
 const expired = { type: "error", status: 400, error: { code: "websocket_connection_limit_reached" } };
 const model = { id: "gpt-6-astra", name: "Astra", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api", input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 1000, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 } };
 const jwt = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fake" } })).toString("base64url")}.x`;
+
+const capacityFailure = headers => ({ type: "response.failed", response: { id: "capacity", status: "failed",
+  error: { code: "policy_capacity_unavailable", message: "Selected model is at capacity. Please try a different model.", headers } } });
+
+async function capacityFixture(t, mode, events, schedule = [1, 2]) {
+  const requests = [];
+  const f = await fixture(t, mode, (req, res) => {
+    const chunks = [];
+    req.on("data", chunk => chunks.push(chunk));
+    req.on("end", () => {
+      requests.push(Buffer.concat(chunks).toString());
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(events(requests.length).map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
+    });
+  }, false, schedule);
+  if (mode === "auto") {
+    const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+    wss.on("connection", socket => socket.on("message", data => {
+      requests.push(data.toString());
+      for (const event of events(requests.length)) socket.send(JSON.stringify(event));
+    }));
+  }
+  return { ...f, requests };
+}
+
+function capacityWait(f) {
+  let resolve;
+  const waiting = new Promise(done => { resolve = done; });
+  const write = f.diagnostics.write.bind(f.diagnostics);
+  f.diagnostics.write = row => { write(row); if (row.kind === "capacity-wait") resolve(row); };
+  return waiting;
+}
+
+for (const mode of ["auto", "sse"]) {
+  test(`capacity recovery hides two failures, replays identical requests, and resets after success (${mode})`, async t => {
+    const f = await capacityFixture(t, mode, n => [
+      { type: "response.created", response: { id: `attempt-${n}`, status: "in_progress" } },
+      ...(n % 3 ? [capacityFailure()] : summaryEvents()),
+    ]);
+    let fetches = 0;
+    for (const requestId of ["first", "tool-follow-up"]) {
+      const stream = streamSimple(model, { messages: [] }, { apiKey: jwt, transport: "sse", maxRetries: 0,
+        fetch: () => { fetches++; return f.transport.request(exchange(f, { requestId, normalizeEvent: responseNormalizer(false) })); } });
+      const events = [];
+      for await (const event of stream) events.push(event.type);
+      const result = await stream.result();
+      assert.equal(result.stopReason, "stop");
+      assert.deepEqual(result.content, [{ type: "text", text: "Checkpoint.", textSignature: '{"v":1,"id":"msg_summary"}' }]);
+      assert.equal(events.filter(type => type === "done").length, 1);
+      assert.equal(events.includes("error"), false);
+    }
+    assert.equal(fetches, 2);
+    assert.equal(f.requests.length, 6);
+    assert.equal(f.requests[1], f.requests[0]); assert.equal(f.requests[2], f.requests[0]);
+    assert.equal(f.requests[4], f.requests[3]); assert.equal(f.requests[5], f.requests[3]);
+    const rows = readFileSync(f.log, "utf8").trim().split("\n").map(JSON.parse);
+    assert.deepEqual(rows.filter(row => row.kind === "capacity-wait").map(row => row.delayMs), [1, 2, 1, 2]);
+    assert.doesNotMatch(JSON.stringify(rows), /PRIVATE|SECRET|try a different model/);
+  });
+
+  for (const ending of ["abort", "cancel", "close"]) test(`capacity wait ends on ${ending} without resending (${mode})`, { timeout: 5000 }, async t => {
+    const f = await capacityFixture(t, mode, () => [capacityFailure()], [30_000]);
+    const waiting = capacityWait(f);
+    const controller = new AbortController();
+    const response = await f.transport.request(exchange(f, { signal: controller.signal, normalizeEvent: responseNormalizer(false) }));
+    const reader = response.body.getReader();
+    const read = reader.read();
+    const rejected = ending === "cancel" ? read : assert.rejects(read, { name: "AbortError" });
+    assert.equal((await waiting).delayMs, 30_000);
+    await assert.rejects(f.transport.request(exchange(f)), /Concurrent requests/);
+    if (ending === "abort") controller.abort();
+    else if (ending === "close") f.transport.close();
+    else await reader.cancel();
+    await rejected;
+    reader.releaseLock();
+    assert.equal(f.requests.length, 1);
+    assert.equal(readFileSync(f.log, "utf8").includes('"kind":"capacity-wait-end"'), true);
+  });
+
+  for (const output of [
+    { type: "response.output_item.added", output_index: 0, item: { id: "fc_partial", type: "function_call", name: "exec", arguments: "" } },
+    { type: "response.output_text.delta", output_index: 0, delta: "partial" },
+    { type: "response.reasoning_summary_text.delta", output_index: 0, delta: "partial reasoning" },
+  ]) test(`capacity failure after ${output.type} is never replayed (${mode})`, async t => {
+    const f = await capacityFixture(t, mode, () => [output, capacityFailure({ "Retry-After": "0" })]);
+    const text = await (await f.transport.request(exchange(f))).text();
+    const events = text.trim().split("\n\n").map(line => JSON.parse(line.slice(6)));
+    assert.deepEqual(events[0], output);
+    assert.equal(events[1].response.error.message, "Policy-restricted capacity is unavailable; waited 0s. Output was already received; this attempt was not resent.");
+    assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: events[1].response.error.message }), false);
+    assert.equal(f.requests.length, 1);
+    assert.doesNotMatch(readFileSync(f.log, "utf8"), /"kind":"capacity-wait"/);
+  });
+
+  test(`exhausted capacity recovery is non-retryable to Pi (${mode})`, async t => {
+    const f = await capacityFixture(t, mode, () => [capacityFailure({ "Retry-After": "0" })]);
+    const result = await streamSimple(model, { messages: [] }, { apiKey: jwt, transport: "sse", maxRetries: 0,
+      fetch: () => f.transport.request(exchange(f, { normalizeEvent: responseNormalizer(false) })) }).result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /^Policy-restricted capacity is unavailable; waited \d+s\. Capacity recovery budget exhausted\.$/);
+    assert.equal(isRetryableAssistantError(result), false);
+    assert.equal(f.requests.length, 3);
+    assert.equal(f.requests[1], f.requests[0]); assert.equal(f.requests[2], f.requests[0]);
+  });
+}
+
+test("capacity advice accepts HTTP delays and dates but rejects malformed values", () => {
+  const now = Date.UTC(1994, 10, 6, 8, 49, 30);
+  for (const [raw, expected] of [["0", 0], [2, 2000], [" 30\t", 30000], ["3600", 600000],
+    ["18446744073709551615", 600000], ["Sun, 06 Nov 1994 08:49:37 GMT", 7000],
+    ["Sunday, 06-Nov-94 08:49:37 GMT", 7000], ["Sun Nov  6 08:49:37 1994", 7000],
+    ["Sun, 06 Nov 1994 08:49:00 GMT", 0], [undefined, undefined], ["", undefined],
+    ["-1", undefined], ["0.5", undefined], [["0"], undefined], [true, undefined],
+    ["Thu, 31 Feb 2000 12:00:00 GMT", undefined], ["0\r\n", undefined], ["2026-01-01", undefined]]) {
+    assert.equal(capacityRetryAfter({ "rEtRy-AfTeR": raw }, now), expected, JSON.stringify(raw));
+  }
+  assert.equal(capacityRetryAfter({ "retry-after-ms": "0" }, now), undefined);
+  assert.equal(capacityRetryAfter({ "Retry-After": "Friday, 01-Jan-66 00:00:00 GMT" }, Date.UTC(2026, 0, 1)), 600000);
+});
+
+for (const [advice, expectedWaits, seconds] of [
+  [undefined, [30000, 60000, 120000, 240000], 450],
+  ["0", [0, 0, 0, 0], 0],
+  ["3600", [600000], 600],
+  ["503", [503000], 503],
+]) test(`capacity budget bounds all waits and advice (${advice ?? "fallback"})`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let waiting = Promise.withResolvers();
+  const rows = [];
+  const recovery = new CapacityRecovery(undefined, row => {
+    rows.push(row);
+    if (row.kind === "capacity-wait") waiting.resolve(row);
+  });
+  let attempts = 0;
+  const attempt = () => {
+    attempts++;
+    return new Response(new ReadableStream({ start(controller) {
+      try {
+        const event = recovery.event(capacityFailure(advice === undefined ? undefined : { "Retry-After": advice }));
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(event))); controller.close();
+      } catch (error) { controller.error(error); }
+    } }));
+  };
+  const text = recovery.wrap(attempt(), async () => attempt(), () => {}).text();
+  for (const delay of expectedWaits) {
+    assert.equal((await waiting.promise).delayMs, delay);
+    waiting = Promise.withResolvers();
+    now += delay;
+    t.mock.timers.tick(delay);
+  }
+  const result = JSON.parse(await text);
+  assert.equal(result.response.error.message, `Policy-restricted capacity is unavailable; waited ${seconds}s. Capacity recovery budget exhausted.`);
+  assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: result.response.error.message }), false);
+  assert.equal(attempts, expectedWaits.length + 1);
+  assert.deepEqual(rows.filter(row => row.kind === "capacity-wait").map(row => row.delayMs), expectedWaits);
+});
+
+test("capacity recovery preserves other failures and treats terminal output as non-replayable", () => {
+  const recovery = new CapacityRecovery(undefined, () => {});
+  for (const event of [
+    { type: "error", error: { code: "policy_capacity_unavailable", message: "model is at capacity" } },
+    { type: "response.failed", response: { error: { code: "server_is_overloaded", message: "model is at capacity" } } },
+    { type: "response.failed", response: { error: { code: "model_not_found", message: "Not found" } } },
+  ]) assert.equal(recovery.event(event), event);
+  const event = capacityFailure();
+  event.response.output = [{ type: "function_call", name: "exec", arguments: "{}" }];
+  const normalized = recovery.event(event);
+  assert.equal(normalized.response.error.message, "Policy-restricted capacity is unavailable; waited 0s. Output was already received; this attempt was not resent.");
+  assert.deepEqual(normalized.response.output, event.response.output);
+  assert.equal(event.response.error.message, "Selected model is at capacity. Please try a different model.");
+});
 
 test("SSE diagnostics distinguish an uploaded request waiting for headers from a stream failure", async t => {
   let requests = 0;

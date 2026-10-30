@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import { Diagnostics, eventDiagnostics, object, allowanceHeaders, type JsonObject } from "./diagnostics.ts";
 import type { Compression } from "./compression.ts";
 import { nativeOrder } from "./request-order.ts";
+import { CapacityRecovery, CapacityWait, CAPACITY_BACKOFF_MS } from "./errors.ts";
 import { allowanceFromHeaders, allowanceFromEvent } from "./allowance.ts";
 import type { RequestTrace } from "./request-trace.ts";
 import { diagnosticEventType, HttpNetworkTrace, networkErrorCodes, observeWebSocketNetwork, responseRequestIds } from "./network-diagnostics.ts";
@@ -42,6 +43,8 @@ export interface Exchange {
   side?: boolean;
   onFallback?: (phase: "connect" | "prewarm" | "stream") => void;
 }
+
+type AttemptExchange = Exchange & { captureReplay?: (resend: () => Promise<Response>) => void };
 
 export interface WireHooks {
   beginTurn(): void;
@@ -153,6 +156,7 @@ export class WireTransport {
   private websocketFailures = 0;
   private websocketRetryAt = 0;
   private busy = false;
+  private capacity?: CapacityRecovery;
   private prewarmed = false;
   private activeCancel?: () => void;
   private binding?: string;
@@ -163,13 +167,15 @@ export class WireTransport {
   private readonly env: NodeJS.ProcessEnv;
   private readonly onAllowance: (headers: JsonObject) => void;
   private readonly prewarmEnabled: boolean;
+  private readonly capacitySchedule: readonly number[];
 
   constructor(
     diagnostics: Diagnostics, hooks: WireHooks, mode: "auto" | "sse",
     fetcher: typeof fetch = globalThis.fetch, env: NodeJS.ProcessEnv = process.env,
     onAllowance: (headers: JsonObject) => void = () => {},
     prewarmEnabled = false,
-  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; this.onAllowance = onAllowance; this.prewarmEnabled = prewarmEnabled; }
+    capacitySchedule: readonly number[] = CAPACITY_BACKOFF_MS,
+  ) { this.diagnostics = diagnostics; this.hooks = hooks; this.mode = mode; this.fetcher = fetcher; this.env = env; this.onAllowance = onAllowance; this.prewarmEnabled = prewarmEnabled; this.capacitySchedule = capacitySchedule; }
 
   private publishAllowance(headers: JsonObject): void {
     if (Object.keys(headers).length) this.onAllowance(headers);
@@ -196,6 +202,11 @@ export class WireTransport {
   }
 
   close(): void {
+    this.capacity?.abort();
+    this.closeConnection();
+  }
+
+  private closeConnection(): void {
     this.activeCancel?.();
     this.activeCancel = undefined;
     this.socket?.terminate();
@@ -232,7 +243,7 @@ export class WireTransport {
 
   private async connect(exchange: Exchange): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) return this.socket;
-    this.close();
+    this.closeConnection();
     const url = exchange.url.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
     const headers = new Headers(exchange.headers);
     for (const key of ["accept", "content-type", "content-encoding", "x-codex-turn-state", "x-openai-internal-codex-responses-lite"]) headers.delete(key);
@@ -274,19 +285,31 @@ export class WireTransport {
     return socket;
   }
 
-  private websocketResponse(socket: WebSocket, exchange: Exchange, prewarm: boolean, reconnects: number): Response {
+  private websocketResponse(socket: WebSocket, exchange: AttemptExchange, prewarm: boolean, reconnects: number,
+    replayBody?: JsonObject): Response {
     // A prewarm sends only what native Codex 0.164.0 does; the request after it continues from it.
     const sent = prewarm ? { ...exchange.body, input: prewarmInput(exchange.body) } : exchange.body;
     const fullBody = prewarm ? { ...sent, generate: false } : exchange.body;
-    const reason = continuationReason(fullBody, this.continuation);
+    const reason = replayBody ? "capacity-retry" : continuationReason(fullBody, this.continuation);
     let attemptId = randomUUID();
-    const body = this.hooks.websocketBody(applyContinuation(fullBody, this.continuation, reason));
+    const body = replayBody ?? this.hooks.websocketBody(applyContinuation(fullBody, this.continuation, reason));
     if (exchange.headers.get("x-openai-internal-codex-responses-lite") === "true") {
       object(body.client_metadata).ws_request_header_x_openai_internal_codex_responses_lite = "true";
     }
     this.diagnostics.request(body, { ...exchange.trace, requestId: exchange.requestId, attemptId,
       inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId, transport: "websocket",
       timeoutMs: exchange.timeoutMs, continuationReason: reason });
+    const captureReplay = (outgoing: JsonObject) => {
+      if (prewarm) return;
+      const frozen = structuredClone(outgoing);
+      exchange.captureReplay?.(async () => {
+        exchange.signal?.throwIfAborted();
+        const connected = await this.connect(exchange);
+        this.busy = true;
+        return this.websocketResponse(connected, exchange, false, reconnects, frozen);
+      });
+    };
+    captureReplay(body);
     let finished = false;
     let retriedMissingResponse = false;
     let sawOutput = false;
@@ -321,8 +344,8 @@ export class WireTransport {
             timeoutMs: exchange.timeoutMs, firstEventMs, maxGapMs, lastEventType, eventCounts,
             receivedBytes, maxEventBytes, perMessageDeflate: socket.extensions.includes("permessage-deflate"),
             network: network?.(), errorCodes: networkErrorCodes(sourceError) });
-          // Do not replay this failed stream. The caller owns retries and any
-          // partial output; its next request can use HTTPS within that budget.
+          // Transport failures are not replayed here. The caller owns these
+          // retries and any partial output; its next request may use HTTPS.
           if (!prewarm && !exchange.signal?.aborted &&
             ["closed", "socket-error", "send-error", "idle-timeout"].includes(reason)) {
             this.useSse(exchange, "stream");
@@ -391,6 +414,7 @@ export class WireTransport {
             this.diagnostics.request(retryBody, { ...exchange.trace, requestId: exchange.requestId, attemptId,
               inferenceRequestId: exchange.inferenceRequestId ?? exchange.requestId,
               transport: "websocket", retry: "missing-continuation", continuationReason: "missing-continuation" });
+            captureReplay(retryBody);
             socket.send(JSON.stringify(nativeOrder({ type: "response.create", ...retryBody })), sendError => {
               if (sendError) fail(new Error("Codex WebSocket retry failed"), "send-error");
             });
@@ -405,7 +429,12 @@ export class WireTransport {
             fail(new Error("Codex WebSocket prewarm failed")); return;
           }
           try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(exchange.normalizeEvent?.(event) ?? event)}\n\n`)); }
-          catch { fail(new Error("Unsupported Codex response tool namespace")); return; }
+          catch (error) {
+            if (error instanceof CapacityWait) {
+              finished = true; cleanup(); this.continuation = undefined; controller.error(error);
+            } else fail(new Error("Unsupported Codex response tool namespace"));
+            return;
+          }
           if (terminal.has(String(event.type)) || event.type === "error") {
             if (!prewarm && ["response.completed", "response.done"].includes(String(event.type))) this.recovered(exchange);
             const response = object(event.response);
@@ -440,9 +469,23 @@ export class WireTransport {
   }
 
   async request(exchange: Exchange): Promise<Response> {
-    if (exchange.side) return this.sse(exchange);
-    try { return await this.requestAttempt(exchange, 0); }
-    catch (error) {
+    if (!exchange.side && this.capacity) throw new Error("Concurrent requests require separate Codex wire sessions");
+    const recovery = new CapacityRecovery(exchange.signal,
+      row => this.diagnostics.write({ ...row, ...exchange.trace, requestId: exchange.requestId }), this.capacitySchedule);
+    if (!exchange.side) this.capacity = recovery;
+    const finish = () => { if (this.capacity === recovery) this.capacity = undefined; };
+    let resend: () => Promise<Response> = async () => { throw new Error("Codex request cannot be resent"); };
+    const attempt: AttemptExchange = { ...exchange, signal: recovery.signal,
+      normalizeEvent: event => {
+        const normalized = recovery.event(event);
+        return exchange.normalizeEvent?.(normalized) ?? normalized;
+      },
+      captureReplay: callback => { resend = callback; } };
+    try {
+      const response = exchange.side ? await this.sse(attempt) : await this.requestAttempt(attempt, 0);
+      return recovery.wrap(response, () => resend(), finish);
+    } catch (error) {
+      finish();
       if (!(error instanceof WebSocketExpired)) throw error;
       // Surface exhausted prewarm recovery through the decoder, not Pi's HTTP-fetch
       // retry loop, which could otherwise start another reconnect budget.
@@ -451,18 +494,18 @@ export class WireTransport {
     }
   }
 
-  private reconnectExpired(exchange: Exchange, reconnects: number, phase: string): Promise<Response> {
+  private reconnectExpired(exchange: AttemptExchange, reconnects: number, phase: string): Promise<Response> {
     this.diagnostics.write({ kind: "websocket-reconnect", requestId: exchange.requestId, reason: "connection-expired", phase });
     return this.requestAttempt(exchange, reconnects + 1);
   }
 
-  private async requestAttempt(exchange: Exchange, reconnects: number): Promise<Response> {
+  private async requestAttempt(exchange: AttemptExchange, reconnects: number): Promise<Response> {
     exchange.signal?.throwIfAborted();
     if (this.busy) throw new Error("Concurrent requests require separate Codex wire sessions");
     const binding = createHash("sha256").update(JSON.stringify([exchange.url,
       exchange.headers.get("authorization"), exchange.headers.get("chatgpt-account-id")])).digest("hex");
     if (this.binding !== undefined && this.binding !== binding) {
-      this.close(); this.fallback = false; this.websocketFailures = 0; this.websocketRetryAt = 0; this.hooks.beginTurn();
+      this.closeConnection(); this.fallback = false; this.websocketFailures = 0; this.websocketRetryAt = 0; this.hooks.beginTurn();
       // Never replay routing state supplied for another credential or endpoint.
       exchange.headers.delete("x-codex-turn-state");
       exchange.headers = this.hooks.headers(exchange.headers);
@@ -472,7 +515,7 @@ export class WireTransport {
     this.busy = true;
     if (this.mode === "auto" && (!this.fallback || Date.now() >= this.websocketRetryAt)) {
       // Probe only as part of the next caller-owned request, never during an SSE
-      // response or on an idle background timer. Inference streams are not replayed.
+      // response or on an idle background timer. Transport errors do not replay inference.
       if (this.fallback) this.diagnostics.write({ kind: "websocket-recovery", requestId: exchange.requestId, phase: "attempt" });
       let socket: WebSocket;
       try {
@@ -498,7 +541,7 @@ export class WireTransport {
             if (!error.replaySafe || reconnects >= 1) throw error;
             return this.reconnectExpired(exchange, reconnects, "prewarm");
           }
-          this.close(); this.useSse(exchange, "prewarm");
+          this.closeConnection(); this.useSse(exchange, "prewarm");
           return this.sse(exchange);
         }
         this.busy = true;
@@ -512,7 +555,7 @@ export class WireTransport {
     if (!exchange.side) { this.activeCancel = undefined; this.busy = false; }
   }
 
-  private async sse(exchange: Exchange): Promise<Response> {
+  private async sse(exchange: AttemptExchange): Promise<Response> {
     if (!exchange.side) this.busy = true;
     const startedAt = Date.now();
     let receivedBytes = 0, events = 0, terminalSeen = false;
@@ -534,6 +577,8 @@ export class WireTransport {
         headers.set("content-encoding", "zstd");
       }
     } catch (error) { if (!exchange.side) this.busy = false; throw error; }
+    const frozenBody = structuredClone(exchange.body), frozenHeaders = new Headers(exchange.headers);
+    exchange.captureReplay?.(() => this.sse({ ...exchange, body: frozenBody, headers: frozenHeaders }));
     const controller = new AbortController();
     const signal = exchange.signal ? AbortSignal.any([exchange.signal, controller.signal]) : controller.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;

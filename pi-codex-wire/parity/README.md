@@ -7,7 +7,14 @@ uses to notice a release that matters and to work out what Wire needs.
 ## Rules
 
 - **Match native wherever it is free.** Field order, IDs, metadata, headers, transport behaviour and request shapes
-  follow the official binary.
+  follow the official binary, except for the retry boundary below.
+- **Unattended-agent recovery is deliberate.** Pi retains its retry policy for transient and HTTP-status errors;
+  retry-count differences from interactive Codex are not parity defects. For streamed `policy_capacity_unavailable`
+  before any output, Wire owns bounded recovery: up to four identical resends, waiting 30/60/120/240 seconds without
+  advice, or valid `Retry-After` capped at ten minutes. Total scheduled waits cannot exceed ten minutes; advice that
+  cannot fit ends recovery rather than allowing an early resend. Abort cancels the wait. Output prevents a resend;
+  exhaustion reports time waited with non-retryable wording so Pi cannot multiply the budget. Each request has a
+  fresh budget, including tool follow-ups after success. Never add model switching or replay partial output.
 - **Never inject Codex's harness messages.** These are skills, permissions, environment, collaboration mode and
   multi-agent instructions. The model reads them, so they are not free. Pi keeps its own prompt.
 - **One tool set for every model.** Wire adds no Codex-specific tool names.
@@ -71,7 +78,8 @@ unattended parity work. A pushed branch or compare link is not a completed hando
    | `request-order.ts` | field orders |
    | `history.ts` | item IDs and passthrough metadata |
    | `model-shape.ts` | Lite shaping, tools, instructions |
-   | `transport.ts` | WebSocket and HTTPS, prewarm, continuation |
+   | `transport.ts` | WebSocket and HTTPS, prewarm, continuation, identical capacity resends |
+   | `errors.ts` | Per-request capacity wait budget, advice parsing, cancellation and terminal error wording |
    | `compact.ts`, `native-compaction.ts`, `compact-input.ts` | remote compaction |
    | `workspace.ts` | git workspaces |
    | `prompt.ts` | the native intro |
@@ -116,7 +124,10 @@ python3 -B pi-codex-wire/parity/compare-captures.py /path/to/captures > /path/to
 
 The version is a plain number such as `0.166.0`. The runner covers standard and Lite first turns, tool continuation,
 prewarm, missing response IDs, cold resume, terminal model-not-found errors, and policy-capacity failures with and
-without retry advice over WebSocket and SSE. An optional fifth argument selects comma-separated scenarios. Its
+without retry advice over WebSocket and SSE. Capacity captures deliberately permit Wire's extra unadvised resend,
+assert identical request bodies, and require one successful Pi turn with no model switch. They use the real 30-second
+fallback wait; short schedules are injected only by transport unit tests. An optional fifth argument selects
+comma-separated scenarios. Its
 `summary.json` records the scratch folder. The comparison checks saved IDs and reports field-order, client/turn
 metadata, input-item shape and header-name differences; inspect those differences and header values before reporting
 parity. Native `exec` identity, API-key versus fake ChatGPT authentication, disabled native analytics and the extra

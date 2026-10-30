@@ -10,7 +10,6 @@
 import { createHash } from "node:crypto";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { annotateItems, uuid7, type ItemHistory, type Turn } from "./history.ts";
-import { normalizePolicyCapacityEvent } from "./errors.ts";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -243,13 +242,12 @@ const responseIdPrefixes = new Map([
 /** One normalizer per exchange. Missing output IDs are minted on receipt, before Pi persists them,
  * and reused for the matching done event. Existing IDs and saved history are never rewritten.
  * Indexing keeps interleaved output items separate; Lite namespaces still undergo executor validation.
- * Policy-capacity failures retain the native retry-advice gate before Pi classifies the error text.
  */
 export function responseNormalizer(lite: boolean): (event: ObjectValue) => ObjectValue {
   const ids = new Map<unknown, string>();
   return event => {
     if (event.type === "response.created") ids.clear();
-    const result = normalizePolicyCapacityEvent(lite ? normalizeLiteEvent(event) : event);
+    const result = lite ? normalizeLiteEvent(event) : event;
     if (result.type !== "response.output_item.added" && result.type !== "response.output_item.done") return result;
     const item = object(result.item, "response item");
     const prefix = responseIdPrefixes.get(String(item.type));
