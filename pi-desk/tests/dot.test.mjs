@@ -16,7 +16,7 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 			import React from "react";
 			import { renderToStaticMarkup } from "react-dom/server";
 			import { DotConversation } from "./src/client/dot-conversation.tsx";
-			const dot = { id: "pc", online: true, loaded: true, ready: false, busy: false, status: "Not connected", error: "",
+			const dot = { id: "pc", server: true, serverName: "Fixture server", online: true, loaded: true, ready: false, busy: false, status: "Not connected", error: "",
 				computers: [{id:"pc", name:"Fixture computer", connected:true}],
 				view: {state:"unavailable", name:"Dot", error:"Session with given id not found.", messages:[], inputs:[]},
 				messages:[], optimistic:[], files:[], filesReady:true, draft:"" };
@@ -30,7 +30,9 @@ test("disconnected Dot offers its connection controls in the conversation", asyn
 					: "export class ApiError extends Error {} export function api() { throw Error('No network'); }", loader: "js" }));
 			} }] });
 		const { html } = createRequire(import.meta.url)(outfile);
-		assert.match(html, /aria-label="Dot connection computer"/);
+		assert.doesNotMatch(html, /aria-label="Dot connection computer"/);
+		assert.match(html, /Dot runs on Fixture server\./);
+		assert.doesNotMatch(html, /Turn on keeping conversation copies/);
 		assert.match(html, />Connect Dot</);
 		assert.match(html, /No ChatGPT window is needed/);
 		assert.match(html, /uses Pi(?:'|&#x27;)s ChatGPT login/);

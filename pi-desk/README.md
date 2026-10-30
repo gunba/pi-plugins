@@ -122,7 +122,10 @@ Dot appears above the computer groups in the sidebar. Selecting it opens the
 main conversation area, without Pi's workspace, model or agent controls.
 Pi conversations retain their Workspace pane.
 
-Open **Connection**, choose the connection computer, then select the saved
+Dot runs on the workspace server, the computer that keeps conversation copies
+(Settings), so it works whichever other computers are on; other computers in the
+workspace refuse Dot requests, and a Desk without a workspace runs Dot itself.
+Open **Connection**, then select the saved
 ChatGPT account that owns your existing Dot. **Add a ChatGPT account** offers
 provider verification inside this panel. Saving a login does not connect it or
 change an agent's account or account default; select **Connect Dot** to use it.
@@ -130,7 +133,7 @@ Dot does not use the computer's default Pi credentials.
 
 Messages, live updates, paged history, avatars and supported file transfers use
 a direct host connection. Chrome and an open ChatGPT window are not needed for
-these features. The connection computer must remain online. Account identity,
+these features. The workspace server must remain online. Account identity,
 Dot and room are pinned; native Pi authentication handles token renewal. If
 provider verification is required again, add a renewed saved login and select it.
 
@@ -146,8 +149,8 @@ fences an attempt not yet admitted; it cannot retract an admitted message.
 Changing accounts holds earlier queued messages for review rather than sending
 them through the new account. An explicit text retry creates a new attempt.
 
-Attach up to eight files, each at most 20 MB. Files are staged on the connection
-computer and uploaded directly to the selected Dot's room. Staged files are
+Attach up to eight files, each at most 20 MB. Files are staged on the workspace
+server and uploaded directly to the selected Dot's room. Staged files are
 account-bound; after an account change, reconnect the original account or select
 the files again. Unconfirmed uploads retain their bytes and receipts for review.
 A confirmed message releases its staged file copies. Supported downloads stream

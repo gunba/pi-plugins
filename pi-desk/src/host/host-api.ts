@@ -124,6 +124,9 @@ export class HostApi {
 
 	/** The Dot conversation, its files, and the connector that lets the Dot reach agents. */
 	private async dot(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
+		// In a workspace, Dot and its connector run only on the server that keeps conversation copies (client dot-conversation.tsx).
+		const teleport = this.host.teleport();
+		if (this.host.account.identity && teleport && !teleport.settings.hold) return reply({ error: "Dot runs on your workspace server, the computer that keeps conversation copies." }, 409);
 		if (url.pathname === "/api/dot/connector") {
 			const connector = this.host.connector();
 			const view = () => ({ enabled: connector.enabled, url: connector.enabled ? this.host.account.connectorUrl() : undefined, relay: this.host.account.status?.state ?? "offline",

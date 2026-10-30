@@ -25,11 +25,14 @@ const storageKey = (computer?: string) => `pi-desk:dot:${computer ?? "local"}`;
 const merge = (older: DotMessage[], newer: DotMessage[]) => [...new Map([...older, ...newer].map(message => [message.id, message])).values()]
 	.sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id));
 
+/**
+ * Dot runs on the workspace server, the computer that keeps conversation copies, so it does not depend on which
+ * computer is on. A browser on one computer alone (local mode) uses that computer.
+ */
 export function useDotConversation(computers: Computer[] | undefined, enabled: boolean) {
-	const [chosen, setChosen] = useState(() => localStorage.getItem("pi-desk:dot-computer") ?? "");
-	const computer = computers ? (computers.find(item => item.id === chosen) ?? computers.find(item => item.connected) ?? computers[0]) : undefined;
-	const id = computer?.id, online = enabled && (!computers || !!computer?.connected);
-	useEffect(() => { if (id && !chosen) { setChosen(id); localStorage.setItem("pi-desk:dot-computer", id); } }, [id, chosen]);
+	const computer = computers?.find(item => item.teleport?.hold);
+	const server = !computers || !!computer;
+	const id = computer?.id, online = enabled && server && (!computers || !!computer?.connected);
 	const [view, setView] = useState<DotSnapshot>(empty);
 	const [read, setRead] = useState<{ key: string; state: DotReadState }>();
 	const readRef = useRef(read); readRef.current = read;
@@ -253,7 +256,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 	const ready = online && !!view.connection && view.state === "ready";
 	const status = !online ? computer?.connection === "paused" ? "App paused" : "Offline"
 		: view.state === "ready" ? view.paused ? "Paused" : view.writing ? "Writing…" : view.live === false ? "Syncing updates…" : "Connected" : view.state === "connecting" ? "Connecting…" : "Not connected";
-	return { computers, id, online, view, loaded, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: before ?? view.before, draft, pending, busy, error: error || pollError,
+	return { computers, id, server, serverName: computer?.name, online, view, loaded, messages, unread, markRead, optimistic: pendingDotMessages(outbox, view.id, messages), before: before ?? view.before, draft, pending, busy, error: error || pollError,
 		loadingHistory, ready, status, action, send, check, cancelUnconfirmed, retry, history, saveDraft, files, filesReady, attach, discard, download,
 		/** Remove a message that was not sent; Edit puts its text back in the composer and keeps its files staged. */
 		remove(input: DotOutboxInput, edit = false) {
@@ -274,7 +277,7 @@ export function useDotConversation(computers: Computer[] | undefined, enabled: b
 			try { commit({ ...enqueueDot({ ...outboxRef.current, draft: text }, view.id, view.connection, []), draft }); }
 			catch (error) { setError(errorText(error)); }
 		},
-		chooseComputer(value: string) { setChosen(value); localStorage.setItem("pi-desk:dot-computer", value); },
+
 	};
 }
 
@@ -330,9 +333,7 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 		{(dot.error || view.error || dictationError) && <div className="connection-banner dot-error" role="alert">{errorText(dot.error || view.error || dictationError)}</div>}
 		{(!ready || showConnection) && <section className="dot-connection" aria-label="Dot connection">
 			<h2>{ready ? "Dot connection" : view.state === "connecting" ? "Connecting Dot…" : "Connect your Dot"}</h2>
-			{dot.computers && <label>Connection computer<select aria-label="Dot connection computer" value={dot.id ?? ""} disabled={busy} onChange={event => dot.chooseComputer(event.target.value)}>
-				{dot.computers.map(computer => <option key={computer.id} value={computer.id}>{computer.name}{computer.connected ? "" : " · Offline"}</option>)}
-			</select></label>}
+			{!dot.server && <p role="status">Dot runs on your workspace server. Turn on keeping conversation copies in that computer's settings.</p>}
 			{dot.loaded ? <>
 				<div className="dot-connection-actions">
 					<button className="primary" disabled={!dot.online || busy || !!view.busy || view.state === "connecting"} onClick={() => void dot.action("connect")}>
@@ -341,10 +342,10 @@ export function DotConversation({ dot, openNavigation, openQuests }: { dot: DotC
 				</div>
 				{ready && view.identity ? <p>Connected as <strong>{view.identity}</strong>.</p>
 					: <p className="muted">Dot uses Pi's ChatGPT login on this computer (OpenAI Codex under Settings → Accounts &amp; connections).</p>}
-				<p>No ChatGPT window is needed for messages, attachments or live updates. Keep the connection computer online.</p>
+				<p>No ChatGPT window is needed for messages, attachments or live updates. Dot runs on {dot.serverName ?? "this computer"}.</p>
 				<DotAgentAccess key={`access:${dot.id ?? "local"}`} computer={dot.id} online={dot.online} />
 			</> : <p role="status">Checking this computer’s Dot support…</p>}
-			{!dot.online && <p className="muted">Bring this computer online to connect Dot.</p>}
+			{dot.server && !dot.online && <p className="muted">Bring {dot.serverName ?? "this computer"} online to connect Dot.</p>}
 		</section>}
 		{dot.unread > 0 && <button type="button" className="dot-new-messages" onClick={() => {
 			atBottom.current = true;
