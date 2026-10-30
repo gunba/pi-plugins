@@ -17,11 +17,12 @@ import json, os, re, subprocess, sys, urllib.error, urllib.request
 HOME = os.path.expanduser("~/codex-parity")
 REPO = os.path.join(HOME, "codex")
 LIMIT = 3_800
-# Where Codex 0.165.0 builds model requests: bodies, headers, turn and client metadata, input items, tool
+# Where Codex 0.166.0 builds model requests: bodies, headers, turn and client metadata, input items, tool
 # declarations, the websocket transport, remote compaction and authentication. Revisit when Codex moves them.
 PATHS = [
     "codex-rs/core/src/client.rs", "codex-rs/core/src/client_common.rs", "codex-rs/core/src/client_tool_metadata.rs",
     "codex-rs/core/src/turn_metadata.rs", "codex-rs/core/src/responses_metadata.rs", "codex-rs/core/src/installation_id.rs",
+    "codex-rs/core/src/session/turn_input.rs", "codex-rs/core/src/session/mod.rs",
     ":(glob)codex-rs/core/src/compact_remote*.rs", "codex-rs/core/src/context_manager",
     "codex-rs/codex-api/src/requests", "codex-rs/codex-api/src/endpoint/responses.rs",
     ":(glob)codex-rs/codex-api/src/endpoint/responses_websocket*", "codex-rs/codex-api/src/responses_headers.rs",
@@ -29,11 +30,14 @@ PATHS = [
     "codex-rs/codex-api/src/error.rs", "codex-rs/codex-api/src/api_bridge.rs",
     "codex-rs/codex-api/src/auth.rs", "codex-rs/codex-api/src/provider.rs",
     "codex-rs/model-provider/src", "codex-rs/models-manager/src",
+    "codex-rs/http-client/src", "codex-rs/websocket-client/src", "codex-rs/runtime-agent-instance/src",
+    "codex-rs/features/src/runtime_auth.rs", "codex-rs/features/src/feature_configs.rs", "codex-rs/features/src/lib.rs",
     "codex-rs/protocol/src/models.rs", "codex-rs/protocol/src/models", "codex-rs/protocol/src/openai_models.rs",
     "codex-rs/protocol/src/openai_models", "codex-rs/protocol/src/response_item_id.rs",
+    "codex-rs/protocol/src/turn_input.rs", "codex-rs/protocol/src/error.rs", "codex-rs/codex-api/src/guardian_assessment.rs",
     "codex-rs/login/src/auth", "codex-rs/tools/src/tool_spec.rs",
 ]
-SKIP = re.compile(r"(^|/)tests?(/|\.rs$)|_tests?\.rs$|\.snap$")
+SKIP = re.compile(r"(^|/)(tests?|test_support)(/|\.rs$)|_tests?\.rs$|\.snap$")
 # Changed lines that say what goes over the wire.
 WIRE = re.compile(r"#\[serde|pub (struct|enum|type)|header|\"x-|\"[a-z_]+\"|json!|metadata|session_id|thread_id|turn_id|"
                   r"window|prompt_cache|reasoning|include|service_tier|instructions|tool|originator|user[-_]agent|websocket|"

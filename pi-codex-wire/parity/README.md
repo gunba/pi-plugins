@@ -7,7 +7,14 @@ uses to notice a release that matters and to work out what Wire needs.
 ## Rules
 
 - **Match native wherever it is free.** Field order, IDs, metadata, headers, transport behaviour and request shapes
-  follow the official binary.
+  follow the official binary, except for the retry boundary below.
+- **Unattended-agent recovery is deliberate.** Pi retains its retry policy for transient and HTTP-status errors;
+  retry-count differences from interactive Codex are not parity defects. For streamed `policy_capacity_unavailable`
+  before any output, Wire owns bounded recovery: up to four identical resends, waiting 30/60/120/240 seconds without
+  advice, or valid `Retry-After` capped at ten minutes. Total scheduled waits cannot exceed ten minutes; advice that
+  cannot fit ends recovery rather than allowing an early resend. Abort cancels the wait. Output prevents a resend;
+  exhaustion reports time waited with non-retryable wording so Pi cannot multiply the budget. Each request has a
+  fresh budget, including tool follow-ups after success. Never add model switching or replay partial output.
 - **Never inject Codex's harness messages.** These are skills, permissions, environment, collaboration mode and
   multi-agent instructions. The model reads them, so they are not free. Pi keeps its own prompt.
 - **One tool set for every model.** Wire adds no Codex-specific tool names.
@@ -45,8 +52,10 @@ that touch requests. The conversation sleeps in between: no process runs, and th
 
 Perth can push to `gunba/pi-plugins` through its repository-scoped SSH deploy key. Keep `origin` on
 `git@github.com:gunba/pi-plugins.git`; the upstream Codex clone stays read-only over HTTPS. The deploy key does not
-provide GitHub API access. Use an already authorized environment to open draft PRs; do not start an account-wide
-GitHub device login for unattended parity work. Without API access, publish the branch and provide its compare link.
+provide GitHub API access. Every parity change is delivered as a draft PR, then handed to **Pi Desk Developer** for
+review and merge. Use an already authorized environment to open the PR; if Perth has only SSH access, ask that agent
+to create the PR for the pushed branch and return its URL. Do not start an account-wide GitHub device login for
+unattended parity work. A pushed branch or compare link is not a completed handoff.
 
 ## When a release wakes you
 
@@ -69,7 +78,8 @@ GitHub device login for unattended parity work. Without API access, publish the 
    | `request-order.ts` | field orders |
    | `history.ts` | item IDs and passthrough metadata |
    | `model-shape.ts` | Lite shaping, tools, instructions |
-   | `transport.ts` | WebSocket and HTTPS, prewarm, continuation |
+   | `transport.ts` | WebSocket and HTTPS, prewarm, continuation, identical capacity resends |
+   | `errors.ts` | Per-request capacity wait budget, advice parsing, cancellation and terminal error wording |
    | `compact.ts`, `native-compaction.ts`, `compact-input.ts` | remote compaction |
    | `workspace.ts` | git workspaces |
    | `prompt.ts` | the native intro |
@@ -89,14 +99,15 @@ GitHub device login for unattended parity work. Without API access, publish the 
      - the prompt-cache impact;
      - the test and capture results.
    - Push the branch: `git -C ~/codex-parity/pi-plugins push -u origin parity/<tag>`.
-   - Open a draft PR against `main` when GitHub API access is available. Include the changes, exclusions, cache impact
-     and validation results in its description. Otherwise provide
-     `https://github.com/gunba/pi-plugins/compare/main...parity/<tag>?expand=1`; a compare link is not an open PR.
-   - Put the PR or compare link in the report. Patches remain an optional fallback:
-     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`.
-   - Add a quest for Jordan to review the PR, or the published branch if no PR was opened. Include its link, the
-     computer (pi-desk-perth), and the evidence folder. Any Desk agent can fetch local files with `agent_send`.
-   - If nothing needs to change, the report says so and no quest is added.
+   - Open a draft PR against `main`, using an already authorized environment or Pi Desk Developer's help. Include
+     the changes, exclusions, cache impact and validation results in its description. Obtain the actual PR URL.
+   - Put the PR URL in the report. Patches may be retained beside the evidence with
+     `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`, but do not replace the PR.
+   - Notify **Pi Desk Developer** with the PR URL, head commit, test results and limitations, prompt-cache impact,
+     and evidence location on pi-desk-perth. That agent owns review and merge. Use `agent_list` to find it and
+     `agent_send` to deliver the handoff or supporting files.
+   - Do not add a routine parity-review quest for Jordan. Ask him only for a concrete decision or access that the
+     agents cannot resolve. If nothing needs to change, write the report without opening a PR or adding a quest.
 7. **Move on.** Write the new tag to `~/codex-parity/baseline`, switch the clean checkout back to `main` so the next
    wake can pull it, set the same watch again, and end your turn.
 
@@ -111,8 +122,12 @@ node pi-codex-wire/parity/run-captures.mjs /path/to/codex /tmp/codex-models.json
 python3 -B pi-codex-wire/parity/compare-captures.py /path/to/captures > /path/to/comparison.json
 ```
 
-The version is a plain number such as `0.165.0`. The runner covers standard and Lite first turns, tool continuation,
-prewarm, missing response IDs, cold resume and terminal model-not-found errors over WebSocket and SSE. Its
+The version is a plain number such as `0.166.0`. The runner covers standard and Lite first turns, tool continuation,
+prewarm, missing response IDs, cold resume, terminal model-not-found errors, and policy-capacity failures with and
+without retry advice over WebSocket and SSE. Capacity captures deliberately permit Wire's extra unadvised resend,
+assert identical request bodies, and require one successful Pi turn with no model switch. They use the real 30-second
+fallback wait; short schedules are injected only by transport unit tests. An optional fifth argument selects
+comma-separated scenarios. Its
 `summary.json` records the scratch folder. The comparison checks saved IDs and reports field-order, client/turn
 metadata, input-item shape and header-name differences; inspect those differences and header values before reporting
 parity. Native `exec` identity, API-key versus fake ChatGPT authentication, disabled native analytics and the extra
