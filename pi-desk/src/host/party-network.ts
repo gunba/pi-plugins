@@ -7,8 +7,6 @@ import { SEARCH_PACKET_TYPES, type SearchPacket } from "../shared/conversation-s
 import type { ConversationSearch, SearchBinding } from "./conversation-search.ts";
 import type { SettingsSync } from "./settings-sync.ts";
 import { TELEPORT_PACKETS, type Teleport, type TeleportPacket } from "./teleport.ts";
-import { HANDS, HANDS_PACKETS, type HandsPacket } from "../shared/hands.ts";
-import type { Hands, HandsBinding } from "./hands.ts";
 
 type Send = (payload: PartyPacket) => Promise<void>;
 
@@ -38,10 +36,8 @@ export class PartyNetwork {
 	/** Computers sent a batch of this computer's old quests, or of notices for their agents, not taken yet. */
 	private handing = new Set<string>();
 	private noticing = new Set<string>();
-	private hands?: Hands;
-	private handsBinding?: HandsBinding;
 	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport, search?: ConversationSearch,
-		quests?: HostQuests, hands?: Hands) {
+		quests?: HostQuests) {
 		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport; this.quests = quests;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
@@ -49,14 +45,6 @@ export class PartyNetwork {
 		if (search) {
 			this.searchBinding = { scope, computers: () => this.computers(), send: (id, packet) => this.send(id, packet), flush: () => this.flush() };
 			search.bind(this.searchBinding);
-		}
-		this.hands = hands;
-		if (hands) {
-			this.handsBinding = { send: (id, packet) => this.send(id, packet), peer: id => {
-				const announced = this.announced.get(id);
-				return { online: this.peers.has(id), supports: !!announced?.operations.includes(HANDS), ...(announced?.name ? { name: announced.name } : {}) };
-			} };
-			hands.bind(this.handsBinding);
 		}
 	}
 	/** Other computers in this workspace, with what they announced; an empty operations list means an older Desk. */
@@ -76,7 +64,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.hands?.disconnected(id); this.asking.delete(id); this.handing.delete(id); this.noticing.delete(id);
+		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.asking.delete(id); this.handing.delete(id); this.noticing.delete(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -247,19 +235,12 @@ export class PartyNetwork {
 			});
 			return;
 		}
-		if (this.hands && HANDS_PACKETS.has(String(packet.type))) {
-			const send = this.peers.get(id)!;
-			// Not awaited: a long command must not hold up this computer's other packets.
-			this.hands.receive(id, packet as unknown as HandsPacket, reply => this.peers.get(id) === send ? send(reply as unknown as PartyPacket)
-				: Promise.reject(Error("The computer disconnected.")));
-			return;
-		}
 		throw Error("Unknown party packet.");
 	}
 	/** This computer's announcement changed (what it supports): every computer is sent it again. */
 	reannounce(self: PartyComputer): void { this.self = self; this.directories.clear(); this.flush(); }
 	/** One packet to a connected computer. */
-	send(id: string, packet: TeleportPacket | SearchPacket | HandsPacket): Promise<void> {
+	send(id: string, packet: TeleportPacket | SearchPacket): Promise<void> {
 		const send = this.peers.get(id);
 		return send ? send(packet as PartyPacket) : Promise.reject(new Error("That computer is not connected."));
 	}
@@ -267,7 +248,6 @@ export class PartyNetwork {
 		if (this.closed) return;
 		clearInterval(this.timer);
 		if (this.searchBinding) this.search?.unbind(this.searchBinding);
-		if (this.handsBinding) this.hands?.unbind(this.handsBinding);
 		for (const id of this.peers.keys()) if (uuid(id)) this.store.setComputerConnected(id, false);
 		this.closed = true; this.peers.clear(); this.closers.clear(); this.directories.clear();
 	}

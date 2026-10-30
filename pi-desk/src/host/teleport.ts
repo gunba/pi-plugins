@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { HANDS_ENTRY, type HandsBinding } from "../shared/hands.ts";
 import { closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { CopySender, CopyStore, lastLineEnd, type CopyChunk, type CopyInfo } from "./copies.ts";
@@ -199,8 +198,7 @@ export function sessionFolder(agentDir: string, cwd: string, configured?: string
  * Places a moved conversation's file where Pi keeps this folder's conversations: its header names the new folder, and
  * `note`, when given, tells the model where it now is (paths and tools from earlier may differ). Returns the file's path.
  */
-/** `hands` is recorded with it: where its file and shell tools act from now on, null for this computer. */
-export function placeMoved(incoming: string, folder: string, cwd: string, note?: string, hands: HandsBinding | null = null): string {
+export function placeMoved(incoming: string, folder: string, cwd: string, note?: string): string {
 	// Read and written in parts: a conversation can be larger than the longest string Node can hold.
 	const source = openSync(incoming, "r"), size = statSync(incoming).size;
 	let end = lastLineEnd(incoming);
@@ -230,8 +228,6 @@ export function placeMoved(incoming: string, folder: string, cwd: string, note?:
 		}
 		const notice = { type: "custom_message", id: randomUUID().slice(0, 8), parentId: leaf, timestamp: new Date().toISOString(),
 			customType: "pi-desk/moved", content: note, display: true };
-		const binding = { type: "custom", id: randomUUID().slice(0, 8), parentId: note === undefined ? leaf : notice.id, timestamp: notice.timestamp,
-			customType: HANDS_ENTRY, data: hands };
 		mkdirSync(folder, { recursive: true });
 		const target = join(folder, `${new Date().toISOString().replace(/[:.]/g, "-")}_${header.id}.jsonl`);
 		const output = openSync(`${target}.tmp`, "w");
@@ -244,7 +240,6 @@ export function placeMoved(incoming: string, folder: string, cwd: string, note?:
 				writeSync(output, buffer, 0, count); offset += count;
 			}
 			if (note !== undefined) writeSync(output, `${JSON.stringify(notice)}\n`);
-			writeSync(output, `${JSON.stringify(binding)}\n`);
 		} finally { closeSync(output); }
 		renameSync(`${target}.tmp`, target);
 		return target;

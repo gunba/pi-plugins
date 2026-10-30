@@ -544,19 +544,6 @@ on its own computer when the user finishes a task it added, and a closed
 conversation wakes for the message. An account without a workspace server keeps
 a task list on each computer.
 
-**Move to another computer** can keep a conversation's tools where they were:
-with **Keep working in <folder> on <computer>**, it runs on the chosen computer
-while its `read`, `write`, `edit`, `bash` and `!` commands act in its old folder
-on its old computer, over the workspace connection. A slow computer can keep the
-files, signed-in apps and network only it has while a faster one does the rest.
-Everything else (codemode, watches, the agents it starts) runs where the
-conversation runs. The folder's computer must be on and connected for those
-tools; on Windows, `bash` is that computer's Git Bash and the folder is named as
-Git Bash names it (`C:\obsidian` is `/c/obsidian`). Files of up to 20 MB move in
-one call; a command's output past its first 8 MB keeps only its last 2 MB.
-Moving the conversation again without the option returns its tools to the
-computer it runs on.
-
 The **Agents** tab lists open conversations and active or queued secondary agents
 across computers, with links to their existing conversation panels. **Watches**
 reads the existing watch views and descriptions retained for closed conversations;

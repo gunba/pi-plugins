@@ -35,7 +35,6 @@ import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { DotConnector } from "./dot-connector.ts";
 import { Dictation } from "./dictation.ts";
-import { Hands } from "./hands.ts";
 import { ConversationSearch } from "./conversation-search.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { Teleport } from "./teleport.ts";
@@ -73,7 +72,6 @@ export class DeskHost {
 	/** Conversation copies kept away from their computer, and moving conversations between computers (teleport.ts). */
 	private teleport?: Teleport;
 	private search?: ConversationSearch;
-	private readonly hands: Hands;
 	/** Settles once earlier Desk logins have moved into Pi's (logins.ts). */
 	private adoption?: Promise<unknown>;
 	private checkpoints?: UpdateCheckpoints;
@@ -144,13 +142,12 @@ export class DeskHost {
 		};
 		const dotBusy = () => !!this.dot?.busy, signingIn = () => !!this.logins?.signingIn;
 		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn });
-		this.hands = new Hands(this.options.agentDir);
 		this.moves = new ConversationMoves(this.core, { teleport: () => this.teleport, parties: () => this.parties, network: () => this.account.network,
 			self: () => this.account.identity?.device.id, moving: session => this.partyOperations?.moving(session) });
 		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
 			teleport: () => this.teleport, search: () => this.search, moves: this.moves });
 		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
-			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, quests: () => this.quests, hands: () => this.hands, connector: () => this.dotConnector,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, quests: () => this.quests, connector: () => this.dotConnector,
 			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
 			request: (access, request) => this.api.handle(access, request),
 			watch: handler => {
@@ -175,7 +172,7 @@ export class DeskHost {
 				setImmediate(() => { void this.close().catch(() => {}); });
 			},
 			reconnectAccount: () => { void this.account.connect().catch(() => {}); },
-			events: this.events, api: (device, request) => this.api.handle(device, request), hands: (request, response) => this.hands.serve(request, response) });
+			events: this.events, api: (device, request) => this.api.handle(device, request) });
 	}
 
 	async start(): Promise<{ origin: string; pairingUrl: string }> {

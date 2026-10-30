@@ -8,7 +8,6 @@ import { homeFolder } from "./local-path.ts";
 import type { Parties } from "./parties.ts";
 import type { PartyNetwork } from "./party-network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
-import { HANDS } from "../shared/hands.ts";
 import { COPIES, HOLD, placeMoved, sessionFolder, type Conversation, type Move, type Teleport } from "./teleport.ts";
 
 interface MoveHost {
@@ -116,18 +115,15 @@ export class ConversationMoves {
 
 	/**
 	 * Opens another computer's conversation here, in `cwd`: from its own computer when that is on (which stops it there),
-	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again. With `hands`, its
-	 * file and shell tools keep acting in the folder it was in on its computer, which must be on for them to work.
+	 * otherwise from a kept copy. The move is recorded and shared, so the original never runs again.
 	 */
-	async move(source: string, session: string, cwd: string, asked = false, hands = false): Promise<{ key: string; note: string }> {
+	async move(source: string, session: string, cwd: string, asked = false): Promise<{ key: string; note: string }> {
 		const teleport = this.host.teleport(), network = this.host.network(), self = this.host.self();
 		if (!teleport || !network || !self) throw new Error("Moving a conversation needs your workspace.");
 		if (source === self) throw new Error("This conversation is already on this computer.");
 		let folder: string;
 		try { folder = realpathSync(homeFolder(cwd)); if (!statSync(folder).isDirectory()) throw new Error(); } catch { throw new Error(`${cwd} is not a folder on this computer.`); }
 		const computers = network.computers(), name = (id: string) => computers.find(computer => computer.id === id)?.name ?? "its computer";
-		if (hands && !computers.find(computer => computer.id === source)?.operations.includes(HANDS))
-			throw new Error(`${name(source)} runs an older Desk that can't act for other computers: update Desk there first.`);
 		const owner = computers.find(computer => computer.id === source && computer.online && computer.operations.includes(COPIES));
 		let fetched = owner ? await teleport.fetch(packet => network.send(source, packet), source, session, true) : teleport.copyLocal(source, session);
 		if (!fetched) {
@@ -137,13 +133,10 @@ export class ConversationMoves {
 			}
 			if (!fetched) throw failure instanceof Error ? failure : new Error(`${name(source)} is off, and no computer that is on keeps a copy of this conversation.`);
 		}
-		if (hands && !fetched.cwd) throw new Error(`${name(source)} did not say which folder the conversation was in, so its tools can't stay there.`);
-		const binding = hands ? { computer: source, name: name(source), platform: computers.find(computer => computer.id === source)?.platform ?? "", folder: fetched.cwd! } : null;
-		const note = binding ? `This conversation moved${asked ? ", as you asked," : ""} from ${binding.name} to ${hostname()}. Its read, write, edit and bash tools still act on ${binding.name}, in ${binding.folder}; everything else runs on ${hostname()}.`
-			: `This conversation moved${asked ? ", as you asked," : ""} from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
+		const note = `This conversation moved${asked ? ", as you asked," : ""} from ${name(source)}${fetched.cwd ? ` (${fetched.cwd})` : ""} to ${hostname()} (${folder}). Files, paths and tools from earlier in it may differ or be missing here: check before relying on them.`;
 		// An agent that asked to move gets the note as the message that starts its next turn instead.
 		const { agentDir, sessionDir } = this.core.options;
-		const file = placeMoved(fetched.file, sessionFolder(agentDir, folder, configuredSessionDirectory(folder, agentDir, sessionDir)), folder, asked ? undefined : note, binding);
+		const file = placeMoved(fetched.file, sessionFolder(agentDir, folder, configuredSessionDirectory(folder, agentDir, sessionDir)), folder, asked ? undefined : note);
 		teleport.record(session, { from: source, to: self, at: Date.now(), file: realpathSync(file) });
 		network.flush();
 		return { key: this.core.createSession(folder, file), note };

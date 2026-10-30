@@ -12,7 +12,7 @@ async function jsonFile(path: string): Promise<Record<string, unknown>> {
 	return value;
 }
 /** Use this profile's installation or its explicit host-data hint; never probe unrelated profiles for credentials. */
-export async function connection(agentDir: string): Promise<{ origin: string; operator: string }> {
+async function connection(agentDir: string): Promise<{ origin: string; operator: string }> {
 	let directory = process.env.PI_DESK_DATA_DIR;
 	if (!directory) {
 		try { directory = (await jsonFile(join(agentDir, "desk", "runtime", "installation.json"))).directory as string; }

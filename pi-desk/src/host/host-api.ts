@@ -103,7 +103,7 @@ export class HostApi {
 		if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.host.logins()!.snapshot());
 		if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.host.logins()!.signOut(string(data.provider, 200)));
 		if (url.pathname === "/api/teleport/move" && request.method === "POST")
-			return reply({ key: (await this.host.moves.move(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096), false, data.hands === true)).key });
+			return reply({ key: (await this.host.moves.move(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096))).key });
 		if (url.pathname === "/api/teleport/settings" && request.method === "POST") {
 			const teleport = this.host.teleport();
 			if (!teleport) throw new Error("Conversation copies need your workspace.");

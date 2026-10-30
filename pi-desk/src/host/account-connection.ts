@@ -13,7 +13,6 @@ import { AccountNetwork } from "./account-network.ts";
 import type { DotConnector } from "./dot-connector.ts";
 import type { HostCore } from "./host-core.ts";
 import type { Parties } from "./parties.ts";
-import type { Hands } from "./hands.ts";
 import { PartyNetwork } from "./party-network.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import type { SettingsSync } from "./settings-sync.ts";
@@ -31,7 +30,6 @@ interface AccountHost {
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
 	quests?(): HostQuests | undefined;
-	hands?(): Hands | undefined;
 	connector(): DotConnector | undefined;
 	computer(): PartyComputer;
 	execute(computer: string, request: PartyOperation): Promise<OperationResult["result"]>;
@@ -139,7 +137,7 @@ export class AccountConnection {
 				if (this.core.closing || revision !== this.revision) return;
 				parties.networkChanged(); this.core.refreshParties();
 			}, { operations: this.host.operations(), execute: (computer, request) => this.host.execute(computer, request) }, this.host.computer(),
-				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.(), this.host.hands?.());
+				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.());
 			this.partyNetwork = network;
 			this.relayConnector = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.core.options.proxy, direct: Number(new URL(this.core.origin).port),
 				request: (access, request) => this.host.request(access, request),

@@ -33,8 +33,6 @@ interface HttpHost {
 	reconnectAccount(): void;
 	events: HostEvents;
 	api(device: string, request: ApiRequest): Promise<ApiResponse>;
-	/** A conversation's file or shell call for another computer, from its worker: operator only, streamed. */
-	hands(request: IncomingMessage, response: ServerResponse): Promise<void>;
 }
 
 /**
@@ -90,7 +88,6 @@ export class HostHttp {
 			}
 			const device = operator ? "operator" : access.authenticate(cookie(request));
 			if (url.pathname.startsWith("/api/") && !device) { json(response, 401, { error: "Pair this browser to continue." }); return; }
-			if (url.pathname === "/api/hands" && request.method === "POST" && device === "operator") { await this.host.hands(request, response); return; }
 			if (url.pathname === "/api/events" && request.method === "GET") {
 				this.host.events.stream(request, response, device!, () => this.core.state());
 				return;

@@ -13,7 +13,6 @@ import type { PartyNetwork } from "./party-network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { HOLD, type Teleport } from "./teleport.ts";
 import { QUEST_LOG, QUEST_NOTICES } from "../../../pi-agents/quest-log.ts";
-import { HANDS } from "../shared/hands.ts";
 
 /** An agent as this computer names it: its id here, or id@computer for one on another computer. */
 const requester = (computer: string, sender: string) => computer === "local" ? sender : `${sender}@${computer}`;
@@ -65,7 +64,7 @@ export class AgentOperations {
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
 			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
 				// The computer that keeps conversation copies keeps the account's quest log too.
-				...teleport?.operations().includes(HOLD) ? [QUEST_LOG] : [], QUEST_NOTICES, HANDS, ...this.host.search?.()?.operations() ?? []] };
+				...teleport?.operations().includes(HOLD) ? [QUEST_LOG] : [], QUEST_NOTICES, ...this.host.search?.()?.operations() ?? []] };
 	}
 
 	/** Carry out the requests agents on this computer have made of it. */
