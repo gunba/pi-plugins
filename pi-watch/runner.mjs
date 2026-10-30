@@ -13,6 +13,9 @@ import { existsSync, openSync, readFileSync, renameSync, writeFileSync } from "n
 import { join } from "node:path";
 
 const spec = JSON.parse(readFileSync(process.argv[2], "utf8"));
+// When memory runs out where the runner shares a memory limit with Pi (Desk's service), the kernel kills the
+// highest-scored process: the watched command and the runner rather than Pi, whose processes keep the default.
+if (process.platform === "linux") try { writeFileSync("/proc/self/oom_score_adj", "800"); } catch { /* Left as inherited. */ }
 const viaStdin = spec.transport === "stdin";
 /** Output kept from one run of a repeated command: its end, which is what changes. */
 const RUN_CHARS = 16_000;

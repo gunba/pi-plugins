@@ -28,6 +28,10 @@ ExecStop=${command} stop --host-only --data-dir ${unitQuote(c.directory)}
 KillMode=process
 SendSIGKILL=no
 TimeoutStopSec=45
+# A runaway command hits this limit and is killed alone (commands raise their OOM score) instead of the desktop.
+MemoryMax=75%
+MemorySwapMax=4G
+OOMPolicy=continue
 # After any crash or kill, including systemd-oomd's, which on-failure does not restart; not after a clean exit.
 Restart=always
 RestartPreventExitStatus=0

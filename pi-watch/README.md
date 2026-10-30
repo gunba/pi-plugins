@@ -52,8 +52,9 @@ These watches wake conversations, not powered-off computers. The host must be ru
   still running then is stopped. A time can be any time ahead. Times are checked against the clock every minute, so a
   computer that slept still acts on time.
 - **Restarts.** Commands run under a small detached runner (`runner.mjs`): a background command once, writing its log
-  and exit status; a re-run command every `every` seconds, writing each changed output as a numbered change. A
-  background command keeps running when Desk restarts or updates a conversation, or when its Pi process stops. A re-run
+  and exit status; a re-run command every `every` seconds, writing each changed output as a numbered change. On Linux
+  the runner raises its OOM score to 800, which its command inherits, so when memory runs out the kernel kills the
+  watched command before Pi. A background command keeps running when Desk restarts or updates a conversation, or when its Pi process stops. A re-run
   command's runner stops with the process unless the conversation is going to sleep (below), and starts again with
   the watch; one gone with a computer restart starts again too. Watches are recorded in the conversation, and are
   picked up again when it next starts: missed output and changes are read from the runner's files, and a time that has

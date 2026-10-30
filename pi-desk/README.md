@@ -467,7 +467,12 @@ to overwrite or delete a foreign service/task with the same name.
 Startup failures appear in `doctor`, service/task status, `host.log` and, when
 available, `login-error.txt`. On Linux the service starts the host again 10
 seconds after a crash or kill, including one by `systemd-oomd`, at most five
-times in five minutes; a clean exit or `systemctl stop` is left alone. Each
+times in five minutes; a clean exit or `systemctl stop` is left alone. The
+service, commands included, may use 75% of memory and 4 GB of swap; at that
+limit the kernel kills the process with the highest OOM score and Desk carries
+on. Watch commands raise their score to 800, and so do `bash` commands when
+`shellCommandPrefix` in Pi's settings does, so the command that ran away is the
+one killed rather than Desk or the desktop. Each
 release rewrites an installed unit that an earlier one wrote differently. The
 Windows logon task does not restart a host that exits. There is no forced
 process-tree termination. A restart restores references, not active workers or
