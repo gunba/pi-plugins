@@ -17,10 +17,12 @@ function rememberPosition(key: string, position: ReadingPosition): void {
 }
 
 /** One native history window and a measured viewport, shared by root and child conversations. */
-export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest }: {
+export function TranscriptView({ session, source, generation, connected, epoch, messages, onLatest, renderMessage, empty, footer, latestRequest, overlay }: {
 	session: string; source?: string; generation: string; connected: boolean; epoch: number;
 	messages: CachedMessage[]; onLatest: (source: string | undefined, page: HistoryPage) => void;
 	renderMessage: (message: ChatMessage, results: Record<string, ChatMessage>, thinking?: ChatMessage[], traceContinues?: boolean) => ReactNode; empty?: ReactNode; footer?: ReactNode; latestRequest?: number;
+	/** Shown over the messages only, leaving the composer and banners usable. */
+	overlay?: ReactNode;
 }) {
 	const storageKey = transcriptKey(session, source);
 	const saved = useRef<ReadingPosition | undefined>(readingPositions.get(storageKey));
@@ -349,5 +351,6 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				})}
 			</div>
 		</div>
+		{overlay}
 	</div></DisclosureStates.Provider>;
 }

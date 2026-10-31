@@ -546,9 +546,10 @@ export class DeskHost {
 		}
 	}
 
+	/** Sends queued messages to Pi in order. They wait while Pi compacts, which refuses messages; the snapshot that ends it drains them. */
 	private drainInputs(managed: ManagedSession): void {
 		if (managed.draining || managed.reconciling || !managed.initialized || this.closing || this.checkpoints?.held || this.restoringUpdate || managed.view.state !== "ready"
-			|| !managed.worker || managed.view.controls?.some(control => control.state === "running")) return;
+			|| !managed.worker || managed.view.controls?.some(control => control.state === "running") || managed.view.snapshot?.compacting) return;
 		if (managed.setup) {
 			if (!managed.settingUp) managed.settingUp = applyModelChoice(managed, managed.setup)
 				.catch(error => console.error(`The chosen model was not applied: ${error instanceof Error ? error.message : String(error)}`))
@@ -559,7 +560,7 @@ export class DeskHost {
 		// Admission returns before worker dispatch, leaving queued input cancellable.
 		managed.draining = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
 			while (!this.closing && !this.checkpoints?.held && !this.restoringUpdate && managed.worker === worker && managed.view.state === "ready"
-				&& !managed.view.controls?.some(control => control.state === "running")) {
+				&& !managed.view.controls?.some(control => control.state === "running") && !managed.view.snapshot?.compacting) {
 				const next = this.inputs!.next(key);
 				if (!next) break;
 				const { input } = next;

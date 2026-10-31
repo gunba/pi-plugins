@@ -2126,11 +2126,14 @@ details[open] > summary:before {
 .summary-footer { display:flex; align-items:center; gap:10px; padding:6px 10px 8px 14px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); }
 .context-start { display:flex; align-items:center; gap:10px; margin:4px 0 16px; color:var(--accent); font-size:11px; }
 .context-start::before, .context-start::after { content:""; flex:1; border-top:1px dashed var(--accent); opacity:.5; }
-.compaction-overlay { position:absolute; inset:82px 0 0 0; z-index:20; display:grid; place-items:center; padding:24px;
-  background:color-mix(in srgb, var(--bg) 94%, transparent); animation:compaction-in .2s ease-out; }
-@media (max-width: 760px) { .compaction-overlay { inset-block-start:68px; } }
+/* Covers the messages only; the composer, banners and header stay usable. Its edges fade into the page. */
+.compaction-overlay { position:absolute; inset:0; z-index:20; display:grid; place-items:center; padding:24px; animation:compaction-in .2s ease-out; }
+.compaction-overlay::before { content:""; position:absolute; inset:0; background:color-mix(in srgb, var(--bg) 94%, transparent);
+  mask-image:linear-gradient(to bottom, transparent, #000 48px, #000 calc(100% - 48px), transparent),
+    linear-gradient(to right, transparent, #000 48px, #000 calc(100% - 48px), transparent);
+  mask-composite:intersect; }
 @keyframes compaction-in { from { opacity:0; } }
-.compaction-panel { width:min(440px, 100%); padding:30px 30px 24px; border:1px solid var(--border); border-radius:16px; background:var(--surface);
+.compaction-panel { position:relative; width:min(440px, 100%); padding:30px 30px 24px; border:1px solid var(--border); border-radius:16px; background:var(--surface);
   box-shadow:0 12px 48px #0000001f; text-align:center; outline:none; }
 .compaction-mark { width:52px; height:52px; margin:0 auto 18px; display:grid; place-items:center; border-radius:14px; background:var(--accent-soft); color:var(--accent); }
 .compaction-mark .ui-icon { width:26px; height:26px; animation:compaction-breathe 2.4s ease-in-out infinite; }

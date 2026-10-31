@@ -588,8 +588,6 @@ export function App({ account }: { account?: BrowserAccount }) {
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>
           <strong>Agents</strong><span>{activeAgents} active · {totalAgents} total</span><span>View →</span>
         </button>}
-        {session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
-          stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
         {session && <VersionBanner key={`${selected}:version`} session={session} computer={currentComputer ?? { name: host.name, release: host.release, updates: host.updates }} busy={busy || !connected} report={setError} />}
         {session && <ControlActivity key={`${selected}:controls`} session={selected} controls={controls.filter(control => control !== compactControl)} />}
         {session?.state === "ready" && extensionErrors.length > 0 && <div className="connection-banner" role="alert">
@@ -616,6 +614,8 @@ export function App({ account }: { account?: BrowserAccount }) {
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
+          overlay={session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
+            stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
           renderMessage={(message, results, thinking, traceContinues) => <Message message={message} results={results} thinking={thinking} traceContinues={traceContinues} sessionKey={selected}
             summarised={contextFrom !== undefined && message.order < contextFrom} contextStart={message.order === contextFrom} />}
           empty={waiting ??
