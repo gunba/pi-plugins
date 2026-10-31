@@ -21,10 +21,11 @@ Limits apply when a result is created. Earlier results are rewritten only where 
 because changing earlier context breaks the provider's prompt cache: from that point on, the conversation is sent
 again at full price.
 
-- **Claude requests over 32 MB**, which Anthropic refuses, have the oldest images replaced with a note in the saved
-  conversation until 16 MB of images remain. A request over 20 MB is trimmed the same way when it pays for its whole
-  prompt anyway: its cache has expired, or it follows compaction or a model or thinking change. A trimmed request is
-  sent exactly as Pi sends the edited conversation afterwards, so the next request reads it from the cache.
+- **Claude requests over 60 MB**, below the size that failed on the Work PC, have the oldest images replaced with a
+  note in the saved conversation until 30 MB of images remain. A request over 40 MB is trimmed the same way when it
+  pays for its whole prompt anyway: its cache has expired, or it follows compaction or a model or thinking change. A
+  trimmed request is sent exactly as Pi sends the edited conversation afterwards, so the next request reads it from
+  the cache.
 
 ## Storage
 
