@@ -6,6 +6,7 @@ import {
 	configuredReserve, configuredWindow, readWindowFiles, writeWindowPreset, modelCapacity,
 } from "./config.ts";
 import compactionPolicy from "./compaction.ts";
+import promptChanges from "./prompt-changes.ts";
 
 function tokens(value: number): string { return value.toLocaleString("en-US"); }
 
@@ -97,6 +98,7 @@ async function enforceCapacity(pi: ExtensionAPI, ctx: ExtensionContext): Promise
 
 export default function contextWindow(pi: ExtensionAPI): void {
 	compactionPolicy(pi);
+	promptChanges(pi);
 	let revision = 0, enforcing: Promise<void> | undefined;
 	const enforce = (ctx: ExtensionContext) => {
 		enforcing ??= enforceCapacity(pi, ctx).catch(error => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"))

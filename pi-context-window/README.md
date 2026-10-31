@@ -35,3 +35,13 @@ share the same configuration reader and writer. A changed model/session or a
 concurrent change to this model's saved preset rejects the pending save.
 The dialog never changes unrelated models, credentials, workspace overrides,
 or the automatic-compaction policy.
+
+## Prompt changes
+
+A provider reads each request's prompt from its cache up to the first part that differs from the previous request.
+When the tool list, the system prompt or an earlier message changes, everything after that point is sent at full
+price again. Each such change is recorded in the conversation as a `pi-prompt-change` entry, which never enters the
+model's context: whether the tools, the system prompt or a message changed; the tools added, removed or redefined;
+up to four changed system-prompt lines before and after (240 characters each); or the changed message's position and
+the role and block sizes before and after. Changes where new turns are added, compaction, other models and side
+requests such as summaries are not recorded.

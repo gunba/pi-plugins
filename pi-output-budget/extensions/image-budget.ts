@@ -1,16 +1,22 @@
 import type { ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import { freeMoment } from "./superseded.ts";
 
 /**
  * Anthropic refuses requests over 32 MB and drops the upload part-way, which its SDK reports only as
  * "Connection error.". Every request resends every image in the context, so a conversation that views many
  * screenshots crosses the limit and then fails on every turn (Work PC, 15 October: 57 images, 67 MB).
- * Images are shrunk when captured, so this is rare. When a request would still exceed the limit, the oldest images
- * are replaced in the saved conversation once, with a native context edit, until those left total KEEP_BYTES.
- * Later requests are built from the edited history, so the prompt cache only changes when this happens.
+ * Images are shrunk when captured, so this is rare. The oldest images are replaced in the saved conversation, with a
+ * native context edit, until those left total KEEP_BYTES. That changes the prompt from the first image replaced, so
+ * the whole conversation after it is sent again at full price: it is done when a request would exceed the limit, or
+ * earlier, past FREE_LIMIT, when the request pays for its whole prompt anyway. Later requests are built from the
+ * edited history.
  */
 const ANTHROPIC_LIMIT = 32 * 1024 * 1024 - 256 * 1024;
+const FREE_LIMIT = 20 * 1024 * 1024;
 const KEEP_BYTES = 16 * 1024 * 1024;
 export const OMITTED_IMAGE_NOTE = "[An earlier image was removed to keep requests under the provider's size limit. View it again if you need it.]";
+/** The text Pi's Anthropic conversion puts before a tool result that has images and no text. */
+const IMAGE_ONLY_PLACEHOLDER = "(see attached image)";
 
 type Part = { type?: string; data?: string; text?: string };
 type Imaged = { id: string; content: Part[] };
@@ -30,18 +36,34 @@ export function oldestImages(entries: Imaged[], keepBytes = KEEP_BYTES): Map<str
 	return edits;
 }
 
-/** The request with the given image data replaced by the note, wherever it appears. */
-function withoutImages(value: unknown, omitted: Set<string>): unknown {
+/**
+ * The request with the given image data replaced by the note, wherever it appears, in the form Pi gives the edited
+ * history on the next request; any difference would make that request miss the cache again. Pi adds a placeholder
+ * text before a tool result's images when it has no text, which the note now is, and sends a tool result with no
+ * images left as its texts joined into one string.
+ */
+export function withoutImages(value: unknown, omitted: Set<string>): unknown {
 	if (Array.isArray(value)) return value.map(item => withoutImages(item, omitted));
 	if (!value || typeof value !== "object") return value;
 	const record = value as Record<string, unknown>, source = record.source as { data?: unknown } | undefined;
 	if (record.type === "image" && typeof source?.data === "string" && omitted.has(source.data)) return { type: "text", text: OMITTED_IMAGE_NOTE };
-	return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, withoutImages(item, omitted)]));
+	const next = Object.fromEntries(Object.entries(record).map(([key, item]) => [key, withoutImages(item, omitted)]));
+	const original = record.content as { type?: string; text?: string; source?: { data?: unknown } }[];
+	if (record.type === "tool_result" && Array.isArray(original)
+		&& original.some(block => block?.type === "image" && typeof block.source?.data === "string" && omitted.has(block.source.data))) {
+		let blocks = next.content as Part[];
+		if (original[0]?.type === "text" && original[0].text === IMAGE_ONLY_PLACEHOLDER && original.filter(block => block?.type === "text").length === 1)
+			blocks = blocks.slice(1);
+		next.content = blocks.every(block => block?.type === "text") ? blocks.map(block => block.text ?? "").join("\n") : blocks;
+	}
+	return next;
 }
 
 export function capAnthropicImages(pi: ExtensionAPI): void {
 	pi.on("before_provider_request", (event, ctx) => {
-		if (ctx.model?.api !== "anthropic-messages" || Buffer.byteLength(JSON.stringify(event.payload)) <= ANTHROPIC_LIMIT) return;
+		if (ctx.model?.api !== "anthropic-messages") return;
+		const size = Buffer.byteLength(JSON.stringify(event.payload));
+		if (size <= FREE_LIMIT || size <= ANTHROPIC_LIMIT && !freeMoment(ctx.model, ctx.sessionManager.getBranch() as never)) return;
 		const manager = ctx.sessionManager as unknown as SessionManager;
 		const entries = manager.buildSessionProjection().entries.flatMap(({ sourceEntry, messages }) => {
 			const content = messages.length === 1 ? (messages[0] as { content?: unknown }).content : undefined;
