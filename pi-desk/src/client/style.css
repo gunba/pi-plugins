@@ -1404,9 +1404,8 @@ details[open] > summary:before {
   overflow: auto;
   overscroll-behavior: contain;
 }
+/* Spacing comes from the main chat's message rules, so a child transcript reads the same. */
 .child-transcript .message {
-  margin: 16px 0;
-  padding: 0;
   min-width: 0;
 }
 .child-transcript pre {
