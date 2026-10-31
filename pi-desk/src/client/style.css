@@ -1090,7 +1090,6 @@ details[open] > summary:before {
 .view-preview b, .view-preview small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view-preview b { font-weight: 500; }
 .view-preview small { color: var(--muted); margin-top: 3px; }
-.agent-conversation .view-preview { padding: 8px 0; font-size: 11px; }
 @media (max-width: 760px) { .view-preview { padding: 8px 12px; gap: 8px; } }
 .detail-panel.agents-panel { width:min(580px, 45vw); flex-shrink:0; display:flex; flex-direction:column; overflow:hidden; padding:18px 22px; }
 .agents-panel > .panel-title { flex-shrink: 0; margin-bottom: 12px; }
@@ -1125,19 +1124,9 @@ details[open] > summary:before {
 .agent-current-status { display:flex; align-items:center; gap:9px; font-size:11px; color:var(--muted); }
 .agent-current-status strong { font-weight:500; color:var(--text); }
 .agent-current-status > span:last-child:not(.status-dot) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.agent-conversation .message { margin-bottom:18px; }
-.agent-conversation .child-transcript .message-activity { margin:0; padding:0; }
-.agent-conversation .message-activity .tool-card { margin:2px 0; border:0; border-left:2px solid var(--border); border-radius:0 4px 4px 0; background:transparent; box-shadow:none; }
-.agent-conversation .message-activity .tool-card:hover { background:var(--hover); }
-.agent-conversation .message-activity .tool-card > summary { padding:9px 8px; min-height:36px; font-size:11px; }
-.agent-conversation .message-activity .tool-error { border-left-color:var(--danger); background:color-mix(in srgb, var(--danger) 5%, transparent); }
-.agent-conversation .tool-status { font-size:10px; }
-.agent-conversation .tool-argument-preview { font-size:10px; }
 .agent-conversation .child-transcript { border-top:1px solid var(--border); padding-top:12px; }
-.agent-conversation .message-body { font-size:13px; }
-.agent-conversation .message-activity .message-body { padding-left:0; }
 .agent-conversation > .child-transcript { flex: 1; min-height: 80px; }
-.agent-conversation .transcript-scroll { height: auto; flex: 1; min-height: 0; }
+.agent-conversation .transcript-scroll { height: auto; flex: 1; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .agent-facts { flex-shrink: 0; font-size: 11px; color: var(--muted); max-height: 20dvh; overflow: auto; margin: 8px 0; }
 .agent-facts summary { cursor: pointer; }
 .agent-conversation > .error-text { font-size: 12px; max-height: 15dvh; overflow: auto; flex-shrink: 0; overflow-wrap: anywhere; }
@@ -1145,11 +1134,9 @@ details[open] > summary:before {
 .agent-receipt { font-size: 11px; flex-shrink: 0; max-height: 18dvh; overflow: auto; }
 .agent-receipt p { margin: 6px 0; }
 .agent-receipt button { padding: 4px 8px; margin-right: 6px; font-size: 11px; }
-.agent-composer { flex-shrink:0; border:1px solid var(--border); border-radius:8px; margin-top:12px; padding:10px; background:var(--surface); }
-.agent-composer textarea { border: 0; width: 100%; min-height: 48px; max-height: 16dvh; resize: vertical; background: transparent; }
-.agent-send { display: flex; gap: 8px; justify-content: flex-end; }
-.agent-send button { display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:6px 10px; }
-.agent-send .ui-icon { width:14px; height:14px; }
+/* The main message box, in the agent panel: only the space around it and its starting height differ. */
+.agent-composer { flex-shrink:0; margin-top:12px; }
+.agent-composer textarea { min-height:72px; max-height:30dvh; resize:vertical; }
 @media (max-width: 1180px) and (max-height: 600px) {
   .detail-panel.agents-panel { padding: 10px; }
   .detail-panel.agents-panel > .panel-title { margin: -10px -10px 8px; padding: 6px 10px; top: -10px; }
@@ -1157,8 +1144,6 @@ details[open] > summary:before {
   .agent-picker-heading { margin-bottom: 4px; }
   .agent-facts { margin: 4px 0; }
   .agent-conversation > .child-transcript { min-height: 0; }
-  .agent-composer { padding: 6px; margin-top: 4px; }
-  .agent-composer textarea { height: 44px; min-height: 44px; }
 }
 @media (max-width: 1180px) {
   .detail-panel.agents-panel { width: min(560px, 100vw); height: 100dvh; max-height: 100dvh; }

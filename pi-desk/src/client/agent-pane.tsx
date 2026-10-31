@@ -4,7 +4,8 @@ import type { UiAction, UiConversation, UiDetails, UiValue } from "../../../pi-u
 import type { ChatMessage, HistoryPage, SessionView, ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
 import { api } from "./connection.ts";
 import { useConfirmation } from "./confirmation.tsx";
-import { composerKey } from "./composer-keys.ts";
+import { composerKey, deliveryPreferenceKey, readDelivery, type Delivery } from "./composer-keys.ts";
+import { DeliveryControl } from "./delivery-control.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
 import { transcriptKey, type CachedMessage } from "./state.ts";
@@ -146,7 +147,11 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 		} catch (error) { if (live.current) reportDeskError(error); }
 		finally { inFlight.current = false; if (live.current) setSending(false); }
 	};
-	const send = async (action: UiAction | undefined) => {
+	// "Send now" interrupts a conversation's own turn; an agent is steered instead.
+	const [delivery, setDelivery] = useState<Delivery>(() => { const saved = readDelivery(localStorage); return saved === "now" ? "steer" : saved; });
+	const busy = item.status === "running" || item.status === "working";
+	const send = async (mode: Delivery) => {
+		const action = mode === "followUp" ? followup ?? primary : primary;
 		if (!action || disabled || inFlight.current || !draft.trim() || !session.activation) return;
 		if (receipt && !await confirmation.request({ title: "Send as a new message?", context: `${context} · ${view.title}`, accept: "Send new message",
 			body: <><p>The earlier delivery is not confirmed. Check this agent's transcript before sending again.</p><pre className="confirmation-preview">{draft.slice(0, 2000)}</pre></> })) return;
@@ -198,27 +203,28 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 				localStorage.removeItem(receiptKey); localStorage.removeItem(key); setReceipt(undefined); setDraft("");
 			})()}>Discard draft</button>
 		</div>}
-		{(messaging.length > 0 || draft || receipt) && <form className="agent-composer"
+		{(messaging.length > 0 || draft || receipt) && <form className="composer agent-composer"
 			onFocus={() => { if (matchMedia("(max-width: 1180px)").matches) onEditing(); }}
-			onSubmit={event => { event.preventDefault(); void send(primary); }}>
+			onSubmit={event => { event.preventDefault(); void send(delivery); }}>
 			<textarea aria-label={`Message ${view.title}`} placeholder={primary ? `Message ${view.title}…` : "This agent cannot receive messages now"}
 				value={draft} disabled={sending} rows={2} maxLength={1_000_000} onChange={event => edit(event.target.value)}
 				onKeyDown={event => {
 					const action = composerKey({ key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
-						shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing }, matchMedia("(pointer:fine)").matches);
+						shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing }, matchMedia("(pointer:fine)").matches, delivery);
 					if (!action) return;
 					event.preventDefault();
 					if (action === "newline") {
 						const editor = event.currentTarget, start = editor.selectionStart;
 						edit(`${draft.slice(0, start)}\n${draft.slice(editor.selectionEnd)}`);
 						requestAnimationFrame(() => editor.setSelectionRange(start + 1, start + 1));
-					} else void send(action === "followUp" ? followup : primary);
+					} else void send(action);
 				}} />
-			<div className="agent-send">
-				{followup && followup !== primary && <button type="button" disabled={disabled || !draft.trim()} onClick={() => void send(followup)}><Icon name="queue" />{followup.label}</button>}
-				<button type="button" className="primary" disabled={disabled || !draft.trim() || !primary}
-					onClick={event => void send(event.shiftKey || event.altKey ? followup ?? primary : primary)}><Icon name={primary?.delivery === "steer" ? "steer" : "send"} />{primary?.label ?? "Send"}</button>
-			</div>
+			<div className="composer-controls"><div className="send-controls">
+				{/* The main message box's send control and saved default; an agent has no "send now". */}
+				<DeliveryControl value={delivery} scope={`${session.key}:${view.id}`} busy={busy} canSendNow={false} send={value => void send(value)}
+					choose={value => { setDelivery(value); localStorage.setItem(deliveryPreferenceKey, value); }}
+					disabled={disabled || !draft.trim() || !primary} />
+			</div></div>
 		</form>}
 		{confirmation.dialog}
 	</div>;
