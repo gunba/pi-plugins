@@ -5,17 +5,17 @@ import { freeMoment } from "./superseded.ts";
  * A request that is too large is dropped part-way through its upload, which Anthropic's SDK reports only as
  * "Connection error.". Every request resends every image in the context, so a conversation that views many
  * screenshots crosses the limit and then fails on every turn (Work PC, 15 October: 57 images, 67 MB, after requests
- * with 62 MB of images had succeeded). Anthropic documents 128 MB, and a 120 MB request through a Claude subscription
- * succeeded from Linux on 31 October; the limit stays below what failed on the Work PC.
+ * with 62 MB of images had succeeded). Anthropic has since raised its limit to 128 MB: on 31 October 120 MB requests
+ * through a Claude subscription succeeded from both Linux and the Work PC.
  * Images are shrunk when captured, so this is rare. The oldest images are replaced in the saved conversation, with a
  * native context edit, until those left total KEEP_BYTES. That changes the prompt from the first image replaced, so
  * the whole conversation after it is sent again at full price: it is done when a request would exceed the limit, or
  * earlier, past FREE_LIMIT, when the request pays for its whole prompt anyway. Later requests are built from the
  * edited history.
  */
-const ANTHROPIC_LIMIT = 60 * 1024 * 1024;
-const FREE_LIMIT = 40 * 1024 * 1024;
-const KEEP_BYTES = 30 * 1024 * 1024;
+const ANTHROPIC_LIMIT = 120 * 1024 * 1024;
+const FREE_LIMIT = 80 * 1024 * 1024;
+const KEEP_BYTES = 60 * 1024 * 1024;
 export const OMITTED_IMAGE_NOTE = "[An earlier image was removed to keep requests under the provider's size limit. View it again if you need it.]";
 /** The text Pi's Anthropic conversion puts before a tool result that has images and no text. */
 const IMAGE_ONLY_PLACEHOLDER = "(see attached image)";
