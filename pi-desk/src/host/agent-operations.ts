@@ -1,3 +1,4 @@
+import { HOME_WORK } from "../shared/home.ts";
 import { homedir, hostname } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPartyFork } from "../../../pi-agents/fork.ts";
@@ -62,7 +63,7 @@ export class AgentOperations {
 	computer(): PartyComputer {
 		const teleport = this.host.teleport();
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: ["create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
+			operations: [HOME_WORK, "create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
 				// The computer that keeps conversation copies keeps the account's quest log too.
 				...teleport?.operations().includes(HOLD) ? [QUEST_LOG] : [], QUEST_NOTICES, ...this.host.search?.()?.operations() ?? []] };
 	}
@@ -122,7 +123,7 @@ export class AgentOperations {
 		}
 	}
 
-	/** Reopen a conversation by its agent id, as the Dot asks. One that is already running is left as it is. */
+	/** Reopen a conversation by its agent id, when an agent asks. One that is already running is left as it is. */
 	private async resume(session: string, wait?: number): Promise<NonNullable<OperationResult["result"]>> {
 		const store = this.host.parties().store, managed = [...this.core.sessions.values()].find(item => item.view.agentId === session);
 		if (managed?.worker && (managed.view.state === "ready" || managed.view.state === "starting")) return { session, state: "running", key: managed.view.key };

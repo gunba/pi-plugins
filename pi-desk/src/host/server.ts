@@ -39,6 +39,7 @@ import { ConversationSearch } from "./conversation-search.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { Teleport } from "./teleport.ts";
 import { DotConnection } from "./dot.ts";
+import { Home, homeWork } from "./home.ts";
 import { AccountConnection } from "./account-connection.ts";
 import { AgentOperations, applyModelChoice } from "./agent-operations.ts";
 import { ConversationMoves } from "./conversation-moves.ts";
@@ -65,6 +66,7 @@ export class DeskHost {
 	private folders?: Folders;
 	private inputs?: InputLedger;
 	private dot?: DotConnection;
+	private home?: Home;
 	private logins?: Logins;
 	/** Pi's general setup, mirrored with the workspace's other computers. */
 	private settingsSync?: SettingsSync;
@@ -159,8 +161,14 @@ export class DeskHost {
 		this.notices = new AwayNotices({ present: () => !!this.presence?.present, quests: () => this.quests.view, computer: () => this.account.identity?.device.id,
 			send: async notice => { await this.account.identity?.notify(notice); } });
 		this.events.watch(event => this.notices.observe(event));
+		let workSignature = "";
+		this.events.watch(event => {
+			if (event.type !== "session") return;
+			const signature = JSON.stringify(homeWork([...this.sessions.values()].map(item => item.view)));
+			if (signature !== workSignature) { workSignature = signature; this.account.network?.flush(); }
+		});
 		this.efficiency = new EfficiencyReports({ agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, directory: () => this.directory, closing: () => this.closing });
-		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot,
+		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot, home: () => this.home,
 			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
 			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events,
 			presence: () => this.presence });
@@ -244,6 +252,14 @@ export class DeskHost {
 			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moves.failed(request, computer, response.error); };
 			this.quests.open(this.options.agentDir);
 			this.quests.refresh();
+			this.home = new Home(this.core, this.quests,
+				() => this.account.localOnly || !!this.teleport?.settings.hold,
+				() => this.account.network?.homeWork() ?? [], async notice => {
+					if (!this.account.identity) throw Error("Phone delivery needs the workspace account connection.");
+					const result = await this.account.identity.notify(notice) as { sent?: number };
+					if (!result.sent) throw Error("The update is saved in Home, but no phone accepted the notification. Enable phone notifications before marking this job verified.");
+					return result;
+				});
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
 			this.dotConnector.quests = () => this.quests.log();
 			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
@@ -308,7 +324,7 @@ export class DeskHost {
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.account.close(); await this.search?.close();
-			this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.home?.close(); this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -733,6 +749,7 @@ export class DeskHost {
 		const key = existing?.view.key ?? randomUUID();
 		const options: WorkerInit = { cwd: realpathSync(homeFolder(cwd)), agentDir: this.options.agentDir, sessionFile, sessionDir: this.options.sessionDir, attachmentScope: key, takeover,
 			deskDirectory: this.options.dataDir ?? join(this.options.agentDir, "desk"),
+			...(existing?.view.home ? { homeDirectory: join(this.directory, "home") } : {}),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
@@ -800,7 +817,7 @@ export class DeskHost {
 		this.updates.close();
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }
-		try { this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.home?.close(); this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		this.events.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));

@@ -133,6 +133,8 @@ export interface SavedSession {
 export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; briefReply?: boolean; learn?: boolean }
 export interface SessionView {
 	key: string;
+	/** The workspace's persistent Home assistant. */
+	home?: boolean;
 	/** Native Pi identity, distinct from the Desk workspace key. */
 	agentId?: string;
 	cwd: string;
@@ -214,6 +216,8 @@ export interface WorkerInit {
 	runtimeDirectory?: string;
 	/** Desk's data folder on this computer (operator availability). */
 	deskDirectory?: string;
+	/** Shared scene store for the workspace Home worker. */
+	homeDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
 }

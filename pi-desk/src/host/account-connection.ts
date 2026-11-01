@@ -11,6 +11,7 @@ import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts
 import type { NativeAccountIdentity } from "./account-identity.ts";
 import { AccountNetwork } from "./account-network.ts";
 import type { DotConnector } from "./dot-connector.ts";
+import { homeWork } from "./home.ts";
 import type { HostCore } from "./host-core.ts";
 import type { Parties } from "./parties.ts";
 import { PartyNetwork } from "./party-network.ts";
@@ -52,6 +53,7 @@ export class AccountConnection {
 	private accountIdentity?: NativeAccountIdentity;
 	private partyNetwork?: PartyNetwork;
 	private revision = 0;
+	private mode?: "local" | "workspace";
 	private retry?: ReturnType<typeof setTimeout>;
 	private following?: ReturnType<typeof setInterval>;
 	private directSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_WIRE * 2, perMessageDeflate: false });
@@ -60,6 +62,8 @@ export class AccountConnection {
 	get relay(): RelayConnector | undefined { return this.relayConnector; }
 	get status(): RelayStatus | undefined { return this.relayStatus; }
 	get identity(): NativeAccountIdentity | undefined { return this.accountIdentity; }
+	/** True only after the saved configuration confirms that this host has no workspace account. */
+	get localOnly(): boolean { return this.mode === "local"; }
 	/** The agent network to the workspace's other computers, while the account connection is up. */
 	get network(): PartyNetwork | undefined { return this.partyNetwork; }
 
@@ -121,6 +125,7 @@ export class AccountConnection {
 		this.accountIdentity?.close(); this.accountIdentity = undefined; this.relayStatus = undefined;
 		const saved = await readAccount(this.core.directory);
 		if (this.core.closing || revision !== this.revision) return;
+		this.mode = saved ? "workspace" : "local";
 		if (!saved) { this.core.emit({ type: "state", state: this.core.state() }); return; }
 		const update = (status: RelayStatus) => {
 			if (this.core.closing || revision !== this.revision) return;
@@ -137,7 +142,7 @@ export class AccountConnection {
 				if (this.core.closing || revision !== this.revision) return;
 				parties.networkChanged(); this.core.refreshParties();
 			}, { operations: this.host.operations(), execute: (computer, request) => this.host.execute(computer, request) }, this.host.computer(),
-				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.());
+				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.(), () => homeWork([...this.core.sessions.values()].map(item => item.view)));
 			this.partyNetwork = network;
 			this.relayConnector = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.core.options.proxy, direct: Number(new URL(this.core.origin).port),
 				request: (access, request) => this.host.request(access, request),

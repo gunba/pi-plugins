@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, QuestTracker, workItems;
+let MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, HomeCanvas, workItems;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, WorkChip, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { QuestTracker } from "./quest-tracker.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, WorkChip, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { HomeCanvas } from "./home-canvas.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,7 +22,7 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, QuestTracker, workItems } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, HomeCanvas, workItems } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
@@ -75,18 +75,15 @@ test("shown link items have direct controls in chat and viewers without embeddin
 	}
 });
 
-test("tasks show every subtask as a checkbox, including the seventh", t => {
-	const storage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-	Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => null } });
-	t.after(() => { if (storage) Object.defineProperty(globalThis, "localStorage", storage); else delete globalThis.localStorage; });
-	const steps = Array.from({ length: 7 }, (_, index) => ({ title: `Subtask ${index + 1}`, done: index === 0 }));
-	const html = renderToStaticMarkup(createElement(QuestTracker, { agentName: () => undefined, openAgent() {}, logs: [{ name: "Local", connected: true,
-		view: { today: "2026-10-24", hours: { timeZone: "UTC", days: [1, 2, 3, 4, 5], start: 9, end: 17 }, completedDays: [], upcoming: [],
-			quests: [{ id: "task", title: "Review changes", kind: "main", state: "open", steps, source: { kind: "you" } }] } }] }));
-	assert.match(html, /Subtask 7/);
-	const checkboxes = [...html.matchAll(/<input[^>]*type="checkbox"[^>]*>/g)].map(([input]) => ({ input, title: /aria-label="Done: ([^"]+)"/.exec(input)?.[1] })).filter(item => item.title);
-	assert.deepEqual(checkboxes.map(({ input, title }) => ({ title, done: /\bchecked=""/.test(input) })), steps);
-	assert.doesNotMatch(html, /1 more/);
+test("Home renders task text as an accessible canvas item, not a checkbox list", () => {
+	const html = renderToStaticMarkup(createElement(HomeCanvas, { open() {}, move() {}, scene: { version: 1, revision: 0, preferences: {}, spec: { root: "canvas", elements: { canvas: { type: "Canvas", props: {}, children: ["task"] }, task: { type: "Blob", props: {
+		ref: { kind: "quest", id: "task" }, title: "Review changes", subtitle: "Seven steps", status: "Waiting for review",
+		icon: "preview", x: 20, y: 30, width: 320, height: 190, seed: 17, wobble: 0.15, color: "accent", outline: "dashed",
+	} } } } } }));
+	assert.match(html, /aria-label="Review changes\. Seven steps\. Waiting for review"/);
+	assert.match(html, /stroke-dasharray="6 7"/);
+	assert.match(html, /var\(--accent\)/);
+	assert.doesNotMatch(html, /type="checkbox"|quest-list|<table/);
 });
 
 test("raw images stay out of Work until shown and image chips are not labelled as screenshots", () => {

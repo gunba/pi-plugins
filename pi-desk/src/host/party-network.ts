@@ -8,6 +8,8 @@ import type { ConversationSearch, SearchBinding } from "./conversation-search.ts
 import type { SettingsSync } from "./settings-sync.ts";
 import { TELEPORT_PACKETS, type Teleport, type TeleportPacket } from "./teleport.ts";
 
+import { HOME_WORK, type HomeWork } from "../shared/home.ts";
+
 type Send = (payload: PartyPacket) => Promise<void>;
 
 /** Desk forwards the native registry/outbox; Pi processes retain ownership and delivery budgets. */
@@ -36,8 +38,12 @@ export class PartyNetwork {
 	/** Computers sent a batch of this computer's old quests, or of notices for their agents, not taken yet. */
 	private handing = new Set<string>();
 	private noticing = new Set<string>();
+	private work = new Map<string, HomeWork[]>();
+	private sentWork = new Map<string, string>();
+	private localWork?: () => HomeWork[];
 	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport, search?: ConversationSearch,
-		quests?: HostQuests) {
+		quests?: HostQuests, localWork?: () => HomeWork[]) {
+		this.localWork = localWork;
 		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport; this.quests = quests;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
@@ -55,6 +61,7 @@ export class PartyNetwork {
 				operations: announced?.operations ?? [] };
 		});
 	}
+	homeWork(): HomeWork[] { return [...this.work].flatMap(([computer, work]) => work.map(item => ({ ...item, computer, ...(!this.peers.has(computer) ? { status: "Offline · last known" } : {}) }))); }
 	connected(id: string, send: Send, close: () => void): () => void {
 		if (this.closed) throw Error("Party network is closed.");
 		this.search?.disconnected(id);
@@ -64,7 +71,7 @@ export class PartyNetwork {
 	}
 	private disconnect(id: string, send: Send): void {
 		if (this.closed || this.peers.get(id) !== send) return;
-		this.peers.delete(id); this.closers.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.asking.delete(id); this.handing.delete(id); this.noticing.delete(id);
+		this.peers.delete(id); this.closers.delete(id); this.sentWork.delete(id); this.directories.delete(id); this.manifests.delete(id); this.teleport?.disconnected(id); this.search?.disconnected(id); this.asking.delete(id); this.handing.delete(id); this.noticing.delete(id);
 		try { this.store.setComputerConnected(id, false); this.changed(); }
 		catch { console.error("Party connection state could not be saved; its presence lease will expire."); }
 	}
@@ -83,6 +90,10 @@ export class PartyNetwork {
 			if (this.directories.get(id) === signature) await send({ type: "presence" });
 			else { await send({ type: "directory", agents, ...(this.self ? { computer: this.self } : {}) }); this.directories.set(id, signature); }
 			if (this.closed || this.peers.get(id) !== send) return;
+			if (this.localWork && this.announced.get(id)?.operations.includes(HOME_WORK)) {
+				const work = this.localWork(), signature = JSON.stringify(work);
+				if (signature !== this.sentWork.get(id)) { await send({ type: "home-work", work }); this.sentWork.set(id, signature); }
+			}
 			const messages = this.store.outgoing(id);
 			if (messages.length) await send({ type: "messages", messages });
 			const operations = this.lifecycle?.operations.outgoing(id);
@@ -126,6 +137,15 @@ export class PartyNetwork {
 	async receive(id: string, raw: unknown): Promise<void> {
 		if (this.closed || !this.peers.has(id)) throw Error("Party computer is disconnected.");
 		const packet = record(raw);
+		if (packet.type === "home-work") {
+			if (!Array.isArray(packet.work) || packet.work.length > 200) throw Error("Invalid Home work snapshot.");
+			const work = packet.work.map(value => {
+				const item = record(value);
+				for (const field of ["id", "title", "status", "detail"]) if (typeof item[field] !== "string" || (item[field] as string).length > 2000) throw Error("Invalid Home work item.");
+				return { id: item.id as string, title: item.title as string, status: item.status as string, detail: item.detail as string, ...(typeof item.view === "string" ? { view: item.view.slice(0, 200) } : {}) };
+			});
+			this.work.set(id, work); this.changed(); return;
+		}
 		if (packet.type === "operations") {
 			if (!this.lifecycle || !Array.isArray(packet.operations) || packet.operations.length > 8) throw Error("Invalid party operations.");
 			const lifecycle = this.lifecycle, send = this.peers.get(id)!;
