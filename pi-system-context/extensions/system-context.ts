@@ -249,30 +249,9 @@ export default function (pi: ExtensionAPI) {
     options.toolGuidelines = Object.fromEntries(Object.entries(options.toolGuidelines ?? {})
       .map(([name, rules]) => [name, rules.filter((rule) => !DROPPED_RULES.has(rule.trim()))]));
 
-    const loadable = loadableTools(pi);
-    const sections = loadable ? `${context}\n\n${loadable}` : context;
     const appended = event.systemPromptOptions.appendSystemPrompt;
-    event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${sections}` : sections;
+    event.systemPromptOptions.appendSystemPrompt = appended ? `${appended}\n\n${context}` : context;
   });
   pi.on("before_provider_request", (event) => withoutStringCallNotes(event.payload));
 }
 
-/**
- * Rarely used tools are deferred: not declared until tool_search loads them, which keeps them out of every
- * request. tool_search does not list them, so name them here by group. The line only changes when the
- * registered tools do, which keeps the prompt cache intact.
- */
-export function loadableTools(pi: Pick<ExtensionAPI, "getAllTools">): string | undefined {
-  if (typeof pi.getAllTools !== "function") return undefined;
-  const groups = new Map<string, string[]>();
-  for (const tool of pi.getAllTools() ?? []) {
-    // MCP tools are called from codemode and listed in their own section.
-    if (tool.exposure !== "deferred" || !tool.namespace?.name || tool.name.startsWith("mcp__") || tool.namespace.name.startsWith("mcp")) continue;
-    const names = groups.get(tool.namespace.name) ?? [];
-    names.push(tool.name);
-    groups.set(tool.namespace.name, names);
-  }
-  if (!groups.size) return undefined;
-  const list = [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([group, names]) => `${group} (${names.sort().join(", ")})`).join("; ");
-  return `### Tools to load\nLoad these with tool_search when needed: ${list}.`;
-}

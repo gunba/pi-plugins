@@ -13,8 +13,6 @@ not replace the complete system prompt or inject reminder messages.
 - shell: C:/WINDOWS/system32/cmd.exe; bash: ~/Desktop/Programs/PortableGit/bin/bash.exe
 - path tools: python 3.x, node v22.x, git x.x, rg x.x, ps x.x
 
-### Tools to load
-Load these with tool_search when needed: agents (agent_move, …).
 ```
 
 Pi's own `<cwd>` section carries the folder. The tool versions are probed once per

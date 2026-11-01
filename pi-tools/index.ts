@@ -73,6 +73,11 @@ const INTROS: Record<string, string> = {
   conversation_search: "Recall past conversations: an earlier decision, command, path or error.",
   conversation_read: "Read the passages around a conversation_search result.",
   home_jobs: "List the scheduled jobs, their files and next deadlines (Perth time). Arms nothing.",
+  chrome_devtools_list_pages: "List the browser's open tabs and their ids.",
+  chrome_devtools_select_page: "Choose the tab later browser calls act on.",
+  chrome_devtools_navigate: "Open a URL in a tab, with Jordan's signed-in sessions; ask before using his own tab.",
+  chrome_devtools_evaluate: "Run a JavaScript expression in the page to read or operate it; keep each call short.",
+  chrome_devtools_screenshot: "Capture the page as a PNG; look at it with image().",
   home_notify: "Deliver a scheduled job's result to Home and Jordan's phone, only when worth telling.",
 };
 /** An operation's intro, or for one without, its first sentence cut to 100 characters at a word. */
@@ -164,7 +169,11 @@ export function createStructuredToolExtension(): ExtensionFactory {
       outputSchema: Type.Unknown(),
       reachesTools: input => /\btool_search\b/.test(String(input.code)) ? "all" : definition.reachesTools?.(input) ?? "all",
       prepareLoadout(loadout) {
-        const others = loadout.declared.filter(tool => !CORE.has(tool.name) && !external(tool.name) && loadout.getExposure(tool.name) !== "deferred");
+        // Every operation a program can call, so agents know them all: the declared ones, those loaded on demand (callable
+        // from programs without loading) and the browser's. MCP servers' tools are listed by server in the system prompt.
+        const declared = new Set(loadout.declared.map(tool => tool.name));
+        const others = loadout.registered.filter(tool => !CORE.has(tool.name) && !tool.name.startsWith("mcp__")
+          && (declared.has(tool.name) || ["deferred", "codemode"].includes(loadout.getExposure(tool.name))));
         // Hidden tools' rules leave the system prompt with their declarations, so the program tool carries them; the
         // file operations' rules are already in their signatures above.
         const rules = [...new Set(loadout.declared.filter(tool => !["codemode", "read", "bash", "edit", "write"].includes(tool.name) && !external(tool.name))
