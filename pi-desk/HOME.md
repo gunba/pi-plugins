@@ -148,7 +148,9 @@ connector can still reach Pi agents and quests.
 4. Verify each Home job's actual delivery against its Dot counterpart. For email,
    retain the provider's sent-message receipt and confirm the message in Sent;
    a draft or a successful model turn is insufficient. Confirm the next watch
-   was armed and that its schedule matches the inventory.
+   was armed and that its schedule matches the inventory. If the monthly review
+   falls outside the overlap day, explicitly request one post-merge validation
+   review; this does not change its monthly schedule or authorize unsubscribing.
 5. Only after every job has succeeded, stop Dot's jobs. Clear the comparison
    setting; no code change or release is needed:
    `POST /api/home/settings {"overlap":false}` on the workspace server.

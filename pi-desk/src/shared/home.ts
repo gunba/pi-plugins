@@ -1,6 +1,6 @@
 import { Type, type Static, type TLiteral } from "typebox";
 import { Value } from "typebox/value";
-import type { CatalogDefinition } from "../../../pi-ui/agent-catalog.ts";
+import { catalogValidator, type CatalogDefinition } from "../../../pi-ui/agent-catalog.ts";
 import { applySpecPatch, validateSpec, type AgentElement, type AgentPatch, type AgentSpec } from "../../../pi-ui/agent-ui.ts";
 
 export const HOME_MODEL = { provider: "openai-codex", id: "gpt-6.1-terra" } as const;
@@ -33,6 +33,7 @@ export const homeCatalog: Record<string, CatalogDefinition> = {
 	...Object.fromEntries(["Blob", "Pill", "Label"].map(type => [type, { props: Object.keys(HomeItemPropsSchema.properties), required: Object.keys(HomeItemPropsSchema.properties), structured: ["ref"] }])),
 	Connector: { props: ["from", "to", "bend"], required: ["from", "to", "bend"] },
 };
+const validateHomeCatalog = catalogValidator(homeCatalog);
 export type HomeReference = Static<typeof HomeReferenceSchema>;
 type ItemProps = Static<typeof HomeItemPropsSchema>;
 export type HomeItem = Omit<ItemProps, "title" | "subtitle" | "status"> & { id: string; shape: "blob" | "pill" | "label"; title: string; subtitle: string; status: string };
@@ -55,6 +56,7 @@ export function homeItems(scene: HomeScene): HomeItem[] {
 		.map(([id, element]) => ({ ...element.props, id, shape: element.type.toLowerCase() } as HomeItem));
 }
 export function validateHomeElement(element: AgentElement, id: string, spec: AgentSpec): void {
+	validateHomeCatalog(element, id, spec);
 	if (element.type === "Canvas") {
 		if (id !== spec.root || Object.keys(element.props).length) throw Error("Home has one Canvas root with empty props.");
 		return;

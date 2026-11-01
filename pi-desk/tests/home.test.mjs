@@ -34,7 +34,7 @@ test("scene patches are atomic, schema checked, and cannot erase a drag", t => {
 	assert.throws(() => store.patch({ revision: 3, operations: [{ op: "replace", path: "/elements/review/props/title", value: "Do not commit" }, { op: "add", path: "/elements/line", value: { type: "Connector", props: { from: "review", to: "missing", bend: 0 } } }, { op: "add", path: "/elements/canvas/children/-", value: "line" }] }), /existing, different items/);
 	assert.deepEqual(other.scene(), scene, "a rejected operation rolls back the entire patch");
 	for (const invalid of [{ color: "#00aaff" }, { icon: "not-an-icon" }, { x: Infinity }, { width: 0 }, { wobble: 1 }, { svg: "<script>" }])
-		assert.throws(() => store.patch({ revision: 3, operations: [{ op: "replace", path: "/elements/review", value: element({ ...item(), ...invalid }) }] }), /Invalid Home component props|UI numbers must be finite/);
+		assert.throws(() => store.patch({ revision: 3, operations: [{ op: "replace", path: "/elements/review", value: element({ ...item(), ...invalid }) }] }), /Invalid Home component props|UI numbers must be finite|Unknown component or property/);
 	assert.deepEqual(other.scene(), scene);
 	const moved = store.patch({ revision: 3, operations: [{ op: "replace", path: "/elements/review/props/x", value: 100 }] }, ["review"]);
 	assert.equal(homeItems(moved)[0].x, 100);
