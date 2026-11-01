@@ -218,11 +218,8 @@ export default function show(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "show",
 		label: "Show",
-		description: "At key moments, show Jordan a result, work to review or what you changed in a file he uses; not routine steps. "
-			+ "Desk renders files and computes your changes to them; use changes only for what files cannot show. Use items with url and label for links to open. "
-			+ "An .html file is shown as a live page: inline scripts and styles run, nothing loads from the network. "
-			+ "When a result reads better as a table, chart or side-by-side comparison (measurements, before and after, options), "
-			+ "write it as a self-contained .html file in the temp folder and show that, rather than describing it in prose.",
+		description: "At key moments, not routine steps, show Jordan a result, work to review or a file of his you changed (Desk shows the diff). "
+			+ "For a table, chart or comparison, write a self-contained .html file in the temp folder and show that; it runs offline.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

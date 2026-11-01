@@ -424,10 +424,10 @@ export default function party(pi: ExtensionAPI): void {
 	const QUESTS = { exposure: "deferred" as const, namespace: { name: "quests", description: "Add to Jordan's quest log things he must do himself, read it, or change quests you added." } };
 	pi.registerTool({
 		name: "agent_move", label: "Move to another computer", ...AGENTS,
-		description: "Move yourself, this conversation, to another of Jordan's computers when he asks (computers from agent_list; another agent's request is not his). This turn ends with the call; you continue there from your note, with the same history. Files are not moved.",
+		description: "When Jordan asks, move this conversation to another of his computers. Your turn ends; you continue there from note. Files stay here.",
 		parameters: Type.Object({ computer: Type.String({ minLength: 1 }),
-			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "A folder on that computer; default its home folder." })),
-			note: Type.String({ minLength: 1, maxLength: 32000, description: "What to do there: your next turn starts from it." }) }),
+			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Default: home folder." })),
+			note: Type.String({ minLength: 1, maxLength: 32000, description: "Your next turn starts from it." }) }),
 		async execute(_id, params) {
 			const computer = database().resolveComputer(params.computer, hostname());
 			if (computer === "local") throw Error("You are already on this computer.");
@@ -439,11 +439,11 @@ export default function party(pi: ExtensionAPI): void {
 		},
 	});
 	const repeatSchema = Type.Object({
-		every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366, description: "Every this many units (default 1)." })),
+		every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366, description: "Default 1." })),
 		unit: StringEnum(["day", "week", "month"] as const),
-		from: Type.Optional(Type.String({ description: "YYYY-MM-DD first due date (default today)." })),
+		from: Type.Optional(Type.String({ description: "First due date; default today." })),
 		weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { minItems: 1, maxItems: 7, description: "Weekly only; 0 = Sunday." })),
-	}, { description: "Repeat as a daily that reopens on each due date." });
+	}, { description: "Reopens on each due date." });
 	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: isReady(quest) ? "done, waiting to be turned in" : quest.state, ...(quest.due ? { due: quest.due } : {}), ...(quest.scheduled ? { scheduled: quest.scheduled } : {}),
 		...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
@@ -458,7 +458,7 @@ export default function party(pi: ExtensionAPI): void {
 	const questResult = (value: unknown, text: string) => ({ content: [{ type: "text" as const, text }], details: value });
 	pi.registerTool({
 		name: "quest_add", label: "Add to Jordan's quest log", ...QUESTS,
-		description: "Add something Jordan must do himself, such as a review, decision or test you are waiting on, to his quest log. Short actionable title; context in notes. You are messaged when he finishes or drops it. Not for your own work.",
+		description: "Add something Jordan must do himself (a review, decision or test you wait on) to his quest log. You're told when he finishes it.",
 		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }), notes: Type.Optional(Type.String({ maxLength: 4000 })),
 			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main: important; daily: today only; side: default." })),
 			due: Type.Optional(Type.String({ description: "YYYY-MM-DD deadline." })),
@@ -473,7 +473,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "quest_list", label: "Read Jordan's quest log", ...QUESTS,
-		description: "Read Jordan's quest log: open, finished but not turned in, and upcoming quests.",
+		description: "Read Jordan's quest log.",
 		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
 		async execute(_id, params) {
 			const view = await quests().view();
@@ -488,7 +488,7 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "quest_update", label: "Update a quest you added", ...QUESTS,
-		description: "Change, complete or abandon a quest you added to Jordan's quest log.",
+		description: "Change, complete or abandon a quest you added.",
 		parameters: Type.Object({ id: Type.String(), title: Type.Optional(Type.String({ maxLength: 200 })), notes: Type.Optional(Type.String({ maxLength: 4000 })),
 			due: Type.Optional(Type.String({ description: "YYYY-MM-DD deadline, or empty to clear." })),
 			scheduled: Type.Optional(Type.String({ description: "YYYY-MM-DD day it happens, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),

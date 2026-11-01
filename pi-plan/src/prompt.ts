@@ -59,7 +59,5 @@ export function renderPlanWrapup(plan: Pick<PlanView, "objective">, blockedReaso
 }
 
 export function renderPlanGuidance(blockedAfter: number): string {
-	return "One plan per branch: a concise objective and concrete steps. auto_continue keeps working across automatic rounds; "
-		+ "a resume, reload or fork pauses that until action resume. update_plan changes the current plan; if it changed since you last saw it, the call shows you the plan instead. "
-		+ `Finishing the steps does not by itself complete the objective. Report blocked only after the same condition persists for ${blockedAfter} rounds.`;
+	return `Finishing a plan's steps doesn't complete its objective. Report blocked only after the same condition persists for ${blockedAfter} rounds.`;
 }

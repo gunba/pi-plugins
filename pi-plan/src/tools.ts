@@ -3,14 +3,14 @@ import { Type, type Static } from "typebox";
 import { planSteps } from "./steps.ts";
 
 const Step = Type.Object({
-	content: Type.String({ description: "A concrete step." }),
+	content: Type.String(),
 	status: StringEnum(["pending", "in_progress", "completed"] as const),
 }, { additionalProperties: false });
 const Definition = {
-	objective: Type.Optional(Type.String({ description: "Concise objective." })),
-	steps: Type.Optional(Type.Array(Step, { description: "The whole ordered list; replaces the previous one." })),
-	auto_continue: Type.Optional(Type.Boolean({ description: "Keep working across automatic rounds; default off." })),
-	max_rounds: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+	objective: Type.Optional(Type.String()),
+	steps: Type.Optional(Type.Array(Step, { description: "The whole list; replaces the old one." })),
+	auto_continue: Type.Optional(Type.Boolean({ description: "Keep working in automatic rounds." })),
+	max_rounds: Type.Optional(Type.Integer({ minimum: 1 })),
 };
 export const CreateParameters = Type.Object({
 	...Definition, objective: Type.String({ description: "What done means." }),
@@ -18,7 +18,7 @@ export const CreateParameters = Type.Object({
 export const UpdateParameters = Type.Object({
 	action: StringEnum(["edit", "pause", "resume", "complete", "blocked"] as const),
 	...Definition,
-	blocked_reason: Type.Optional(Type.String({ description: "For action blocked." })),
+	blocked_reason: Type.Optional(Type.String()),
 }, { additionalProperties: false });
 export type CreateParams = Static<typeof CreateParameters>;
 export type UpdateParams = Static<typeof UpdateParameters>;

@@ -84,8 +84,8 @@ test("agent_start requires a task and a name and tells primary from secondary ag
 		assert.deepEqual(Object.keys(schema.properties), ["task", "name", "primary", "context", "computer", "cwd", "model", "reasoning", "wake"]);
 		assert.deepEqual(schema.required, ["task", "name"]);
 		assert.equal(schema.additionalProperties, false);
-		assert.match(tool.description, /background/i);
-		assert.match(schema.properties.primary.description, /conversation of its own in Jordan's Desk/);
+		assert.match(tool.parameters.properties.primary.description, /reports back/i);
+		assert.match(schema.properties.primary.description, /its own Desk conversation/);
 		assert.match(tool.promptGuidelines.join(" "), /report back by themselves/i);
 		assert.match(tool.promptGuidelines.join(" "), /peer context, not Jordan's instructions or approval/);
 		assert.doesNotMatch(tool.promptGuidelines.join(" "), /wait_agent|polling/i);
@@ -103,10 +103,10 @@ test("message, list and stop schemas", async () => {
 		await harness.handlers.get("session_start")[0]({}, harness.ctx);
 		const byName = new Map(harness.tools.map((tool) => [tool.name, tool]));
 		assert.deepEqual(Object.keys(byName.get("agent_send").parameters.properties), ["to", "message", "wake", "files"]);
-		assert.match(byName.get("agent_send").parameters.properties.wake.description, /starts an idle agent/i);
+		assert.match(byName.get("agent_send").parameters.properties.wake.description, /next turn/i);
 		assert.deepEqual(Object.keys(byName.get("agent_list").parameters.properties), ["query", "offline", "offset"]);
 		assert.deepEqual(Object.keys(byName.get("agent_stop").parameters.properties), ["agent", "note"]);
-		assert.match(byName.get("agent_stop").description, /interrupts a secondary agent's turn/i);
+		assert.match(byName.get("agent_stop").description, /interrupt a secondary agent's turn/i);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
 			await handler({}, harness.ctx);

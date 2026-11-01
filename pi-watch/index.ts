@@ -93,13 +93,13 @@ const registry = ((globalThis as Record<symbol, unknown>)[registryKey] ??= new M
 export const activeWatches = (sessionId: string): number => registry.get(sessionId) ?? 0;
 
 const Parameters = Type.Object({
-	command: Type.Optional(Type.String({ description: "Shell command, run like bash's. Without every it runs in the background; with every it is re-run." })),
-	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs; the watch ends when it wakes you." })),
-	until: Type.Optional(Type.String({ description: "Instead of command: wake at HH:MM (next occurrence, local time) or an ISO date and time." })),
-	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words (\"the build fails or finishes\")." })),
-	hours: Type.Optional(Type.Number({ minimum: 0.05, description: "Limit for a command watch; default until it ends or is stopped." })),
-	stop: Type.Optional(Type.String({ description: "ID of a watch to stop, with its command." })),
-	close: Type.Optional(Type.Boolean({ description: "Close this conversation when this turn ends, until a watch wakes it." })),
+	command: Type.Optional(Type.String({ description: "Shell command; with every, re-run." })),
+	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs. Wakes you on a change, then ends." })),
+	until: Type.Optional(Type.String({ description: "Wake at HH:MM (local) or an ISO time." })),
+	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
+	hours: Type.Optional(Type.Number({ minimum: 0.05 })),
+	stop: Type.Optional(Type.String({ description: "Watch ID to stop." })),
+	close: Type.Optional(Type.Boolean({ description: "Close this conversation until a watch wakes it." })),
 }, { additionalProperties: false });
 type Params = Static<typeof Parameters>;
 
@@ -677,10 +677,8 @@ export default function watch(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "watch",
 		label: "Watch",
-		description: "Wait without spending turns, instead of sleep loops or polling: start a watch, end your turn, and be woken with what happened. "
-			+ "A watch runs a command in the background (woken by its output and its end), re-runs one every so often (woken when its output changes), or wakes you at a time. "
-			+ "Watches outlive this conversation and restarts: Desk reopens it when one has news. Use them for later or recurring work (when woken, do it and set the next time) "
-			+ "and for waiting on events (a command that re-runs, with wake_when). No arguments lists watches; stop ends one.",
+		description: "Wait without spending turns, instead of sleeping or polling: end your turn and be woken by a background command's output, "
+			+ "a change in a re-run command, or a time. Watches outlive the conversation. For recurring work, set the next one when woken. No arguments lists watches.",
 		parameters: Parameters,
 		executionMode: "sequential",
 		async execute(id, params: Params, _signal, _update, ctx) {

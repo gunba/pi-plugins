@@ -245,14 +245,14 @@ class PlanController {
 			return new Text(theme.fg(plan !== undefined ? "toolOutput" : "error", safeWorkText(text, true)), 0, 0);
 		};
 		this.pi.registerTool({
-			name: "create_plan", label: "Create Plan", description: "Create the plan: an objective and steps.",
+			name: "create_plan", label: "Create Plan", description: "Create the plan.",
 			promptGuidelines: guidance, parameters: CreateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
 			execute: async (_id, params: CreateParams, _signal, _update, ctx) => this.run(ctx, () => this.shown(this.store.create({ ...definition(params), objective: params.objective }))),
 			renderCall: (params, theme) => call("Create plan", params, theme),
 			renderResult: renderer,
 		});
 		this.pi.registerTool({
-			name: "update_plan", label: "Update Plan", description: "Change the current plan: edit replaces the fields given; pause, resume, complete or blocked change its state.",
+			name: "update_plan", label: "Update Plan", description: "Change the plan (edit replaces the fields given) or its state.",
 			promptGuidelines: guidance, parameters: UpdateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
 			execute: async (_id, params: UpdateParams, _signal, _update, ctx) => this.run(ctx, () => this.shown(this.update(params))),
 			renderCall: (params, theme) => call("Update plan", params, theme),

@@ -1420,7 +1420,7 @@ export default function(pi: ExtensionAPI) {
       name: "ask_user",
       label: "Ask User",
       description:
-         "Ask the user for a decision, missing information, or approval.",
+         "Ask the user a question.",
       promptSnippet:
          "Collect a user decision or approval",
       // Block other tool calls in the same assistant turn until the user answers,
@@ -1431,7 +1431,7 @@ export default function(pi: ExtensionAPI) {
          question: Type.String(),
          context: Type.Optional(
             Type.String({
-               description: "Findings shown above the question.",
+               description: "Shown above the question.",
             }),
          ),
          options: Type.Optional(
@@ -1440,19 +1440,18 @@ export default function(pi: ExtensionAPI) {
                   Type.String(),
                   Type.Object({ title: Type.String(), description: Type.Optional(Type.String()) }),
                ]),
-               { description: "Distinct choices; omit for an open question." },
             ),
          ),
          allowMultiple: Type.Optional(
-            Type.Boolean({ description: "Default false." }),
+            Type.Boolean(),
          ),
          allowFreeform: Type.Optional(
-            Type.Boolean({ description: "Offer a typed answer too. Default true." }),
+            Type.Boolean({ description: "Default true." }),
          ),
          allowComment: Type.Optional(
-            Type.Boolean({ description: "Ask for an optional comment with the choice. Default false." }),
+            Type.Boolean(),
          ),
-         timeout: Type.Optional(Type.Number({ description: "Milliseconds before the question closes unanswered. Leave it out unless an answer is only useful soon." })),
+         timeout: Type.Optional(Type.Number({ description: "Milliseconds; only if the answer is useful only soon." })),
       }),
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {

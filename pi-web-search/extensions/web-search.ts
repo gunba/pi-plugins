@@ -23,13 +23,13 @@ const RESULT_CHARS = 1_200, RESULTS = 8;
 const PAGE_CHARS = 12_000;
 
 export const SEARCH_PARAMETERS = Type.Object({
-	goal: Type.String({ minLength: 1, description: "What the search must find, as a sentence; it may name preferred sources or dates." }),
-	queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 5, description: "Short keyword searches for the goal, 3–6 words each; 2–3 work best." }),
+	goal: Type.String({ minLength: 1, description: "What to find, as a sentence." }),
+	queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 5, description: "2–3 keyword searches of 3–6 words." }),
 }, { additionalProperties: false });
 export const FETCH_PARAMETERS = Type.Object({
-	urls: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20, description: "Pages, PDFs or files to read." }),
-	goal: Type.Optional(Type.String({ description: "What to look for; the excerpts returned focus on it." })),
-	full: Type.Optional(Type.Boolean({ description: "Each page's whole text instead of excerpts; can be very long." })),
+	urls: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 }),
+	goal: Type.Optional(Type.String({ description: "Excerpts focus on it." })),
+	full: Type.Optional(Type.Boolean({ description: "Whole text, not excerpts." })),
 }, { additionalProperties: false });
 type SearchParams = Static<typeof SEARCH_PARAMETERS>;
 type FetchParams = Static<typeof FETCH_PARAMETERS>;
@@ -258,9 +258,9 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "web_search",
 		label: "Web search",
-		description: "Search the web for current information. Returns ranked pages with excerpts that usually answer the goal directly.",
+		description: "Search the web.",
 		promptSnippet: "Search the web",
-		promptGuidelines: ["Use web_search to find current facts and web_fetch to read pages (not curl or scripts); one web_search per independent question, and cite sources with Markdown links."],
+		promptGuidelines: ["Read pages with web_fetch, not curl; one web_search per question; cite sources as Markdown links."],
 		parameters: SEARCH_PARAMETERS,
 		renderResult: renderSearchResult,
 		execute: (_id, params, signal, _update, ctx) => search(params as SearchParams, signal, ctx),
@@ -268,7 +268,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "web_fetch",
 		label: "Web fetch",
-		description: "Read web pages, PDFs and other files by URL, including pages that need JavaScript: excerpts focused on the goal, or the whole text. Pages the search service cannot read, and local network addresses, are read from this computer. For pages behind a sign-in or a bot check, use the browser tools.",
+		description: "Read web pages, PDFs and files by URL. Use the browser for pages behind a sign-in.",
 		promptSnippet: "Read web pages",
 		parameters: FETCH_PARAMETERS,
 		renderResult: renderSearchResult,
