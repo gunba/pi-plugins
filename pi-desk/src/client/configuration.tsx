@@ -30,57 +30,76 @@ export function Configuration({ view, disabled, invoke }: {
 		return () => clearTimeout(timer);
 	}, [data.loaded, data.selected, disabled, changing, category, query, page, data.category, data.filter, data.offset]);
 	useEffect(() => {
-		if (lastOffset.current !== data.offset && results.current) {
-			const container = results.current.closest(".settings-content");
-			if (container) container.scrollTop += results.current.getBoundingClientRect().top - container.getBoundingClientRect().top - 16;
-		}
+		if (lastOffset.current !== data.offset && results.current) results.current.scrollTop = 0;
 		lastOffset.current = data.offset;
 	}, [data.offset]);
 	const rows = [...data.documents.map(file => ({ file })), ...data.settings.map(field => ({ field }))];
 	const offset = data.offset;
+	// A setting opens beside the list from the page already loaded; a file is opened by the worker, which keeps the list.
+	const [settingKey, setSettingKey] = useState<string>();
+	const setting = data.selected ? undefined : data.settings.find(field => field.key === settingKey);
+	const busy = disabled || changing;
+	const fileIcon = (kind: string) => kind === "extension" ? "plug" : kind === "context" ? "context" : kind === "settings" || kind === "model" ? "sliders" : "code";
 	return <div className="configuration-browser">
-		<header className="configuration-heading"><div><p className="muted">Pi's settings, instructions, skills, prompts and extensions on this computer, as this conversation sees them.</p></div>
-			<button className="icon-button" title="Refresh settings and resource inventory" aria-label="Refresh settings and resource inventory" disabled={disabled} onClick={() => { attempted.current = undefined; action(data.selected ? "reopen" : "browse"); }}><Icon name="refresh" /></button></header>
+		<header className="configuration-toolbar">
+			<nav className="configuration-tabs" aria-label="Pi resource categories">{configCategories.map(item => <button key={item.id} aria-pressed={category === item.id}
+				onClick={() => { setSelection({ ...selection, category: item.id }); setPage(0); }}>{item.title}</button>)}</nav>
+			<input className="configuration-search" type="search" maxLength={500} aria-label="Search settings and resources" placeholder="Search" value={query}
+				onChange={event => { setSelection({ ...selection, query: event.target.value }); setPage(0); }} />
+			<button className="icon-button" title="Refresh settings and resource inventory" aria-label="Refresh settings and resource inventory" disabled={disabled}
+				onClick={() => { attempted.current = undefined; action(data.selected ? "reopen" : "browse"); }}><Icon name="refresh" /></button>
+		</header>
 		{view.working && <p className="muted" role="status">{view.working}…</p>}
 		{view.actionError && <p className="error-text" role="alert">{view.actionError}</p>}
 		{data.warnings?.map(warning => <p className="error-text" key={warning}>{warning}</p>)}
-		{data.selected ? <>
-			<div className="configuration-file-heading"><button className="quiet-action" disabled={disabled} onClick={() => action("files")}>← Back</button>
-				{view.actions?.some(item => item.id === "edit") && <button disabled={disabled} onClick={() => action("edit")}><Icon name="edit" />{data.selected.file.exists ? "Edit file" : "Create file"}</button>}</div>
-			<h4>{data.selected.file.title}</h4><p className="configuration-path">{data.selected.file.path}</p>
-			<div className="configuration-tags"><span>{data.selected.file.scope}</span>{data.selected.file.loaded && <span className="resource-loaded">Loaded</span>}{data.selected.file.readonly && <span>Read-only</span>}</div>
-			{data.selected.file.note && <p className="muted">{data.selected.file.note}</p>}
-			{!!data.selected.protectedCount && <p className="muted">{data.selected.protectedCount} protected fields stay on the computer. Their placeholders must remain unchanged.</p>}
-			<pre className="configuration-preview">{data.selected.preview || (data.selected.file.readonly && !data.selected.file.exists ? "No file preview is available for this native resource." : "Empty file")}</pre>
-			{data.selected.truncated && <p className="muted">Preview shortened. Open the editor for the complete file.</p>}
-			<p className="muted">This is the saved file. Reload Pi resources after editing; some settings need a new session. Installed runtime files are read-only.</p>
-		</> : <>
-			<nav className="configuration-tabs" aria-label="Pi resource categories">{configCategories.map(item => <button key={item.id} aria-pressed={category === item.id}
-				onClick={() => { setSelection({ ...selection, category: item.id }); setPage(0); }}>{item.title}</button>)}</nav>
-			<input className="configuration-search" type="search" maxLength={500} aria-label="Search settings and resources" placeholder="Search names, settings, descriptions or paths" value={query}
-				onChange={event => { setSelection({ ...selection, query: event.target.value }); setPage(0); }} />
-			{(category === "settings" || category === "all") && <p className="muted">Active values come from Pi’s merged settings. Saved global/project values and reference defaults are separate; defaults can depend on the model.</p>}
-			{category === "skill" && <p className="muted">Loaded skills are available to the agent by name. Their full instructions are read when needed.</p>}
-			{category !== "settings" && !data.nativeResources && <p className="muted">This worker reports commands and discovered files, not a complete native loaded-resource inventory.</p>}
-			{!data.loaded ? <button disabled={disabled} onClick={() => action("browse")}>Load settings and resources</button> : <>
-				{changing && <p className="muted" role="status">Updating results…</p>}
-				<div className="configuration-results" ref={results} aria-busy={changing}>{rows.map(row => "file" in row ? <button className="configuration-file" key={row.file.id} disabled={disabled || changing} onClick={() => action("open", row.file.id)}>
-					<Icon name={row.file.kind === "extension" ? "plug" : row.file.kind === "context" ? "context" : row.file.kind === "settings" || row.file.kind === "model" ? "sliders" : "code"} />
-					<span><strong title={row.file.title}>{row.file.title}</strong><small className="configuration-path" title={row.file.path}>{row.file.path}</small><span className="configuration-tags"><span>{row.file.scope}</span>
-						{row.file.loaded ? <span className="resource-loaded">Loaded</span> : !row.file.exists ? <span>Not created</span> : <span>On disk</span>}{row.file.readonly && <span>Read-only</span>}</span></span><span aria-hidden="true">›</span>
-				</button> : <Setting key={row.field.key} field={row.field} disabled={disabled || changing} review={scope => action("review-setting", { key: row.field.key, scope })} />)}</div>
-				{!rows.length && <p className="muted">No matching settings or resources.</p>}
-				<footer className="configuration-pagination"><span>{data.total ? `${offset + 1}–${Math.min(offset + 40, data.total)} of ${data.total}` : "0 results"}</span>
-					{data.total > 40 && <><button disabled={disabled || changing || !offset} onClick={() => setPage(Math.max(0, offset / 40 - 1))}>Previous</button><button disabled={disabled || changing || offset + 40 >= data.total} onClick={() => setPage(offset / 40 + 1)}>Next</button></>}</footer>
-			</>}
-		</>}
+		{!data.loaded ? <button disabled={disabled} onClick={() => action("browse")}>Load settings and resources</button> : <div className="configuration-split">
+			<div className="configuration-list">
+				<div className="configuration-results" ref={results} aria-busy={changing}>{rows.map(row => "file" in row
+					? <button className="configuration-row" key={row.file.id} disabled={busy} title={row.file.path}
+						aria-current={data.selected?.file.id === row.file.id ? "true" : undefined}
+						onClick={() => { setSettingKey(undefined); action("open", row.file.id); }}>
+						<Icon name={fileIcon(row.file.kind)} /><strong>{row.file.title}</strong>
+						<small>{row.file.scope}{row.file.loaded ? " · loaded" : !row.file.exists ? " · not created" : ""}{row.file.readonly ? " · read-only" : ""}</small>
+					</button>
+					: <button className="configuration-row" key={row.field.key} disabled={busy} title={row.field.key}
+						aria-current={!data.selected && settingKey === row.field.key ? "true" : undefined}
+						onClick={() => { setSettingKey(row.field.key); if (data.selected) action("files"); }}>
+						<Icon name="sliders" /><strong>{row.field.label}</strong><code>{row.field.value ?? "default"}</code>
+					</button>)}
+					{!rows.length && <p className="muted">{changing ? "Updating results…" : "No matching settings or resources."}</p>}
+				</div>
+				{data.total > 40 && <footer className="configuration-pagination"><span>{`${offset + 1}–${Math.min(offset + 40, data.total)} of ${data.total}`}</span>
+					<button disabled={busy || !offset} onClick={() => setPage(Math.max(0, offset / 40 - 1))}>Previous</button>
+					<button disabled={busy || offset + 40 >= data.total} onClick={() => setPage(offset / 40 + 1)}>Next</button></footer>}
+			</div>
+			<section className="configuration-detail" aria-label="Selected setting or file">
+				{data.selected ? <>
+					<div className="configuration-detail-heading"><div><h4>{data.selected.file.title}</h4><p className="configuration-path">{data.selected.file.path}</p></div>
+						{view.actions?.some(item => item.id === "edit") && <button disabled={disabled} onClick={() => action("edit")}><Icon name="edit" />{data.selected.file.exists ? "Edit" : "Create"}</button>}</div>
+					<p className="muted">{data.selected.file.scope}{data.selected.file.loaded ? " · loaded" : ""}{data.selected.file.readonly ? " · read-only: installed with the runtime" : ""}
+						{data.selected.file.note ? ` · ${data.selected.file.note}` : ""}{data.selected.protectedCount ? ` · ${data.selected.protectedCount} protected fields stay on the computer; keep their placeholders` : ""}</p>
+					<pre className="configuration-preview">{data.selected.preview || (data.selected.file.readonly && !data.selected.file.exists ? "No file preview is available for this native resource." : "Empty file")}</pre>
+					{data.selected.truncated && <p className="muted">Preview shortened. Edit to see the whole file.</p>}
+				</> : setting ? <Setting field={setting} disabled={busy} review={scope => action("review-setting", { key: setting.key, scope })} />
+				: <div className="configuration-hint muted">
+					<p>Choose a setting or file to see it here.</p>
+					{(category === "settings" || category === "all") && <p>Settings show the active value from Pi's merged settings; global and project files and the reference default are shown separately.</p>}
+					{category === "skill" && <p>Loaded skills are available to the agent by name; their full instructions are read when needed.</p>}
+					{category !== "settings" && !data.nativeResources && <p>This conversation reports commands and discovered files, not a complete loaded-resource inventory.</p>}
+					<p>Reload Pi resources after editing; some settings need a new session.</p>
+				</div>}
+			</section>
+		</div>}
 	</div>;
 }
 function Setting({ field, disabled, review }: { field: ConfigSettingView; disabled: boolean; review: (scope: string) => void }) {
-	return <details className="configuration-setting"><summary><span><strong>{field.label}</strong><code>{field.key}</code></span><span className="configuration-current" title={field.value ?? "Uses Pi’s default"}>{field.value ?? "Default"}</span></summary>
-		<div><p>{field.description}</p><p className="muted">{field.type}{field.choices?.length ? ` · ${field.choices.join(" / ")}` : ""}</p>
-			<dl>{[["Active", field.value], ["Saved · global", field.global], ["Saved · project", field.project], ["Reference default", field.defaultValue]].map(([name, value]) => <div key={name}><dt>{name}</dt><dd><pre>{value ?? "Not set"}</pre></dd></div>)}</dl>
-			<div className="configuration-setting-actions"><button disabled={disabled} onClick={() => review("project")}>Review in project file</button><button disabled={disabled} onClick={() => review("global")}>Review in global file</button></div>
-		</div>
-	</details>;
+	return <div className="configuration-setting">
+		<h4>{field.label}</h4><code>{field.key}</code>
+		<p>{field.description}</p>
+		<p className="muted">{field.type}{field.choices?.length ? ` · ${field.choices.join(" / ")}` : ""}</p>
+		<dl>{[["Active", field.value], ["Default", field.defaultValue], ["Saved · global", field.global], ["Saved · project", field.project]].map(([name, value]) =>
+			<div key={name}><dt>{name}</dt><dd><pre>{value ?? "Not set"}</pre></dd></div>)}</dl>
+		<div className="configuration-setting-actions"><button disabled={disabled} onClick={() => review("global")}>Edit in global file</button>
+			<button disabled={disabled} onClick={() => review("project")}>Edit in project file</button></div>
+	</div>;
 }

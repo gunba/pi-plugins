@@ -176,10 +176,11 @@ export class ConfigPresentation {
 		const matches = (text: string) => this.search.toLowerCase().split(/\s+/).every(word => text.toLowerCase().includes(word));
 		const kinds: readonly string[] = configCategories.find(category => category.id === this.category)?.kinds ?? [];
 		const documents = (this.entries ?? []).filter(entry => (this.category === "all" || kinds.includes(entry.kind)) && matches(`${entry.title} ${entry.path} ${entry.scope} ${entry.note ?? ""}`)).map(fileView);
-		const settings = this.entries && !this.selected && ["settings", "all"].includes(this.category) ? this.settingRows().filter(field => matches(`${field.key} ${field.label} ${field.description}`)) : [];
+		const settings = this.entries && ["settings", "all"].includes(this.category) ? this.settingRows().filter(field => matches(`${field.key} ${field.label} ${field.description}`)) : [];
 		const rows = [...documents.map(file => ({ file })), ...settings.map(field => ({ field }))];
 		const offset = Math.min(this.offset, Math.max(0, Math.ceil(rows.length / 40) - 1) * 40);
-		const page = this.selected ? [] : rows.slice(offset, offset + 40);
+		// The list stays beside an open file, as in the terminal navigator.
+		const page = rows.slice(offset, offset + 40);
 		const data: ConfigViewData = {
 			loaded: !!this.entries, query: this.filter, nativeResources: !!this.ops.nativeResources,
 			category: this.category, filter: this.search, offset, total: rows.length,
@@ -221,7 +222,7 @@ export class ConfigPresentation {
 				action("reopen", "Refresh file", () => this.select(entry)));
 			if (!entry.readonly) actions.push(action("edit", "Edit file", () => this.edit()));
 		}
-		data.warnings = !this.selected && ["settings", "all"].includes(this.category) ? this.settingWarnings : undefined;
+		data.warnings = ["settings", "all"].includes(this.category) ? this.settingWarnings : undefined;
 		this.remote.publish("config", { kind: "configuration", title: "Pi settings & resources", surface: "settings", data, actions }, callbacks);
 	}
 }

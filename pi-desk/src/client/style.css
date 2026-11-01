@@ -1,46 +1,45 @@
 @import url("./tokens.css");
 .surface-dialog { color:var(--text); }
-.configuration-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-.configuration-heading h3 { margin:0; }
-.configuration-heading p { margin:7px 0 16px; font-size:12px; }
-.configuration-tabs { display:flex; gap:4px; overflow:auto; scrollbar-width:none; border-bottom:1px solid var(--border); padding-bottom:7px; margin-bottom:14px; }
+/* Pi settings: tabs and search above a list and the selected item, like the terminal's /pi-config. */
+.configuration-browser { display:flex; flex-direction:column; gap:10px; }
+.configuration-toolbar { display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+.configuration-tabs { display:flex; gap:2px; overflow:auto; scrollbar-width:none; min-width:0; }
 .configuration-tabs::-webkit-scrollbar { display:none; }
-.configuration-tabs button { flex:none; border:0; background:transparent; padding:7px 10px; font-size:12px; color:var(--muted); }
+.configuration-tabs button { flex:none; border:0; background:transparent; padding:6px 9px; font-size:12px; color:var(--muted); }
 .configuration-tabs button[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent); }
-.configuration-search { width:100%; margin-bottom:6px; }
-.configuration-browser > .muted { font-size:12px; line-height:1.5; }
-.configuration-results { margin-top:16px; }
-.configuration-file { display:flex; align-items:center; gap:12px; width:100%; border:0; border-bottom:1px solid var(--border); border-radius:0; padding:12px 6px; margin:0; background:transparent; text-align:left; }
-.configuration-file:hover:not(:disabled) { background:var(--hover); }
-.configuration-file > .ui-icon { flex:none; width:18px; height:18px; color:var(--accent); }
-.configuration-file > span:first-of-type { min-width:0; flex:1; }
-.configuration-file strong { display:block; font-size:13px; font-weight:600; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.configuration-file .configuration-path { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.configuration-path { display:block; font:11px/1.5 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; margin:5px 0; }
-.configuration-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
-.configuration-tags span { color:var(--muted); font-size:10px; background:var(--hover); padding:2px 5px; border-radius:4px; text-transform:capitalize; }
-.configuration-tags .resource-loaded { color:var(--accent); background:var(--accent-soft); }
-.configuration-setting { border-bottom:1px solid var(--border); }
-.configuration-setting > summary { display:flex; align-items:center; justify-content:space-between; gap:16px; cursor:pointer; padding:12px 3px; }
-.configuration-setting > summary > span:first-child { min-width:0; }
-.configuration-setting strong { display:block; font-size:13px; font-weight:550; }
-.configuration-setting code { display:block; font-size:11px; color:var(--muted); overflow-wrap:anywhere; margin-top:4px; }
-.configuration-current { margin-left:auto; min-width:0; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:11px ui-monospace,monospace; color:var(--accent); }
-.configuration-setting > div { padding:0 3px 16px; font-size:12px; line-height:1.5; }
-.configuration-setting dl { margin:12px 0; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-.configuration-setting dl > div { min-width:0; border:1px solid var(--border); border-radius:7px; padding:9px; }
+.configuration-search { flex:1 1 160px; min-width:120px; margin-left:auto; padding:6px 10px; font-size:12px; }
+.configuration-split { display:grid; grid-template-columns:minmax(240px, 2fr) minmax(0, 3fr); gap:16px; height:max(380px, calc(100dvh - 300px)); }
+.configuration-list { display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--border); padding-right:10px; }
+.configuration-results { flex:1; min-height:0; overflow:auto; }
+.configuration-row { display:flex; align-items:center; gap:8px; width:100%; height:32px; margin:0; padding:0 8px; border:0; border-radius:6px; background:transparent; text-align:left; font-size:12px; }
+.configuration-row:hover:not(:disabled) { background:var(--hover); }
+.configuration-row[aria-current="true"] { background:var(--accent-soft); }
+.configuration-row > .ui-icon { flex:none; width:15px; height:15px; color:var(--muted); }
+.configuration-row strong { flex:1 1 auto; min-width:0; font-weight:500; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.configuration-row small, .configuration-row code { flex:0 1 auto; max-width:45%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--muted); font-size:11px; }
+.configuration-row code { font-family:ui-monospace,monospace; color:var(--accent); }
+.configuration-detail { min-width:0; min-height:0; overflow:auto; font-size:12px; line-height:1.55; }
+.configuration-detail h4 { margin:0; font-size:14px; font-weight:600; }
+.configuration-detail-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.configuration-detail-heading > div { min-width:0; }
+.configuration-detail-heading button { display:flex; align-items:center; gap:7px; flex:none; font-size:12px; }
+.configuration-path { display:block; font:11px/1.5 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; margin:3px 0 0; }
+.configuration-preview { margin:8px 0 0; background:var(--hover); border:1px solid var(--border); border-radius:8px; padding:12px; font:12px/1.6 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+.configuration-hint p { margin:0 0 8px; }
+.configuration-setting > code { display:block; margin-top:2px; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.configuration-setting dl { margin:12px 0; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.configuration-setting dl > div { min-width:0; border:1px solid var(--border); border-radius:7px; padding:8px; }
 .configuration-setting dt { color:var(--muted); font-size:11px; }
-.configuration-setting dd { margin:5px 0 0; }
+.configuration-setting dd { margin:4px 0 0; }
 .configuration-setting pre { margin:0; font:11px/1.5 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; max-height:150px; overflow:auto; }
 .configuration-setting-actions { display:flex; flex-wrap:wrap; gap:8px; }
-.configuration-setting-actions button { font-size:11px; }
-.configuration-pagination { display:flex; align-items:center; justify-content:flex-end; gap:8px; color:var(--muted); font-size:12px; padding:16px 0 0; }
+.configuration-setting-actions button { font-size:12px; }
+.configuration-pagination { display:flex; align-items:center; justify-content:flex-end; gap:8px; color:var(--muted); font-size:11px; padding:8px 0 0; }
 .configuration-pagination > span { margin-right:auto; }
 .configuration-pagination button { font-size:11px; }
-.configuration-file-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.configuration-file-heading button { display:flex; align-items:center; gap:7px; font-size:12px; }
-.configuration-preview { background:var(--hover); border:1px solid var(--border); border-radius:8px; padding:12px; font:12px/1.6 ui-monospace,monospace; white-space:pre-wrap; overflow-wrap:anywhere; max-height:52dvh; overflow:auto; }
-@media(max-width:700px) { .configuration-setting dl { grid-template-columns:1fr; } .configuration-tabs { margin-right:-8px; } .configuration-tabs button { min-height:40px; } .configuration-heading > .icon-button { min-width:40px; min-height:40px; } }
+@media(max-width:900px) { .configuration-split { grid-template-columns:1fr; height:auto; } .configuration-list { border-right:0; padding-right:0; }
+  .configuration-results { max-height:45dvh; } .configuration-toolbar { flex-wrap:wrap; } }
+@media(max-width:700px) { .configuration-setting dl { grid-template-columns:1fr; } .configuration-tabs { margin-right:-8px; } .configuration-tabs button { min-height:40px; } .configuration-toolbar > .icon-button { min-width:40px; min-height:40px; } }
 .context-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .context-heading h3 { display:flex; align-items:center; gap:8px; margin:0; }
 .context-summary { display:flex; flex-wrap:wrap; gap:6px 16px; color:var(--muted); font-size:12px; margin:16px 0; }
@@ -1828,6 +1827,8 @@ details[open] > summary:before {
 .settings-page-heading > h2 { margin:0; font-size:21px; font-weight:600; letter-spacing:-.3px; }
 .settings-content .panel-card { padding:18px 20px; margin:0 0 14px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
 .settings-content .panel-card:last-child { margin-bottom:0; }
+/* The settings browser has its own layout; the card frame would only take space from it. */
+.settings-content .panel-card[data-view="config"] { padding:0; border:0; background:transparent; }
 .settings-content .panel-card > details { margin:0; }
 .settings-content .panel-card > details > summary { font-size:13px; font-weight:500; cursor:pointer; }
 .settings-content .panel-card h3 { display:flex; align-items:center; gap:9px; font-size:14px; font-weight:600; margin:0 0 12px; }
