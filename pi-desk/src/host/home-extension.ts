@@ -28,7 +28,7 @@ Composition
 - Use colour per branch and keep at least 16 px between any two pieces of text or items. A working agent sits beside the task it serves, or on a small "working now" branch when it serves none.
 - Keep the whole drawing within about 1200 by 700 and readable at full size, however many tasks there are. As tasks multiply, shorten labels and tighten branches rather than spread out.
 - Grow by recomposing: a new task goes on its branch, and when a branch runs out of room, lay that branch out again (keeping positions Jordan dragged) rather than squeezing items in.
-- home_scene lists layout problems with the scene: words overlapping, outlines running into each other, a drawing too big. Fix every one before you finish a turn, including any already there when you read it.
+- home_scene lists layout problems with the scene: words overlapping, lines running through words, outlines running into each other, a drawing too big. Fix every one before you finish a turn, including any already there when you read it.
 
 The scene format
 - The scene is a json-render spec: {root:"canvas", elements:{canvas:{type:"Canvas", props:{}, children:[...]}}}. Every element goes directly under Canvas; later children draw on top, so put paths and connectors first. An element's key is its identity (letters, digits, - _ and ., up to 100); never set $id. Props follow the schemas home_scene returns.

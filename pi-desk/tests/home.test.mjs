@@ -175,4 +175,10 @@ test("home_scene names the layout faults Terra left on Jordan's canvas", () => {
 		presentation: element("Text", { x: 65, y: 380, text: "Presentation", size: 17, color: "text" }),
 		far: element("Text", { x: 1500, y: 900, text: "Psych · 17 Nov", size: 13, color: "muted" }),
 	})), ["the drawing is 1540 by 727; keep it within about 1200 by 700"]);
+	// Seen on Sydney: a branch curving from Today across the tree ran through the subtasks it passed.
+	assert.deepEqual(homeLayoutProblems(scene({
+		branch: element("Path", { x: 0, y: 0, color: "lilac", d: "M 155 110 C 250 110 270 100 335 100 M 175 320 C 400 320 500 120 640 100" }),
+		subtask: element("Text", { x: 335, y: 190, text: "AI skills, structure & bias", size: 13, color: "text" }),
+		beside: element("Text", { x: 340, y: 92, text: "Presentation", size: 14, color: "teal" }),
+	})), ["line branch runs through subtask"]);
 });

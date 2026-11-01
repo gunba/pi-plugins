@@ -172,6 +172,36 @@ function pathBox(d: string): [number, number, number, number] | undefined {
 	}
 	return xs.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : undefined;
 }
+/** Points along a path, a few per segment, for telling whether a line runs through something. Arcs count as straight. */
+function pathSamples(d: string): [number, number][] {
+	const tokens = d.match(/[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) ?? [];
+	let x = 0, y = 0, startX = 0, startY = 0, command = "", i = 0;
+	const samples: [number, number][] = [];
+	const curve = (points: [number, number][]) => {
+		for (let step = 1; step <= 16; step++) {
+			let row = points, t = step / 16;
+			while (row.length > 1) row = row.slice(1).map(([px, py], k) => [row[k]![0] + (px - row[k]![0]) * t, row[k]![1] + (py - row[k]![1]) * t] as [number, number]);
+			samples.push(row[0]!);
+		}
+	};
+	while (i < tokens.length) {
+		if (/[A-Za-z]/.test(tokens[i]!)) command = tokens[i++]!;
+		const upper = command.toUpperCase(), relative = command !== upper, count = PATH_ARGS[upper];
+		if (count === undefined) return samples;
+		if (upper === "Z") { curve([[x, y], [startX, startY]]); x = startX; y = startY; command = ""; continue; }
+		const args = tokens.slice(i, i + count).map(Number);
+		if (args.length < count || args.some(Number.isNaN)) break;
+		i += count;
+		const at = (k: number): [number, number] => [relative ? x + args[k]! : args[k]!, relative ? y + args[k + 1]! : args[k + 1]!];
+		const end: [number, number] = upper === "H" ? [relative ? x + args[0]! : args[0]!, y] : upper === "V" ? [x, relative ? y + args[0]! : args[0]!] : at(upper === "A" ? 5 : count - 2);
+		if (upper === "M") { startX = end[0]; startY = end[1]; command = relative ? "l" : "L"; }
+		else if (upper === "C") curve([[x, y], at(0), at(2), end]);
+		else if (upper === "S" || upper === "Q") curve([[x, y], at(0), end]);
+		else curve([[x, y], end]);
+		[x, y] = end;
+	}
+	return samples;
+}
 /** Where a free element or item is drawn; text is measured at about 0.55 em a character, as the theme's sans-serif averages. */
 function homeBox(id: string, element: AgentElement): Box | undefined {
 	const props = element.props as Record<string, unknown>, x = Number(props.x ?? 0), y = Number(props.y ?? 0);
@@ -203,6 +233,14 @@ export function homeLayoutProblems(scene: HomeScene): string[] {
 	const problems: string[] = [];
 	for (let i = 0; i < words.length; i++) for (let j = i + 1; j < words.length; j++)
 		if (overlap(words[i]!.box, words[j]!.box)) problems.push(`${words[i]!.box.id} overlaps ${words[j]!.box.id}`);
+	// Lines (paths without a fill) may end beside words but never run through them.
+	for (const [id, element] of elements) {
+		const props = element.props as Record<string, unknown>;
+		if (element.type !== "Path" || props.fill !== undefined && props.fill !== "none") continue;
+		const points = pathSamples(String(props.d)).map(([px, py]) => [px + Number(props.x ?? 0), py + Number(props.y ?? 0)]);
+		for (const { box } of words) if (points.some(([px, py]) => px > box.x + 3 && px < box.x + box.width - 3 && py > box.y + 3 && py < box.y + box.height - 3))
+			problems.push(`line ${id} runs through ${box.id}`);
+	}
 	for (let i = 0; i < areas.length; i++) for (let j = i + 1; j < areas.length; j++) {
 		const a = areas[i]!.box, b = areas[j]!.box, inside = (o: Box, c: Box) => o.x <= c.x && o.y <= c.y && o.x + o.width >= c.x + c.width && o.y + o.height >= c.y + c.height;
 		if (overlap(a, b) && !inside(a, b) && !inside(b, a)) problems.push(`areas ${a.id} and ${b.id} run into each other`);

@@ -25,8 +25,8 @@ behind a click. Display text supports `$state` bindings to live-work status, so
 a status can update without a model turn.
 
 `home_scene` reports layout problems with every read and patch: words overlapping
-other words or items, outlines running into each other, and a drawing larger than
-about 1200 by 700. The instructions require fixing them before a turn ends, so
+other words or items, lines running through words, outlines running into each other,
+and a drawing larger than about 1200 by 700. The instructions require fixing them before a turn ends, so
 faults left by earlier turns do not accumulate.
 
 The host debounces live-work and drag changes into turns in the Home conversation.
