@@ -84,8 +84,10 @@ or refresh script. Sending checks the authenticated account, explicitly writes t
 checking Sent and whether the draft still exists. The tool reports success only
 when Gmail returns a sent-message ID.
 
-Perth has a headless Chrome service (`pi-chrome`, DevTools on loopback port 9222)
-and Gmail MCP configured in `~/.pi/agent/mcp.json`. The send registration above is
+The workspace server has a headless Chrome service (`pi-chrome`, DevTools on
+loopback port 9222) and Gmail MCP configured in `~/.pi/agent/mcp.json`. The current
+host is Sydney Server (`ssh pi-desk-sydney`, user `desk`), serving
+https://app.85-155-189-66.sslip.io. The send registration above is
 an additional adapter setup step after merge. A new Home conversation picks up
 the configured tools normally; an already running one needs a restart after MCP
 configuration changes. Credentials and private job instructions do not belong in
@@ -93,14 +95,17 @@ the repository.
 
 ## Durable scheduled jobs
 
-The private handover is archived on Perth at
+The private handover is archived on the workspace server at
 `~/.pi/agent/home/handover/steve-inventory.md`. Seven inert job directories are
 staged under `~/.pi/agent/home/staged/jobs/`; no watches or deliveries are started
 by staging. Each has verbatim `instructions.md`, `schedule.ics`, a seeded
 `baseline.md`, and mutable `state.json`. The full continuity archive is retained.
 Personal viewing, email and job-search history is not published in this repository.
 
-All schedules use **Australia/Perth**:
+All schedules use **Australia/Perth**, Jordan's personal timezone, regardless of
+the workspace server's location or operating-system timezone. Pass the absolute
+ISO deadline returned by `home_jobs` to `watch.until`, never a server-local HH:MM:
+
 
 | Job | Schedule | Delivery |
 | --- | --- | --- |
@@ -150,7 +155,7 @@ connector can still reach Pi agents and quests.
    additions. Jordan separately approved the email-triage cadence below. Missing
    IMDb IDs remain unknown; do not invent them.
 2. After merge, install the staged seven jobs into the real Home conversation on
-   Perth. For each recurring job, create a watch with an absolute `until`; the
+   the workspace server. For each recurring job, create a watch with an absolute `until`; the
    job must re-arm its next occurrence when woken. Reading a quest repeat is not
    a timed notification or email schedule.
 3. Keep **Home settings → Compare scheduled deliveries with Dot** enabled for

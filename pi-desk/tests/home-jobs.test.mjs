@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,16 @@ test("Perth deadlines preserve the seven approved schedules at day and month bou
 	assert.equal(nextHomeJob(homeJobs[3], Date.parse("2026-10-31T23:59:00+08:00")), "2026-11-01T01:08:00.000Z");
 	assert.equal(nextHomeJob(homeJobs[3], Date.parse("2026-12-01T09:08:00+08:00")), "2027-01-01T01:08:00.000Z");
 	assert.equal(nextHomeJob(homeJobs[6], Date.parse("2026-11-01T21:00:00+08:00")), "2026-11-01T23:00:00.000Z");
+});
+
+test("a Sydney or UTC server keeps Jordan's Australia/Perth deadlines", () => {
+	const module = new URL("../src/host/home-jobs.ts", import.meta.url).href;
+	const script = `import { homeJobs, nextHomeJob } from ${JSON.stringify(module)}; console.log(JSON.stringify(homeJobs.map(job => nextHomeJob(job, Date.parse("2026-11-01T00:30:00Z")))));`;
+	const expected = ["2026-11-01T01:00:00.000Z", "2026-11-01T01:00:00.000Z", "2026-11-01T01:08:00.000Z", "2026-11-01T01:08:00.000Z", "2026-11-01T01:00:00.000Z", "2026-11-01T01:00:00.000Z", "2026-11-01T01:00:00.000Z"];
+	for (const TZ of ["Australia/Sydney", "UTC"]) {
+		const result = execFileSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, TZ }, encoding: "utf8" });
+		assert.deepEqual(JSON.parse(result), expected, TZ);
+	}
 });
 
 test("staging preserves verbatim instructions and every historical seed without scheduling or replacing state", t => {
