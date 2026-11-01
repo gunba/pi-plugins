@@ -17,7 +17,7 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 ## Agent tools
 
 - [`pi-agents`](pi-agents/README.md): start and message other agents: conversations on any of the user's computers, or
-  background helpers that report back. Also the user's quest list.
+  background helpers that report back.
 - [`pi-ask-user`](pi-ask-user/index.ts): the `ask_user` tool (a fork of `pi-ask-user` 0.11.2 without its decision-gate
   skill).
 - [`pi-conversation-search`](pi-conversation-search/README.md): search retained conversations across computers,

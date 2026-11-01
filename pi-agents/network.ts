@@ -25,13 +25,6 @@ export interface OperationResult { id: string; result?: { session: string; state
 export type PartyPacket =
 	| { type: "home-work"; work: import("../pi-desk/src/shared/home.ts").HomeWork[] }
 	| { type: "directory"; agents: NetworkMember[]; computer?: PartyComputer }
-	/** Jordan's quest log, kept by one computer for the account (quest-log.ts). */
-	| { type: "quest-calls"; calls: unknown[] }
-	| { type: "quest-replies"; replies: unknown[] }
-	| { type: "quest-import"; quests: unknown[] }
-	| { type: "quest-imported"; ids: string[] }
-	| { type: "quest-notices"; notices: { id: number; agent: string; text: string }[] }
-	| { type: "quest-notices-taken"; ids: number[] }
 	| { type: "presence" }
 	| { type: "messages"; messages: PartyMessage[] }
 	| { type: "receipts"; receipts: DeliveryReceipt[] }

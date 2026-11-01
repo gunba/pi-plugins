@@ -2,7 +2,6 @@ import { appendFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { launchOperation } from "../../manage/operations.ts";
 import type { ProviderAuthType } from "../shared/logins.ts";
-import type { QuestActor, QuestCommand } from "../shared/quests.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import type { AccessStore } from "./access.ts";
 import type { AccountConnection } from "./account-connection.ts";
@@ -14,14 +13,11 @@ import type { ConversationMoves } from "./conversation-moves.ts";
 import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
-import type { DotConnector } from "./dot-connector.ts";
-import type { DotConnection } from "./dot.ts";
 import type { Home } from "./home.ts";
 import type { EfficiencyReports } from "./efficiency.ts";
 import type { Folders } from "./folders.ts";
 import { reply, type HostCore } from "./host-core.ts";
 import type { HostEvents } from "./host-events.ts";
-import type { HostQuests } from "./host-quests.ts";
 import type { HostUpdates } from "./host-updates.ts";
 import type { Logins } from "./logins.ts";
 import type { Presence } from "./presence.ts";
@@ -35,9 +31,7 @@ interface ApiHost {
 	access(): AccessStore;
 	runtimeHome(): string | undefined;
 	logins(): Logins | undefined;
-	dot(): DotConnection | undefined;
 	home(): Home | undefined;
-	connector(): DotConnector;
 	dictation(): Dictation | undefined;
 	folders(): Folders;
 	saved(): SavedSessionIndex;
@@ -47,7 +41,6 @@ interface ApiHost {
 	agents: AgentOperations;
 	moves: ConversationMoves;
 	updates: HostUpdates;
-	quests: HostQuests;
 	efficiency: EfficiencyReports;
 	events: HostEvents;
 	presence(): Presence | undefined;
@@ -84,7 +77,7 @@ export class HostApi {
 					return reply({ error: "Device access is no longer authorized." }, 401);
 				return reply(result);
 			}
-			const response = await this.workspace(url, request, data) ?? await this.home(url, request, data) ?? await this.dot(url, request, data) ?? await this.computer(url, request, data)
+			const response = await this.workspace(url, request, data) ?? await this.home(url, request, data) ?? await this.computer(url, request, data)
 				?? await sessionRoute(this.core, this.host.saved, url, request, data);
 			if (response) return response;
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
@@ -134,68 +127,15 @@ export class HostApi {
 		if (url.pathname === "/api/home/open" && request.method === "POST") return reply(await home.open());
 		if (url.pathname === "/api/home/messages" && request.method === "POST") return reply(await home.message(
 			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 36)) : undefined));
-		if (url.pathname === "/api/home/settings" && request.method === "POST") {
-			if (typeof data.overlap !== "boolean") throw Error("Choose overlap true or false.");
-			return reply(home.settings(data.overlap));
-		}
 		if (url.pathname === "/api/home/drag" && request.method === "POST") return reply(home.drag(string(data.id, 200), Number(data.x), Number(data.y)));
 		return undefined;
 	}
 
-	/** The Dot conversation, its files, and the connector that lets the Dot reach agents. */
-	private async dot(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
-		if (!isDotPath(url.pathname)) return undefined;
-		if (refusesDot(!!this.host.account.identity, this.host.teleport()?.settings.hold ?? false))
-			return reply({ error: "Dot runs on your workspace server, the computer that keeps conversation copies." }, 409);
-		if (url.pathname === "/api/dot/connector") {
-			const connector = this.host.connector();
-			const view = () => ({ enabled: connector.enabled, url: connector.enabled ? this.host.account.connectorUrl() : undefined, relay: this.host.account.status?.state ?? "offline",
-				approvals: connector.enabled ? connector.approvals() : [], connections: connector.connections() });
-			if (request.method === "GET") return reply(view());
-			if (request.method === "POST") {
-				if (typeof data.approve === "string" || typeof data.deny === "string") connector.decide(string(data.approve ?? data.deny, 36), typeof data.approve === "string");
-				else {
-					if (data.enabled === true) connector.enable(); else if (data.enabled === false) connector.disable();
-					else throw new Error("Choose enabled true or false.");
-					this.host.account.relay?.connectorChanged(); this.core.refreshParties(); this.host.account.network?.flush();
-				}
-				return reply(view());
-			}
-		}
-		const dot = this.host.dot()!;
-		if (url.pathname === "/api/dot" && request.method === "GET") return reply(await dot.view());
-		if (url.pathname === "/api/dot/connect" && request.method === "POST") {
-			void dot.connect().catch(() => {}); return reply({ accepted: true }, 202);
-		}
-		if (url.pathname === "/api/dot/disconnect" && request.method === "POST") { await dot.disconnect(); return reply({}); }
-		if (url.pathname === "/api/dot/history" && request.method === "GET") return reply(await dot.history(string(url.searchParams.get("before"), 1000)));
-		if (url.pathname === "/api/dot/inputs" && request.method === "POST") return reply({ input: dot.send(
-			string(data.id, 36), string(data.dot, 200), string(data.text, 32_000),
-			Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], string(data.connection, 64)) }, 202);
-		if (url.pathname === "/api/dot/uploads" && request.method === "POST") return reply(dot.stageFile(
-			string(data.id, 36), string(data.dot, 200), string(data.name, 200), string(data.mime, 100), Number(data.size), string(data.connection, 64)));
-		const dotFile = /^\/api\/dot\/uploads\/([a-f0-9-]{36})(?:\/(discard))?$/.exec(url.pathname);
-		if (dotFile && !dotFile[2] && request.method === "POST") return reply(dot.appendFile(dotFile[1]!, Number(data.offset), string(data.data, 400_000)));
-		if (dotFile?.[2] && request.method === "POST") { dot.removeFile(dotFile[1]!); return reply({}); }
-		if (url.pathname === "/api/dot/downloads" && request.method === "POST") return reply(await dot.download(string(data.message, 500), string(data.attachment, 500)));
-		const dotDownload = /^\/api\/dot\/downloads\/([a-f0-9-]{36})(?:\/(release))?$/.exec(url.pathname);
-		if (dotDownload) {
-			if (!dotDownload[2] && request.method === "GET") return reply(await dot.downloadChunk(dotDownload[1]!, Number(url.searchParams.get("offset"))));
-			if (dotDownload[2] === "release" && request.method === "POST") { await dot.releaseDownload(dotDownload[1]!); return reply({}); }
-		}
-		const dotInput = /^\/api\/dot\/inputs\/([a-f0-9-]{36})(?:\/(cancel))?$/.exec(url.pathname);
-		if (dotInput && !dotInput[2] && request.method === "GET") return reply({ input: await dot.input(dotInput[1]!) ?? null });
-		if (dotInput?.[2] && request.method === "POST") return reply({ input: dot.cancelInput(
-			dotInput[1]!, string(data.dot, 200), string(data.text, 32_000), Array.isArray(data.files) ? data.files.map(file => string(file, 36)) : [], data.connection === undefined ? undefined : string(data.connection, 64)) });
-		return undefined;
-	}
-
-	/** This computer: storage, updates, dictation, the efficiency report, the quest log, settings and its folders. */
+	/** This computer: storage, updates, dictation, the efficiency report, settings and its folders. */
 	private async computer(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
 		const updates = this.host.updates, home = this.host.runtimeHome();
 		if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.core.persist(true); return reply({ saved: true }); }
 		if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
-			if (this.host.dot()?.busy) throw Error("Finish the current Dot operation before updating.");
 			if (this.host.logins()?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 			const version = string(data.version, 40);
 			if (!home || !/^\d+\.\d+\.\d+$/.test(version)) return reply({ error: "Select the published update." }, 409);
@@ -234,15 +174,6 @@ export class HostApi {
 				return reply(value);
 			}
 		}
-		const quests = this.host.quests;
-		if (url.pathname === "/api/quests" && quests.keeps()) {
-			if (request.method === "POST") {
-				const command = object(data.command) as unknown as QuestCommand, by: QuestActor = { kind: "you" };
-				const quest = await quests.log().apply(by, command);
-				return reply({ quest: quest ?? null, quests: quests.view });
-			}
-			return reply(await quests.log().view());
-		}
 		if (url.pathname === "/api/cache-compaction" && request.method === "POST") {
 			const threshold = data.threshold === null || data.threshold === undefined ? undefined : Number(data.threshold);
 			updates.setCacheCompaction(threshold);
@@ -274,7 +205,6 @@ export class HostApi {
 			return reply({ accepted: true }, 202);
 		}
 		if (url.pathname === "/api/runtime/apply" && request.method === "POST") {
-			if (this.host.dot()?.busy) throw Error("Finish the current Dot operation before updating.");
 			if (this.host.logins()?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 			const prepared = string(data.prepared, 64);
 			if (!home || !/^[a-f0-9]{64}$/.test(prepared)) return reply({ error: "Select a prepared update." }, 409);
@@ -312,7 +242,3 @@ function recordClientError(path: string, data: Record<string, unknown>): void {
 	appendFileSync(path, `${line}\n`);
 }
 
-/** The Dot conversation's and connector's routes; every other request passes on to the next router. */
-export const isDotPath = (pathname: string): boolean => pathname === "/api/dot" || pathname.startsWith("/api/dot/");
-/** In a workspace, Dot runs only on the server that keeps conversation copies (client dot-conversation.tsx). */
-export const refusesDot = (workspace: boolean, holdsCopies: boolean): boolean => workspace && !holdsCopies;

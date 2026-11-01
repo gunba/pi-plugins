@@ -33,12 +33,10 @@ import { isOpenSession } from "../shared/workspace.ts";
 import { SLEEP_AFTER_MS, asleep, atRest, hasNews, waiting } from "./sleep.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
-import { DotConnector } from "./dot-connector.ts";
 import { Dictation } from "./dictation.ts";
 import { ConversationSearch } from "./conversation-search.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { Teleport } from "./teleport.ts";
-import { DotConnection } from "./dot.ts";
 import { Home, homeWork } from "./home.ts";
 import { AccountConnection } from "./account-connection.ts";
 import { AgentOperations, applyModelChoice } from "./agent-operations.ts";
@@ -48,7 +46,6 @@ import { HostApi } from "./host-api.ts";
 import type { HostCore, HostOptions, ManagedSession } from "./host-core.ts";
 import { HostEvents } from "./host-events.ts";
 import { HostHttp } from "./host-http.ts";
-import { HostQuests } from "./host-quests.ts";
 import { HostUpdates } from "./host-updates.ts";
 import { settle } from "../shared/attention.ts";
 
@@ -65,7 +62,6 @@ export class DeskHost {
 	private saved?: SavedSessionIndex;
 	private folders?: Folders;
 	private inputs?: InputLedger;
-	private dot?: DotConnection;
 	private home?: Home;
 	private logins?: Logins;
 	/** Pi's general setup, mirrored with the workspace's other computers. */
@@ -83,7 +79,6 @@ export class DeskHost {
 	private readonly wakeTried = new Map<string, { wakes: number; at: number }>();
 	private parties?: Parties;
 	private partyOperations?: PartyOperations;
-	private dotConnector?: DotConnector;
 	private dictation?: Dictation;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private sessions = new Map<string, ManagedSession>();
@@ -107,7 +102,6 @@ export class DeskHost {
 	private readonly account: AccountConnection;
 	private readonly moves: ConversationMoves;
 	private readonly agents: AgentOperations;
-	private readonly quests: HostQuests;
 	private readonly efficiency: EfficiencyReports;
 	private readonly api: HostApi;
 	private presence?: Presence;
@@ -142,23 +136,21 @@ export class DeskHost {
 			attachments: key => this.attachments(key),
 			refreshParties: () => this.refreshParties(),
 		};
-		const dotBusy = () => !!this.dot?.busy, signingIn = () => !!this.logins?.signingIn;
-		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn });
+		const signingIn = () => !!this.logins?.signingIn;
+		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn });
 		this.moves = new ConversationMoves(this.core, { teleport: () => this.teleport, parties: () => this.parties, network: () => this.account.network,
 			self: () => this.account.identity?.device.id, moving: session => this.partyOperations?.moving(session) });
 		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
 			teleport: () => this.teleport, search: () => this.search, moves: this.moves });
 		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
-			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, quests: () => this.quests, connector: () => this.dotConnector,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search,
 			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
 			request: (access, request) => this.api.handle(access, request),
 			watch: handler => {
 				const remove = this.events.addBrowser(handler); handler({ type: "state", state: this.state() });
 				return remove;
 			} });
-		this.quests = new HostQuests({ closing: () => this.closing, changed: () => this.events.emit({ type: "state", state: this.state() }), parties: () => this.parties,
-			computer: () => this.account.identity?.device.id });
-		this.notices = new AwayNotices({ present: () => !!this.presence?.present, quests: () => this.quests.view, computer: () => this.account.identity?.device.id,
+		this.notices = new AwayNotices({ present: () => !!this.presence?.present, computer: () => this.account.identity?.device.id,
 			send: async notice => { await this.account.identity?.notify(notice); } });
 		this.events.watch(event => this.notices.observe(event));
 		let workSignature = "";
@@ -168,12 +160,12 @@ export class DeskHost {
 			if (signature !== workSignature) { workSignature = signature; this.account.network?.flush(); }
 		});
 		this.efficiency = new EfficiencyReports({ agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, directory: () => this.directory, closing: () => this.closing });
-		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, dot: () => this.dot, home: () => this.home,
-			connector: () => this.dotConnector!, dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
-			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, quests: this.quests, efficiency: this.efficiency, events: this.events,
+		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, home: () => this.home,
+			dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
+			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, efficiency: this.efficiency, events: this.events,
 			presence: () => this.presence });
 		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
-			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, dotBusy, signingIn,
+			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn,
 			stop: preserveWorkers => {
 				this.closing = true;
 				if (preserveWorkers) this.preserveWorkers = true;
@@ -219,9 +211,6 @@ export class DeskHost {
 			this.adoption = adoptSavedLogins(directory, this.options.agentDir)
 				.then(adopted => { if (adopted.length) console.error(`Moved Desk's ${adopted.join(", ")} login into Pi's logins.`); })
 				.catch(error => console.error("Desk's earlier logins could not be moved into Pi's:", error));
-			// Dot signs into ChatGPT with Pi's own Codex login.
-			this.dot = new DotConnection(directory, { proxy: this.options.proxy, authPath: join(this.options.agentDir, "auth.json") });
-			this.dot.start();
 			this.saved = new SavedSessionIndex(directory, this.options.cwd, this.options.agentDir, this.options.sessionDir,
 				() => [...this.sessions.values()].flatMap(({ view }) => {
 					const file = view.snapshot?.file ?? view.file;
@@ -246,13 +235,11 @@ export class DeskHost {
 				for (const managed of this.sessions.values()) this.drainInputs(managed);
 				this.agents.flushLocal();
 			});
-			this.parties = new Parties(this.options.agentDir, () => { this.refreshParties(); this.quests.refresh(); this.account.network?.flush(); this.agents.flushLocal(); });
+			this.parties = new Parties(this.options.agentDir, () => { this.refreshParties(); this.account.network?.flush(); this.agents.flushLocal(); });
 			this.partyOperations = new PartyOperations(join(this.options.agentDir, "party"));
 			this.partyOperations.startHost(); this.agents.flushLocal();
 			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moves.failed(request, computer, response.error); };
-			this.quests.open(this.options.agentDir);
-			this.quests.refresh();
-			this.home = new Home(this.core, this.quests,
+			this.home = new Home(this.core,
 				() => this.account.localOnly || !!this.teleport?.settings.hold,
 				() => this.account.network?.homeWork() ?? [], async notice => {
 					if (!this.account.identity) throw Error("Phone delivery needs the workspace account connection.");
@@ -261,11 +248,6 @@ export class DeskHost {
 					return result;
 				});
 			this.home.startsAlone = () => !!this.teleport?.settings.hold;
-			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
-			this.dotConnector.quests = () => this.quests.log();
-			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
-			this.dotConnector.conversations = { operations: () => this.partyOperations, here: () => this.agents.computer(),
-				computers: () => this.account.network?.computers() ?? [], folders: () => [...this.sessions.values()].map(item => item.view.cwd) };
 			this.refreshParties();
 			this.folders = new Folders({ cwd: this.options.cwd, agentDir: this.options.agentDir, sessionDir: this.options.sessionDir,
 				recent: () => [...this.saved!.recentProjects(), ...[...this.sessions.values()].map(({ view }) => ({
@@ -288,7 +270,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				this.events.heartbeat();
-				this.updates.refresh(); this.refreshParties(); this.quests.refresh(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue(); this.sleepIdle();
+				this.updates.refresh(); this.refreshParties(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue(); this.sleepIdle();
 				try { this.partyOperations?.touchHost(); this.agents.flushLocal(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -325,7 +307,7 @@ export class DeskHost {
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.account.close(); await this.search?.close();
-			this.home?.close(); this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.home?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -360,7 +342,7 @@ export class DeskHost {
 	state(): HostState {
 		return { release: RELEASE, operator: this.presence?.view, name: hostname(), platform: process.platform, cwd: this.options.cwd,
 			sessions: [...this.sessions.values()].map(item => item.view).filter(isOpenSession),
-			parties: this.parties?.snapshot, relay: this.account.status, updates: this.updates.state, storageError: this.storageError, quests: this.quests.view,
+			parties: this.parties?.snapshot, relay: this.account.status, updates: this.updates.state, storageError: this.storageError,
 			...(this.dictation?.available ? { dictation: true } : {}),
 			...(this.updates.cacheCompaction ? { cacheCompaction: this.updates.cacheCompaction } : {}),
 			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}),
@@ -812,13 +794,12 @@ export class DeskHost {
 		for (const cancel of this.startupWaits) cancel();
 		const errors: unknown[] = [];
 		try { await this.logins?.close(); } catch (error) { errors.push(error); }
-		try { await this.dot?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
 		clearInterval(this.heartbeat); this.packageUpdates?.close(); this.presence?.close(); this.notices.close();
 		this.updates.close();
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }
-		try { this.home?.close(); this.dotConnector?.close(); this.quests.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
+		try { this.home?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		this.events.end();
 		const workers = await Promise.allSettled([...this.sessions.values()].map(item => this.preserveWorkers ? item.worker?.detach() : item.worker?.close()));

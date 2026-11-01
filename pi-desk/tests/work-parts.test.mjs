@@ -55,7 +55,7 @@ test("catalog validation rejects unknown props and unsafe chart capabilities", (
 
 test("custom catalogs explicitly allow structured references without admitting arbitrary props", () => {
 	const validate = catalogValidator({ Blob: { props: ["ref"], structured: ["ref"] } });
-	const blob = { root: "blob", elements: { blob: { type: "Blob", props: { ref: { kind: "quest", id: "q" } } } } };
+	const blob = { root: "blob", elements: { blob: { type: "Blob", props: { ref: { kind: "url", url: "https://example.com/" } } } } };
 	assert.equal(validateSpec(blob, validate), blob);
 	assert.throws(() => validateSpec({ ...blob, elements: { blob: { ...blob.elements.blob, props: { ...blob.elements.blob.props, unsafe: {} } } } }, validate), /Unknown/);
 });

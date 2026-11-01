@@ -4,7 +4,6 @@ import remarkGfm from "remark-gfm";
 import { emptyHomeScene, homeUrl, type HomeItem, type HomeMessage, type HomeSnapshot } from "../shared/home.ts";
 import type { ChatMessage } from "../shared/protocol.ts";
 import { MessageView } from "./message-view.tsx";
-import type { Quest } from "../shared/quests.ts";
 import { api } from "./connection.ts";
 import { sessionKey, type WorkspaceState } from "./workspace.ts";
 import { HomeCanvas } from "./home-canvas.tsx";
@@ -25,8 +24,8 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const server = host.computers?.find(computer => computer.teleport?.hold), computer = server?.id;
 	const online = host.computers ? !!server?.connected : connected;
 	const [snapshot, setSnapshot] = useState<HomeSnapshot>({ scene: emptyHomeScene(), messages: [], busy: false });
-	const [error, setError] = useState(""), [busy, setBusy] = useState(false), [quest, setQuest] = useState<Quest>();
-	const [showSettings, setShowSettings] = useState(false), [discardPending, setDiscardPending] = useState(false);
+	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+	const [discardPending, setDiscardPending] = useState(false);
 	const [file, setFile] = useState<Extract<HomeItem["ref"], { kind: "file" }>>();
 	const storageKey = `pi-desk:home:${computer ?? "local"}`;
 	const [draft, setDraft] = useState(""), [pending, setPending] = useState<Pending>();
@@ -117,11 +116,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		const ref = item.ref;
 		if (ref.kind === "conversation") openConversation(referenceKey(ref.computer ?? computer, ref.id), ref.view);
 		else if (ref.kind === "url") { if (homeUrl(ref.url)) window.open(ref.url, "_blank", "noopener,noreferrer"); }
-		else if (ref.kind === "file") setFile(ref);
-		else {
-			const view = server?.quests ?? host.quests, found = [...view?.quests ?? [], ...view?.upcoming ?? []].find(quest => quest.id === ref.id);
-			if (found) setQuest(found); else setError("That quest has left the log. Home will refresh shortly.");
-		}
+		else setFile(ref);
 	};
 	const move = async (id: string, x: number, y: number) => {
 		const generation = epoch.current;
@@ -137,7 +132,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 				<button className="subtle-button" disabled={!key} onClick={() => {
 					if (key && session) openConversation(key);
 					else void open().then(next => { if (next.session) openConversation(referenceKey(computer, next.session)); }).catch(error => setError(failure(error)));
-				}}>History</button><button className={`icon-button${chatOpen ? " selected" : ""}`} aria-label={chatOpen ? "Hide the conversation" : "Show the conversation"} aria-pressed={chatOpen} onClick={toggleChat}><Icon name="chat" /></button><button className="icon-button" aria-label="Home settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button></div>
+				}}>History</button><button className={`icon-button${chatOpen ? " selected" : ""}`} aria-label={chatOpen ? "Hide the conversation" : "Show the conversation"} aria-pressed={chatOpen} onClick={toggleChat}><Icon name="chat" /></button></div>
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
 		<div className={`home-body${chatOpen ? " chat-open" : ""}`}>
@@ -170,12 +165,6 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			try { localStorage.removeItem(`${storageKey}:pending`); pendingRef.current = undefined; setPending(undefined); setDiscardPending(false); }
 			catch (error) { setError(failure(error)); }
 		}}>Discard local attempt</button></div></Modal>}
-		{showSettings && <Modal title="Home settings" close={() => setShowSettings(false)}><label><input type="checkbox" checked={snapshot.overlap ?? false} disabled={!online} onChange={event => {
-			const generation = epoch.current, overlap = event.target.checked; setSnapshot(current => ({ ...current, overlap }));
-			void api<HomeSnapshot>("/home/settings", { overlap }, computer).then(next => { if (epoch.current === generation) setSnapshot(next); }).catch(error => { if (epoch.current === generation) { setSnapshot(current => ({ ...current, overlap: !overlap })); setError(failure(error)); } });
-		}} /> Compare scheduled deliveries with Dot</label><p className="muted">Home prefixes scheduled email subjects and notification titles with “Home:”. Keep this on for the overlap day. Turn it off after every job has delivered correctly and Dot’s jobs have been stopped.</p></Modal>}
-		{quest && <Modal title={quest.title} close={() => setQuest(undefined)}><p>{quest.notes}</p><p className="muted">{quest.state}{quest.due ? ` · Due ${quest.due}` : ""}{quest.scheduled ? ` · ${quest.scheduled}` : ""}</p>
-			{quest.steps?.map((step, index) => <p key={index}>{step.done ? "✓" : "·"} {step.title}</p>)}<button onClick={() => { saveDraft(`About “${quest.title}”: `); setQuest(undefined); editor.current?.focus(); }}>Tell Home what to change</button></Modal>}
 		{file && <FileViewer session={referenceKey(file.computer ?? computer, file.session)} reference={{ id: file.id, name: file.name }} close={() => setFile(undefined)} />}
 	</>;
 }

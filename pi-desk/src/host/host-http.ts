@@ -26,7 +26,6 @@ interface HttpHost {
 	runtime(): string | undefined;
 	runtimeHome(): string | undefined;
 	/** Host-owned work an update must not cut off. */
-	dotBusy(): boolean;
 	signingIn(): boolean;
 	/** Stop admitting work, then close the host; `preserveWorkers` leaves the conversations running for its replacement. */
 	stop(preserveWorkers: boolean): void;
@@ -134,7 +133,6 @@ export class HostHttp {
 				json(response, 202, { instance: control.record.instance }); return;
 			}
 			if (["/api/host/prepare-update", "/api/host/stop-for-update"].includes(url.pathname)) {
-				if (this.host.dotBusy()) throw Error("Finish the current Dot operation before updating.");
 				if (this.host.signingIn()) throw Error("Finish or cancel the sign-in before updating.");
 				const target = string(data.target, 64), id = string(data.checkpoint, 128);
 				const runtime = this.host.runtime(), home = this.host.runtimeHome();

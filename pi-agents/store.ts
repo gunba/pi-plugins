@@ -183,8 +183,7 @@ export class PartyStore {
 	}
 	/**
 	 * Conversations other computers may message: those running, and those closed in the last CLOSED_LISTED_MS that kept
-	 * a session file, so they can be found, messaged and reopened from elsewhere. Local services such as the quest log's
-	 * sender are not among them.
+	 * a session file, so they can be found, messaged and reopened from elsewhere.
 	 */
 	networkDirectory(): NetworkMember[] {
 		const now = this.now(), live = this.localMembers().filter(member => member.kind === "session" || member.kind === "child");

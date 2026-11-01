@@ -43,7 +43,7 @@ budget's 40-line/3,000-byte excerpts remain in use.
 - `read`, `bash`, `edit`, `write`, and MCP resources retain their native data shapes.
 - Agent operations expose their existing response objects, rather than their compact
   display strings. Primary approval denial remains `{approved: false}`.
-- Plans expose `{plan}`; quests expose their existing `added`, `quest`, or list data.
+- Plans expose `{plan}`.
 - `ask_user` exposes its response, cancellation state and question details.
 - `show` exposes its existing shown-file description.
 - `watch` exposes `{text, watches}`, including watch IDs needed to stop them.

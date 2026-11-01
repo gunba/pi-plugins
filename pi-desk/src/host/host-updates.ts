@@ -18,7 +18,6 @@ interface UpdateHost {
 	runtime(): string | undefined;
 	runtimeHome(): string | undefined;
 	/** Host-owned work an update must not cut off. */
-	dotBusy(): boolean;
 	signingIn(): boolean;
 }
 
@@ -172,7 +171,7 @@ export class HostUpdates {
 			const available = this.state?.available, attempt = this.hostUpdateAttempt;
 			const waiting = !available || !this.automatic.host || !home ? undefined
 				: now - this.started < QUIET_MS ? "Desk started in the last ten minutes"
-				: hostBusy ?? (this.host.dotBusy() ? "A Dot operation is running" : this.host.signingIn() ? "A sign-in is in progress"
+				: hostBusy ?? (this.host.signingIn() ? "A sign-in is in progress"
 				: !["idle", "failed"].includes(this.state!.phase) ? `Another update is ${this.state!.phase}`
 				// A failed attempt is retried later, not abandoned: one failure used to stop automatic updates for good.
 				: attempt?.version === available && now - attempt.at < RETRY_MS ? `The last attempt failed; Desk retries ${new Date(attempt.at + RETRY_MS).toLocaleTimeString()}` : undefined);

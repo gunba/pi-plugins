@@ -1,12 +1,10 @@
 import type { UiConversation } from "../../../pi-ui/index.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { HOME_MODEL, type HomeSnapshot, type HomeWork, type HomeRun } from "../shared/home.ts";
 import type { HostCore, ManagedSession } from "./host-core.ts";
-import type { HostQuests } from "./host-quests.ts";
 import { HomeStore } from "./home-store.ts";
 
 /** Compact work facts only: token streams and usage changes must not trigger layout turns. */
@@ -41,17 +39,15 @@ export class Home {
 	private closeWhenIdle = false;
 	private error?: string;
 	private core: HostCore;
-	private quests: HostQuests;
 	private enabled: () => boolean;
 	private remote: () => HomeWork[];
 	private notify?: (notice: { title: string; body: string; tag: string; session: string }) => Promise<unknown>;
 	/** Whether Home may start its conversation unasked: on the workspace server. Elsewhere opening Home starts it. */
 	startsAlone: () => boolean = () => false;
-	constructor(core: HostCore, quests: HostQuests, enabled: () => boolean, remote: () => HomeWork[], notify?: Home["notify"]) {
+	constructor(core: HostCore, enabled: () => boolean, remote: () => HomeWork[], notify?: Home["notify"]) {
 		this.notify = notify;
-		this.core = core; this.quests = quests; this.enabled = enabled; this.remote = remote;
+		this.core = core; this.enabled = enabled; this.remote = remote;
 		this.directory = join(core.directory, "home"); this.store = new HomeStore(this.directory); this.store.recover();
-		if (this.store.get("overlap") === undefined) this.store.set("overlap", existsSync(join(core.directory, "dot", "connection.json")) || existsSync(join(core.directory, "dot-connector.json")));
 		this.submitted = this.store.get<string>("submitted") ?? "";
 		this.timer = setInterval(() => void this.tick(), 1000); this.timer.unref();
 	}
@@ -85,17 +81,15 @@ export class Home {
 		this.assertEnabled();
 		const managed = this.current();
 		return { scene: this.store.scene(), messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
-			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined), run: this.store.get<HomeRun>("run"), session: managed?.view.key, state: this.store.get("state"), overlap: this.store.get<boolean>("overlap") };
+			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined), run: this.store.get<HomeRun>("run"), session: managed?.view.key, state: this.store.get("state") };
 	}
 	private facts() {
-		return { quests: this.quests.view, work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], preferences: this.store.scene().preferences, overlap: this.store.get<boolean>("overlap") };
+		return { work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], preferences: this.store.scene().preferences };
 	}
 	private refreshFacts() {
-		this.quests.refresh();
 		const facts = this.facts();
-		this.store.set("quests", facts.quests ?? null); this.store.set("work", facts.work);
-		this.store.set("state", { quests: Object.fromEntries([...(facts.quests?.quests ?? []), ...(facts.quests?.upcoming ?? [])].map(quest => [quest.id, { title: quest.title.slice(0, 100), state: quest.state, due: quest.due ?? null, scheduled: quest.scheduled ?? null }])),
-			work: Object.fromEntries(facts.work.map(work => [`${work.computer ?? "local"}.${work.id}${work.view ? `.${work.view}` : ""}`, { title: work.title.slice(0, 100), status: work.status }])) });
+		this.store.set("work", facts.work);
+		this.store.set("state", { work: Object.fromEntries(facts.work.map(work => [`${work.computer ?? "local"}.${work.id}${work.view ? `.${work.view}` : ""}`, { title: work.title.slice(0, 100), status: work.status }])) });
 		return facts;
 	}
 	async message(id: string, text: string, attachments?: string[]): Promise<HomeSnapshot> {
@@ -123,7 +117,6 @@ export class Home {
 			command: { kind: "prompt", text, ...(attachments?.length ? { attachments } : {}), behavior: "followUp" } });
 		this.core.inputEvent(managed); this.core.drainInputs(managed);
 	}
-	settings(overlap: boolean): HomeSnapshot { this.assertEnabled(); this.store.set("overlap", overlap); return this.snapshot(); }
 	drag(id: string, x: number, y: number): HomeSnapshot { this.assertEnabled(); this.store.drag(id, x, y); return this.snapshot(); }
 	async tick(): Promise<void> {
 		if (this.ticking || this.closed || !this.enabled() || this.core.closing || this.core.held || this.core.restoringUpdate) return;
@@ -137,13 +130,9 @@ export class Home {
 						const { title, text } = request.command;
 						this.store.message({ id: request.id, role: "assistant", text, at: Date.now() });
 						if (!this.notify) throw Error("Home saved the update, but phone delivery is not configured.");
-						await this.notify({ title: this.store.get("overlap") && !title.startsWith("Home:") ? `Home: ${title}` : title,
+						await this.notify({ title,
 							body: text.replace(/\s+/g, " ").slice(0, 500), tag: `home:${request.id}`, session: "home" });
 						this.store.settle(request.id, { value: { delivered: true, message: request.id } });
-					} else {
-						const value = await this.quests.log().apply({ kind: "you", label: "Home" }, request.command);
-						this.refreshFacts();
-						this.store.settle(request.id, { value: value ?? null });
 					}
 				}
 				catch (error) { this.store.settle(request.id, { error: error instanceof Error ? error.message : String(error) }); }
@@ -151,9 +140,9 @@ export class Home {
 			const facts = this.refreshFacts(), signature = JSON.stringify(facts);
 			if (signature !== this.observed) { this.observed = signature; if (!this.changedAt) this.changedAt = Date.now(); }
 			if (signature === this.submitted) { this.changedAt = 0; return; }
-			if (!this.quests.view || !this.changedAt || Date.now() - this.changedAt < 3000) return;
+			if (!this.changedAt || Date.now() - this.changedAt < 3000) return;
 			const managed = this.current();
-			if (!managed && !facts.quests?.quests.length && !facts.quests?.upcoming?.length && !facts.work.length) return;
+			if (!managed && !facts.work.length) return;
 			if (managed?.view.snapshot?.activity === "running" || managed?.view.ui?.interactions.length || managed?.view.inputs?.length) return;
 			if (!managed && !this.store.get("session") && !this.startsAlone()) return;
 			const ready = await this.ensure();

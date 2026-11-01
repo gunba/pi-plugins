@@ -77,7 +77,7 @@ test("shown link items have direct controls in chat and viewers without embeddin
 
 test("Home renders task text as an accessible canvas item, not a checkbox list", () => {
 	const html = renderToStaticMarkup(createElement(HomeCanvas, { open() {}, move() {}, scene: { version: 1, revision: 0, preferences: {}, spec: { root: "canvas", elements: { canvas: { type: "Canvas", props: {}, children: ["task"] }, task: { type: "Blob", props: {
-		ref: { kind: "quest", id: "task" }, title: "Review changes", subtitle: "Seven steps", status: "Waiting for review",
+		ref: { kind: "url", url: "https://example.com/review" }, title: "Review changes", subtitle: "Seven steps", status: "Waiting for review",
 		icon: "preview", x: 20, y: 30, width: 320, height: 190, seed: 17, wobble: 0.15, color: "accent", outline: "dashed",
 	} } } } } }));
 	assert.match(html, /aria-label="Review changes\. Seven steps\. Waiting for review"/);

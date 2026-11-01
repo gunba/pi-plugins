@@ -158,7 +158,7 @@ async function integration(t, { search = false, party = false, policy = false, g
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
 		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(guard ? ["bash", "codemode"] : []), ...(search ? ["web_search"] : []),
-			...(party ? ["quest_list"] : [])] }));
+			...(party ? ["agent_move"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
 	const rootCatalogs = [];
@@ -279,11 +279,11 @@ test("child initialization retains enabled tools from multiple source extensions
 });
 
 test("party messages reach an SDK child at its next turn without starting one", { timeout: 25000 }, async (t) => {
-	const h = await integration(t, { party: true, initialActive: ["custom_inventory", "quest_list"] });
-	const child = await h.open("root-party-child", { descriptorTools: ["custom_inventory", "quest_list"] });
+	const h = await integration(t, { party: true, initialActive: ["custom_inventory", "agent_move"] });
+	const child = await h.open("root-party-child", { descriptorTools: ["custom_inventory", "agent_move"] });
 	const available = JSON.parse((await child.driver.prompt("fixture-availability")).output);
 	assert.ok(available.includes("custom_inventory"));
-	assert.ok(available.includes("quest_list"), "the party extension's tools are inherited");
+	assert.ok(available.includes("agent_move"), "the party extension's tools are inherited");
 	const agents = primaryAgents(h.rootSession.sessionId);
 	const entry = agents.list({}).agents.find(agent => agent.id === "root-party-child");
 	assert.equal(entry.kind, "child");

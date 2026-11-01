@@ -31,7 +31,7 @@ export function useNoticeLinks(sessions: readonly SessionView[] | undefined, ope
 	useEffect(() => {
 		if (!notice?.session) return;
 		if (Date.now() - notice.at > WAIT_MS) { setNotice(undefined); return; }
-		if (notice.session === "home" || notice.session === "quests" || notice.session === "dot") { open("home"); setNotice(undefined); return; }
+		if (notice.session === "home") { open("home"); setNotice(undefined); return; }
 		const target = sessions?.find(session => session.key === notice.session);
 		if (!target) return;
 		open(target.key); setNotice(undefined);
@@ -42,8 +42,8 @@ export function useNoticeLinks(sessions: readonly SessionView[] | undefined, ope
 }
 
 /**
- * Text or a link shared to Desk from another app (Android's share sheet, the manifest's share_target) becomes a task
- * on the computer that keeps your tasks, and the task list opens to it.
+ * Text or a link shared to Desk from another app (Android's share sheet, the manifest's share_target) goes to Home,
+ * which adds it to Jordan's tasks, and Home opens.
  */
 export function useSharedTask(host: WorkspaceState | undefined, home: string | undefined, open: (key: string) => void): void {
 	const [shared] = useState(() => {
@@ -54,16 +54,11 @@ export function useSharedTask(host: WorkspaceState | undefined, home: string | u
 	});
 	const added = useRef(false);
 	useEffect(() => {
-		if (!shared || added.current || !host) return;
-		const logs: (string | undefined)[] = host.computers ? host.computers.filter(computer => computer.quests && computer.connected).map(computer => computer.id)
-			: host.quests ? [undefined] : [];
-		if (!logs.length) return;
-		const target = logs.includes(home) ? home : logs[0];
+		if (!shared || added.current || !host || !home) return;
 		added.current = true;
-		// Apps put a shared link in the text as often as in the link; the first line names the task.
-		const body = [...new Set([shared.text.trim(), shared.url.trim()].filter(Boolean))].join("\n");
-		const title = (shared.title.trim() || body.split("\n")[0] || "Shared").slice(0, 200), notes = body === title ? "" : body.slice(0, 4000);
-		void api("/quests", { command: { action: "add", title, kind: "main", ...(notes ? { notes } : {}) } }, target)
+		// Apps put a shared link in the text as often as in the link.
+		const body = [...new Set([shared.title.trim(), shared.text.trim(), shared.url.trim()].filter(Boolean))].join("\n").slice(0, 8000);
+		void api("/home/messages", { id: crypto.randomUUID(), text: `Shared to Desk; add it to my tasks:\n${body}`, attachments: [] }, home)
 			.then(() => open("home"), () => { added.current = false; });
 	}, [shared, host, home]);
 }

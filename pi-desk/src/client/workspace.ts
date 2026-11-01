@@ -17,7 +17,6 @@ export interface Computer {
 	updates?: HostState["updates"];
 	storageError?: string;
 	parties?: HostState["parties"];
-	quests?: HostState["quests"];
 	dictation?: boolean;
 	cacheCompaction?: number;
 	settingsSync?: HostState["settingsSync"];

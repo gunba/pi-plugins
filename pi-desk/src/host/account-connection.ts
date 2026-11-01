@@ -10,7 +10,6 @@ import { MAX_WIRE } from "../shared/secure-channel.ts";
 import { readAccount, saveAccount, type SavedAccount } from "./account-config.ts";
 import type { NativeAccountIdentity } from "./account-identity.ts";
 import { AccountNetwork } from "./account-network.ts";
-import type { DotConnector } from "./dot-connector.ts";
 import { homeWork } from "./home.ts";
 import type { HostCore } from "./host-core.ts";
 import type { Parties } from "./parties.ts";
@@ -18,7 +17,6 @@ import { PartyNetwork } from "./party-network.ts";
 import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-connector.ts";
 import type { SettingsSync } from "./settings-sync.ts";
 import type { ConversationSearch } from "./conversation-search.ts";
-import type { HostQuests } from "./host-quests.ts";
 import type { Teleport } from "./teleport.ts";
 
 /** How often a host checks the account service for a moved relay. */
@@ -30,8 +28,6 @@ interface AccountHost {
 	settingsSync(): SettingsSync | undefined;
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
-	quests?(): HostQuests | undefined;
-	connector(): DotConnector | undefined;
 	computer(): PartyComputer;
 	execute(computer: string, request: PartyOperation): Promise<OperationResult["result"]>;
 	/** An API request from a browser that reached this host through the relay or directly. */
@@ -42,7 +38,7 @@ interface AccountHost {
 
 /**
  * This computer's place in the workspace: its account identity, the relay connection that carries remote browsers,
- * agent messages and the Dot connector, the agent network to the other computers, and browsers on this computer that
+ * agent messages, the agent network to the other computers, and browsers on this computer that
  * connect directly. It follows the account service when the workspace's services move.
  */
 export class AccountConnection {
@@ -81,9 +77,6 @@ export class AccountConnection {
 	}
 
 	/** This computer's public MCP address through the relay; undefined until the account connection is up. */
-	connectorUrl(): string | undefined {
-		return this.relayStatus && this.accountIdentity ? `${this.relayStatus.origin}/connector/${this.accountIdentity.device.id}` : undefined;
-	}
 
 	/**
 	 * Hosts follow the workspace when its services move, as browsers do on each load. The website names the account
@@ -142,14 +135,14 @@ export class AccountConnection {
 				if (this.core.closing || revision !== this.revision) return;
 				parties.networkChanged(); this.core.refreshParties();
 			}, { operations: this.host.operations(), execute: (computer, request) => this.host.execute(computer, request) }, this.host.computer(),
-				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), this.host.quests?.(), () => homeWork([...this.core.sessions.values()].map(item => item.view)));
+				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), () => homeWork([...this.core.sessions.values()].map(item => item.view)));
 			this.partyNetwork = network;
 			this.relayConnector = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.core.options.proxy, direct: Number(new URL(this.core.origin).port),
 				request: (access, request) => this.host.request(access, request),
 				watch: handler => this.host.watch(handler), status: update, party: {
 					connected: (id, send, close) => network.connected(id, send, close),
 					receive: (id, packet) => network.receive(id, packet),
-				}, connector: { enabled: () => !!this.host.connector()?.enabled, handle: request => this.host.connector()!.handle(request, this.connectorUrl()!) },
+				},
 			});
 			this.relayConnector.start();
 		} catch {

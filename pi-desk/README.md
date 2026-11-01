@@ -118,20 +118,19 @@ estimates, not a ChatGPT subscription balance.
 
 ## Home
 
-Home replaces the separate Dot and Tasks panes with a shared, agent-arranged
-canvas. A persistent GPT-6.1 Terra conversation runs on the workspace server,
-answers the canvas composer, manages the existing quest log and arranges the
-canvas through the shared json-render component catalog and JSON Patch layer.
+Home is Jordan's tasks and live work, drawn by an agent on one canvas. A
+persistent GPT-6.1 Terra conversation runs on the workspace server, keeps the
+tasks in a Markdown file (`~/.pi/agent/home/tasks.md`), answers the canvas
+composer and draws the canvas through the shared json-render component catalog
+and JSON Patch layer. Agents add work for Jordan by messaging it.
 
-Items open their conversations, quest details, files or links. Dragging saves a
+Items open their conversations, files or links. Dragging saves a
 position preference; phones support panning and pinch zoom. Compact replies sit
 above the composer, with attachments and dictation; History opens the complete
 native Pi conversation and its approvals. The header shows the last run's cost.
 
 Home uses Pi's normal tools for watches, Gmail, browser work, web research and
-agent messaging. The Dot backend and connector remain temporarily so existing
-scheduled work continues during a verified, one-day overlap. See
-[Home architecture, capability coverage and cutover](HOME.md).
+agent messaging, and runs Jordan's scheduled jobs. See [Home](HOME.md).
 
 ## Development
 
@@ -476,15 +475,12 @@ controller admission. Uncertain replies retain the draft and exact request ID:
 requires confirmation; reconnect never sends automatically. Each view has its
 own action lock, so a launch dialog does not block another agent's controls.
 
-**Home** shows quests and live work on one canvas. It includes conversations
-waiting for answers or approvals, working agents and blocked plans. There is
-no separate task list: requests to add, finish, reschedule or rearrange work go
-to Home's Terra conversation. The existing quest log, recurrence, working hours
-and agent notifications remain authoritative.
+**Home** shows Jordan's tasks and live work on one canvas. It includes
+conversations waiting for answers or approvals, working agents and blocked
+plans. There is no separate task list: requests to add, finish, reschedule or
+rearrange work go to Home's Terra conversation, which keeps the tasks file.
 
-The workspace server keeps the shared Home and quest log. Agents and the retained
-Dot connector on other computers still reach that log through their own Desk.
-Remote live-work snapshots are sent when their status changes, not on token
+The workspace server keeps Home. Remote live-work snapshots are sent when their status changes, not on token
 deltas; disconnected computers are labelled as last-known state.
 
 Chat and detail views render GitHub-flavoured Markdown tables. Transcript errors

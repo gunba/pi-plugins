@@ -1,21 +1,25 @@
 import { open } from "node:fs/promises";
 import { basename } from "node:path";
-import { isOnDuty } from "../../../pi-agents/quest-model.ts";
 import type { PushNotice } from "../account/push.ts";
 import type { HostEvent, SessionView } from "../shared/protocol.ts";
-import type { QuestView } from "../shared/quests.ts";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
 
 interface NoticeHost {
 	/** The user has used Desk recently (presence.ts). */
 	present(): boolean;
-	quests(): QuestView | undefined;
 	/** This computer's id in the account workspace, which the app prefixes to its conversation keys. */
 	computer(): string | undefined;
 	send(notice: PushNotice): Promise<unknown>;
 }
 
 const TAIL = 256 * 1024;
+/** Jordan's working hours: weekdays 9:00 to 17:00, Perth time, the same zone as Home's schedules (home-jobs.ts). */
+function onDuty(at = Date.now()): boolean {
+	const parts = Object.fromEntries(new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Perth", hour: "2-digit", hourCycle: "h23", weekday: "short" })
+		.formatToParts(at).map(part => [part.type, part.value]));
+	const hour = Number(parts.hour) % 24;
+	return !["Sat", "Sun"].includes(parts.weekday!) && hour >= 9 && hour < 17;
+}
 type Form = NonNullable<SessionView["ui"]>["interactions"][number]["form"];
 const name = (view: SessionView) => view.name || view.title || view.snapshot?.name || view.snapshot?.title || basename(view.cwd) || "A conversation";
 const excerpt = (text: string, max = 300) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat; };
@@ -42,7 +46,7 @@ async function lastReply(file: string | undefined): Promise<{ text?: string; err
 
 /**
  * Notices to the user's phone while they are away, during their working hours: a conversation's question, its
- * finishing or stopping on an error with nothing left to wake it (shared/attention.ts), and tasks due today. Questions wait for an answer either way; on Android a
+ * finishing or stopping on an error with nothing left to wake it (shared/attention.ts). Questions wait for an answer either way; on Android a
  * yes/no or two-choice question can be answered from the notification.
  */
 export class AwayNotices {
@@ -54,13 +58,12 @@ export class AwayNotices {
 	/** Each conversation's finished mark already considered, by key; marks from before this host started are not news. */
 	private finished = new Map<string, number>();
 	private readonly started = Date.now();
-	/** Tasks sent today, by date and id. */
-	private due = new Set<string>();
 	private timer: ReturnType<typeof setInterval>;
 
 	constructor(host: NoticeHost) {
 		this.host = host;
-		this.timer = setInterval(() => this.tasks(), 5 * 60_000); this.timer.unref();
+		// A question asked out of hours goes to the phone once working hours begin.
+		this.timer = setInterval(() => this.flush(), 5 * 60_000); this.timer.unref();
 	}
 	close(): void { clearInterval(this.timer); }
 
@@ -71,8 +74,7 @@ export class AwayNotices {
 		this.flush();
 	}
 	private get sending(): boolean {
-		const quests = this.host.quests();
-		return !this.host.present() && !!quests && isOnDuty(quests.hours);
+		return !this.host.present() && onDuty();
 	}
 	private key(view: SessionView): string { const computer = this.host.computer(); return computer ? `${computer}:${view.key}` : view.key; }
 	private send(notice: PushNotice): void { void this.host.send(notice).catch(error => console.error(`A notice could not be sent: ${error instanceof Error ? error.message : String(error)}`)); }
@@ -109,19 +111,5 @@ export class AwayNotices {
 			session: this.key(view), urgency: "high",
 			...(choices.length ? { actions: choices.map(([title], index) => ({ action: String(index), title: excerpt(title, 40) })),
 				answers: Object.fromEntries(choices.map(([, answer], index) => [String(index), { interaction, answer }])) } : {}) });
-	}
-	/** Each open task due or scheduled today or earlier, once a day, while the user is away during working hours. */
-	private tasks(): void {
-		const view = this.host.quests();
-		this.flush();
-		if (!view || !this.sending) return;
-		for (const quest of view.quests) {
-			const id = `${view.today}:${quest.id}`;
-			const date = [quest.due, quest.scheduled].filter(Boolean).sort()[0];
-			if (quest.state !== "open" || !date || date > view.today || this.due.has(id)) continue;
-			this.due.add(id);
-			this.send({ title: `Due today: ${excerpt(quest.title, 100)}`, body: excerpt(quest.notes ?? ""), tag: `task:${quest.id}`, session: "quests" });
-		}
-		for (const id of this.due) if (!id.startsWith(`${view.today}:`)) this.due.delete(id);
 	}
 }

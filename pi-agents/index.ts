@@ -3,7 +3,6 @@ import { hostname } from "node:os";
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../pi-work-ui/index.ts";
 import { isManagedChild } from "../pi-work-coordination/index.ts";
@@ -14,9 +13,6 @@ import { renderPartyNotice } from "./render.ts";
 import { getPresentation } from "../pi-ui/index.ts";
 import { PartyPresentation } from "./presentation.ts";
 import { PartyOperations } from "./operations.ts";
-import { QuestStore } from "./quests.ts";
-import { LocalQuestLog, QuestCalls, type QuestLog } from "./quest-log.ts";
-import { isReady, isToday, repeatLabel, QUEST_KINDS, type Quest } from "./quest-model.ts";
 import { agentId, nativeId } from "./network.ts";
 import { partyForkPoint } from "./fork.ts";
 import { partyDelivery } from "./availability.ts";
@@ -67,10 +63,6 @@ export default function party(pi: ExtensionAPI): void {
 	const database = () => store ??= new PartyStore(directory);
 	const signal = () => { writeFileSync(join(directory, "changed"), randomUUID(), { mode: 0o600 }); };
 	const operations = () => { database(); return lifecycle ??= new PartyOperations(directory); };
-	let questStore: QuestStore | undefined;
-	let questCalls: QuestCalls | undefined;
-	// Kept on the computer that keeps it for the whole account, or here when none does.
-	const quests = (): QuestLog => (questCalls ??= new QuestCalls(directory)).remote() ?? new LocalQuestLog(questStore ??= new QuestStore(directory));
 	const member = () => store?.member(session);
 	const syncFlight = () => {
 		if (!store || member()?.owner !== owner) return;
@@ -229,7 +221,7 @@ export default function party(pi: ExtensionAPI): void {
 		providePrimaryAgents(session, undefined);
 		stopped = true; armed = false; preparingPrompt = false; stopTransport();
 		try { store?.release(session, owner); }
-		finally { questStore?.close(); questStore = undefined; questCalls?.close(); questCalls = undefined; lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
+		finally { lifecycle?.close(); lifecycle = undefined; store?.close(); store = undefined; source?.dispose(); source = undefined; ctx = undefined; inFlight.clear(); }
 	});
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
@@ -421,7 +413,6 @@ export default function party(pi: ExtensionAPI): void {
 	};
 	// Rarely used tools are loaded with tool_search when needed rather than declared in every request.
 	const AGENTS = { exposure: "deferred" as const, namespace: { name: "agents", description: "Move this conversation to another of Jordan's computers." } };
-	const QUESTS = { exposure: "deferred" as const, namespace: { name: "quests", description: "Add to Jordan's quest log things he must do himself, read it, or change quests you added." } };
 	pi.registerTool({
 		name: "agent_move", label: "Move to another computer", ...AGENTS,
 		description: "When Jordan asks, move this conversation to another of his computers. Your turn ends; you continue there from note. Files stay here.",
@@ -436,71 +427,6 @@ export default function party(pi: ExtensionAPI): void {
 			// The move waits for this turn to end: stopping now lets it go at once.
 			return { ...result({ moving: true, computer, cwd: params.cwd ?? "its home folder",
 				next: "This conversation stops here now and continues there from your note. If the move fails, you are told here." }), terminate: true };
-		},
-	});
-	const repeatSchema = Type.Object({
-		every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366, description: "Default 1." })),
-		unit: StringEnum(["day", "week", "month"] as const),
-		from: Type.Optional(Type.String({ description: "First due date; default today." })),
-		weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), { minItems: 1, maxItems: 7, description: "Weekly only; 0 = Sunday." })),
-	}, { description: "Reopens on each due date." });
-	const questJson = (quest: Quest) => ({ id: quest.id, title: quest.title, kind: quest.kind, state: isReady(quest) ? "done, waiting to be turned in" : quest.state, ...(quest.due ? { due: quest.due } : {}), ...(quest.scheduled ? { scheduled: quest.scheduled } : {}),
-		...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
-		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
-		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
-	/** A quest as a line, and its steps beneath, for the model; the structured form stays in details. */
-	const questLine = (quest: Quest, note = "") => {
-		const item = questJson(quest) as ReturnType<typeof questJson> & { repeats?: string; next_due?: string; steps?: string[] };
-		const facts = [item.kind, item.state !== "open" && item.state, item.due && `due ${item.due}`, item.scheduled && `on ${item.scheduled}`,
-			item.repeats && `${item.repeats}${item.next_due ? `, next ${item.next_due}` : ""}`, item.from !== "Jordan" && `from ${item.from}`, note].filter(Boolean).join(", ");
-		return [`${item.id} · ${item.title} (${facts})`, ...(item.steps ?? []).map(step => `  ${step}`)].join("\n");
-	};
-	const questResult = (value: unknown, text: string) => ({ content: [{ type: "text" as const, text }], details: value, structuredContent: JSON.parse(JSON.stringify(value)) });
-	pi.registerTool({
-		name: "quest_add", label: "Add to Jordan's quest log", ...QUESTS,
-		description: "Add something Jordan must do himself (a review, decision or test you wait on) to his quest log. You're told when he finishes it.",
-		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 200 }), notes: Type.Optional(Type.String({ maxLength: 4000 })),
-			kind: Type.Optional(StringEnum(QUEST_KINDS, { description: "main: important; daily: today only; side: default." })),
-			due: Type.Optional(Type.String({ description: "YYYY-MM-DD deadline." })),
-			scheduled: Type.Optional(Type.String({ description: "YYYY-MM-DD day it happens, like an appointment." })),
-			steps: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 30 })),
-			repeat: Type.Optional(repeatSchema),
-			notify: Type.Optional(Type.Boolean({ description: "Default true." })) }),
-		async execute(_id, params) {
-			const quest = await quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
-			return questResult({ added: questJson(quest!) }, `Added ${questLine(quest!)}`);
-		},
-	});
-	pi.registerTool({
-		name: "quest_list", label: "Read Jordan's quest log", ...QUESTS,
-		description: "Read Jordan's quest log.",
-		parameters: Type.Object({ mine: Type.Optional(Type.Boolean({ description: "Only quests you added." })) }),
-		async execute(_id, params) {
-			const view = await quests().view();
-			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
-			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
-			const upcoming = (view.upcoming ?? []).filter(mine);
-			return questResult({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
-				upcoming: upcoming.map(quest => ({ ...questJson(quest), state: `${quest.repeat ? "not due" : "scheduled"} until ${quest.next}` })) },
-				[`Today is ${view.today}.`, ...(open.length ? open.map(quest => questLine(quest, isToday(quest, view.today) ? "today" : "")) : ["No open quests."]),
-					...(upcoming.length ? ["Upcoming:", ...upcoming.map(quest => questLine(quest))] : [])].join("\n"));
-		},
-	});
-	pi.registerTool({
-		name: "quest_update", label: "Update a quest you added", ...QUESTS,
-		description: "Change, complete or abandon a quest you added.",
-		parameters: Type.Object({ id: Type.String(), title: Type.Optional(Type.String({ maxLength: 200 })), notes: Type.Optional(Type.String({ maxLength: 4000 })),
-			due: Type.Optional(Type.String({ description: "YYYY-MM-DD deadline, or empty to clear." })),
-			scheduled: Type.Optional(Type.String({ description: "YYYY-MM-DD day it happens, or empty to clear." })), steps: Type.Optional(Type.Array(Type.Object({ title: Type.String(), done: Type.Boolean() }), { maxItems: 30 })),
-			repeat: Type.Optional(Type.Union([repeatSchema, Type.Null()], { description: "A new schedule, or null to stop repeating." })),
-			state: Type.Optional(StringEnum(["open", "done", "abandoned"] as const)) }),
-		async execute(_id, params) {
-			const by = { kind: "agent" as const, id: session, label: label() }, { id, state, ...fields } = params;
-			const log = quests();
-			let quest = Object.keys(fields).length ? await log.apply(by, { action: "update", id, ...fields }) : await log.get(id);
-			if (state) quest = await log.apply(by, { action: state === "done" ? "complete" : state === "abandoned" ? "abandon" : "reopen", id });
-			if (!quest) throw Error(`No quest has the id ${id}.`);
-			return questResult({ quest: questJson(quest) }, questLine(quest));
 		},
 	});
 	pi.registerMessageRenderer(PARTY_MESSAGE, renderPartyNotice);

@@ -108,7 +108,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 					setTheme(event.target.value); document.documentElement.dataset.theme = event.target.value;
 					localStorage.setItem("pi-desk:theme", event.target.value);
 				}}><option value="dark">Dark</option><option value="light">Light</option></select></Row>
-				<Row label="Notifications" hint="While you're away (no use of Desk on any device for 15 minutes), during your working hours, agents' questions, finished work and tasks due today come here. On Android, yes/no and two-choice questions can be answered from the notification.">
+				<Row label="Notifications" hint="While you're away (no use of Desk on any device for 15 minutes), during your working hours, agents' questions and finished work come here. On Android, yes/no and two-choice questions can be answered from the notification.">
 					<PhoneNotifications account={account} /></Row>
 				<Row label="Version"><span>App {RELEASE.version}{(computer?.release ?? (!host.computers ? host.release : undefined))
 					? <span className="muted"> · {computer?.name ?? host.name}: Desk {(computer?.release ?? host.release).version}, Pi {(computer?.release ?? host.release).engine}</span> : null}</span>

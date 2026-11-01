@@ -4,13 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { Value } from "typebox/value";
 import { emptyHomeScene, homeItems, homeMovable, validateHomeElement, HomePatchSchema, patchHome, type HomeMessage, type HomeReference, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
 import { validateSpec } from "../../../pi-ui/agent-ui.ts";
-import type { QuestCommand, QuestView } from "../shared/quests.ts";
 
-const referenceKey = (ref: HomeReference): string | undefined => ref.kind === "quest" ? `quest:${ref.id}`
-	: ref.kind === "conversation" ? JSON.stringify([ref.kind, ref.computer ?? "", ref.id, ref.view ?? ""]) : undefined;
+const referenceKey = (ref: HomeReference): string | undefined => ref.kind === "conversation" ? JSON.stringify([ref.kind, ref.computer ?? "", ref.id, ref.view ?? ""]) : undefined;
 
 /** Shared by the host and its Home worker. SQLite serializes scene patches and user drags across processes. */
-export type HomeRequest = QuestCommand | { action: "notify"; title: string; text: string };
+export type HomeRequest = { action: "notify"; title: string; text: string };
 export class HomeStore {
 	private db: DatabaseSync;
 	constructor(directory: string) {
@@ -31,6 +29,8 @@ export class HomeStore {
 		if (!scene) return emptyHomeScene();
 		if (scene.version !== 1 || !Number.isSafeInteger(scene.revision) || scene.revision < 0 || !scene.preferences || typeof scene.preferences !== "object" || Array.isArray(scene.preferences))
 			throw Error("Home's saved scene has an unsupported format. Restore it before arranging more work.");
+		// Scenes from before quests were removed refer to them; Home draws again from Jordan's tasks file.
+		if (JSON.stringify(scene.spec).includes('"kind":"quest"')) return { ...emptyHomeScene(), revision: scene.revision };
 		validateSpec(scene.spec, validateHomeElement);
 		for (const position of Object.values(scene.preferences)) if (!position || ![position.x, position.y].every(value => Number.isFinite(value) && Math.abs(value) <= 4000))
 			throw Error("Home's saved position preference is invalid.");
@@ -41,21 +41,13 @@ export class HomeStore {
 		try { const scene = update(this.scene()); this.set("scene", scene); this.db.exec("COMMIT"); return scene; }
 		catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
-	/** Required references come from the computed quest view, including reopened repeats, never raw saved quest states. */
+	/** Live work the canvas must show: questions, approvals, blocked plans and working agents. */
 	required(): { ref: HomeReference; title: string }[] {
-		const view = this.get<QuestView>("quests");
-		const quests = new Map([...(view?.quests.filter(quest => quest.state === "open") ?? []), ...(view?.upcoming ?? [])].map(quest => [quest.id, quest]));
-		return [...quests.values()].map<{ ref: HomeReference; title: string }>(quest => ({ ref: { kind: "quest", id: quest.id }, title: quest.title }))
-			.concat((this.get<HomeWork[]>("work") ?? []).map(work => ({ ref: { kind: "conversation", id: work.id, ...(work.computer ? { computer: work.computer } : {}), ...(work.view ? { view: work.view } : {}) } as HomeReference, title: work.title })));
+		return (this.get<HomeWork[]>("work") ?? []).map(work => ({ ref: { kind: "conversation", id: work.id, ...(work.computer ? { computer: work.computer } : {}), ...(work.view ? { view: work.view } : {}) } as HomeReference, title: work.title }));
 	}
 	private checkCoverage(scene: HomeScene): void {
-		const view = this.get<QuestView>("quests");
-		if (!view) throw Error("The real quest log has not loaded yet. Read home_quest before arranging Home.");
-		const known = new Set([...view.quests, ...(view.upcoming ?? [])].map(quest => quest.id)), items = homeItems(scene);
-		const unknown = items.filter(item => item.ref.kind === "quest" && !known.has(item.ref.id));
-		if (unknown.length) throw Error(`Home contains quest references absent from the real log: ${unknown.map(item => item.id).join(", ")}. Do not use sample tasks.`);
-		const present = new Set(items.map(item => referenceKey(item.ref))), missing = this.required().filter(item => !present.has(referenceKey(item.ref)));
-		if (missing.length) throw Error(`Include every open/upcoming quest and live work item in the same patch. Missing: ${JSON.stringify(missing)}.`);
+		const present = new Set(homeItems(scene).map(item => referenceKey(item.ref))), missing = this.required().filter(item => !present.has(referenceKey(item.ref)));
+		if (missing.length) throw Error(`Include every live work item in the same patch. Missing: ${JSON.stringify(missing)}.`);
 	}
 	patch(raw: unknown, releasePositions: string[] = []): HomeScene {
 		if (!Value.Check(HomePatchSchema, raw)) throw Error("Invalid Home patch: " + [...Value.Errors(HomePatchSchema, raw)].slice(0, 3).map(error => error.message).join("; "));
@@ -94,6 +86,6 @@ export class HomeStore {
 		const row = this.db.prepare("SELECT result FROM home_requests WHERE id=?").get(id) as { result?: string } | undefined;
 		return row?.result ? JSON.parse(row.result) : undefined;
 	}
-	recover(): void { this.db.prepare("UPDATE home_requests SET state='done', result=? WHERE state='applying'").run(JSON.stringify({ error: "Desk restarted during this change. Read the quest log before deciding whether to repeat it." })); }
+	recover(): void { this.db.prepare("UPDATE home_requests SET state='done', result=? WHERE state='applying'").run(JSON.stringify({ error: "Desk restarted during this delivery. Check Home before repeating it." })); }
 	close(): void { this.db.close(); }
 }

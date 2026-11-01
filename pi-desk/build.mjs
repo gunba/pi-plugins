@@ -30,7 +30,7 @@ for (const output of Object.values(host.metafile.outputs)) for (const dependency
 if (undeclared.size) throw new Error(`Undeclared host runtime dependencies: ${[...undeclared].join(", ")}`);
 await build({
   absWorkingDir: root,
-  entryPoints: { "home-jobs": "manage/home-jobs.ts", "gmail-send": "manage/gmail-send.mjs" },
+  entryPoints: { "gmail-send": "manage/gmail-send.mjs" },
   outdir: "dist/manage",
   platform: "node",
   target: "node22",

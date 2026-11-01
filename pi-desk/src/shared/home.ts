@@ -13,7 +13,6 @@ export const homeIcons = ["chat", "folder", "preview", "computer", "tools", "clo
 /** Theme-aware colours: Desk's own tokens and a few hues Home adds for both themes. */
 export const HOME_COLORS = ["accent", "input-needed", "muted", "danger", "text", "sage", "amber", "rose", "teal", "sand", "lilac"] as const;
 export const HomeReferenceSchema = Type.Union([
-	Type.Object({ kind: Type.Literal("quest"), id }),
 	Type.Object({ kind: Type.Literal("conversation"), id, computer: Type.Optional(id), view: Type.Optional(id) }),
 	Type.Object({ kind: Type.Literal("file"), session: id, computer: Type.Optional(id), id, name: text(300) }),
 	Type.Object({ kind: Type.Literal("url"), url: Type.String({ minLength: 1, maxLength: 4096 }) }),
@@ -66,7 +65,7 @@ export type HomePatch = { revision: number; operations: AgentPatch[] };
 export interface HomeScene { version: 1; revision: number; spec: AgentSpec; preferences: Record<string, { x: number; y: number }> }
 export interface HomeMessage { id: string; role: "user" | "assistant"; text: string; at: number; state?: "queued" | "running" | "done" | "interrupted" }
 export interface HomeRun { at: number; cost: number; input: number; output: number; cacheRead: number }
-export interface HomeSnapshot { scene: HomeScene; messages: HomeMessage[]; busy: boolean; error?: string; run?: HomeRun; session?: string; state?: Record<string, unknown>; overlap?: boolean }
+export interface HomeSnapshot { scene: HomeScene; messages: HomeMessage[]; busy: boolean; error?: string; run?: HomeRun; session?: string; state?: Record<string, unknown> }
 export interface HomeWork { id: string; computer?: string; title: string; status: string; detail: string; view?: string }
 export const emptyHomeScene = (): HomeScene => ({ version: 1, revision: 0, spec: { root: "canvas", elements: { canvas: { type: "Canvas", props: {}, children: [] } } }, preferences: {} });
 

@@ -81,7 +81,7 @@ its SDK. Runtime selection keeps older slots for live actors and rollback.
 
 A host on 0.5.23 or earlier owned workers that cannot be handed over: after its
 update, its conversations show as interrupted and resume by hand. Host-owned
-sign-in/Dot operations and failed catalog saves still need to finish before
+sign-ins and failed catalog saves still need to finish before
 cutover. Failed or unconfirmed outcomes need attention, not replay.
 Ordinary **Close** still removes a conversation from the workspace while keeping
 its native history. Native `/desk restart` and rollback stop the host and its

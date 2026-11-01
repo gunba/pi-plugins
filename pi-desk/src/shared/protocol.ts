@@ -192,8 +192,6 @@ export type ConversationCopy = { session: string; computer: string; cwd: string;
 export interface HostState { release: ReleaseInfo; operator?: import("./operator.ts").OperatorPresence; storageError?: string; name: string; platform?: string; cwd: string; sessions: SessionView[];
 	parties?: import("./parties.ts").PartyDirectory;
 	updates?: import("./updates.ts").RuntimeUpdateState;
-	/** This computer's quest log. Omitted by hosts before 0.5.62. */
-	quests?: import("./quests.ts").QuestView;
 	/** Compact idle conversations before their prompt cache expires, above this percent of the context budget. */
 	cacheCompaction?: number;
 	/** The last Pi setting or file that arrived from another computer (settings sync). */

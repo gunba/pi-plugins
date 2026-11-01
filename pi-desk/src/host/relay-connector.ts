@@ -48,8 +48,6 @@ export interface HostAccount extends ChannelIdentity {
 	lease(peers: MembershipPeer[], purpose?: "party"): Promise<MembershipLease>;
 	heartbeat(connected: boolean): Promise<unknown>;
 }
-export interface ConnectorRequest { method: string; path: string; query: string; headers: { authorization?: string; "content-type"?: string }; body: string }
-export interface ConnectorResponse { status: number; headers?: Record<string, string>; body: string }
 export interface RelayStatus { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string }
 interface Options {
 	appOrigin: string; proxy?: string; account: HostAccount;
@@ -60,8 +58,6 @@ interface Options {
 		connected: (id: string, send: (payload: unknown) => Promise<void>, close: () => void) => () => void;
 		receive: (id: string, payload: unknown) => void | Promise<void>;
 	};
-	/** Dot connector: the relay forwards HTTP requests for this host's connector path; the host authenticates them. */
-	connector?: { enabled: () => boolean; handle: (request: ConnectorRequest) => Promise<ConnectorResponse> };
 	/** The loopback port where a browser on this computer can connect directly (see {@link RelayConnector.direct}). */
 	direct?: number;
 }
@@ -126,11 +122,6 @@ export class RelayConnector {
 			}
 		} finally { this.connecting = false; }
 	}
-	/** Publish the current connector key (or its removal) to the relay. */
-	connectorChanged(): void {
-		if (!this.options.connector || !this.admitted || this.socket?.readyState !== WebSocket.OPEN) return;
-		this.socket.send(JSON.stringify({ type: "connector-enable", enabled: this.options.connector.enabled() }));
-	}
 	private open(): void {
 		const socket = new WebSocket(socketUrl(this.status.origin, "/host", this.options.account.device.id), {
 			agent: this.agent, handshakeTimeout: 15_000, maxPayload: MAX_WIRE * 2, perMessageDeflate: false,
@@ -168,7 +159,6 @@ export class RelayConnector {
 					if (message.type !== "admitted" || !authenticating || message.protocol !== PROTOCOL_VERSION) throw new Error("Invalid admission.");
 					this.admitted = true; this.backoff = 1000; this.update("online");
 					if (this.options.party) socket.send(JSON.stringify({ type: "party-enable" }));
-					this.connectorChanged();
 					this.refresh = setInterval(maintain, 20_000); this.refresh.unref();
 					this.expiry = setInterval(() => {
 						if (performance.now() >= this.hostLeaseUntil) { socket.terminate(); return; }
@@ -177,16 +167,6 @@ export class RelayConnector {
 					maintain(); return;
 				}
 				if (message.type === "renewed") return;
-				if (message.type === "connector") {
-					const id = string(message.id, 64), headers = object(message.headers ?? {});
-					const header = (name: string) => headers[name] === undefined ? undefined : string(headers[name], 8000);
-					const request: ConnectorRequest = { method: string(message.method, 10), path: string(message.path, 200), query: string(message.query, 4000),
-						headers: { authorization: header("authorization"), "content-type": header("content-type") }, body: string(message.body, 256 * 1024) };
-					void (this.options.connector?.handle(request) ?? Promise.resolve({ status: 404, body: "" }))
-						.catch(() => ({ status: 500, body: JSON.stringify({ error: "The connector failed." }) }))
-						.then(result => { if (this.socket === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "connector-result", id, ...result })); });
-					return;
-				}
 				if (message.type === "hosts") {
 					if (!Array.isArray(message.hosts) || message.hosts.length > 256 || !message.hosts.every(validId)) throw new Error("Invalid computer directory.");
 					this.computers = message.hosts; this.connectParties(); return;
