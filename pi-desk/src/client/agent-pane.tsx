@@ -35,6 +35,7 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	const [search, setSearch] = useState(""), [folded, setFolded] = useState(!historyInitiallyOpen && !!focused);
 	const listing = !narrow || !folded;
 	const [historyOpen, setHistoryOpen] = useState(historyInitiallyOpen), [opening, setOpening] = useState("");
+	const [limitOpen, setLimitOpen] = useState(false);
 	const requested = useRef(new Set<string>());
 	const confirmation = useConfirmation(`${session.key}:${session.activation}:${session.ui?.generation}:${connected}`);
 	const { current, history: previous, historyView, total } = agentInventory([...views, ...(history ? [history] : [])]);
@@ -70,14 +71,17 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 		}
 	}, [focused, selected, historyView, connected]);
 	return <div className="agent-pane">
-		<p className="agent-parent">{context}</p>
 		<div className="agent-picker-heading">
 			{narrow ? <button type="button" aria-expanded={listing} onClick={() => setFolded(listing)}><Icon name="layers" />Agents <span>{total}</span><span aria-hidden="true">{listing ? "⌃" : "⌄"}</span></button>
 				: <strong>Agents <span>{total}</span></strong>}
-			<span className="muted">{connected ? slots ? `${slots} live slots` : `${current.length} current` : "Disconnected"}</span>
+			<span className="agent-parent" title={context}>{context}</span>
+			{/* The limit is changed rarely; it opens from the slot count. */}
+			{connected && slots && limitView ? <button type="button" className="agent-slots" aria-expanded={limitOpen} title="Live agent limit"
+				onClick={() => setLimitOpen(!limitOpen)}>{slots} live slots</button>
+				: <span className="muted">{connected ? slots ? `${slots} live slots` : `${current.length} current` : "Disconnected"}</span>}
 			{listing && historyView && <WorkspaceActions view={historyView} disabled={!connected || !!historyView.working} invoke={action => void manage(action)} />}
 		</div>
-		{listing && limitView && (limitView.data as UiDetails).controls?.map(control => <SettingControl key={control.action.id} control={control}
+		{listing && limitOpen && limitView && (limitView.data as UiDetails).controls?.map(control => <SettingControl key={control.action.id} control={control}
 			disabled={!connected || !!limitView.working} invoke={(action, value) => void manage(action, value, limitView)} />)}
 		{listing && <div className="agent-picker">
 			{total > 8 && <div className="agent-filter"><input aria-label="Find an agent" placeholder="Find an agent" value={search} onChange={event => setSearch(event.target.value)} /></div>}
@@ -130,7 +134,7 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 	const [receipt, setReceipt] = useState<Receipt | undefined>(() => {
 		try { return JSON.parse(localStorage.getItem(receiptKey) ?? "null") ?? undefined; } catch { return undefined; }
 	});
-	const [sending, setSending] = useState(false), [latest, setLatest] = useState(0);
+	const [sending, setSending] = useState(false), [latest, setLatest] = useState(0), [facts, setFacts] = useState(false);
 	const inFlight = useRef(false), live = useRef(true);
 	const currentView = useRef(view); currentView.current = view;
 	useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -184,14 +188,15 @@ function AgentConversation({ session, context, view, connected, epoch, messages,
 		catch (error) { if (live.current) reportDeskError(error); }
 	};
 	return <div className="agent-conversation">
-		<header className="agent-review-heading"><div className="agent-identity"><h3>{view.title}</h3>
-			<div className="agent-current-status"><span className={`status-dot ${questions.length ? "waiting" : item.status}`} />
-				<strong>{questions.length ? "Needs input" : activityLabel(item.status)}</strong>{item.activity && <span>{item.activity}</span>}</div>
-		</div><ActionMenu actions={actions.filter(action => !action.input)} disabled={disabled} invoke={action => void control(action)} label="Agent controls" /></header>
-		<details className="agent-facts"><summary>Details & plan</summary><p>{item.subtitle}</p>
+		<header className="agent-review-heading"><span className={`status-dot ${questions.length ? "waiting" : item.status}`} />
+			<h3 title={view.title}>{view.title}</h3>
+			<span className="agent-current-status">{questions.length ? "Needs input" : activityLabel(item.status)}{item.activity ? ` · ${item.activity}` : ""}</span>
+			<button type="button" className="quiet-action" aria-expanded={facts} onClick={() => setFacts(!facts)}>Details</button>
+			<ActionMenu actions={actions.filter(action => !action.input)} disabled={disabled} invoke={action => void control(action)} label="Agent controls" /></header>
+		{facts && <div className="agent-facts"><p>{item.subtitle}</p>
 			<dl className="detail-fields">{item.fields?.map(field => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
 			{item.scope && <ViewPreviews views={session.ui!.views.filter(view => view.scope?.id === item.scope)} open={openView} />}
-		</details>
+		</div>}
 		{(item.error || view.actionError) && <p className="error-text" role="alert">{view.actionError || item.error}</p>}
 		{view.working && <p className="muted" role="status">{view.working}…</p>}
 		{questions.map(question => <button type="button" className="question-banner" key={question.id} onClick={() => answer(question.id)}>

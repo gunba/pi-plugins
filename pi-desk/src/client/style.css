@@ -1093,11 +1093,14 @@ details[open] > summary:before {
 .detail-panel.agents-panel { display:flex; flex-direction:column; overflow:hidden; padding:18px 22px; }
 .agents-panel > .panel-title { flex-shrink: 0; margin-bottom: 12px; }
 .agent-pane, .agent-conversation { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.agent-parent { margin: 0 0 8px; font-size: 11px; color: var(--muted); flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-parent { min-width: 0; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-slots { flex:none; margin-left:auto; border:0; background:transparent; padding:4px 6px; font-size:11px; color:var(--muted); border-radius:5px; }
+.agent-slots:hover, .agent-slots[aria-expanded="true"] { background:var(--hover); color:var(--text); }
 .agent-picker-heading { display:flex; align-items:center; gap:10px; font-size:11px; margin-bottom:6px; min-height:30px; }
 .agent-picker-heading > strong { font-size:12px; font-weight:600; }
 .agent-picker-heading > strong > span { margin-left:4px; padding:1px 5px; border-radius:3px; background:var(--hover); font-weight:500; }
-.agent-picker-heading > .muted { margin-left:auto; }
+.agent-picker-heading > .muted { margin-left:auto; flex:none; }
+.agent-picker-heading > strong { flex:none; }
 .agent-picker-heading .workspace-actions { margin:0; }
 .agent-picker-heading button { display:flex; align-items:center; gap:8px; font-size:11px; border:0; border-radius:4px; background:transparent; padding:6px 0; color:var(--muted); }
 .agent-picker-heading button > .ui-icon { width:14px; height:14px; }
@@ -1124,9 +1127,12 @@ details[open] > summary:before {
 .agent-row small { flex:1 1 0; min-width:0; color: var(--muted); }
 .agent-row > span:last-child { flex:none; color:var(--muted); font-size:10px; }
 .agent-row .status-dot { flex:none; }
-.agent-conversation > header { display:flex; gap:12px; align-items:flex-start; flex-shrink:0; padding:0 0 12px; }
-.agent-conversation > header > div { flex:1; min-width:0; }
-.agent-conversation h3 { margin:0 0 9px; font-size:17px; line-height:1.4; letter-spacing:-.2px; font-weight:600; overflow-wrap:anywhere; }
+/* The selected agent: one line with its state, details and controls. */
+.agent-conversation > header { display:flex; gap:8px; align-items:center; flex-shrink:0; min-height:32px; padding:4px 0; border-top:1px solid var(--border); }
+.agent-conversation h3 { flex:0 1 auto; min-width:0; margin:0; font-size:13px; line-height:1.4; font-weight:600; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.agent-conversation > header .agent-current-status { flex:1 1 0; min-width:0; font-size:11px; color:var(--muted); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.agent-conversation > header .status-dot { flex:none; }
+.agent-conversation > header .quiet-action { flex:none; padding:4px 6px; font-size:11px; }
 .agent-current-status { display:flex; align-items:center; gap:9px; font-size:11px; color:var(--muted); }
 .agent-current-status strong { font-weight:500; color:var(--text); }
 .agent-current-status > span:last-child:not(.status-dot) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1291,7 +1297,7 @@ details[open] > summary:before {
   position: sticky;
   top: -22px;
   z-index: 2;
-  margin: -22px -22px 24px;
+  margin: -22px -22px 14px;
   padding: 16px 22px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1862,7 +1868,17 @@ details[open] > summary:before {
 .detail-item-heading small { display:block; color:var(--muted); margin-top:4px; font-size:12px; overflow-wrap:anywhere; }
 .detail-status { flex:0 1 auto; max-width:100%; padding:3px 7px; border-radius:4px; background:var(--hover); color:var(--muted); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
 /* Messages: a compact reading list, the text in full contrast and the reply as a link-sized action. */
-.panel-card[data-view="messages"] > .detail-copy { padding:4px 0 8px; font-size:11px; }
+/* Its actions and the line about delivery share one row above the list. Older workers also send Session and Delivery
+   fields and a status chip per message; the line and the heading cover them. */
+.panel-card[data-view="messages"] { display:grid; grid-template-columns:auto minmax(0, 1fr); column-gap:12px; align-items:center; }
+.panel-card[data-view="messages"] > * { grid-column:1 / -1; }
+.panel-card[data-view="messages"] > .panel-section-heading { grid-column:1; margin:0; }
+.panel-card[data-view="messages"] > .panel-section-heading .workspace-actions { margin:0; }
+.panel-card[data-view="messages"] > .detail-copy { grid-column:2; padding:0; margin:0; font-size:11px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.panel-card[data-view="messages"] > .detail-fields { display:none; }
+.panel-card[data-view="messages"] .detail-item:first-of-type { margin-top:8px; }
+.panel-card[data-view="messages"] .detail-item-heading { flex-wrap:nowrap; }
+.panel-card[data-view="messages"] .detail-status { flex:none; padding:0; background:none; font-size:11px; }
 .panel-card[data-view="messages"] .detail-item { padding:10px 0; }
 .panel-card[data-view="messages"] .detail-item-heading > div { display:flex; align-items:baseline; gap:8px; flex-basis:auto; }
 .panel-card[data-view="messages"] .detail-item-heading strong { flex:0 1 auto; min-width:0; font-size:12px; font-weight:600; line-height:1.4;
