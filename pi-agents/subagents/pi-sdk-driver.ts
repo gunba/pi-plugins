@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { createStructuredToolExtension, createStructuredSearchExtension, REQUEST_DESCRIPTION } from "../../pi-tools/index.ts";
+import { createStructuredToolExtension, createStructuredSearchExtension, REQUEST_PREFIX } from "../../pi-tools/index.ts";
 import { describeAgentTools, describeSessionTools } from "../../pi-ui/tool-descriptions.ts";
 import {
 	createAgentSession,
@@ -342,7 +342,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			}
 		};
 		const presentation = this.host.createPresentation?.(input.descriptor);
-		const structured = toolInfo?.some(tool => tool.name === "codemode" && tool.description === REQUEST_DESCRIPTION);
+		const structured = toolInfo?.some(tool => tool.name === "codemode" && !!tool.description?.startsWith(REQUEST_PREFIX));
 		const followups = new FollowupDelivery(input.sessionManager, input.onFollowupDelivered);
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,

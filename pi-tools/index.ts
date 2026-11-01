@@ -24,7 +24,14 @@ function scriptTool<T extends { name: string; outputSchema?: TSchema }>(tool: T)
     ...tool, outputSchema: Type.Union([tool.outputSchema ?? OUTPUTS[tool.name] ?? Type.String(), ERROR]),
   };
 }
-export const REQUEST_DESCRIPTION = `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await, return, loops and conditions work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
+/** The description's first words, which identify the single-tool interface wherever its definition is seen. */
+export const REQUEST_PREFIX = "Run a JavaScript program (QuickJS) that calls operations and returns data.";
+const CORE = new Set(["codemode", "tool_search", "read", "bash", "edit", "write", "ask_user", "web_search", "web_fetch", "watch"]);
+/**
+ * The definition, naming the session's other always-available operations so a tool added in a new version is listed.
+ * Tools loaded on demand are left out: loading one must not change the definition, and searchTools finds them.
+ */
+export const requestDescription = (others: readonly string[]) => `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await, return, loops and conditions work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
 - await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for an error before a step that depends on it.
 - Await side effects in order; use Promise.all only for independent steps. Calls still pending at return are cancelled; finished ones are not undone.
 - Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
@@ -40,7 +47,7 @@ Common operations (more: describeTool):
 ask_user({question,options?,context?,done_when?}) -> {response,cancelled}; done_when: a command that exits 0 once it's done.
 web_search({goal,queries}), web_fetch({urls,goal?,full?}) -> {pages,failures}.
 watch({command?,every?,until?,wake_when?,stop?}): wait without spending turns.
-Other operations: create_plan, update_plan; agent_start, agent_send, agent_list, agent_stop, agent_move; quest_add, quest_list, quest_update; watch; ask_user; show; web_search, web_fetch; conversation_search, conversation_read; list_mcp_resources, list_mcp_resource_templates, read_mcp_resource. Read an operation's contract before its first call: await describeTool(name). searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
+Other operations: ${others.join(", ")}. Read an operation's contract before its first call: await describeTool(name). searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
 Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
@@ -62,6 +69,7 @@ function script(code: string): string {
   const options = code.match(/^\s*\/\/ @options:[^\r\n]*(?:\r?\n|$)/)?.[0] ?? "";
   return `${options}\nreturn await (async (tools) => {\n${code.slice(options.length)}\n})(new Proxy({...tools}, {get(target, name) {
     if (String(name).startsWith("chrome_devtools_") || String(name).startsWith("mcp__")) return target[name];
+    if (typeof name === "string" && !(name in target)) return async () => ({error: \`No operation \${name}. Find one with searchTools(query).\`});
     return async args => {
       let outcome;
       try { outcome = await target[name](args); } catch (e) { return {error: String(e.message ?? e)}; }
@@ -121,13 +129,14 @@ export function createStructuredToolExtension(): ExtensionFactory {
     return {
       ...definition,
       defaultActive: true,
-      description: REQUEST_DESCRIPTION,
+      description: requestDescription([]),
       promptGuidelines: ["Do everything through codemode: one program can make many calls and return only what you need."],
       outputSchema: Type.Unknown(),
       reachesTools: input => /\btool_search\b/.test(String(input.code)) ? "all" : definition.reachesTools?.(input) ?? "all",
       prepareLoadout(loadout) {
+        const others = loadout.declared.filter(tool => !CORE.has(tool.name) && !external(tool.name) && loadout.getExposure(tool.name) !== "deferred");
         return {
-          descriptions: { codemode: REQUEST_DESCRIPTION },
+          descriptions: { codemode: requestDescription(others.map(tool => tool.name)) },
           hiddenDeclarations: loadout.declared.filter(tool => tool.name !== "codemode" && !external(tool.name)).map(tool => tool.name),
         };
       },
