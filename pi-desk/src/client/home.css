@@ -63,3 +63,13 @@
  .home-zoom { left:10px; bottom:5px; }
 }
 @media(prefers-reduced-motion:reduce) { .home-item, .home-shape { transition:none; } }
+/* Hues Home adds to Desk's tokens, tuned for each theme. */
+.home-canvas { --home-text:var(--text); --home-sage:#5f8f6b; --home-amber:#b07a1f; --home-rose:#b55a6a; --home-teal:#2f8a87; --home-sand:#9a7d5a; --home-lilac:#8a6fc4; }
+:root[data-theme="dark"] .home-canvas { --home-sage:#8dbb97; --home-amber:#d9a54a; --home-rose:#e08a98; --home-teal:#62bdb7; --home-sand:#c9a97f; --home-lilac:#b59cf0; }
+.home-text { fill:currentColor; }
+.home-text-box { overflow:visible; }
+.home-text-box > div { color:currentColor; line-height:1.3; white-space:pre-wrap; overflow-wrap:anywhere; }
+.home-icon-box { overflow:visible; }
+.home-icon-box .ui-icon { width:100%; height:100%; }
+.home-free-item { cursor:grab; outline:none; }
+.home-free-item:focus-visible { filter:drop-shadow(0 0 2px var(--accent)); }

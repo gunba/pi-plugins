@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Value } from "typebox/value";
-import { emptyHomeScene, homeItems, homeItemType, validateHomeElement, HomePatchSchema, patchHome, type HomeMessage, type HomeReference, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
+import { emptyHomeScene, homeItems, homeMovable, validateHomeElement, HomePatchSchema, patchHome, type HomeMessage, type HomeReference, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
 import { validateSpec } from "../../../pi-ui/agent-ui.ts";
 import type { QuestCommand, QuestView } from "../shared/quests.ts";
 
@@ -70,7 +70,7 @@ export class HomeStore {
 		if (![x, y].every(value => Number.isFinite(value) && Math.abs(value) <= 4000)) throw Error("Position is outside Home's canvas.");
 		return this.change(scene => {
 			const item = scene.spec.elements[id];
-			if (!item || !homeItemType(item.type)) throw Error("That item is no longer on Home.");
+			if (!homeMovable(item)) throw Error("That item is no longer on Home.");
 			item.props.x = x; item.props.y = y;
 			Object.defineProperty(scene.preferences, id, { value: { x, y }, enumerable: true, configurable: true, writable: true });
 			scene.revision++; return scene;

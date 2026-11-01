@@ -6,8 +6,8 @@ import { HomeCanvasContext, homeComponents } from "./home-components.tsx";
 
 const GAP = 18;
 /**
- * Pushes overlapping items apart for display, along whichever axis needs the smaller move, so a layout the agent
- * crowds still reads cleanly. The item Jordan is dragging stays under his pointer. The scene itself is not changed.
+ * Pushes overlapping labels and pills apart for display, along whichever axis needs the smaller move, so text the
+ * agent crowds still reads. The item Jordan is dragging stays under his pointer. The scene itself is not changed.
  */
 function separate(items: HomeItem[], held?: string): HomeItem[] {
 	const placed = items.map(item => ({ ...item }));
@@ -15,6 +15,8 @@ function separate(items: HomeItem[], held?: string): HomeItem[] {
 		let moved = false;
 		for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
 			const a = placed[i]!, b = placed[j]!;
+			// Only text-bearing labels and pills are kept apart; blobs may hold them, and free drawing goes where it is put.
+			if (!["label", "pill"].includes(a.shape) || !["label", "pill"].includes(b.shape)) continue;
 			const overlapX = Math.min(a.x + a.width, b.x + b.width) + GAP - Math.max(a.x, b.x);
 			const overlapY = Math.min(a.y + a.height, b.y + b.height) + GAP - Math.max(a.y, b.y);
 			if (overlapX <= 0 || overlapY <= 0) continue;
@@ -41,9 +43,12 @@ export function HomeCanvas({ scene, state, open, move }: { scene: HomeScene; sta
 	const sourceItems = homeItems(scene);
 	const items = separate(sourceItems.map(item => dragged?.id === item.id ? { ...item, x: dragged.x, y: dragged.y } : item), dragged?.id);
 	const fit = () => {
-		if (!sourceItems.length) return;
-		const left = Math.min(...sourceItems.map(item => item.x)) - 35, top = Math.min(...sourceItems.map(item => item.y)) - 35;
-		const right = Math.max(...sourceItems.map(item => item.x + item.width)) + 35, bottom = Math.max(...sourceItems.map(item => item.y + item.height)) + 35;
+		// The drawn extent, free drawing included; the items' boxes stand in before the canvas has drawn.
+		const drawn = (element.current?.querySelector(".home-canvas svg > g") as SVGGElement | null)?.getBBox();
+		if (!drawn?.width && !sourceItems.length) return;
+		const left = (drawn?.width ? drawn.x : Math.min(...sourceItems.map(item => item.x))) - 35, top = (drawn?.width ? drawn.y : Math.min(...sourceItems.map(item => item.y))) - 35;
+		const right = (drawn?.width ? drawn.x + drawn.width : Math.max(...sourceItems.map(item => item.x + item.width))) + 35;
+		const bottom = (drawn?.height ? drawn.y + drawn.height : Math.max(...sourceItems.map(item => item.y + item.height))) + 35;
 		const zoom = Math.max(0.15, Math.min(1.25, size.width / (right - left), size.height / (bottom - top)));
 		setCamera({ x: (size.width - (right - left) * zoom) / 2 - left * zoom, y: (size.height - (bottom - top) * zoom) / 2 - top * zoom, zoom });
 	};

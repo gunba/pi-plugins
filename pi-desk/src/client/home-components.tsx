@@ -1,3 +1,4 @@
+import type React from "react";
 import { createContext, useContext, type CSSProperties, type MutableRefObject } from "react";
 import { composeAgentCatalog, type ComponentRegistry, type ComponentRenderProps } from "./agent-ui/index.tsx";
 import { homeBlob, homeCatalog, type HomeItem } from "../shared/home.ts";
@@ -13,6 +14,9 @@ const useCanvas = () => {
 	if (!context) throw Error("Home components need a Home canvas.");
 	return context;
 };
+/** Desk's own colour tokens, or a hue Home adds; both follow the light and dark themes. */
+export const homeColor = (token: unknown): string =>
+	["accent", "input-needed", "muted", "danger", "text"].includes(String(token)) ? `var(--${token})` : `var(--home-${String(token)})`;
 function Canvas({ children }: ComponentRenderProps) {
 	const { camera } = useCanvas();
 	return <svg width="100%" height="100%" role="group" aria-label="Tasks and live work"><g transform={`translate(${camera.x} ${camera.y}) scale(${camera.zoom})`}>{children}</g></svg>;
@@ -23,7 +27,7 @@ function Shape({ element }: ComponentRenderProps) {
 	if (!geometry) return null;
 	const item = { ...element.props, ...geometry, title: element.props.title, subtitle: element.props.subtitle, status: element.props.status } as HomeItem;
 	return <g className={`home-item home-${item.shape}`} data-home-item={id}
-		style={{ transform: `translate(${item.x}px, ${item.y}px)`, "--home-color": `var(--${item.color})` } as CSSProperties}>
+		style={{ transform: `translate(${item.x}px, ${item.y}px)`, "--home-color": homeColor(item.color) } as CSSProperties}>
 		{item.shape === "blob" ? <path className="home-shape" d={homeBlob(item)} strokeDasharray={item.outline === "dashed" ? "5 6" : undefined} />
 			: item.shape === "pill" ? <rect className="home-shape" width={item.width} height={item.height} rx={item.height / 2} strokeDasharray={item.outline === "dashed" ? "5 6" : undefined} /> : null}
 		<foreignObject width={item.width} height={item.height}>
@@ -71,9 +75,54 @@ function Connector({ element }: ComponentRenderProps) {
 	const c1 = { x: start.point.x + start.out.x * reach + side.x, y: start.point.y + start.out.y * reach + side.y };
 	const c2 = { x: end.point.x + end.out.x * reach + side.x, y: end.point.y + end.out.y * reach + side.y };
 	const color = (a.shape === "label" ? b : a).color;
-	return <g className="home-link" style={{ "--home-color": `var(--${color})` } as CSSProperties}>
+	return <g className="home-link" style={{ "--home-color": homeColor(color) } as CSSProperties}>
 		<path d={`M ${start.point.x} ${start.point.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.point.x} ${end.point.y}`} />
 		<circle cx={start.point.x} cy={start.point.y} r="2.6" /><circle cx={end.point.x} cy={end.point.y} r="2.6" />
 	</g>;
 }
-export const homeComponents: ComponentRegistry = composeAgentCatalog(homeCatalog, { Canvas, Blob: Shape, Pill: Shape, Label: Shape, Connector }).components;
+type Props = Record<string, unknown>;
+/**
+ * Free drawing sits where the agent puts it. One with a ref is an item: it follows a drag, and Enter opens it like a
+ * click; the canvas handles pointers for every item.
+ */
+function Free({ element, children }: { element: ComponentRenderProps["element"]; children: React.ReactNode }) {
+	const { items, open } = useCanvas();
+	const props = element.props as Props, id = String(props.$id), item = items.find(entry => entry.id === id);
+	const x = item?.x ?? Number(props.x), y = item?.y ?? Number(props.y), rotate = Number(props.rotate ?? 0);
+	return <g className={item ? "home-free home-free-item" : "home-free"} data-home-item={item ? id : undefined}
+		transform={`translate(${x} ${y})${rotate ? ` rotate(${rotate})` : ""}`}
+		style={{ color: homeColor(props.color), opacity: props.opacity === undefined ? undefined : Number(props.opacity) }}
+		{...item ? { tabIndex: 0, role: "button", "aria-label": String(props.text ?? props.name ?? id),
+			onKeyDown: (event: React.KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(item); } } } : {}}>
+		{children}
+	</g>;
+}
+/** Fill and outline shared by Shape and Path: the fill defaults to the colour for shapes and to none for paths. */
+function paint(props: Props, fillByDefault: boolean) {
+	const fill = props.fill ?? (fillByDefault ? props.color : "none"), width = Number(props.strokeWidth ?? 1.5);
+	return { fill: fill === "none" ? "none" : homeColor(fill), fillOpacity: fill === "none" ? undefined : Number(props.tint ?? 0.14),
+		stroke: width ? "currentColor" : "none", strokeWidth: width, strokeDasharray: props.dashed ? "6 6" : undefined,
+		strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+}
+function Text({ element }: ComponentRenderProps) {
+	const props = element.props as Props, size = Number(props.size), align = (props.align ?? "start") as "start" | "middle" | "end";
+	const style = { fontSize: size, fontWeight: Number(props.weight ?? 400), fontStyle: props.italic ? "italic" : undefined } as const;
+	return <Free element={element}>{props.width
+		? <foreignObject width={Number(props.width)} height={1} className="home-text-box">
+			<div style={{ ...style, textAlign: align === "middle" ? "center" : align === "end" ? "right" : "left" }}>{String(props.text)}</div></foreignObject>
+		: <text className="home-text" y={size} textAnchor={align} style={style}>{String(props.text)}</text>}</Free>;
+}
+function ShapeElement({ element }: ComponentRenderProps) {
+	const props = element.props as Props, width = Number(props.width), height = Number(props.height);
+	return <Free element={element}>{props.kind === "ellipse"
+		? <ellipse cx={width / 2} cy={height / 2} rx={width / 2} ry={height / 2} {...paint(props, true)} />
+		: <rect width={width} height={height} rx={Number(props.radius ?? 0)} {...paint(props, true)} />}</Free>;
+}
+function Path({ element }: ComponentRenderProps) {
+	return <Free element={element}><path d={String(element.props.d)} {...paint(element.props as Props, false)} /></Free>;
+}
+function IconElement({ element }: ComponentRenderProps) {
+	const size = Number(element.props.size);
+	return <Free element={element}><foreignObject width={size} height={size} className="home-icon-box"><Icon name={element.props.name as never} /></foreignObject></Free>;
+}
+export const homeComponents: ComponentRegistry = composeAgentCatalog(homeCatalog, { Canvas, Blob: Shape, Pill: Shape, Label: Shape, Connector, Text, Shape: ShapeElement, Path, Icon: IconElement }).components;
