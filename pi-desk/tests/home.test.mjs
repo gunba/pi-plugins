@@ -21,8 +21,10 @@ const fixture = t => {
 	const directory = mkdtempSync(join(tmpdir(), "desk-home-"));
 	const store = new HomeStore(directory);
 	store.set("quests", { quests: [{ id: "quest-1", title: "Review changes", state: "open" }], upcoming: [] });
-	t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-	return { directory, store };
+	// Windows cannot remove a folder while a database in it is open, so everything a test opens there closes first.
+	const closing = [];
+	t.after(() => { for (const close of closing) close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+	return { directory, store, closing };
 };
 
 test("first Home scene includes every real open quest, reopened daily, upcoming repeat and live-work reference", t => {
@@ -63,7 +65,7 @@ test("first Home scene includes every real open quest, reopened daily, upcoming 
 });
 
 test("scene patches are atomic, schema checked, and cannot erase a drag", t => {
-	const { directory, store } = fixture(t), other = new HomeStore(directory); t.after(() => other.close());
+	const { directory, store, closing } = fixture(t), other = new HomeStore(directory); closing.push(() => other.close());
 	store.patch({ revision: 0, operations: add(item()) });
 	other.drag("review", 500, 240);
 	assert.throws(() => store.patch({ revision: 1, operations: [{ op: "remove", path: "/elements/review" }] }), /Home changed/);
@@ -188,9 +190,9 @@ test("overlap labelling is persistent and scheduled Home alerts use an explicit 
 });
 
 test("every Home turn reads the current overlap setting, including scheduled wakes after compaction", t => {
-	const { directory, store } = fixture(t), handlers = new Map(), tools = new Map();
+	const { directory, store, closing } = fixture(t), handlers = new Map(), tools = new Map();
 	installHome({ on: (name, handler) => handlers.set(name, handler), registerTool: tool => tools.set(tool.name, tool) }, directory);
-	t.after(() => handlers.get("session_shutdown")());
+	closing.push(() => handlers.get("session_shutdown")());
 	store.set("overlap", true);
 	assert.match(handlers.get("before_agent_start")({ systemPrompt: "Normal Pi tools" }).systemPrompt, /Prefix every outgoing scheduled email subject/);
 	store.set("overlap", false);
