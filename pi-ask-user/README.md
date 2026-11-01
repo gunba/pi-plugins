@@ -27,6 +27,7 @@ Registered tool name: `ask_user`.
 | `allowFreeform` | `boolean?` | `true` | Add a freeform response option |
 | `allowComment` | `boolean?` | `false` | Allow an optional comment after a structured choice |
 | `timeout` | `number?` | — | Auto-dismiss after N ms |
+| `done_when` | `string?` | — | For a request to do something: a shell command (the bash tool's shell) re-run every 5 s; the question closes by itself once it exits 0 |
 
 In the terminal the question opens as an overlay. `PI_ASK_USER_DISPLAY_MODE=inline`
 shows it in place instead. `alt+o` hides and reopens the overlay and `ctrl+g` toggles

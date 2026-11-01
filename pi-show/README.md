@@ -11,7 +11,7 @@ await tools.edit({path:"workers.ts", edits:[{oldText:"workers = 4",newText:"work
   show:true, description:"Use the faster worker pool"});
 ```
 
-Other operations—including `show`, agent management, plans, watches, search and questions—do not get the flag. They keep their own UI. This convention is shared once in the single-tool definition; discover `show` for the full contract.
+Other operations—including `show`, agent management, plans, watches, search and questions—do not get the flag. They keep their own UI. The flag is documented in each relevant operation's discovered contract; discover `show` for the full show contract.
 
 ## Arrange results by stable ID
 

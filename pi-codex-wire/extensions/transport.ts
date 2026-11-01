@@ -18,6 +18,12 @@ const zlib = require("node:zlib") as {
 const encoder = new TextEncoder();
 const terminal = new Set(["response.completed", "response.done", "response.incomplete", "response.failed"]);
 
+/**
+ * The server ends a WebSocket 60 minutes after it opens, failing any response then streaming. A connection is
+ * replaced between requests well before that, so a response would need to stream for over 10 minutes to meet it.
+ */
+const SOCKET_MAX_AGE_MS = 50 * 60_000;
+
 class WebSocketExpired extends Error {
   readonly replaySafe: boolean;
   constructor(replaySafe: boolean) {
@@ -150,6 +156,7 @@ function proxyFor(url: string, env: NodeJS.ProcessEnv): string | undefined {
 /** A transport adapter; Pi still serializes tools/messages and decodes model events. */
 export class WireTransport {
   private socket?: WebSocket;
+  private socketOpenedAt = 0;
   private socketNetwork?: () => JsonObject;
   private continuation?: Continuation;
   private fallback = false;
@@ -242,7 +249,7 @@ export class WireTransport {
   }
 
   private async connect(exchange: Exchange): Promise<WebSocket> {
-    if (this.socket?.readyState === WebSocket.OPEN) return this.socket;
+    if (this.socket?.readyState === WebSocket.OPEN && Date.now() - this.socketOpenedAt < SOCKET_MAX_AGE_MS) return this.socket;
     this.closeConnection();
     const url = exchange.url.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
     const headers = new Headers(exchange.headers);
@@ -281,7 +288,7 @@ export class WireTransport {
       exchange.signal?.addEventListener("abort", aborted, { once: true });
       if (exchange.signal?.aborted) aborted();
     });
-    this.socket = socket;
+    this.socket = socket; this.socketOpenedAt = Date.now();
     return socket;
   }
 

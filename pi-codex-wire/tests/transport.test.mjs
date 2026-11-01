@@ -765,6 +765,23 @@ test("parsed Pi replay preserves deltas despite argument whitespace and server s
   assert.deepEqual(frames[2].input, [toolResult]);
 });
 
+test("a connection nearing the server's 60-minute limit is replaced before the next request", async t => {
+  const f = await fixture(t);
+  const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
+  const connections = [];
+  wss.on("connection", socket => {
+    const frames = []; connections.push(frames);
+    socket.on("message", data => { frames.push(JSON.parse(data.toString())); socket.send(JSON.stringify(completed(`r${connections.length}`))); });
+  });
+  await (await f.transport.request(exchange(f))).text();
+  await (await f.transport.request(exchange(f))).text();
+  assert.equal(connections.length, 1, "a young connection is reused");
+  f.transport.socketOpenedAt -= 51 * 60_000;
+  await (await f.transport.request(exchange(f))).text();
+  assert.equal(connections.length, 2);
+  assert.ok(connections[1].every(frame => frame.previous_response_id !== "r1"), "a response on the old connection cannot be continued");
+});
+
 test("account changes cannot reuse sockets, routing state or continuation", async t => {
   const f = await fixture(t);
   const wss = new WebSocketServer({ server: f.server }); t.after(() => wss.close());
