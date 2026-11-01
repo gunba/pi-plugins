@@ -1,8 +1,7 @@
 # One request tool for Desk
 
-A candidate interface, not a recommendation to switch production defaults yet. The
-[measurements](../pi-improve-skill/bench/single-tool/README.md) show a much smaller
-request definition, but the real repository task was slower with this interface.
+Desk uses one request tool by default for all built-in and plugin operations.
+Chrome and MCP-server operations retain their own interfaces.
 
 ## Interface
 
@@ -71,10 +70,9 @@ plan, agent, shown-file and watch cards. No new card implementation is introduce
 Children inherit the parent's interface and tool permissions; terminal parents
 using the original interface keep it in their children.
 
-The measured provider-neutral definition is **3,324 UTF-8 bytes**, against **18,938**
-for the benchmark's ordinary tool set. A real-session test enforces a **3,584-byte**
-ceiling, including Desk's description field, and checks that discovery leaves the
-definition unchanged.
+A real-session test enforces a **3,584-byte** ceiling for the provider-neutral
+definition, including Desk's description field, and checks that discovery leaves
+the definition unchanged.
 
 ## Why not GraphQL or a list of operations?
 
@@ -85,8 +83,7 @@ facilities, the guarded execution path, provider grammar support and Desk cards.
 The change therefore subsumes ordinary calls into codemode, rather than making
 codemode an operation inside a second orchestrator.
 
-This is an implementation and measured candidate, not evidence that script-only
-coding is universally better. The draft PR should not be merged as the default on
-the current evidence. Retaining direct file/shell calls alongside ordinary codemode
-is the supported production choice until a single-tool primitive fast path or other
-candidate demonstrates comparable real coding performance.
+File and shell operations use this same entry point, not a separate direct-call
+path. Write valid JavaScript with key:value pairs in object literals. Node globals
+such as `process`, `require` and `Buffer` are unavailable in QuickJS; use `tools.bash`
+to run Node or shell code.

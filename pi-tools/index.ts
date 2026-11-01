@@ -26,6 +26,7 @@ function scriptTool<T extends { name: string; outputSchema?: TSchema }>(tool: T)
 }
 export const REQUEST_DESCRIPTION = `Execute a JavaScript request in QuickJS: top-level await, return, loops and conditions; no Node, filesystem, network or timers except through operations. Send raw source when supported, otherwise {code: "..."}.
 Shared conventions:
+- Use valid JavaScript: object fields need key:value pairs. No process, require, Buffer or imports; run Node/shell code through tools.bash.
 - await tools.NAME(args) returns data or {error:string}; check errors before dependent effects. Await effects in order; Promise.all is for independent work. Pending calls are cancelled at return; completed effects are not rolled back.
 - Return only needed fields: const r=await tools.bash({command:"git status --short",description:"Inspect changes"}); return r.error?r:{output:r.output};
 - Every operation accepts description?:string: one short sentence for the user about what and why. It is omitted from the signatures below.
@@ -121,7 +122,7 @@ export function createStructuredSearchExtension(): ExtensionFactory {
   return pi => intercept(pi, createToolSearchExtension(), definition => ({ ...definition, exposure: "direct", defaultActive: true }));
 }
 
-/** Explicit entry point for headless comparisons against the ordinary built-ins. */
+/** Install the request and discovery adapters together. */
 export default function structuredTools(pi: ExtensionAPI): void {
   createStructuredToolExtension()(pi);
   createStructuredSearchExtension()(pi);
