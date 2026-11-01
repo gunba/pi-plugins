@@ -10,7 +10,7 @@ import { Home, homeWork } from "../src/host/home.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 import { HostQuests } from "../src/host/host-quests.ts";
 import { QuestStore } from "../../pi-agents/quests.ts";
-import { HOME_MODEL, homeBlob, homeItems } from "../src/shared/home.ts";
+import { HOME_MODEL, homeBlob, homeItems, homeLayoutProblems } from "../src/shared/home.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 
 const item = (id = "review") => ({ id, ref: { kind: "quest", id: "quest-1" }, title: "Review changes", subtitle: "Website", status: "Waiting for you",
@@ -198,4 +198,26 @@ test("every Home turn reads the current overlap setting, including scheduled wak
 	store.set("overlap", false);
 	assert.match(handlers.get("before_agent_start")({ systemPrompt: "Normal Pi tools" }).systemPrompt, /Normal\. Do not add a Home:/);
 	assert.deepEqual([...tools.keys()], ["home_scene", "home_quest", "home_jobs", "home_notify"]);
+});
+
+test("home_scene names the layout faults Terra left on Jordan's canvas", () => {
+	// Seen on Sydney: blobs grown to fit their words covered the tasks below them, and two area outlines ran into each other.
+	const element = (type, props) => ({ type, props, children: [] });
+	const scene = (elements) => ({ version: 1, revision: 1, preferences: {},
+		spec: { root: "canvas", elements: { canvas: element("Canvas", {}), ...elements } } });
+	const ref = { kind: "quest", id: "q" };
+	const blob = { x: 60, y: 190, width: 210, height: 90, title: "HostHatch switch", icon: "globe", color: "amber", ref, seed: 1, wobble: 0.1 };
+	assert.deepEqual(homeLayoutProblems(scene({
+		land: element("Path", { x: 30, y: 90, color: "teal", d: "M10 20 C120 0 500 0 620 40 C640 200 630 400 560 430 C300 450 60 440 20 380 Z" }),
+		cloud: element("Path", { x: 620, y: 100, color: "lilac", dashed: true, d: "M10 30 C150 -10 380 0 440 80 C450 250 400 340 220 350 C60 360 0 250 10 30 Z" }),
+		hosthatch: element("Blob", blob),
+		presentation: element("Text", { x: 65, y: 350, text: "Presentation", size: 17, color: "text", width: 210 }),
+		dot: element("Shape", { x: 100, y: 592, kind: "ellipse", width: 8, height: 8, color: "muted" }),
+		desks: element("Text", { x: 104, y: 550, text: "Office desks · 2 Nov", size: 13, color: "muted", align: "middle" }),
+	})), ["hosthatch overlaps presentation", "areas land and cloud run into each other"]);
+	assert.deepEqual(homeLayoutProblems(scene({
+		hosthatch: element("Blob", { ...blob, height: 170 }),
+		presentation: element("Text", { x: 65, y: 380, text: "Presentation", size: 17, color: "text" }),
+		far: element("Text", { x: 1500, y: 900, text: "Psych · 17 Nov", size: 13, color: "muted" }),
+	})), ["the drawing is 1540 by 727; keep it within about 1200 by 700"]);
 });

@@ -147,3 +147,71 @@ export function homeBlob(item: Pick<HomeItem, "width" | "height" | "seed" | "wob
 	}
 	return path + " Z";
 }
+
+type Box = { id: string; x: number; y: number; width: number; height: number };
+const PATH_ARGS: Record<string, number> = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+/** The box around a path's points, control points included, so it may be a little larger than the curve. */
+function pathBox(d: string): [number, number, number, number] | undefined {
+	const tokens = d.match(/[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) ?? [];
+	let x = 0, y = 0, startX = 0, startY = 0, command = "", i = 0;
+	const xs: number[] = [], ys: number[] = [];
+	while (i < tokens.length) {
+		if (/[A-Za-z]/.test(tokens[i]!)) command = tokens[i++]!;
+		const upper = command.toUpperCase(), relative = command !== upper, count = PATH_ARGS[upper];
+		if (count === undefined) return undefined;
+		if (upper === "Z") { x = startX; y = startY; command = ""; continue; }
+		const args = tokens.slice(i, i + count).map(Number);
+		if (args.length < count || args.some(Number.isNaN)) break;
+		i += count;
+		const point = (px: number, py: number) => { xs.push(relative ? x + px : px); ys.push(relative ? y + py : py); };
+		if (upper === "H") { x = relative ? x + args[0]! : args[0]!; xs.push(x); ys.push(y); continue; }
+		if (upper === "V") { y = relative ? y + args[0]! : args[0]!; xs.push(x); ys.push(y); continue; }
+		if (upper === "A") point(args[5]!, args[6]!);
+		else for (let k = 0; k < count; k += 2) point(args[k]!, args[k + 1]!);
+		x = xs.at(-1)!; y = ys.at(-1)!;
+		if (upper === "M") { startX = x; startY = y; command = relative ? "l" : "L"; }
+	}
+	return xs.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : undefined;
+}
+/** Where a free element or item is drawn; text is measured at about 0.55 em a character, as the theme's sans-serif averages. */
+function homeBox(id: string, element: AgentElement): Box | undefined {
+	const props = element.props as Record<string, unknown>, x = Number(props.x ?? 0), y = Number(props.y ?? 0);
+	if (homeItemType(element.type)) {
+		const [width, height] = HOME_MIN_SIZE[element.type.toLowerCase()] ?? [0, 0];
+		return { id, x, y, width: Math.max(Number(props.width), width), height: Math.max(Number(props.height), height) };
+	}
+	if (element.type === "Icon") return { id, x, y, width: Number(props.size), height: Number(props.size) };
+	if (element.type === "Shape") return { id, x, y, width: Number(props.width), height: Number(props.height) };
+	if (element.type === "Path") {
+		const box = pathBox(String(props.d));
+		return box && { id, x: x + box[0], y: y + box[1], width: box[2] - box[0], height: box[3] - box[1] };
+	}
+	if (element.type !== "Text") return undefined;
+	const size = Number(props.size), length = typeof props.text === "string" ? props.text.length : 20;
+	const natural = length * size * (Number(props.weight ?? 400) >= 600 ? 0.58 : 0.55), wrap = Number(props.width ?? 0);
+	const width = wrap || natural, height = size * 1.3 * (wrap ? Math.max(1, Math.ceil(natural / wrap)) : 1);
+	const left = props.align === "middle" ? x - width / 2 : props.align === "end" ? x - width : x;
+	return { id, x: left, y, width, height };
+}
+const overlap = (a: Box, b: Box) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 2 && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 2;
+/** Layout faults the agent should fix before it finishes: words on top of other words or items, areas running into each other, and a drawing too big for the screen. */
+export function homeLayoutProblems(scene: HomeScene): string[] {
+	const elements = Object.entries(scene.spec.elements).filter(([id]) => id !== scene.spec.root);
+	const boxes = elements.map(([id, element]) => ({ element, box: homeBox(id, element) })).filter(entry => entry.box) as { element: AgentElement; box: Box }[];
+	// Shapes and paths at least this big in both directions are areas; smaller ones are marks such as dots and ticks.
+	const area = (entry: { element: AgentElement; box: Box }) => ["Shape", "Path"].includes(entry.element.type) && entry.box.width >= 120 && entry.box.height >= 80;
+	const words = boxes.filter(entry => !["Shape", "Path"].includes(entry.element.type)), areas = boxes.filter(area);
+	const problems: string[] = [];
+	for (let i = 0; i < words.length; i++) for (let j = i + 1; j < words.length; j++)
+		if (overlap(words[i]!.box, words[j]!.box)) problems.push(`${words[i]!.box.id} overlaps ${words[j]!.box.id}`);
+	for (let i = 0; i < areas.length; i++) for (let j = i + 1; j < areas.length; j++) {
+		const a = areas[i]!.box, b = areas[j]!.box, inside = (o: Box, c: Box) => o.x <= c.x && o.y <= c.y && o.x + o.width >= c.x + c.width && o.y + o.height >= c.y + c.height;
+		if (overlap(a, b) && !inside(a, b) && !inside(b, a)) problems.push(`areas ${a.id} and ${b.id} run into each other`);
+	}
+	if (boxes.length) {
+		const left = Math.min(...boxes.map(entry => entry.box.x)), top = Math.min(...boxes.map(entry => entry.box.y));
+		const width = Math.max(...boxes.map(entry => entry.box.x + entry.box.width)) - left, height = Math.max(...boxes.map(entry => entry.box.y + entry.box.height)) - top;
+		if (width > 1320 || height > 780) problems.push(`the drawing is ${Math.round(width)} by ${Math.round(height)}; keep it within about 1200 by 700`);
+	}
+	return problems.slice(0, 20);
+}

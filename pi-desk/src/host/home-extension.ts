@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readHomeJobs } from "./home-jobs.ts";
-import { HomePatchSchema, HomeItemPropsSchema, HomeConnectorPropsSchema, HomeTextPropsSchema, HomeShapePropsSchema, HomePathPropsSchema, HomeIconPropsSchema } from "../shared/home.ts";
+import { HomePatchSchema, HomeItemPropsSchema, HomeConnectorPropsSchema, HomeTextPropsSchema, HomeShapePropsSchema, HomePathPropsSchema, HomeIconPropsSchema, homeLayoutProblems, type HomeScene } from "../shared/home.ts";
 import type { QuestCommand } from "../shared/quests.ts";
 import { HomeStore } from "./home-store.ts";
 
@@ -19,8 +19,16 @@ The canvas
 - Ready-made items: Blob (an organic shape with icon, title, subtitle and status; at least 300 by 170 so its words fit), Pill (at least 220 by 84) and Label (an icon beside text). Connector {from, to, bend} joins two of them edge to edge. Don't title the canvas; Home's header names it.
 - Free drawing: Text, Shape (rect or ellipse), Path (SVG path data, drawn from its x, y) and Icon, anywhere. A free element with a ref is an item Jordan can open and drag; a task can simply be a Text with its quest's ref, inside an area you drew.
 - Colours are theme tokens that work in light and dark: accent, input-needed, danger, muted, text, sage, amber, rose, teal, sand and lilac. Fills are tints (tint 0.08 to 0.2 behind text). Keep text 12 px or larger, never on top of other text, and readable against what's behind it.
-- Scale it to Jordan's screen: keep the whole drawing within about 1200 by 700, readable at full size, however many tasks there are. Only the few things that need him now (about five at most) get large shapes; show the rest compactly, as labels or text grouped in a few areas, and gather repeating and upcoming tasks into a quiet corner. As tasks multiply, shrink and group rather than spread out.
 - Remove items once they are finished or obsolete. Keep positions stable between turns. The store keeps the positions Jordan drags; release one, with releasePositions in the same home_scene call, only when he asks you to move that item.
+
+Composition
+- Draw a map with a clear order of attention: the few things that need Jordan now (about five at most) as large Blobs, everything else as compact text grouped in areas, and repeating and upcoming tasks in a quiet strip or corner. The eye should land on the large shapes first.
+- Areas read best as soft closed Paths with a light tint. Keep them at least 40 px apart; one never runs into another. Name each with small Text in its colour. Keep every item inside its area with a margin, and at least 16 px between any two pieces of text or items.
+- Today comes first, in a clear place of its own: what Jordan has to do today (dailies such as medication and rowing, appointments, today's deadlines), each shown done or still to do, by the quest log's today and each quest's state and next date. When today is light, add tomorrow's beneath it. Later dates go in the quiet strip.
+- Put each thing beside what it belongs to: a working agent next to the task it serves, or in a small "working now" group when it serves none; a date centred on its timeline dot (the same x, align middle).
+- Keep the whole drawing within about 1200 by 700 and readable at full size, however many tasks there are. As tasks multiply, shrink and group rather than spread out.
+- Grow by recomposing: put a new item in its area's free space, and when an area is full, lay that area out again (keeping positions Jordan dragged) rather than squeezing items in or letting them spill.
+- home_scene lists layout problems with the scene: words overlapping, areas running into each other, a drawing too big. Fix every one before you finish a turn, including any already there when you read it.
 
 The scene format
 - The scene is a json-render spec: {root:"canvas", elements:{canvas:{type:"Canvas", props:{}, children:[...]}}}. Every element goes directly under Canvas; later children draw on top, so put areas and connectors first. An element's key is its identity (letters, digits, - _ and ., up to 100); never set $id. Props follow the schemas home_scene returns.
@@ -48,6 +56,8 @@ Tools and limits
 - Hand work to other agents only when Jordan asks. Approvals and permissions apply as usual; never work around them.
 `;
 
+/** A scene with the layout faults the agent must still fix, listed only when there are some. */
+const withProblems = (scene: HomeScene) => { const problems = homeLayoutProblems(scene); return problems.length ? { ...scene, problems } : scene; };
 const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value });
 const optionalText = () => Type.Optional(Type.String({ maxLength: 4000 }));
 const repeat = Type.Object({ every: Type.Optional(Type.Integer({ minimum: 1, maximum: 366 })), unit: Type.Union([Type.Literal("day"), Type.Literal("week"), Type.Literal("month")]),
@@ -69,7 +79,7 @@ export function installHome(pi: ExtensionAPI, directory: string): void {
 		? "Side-by-side comparison with Dot. Prefix every outgoing scheduled email subject and notification title with Home:. Do not stop Dot jobs. The operator clears this setting after all jobs have been verified."
 		: "Normal. Do not add a Home: comparison prefix to scheduled email subjects or notification titles.") }));
 	pi.registerTool({ name: "home_scene", label: "Arrange Home", description: "Without patch, returns the scene with its revision, the references it must include (required), the live state keys and the component schemas. With patch, applies it as one change. Positions are canvas pixels; positions Jordan dragged are kept.",
-		parameters: Type.Object({ patch: Type.Optional(HomePatchSchema), releasePositions: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 160, description: "Items Jordan has asked you to move although he dragged them there. Needs a patch." })) }), async execute(_id, params) { return result(params.patch ? store.patch(params.patch, params.releasePositions) : { ...store.scene(), required: store.required(), state: store.get("state"), components: { Canvas: { props: {} }, Blob: HomeItemPropsSchema, Pill: HomeItemPropsSchema, Label: HomeItemPropsSchema, Connector: HomeConnectorPropsSchema, Text: HomeTextPropsSchema, Shape: HomeShapePropsSchema, Path: HomePathPropsSchema, Icon: HomeIconPropsSchema } }); } });
+		parameters: Type.Object({ patch: Type.Optional(HomePatchSchema), releasePositions: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 160, description: "Items Jordan has asked you to move although he dragged them there. Needs a patch." })) }), async execute(_id, params) { return result(params.patch ? withProblems(store.patch(params.patch, params.releasePositions)) : { ...withProblems(store.scene()), required: store.required(), state: store.get("state"), components: { Canvas: { props: {} }, Blob: HomeItemPropsSchema, Pill: HomeItemPropsSchema, Label: HomeItemPropsSchema, Connector: HomeConnectorPropsSchema, Text: HomeTextPropsSchema, Shape: HomeShapePropsSchema, Path: HomePathPropsSchema, Icon: HomeIconPropsSchema } }); } });
 	pi.registerTool({ name: "home_quest", label: "Manage Home quests", description: "Without command, returns the quest log. With command, changes a quest for Jordan, including other agents' quests; the agent waiting on it is told. Dates are YYYY-MM-DD.",
 		parameters: Type.Object({ command: Type.Optional(QuestCommandSchema) }),
 		async execute(id, params, signal) {
