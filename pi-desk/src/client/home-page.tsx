@@ -33,11 +33,15 @@ function Text({ children }: { children: string }) {
  */
 export function HomePage({ page, work, open }: { page: string; work: HomeWork[]; open: (work: HomeWork) => void }) {
 	const { lead, columns } = sections(page);
-	const now = Date.now(), chips = [...work].sort((a, b) => RANK[tone(a.status)] - RANK[tone(b.status)]);
+	// Secondary agents follow the conversation that started them.
+	const now = Date.now(), sameConversation = (a: HomeWork, b: HomeWork) => a.id === b.id && (a.computer ?? "") === (b.computer ?? "");
+	const chips = work.filter(item => !item.parent).sort((a, b) => RANK[tone(a.status)] - RANK[tone(b.status)])
+		.flatMap(top => [top, ...work.filter(item => item.parent && sameConversation(item, top))]);
 	const wakes = work.filter(item => item.wakes && item.wakes > now - 60_000).sort((a, b) => a.wakes! - b.wakes!).slice(0, 12);
 	return <div className="home-canvas"><div className="home-page">
 		{chips.length > 0 && <div className="home-live" aria-label="Conversations">{chips.map(item =>
-			<button key={`${item.computer ?? ""}:${item.id}:${item.view ?? ""}`} className={`home-live-item ${tone(item.status)}`} title={item.detail || undefined} onClick={() => open(item)}>
+			<button key={`${item.computer ?? ""}:${item.id}:${item.view ?? ""}`} className={`home-live-item ${tone(item.status)}${item.parent ? " child" : ""}`}
+				title={[item.parent && `Secondary agent of ${item.parent}`, item.detail].filter(Boolean).join("\n") || undefined} onClick={() => open(item)}>
 				<span className="home-live-dot" /><strong>{item.title}</strong><span>{item.status}</span></button>)}</div>}
 		{wakes.length > 0 && <section className="home-wakes" aria-labelledby="home-wakes-title"><h3 id="home-wakes-title">Next wakes</h3>
 			<ol>{wakes.map(item => <li key={`${item.computer ?? ""}:${item.id}`}><button title={`A watch wakes ${item.title}`} onClick={() => open(item)}>

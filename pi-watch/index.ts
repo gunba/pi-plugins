@@ -95,7 +95,7 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command; with every, re-run." })),
 	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs. Wakes you on a change, then ends." })),
-	until: Type.Optional(Type.String({ description: "Wake at HH:MM (local) or an ISO time." })),
+	until: Type.Optional(Type.String({ description: "Wake after a delay (90s, 5m, 2h), at HH:MM (local) or at an ISO time." })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
 	hours: Type.Optional(Type.Number({ minimum: 0.05 })),
 	stop: Type.Optional(Type.String({ description: "Watch ID to stop." })),
@@ -131,8 +131,15 @@ export function describeWatch(spec: WatchSpec): string {
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
 }
 
-/** Milliseconds since the epoch for "HH:MM" (its next occurrence here) or an ISO date and time. */
+const UNIT: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
+/**
+ * Milliseconds since the epoch for a delay from now ("90s", "5m", "1.5h", "in 2 hours"), "HH:MM" (its next occurrence
+ * here) or an ISO date and time. Agents don't know the time, so a delay is the easy way to wake shortly.
+ */
 export function parseTime(text: string, now = Date.now()): number {
+	const delay = /^(?:in\s+|\+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)$/i.exec(text.trim());
+	if (delay) return now + Math.max(1_000, Number(delay[1]) * UNIT[delay[2]![0]!.toLowerCase()]!);
 	const clock = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
 	let at: number;
 	if (clock) {
@@ -143,7 +150,7 @@ export function parseTime(text: string, now = Date.now()): number {
 		if (next.getTime() <= now) next.setDate(next.getDate() + 1);
 		at = next.getTime();
 	} else at = Date.parse(text);
-	if (!Number.isFinite(at)) throw new Error(`${text} is not a time: give HH:MM or an ISO date and time.`);
+	if (!Number.isFinite(at)) throw new Error(`${text} is not a time: give a delay such as 5m, HH:MM or an ISO date and time.`);
 	if (at <= now) throw new Error(`${text} has passed.`);
 	return at;
 }
@@ -326,7 +333,7 @@ class Watches {
 			return this.list();
 		}
 		if (params.command !== undefined && params.until !== undefined) throw new Error("Give command or until, not both; hours sets how long a command watch lasts.");
-		if (params.until !== undefined && given.length > 1) throw new Error("until wakes you at a time (HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
+		if (params.until !== undefined && given.length > 1) throw new Error("until wakes you after a delay or at a time (5m, HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
 		const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
 		if (params.command !== undefined && !command) throw new Error("command is empty.");
 		if (this.active.size >= MAX_ACTIVE) throw new Error(`At most ${MAX_ACTIVE} watches can run at once. ${this.list()}`);

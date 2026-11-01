@@ -19,13 +19,15 @@ export function homeWork(sessions: SessionView[]): HomeWork[] {
 		const blocked = plans.find(view => (view.data as { fields?: { label: string; value: string }[] }).fields?.some(field => field.label === "State" && field.value === "blocked"));
 		const status = questions.length ? "Waiting on you" : blocked ? "Blocked" : session.snapshot?.activity === "running" ? "Working"
 			: session.state === "failed" ? "Failed" : session.watching ? "Watching" : session.state === "closed" ? "Closed" : "Idle";
+		const title = session.name ?? session.title ?? "Conversation";
 		const children = (session.ui?.views ?? []).filter(view => view.kind === "conversation").flatMap(view => {
 			const data = view.data as UiConversation;
 			return data.active || ["running", "working", "waiting", "blocked"].includes(data.status) ? [{
-				id: session.key, title: view.title, status: data.status, detail: (data.activity ?? data.subtitle ?? "").slice(0, 1000), view: view.id,
+				id: session.key, title: view.title, status: data.status.replace(/^./, letter => letter.toUpperCase()),
+				detail: (data.activity ?? data.subtitle ?? "").slice(0, 1000), view: view.id, parent: title,
 			}] : [];
 		});
-		return [{ id: session.key, title: session.name ?? session.title ?? "Conversation", status,
+		return [{ id: session.key, title, status,
 			detail: questions.map(item => item.form.title).join(" · ").slice(0, 1000) || (blocked ? JSON.stringify(blocked.data).slice(0, 1500) : ""),
 			...(blocked ? { view: blocked.id } : {}), ...(session.wakes ? { wakes: session.wakes } : {}) }, ...children];
 	}).slice(0, 200);

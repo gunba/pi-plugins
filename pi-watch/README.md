@@ -7,7 +7,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 |---|---|---|
 | `watch({command})` | the command, run in the background | with its new output, and when it ends |
 | `watch({command, every})` | the command, re-run every `every` seconds | when its output changes; the watch then ends |
-| `watch({until})` | the clock: `HH:MM` or an ISO date and time | at that time |
+| `watch({until})` | the clock: a delay such as `90s`, `5m` or `2h`, `HH:MM`, or an ISO date and time | at that time |
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |
 | `watch({close: true})` | | closes the conversation when this turn ends, to sleep until a watch wakes it (alone or with a new watch) |
