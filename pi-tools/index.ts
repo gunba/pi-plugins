@@ -29,7 +29,7 @@ Shared conventions:
 - Use valid JavaScript: object fields need key:value pairs. No process, require, Buffer or imports; run Node/shell code through tools.bash.
 - await tools.NAME(args) returns data or {error:string}; check errors before dependent effects. Await effects in order; Promise.all is for independent work. Pending calls are cancelled at return; completed effects are not rolled back.
 - Return only needed fields: const r=await tools.bash({command:"git status --short",description:"Inspect changes"}); return r.error?r:{output:r.output};
-- Every operation accepts description?:string: one short sentence for the user about what and why. It is omitted from the signatures below.
+- Every operation accepts description?:string: one short sentence for the user. edit/write/bash also accept show?:boolean: include true only for results worth showing in Work, otherwise false. These fields are omitted below.
 - Paths are relative to the working directory. Use read for contents, bash for file operations, edit for targeted replacements, write for new files or complete rewrites. Multiline template literals work; escape literal backticks and \${, or use quoted strings.
 Core signatures (all return {error:string} on failure):
 read({path:string,offset?:number,limit?:number}) -> string | image block. Lines are 1-based; continue with offset for long files.

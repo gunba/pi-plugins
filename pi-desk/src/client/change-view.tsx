@@ -17,6 +17,9 @@ import { dragPaneWidth } from "./pane-width.ts";
 import { BriefView, type Brief } from "./brief.tsx";
 import { markdownPlugins } from "./markdown-links.ts";
 import { shownUrl } from "../../../pi-show/extensions/links.ts";
+import { AgentFilesContext, AgentSurface } from "./agent-ui/index.tsx";
+import { visibleWorkItems } from "./work-items.ts";
+import "./work-board.css";
 
 type DiffBlock = Extract<ChatBlock, { type: "diff" }>;
 type DocumentBlock = Extract<ChatBlock, { type: "document" }>;
@@ -133,26 +136,16 @@ function columnName(index: number): string {
 /** title: for an image, the file it came from. */
 /** "What do I need to know?": written on request, kept in the side pane while the conversation goes on. */
 export type BriefBlock = { type: "brief"; brief: Brief; working?: boolean; rewrite?: () => void };
-export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock | BriefBlock };
-/** Changes, shown work and images returned by tools, in the loaded part of a conversation, oldest first. */
-export function workItems(messages: readonly ChatMessage[]): WorkItem[] {
-	return messages.flatMap(message => message.blocks.flatMap((block, index): WorkItem[] => {
-		const item = { id: `${message.id}:${index}`, at: message.timestamp, message: message.id };
-		if (block?.type === "diff" || block?.type === "document" || block?.type === "shown") return [{ ...item, block }];
-		// A file block names its image; otherwise the result may be a screenshot, a read, or a generated picture.
-		if (block?.type === "image" && message.role === "tool") {
-			const file = message.blocks.find(other => other?.type === "file");
-			return [{ ...item, block, title: file?.type === "file" ? file.file.name : "Image" }];
-		}
-		return [];
-	}));
-}
+export type WorkItem = { id: string; at: number; message: string; source?: string; title?: string; activity?: boolean; block: DiffBlock | DocumentBlock | ShownBlock | ImageBlock | BriefBlock };
+/** Selected activity and agent-arranged parts in the loaded conversation. */
+export function workItems(messages: readonly ChatMessage[]): WorkItem[] { return visibleWorkItems(messages); }
 /** A link in an agent reply or shown result: a local file Desk can open, or a web page. */
 export type LinkItem = { key: string; at: number; message: string; label: string; url?: string; file?: FileReference };
 const LINK = /\[([^\]\n]{1,200})\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"*_`])/g;
 /** Links in loaded replies and shown results, each once at its latest mention, oldest first. */
 export function messageLinks(messages: readonly ChatMessage[]): LinkItem[] {
-	const found = new Map<string, LinkItem>();
+	const found = new Map<string, LinkItem>(), latest = new Map<string, ShownBlock>();
+	for (const message of [...messages].sort((a, b) => a.order - b.order)) for (const block of message.blocks) if (block?.type === "shown" && block.shown.id) latest.set(block.shown.id, block);
 	for (const message of messages) {
 		const add = (target: string, label?: string) => {
 			// The host resolved local file links; other destinations must be credential-free web addresses.
@@ -162,6 +155,7 @@ export function messageLinks(messages: readonly ChatMessage[]): LinkItem[] {
 			if (item) { found.delete(item.key); found.set(item.key, item); }
 		};
 		for (const block of message.blocks) {
+			if (block?.type === "shown" && (block.shown.remove || block.shown.id && latest.get(block.shown.id) !== block)) continue;
 			const text = block?.type === "shown" ? block.shown.note : block?.type === "text" && message.role === "assistant" ? block.text : undefined;
 			for (const match of text?.matchAll(LINK) ?? []) add(match[2] ?? match[3]!, match[1]?.trim());
 			if (block?.type === "shown") for (const item of block.shown.items) if (item.url) add(item.url, item.label);
@@ -172,8 +166,8 @@ export function messageLinks(messages: readonly ChatMessage[]): LinkItem[] {
 
 /** Opens an item: in the side pane when there is room, otherwise in the expanded view. */
 export const WorkFocus = createContext<(item: WorkItem) => void>(() => undefined);
-const itemTitle = (item: WorkItem) => item.block.type === "brief" ? "What do I need to know?" : item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
-	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title;
+const itemTitle = (item: WorkItem) => item.title ?? (item.block.type === "brief" ? "What do I need to know?" : item.block.type === "image" ? item.title ?? "Image" : item.block.type === "diff" ? name(item.block.movePath ?? item.block.path)
+	: item.block.type === "document" ? name(item.block.change.path) : item.block.shown.title);
 const itemKind = (item: WorkItem) => item.block.type === "brief" ? "Brief" : item.block.type === "image" ? "Viewed" : item.block.type === "shown" ? "Shown" : item.block.type === "document" ? item.block.change.created ? "New" : "Changed"
 	: item.block.meanwhile ? "Meanwhile" : item.block.action === "added" ? "New" : item.block.action === "deleted" ? "Deleted" : item.block.action === "moved" ? "Moved" : "Edited";
 function itemFacts(item: WorkItem): ReactNode {
@@ -379,9 +373,16 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 		{block.change.preview && <PreviewView preview={block.change.preview} />}
 	</>;
 	return <>
+		{block.shown.source && <p className={`work-source-state work-source-${block.shown.sourceStatus?.state ?? "waiting"}`}>
+			{block.shown.sourceStatus?.state === "live" ? "Live" : block.shown.sourceStatus?.state === "stale" ? "No recent progress update" : block.shown.sourceStatus?.detail ?? "Waiting for progress"}
+			{block.shown.sourceStatus?.at && <time> · {localTime(block.shown.sourceStatus.at, HOUR_MINUTE)}</time>}</p>}
+		{block.shown.spec && <AgentFilesContext value={(index, imageOnly, alt) => {
+			const entry = block.shown.items[index];
+			return entry && (!imageOnly || entry.kind === "image") ? <div role={imageOnly ? "img" : undefined} aria-label={imageOnly ? alt : undefined}><ShownEntry item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} /></div> : <p className="muted">Attachment unavailable.</p>;
+		}}><AgentSurface spec={block.shown.spec} /></AgentFilesContext>}
 		{block.shown.note && <ShownNote note={block.shown.note} />}
-		{!block.shown.note && !block.shown.items.length && <p className="muted work-note">No details were provided for this result.</p>}
-		{block.shown.items.map((entry, index) => <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} />)}
+		{!block.shown.spec && !block.shown.note && !block.shown.items.length && <p className="muted work-note">No details were provided for this result.</p>}
+		{block.shown.items.map((entry, index) => Object.values(block.shown.spec?.elements ?? {}).some(element => ["File", "Image"].includes(element.type) && element.props.item === index) ? null : <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} />)}
 	</>;
 }
 function quoteFor(item: WorkItem): string {
@@ -402,34 +403,39 @@ function ItemHeader({ item, session, children }: { item: WorkItem; session: stri
 	</header>;
 }
 
-/** Beside the conversation: what the agent changed and showed, newest first, with the selected one open. */
+/** Agent-arranged work is independent of the selected activity record. */
 export function WorkPane({ items, links, selected, select, expand, close, session }: {
 	items: WorkItem[]; links: LinkItem[]; selected?: string; select: (id: string) => void; expand: (item: WorkItem) => void; close: () => void; session: string;
 }) {
-	const newest = [...items].reverse(), current = newest.find(item => item.id === selected) ?? newest[0];
+	const parts = items.filter(item => !item.activity && ["shown", "brief"].includes(item.block.type));
+	const activity = items.filter(item => !parts.includes(item)).reverse();
+	const [pinnedLinks, setPinnedLinks] = useState<string[]>([]);
+	useEffect(() => { try { const value: unknown = JSON.parse(localStorage.getItem(`pi-desk:work-links:${session}`) ?? "[]"); setPinnedLinks(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []); } catch { setPinnedLinks([]); } }, [session]);
+	const pin = (key: string) => setPinnedLinks(previous => { const next = previous.includes(key) ? previous.filter(value => value !== key) : [...previous, key]; localStorage.setItem(`pi-desk:work-links:${session}`, JSON.stringify(next)); return next; });
 	const width = useRef<HTMLElement>(null);
-	return <aside className="work-pane" aria-label="Changes and shown work" ref={width}>
+	return <aside className="work-pane work-board" aria-label="Work" ref={width}>
 		<div className="pane-resize" onPointerDown={event => dragPaneWidth(event, width.current, "--work-pane")} aria-hidden="true" />
-		<div className="work-pane-heading"><strong>Changes</strong><small>{items.length}</small>
-			<button type="button" className="icon-button" title="Hide" aria-label="Hide changes" onClick={close}><Icon name="close" /></button></div>
-		{current && <ReferenceContext value={{ message: current.message, source: current.source }}><section className="work-current">
-			<ItemHeader item={current} session={session}><button type="button" className="icon-button" title="Expand" aria-label="Expand" onClick={() => expand(current)}><Icon name="expand" /></button></ItemHeader>
-			<div className="work-current-body"><WorkBody item={current} session={session} /></div>
-		</section></ReferenceContext>}
-		{newest.length > 1 && <ol className="work-list">{newest.map(item => <li key={item.id}>
-			<button type="button" className="work-list-item" aria-current={item === current ? "true" : undefined} onClick={() => select(item.id)}>
-				<span className="change-kind">{itemKind(item)}</span><strong>{itemTitle(item)}</strong>{itemFacts(item)}
-				<time>{localTime(item.at, HOUR_MINUTE)}</time>
-			</button></li>)}</ol>}
-		{links.length > 0 && <section className="work-links" aria-label="Links">
-			<h3>Links<small>{links.length}</small></h3>
-			<ol>{[...links].reverse().map(link => <li key={link.key}>
-				<Icon name={link.file ? "folder" : "globe"} />
-				{link.file ? <ReferenceContext value={{ message: link.message }}><FileLink session={session} file={link.file}>{link.label}</FileLink></ReferenceContext>
-					: <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>{link.label}</a>}
-				<time>{localTime(link.at, HOUR_MINUTE)}</time>
-			</li>)}</ol>
-		</section>}
+		<div className="work-pane-heading"><strong>Work</strong><small>{parts.length ? `${parts.length} part${parts.length === 1 ? "" : "s"}` : "Selected activity"}</small>
+			<button type="button" className="icon-button" title="Back to conversation" aria-label="Close Work" onClick={close}><Icon name="close" /></button></div>
+		{links.length > 0 && <nav className="work-pins" aria-label="Links, pinned first">{[...links].reverse().sort((a, b) => Number(pinnedLinks.includes(b.key)) - Number(pinnedLinks.includes(a.key))).map(link => <span key={link.key} className="work-pin">
+			{link.file ? <ReferenceContext value={{ message: link.message }}><FileLink session={session} file={link.file}>{link.label}</FileLink></ReferenceContext>
+				: <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>{link.label}</a>}
+			<button type="button" aria-label={`${pinnedLinks.includes(link.key) ? "Unpin" : "Pin"} ${link.label}`} aria-pressed={pinnedLinks.includes(link.key)} onClick={() => pin(link.key)}>◇</button>
+		</span>)}</nav>}
+		<div className="work-board-scroll">
+			{parts.map(item => <ReferenceContext key={item.id} value={{ message: item.message, source: item.source }}><details className="work-part" open={item.block.type !== "shown" || !item.block.shown.collapsed}>
+				<summary><strong>{itemTitle(item)}</strong>{item.block.type === "shown" && item.block.shown.pinned && <small>Pinned</small>}
+					<span className="change-actions"><Reply text={() => quoteFor(item)} /><button type="button" className="icon-button" title="Expand" aria-label={`Expand ${itemTitle(item)}`} onClick={() => expand(item)}><Icon name="expand" /></button></span></summary>
+				<div className="work-part-body"><WorkBody item={item} session={session} /></div>
+			</details></ReferenceContext>)}
+			{activity.length > 0 && <section className="work-activity" aria-label="Selected activity"><h3>Selected activity <small>{activity.length}</small></h3>
+				{activity.map(item => <ReferenceContext key={item.id} value={{ message: item.message, source: item.source }}><details open={item.id === selected} className="work-activity-item">
+					<summary onClick={event => { event.preventDefault(); select(item.id === selected ? "" : item.id); }}><Icon name={itemIcon(item)} /><span><strong>{itemTitle(item)}</strong>
+						<small>{item.block.type === "diff" ? name(item.block.path) : item.block.type === "document" ? name(item.block.change.path) : itemKind(item)} {itemFacts(item)}</small></span><time>{localTime(item.at, HOUR_MINUTE)}</time><Icon name="chevron" /></summary>
+					<div className="work-part-body"><div className="work-activity-actions"><Reply text={() => quoteFor(item)} /><button type="button" className="icon-button" title="Expand" onClick={() => expand(item)}><Icon name="expand" /></button></div><WorkBody item={item} session={session} /></div>
+				</details></ReferenceContext>)}
+			</section>}
+		</div>
 	</aside>;
 }
 

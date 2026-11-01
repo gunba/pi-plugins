@@ -15,7 +15,10 @@ import show from "../../pi-show/extensions/show.ts";
 import watch, { activeWatches } from "../../pi-watch/index.ts";
 import { createSubagentToolDefinitions } from "../../pi-agents/subagents/subagent-tools.ts";
 import { providePrimaryAgents } from "../../pi-agents/primary.ts";
-import { describeAgentTools, describeSessionTools } from "../../pi-ui/tool-descriptions.ts";
+import { describeAgentTools, describeSessionTools, describedTool } from "../../pi-ui/tool-descriptions.ts";
+import { Transcript } from "../../pi-desk/src/host/transcript.ts";
+import { TranscriptFeed } from "../../pi-desk/src/host/transcript-feed.ts";
+import { visibleWorkItems } from "../../pi-desk/src/client/work-items.ts";
 
 const model = { id: "offline", name: "offline", api: "openai-completions", provider: "fixture", baseUrl: "https://invalid.test",
   reasoning: false, input: ["text"], contextWindow: 32768, maxTokens: 2048,
@@ -232,4 +235,56 @@ test("long literal content is written exactly and a later script sees branch sta
   assert.equal(await readFile(join(h.root, "source.js"), "utf8"), contents);
   const second = await h.run(`return {saved: load("saved"), length: (await tools.read({path: load("saved")})).length};`);
   assert.deepEqual(data(second), { saved: "source.js", length: contents.length });
+});
+
+test("only edit, write and bash advertise presentation visibility and strip it before execution", async () => {
+  for (const name of ["edit", "write", "bash", "read", "show", "agent_start", "create_plan", "watch", "ask_user", "tool_search"]) {
+    let input;
+    const tool = describedTool({ name, parameters: Type.Object({}), execute: async (_id, args) => { input = args; } });
+    const eligible = ["edit", "write", "bash"].includes(name);
+    assert.equal("show" in tool.parameters.properties, eligible, name);
+    await tool.execute("call", { description: "Inspect output", ...(eligible ? { show: true } : {}) });
+    assert.deepEqual(input, {}, name);
+  }
+});
+
+test("a fresh single-tool conversation shows only selected edits and persists nested surfaces", async t => {
+  const h = await harness(t, show);
+  data(await h.run(`
+    await tools.write({path:'quiet.txt',content:'quiet',show:false,description:'Keep this internal'});
+    await tools.write({path:'review.txt',content:'before',show:false,description:'Prepare fixture'});
+    await tools.edit({path:'review.txt',edits:[{oldText:'before',newText:'after'}],show:true,description:'Explain the useful edit'});
+    return await tools.show({id:'result',title:'Result',spec:{root:'m',elements:{m:{type:'Metric',props:{label:'Result',value:'before'}}}}});`));
+  data(await h.run(`return await tools.show({id:'result',pinned:true,patch:[{op:'replace',path:'/elements/m/props/value',value:'after'}]});`));
+  const history = new Transcript().history(h.session.sessionManager.getBranch(), {}, undefined, undefined, h.root);
+  const items = visibleWorkItems(history.messages);
+  assert.equal(items.length, 2);
+  assert.equal(items[0].title, "Explain the useful edit");
+  assert.equal(items[0].block.path, join(h.root, "review.txt"));
+  assert.equal(items[1].id, "part:result");
+  assert.equal(items[1].block.shown.spec.elements.m.props.value, "after");
+  assert.equal(items[1].block.shown.pinned, true);
+  assert.equal(h.session.messages.some(message => message.role === 'toolResult'), true);
+});
+
+test("progress reaches Desk while a fresh conversation is blocked on its command", { timeout: 15000 }, async t => {
+  const h = await harness(t, show), received = [];
+  let release;
+  const progressed = new Promise(resolve => { release = resolve; });
+  const feed = new TranscriptFeed(new Transcript(), () => h.session.sessionManager.getBranch(), () => "test", event => {
+    received.push(event);
+    const shown = event.message?.blocks.find(block => block.type === 'shown')?.shown;
+    if (shown?.spec?.state?.done === 12) { release(); void writeFile(join(h.root, 'release'), 'done'); }
+  }, () => h.root);
+  const unsubscribe = h.session.subscribe(event => feed.event(event));
+  t.after(() => { unsubscribe(); feed.close(); });
+  const program = "const fs=require('node:fs');const watcher=fs.watch('.',(_,name)=>{if(name==='release'){watcher.close();process.exit(0)}});fs.writeFileSync('progress.txt','12/340 report.pdf\\n');";
+  const command = `node -e ${JSON.stringify(program)}`;
+  const running = h.run(`
+    await tools.show({id:'files',title:'Files',source:{file:'progress.txt',pattern:'{done}/{total} {item}'},spec:{root:'p',elements:{p:{type:'Progress',props:{done:{$state:'/done'},total:{$state:'/total'},item:{$state:'/item'}}}}}});
+    return await tools.bash({command:${JSON.stringify(command)},show:false,description:'Process files'});`);
+  await progressed;
+  assert.equal(h.events.some(event => event.type === 'tool_execution_end' && event.toolName === 'bash'), false, 'the process is still blocked when progress arrives');
+  await running;
+  assert.equal(feed.history().messages.some(message => message.blocks.some(block => block.type === 'shown' && block.shown.spec?.state?.done === 12)), true);
 });

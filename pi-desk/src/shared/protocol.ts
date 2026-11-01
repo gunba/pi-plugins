@@ -110,6 +110,8 @@ export interface ChatMessage {
 	timestamp: number;
 	toolName?: string;
 	toolCallId?: string;
+	/** Selected edit/write/bash activity, persisted separately from the complete execution log. */
+	work?: { description: string };
 	isError?: boolean;
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };

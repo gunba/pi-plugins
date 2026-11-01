@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker, workItems;
+let MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, QuestTracker, workItems;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { QuestTracker } from "./quest-tracker.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, WorkChip, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { QuestTracker } from "./quest-tracker.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,7 +22,7 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates, WorkBody, ShownSummary, messageLinks, QuestTracker, workItems } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, QuestTracker, workItems } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
@@ -77,9 +77,12 @@ test("tasks show every subtask as a checkbox, including the seventh", t => {
 	assert.doesNotMatch(html, /1 more/);
 });
 
-test("generated image results are not labelled as screenshots", () => {
+test("raw images stay out of Work until shown and image chips are not labelled as screenshots", () => {
 	const generated = { ...message("generated", "tool", [{ type: "image", asset: "fixture", mimeType: "image/png" }]), toolName: "codemode" };
-	assert.deepEqual(workItems([generated]).map(item => item.title), ["Image"]);
+	assert.deepEqual(workItems([generated]), []);
+	const html = renderToStaticMarkup(createElement(WorkChip, { item: { id: "image", message: generated.id, at: 0, title: "Image", block: generated.blocks[0] } }));
+	assert.match(html, /Image/);
+	assert.doesNotMatch(html, /Screenshot/i);
 });
 
 test("closed tool output and thinking do not build their hidden Markdown bodies", () => {
