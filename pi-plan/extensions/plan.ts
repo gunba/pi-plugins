@@ -39,7 +39,7 @@ function lastShownPlan(branch: readonly SessionEntry[]): string {
 }
 const result = (plan?: PlanView) => {
 	const value = { plan: plan ?? null };
-	return { content: [{ type: "text" as const, text: planText(plan) }], details: value };
+	return { content: [{ type: "text" as const, text: planText(plan) }], details: value, structuredContent: JSON.parse(JSON.stringify(value)) };
 };
 /**
  * The plan as the model reads it: what it can act on, without identifiers, timestamps or settings left at their

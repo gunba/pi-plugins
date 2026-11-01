@@ -136,14 +136,16 @@ function searchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
 		...page.excerpts?.length ? [clip(page.excerpts.join("\n…\n"), RESULT_CHARS).replace(/^/gm, "   ")] : []].join("\n"));
 	const text = [pages.length ? lines.join("\n\n") : "No results.", ...failures.length ? [failures.map(({ url, reason }) => `${url}: ${reason}`).join("\n")] : [],
 		...pages.length ? ["web_fetch reads more of a page."] : []].join("\n\n");
-	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
+	return { content: [{ type: "text", text }], structuredContent: JSON.parse(JSON.stringify({ pages, failures })),
+		details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })) } };
 }
 
 function fetchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
 	const sections = pages.map(page => [`## ${page.title?.trim() || page.url}`, page.direct ? `${page.url} · read from this computer` : page.url,
 		clip(page.full_content ?? page.excerpts?.join("\n…\n") ?? "", PAGE_CHARS) || "(no text)"].join("\n"));
 	const text = [...sections, ...failures.length ? [failures.map(({ url, reason }) => `Could not read ${url}: ${reason}`).join("\n")] : []].join("\n\n") || "Nothing was read.";
-	return { content: [{ type: "text", text }], details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
+	return { content: [{ type: "text", text }], structuredContent: JSON.parse(JSON.stringify({ pages, failures })),
+		details: { results: pages.map(page => ({ url: page.url, ...(page.title ? { title: page.title } : {}) })),
 		...(failures.length ? { errors: failures.length } : {}) } };
 }
 

@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { AssistantMessageEventStream, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
 import { createAgentSession, createCodemodeExtension, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { PiSdkDriverFactory } from "../subagents/pi-sdk-driver.ts";
+import { createStructuredToolExtension } from "../../pi-tools/index.ts";
 import { childPolicySources } from "../subagents/child-policies.ts";
 
 const SEARCH_SOURCE = fileURLToPath(new URL("../../pi-web-search/extensions/web-search.ts", import.meta.url));
@@ -78,7 +79,7 @@ export default function(pi) {
 }`;
 }
 
-async function integration(t, { search = false, party = false, policy = false, guard = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
+async function integration(t, { search = false, party = false, policy = false, guard = false, structured = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-tool-inheritance-sdk-"));
 	const agentDir = join(directory, "agent"); const rootCwd = join(directory, "root-work");
 	await mkdir(agentDir); await mkdir(rootCwd);
@@ -150,7 +151,7 @@ async function integration(t, { search = false, party = false, policy = false, g
 	const events = createEventBus();
 	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, eventBus: events, settingsManager: SettingsManager.inMemory(settings),
 		additionalExtensionPaths: [fixturePath, ...(policy ? [policyPath] : []), ...(guard ? [GUARD_SOURCE, "builtin:codemode"] : []), ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
-		extensionFactories: guard ? [{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() }] : [],
+		extensionFactories: guard ? [{ name: "codemode", builtin: true, replaceable: true, factory: structured ? createStructuredToolExtension() : createCodemodeExtension() }] : [],
 		noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
@@ -234,6 +235,19 @@ test("command protection follows real root, codemode and SDK child calls without
 	assert.equal(executed(child.manager).length, 0);
 	await call(child, "bash", { command: "echo fixture-only" });
 	assert.equal(executed(child.manager).length, 1, "allowed call reaches only the fake executor");
+});
+
+test("Desk children inherit one declaration while parent permissions and nested guards remain effective", { timeout: 25000 }, async t => {
+	const h = await integration(t, { guard: true, structured: true, initialActive: ["codemode", "bash", "custom_inventory"] });
+	const child = await h.open("structured-child");
+	assert.deepEqual(JSON.parse((await child.driver.prompt("fixture-availability")).output), ["codemode"]);
+	const result = await call(child, "codemode", { code: 'const blocked=await tools.bash({command:"rm -rf /"}); const inventory=JSON.parse(await tools.custom_inventory({})); return {blocked:!!blocked.error,model:inventory.model};' });
+	assert.deepEqual(JSON.parse(result.output), {blocked:true,model:"child-codex-fixture"});
+	assert.equal(executed(child.manager).length, 1);
+	h.setActive(["codemode", "bash"]);
+	const denied = await call(child, "codemode", {code:'return await tools.custom_inventory({});'});
+	assert.equal(typeof JSON.parse(denied.output).error, "string");
+	assert.equal(executed(child.manager).length, 1, "a hidden declaration must not bypass disabled underlying permissions");
 });
 
 test("actual web_search runs with the child's own model and session in its fake POST", { timeout: 25000 }, async (t) => {

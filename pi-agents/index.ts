@@ -269,7 +269,7 @@ export default function party(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => { preparingPrompt = false; refresh(); });
 	pi.on("agent_settled", () => { preparingPrompt = false; refresh(); });
 	pi.on("session_info_changed", refresh);
-	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} });
+	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {}, structuredContent: JSON.parse(JSON.stringify(value)) });
 
 	const sendMessage = (to: string, text: string, wake: boolean, files: MessageFile[] = []) => {
 		const sent = database().send(session, owner, to, text, wake, files);
@@ -455,7 +455,7 @@ export default function party(pi: ExtensionAPI): void {
 			item.repeats && `${item.repeats}${item.next_due ? `, next ${item.next_due}` : ""}`, item.from !== "Jordan" && `from ${item.from}`, note].filter(Boolean).join(", ");
 		return [`${item.id} · ${item.title} (${facts})`, ...(item.steps ?? []).map(step => `  ${step}`)].join("\n");
 	};
-	const questResult = (value: unknown, text: string) => ({ content: [{ type: "text" as const, text }], details: value });
+	const questResult = (value: unknown, text: string) => ({ content: [{ type: "text" as const, text }], details: value, structuredContent: JSON.parse(JSON.stringify(value)) });
 	pi.registerTool({
 		name: "quest_add", label: "Add to Jordan's quest log", ...QUESTS,
 		description: "Add something Jordan must do himself, such as a review, decision or test you are waiting on, to his quest log. Short actionable title; context in notes. You are messaged when he finishes or drops it. Not for your own work.",
