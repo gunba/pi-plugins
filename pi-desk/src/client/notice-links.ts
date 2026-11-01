@@ -11,7 +11,7 @@ const WAIT_MS = 60_000;
 /**
  * A notification's click (public/sw.js) opens its conversation, or the task list, once the app has it; an Android
  * action button also answers the question, if it is still waiting. The home-screen shortcuts (manifest) open the
- * task list or the Dot the same way, with ?open=.
+ * Home the same way, with ?open=.
  */
 export function useNoticeLinks(sessions: readonly SessionView[] | undefined, open: (key: string) => void): void {
 	const [notice, setNotice] = useState<Notice>();
@@ -31,7 +31,7 @@ export function useNoticeLinks(sessions: readonly SessionView[] | undefined, ope
 	useEffect(() => {
 		if (!notice?.session) return;
 		if (Date.now() - notice.at > WAIT_MS) { setNotice(undefined); return; }
-		if (notice.session === "quests" || notice.session === "dot") { open(notice.session); setNotice(undefined); return; }
+		if (notice.session === "home" || notice.session === "quests" || notice.session === "dot") { open("home"); setNotice(undefined); return; }
 		const target = sessions?.find(session => session.key === notice.session);
 		if (!target) return;
 		open(target.key); setNotice(undefined);
@@ -64,6 +64,6 @@ export function useSharedTask(host: WorkspaceState | undefined, home: string | u
 		const body = [...new Set([shared.text.trim(), shared.url.trim()].filter(Boolean))].join("\n");
 		const title = (shared.title.trim() || body.split("\n")[0] || "Shared").slice(0, 200), notes = body === title ? "" : body.slice(0, 4000);
 		void api("/quests", { command: { action: "add", title, kind: "main", ...(notes ? { notes } : {}) } }, target)
-			.then(() => open("quests"), () => { added.current = false; });
+			.then(() => open("home"), () => { added.current = false; });
 	}, [shared, host, home]);
 }

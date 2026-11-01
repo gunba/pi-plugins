@@ -57,6 +57,7 @@ import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
+import { installHome } from "./home-extension.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
@@ -247,6 +248,7 @@ export class DeskEngine {
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);
 						installIntegrations(pi);
+						if (options.homeDirectory) installHome(pi, options.homeDirectory);
 						this.events = pi.events;
 						const releaseUsage = pi.events.on(SESSION_USAGE_CHANGED, () => { this.usageRevision++; this.scheduleSnapshot(); });
 						pi.on("session_shutdown", releaseUsage);

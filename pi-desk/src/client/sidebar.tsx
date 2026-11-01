@@ -6,11 +6,11 @@ import { useAppUpdate } from "./app-update.ts";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { connectionLabel, connectionTone, isOffline } from "./connection-state.ts";
 import { VersionTag } from "./conversation-version.tsx";
-import { DotNavigation, type DotConversationState } from "./dot-conversation.tsx";
+
 import { Icon, ProviderIcon } from "./icons.tsx";
 import type { MoveRequest } from "./move-conversation.tsx";
 import { OsIcon } from "./os-icon.tsx";
-import type { QuestLog } from "./quest-tracker.tsx";
+
 import type { SessionView } from "../shared/protocol.ts";
 import { unseen } from "../shared/attention.ts";
 import { Navigation } from "./surfaces.tsx";
@@ -38,22 +38,22 @@ function SidebarRename({ title, rename, close }: { title: string; rename: (name:
 }
 
 /**
- * The conversation list: Dot and Tasks, then each computer's conversations, with copies of an off computer's
+ * The conversation list: Home, then each computer's conversations, with copies of an off computer's
  * conversations to move elsewhere; a drawer on phones.
  */
-export function Sidebar({ open, close, host, connected, transportConnected, selected, sending, dot, questLogs, select, newConversation, resume, openSettings, move, report, closed }: {
+export function Sidebar({ open, close, host, connected, transportConnected, selected, sending, select, newConversation, resume, openSettings, move, report, closed }: {
   open: boolean; close: () => void; host: WorkspaceState; connected: boolean;
   /** This browser's own connection, for a workspace without separate computers. */
   transportConnected: boolean;
-  selected: string; sending: boolean; dot: DotConversationState; questLogs: QuestLog[];
-  /** Shows a conversation, "dot" or "quests". */
+  selected: string; sending: boolean;
+  /** Shows a conversation or Home. */
   select: (key: string) => void;
   newConversation: (computer?: string) => void; resume: () => void; openSettings: (section: string) => void;
   move: (request: MoveRequest) => void; report: (error: string) => void;
   /** A conversation was closed from its row. */
   closed: (key: string) => void;
 }) {
-  const dotSelected = selected === "dot", questsSelected = selected === "quests", appUpdate = useAppUpdate();
+  const homeSelected = selected === "home", appUpdate = useAppUpdate();
   /** The conversation being renamed. */
   const [renaming, setRenaming] = useState("");
   /** An off computer's conversations that another computer keeps copies of, to move elsewhere. */
@@ -74,7 +74,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
   const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
-  const openQuests = questLogs.reduce((count, log) => count + log.view.quests.filter(quest => quest.state === "open").length + (log.view.upcoming?.length ?? 0), 0);
+
   return <Navigation open={open} close={close}>
     <div className="brand">
       <span className="brand-mark small">π</span>
@@ -89,13 +89,11 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       </button>
     </div>
     <div className="sidebar-scroll">
-    <div className="nav-label">Dots</div>
-    <nav className="dot-list" aria-label="Dots">
-      <DotNavigation dot={dot} selected={dotSelected} open={() => select("dot")} />
-      <button className={`session-item quest-navigation${questsSelected ? " selected" : ""}`} aria-current={questsSelected ? "page" : undefined}
-        onClick={() => select("quests")}>
-        <span className="quest-navigation-icon" aria-hidden="true"><Icon name="plan" /></span>
-        <span><strong>Tasks</strong><small>{openQuests ? `${openQuests} open` : "Workspace overview"}</small></span></button>
+    <nav className="home-navigation" aria-label="Home">
+      <button className={`session-item${homeSelected ? " selected" : ""}`} aria-current={homeSelected ? "page" : undefined} onClick={() => select("home")}>
+        <span className="home-navigation-icon"><Icon name="layers" /></span><span><strong>Home</strong><small>Your work, together</small></span>
+        {host.sessions.some(item => item.home && unseen(item)) && <span className="home-unread">New</span>}
+      </button>
     </nav>
     <div className="nav-label">
       Computers <span>{computers.length}</span>
@@ -107,7 +105,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
           title={folded.has(computer.id ?? "local") ? `Show ${computer.name}'s conversations` : `Hide ${computer.name}'s conversations`}
           onClick={() => toggleFolded(computer.id ?? "local")}><OsIcon platform={computer.platform} /><strong>{computer.name}</strong>
           {folded.has(computer.id ?? "local") && host.sessions.some(item => item.computer === computer.id) &&
-            <span className="computer-count">{host.sessions.filter(item => item.computer === computer.id).length}</span>}
+            <span className="computer-count">{host.sessions.filter(item => !item.home && item.computer === computer.id).length}</span>}
           <Icon name="chevron" /></button>
         <small title={"latency" in computer && computer.latency !== undefined ? `Connected; round trip to ${computer.name} ${computer.direct ? "directly on this computer" : "through the relay"}: ${computer.latency} ms` : connectionLabel(computer)}>
           <span className={`status-dot ${connectionTone(computer)}`} role="img" aria-label={connectionLabel(computer)} />
@@ -127,7 +125,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
         </button>}
       {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
         <button onClick={() => location.reload()}>Reload app</button></div>}
-      {host.sessions.filter(item => item.computer === computer.id)
+      {host.sessions.filter(item => !item.home && item.computer === computer.id)
         .sort((a, b) => restRank(a) - restRank(b) || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map((item, index, rows) => {
         // A divider heads the conversations that aren't running.
         const resting = index === rows.findIndex(row => restRank(row) > 0) ? " first-resting" : "";

@@ -2,44 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dotEntry } from "../src/host/dot-wire.ts";
 
-test("disconnected Dot offers its connection controls in the conversation", async () => {
-	const { build } = await import("esbuild");
-	const { mkdtempSync, rmSync } = await import("node:fs");
-	const { tmpdir } = await import("node:os");
-	const { join } = await import("node:path");
-	const { fileURLToPath } = await import("node:url");
-	const { createRequire } = await import("node:module");
-	const directory = mkdtempSync(join(tmpdir(), "desk-dot-connection-"));
-	try {
-		const outfile = join(directory, "fixture.cjs");
-		await build({ stdin: { resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx", contents: `
-			import React from "react";
-			import { renderToStaticMarkup } from "react-dom/server";
-			import { DotConversation } from "./src/client/dot-conversation.tsx";
-			const dot = { id: "pc", server: true, serverName: "Fixture server", online: true, loaded: true, ready: false, busy: false, status: "Not connected", error: "",
-				computers: [{id:"pc", name:"Fixture computer", connected:true}],
-				view: {state:"unavailable", name:"Dot", error:"Session with given id not found.", messages:[], inputs:[]},
-				messages:[], optimistic:[], files:[], filesReady:true, draft:"" };
-			export const html = renderToStaticMarkup(<DotConversation dot={dot} openNavigation={() => {}}/>);
-		` }, outfile, bundle: true, platform: "node", format: "cjs", jsx: "automatic",
-			plugins: [{ name: "offline-connection", setup(builder) {
-				builder.onResolve({ filter: /connection\.ts$/ }, () => ({ path: "connection", namespace: "fixture" }));
-				builder.onResolve({ filter: /surfaces\.tsx$/ }, () => ({ path: "surfaces", namespace: "fixture" }));
-				builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: args.path === "surfaces"
-					? "export function Modal({children}) { return children; }"
-					: "export class ApiError extends Error {} export function api() { throw Error('No network'); }", loader: "js" }));
-			} }] });
-		const { html } = createRequire(import.meta.url)(outfile);
-		assert.doesNotMatch(html, /aria-label="Dot connection computer"/);
-		assert.match(html, /Dot runs on Fixture server\./);
-		assert.doesNotMatch(html, /Turn on keeping conversation copies/);
-		assert.match(html, />Connect Dot</);
-		assert.match(html, /No ChatGPT window is needed/);
-		assert.match(html, /uses Pi(?:'|&#x27;)s ChatGPT login/);
-		assert.doesNotMatch(html, /Chrome’s ChatGPT sign-in|opens a background tab/);
-		assert.doesNotMatch(html, /Session with given id not found/);
-	} finally { rmSync(directory, { recursive: true, force: true }); }
-});
 
 const items = [
 	{ id: "one", role: "user", self: true, senderName: "Owner", createdAt: "2026-10-03T00:00:00Z", text: "Hello" },

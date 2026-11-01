@@ -28,7 +28,7 @@ import { deskCommandCatalog } from "./desk-commands.ts";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
 import { LiveNotices, reportDeskError } from "./desk-status.ts";
 import { dictationComputer } from "./dictation.tsx";
-import { DotConversation, useDotConversation } from "./dot-conversation.tsx";
+import { Home } from "./home.tsx";
 import { Icon } from "./icons.tsx";
 import { InteractionForm, type InteractionDraft } from "./interaction-form.tsx";
 import { Loading } from "./loading.tsx";
@@ -40,8 +40,6 @@ import { NativeQueue } from "./native-queue.tsx";
 import { useNewConversation } from "./new-conversation.tsx";
 import { PendingInputs } from "./pending-inputs.tsx";
 import { PlanHeader } from "./plan-header.tsx";
-import { QuestTracker, type QuestLog } from "./quest-tracker.tsx";
-import { TasksOverview } from "./tasks-overview.tsx";
 import { askForNotificationsOnFirstClick, useQuestionAlerts } from "./question-alerts.ts";
 import { trackUse } from "./presence.ts";
 import { useFinishedBadge, useSeen } from "./finished.ts";
@@ -69,10 +67,10 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [upgrade, setUpgrade] = useState<string>();
   useEffect(() => onUpgrade(setUpgrade), []);
   const [selected, setSelected] = useState(
-    localStorage.getItem("pi-desk:selected") ?? "",
+    ["dot", "quests", ""].includes(localStorage.getItem("pi-desk:selected") ?? "") ? "home" : localStorage.getItem("pi-desk:selected")!,
   );
-  const dotSelected = selected === "dot", questsSelected = selected === "quests";
-  const dot = useDotConversation(state.host?.computers, authorized === true && !!state.host);
+  const homeSelected = selected === "home";
+  const workspaceServer = state.host?.computers?.find(computer => computer.teleport?.hold)?.id;
   const [transportConnected, setConnected] = useState(false);
   const [localEpoch, setEpoch] = useState(0);
   const [sidebar, setSidebar] = useState(false);
@@ -196,7 +194,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   useFinishedBadge(state.host?.sessions);
   useQuestionAlerts(state.host?.sessions, selected, conversationTitle);
   useNoticeLinks(state.host?.sessions, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
-  useSharedTask(state.host, dot.id, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
+  useSharedTask(state.host, workspaceServer, key => { setSelected(key); setSidebar(false); setPanel(undefined); });
   const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };
   const commandHandlers = deskCommandHandlers({ session, key: selected, command, delivery: deliveryMode,
     openSettings: section => { setSettingsSection(section); setPanel("settings"); },
@@ -306,7 +304,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (newestWork.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
     }
   }, [selected, newestWork]);
-  const showWorkPane = !dotSelected && !questsSelected && wideWorkspace && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
+  const showWorkPane = !homeSelected && wideWorkspace && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
   useEffect(() => {
     if (panel === "view" && focusedView === "subagents") setPanel("agents");
     if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
@@ -320,7 +318,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     }
   }, [panel, focusedView, activeAgents, selected, session?.activation, ui, showWorkPane]);
   const openWork = (item: WorkItem) => {
-    if (wideWorkspace && !dotSelected && !questsSelected) {
+    if (wideWorkspace && !homeSelected) {
       // A brief is listed from its own state, which a copy here would leave behind.
       if (item.block.type !== "brief" && !loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
       setWorkSelected(item.id); setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false");
@@ -480,19 +478,6 @@ export function App({ account }: { account?: BrowserAccount }) {
     );
 
   const host = state.host;
-  const questLogs: QuestLog[] = host.computers
-    ? host.computers.flatMap(computer => computer.quests ? [{ computer: computer.id, name: computer.name, view: computer.quests, connected: computer.connected }] : [])
-    : host.quests ? [{ name: host.name, view: host.quests, connected }] : [];
-  const agentSession = (id: string) => host.sessions.find(item => (item.snapshot?.id ?? item.agentId) === id);
-  const questTracker = <TasksOverview host={host} connected={connected}
-    tasks={questLogs.reduce((count, log) => count + log.view.quests.filter(item => item.state === "open").length + (log.view.upcoming?.length ?? 0), 0)}
-    open={(item, target) => {
-      setSelected(item.key); setSidebar(false); setPanel(target?.agent ? "agents" : target?.view ? "view" : undefined);
-      if (target?.view) setFocusedView(target.view);
-      if (target?.agent) { localStorage.setItem(`pi-desk:agent-selection:${item.key}`, target.agent); setFocusedAgent(target.agent); setAgentHistoryOpen(false); }
-    }}><QuestTracker logs={questLogs} primary={dot.id} agentName={id => { const found = agentSession(id); return found ? conversationTitle(found) : undefined; }}
-    openAgent={id => { const found = agentSession(id); if (found) { setSelected(found.key); setPanel(undefined); setSidebar(false); } }}
-    ask={dot.ready ? { name: dot.view.name ?? "Dot", send: dot.queue } : undefined} /></TasksOverview>;
   return (
     <WorkFocus.Provider value={openWork}><RewindContext.Provider value={{ rewind: session && connected && !busy && !closing ? message => void rewind(message) : undefined }}><BriefContext.Provider value={{
       // Offered while Pi is idle: a brief is saved in the conversation, and a review is a message of its own.
@@ -510,20 +495,13 @@ export function App({ account }: { account?: BrowserAccount }) {
       } }}><div className={`app ${sidebar ? "sidebar-open" : ""}`}>
       <DeskStatusBar />
       <Sidebar open={sidebar} close={() => setSidebar(false)} host={host} connected={connected} transportConnected={transportConnected}
-        selected={selected} sending={sending} dot={dot} questLogs={questLogs} select={key => { setSelected(key); setSidebar(false); setPanel(undefined); }}
+        selected={selected} sending={sending} select={key => { setSelected(key); setSidebar(false); setPanel(undefined); }}
         newConversation={newConversation.open} resume={() => { setResumeOpen(true); setSidebar(false); }}
         openSettings={section => { setSettingsSection(section); setPanel("settings"); setSidebar(false); }}
         move={setMoving} report={setError} closed={key => { if (selectedRef.current === key) setPanel(undefined); }} />
-      <main className={`main${dotSelected ? " main-dot" : questsSelected ? " main-quests" : ""}`} data-primary-focus tabIndex={-1}>
-        {dotSelected ? <DotConversation dot={dot} openNavigation={() => setSidebar(true)}
-          openQuests={!wideWorkspace ? () => { setSelected("quests"); setPanel(undefined); } : undefined} />
-        : questsSelected ? <>
-          <header className="topbar">
-            <button className="icon-button mobile-nav" aria-label="Open navigation" onClick={() => setSidebar(true)}>☰</button>
-            <div className="conversation-heading"><strong>Tasks</strong></div>
-          </header>
-          <div className="quest-page">{questTracker}</div>
-        </> : <>
+      <main className={`main${homeSelected ? " main-home" : ""}`} data-primary-focus tabIndex={-1}>
+        {homeSelected ? <Home host={host} connected={connected} openNavigation={() => setSidebar(true)}
+          openConversation={(key, view) => { setSelected(key); setSidebar(false); setPanel(view ? "view" : undefined); if (view) setFocusedView(view); }} /> : <>
         <header className="topbar">
           <button
             className="icon-button mobile-nav"
@@ -547,7 +525,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {session && <span className="conversation-activity" title={activityLabel(sessionActivity(session))}>
               <span className={`status-dot ${sessionActivity(session)}`} /><span>{activityLabel(sessionActivity(session))}</span>
             </span>}
-            {!phone && !dotSelected && !questsSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
+            {!phone && !homeSelected && session?.workerRuntime?.learn && <button type="button" className={`header-chip${session.snapshot?.learn?.enabled ? " selected" : ""}`}
               aria-pressed={!!session.snapshot?.learn?.enabled} aria-label="Learn mode" disabled={!connected || session.state !== "ready" || controlBusy}
               title={`Learn mode${session.snapshot?.learn?.writing ? ": writing an explanation…" : session.snapshot?.learn?.enabled ? ": on" : ""}. Explains the theory behind recent work outside the agent’s context. Uses extra model calls.`}
               onClick={() => run({ kind: "learn", enabled: !session.snapshot?.learn?.enabled })}>
@@ -559,7 +537,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               aria-label={`Messages: ${(messagesView.data as UiDetails).items!.length}`}
               title={(messagesView.data as UiDetails).summary ?? "Agent messages"} onClick={() => { setFocusedView("messages"); setPanel(panel === "view" && focusedView === "messages" ? undefined : "view"); }}>
               <Icon name="party" />{!phone && "Messages "}<b>{(messagesView.data as UiDetails).items!.length}</b></button>}
-            {wideWorkspace && paneItems.length + loadedLinks.length > 0 && !dotSelected && !questsSelected && <button type="button" className="icon-button"
+            {wideWorkspace && paneItems.length + loadedLinks.length > 0 && !homeSelected && <button type="button" className="icon-button"
               title={showWorkPane ? "Hide changes" : `Show changes and links (${paneItems.length + loadedLinks.length})`} aria-label="Changes" aria-pressed={showWorkPane}
               onClick={() => { const hidden = showWorkPane; setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
               <Icon name="panel-right" /></button>}
@@ -700,7 +678,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         )}
         </>}
       </main>
-      {dotSelected && wideWorkspace && <div className="quest-rail">{questTracker}</div>}
+
       {showWorkPane && <WorkPane items={paneItems} links={loadedLinks} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
         close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
       {panel && (

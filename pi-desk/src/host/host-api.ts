@@ -16,6 +16,7 @@ import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
 import type { DotConnector } from "./dot-connector.ts";
 import type { DotConnection } from "./dot.ts";
+import type { Home } from "./home.ts";
 import type { EfficiencyReports } from "./efficiency.ts";
 import type { Folders } from "./folders.ts";
 import { reply, type HostCore } from "./host-core.ts";
@@ -35,6 +36,7 @@ interface ApiHost {
 	runtimeHome(): string | undefined;
 	logins(): Logins | undefined;
 	dot(): DotConnection | undefined;
+	home(): Home | undefined;
 	connector(): DotConnector;
 	dictation(): Dictation | undefined;
 	folders(): Folders;
@@ -82,7 +84,7 @@ export class HostApi {
 					return reply({ error: "Device access is no longer authorized." }, 401);
 				return reply(result);
 			}
-			const response = await this.workspace(url, request, data) ?? await this.dot(url, request, data) ?? await this.computer(url, request, data)
+			const response = await this.workspace(url, request, data) ?? await this.home(url, request, data) ?? await this.dot(url, request, data) ?? await this.computer(url, request, data)
 				?? await sessionRoute(this.core, this.host.saved, url, request, data);
 			if (response) return response;
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
@@ -119,6 +121,24 @@ export class HostApi {
 			else this.host.logins()!.answer(signIn[1]!, string(data.prompt, 36), string(data.value, 32_000));
 			return reply({});
 		}
+		return undefined;
+	}
+
+	private async home(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
+		if (!url.pathname.startsWith("/api/home")) return undefined;
+		if (!!this.host.account.identity && !this.host.teleport()?.settings.hold)
+			return reply({ error: "Home runs on the workspace server, the computer that keeps conversation copies." }, 409);
+		const home = this.host.home();
+		if (!home) return reply({ error: "Home is starting." }, 503);
+		if (url.pathname === "/api/home" && request.method === "GET") return reply(home.snapshot());
+		if (url.pathname === "/api/home/open" && request.method === "POST") return reply(await home.open());
+		if (url.pathname === "/api/home/messages" && request.method === "POST") return reply(await home.message(
+			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 36)) : undefined));
+		if (url.pathname === "/api/home/settings" && request.method === "POST") {
+			if (typeof data.overlap !== "boolean") throw Error("Choose overlap true or false.");
+			return reply(home.settings(data.overlap));
+		}
+		if (url.pathname === "/api/home/drag" && request.method === "POST") return reply(home.drag(string(data.id, 200), Number(data.x), Number(data.y)));
 		return undefined;
 	}
 

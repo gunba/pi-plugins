@@ -116,71 +116,22 @@ unsupported credentials are not silently replaced with another billing method.
 Generated images appear in tool results. Reported token costs are API-equivalent
 estimates, not a ChatGPT subscription balance.
 
-## Dot
+## Home
 
-Dot appears above the computer groups in the sidebar. Selecting it opens the
-main conversation area, without Pi's workspace, model or agent controls.
-Pi conversations retain their Workspace pane.
+Home replaces the separate Dot and Tasks panes with a shared, agent-arranged
+canvas. A persistent GPT-6.1 Terra conversation runs on the workspace server,
+answers the canvas composer, manages the existing quest log and arranges the
+canvas through the shared json-render component catalog and JSON Patch layer.
 
-Dot runs on the workspace server, the computer that keeps conversation copies
-(Settings), so it works whichever other computers are on; other computers in the
-workspace refuse Dot requests, and a Desk without a workspace runs Dot itself.
-Open **Connection**, then select the saved
-ChatGPT account that owns your existing Dot. **Add a ChatGPT account** offers
-provider verification inside this panel. Saving a login does not connect it or
-change an agent's account or account default; select **Connect Dot** to use it.
-Dot does not use the computer's default Pi credentials.
+Items open their conversations, quest details, files or links. Dragging saves a
+position preference; phones support panning and pinch zoom. Compact replies sit
+above the composer, with attachments and dictation; History opens the complete
+native Pi conversation and its approvals. The header shows the last run's cost.
 
-Messages, live updates, paged history, avatars and supported file transfers use
-a direct host connection. Chrome and an open ChatGPT window are not needed for
-these features. The workspace server must remain online. Account identity,
-Dot and room are pinned; native Pi authentication handles token renewal. If
-provider verification is required again, add a renewed saved login and select it.
-
-Dot's execution and memory remain in OpenAI's cloud. Closing Desk or selecting
-**Disconnect** does not pause it. Sending first saves a local outbox entry and
-clears the input, so you can compose the next message immediately. Messages
-leave the queue in order; an unconfirmed send holds later messages. A paused
-Dot also holds its queue until it is resumed in ChatGPT.
-
-The host saves delivery receipts and never automatically resends an uncertain
-delivery. **Check delivery** reconciles a receipt. **Cancel unconfirmed attempt**
-fences an attempt not yet admitted; it cannot retract an admitted message.
-Changing accounts holds earlier queued messages for review rather than sending
-them through the new account. An explicit text retry creates a new attempt.
-
-Attach up to eight files, each at most 20 MB. Files are staged on the workspace
-server and uploaded directly to the selected Dot's room. Staged files are
-account-bound; after an account change, reconnect the original account or select
-the files again. Unconfirmed uploads retain their bytes and receipts for review.
-A confirmed message releases its staged file copies. Supported downloads stream
-through the host's bounded, short-lived cache (128 MiB per file, 256 MiB total).
-Other attachment previews and unsupported download origins open in ChatGPT.
-Dot's activity, cloud computer, profile, rules and approvals also stay in ChatGPT.
-
-**Agent access** (in the Dot connection panel) lets the Dot message your Pi agents.
-Turning it on registers the Dot as "Steve (Dot)" in agent messaging and shows a
-connector URL to add in ChatGPT as a custom MCP connector with OAuth. ChatGPT
-registers itself and asks for access; approve the request in the same panel after
-checking that its code matches the one ChatGPT shows. Only ChatGPT callback
-addresses can receive a grant. Access tokens last an hour and refresh tokens
-rotate; the host keeps only their hashes. The connector has three tools: list
-agents across connected computers, message an agent and read the agents'
-replies. It cannot read transcripts, run tools or change settings, and agents
-treat its messages as peer context. Requests travel through the relay, which
-sees those messages but not transcripts. Turning access off revokes every token.
-
-The direct adapter uses ChatGPT's private backend protocol, not a supported
-public Dot API. Provider
-changes can require an adapter update; unsupported authorization and permission
-steps stay with the provider. Dot usage remains subject to the selected account's
-subscription and Dot allowances. Hosts without direct-connection support show an
-update notice rather than using a different browser account.
-
-Direct authenticated reads, live updates and text delivery have been verified.
-Authentication delegation, attachments, recovery and UI behavior are checked
-with isolated fixtures; live uploads and forced token renewal are not yet
-verified.
+Home uses Pi's normal tools for watches, Gmail, browser work, web research and
+agent messaging. The Dot backend and connector remain temporarily so existing
+scheduled work continues during a verified, one-day overlap. See
+[Home architecture, capability coverage and cutover](HOME.md).
 
 ## Development
 
@@ -525,31 +476,16 @@ controller admission. Uncertain replies retain the draft and exact request ID:
 requires confirmation; reconnect never sends automatically. Each view has its
 own action lock, so a launch dialog does not block another agent's controls.
 
-**Tasks** opens the workspace overview, also shown beside Dot on wide screens.
-The task list groups Today, To do, Upcoming and Completed. Tasks and all their
-subtasks use checkboxes whether details are open or closed; opening details
-adds title, notes, subtask and schedule editing. Completion is immediate; a
-completed task can be reopened or archived. Existing task storage, recurrence,
-working hours and agent notifications are unchanged. The `quest_*` tool names
-remain compatible, and Dot's `quest_log` still archives completed items when it
-reads them.
+**Home** shows quests and live work on one canvas. It includes conversations
+waiting for answers or approvals, working agents and blocked plans. There is
+no separate task list: requests to add, finish, reschedule or rearrange work go
+to Home's Terra conversation. The existing quest log, recurrence, working hours
+and agent notifications remain authoritative.
 
-One computer keeps the task list for the whole account: the one that keeps
-conversation copies (the workspace server), which stays up when the others
-sleep. Tasks stay available while any other computer is off. Agents and the Dot
-connector on other computers use it through their own Desk, and a task can be
-read or changed only while the workspace server is connected. Tasks a computer
-kept before it moved to the workspace server once it connects. An agent is told
-on its own computer when the user finishes a task it added, and a closed
-conversation wakes for the message. An account without a workspace server keeps
-a task list on each computer.
-
-The **Agents** tab lists open conversations and active or queued secondary agents
-across computers, with links to their existing conversation panels. **Watches**
-reads the existing watch views and descriptions retained for closed conversations;
-it does not create another scheduler. Offline rows are marked as last-known state.
-A count ending in `+` means a conversation reports pending work without individual
-watch details, so the total is a lower bound.
+The workspace server keeps the shared Home and quest log. Agents and the retained
+Dot connector on other computers still reach that log through their own Desk.
+Remote live-work snapshots are sent when their status changes, not on token
+deltas; disconnected computers are labelled as last-known state.
 
 Chat and detail views render GitHub-flavoured Markdown tables. Transcript errors
 appear at their recorded time rather than accumulating in a global banner.

@@ -92,7 +92,7 @@ export function FileThumbnail({ session, file }: { session: string; file: FileRe
 	</>;
 }
 
-function FileViewer({ session, reference, close }: { session: string; reference: FileReference; close: () => void }) {
+export function FileViewer({ session, reference, close }: { session: string; reference: FileReference; close: () => void }) {
 	const origin = useReferenceQuery();
 	const content = useRef<HTMLPreElement>(null);
 	const request = useRef(0), transfer = useRef<AbortController | undefined>(undefined);

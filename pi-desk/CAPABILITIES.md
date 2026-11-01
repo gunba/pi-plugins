@@ -100,26 +100,21 @@ same rule, so a watch waking a conversation for a check-in does not notify.
 | Skills, prompts and project resources | Native discovery, project trust and command expansion |
 | Session ownership | Desk pre-open lease; shared terminal presence and shutdown integration |
 
-## Dot
+## Home
 
-The Dot sidebar entry opens an existing ChatGPT Dot in the main conversation
-area. **Connection** chooses a computer and a saved ChatGPT login independently
-of agent accounts/defaults. Text chat, live updates, paged history, avatars and
-supported attachments use a direct, account-pinned connection without Chrome.
-An optimistic local outbox preserves drafts and sends in order. Changed accounts
-hold earlier queued messages/files for review; uncertain sends are not replayed.
+Home is a shared canvas and persistent Terra 6.1 conversation on the workspace
+server. It renders through the shared json-render catalog and patch layer.
+Quests remain in the quest log; live agent work supplies questions, approvals,
+running work and blocked plans. Normal Pi tools provide watches, web research,
+MCP, browser access and agent messaging.
 
-New Dot messages have a sidebar count, a tab-title alert and an in-conversation
-jump button. Read markers are local to this browser and connection; messages are
-acknowledged when the Dot conversation is visible at its latest messages. Initial
-history is not treated as a new alert. The remote display pauses while the app is
-hidden and catches up on return; these are not push notifications when Desk is
-closed.
+The composer supports attachments and dictation with durable message admission.
+Replies are compact; History opens the native conversation, including approvals
+and delivery recovery. Scene revisions fence stale patches, and drags persist.
 
-Dot's cloud execution and memory remain at OpenAI. Pi's Workspace is hidden
-when viewing Dot. ChatGPT's activity, profile, approvals and cloud-computer
-controls stay in ChatGPT. The private backend protocol can change; see the [Dot setup and
-verification limits](README.md#dot).
+Dot's backend and connector remain for the scheduled-job overlap, but its pane
+and client pipeline are removed. See [Home](HOME.md) for capability coverage,
+Gmail sending and the post-merge cutover plan.
 
 ## Account selection
 

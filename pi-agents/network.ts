@@ -23,6 +23,7 @@ export interface PartyComputer { name: string; platform: string; version: string
 /** model and reasoning report what was applied; hosts before 0.5.45 ignore a requested model. */
 export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string }; error?: string }
 export type PartyPacket =
+	| { type: "home-work"; work: import("../pi-desk/src/shared/home.ts").HomeWork[] }
 	| { type: "directory"; agents: NetworkMember[]; computer?: PartyComputer }
 	/** Jordan's quest log, kept by one computer for the account (quest-log.ts). */
 	| { type: "quest-calls"; calls: unknown[] }
