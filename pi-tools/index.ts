@@ -72,7 +72,6 @@ const INTROS: Record<string, string> = {
   agent_move: "Only when Jordan asks: move this conversation to another of his computers.",
   conversation_search: "Recall past conversations: an earlier decision, command, path or error.",
   conversation_read: "Read the passages around a conversation_search result.",
-  home_scene: "Read Home's SVG canvas, or write it whole; both return a picture to check it by.",
   home_jobs: "List the scheduled jobs, their files and next deadlines (Perth time). Arms nothing.",
   home_notify: "Deliver a scheduled job's result to Home and Jordan's phone, only when worth telling.",
 };

@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { emptyHomeScene, homeWorkKey, HOME_SVG_LIMIT, type HomeMessage, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
+import type { HomeMessage, HomeRun } from "../shared/home.ts";
 
-/** Shared by the host and its Home worker. SQLite serializes scene writes across processes. */
+/** Shared by the host and its Home worker: Home's messages, runs and delivery requests. */
 export type HomeRequest = { action: "notify"; title: string; text: string };
 export class HomeStore {
 	private db: DatabaseSync;
@@ -20,30 +20,6 @@ export class HomeStore {
 		return row ? JSON.parse(row.value) : undefined;
 	}
 	set(key: string, value: unknown): void { this.db.prepare("INSERT OR REPLACE INTO home_values VALUES (?,?)").run(key, JSON.stringify(value)); }
-	scene(): HomeScene {
-		const scene = this.get<HomeScene>("scene");
-		// Scenes from before the canvas was SVG start blank; the agent draws them again.
-		if (!scene || scene.version !== 2) return { ...emptyHomeScene(), revision: scene?.revision ?? 0 };
-		return scene;
-	}
-	/** Live work the canvas must show, each opened by an element with data-open="<key>". */
-	required(): { key: string; title: string; status: string }[] {
-		return (this.get<HomeWork[]>("work") ?? []).map(work => ({ key: homeWorkKey(work), title: work.title, status: work.status }));
-	}
-	/** Replace the canvas, if it is still the revision the agent read and shows every live work item. */
-	write(revision: number, svg: string): HomeScene {
-		if (typeof svg !== "string" || !/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/.test(svg)) throw Error("The canvas is one SVG document, starting with <svg.");
-		if (svg.length > HOME_SVG_LIMIT) throw Error(`The SVG is ${svg.length} characters; keep it under ${HOME_SVG_LIMIT}.`);
-		const missing = this.required().filter(item => !svg.includes(`data-open="${item.key}"`));
-		if (missing.length) throw Error(`Give each live work item an element with data-open="<key>". Missing: ${JSON.stringify(missing)}.`);
-		this.db.exec("BEGIN IMMEDIATE");
-		try {
-			const current = this.scene();
-			if (revision !== current.revision) throw Error("Home changed. Read the current scene and write again.");
-			const scene: HomeScene = { version: 2, revision: current.revision + 1, svg };
-			this.set("scene", scene); this.db.exec("COMMIT"); return scene;
-		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
-	}
 	message(message: HomeMessage): void { this.db.prepare("INSERT OR IGNORE INTO home_messages VALUES (?,?,?)").run(message.id, JSON.stringify(message), message.at); }
 	messages(): HomeMessage[] { return (this.db.prepare("SELECT value FROM home_messages ORDER BY at DESC, rowid DESC LIMIT 80").all() as { value: string }[]).reverse().map(row => JSON.parse(row.value)); }
 	run(run: HomeRun): void { this.set("run", run); }

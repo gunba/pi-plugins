@@ -102,15 +102,15 @@ same rule, so a watch waking a conversation for a check-in does not notify.
 
 ## Home
 
-Home is a shared canvas and persistent Terra 6.1 conversation on the workspace
-server. The agent draws the canvas as one SVG document and sees a picture of it.
+Home is Jordan's page and a persistent Terra 6.1 conversation on the workspace
+server. The agent keeps Jordan's tasks file, which Home shows as his page in columns.
 Jordan's tasks are a Markdown file Terra keeps; live agent work supplies
 questions, approvals, running work and blocked plans. Normal Pi tools provide watches, web research,
 MCP, browser access and agent messaging.
 
 The composer supports attachments and dictation with durable message admission.
 Replies are compact; History opens the native conversation, including approvals
-and delivery recovery. Scene revisions fence stale writes.
+and delivery recovery.
 
 See [Home](HOME.md) for scheduled jobs and Gmail sending.
 

@@ -118,13 +118,13 @@ estimates, not a ChatGPT subscription balance.
 
 ## Home
 
-Home is Jordan's tasks and live work, drawn by an agent on one canvas. A
+Home is Jordan's tasks and live work on one page. A
 persistent GPT-6.1 Terra conversation runs on the workspace server, keeps the
-tasks in a Markdown file (`~/.pi/agent/home/tasks.md`), answers the canvas
-composer and draws the canvas as one SVG document, checking a picture of each
-change. Agents add work for Jordan by messaging it.
+tasks in a Markdown file (`~/.pi/agent/home/tasks.md`), answers the
+composer and keeps that file organised as Jordan's page, which Home shows in
+columns below the live work. Agents add work for Jordan by messaging it.
 
-Items open their conversations or links. Compact replies sit
+Live work opens its conversation. Compact replies sit
 above the composer, with attachments and dictation; History opens the complete
 native Pi conversation and its approvals. The header shows the last run's cost.
 
@@ -474,7 +474,7 @@ controller admission. Uncertain replies retain the draft and exact request ID:
 requires confirmation; reconnect never sends automatically. Each view has its
 own action lock, so a launch dialog does not block another agent's controls.
 
-**Home** shows Jordan's tasks and live work on one canvas. It includes
+**Home** shows Jordan's tasks and live work on one page. It includes
 conversations waiting for answers or approvals, working agents and blocked
 plans. There is no separate task list: requests to add, finish, reschedule or
 rearrange work go to Home's Terra conversation, which keeps the tasks file.

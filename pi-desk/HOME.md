@@ -1,6 +1,6 @@
 # Home
 
-Home is a shared canvas and one persistent Pi conversation on the workspace server
+Home is Jordan's page and one persistent Pi conversation on the workspace server
 (the computer that keeps conversation copies). Its model is
 `openai-codex/gpt-6.1-terra`, with extra-high reasoning, selected from the same model store
 as any Desk conversation. Local-only Desk keeps Home on that computer.
@@ -14,25 +14,20 @@ section. It is the only task list. Jordan changes it by telling Home; agents add
 work for him by messaging Home with `agent_send`. A daily job at 05:00 Perth time
 brings the Today section up to date.
 
-## Canvas and conversation
+## Page and conversation
 
-The canvas is one SVG document the agent writes whole: its drawing of the tasks file
-and the live work (questions, approvals, working agents, blocked plans), designed
-as it sees fit. `home_scene` reads it, or replaces it given the revision that was
-read; a write must give every live work item an element with `data-open="<key>"`.
-Desk shows the SVG as written, in a frame without scripts, scaled to the pane; a
-click on a `data-open` element opens that conversation, and a link opens in a new tab.
+Home shows the tasks file as Jordan's page, styled like the rest of Desk, with the
+live work (questions, approvals, working agents, blocked plans) above it as chips
+that open their conversations. The agent keeps the page organised: each `##`
+section is a column, side by side on a wide screen and stacked on a phone, in the
+order written, with Today first; `###` groups things within a column; text before
+the first `##` spans the page; HTML comments hold the agent's own notes and are not
+shown. Live work comes from Desk directly, so it never needs an agent turn.
 
-Every read and write returns a picture of the canvas, drawn on the host from the SVG
-with resvg's WebAssembly build and a system font (`home-picture.ts`), so the agent
-sees what Jordan sees and refines it until it looks right.
-
-The host debounces live-work changes into turns in the Home conversation. Token
-deltas and usage changes do not trigger them. The composer supports files,
-dictation and a saved delivery receipt, using normal Desk uploads and input
-admission. **History** opens the complete native conversation, including
-questions, approvals, tool activity and recovery controls. The last turn's cost
-is shown in the header.
+The composer supports files, dictation and a saved delivery receipt, using normal
+Desk uploads and input admission. **History** opens the complete native
+conversation, including questions, approvals, tool activity and recovery
+controls. The last turn's cost is shown in the header.
 
 Home is a normal Desk worker, not a side model call. Watches, approvals, native
 queueing, model credentials, MCP, agent messaging, compaction and host-update
@@ -75,7 +70,7 @@ passes unchanged to `watch.until`.
 
 | Job | Schedule | Delivery |
 | --- | --- | --- |
-| Start of the day | Daily 05:00 | Updates the tasks file's Today section and the canvas |
+| Start of the day | Daily 05:00 | Updates the tasks file's Today section |
 | TV alerts | Daily 09:00 | Home + phone, only worthwhile new releases |
 | AI job shortlist | Daily 09:00 | Home + phone, only new qualifying roles |
 | YouTube watch guide | Daily 09:08 | Email from/to the address in the private instructions |

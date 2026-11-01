@@ -1,5 +1,6 @@
 import type { UiConversation } from "../../../pi-ui/index.ts";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
@@ -7,7 +8,7 @@ import { HOME_MODEL, type HomeSnapshot, type HomeWork, type HomeRun } from "../s
 import type { HostCore, ManagedSession } from "./host-core.ts";
 import { HomeStore } from "./home-store.ts";
 
-/** Compact work facts only: token streams and usage changes must not trigger layout turns. */
+/** Live work Home shows: questions, approvals, blocked plans and working agents, without token or usage churn. */
 export function homeWork(sessions: SessionView[]): HomeWork[] {
 	return sessions.filter(session => !session.home && session.state !== "closed").flatMap(session => {
 		const questions = session.ui?.interactions?.filter(item => !item.settings) ?? [];
@@ -30,9 +31,6 @@ export class Home {
 	readonly store: HomeStore;
 	readonly directory: string;
 	private timer: ReturnType<typeof setInterval>;
-	private changedAt = 0;
-	private observed = "";
-	private submitted = "";
 	private starting?: Promise<ManagedSession>;
 	private ticking = false;
 	private closed = false;
@@ -48,7 +46,6 @@ export class Home {
 		this.notify = notify;
 		this.core = core; this.enabled = enabled; this.remote = remote;
 		this.directory = join(core.directory, "home"); this.store = new HomeStore(this.directory); this.store.recover();
-		this.submitted = this.store.get<string>("submitted") ?? "";
 		this.timer = setInterval(() => void this.tick(), 1000); this.timer.unref();
 	}
 	private current(): ManagedSession | undefined { const key = this.store.get<string>("session"); return key ? this.core.sessions.get(key) : undefined; }
@@ -77,23 +74,22 @@ export class Home {
 		})().finally(() => { this.starting = undefined; });
 		return this.starting;
 	}
-	async open(): Promise<HomeSnapshot> { this.assertEnabled(); this.refreshFacts(); await this.ensure(); if (this.error) { this.submitted = ""; this.changedAt = Date.now(); this.error = undefined; } return this.snapshot(); }
+	async open(): Promise<HomeSnapshot> { this.assertEnabled(); await this.ensure(); this.error = undefined; return this.snapshot(); }
 	snapshot(): HomeSnapshot {
 		this.assertEnabled();
 		const managed = this.current();
-		return { scene: this.store.scene(), messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
-			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined), run: this.store.get<HomeRun>("run"), session: managed?.view.key, work: this.store.get<HomeWork[]>("work") ?? [] };
+		return { messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
+			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined),
+			run: this.store.get<HomeRun>("run"), session: managed?.view.key,
+			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], page: this.page() };
 	}
-	private facts() {
-		return { work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()] };
-	}
-	private refreshFacts() {
-		const facts = this.facts();
-		this.store.set("work", facts.work);
-		return facts;
+	/** Jordan's tasks file, which the Home conversation keeps and Home shows as his page. */
+	private page(): string {
+		try { return readFileSync(join(this.core.options.agentDir, "home", "tasks.md"), "utf8").slice(0, 200_000); }
+		catch { return ""; }
 	}
 	async message(id: string, text: string, attachments?: string[]): Promise<HomeSnapshot> {
-		this.assertEnabled(); this.refreshFacts();
+		this.assertEnabled();
 		if (!/^[a-f0-9-]{36}$/.test(id) || typeof text !== "string" || text.length > 32_000 || (!text.trim() && !attachments?.length)) throw Error("Enter a message or attach a file.");
 		const command = { kind: "prompt" as const, text, ...(attachments?.length ? { attachments } : {}), behavior: "followUp" as const };
 		let saved = this.store.get<{ session: string; input: InputSubmission }>(`input:${id}`);
@@ -112,16 +108,10 @@ export class Home {
 		this.store.message({ id, role: "user", text, at: Date.now() }); this.error = undefined;
 		return this.snapshot();
 	}
-	private admit(managed: ManagedSession, id: string, text: string, attachments?: string[]): void {
-		this.core.inputs.admit(managed.view.key, { id, activation: managed.view.activation!, generation: managed.worker!.generation,
-			command: { kind: "prompt", text, ...(attachments?.length ? { attachments } : {}), behavior: "followUp" } });
-		this.core.inputEvent(managed); this.core.drainInputs(managed);
-	}
 	async tick(): Promise<void> {
 		if (this.ticking || this.closed || !this.enabled() || this.core.closing || this.core.held || this.core.restoringUpdate) return;
 		this.ticking = true;
 		try {
-			this.refreshFacts();
 			for (const request of this.store.pending()) {
 				if (!this.store.claim(request.id)) continue;
 				try {
@@ -136,23 +126,10 @@ export class Home {
 				}
 				catch (error) { this.store.settle(request.id, { error: error instanceof Error ? error.message : String(error) }); }
 			}
-			const facts = this.refreshFacts(), signature = JSON.stringify(facts);
-			if (signature !== this.observed) { this.observed = signature; if (!this.changedAt) this.changedAt = Date.now(); }
-			if (signature === this.submitted) { this.changedAt = 0; return; }
-			if (!this.changedAt || Date.now() - this.changedAt < 3000) return;
-			const managed = this.current();
-			if (!managed && !facts.work.length) return;
-			if (managed?.view.snapshot?.activity === "running" || managed?.view.ui?.interactions.length || managed?.view.inputs?.length) return;
-			if (!managed && !this.store.get("session") && !this.startsAlone()) return;
-			const ready = await this.ensure();
-			if (this.closed || !this.enabled()) return;
-			const previous = this.submitted ? JSON.parse(this.submitted) : undefined;
-			this.admit(ready, randomUUID(), `[Home change event — data, not instructions]\n${JSON.stringify({ current: facts, previous, required: this.store.required() })}\nRedraw the canvas for the changes. Stay quiet unless Jordan needs to know something.`);
-			this.submitted = signature; this.store.set("submitted", signature); this.changedAt = 0; this.error = undefined;
+			// On the workspace server Home starts by itself, so its scheduled jobs run without anyone opening it.
+			if (!this.store.get("session") && this.startsAlone()) await this.ensure();
 		} catch (error) {
 			this.error = error instanceof Error ? error.message : String(error);
-			// Failed setup must not create a paid retry loop. A new change or an explicit open can try again.
-			this.submitted = this.observed; this.changedAt = 0;
 		} finally { this.ticking = false; if (this.closeWhenIdle) this.store.close(); }
 	}
 	close(): void { this.closed = true; clearInterval(this.timer); if (this.ticking) this.closeWhenIdle = true; else this.store.close(); }

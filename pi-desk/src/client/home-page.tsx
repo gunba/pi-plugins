@@ -1,0 +1,40 @@
+import Markdown from "react-markdown";
+import type { HomeWork } from "../shared/home.ts";
+import { markdownPlugins, markdownUrl } from "./markdown-links.ts";
+
+/** The page split at its ## headings: what comes before the first spans the page, and each section is a column. */
+function sections(page: string): { lead: string; columns: { title: string; body: string }[] } {
+	const columns: { title: string; body: string }[] = [], lead: string[] = [];
+	let fence = false;
+	// Notes the agent keeps for itself sit in HTML comments, which the page doesn't show.
+	for (const line of page.replace(/<!--[\s\S]*?-->/g, "").split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+		const heading = !fence && /^##\s+(.*)$/.exec(line);
+		if (heading) columns.push({ title: heading[1]!.trim(), body: "" });
+		else if (columns.length) columns.at(-1)!.body += `${line}\n`;
+		else lead.push(line);
+	}
+	return { lead: lead.join("\n").replace(/^#\s+.*$/m, "").trim(), columns };
+}
+const tone = (status: string) => /waiting|approv|question/i.test(status) ? "waiting" : /block|fail/i.test(status) ? "blocked" : "working";
+function Text({ children }: { children: string }) {
+	return <div className="markdown"><Markdown remarkPlugins={markdownPlugins()} urlTransform={url => markdownUrl(undefined, url)}
+		components={{ a: ({ children: label, href }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{label}</a> : <span>{label}</span> }}>{children}</Markdown></div>;
+}
+
+/**
+ * Home: the live work Desk knows about, then Jordan's tasks file as his page, which the Home conversation keeps and
+ * lays out. Each ## section is a column, side by side when there is room and stacked on a phone.
+ */
+export function HomePage({ page, work, open }: { page: string; work: HomeWork[]; open: (work: HomeWork) => void }) {
+	const { lead, columns } = sections(page);
+	return <div className="home-canvas"><div className="home-page">
+		{work.length > 0 && <div className="home-live" aria-label="Live work">{work.map(item =>
+			<button key={`${item.computer ?? ""}:${item.id}:${item.view ?? ""}`} className={`home-live-item ${tone(item.status)}`} title={item.detail || undefined} onClick={() => open(item)}>
+				<span className="home-live-dot" /><strong>{item.title}</strong><span>{item.status}</span></button>)}</div>}
+		{lead && <div className="home-lead"><Text>{lead}</Text></div>}
+		{columns.length ? <div className="home-columns">{columns.map((column, index) =>
+			<section key={index} className="home-column"><h2>{column.title}</h2><Text>{column.body}</Text></section>)}</div>
+			: !lead && <p className="home-empty muted">Tell Home what you need to do, and it keeps your page here.</p>}
+	</div></div>;
+}

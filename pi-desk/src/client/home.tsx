@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { emptyHomeScene, type HomeMessage, type HomeSnapshot, type HomeWork } from "../shared/home.ts";
+import type { HomeMessage, HomeSnapshot, HomeWork } from "../shared/home.ts";
 import type { ChatMessage } from "../shared/protocol.ts";
 import { MessageView } from "./message-view.tsx";
 import { api } from "./connection.ts";
 import { sessionKey, type WorkspaceState } from "./workspace.ts";
-import { HomeCanvas } from "./home-canvas.tsx";
+import { HomePage } from "./home-page.tsx";
 import { Icon } from "./icons.tsx";
 import { Modal } from "./surfaces.tsx";
 import { AttachmentList, useAttachments } from "./attachments.tsx";
@@ -22,7 +22,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 }) {
 	const server = host.computers?.find(computer => computer.teleport?.hold), computer = server?.id;
 	const online = host.computers ? !!server?.connected : connected;
-	const [snapshot, setSnapshot] = useState<HomeSnapshot>({ scene: emptyHomeScene(), messages: [], busy: false });
+	const [snapshot, setSnapshot] = useState<HomeSnapshot>({ messages: [], busy: false });
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
 	const [discardPending, setDiscardPending] = useState(false);
 	const storageKey = `pi-desk:home:${computer ?? "local"}`;
@@ -44,7 +44,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const saveDraft = (text: string) => { setDraft(text); draftRef.current = text; try { localStorage.setItem(`${storageKey}:draft`, text); } catch { setError("Your draft could not be saved on this device."); } };
 	useEffect(() => {
 		const generation = ++epoch.current;
-		setSnapshot({ scene: emptyHomeScene(), messages: [], busy: false }); setError(""); setBusy(false);
+		setSnapshot({ messages: [], busy: false }); setError(""); setBusy(false);
 		setDraftLoaded(false); pendingRef.current = undefined; setPending(undefined);
 		try {
 			setDraft(localStorage.getItem(`${storageKey}:draft`) ?? "");
@@ -113,7 +113,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const openWork = (work: HomeWork) => openConversation(referenceKey(work.computer ?? computer, work.id), work.view);
 	return <>
 		<header className="topbar home-topbar"><button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
-			<div className="conversation-heading"><strong>Home</strong><span>{snapshot.busy ? "Arranging and working…" : "Your work, in one place"}</span></div>
+			<div className="conversation-heading"><strong>Home</strong><span>{snapshot.busy ? "Working…" : "Your work, in one place"}</span></div>
 			<div className="top-actions"><span className="home-run" title={snapshot.run ? `${snapshot.run.input} input · ${snapshot.run.output} output · ${snapshot.run.cacheRead} cached tokens` : undefined}>
 				{snapshot.run ? `$${snapshot.run.cost.toFixed(4)} last run` : "Terra 6.1"}</span>
 				<button className="subtle-button" disabled={!key} onClick={() => {
@@ -123,7 +123,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
 		<div className={`home-body${chatOpen ? " chat-open" : ""}`}>
-		<HomeCanvas svg={snapshot.scene.svg} work={snapshot.work ?? []} open={openWork} />
+		<HomePage page={snapshot.page ?? ""} work={snapshot.work ?? []} open={openWork} />
 		<section className="home-chat" aria-label="Talk to Home">
 			{chatOpen && <div className="home-log" ref={log} role="log" aria-live="polite">
 				{snapshot.messages.length ? snapshot.messages.map((message, index) => <MessageView key={message.id} message={chatMessage(message, index)} sessionKey={key ?? "home"} />)

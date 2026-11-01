@@ -8,7 +8,7 @@ import { installHome } from "../src/host/home-extension.ts";
 import { HomeStore } from "../src/host/home-store.ts";
 import { Home, homeWork } from "../src/host/home.ts";
 import { InputLedger } from "../src/host/inputs.ts";
-import { HOME_MODEL, emptyHomeScene } from "../src/shared/home.ts";
+import { HOME_MODEL } from "../src/shared/home.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 
 const fixture = t => {
@@ -19,24 +19,6 @@ const fixture = t => {
 	t.after(() => { for (const close of closing) close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { directory, store, closing };
 };
-
-test("a canvas write opens every live work item, is fenced by revision, and an older canvas starts blank", t => {
-	const { store } = fixture(t);
-	store.set("work", [
-		{ id: "asking", title: "Approval waiting", status: "Waiting on you", detail: "Approve?" },
-		{ id: "working", computer: "laptop", view: "subagent-1", title: "Active agent", status: "Working", detail: "" },
-	]);
-	assert.deepEqual(store.required().map(item => item.key), ["local.asking", "laptop.working.subagent-1"]);
-	const svg = '<svg viewBox="0 0 1200 700"><text data-open="local.asking">Approve</text><g data-open="laptop.working.subagent-1"><text>Agent</text></g></svg>';
-	assert.throws(() => store.write(0, "<div>not svg</div>"), /one SVG document/);
-	assert.throws(() => store.write(0, '<svg><text data-open="local.asking">Approve</text></svg>'), /laptop.working.subagent-1/);
-	assert.deepEqual(store.write(0, svg), { version: 2, revision: 1, svg });
-	assert.throws(() => store.write(0, svg), /Home changed/);
-	assert.deepEqual(store.scene(), { version: 2, revision: 1, svg });
-	// A canvas saved as a json-render scene, before Home drew SVG.
-	store.set("scene", { version: 1, revision: 7, spec: { root: "canvas", elements: {} }, preferences: {} });
-	assert.deepEqual(store.scene(), { ...emptyHomeScene(), revision: 7 });
-});
 
 test("an uncertain delivery is never silently repeated after a restart", t => {
 	const { store } = fixture(t), id = randomUUID();
@@ -92,19 +74,6 @@ test("Home reuses one conversation and receipt after a lost response and worker 
 	new SessionCatalog(core.directory).write([managed.view]);
 	assert.equal(new SessionCatalog(core.directory).read()[0].home, true);
 	disable(); await assert.rejects(home.open(), /workspace server/);
-});
-
-test("live-work changes coalesce into one persistent conversation turn", async t => {
-	let now = 1000; t.mock.method(Date, "now", () => now);
-	const { home, core, work, admitted } = controller(t);
-	work.push({ id: "reviewer", computer: "laptop", title: "Review the result", status: "Working", detail: "" });
-	await home.tick(); assert.equal(admitted.length, 0);
-	work[0] = { ...work[0], title: "Review the final result" };
-	now = 4001; await home.tick();
-	assert.equal(admitted.length, 1);
-	assert.match(admitted[0].input.command.text, /Review the final result/);
-	assert.equal(core.sessions.size, 1);
-	await home.tick(); assert.equal(admitted.length, 1);
 });
 
 test("scheduled Home alerts use an explicit phone delivery path", async t => {

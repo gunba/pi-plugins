@@ -4,9 +4,41 @@
 .home-topbar .conversation-heading strong { font-size:17px; }
 .home-topbar .conversation-heading span { color:var(--muted); font-size:12px; }
 .home-run { color:var(--muted); font-size:11px; white-space:nowrap; }
-.home-canvas { flex:1; min-height:160px; position:relative; overflow:hidden; background:var(--bg); }
-.home-frame { display:block; width:100%; height:100%; border:0; }
-.home-empty { position:absolute; inset:0; display:grid; place-items:center; margin:0; font-size:13px; }
+.home-canvas { flex:1; min-height:160px; position:relative; overflow:auto; background:var(--bg); scrollbar-width:thin; }
+/* Jordan's page: live work, then the tasks file's sections as columns, each with its own hue. */
+.home-page { max-width:1320px; margin:0 auto; padding:30px 40px 48px; --home-sage:#5f8f6b; --home-teal:#2f8a87; --home-lilac:#8a6fc4; --home-amber:#b07a1f; --home-rose:#b55a6a; }
+:root[data-theme="dark"] .home-page { --home-sage:#8dbb97; --home-teal:#62bdb7; --home-lilac:#b59cf0; --home-amber:#d9a54a; --home-rose:#e08a98; }
+.home-live { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:26px; }
+.home-live-item { display:flex; align-items:baseline; gap:8px; max-width:100%; padding:7px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text); font-size:12.5px; }
+.home-live-item strong { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.home-live-item span:last-child { color:var(--muted); white-space:nowrap; }
+.home-live-dot { flex:none; width:7px; height:7px; border-radius:50%; background:var(--accent); align-self:center; }
+.home-live-item.waiting .home-live-dot { background:var(--input-needed); }
+.home-live-item.blocked .home-live-dot { background:var(--danger); }
+.home-lead { margin-bottom:22px; font-size:15px; }
+.home-columns { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:30px 44px; align-items:start; }
+.home-column { --home-hue:var(--accent); min-width:0; }
+.home-column:nth-child(5n+2) { --home-hue:var(--home-teal); }
+.home-column:nth-child(5n+3) { --home-hue:var(--home-lilac); }
+.home-column:nth-child(5n+4) { --home-hue:var(--home-sage); }
+.home-column:nth-child(5n+5) { --home-hue:var(--home-amber); }
+.home-column h2 { margin:0 0 12px; padding-top:10px; border-top:2px solid color-mix(in srgb,var(--home-hue) 70%,transparent); color:var(--home-hue); font-size:17px; font-weight:600; letter-spacing:-.01em; }
+.home-column:first-child h2 { font-size:26px; }
+.home-column .markdown { font-size:14px; line-height:1.55; }
+.home-column .markdown h3 { margin:16px 0 6px; color:var(--muted); font-size:11.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+.home-column .markdown p { margin:0 0 10px; }
+.home-column .markdown ul { margin:0 0 12px; padding-left:0; list-style:none; }
+.home-column .markdown ul ul { margin:3px 0 4px; padding-left:20px; }
+.home-column .markdown li { margin:3px 0; }
+.home-column .markdown li::marker { content:""; }
+.home-column .markdown li.task-list-item { list-style:none; }
+.home-column .markdown li:not(.task-list-item)::before { content:"·"; display:inline-block; width:14px; color:var(--home-hue); font-weight:700; }
+.home-column .markdown input[type=checkbox] { appearance:none; flex:none; width:13px; height:13px; min-width:0; min-height:0; padding:0; margin:0 8px 0 0; box-shadow:none; vertical-align:-1px; border:1.5px solid color-mix(in srgb,var(--home-hue) 75%,var(--bg)); border-radius:4px; background:transparent; }
+.home-column .markdown input[type=checkbox]:checked { background:color-mix(in srgb,var(--home-hue) 45%,var(--bg)); border-color:transparent; }
+.home-column .markdown li:has(> input:checked) { color:var(--muted); }
+.home-column .markdown li:has(> input:checked) > input + * , .home-column .markdown li:has(> p > input:checked) { color:var(--muted); }
+.home-column .markdown strong { color:var(--text); font-weight:600; }
+.home-empty { margin:12vh 0 0; text-align:center; font-size:13px; }
 .home-body { flex:1; min-height:0; display:flex; flex-direction:column; position:relative; }
 .home-chat { flex:none; width:min(760px,100%); margin:0 auto; padding:8px 22px 18px; }
 /* Open, the conversation is a pane beside the canvas, the box at its foot. */
@@ -34,6 +66,8 @@
 .home-navigation .session-item small { display:block; color:var(--muted); }
 .home-unread { margin-left:auto; color:var(--accent); font-size:12px; }
 @media(max-width:760px) {
+ .home-page { padding:18px 16px 32px; }
+ .home-columns { gap:26px; }
  .home-topbar .conversation-heading { display:block; }
  .home-topbar .conversation-heading span { display:none; }
  .home-run { display:none; }
