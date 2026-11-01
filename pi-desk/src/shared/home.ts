@@ -82,12 +82,31 @@ export function patchHome(scene: HomeScene, patch: HomePatch): HomeScene {
 }
 
 /** Deterministic, bounded closed curve. The agent supplies parameters, never executable SVG. */
+/** A small deterministic generator, so an item's seed always gives it the same outline. */
+function seeded(seed: number): () => number {
+	let state = (seed * 2654435761) >>> 0 || 1;
+	return () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296; };
+}
+/**
+ * An organic closed outline inside the item's box. The base is a superellipse, roomier than an ellipse for text; a
+ * few seeded low-frequency waves pull it inward by at most `wobble` of the radius, so it never leaves its box.
+ */
 export function homeBlob(item: Pick<HomeItem, "width" | "height" | "seed" | "wobble">): string {
 	const { width: w, height: h, seed, wobble } = item;
-	const points = Array.from({ length: 8 }, (_, i) => {
-		const a = i * Math.PI / 4, r = 1 - wobble * (0.5 + 0.5 * Math.sin(seed + i * 2.39));
-		return [w / 2 + Math.cos(a) * w / 2 * r, h / 2 + Math.sin(a) * h / 2 * r];
+	const random = seeded(seed), exponent = 2.6, count = 14;
+	const waves = [2, 3, 5].map((frequency, index) => ({ frequency, phase: random() * Math.PI * 2, amount: wobble * [0.55, 0.3, 0.15][index]! * (0.7 + 0.6 * random()) }));
+	const points = Array.from({ length: count }, (_, i) => {
+		const angle = i / count * Math.PI * 2, cos = Math.cos(angle), sin = Math.sin(angle);
+		const inward = waves.reduce((sum, wave) => sum + wave.amount * (1 + Math.sin(wave.frequency * angle + wave.phase)) / 2, 0);
+		const radius = 1 - inward;
+		return [w / 2 + Math.sign(cos) * Math.abs(cos) ** (2 / exponent) * w / 2 * radius, h / 2 + Math.sign(sin) * Math.abs(sin) ** (2 / exponent) * h / 2 * radius];
 	});
-	const mid = (a: number[], b: number[]) => `${((a[0]! + b[0]!) / 2).toFixed(2)} ${((a[1]! + b[1]!) / 2).toFixed(2)}`;
-	return `M ${mid(points[7]!, points[0]!)} ` + points.map((p, i) => `Q ${p[0]!.toFixed(2)} ${p[1]!.toFixed(2)} ${mid(p, points[(i + 1) % 8]!)}`).join(" ") + " Z";
+	// A closed Catmull-Rom spline through the points, written as cubic Béziers.
+	const at = (i: number) => points[(i + count) % count]!, f = (n: number) => n.toFixed(1);
+	let path = `M ${f(at(0)[0]!)} ${f(at(0)[1]!)}`;
+	for (let i = 0; i < count; i++) {
+		const [p0, p1, p2, p3] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
+		path += ` C ${f(p1[0]! + (p2[0]! - p0[0]!) / 6)} ${f(p1[1]! + (p2[1]! - p0[1]!) / 6)}, ${f(p2[0]! - (p3[0]! - p1[0]!) / 6)} ${f(p2[1]! - (p3[1]! - p1[1]!) / 6)}, ${f(p2[0]!)} ${f(p2[1]!)}`;
+	}
+	return path + " Z";
 }

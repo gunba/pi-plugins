@@ -4,6 +4,31 @@ import { Icon } from "./icons.tsx";
 import { AgentSurface } from "./agent-ui/index.tsx";
 import { HomeCanvasContext, homeComponents } from "./home-components.tsx";
 
+const GAP = 18;
+/**
+ * Pushes overlapping items apart for display, along whichever axis needs the smaller move, so a layout the agent
+ * crowds still reads cleanly. The item Jordan is dragging stays under his pointer. The scene itself is not changed.
+ */
+function separate(items: HomeItem[], held?: string): HomeItem[] {
+	const placed = items.map(item => ({ ...item }));
+	for (let pass = 0; pass < 24; pass++) {
+		let moved = false;
+		for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
+			const a = placed[i]!, b = placed[j]!;
+			const overlapX = Math.min(a.x + a.width, b.x + b.width) + GAP - Math.max(a.x, b.x);
+			const overlapY = Math.min(a.y + a.height, b.y + b.height) + GAP - Math.max(a.y, b.y);
+			if (overlapX <= 0 || overlapY <= 0) continue;
+			moved = true;
+			const horizontal = overlapX < overlapY, amount = horizontal ? overlapX : overlapY;
+			const direction = horizontal ? Math.sign(b.x + b.width / 2 - a.x - a.width / 2) || 1 : Math.sign(b.y + b.height / 2 - a.y - a.height / 2) || 1;
+			const shareA = a.id === held ? 0 : b.id === held ? 1 : 0.5, axis = horizontal ? "x" : "y";
+			a[axis] -= direction * amount * shareA; b[axis] += direction * amount * (1 - shareA);
+		}
+		if (!moved) break;
+	}
+	return placed;
+}
+
 export function HomeCanvas({ scene, state, open, move }: { scene: HomeScene; state?: Record<string, unknown>; open: (item: HomeItem) => void; move: (id: string, x: number, y: number) => void }) {
 	const element = useRef<HTMLDivElement>(null);
 	const [size, setSize] = useState({ width: 0, height: 0 });
@@ -14,7 +39,7 @@ export function HomeCanvas({ scene, state, open, move }: { scene: HomeScene; sta
 	const gesture = useRef<{ camera: typeof camera; x: number; y: number; distance: number; item?: HomeItem; moved: boolean } | undefined>(undefined);
 	const initialized = useRef(false), suppressClick = useRef(false);
 	const sourceItems = homeItems(scene);
-	const items = sourceItems.map(item => dragged?.id === item.id ? { ...item, x: dragged.x, y: dragged.y } : item);
+	const items = separate(sourceItems.map(item => dragged?.id === item.id ? { ...item, x: dragged.x, y: dragged.y } : item), dragged?.id);
 	const fit = () => {
 		if (!sourceItems.length) return;
 		const left = Math.min(...sourceItems.map(item => item.x)) - 35, top = Math.min(...sourceItems.map(item => item.y)) - 35;
