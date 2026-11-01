@@ -16,8 +16,7 @@
 .home-live-item.waiting .home-live-dot { background:var(--input-needed); }
 .home-live-item.blocked .home-live-dot { background:var(--danger); }
 .home-live-item.quiet { background:transparent; }
-.home-live-item.child { position:relative; margin-left:6px; padding:5px 10px; border-style:dashed; background:transparent; font-size:11.5px; align-self:center; }
-.home-live-item.child::before { content:""; position:absolute; left:-15px; top:50%; width:14px; border-top:1px dashed var(--border); }
+.home-live-item.child { padding:5px 10px; border-style:dashed; background:transparent; font-size:11.5px; align-self:center; }
 .home-live-item.child .home-live-dot { width:6px; height:6px; }
 .home-live-item.quiet .home-live-dot { background:transparent; box-shadow:inset 0 0 0 1.5px var(--muted); }
 .home-wakes { margin:-12px 0 26px; }
