@@ -126,19 +126,23 @@ export default function outputBudget(pi: ExtensionAPI): void {
     const details = event.details as { fullOutputPath?: unknown; outputBudgeted?: boolean } | undefined;
     if (details?.outputBudgeted) return;
     const store = outputArtifactStore();
+    // A call made from a codemode program returns to the program, not the model: it gets the whole result to select
+    // from, and the program's own result is the one cut down.
+    const nested = !!event.parentToolCallId;
     if (piTool(event.toolName)) {
       // Pi's own spill file is kept, so Desk can show the complete output after Pi deletes it; the result is Pi's.
       // Only that path is followed, never a path a tool or server put in its payload.
       if (typeof details?.fullOutputPath !== "string" || !details || Object.getPrototypeOf(details) !== Object.prototype) return;
       let artifact: string;
       try { artifact = await store.putFile(details.fullOutputPath); } catch { return; }
+      if (nested) return { details: { ...details, full_output_artifact: artifact } };
       // Pi kept 50 KB of the output; the model gets an excerpt of the saved whole instead. Images stay as they are.
       let text: string | undefined;
       try { text = await excerptFile(store.path(artifact), tailFirst(event.toolName) ? "tail" : "head"); } catch { text = undefined; }
       const content = text === undefined ? undefined : [{ type: "text" as const, text }, ...event.content.filter(block => block.type !== "text")];
       return { ...(content ? { content } : {}), details: { ...details, full_output_artifact: artifact } };
     }
-    if (!event.content.every(block => block.type === "text")) return;
+    if (nested || !event.content.every(block => block.type === "text")) return;
     ctx.signal?.throwIfAborted();
     const cut = await cutLikePi(event.content.map(block => block.type === "text" ? block.text : "").join("\n"), store);
     if (!cut) return;

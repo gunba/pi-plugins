@@ -9,6 +9,8 @@ anything else. Sending 50 KB of a long output cost about 12,000 tokens, kept in 
   store, the excerpt is made from it, and Desk shows the complete output after Pi deletes the file. Images in a
   result are kept.
 - **Other tools' text results** are saved whole under `~/.pi/agent/tool-output/` and excerpted the same way.
+- **Calls a codemode program makes** return whole to the program (Pi's tools still stop at their own 2,000 lines or
+  50 KB, with the full output's path), so it can pick out what it needs; only the program's own result is excerpted.
 - **`read`** pages through a file as Pi's read does: 2,000 lines or 50 KB at a time, then an offset to continue.
 - **Images** from `read` are shrunk to at most 1.5 MB each, within Pi's own limit of 2,000 pixels a side, because every
   request resends every image in the conversation. The file on disk is untouched.
