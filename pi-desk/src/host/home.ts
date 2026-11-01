@@ -70,7 +70,8 @@ export class Home {
 
 				await managed.worker!.command({ kind: "model", ...HOME_MODEL });
 			}
-			if (snapshot?.thinking !== "low") await managed.worker!.command({ kind: "thinking", level: "low" });
+			// Drawing well takes thought; Terra is cheap enough to think hard every turn.
+			if (snapshot?.thinking !== "xhigh") await managed.worker!.command({ kind: "thinking", level: "xhigh" });
 			if (managed.view.name !== "Home") await managed.worker!.command({ kind: "name", name: "Home" });
 			return managed;
 		})().finally(() => { this.starting = undefined; });

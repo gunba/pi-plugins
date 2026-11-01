@@ -32,6 +32,7 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@huggingface/tokenizers": "0.2.0",
+    "@resvg/resvg-wasm": "2.6.2",
     "jose": "6.2.12",
     "mdast-util-from-markdown": "2.0.2",
     "onnxruntime-node": "1.31.1",

@@ -2,7 +2,7 @@
 
 Home is a shared canvas and one persistent Pi conversation on the workspace server
 (the computer that keeps conversation copies). Its model is
-`openai-codex/gpt-6.1-terra`, with low reasoning, selected from the same model store
+`openai-codex/gpt-6.1-terra`, with extra-high reasoning, selected from the same model store
 as any Desk conversation. Local-only Desk keeps Home on that computer.
 
 ## Tasks
@@ -24,7 +24,9 @@ working agents, blocked plans) as one connected structure; nothing is hidden
 behind a click. Display text supports `$state` bindings to live-work status, so
 a status can update without a model turn.
 
-`home_scene` reports layout problems with every read and patch: words overlapping
+`home_scene` returns a picture of the canvas with every read and patch, drawn on the
+host from the scene (`home-picture.ts`, SVG rendered with resvg), so the agent sees
+what Jordan sees and refines it. It also reports layout problems: words overlapping
 other words or items, lines running through words, outlines running into each other,
 and a drawing larger than about 1200 by 700. The instructions require fixing them before a turn ends, so
 faults left by earlier turns do not accumulate.

@@ -1,8 +1,10 @@
 import { Type } from "typebox";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readHomeJobs } from "./home-jobs.ts";
-import { HomePatchSchema, HomeItemPropsSchema, HomeConnectorPropsSchema, HomeTextPropsSchema, HomeShapePropsSchema, HomePathPropsSchema, HomeIconPropsSchema, homeLayoutProblems, type HomeScene } from "../shared/home.ts";
+import { HomePatchSchema, HomeItemPropsSchema, HomeConnectorPropsSchema, HomeTextPropsSchema, HomeShapePropsSchema, HomePathPropsSchema, HomeIconPropsSchema, homeExtent, homeLayoutProblems } from "../shared/home.ts";
+import { homePicture } from "./home-picture.ts";
 import { HomeStore } from "./home-store.ts";
 
 const TASKS = join(getAgentDir(), "home", "tasks.md");
@@ -14,7 +16,7 @@ Tasks
 
 The canvas
 - The canvas is your drawing of that file and of the live work: questions, approvals, blocked plans and working agents. Draw everything; nothing is hidden behind a click. Every task appears with each of its subtasks, done ones ticked and quiet. Never add made-up or sample work.
-- Draw it as one connected structure, like a single map or tree: branches for today, the work, ideas and routines, each task on its branch and its subtasks branching from it, joined by Paths. Not separate islands, and not lists inside containers. Avoid what makes a task app: rows, grids, columns of identical shapes, one colour for everything.
+- Draw it as one connected whole, not separate islands or lists in boxes. Avoid what makes a task app: rows, grids, columns of identical shapes, one colour for everything.
 - You decide everything on it and change it only with home_scene. Read home_scene first and patch its exact revision; if the revision is stale, read again and retry, never undoing a position Jordan dragged.
 - home_scene's required list names the live work; every patch keeps each on some element with its ref, so Jordan can open it.
 - Ready-made items: Blob (an organic shape with icon, title, subtitle and status; at least 300 by 170 so its words fit), Pill (at least 220 by 84) and Label (an icon beside text). Connector {from, to, bend} joins two of them edge to edge. Don't title the canvas; Home's header names it.
@@ -23,12 +25,10 @@ The canvas
 - Keep positions stable between turns. The store keeps the positions Jordan drags; release one, with releasePositions in the same home_scene call, only when he asks you to move that item.
 
 Composition
-- Today comes first, at the root of the structure: what Jordan has to do today (routines such as medication and rowing, appointments, today's deadlines), each shown done or still to do. When today is light, add tomorrow's beside it.
-- Give the few things that need Jordan now (about five at most) the largest shapes; everything else is compact text on its branch. The eye should land on today and those first.
-- Use colour per branch and keep at least 16 px between any two pieces of text or items. A working agent sits beside the task it serves, or on a small "working now" branch when it serves none.
-- Keep the whole drawing within about 1200 by 700 and readable at full size, however many tasks there are. As tasks multiply, shorten labels and tighten branches rather than spread out.
-- Grow by recomposing: a new task goes on its branch, and when a branch runs out of room, lay that branch out again (keeping positions Jordan dragged) rather than squeezing items in.
-- home_scene lists layout problems with the scene: words overlapping, lines running through words, outlines running into each other, a drawing too big. Fix every one before you finish a turn, including any already there when you read it.
+- Today comes first: what Jordan has to do today (routines such as medication and rowing, appointments, today's deadlines), each shown done or still to do. When today is light, add tomorrow's beside it.
+- Beyond that, the design is yours. Aim for something beautiful and easy to take in at a glance, not a task app.
+- Keep the whole drawing within about 1200 by 700 and legible at full size; as tasks multiply, tighten it rather than spread out.
+- home_scene returns a picture of the canvas as Jordan sees it, and lists layout problems: words overlapping, lines running through words, outlines running into each other, a drawing too big. After every change, look at the picture with image(result.picture), fix those problems and anything else that looks wrong, and keep refining until it looks right. Never return the picture as text.
 
 The scene format
 - The scene is a json-render spec: {root:"canvas", elements:{canvas:{type:"Canvas", props:{}, children:[...]}}}. Every element goes directly under Canvas; later children draw on top, so put paths and connectors first. An element's key is its identity (letters, digits, - _ and ., up to 100); never set $id. Props follow the schemas home_scene returns.
@@ -56,16 +56,26 @@ Tools and limits
 - Hand work to other agents only when Jordan asks. Approvals and permissions apply as usual; never work around them.
 `;
 
-/** A scene with the layout faults the agent must still fix, listed only when there are some. */
-const withProblems = (scene: HomeScene) => { const problems = homeLayoutProblems(scene); return problems.length ? { ...scene, problems } : scene; };
+const COMPONENTS = { Canvas: { props: {} }, Blob: HomeItemPropsSchema, Pill: HomeItemPropsSchema, Label: HomeItemPropsSchema, Connector: HomeConnectorPropsSchema,
+	Text: HomeTextPropsSchema, Shape: HomeShapePropsSchema, Path: HomePathPropsSchema, Icon: HomeIconPropsSchema };
 const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value });
 /** Runs inside the normal Desk worker, so watches, MCP, approvals and agent messaging retain their usual lifecycle. */
 export function installHome(pi: ExtensionAPI, directory: string): void {
 	const store = new HomeStore(directory);
 	pi.on("session_shutdown", () => store.close());
 	pi.on("before_agent_start", event => ({ systemPrompt: HOME_INSTRUCTIONS + "\n" + event.systemPrompt }));
-	pi.registerTool({ name: "home_scene", label: "Arrange Home", description: "Without patch, returns the scene with its revision, the references it must include (required), the live state keys and the component schemas. With patch, applies it as one change. Positions are canvas pixels; positions Jordan dragged are kept.",
-		parameters: Type.Object({ patch: Type.Optional(HomePatchSchema), releasePositions: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 160, description: "Items Jordan has asked you to move although he dragged them there. Needs a patch." })) }), async execute(_id, params) { return result(params.patch ? withProblems(store.patch(params.patch, params.releasePositions)) : { ...withProblems(store.scene()), required: store.required(), state: store.get("state"), components: { Canvas: { props: {} }, Blob: HomeItemPropsSchema, Pill: HomeItemPropsSchema, Label: HomeItemPropsSchema, Connector: HomeConnectorPropsSchema, Text: HomeTextPropsSchema, Shape: HomeShapePropsSchema, Path: HomePathPropsSchema, Icon: HomeIconPropsSchema } }); } });
+	pi.registerTool({ name: "home_scene", label: "Arrange Home", description: "Without patch, returns the scene with its revision, the references it must include (required), the live state keys, the component schemas and a picture of the canvas. With patch, applies it as one change and returns the new revision, any layout problems and a picture. Positions are canvas pixels; positions Jordan dragged are kept.",
+		parameters: Type.Object({ patch: Type.Optional(HomePatchSchema), releasePositions: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 160, description: "Items Jordan has asked you to move although he dragged them there. Needs a patch." })) }),
+		async execute(_id, params) {
+			const scene = params.patch ? store.patch(params.patch, params.releasePositions) : store.scene(), problems = homeLayoutProblems(scene);
+			const value = params.patch ? { revision: scene.revision, ...(problems.length ? { problems } : {}) }
+				: { ...scene, ...(problems.length ? { problems } : {}), required: store.required(), state: store.get("state"), components: COMPONENTS };
+			const extent = homeExtent(scene), data = extent ? await homePicture(scene, extent).catch(() => undefined) : undefined;
+			const picture = data ? { type: "image" as const, data, mimeType: "image/png" } : undefined;
+			// The picture reaches a program through structuredContent; the transcript keeps only the text.
+			return { content: [{ type: "text" as const, text: JSON.stringify(value) }, ...picture ? [picture] : []], details: value,
+				structuredContent: JSON.parse(JSON.stringify(picture ? { ...value, picture } : value)) as JsonValue };
+		} });
 	pi.registerTool({ name: "home_jobs", label: "Read Home schedules", description: "Lists each scheduled job's files and its next deadline (Australia/Perth). Arms and runs nothing.", parameters: Type.Object({}),
 		async execute() { return result(readHomeJobs(join(getAgentDir(), "home", "jobs"))); } });
 	pi.registerTool({ name: "home_notify", label: "Deliver Home update", description: "Sends a scheduled job's result to Home and Jordan's phone. Only when there is something worth telling; a failed send is not retried.",

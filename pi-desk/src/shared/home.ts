@@ -172,6 +172,40 @@ function pathBox(d: string): [number, number, number, number] | undefined {
 	}
 	return xs.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : undefined;
 }
+type Point = { x: number; y: number };
+/** Labels draw their 28px icon 8px in from the left; connectors meet the icon, never the text beside it. */
+const LABEL_ICON = { inset: 22, radius: 16 };
+/**
+ * Where a connector meets an item, and the direction it leaves in. A blob or pill is met on its outline facing the
+ * other end; a label is met on its icon, from above, below or the left, so the line stays clear of its words.
+ */
+function anchor(item: HomeItem, toward: Point): { point: Point; out: Point } {
+	if (item.shape === "label") {
+		const center = { x: item.x + LABEL_ICON.inset, y: item.y + item.height / 2 }, dx = toward.x - center.x, dy = toward.y - center.y;
+		const out = dx < 0 && Math.abs(dx) > Math.abs(dy) ? { x: -1, y: 0 } : { x: 0, y: dy < 0 ? -1 : 1 };
+		return { point: { x: center.x + out.x * LABEL_ICON.radius, y: center.y + out.y * LABEL_ICON.radius }, out };
+	}
+	const rx = item.width / 2, ry = item.height / 2, center = { x: item.x + rx, y: item.y + ry };
+	const angle = Math.atan2((toward.y - center.y) / ry, (toward.x - center.x) / rx);
+	// Blob outlines sit inside their box, so meet them a little inside the ellipse that fills it.
+	const inset = item.shape === "blob" ? 0.9 : 0.97, out = { x: Math.cos(angle), y: Math.sin(angle) };
+	return { point: { x: center.x + out.x * rx * inset, y: center.y + out.y * ry * inset }, out };
+}
+const middle = (item: HomeItem): Point => item.shape === "label"
+	? { x: item.x + LABEL_ICON.inset, y: item.y + item.height / 2 } : { x: item.x + item.width / 2, y: item.y + item.height / 2 };
+/** A connector between two items: a curve from outline to outline, bend shifting both handles sideways so the agent can
+ * separate connectors that would run together. It takes the colour of the item that isn't a label. */
+export function homeConnector(a: HomeItem, b: HomeItem, bend: number): { d: string; start: Point; end: Point; color: string } {
+	const start = anchor(a, middle(b)), end = anchor(b, middle(a));
+	const reach = Math.max(24, Math.hypot(end.point.x - start.point.x, end.point.y - start.point.y) * 0.42);
+	const length = Math.hypot(end.point.x - start.point.x, end.point.y - start.point.y) || 1;
+	const side = { x: -(end.point.y - start.point.y) / length * bend * 0.5, y: (end.point.x - start.point.x) / length * bend * 0.5 };
+	const c1 = { x: start.point.x + start.out.x * reach + side.x, y: start.point.y + start.out.y * reach + side.y };
+	const c2 = { x: end.point.x + end.out.x * reach + side.x, y: end.point.y + end.out.y * reach + side.y };
+	return { d: `M ${start.point.x} ${start.point.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.point.x} ${end.point.y}`, start: start.point, end: end.point,
+		color: String((a.shape === "label" ? b : a).color) };
+}
+
 /** Points along a path, a few per segment, for telling whether a line runs through something. Arcs count as straight. */
 function pathSamples(d: string): [number, number][] {
 	const tokens = d.match(/[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) ?? [];
@@ -223,6 +257,13 @@ function homeBox(id: string, element: AgentElement): Box | undefined {
 	return { id, x: left, y, width, height };
 }
 const overlap = (a: Box, b: Box) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 2 && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 2;
+/** The box around everything drawn, or undefined for an empty canvas. */
+export function homeExtent(scene: HomeScene): { x: number; y: number; width: number; height: number } | undefined {
+	const boxes = Object.entries(scene.spec.elements).filter(([id]) => id !== scene.spec.root).flatMap(([id, element]) => homeBox(id, element) ?? []);
+	if (!boxes.length) return undefined;
+	const x = Math.min(...boxes.map(box => box.x)), y = Math.min(...boxes.map(box => box.y));
+	return { x, y, width: Math.max(...boxes.map(box => box.x + box.width)) - x, height: Math.max(...boxes.map(box => box.y + box.height)) - y };
+}
 /** Layout faults the agent should fix before it finishes: words on top of other words or items, areas running into each other, and a drawing too big for the screen. */
 export function homeLayoutProblems(scene: HomeScene): string[] {
 	const elements = Object.entries(scene.spec.elements).filter(([id]) => id !== scene.spec.root);
@@ -245,10 +286,7 @@ export function homeLayoutProblems(scene: HomeScene): string[] {
 		const a = areas[i]!.box, b = areas[j]!.box, inside = (o: Box, c: Box) => o.x <= c.x && o.y <= c.y && o.x + o.width >= c.x + c.width && o.y + o.height >= c.y + c.height;
 		if (overlap(a, b) && !inside(a, b) && !inside(b, a)) problems.push(`areas ${a.id} and ${b.id} run into each other`);
 	}
-	if (boxes.length) {
-		const left = Math.min(...boxes.map(entry => entry.box.x)), top = Math.min(...boxes.map(entry => entry.box.y));
-		const width = Math.max(...boxes.map(entry => entry.box.x + entry.box.width)) - left, height = Math.max(...boxes.map(entry => entry.box.y + entry.box.height)) - top;
-		if (width > 1320 || height > 780) problems.push(`the drawing is ${Math.round(width)} by ${Math.round(height)}; keep it within about 1200 by 700`);
-	}
+	const extent = homeExtent(scene);
+	if (extent && (extent.width > 1320 || extent.height > 780)) problems.push(`the drawing is ${Math.round(extent.width)} by ${Math.round(extent.height)}; keep it within about 1200 by 700`);
 	return problems.slice(0, 20);
 }
