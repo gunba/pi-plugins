@@ -69,7 +69,7 @@ export function remoteMember(computer: string, value: unknown, now: number): Mem
 	return { session: agentId(id(computer), id(input.session)), computer, owner: "",
 		room: "", epoch: id(input.epoch), agent_epoch: id(input.agent_epoch),
 		label: text(input.label, 120), cwd: text(input.cwd, 4096), description: text(input.description, 1600),
-		state, kind, heartbeat: state === "offline" ? 0 : now, wakes: integer(input.wakes, 8),
+		state, kind, heartbeat: state === "offline" ? 0 : now, seen: input.seen === undefined ? 0 : integer(input.seen), wakes: integer(input.wakes, 8),
 		delivery: integer(input.delivery, 1), muted: integer(input.muted, 1) };
 }
 export function remoteMessage(value: unknown): PartyMessage {
@@ -134,5 +134,6 @@ export function operationResult(value: unknown): OperationResult {
 export function networkMembers(members: Member[], now: number, lease: number): NetworkMember[] {
 	return members.map(({ owner: _owner, computer: _computer, heartbeat, ...member }) => ({ ...member,
 		label: member.label.slice(0, 120), cwd: member.cwd.slice(0, 4096), description: member.description.slice(0, 1600),
-		state: heartbeat > now - lease ? member.state : "offline" })).sort((a, b) => a.session.localeCompare(b.session));
+		// A running member's seen changes with every heartbeat; it is sent only once closed, so the directory changes only when membership does.
+		...heartbeat > now - lease ? { state: member.state, seen: 0 } : { state: "offline", seen: member.seen } })).sort((a, b) => a.session.localeCompare(b.session));
 }

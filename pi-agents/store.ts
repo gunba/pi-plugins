@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -6,12 +6,16 @@ import { agentId, nativeId, networkMembers, remoteMember, remoteMessage, NETWORK
 	type DeliveryReceipt, type NetworkMember } from "./network.ts";
 
 export const LEASE_MS = 45_000;
+/** How long, and how many of, a computer's closed conversations it lists to the others. */
+const CLOSED_LISTED_MS = 30 * 86_400_000, CLOSED_LISTED = 200;
 /** Messages are direct; an epoch change (new registration) withdraws undelivered ones. */
 export const CURRENT_MESSAGE_SQL = `m.room='' AND sender.agent_epoch=m.sender_epoch AND recipient.agent_epoch=m.recipient_epoch`;
 export interface Member {
 	session: string; room: string; epoch: string; label: string; owner: string;
 	heartbeat: number; state: string; wakes: number;
 	agent_epoch: string; cwd: string; description: string; kind: string; delivery: number; muted: number;
+	/** When it was last running (ms); 0 if unknown. Unlike heartbeat, release keeps it. */
+	seen: number;
 	computer?: string;
 }
 export interface PartyMessage {
@@ -152,10 +156,24 @@ export class PartyStore {
 				this.db.exec("UPDATE members SET wakes=0");
 				this.db.prepare("INSERT INTO network_meta VALUES (\'wake-policy\',\'idle-starts\') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
 			}
+			if (!members.has("seen")) {
+				this.db.exec("ALTER TABLE members ADD COLUMN seen INTEGER NOT NULL DEFAULT 0; UPDATE members SET seen=heartbeat");
+				// A conversation closed before this column existed was last running when its session file last changed.
+				const closed = this.db.prepare("SELECT m.session, f.file FROM members m JOIN session_files f ON f.session=m.session WHERE m.seen=0 AND m.kind='session'")
+					.all() as { session: string; file: string }[];
+				const seen = this.db.prepare("UPDATE members SET seen=? WHERE session=?");
+				for (const row of closed) {
+					try { seen.run(Math.trunc(statSync(row.file).mtimeMs), row.session); } catch { /* Its file is gone, so it cannot be reopened. */ }
+				}
+			}
 			const fields = ["session", "room", "epoch", "label", "owner", "heartbeat", "state", "wakes",
 				"agent_epoch", "cwd", "description", "kind", "delivery", "muted"];
-			this.db.exec(`CREATE VIEW IF NOT EXISTS party_agents AS SELECT ${fields.join(",")}, NULL AS computer FROM members
-				UNION ALL SELECT ${fields.map(field => ["session", "heartbeat"].includes(field) ? field : `json_extract(profile,'$.${field}')`).join(",")}, computer FROM network_members`);
+			const view = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='party_agents'").get() as { sql: string } | undefined;
+			if (view && !view.sql.includes("seen")) this.db.exec("DROP VIEW party_agents");
+			// Older Desks announce no seen; their closed conversations sort last.
+			this.db.exec(`CREATE VIEW IF NOT EXISTS party_agents AS SELECT ${fields.join(",")}, seen, NULL AS computer FROM members
+				UNION ALL SELECT ${fields.map(field => ["session", "heartbeat"].includes(field) ? field : `json_extract(profile,'$.${field}')`).join(",")},
+				COALESCE(json_extract(profile,'$.seen'),0), computer FROM network_members`);
 		});
 	}
 	close(): void { this.db.close(); }
@@ -163,9 +181,17 @@ export class PartyStore {
 		return this.db.prepare("SELECT * FROM members WHERE heartbeat>? ORDER BY heartbeat DESC,session LIMIT ?")
 			.all(this.now() - LEASE_MS, NETWORK_LIMIT) as unknown as Member[];
 	}
-	/** Conversations other computers may message; local services such as the quest log's sender are not among them. */
+	/**
+	 * Conversations other computers may message: those running, and those closed in the last CLOSED_LISTED_MS that kept
+	 * a session file, so they can be found, messaged and reopened from elsewhere. Local services such as the quest log's
+	 * sender are not among them.
+	 */
 	networkDirectory(): NetworkMember[] {
-		return networkMembers(this.localMembers().filter(member => member.kind === "session" || member.kind === "child"), this.now(), LEASE_MS);
+		const now = this.now(), live = this.localMembers().filter(member => member.kind === "session" || member.kind === "child");
+		const closed = this.db.prepare(`SELECT m.* FROM members m JOIN session_files f ON f.session=m.session
+			WHERE m.kind='session' AND m.heartbeat<=? AND m.seen>? ORDER BY m.seen DESC, m.session LIMIT ?`)
+			.all(now - LEASE_MS, now - CLOSED_LISTED_MS, Math.min(CLOSED_LISTED, NETWORK_LIMIT - live.length)) as unknown as Member[];
+		return networkMembers([...live, ...closed], now, LEASE_MS);
 	}
 	setNetworkScope(scope: string): void {
 		this.tx(() => {
@@ -213,7 +239,8 @@ export class PartyStore {
 	}
 	/** The conversations a computer last listed as open (native ids); kept while it is disconnected. */
 	openSessions(computer: string): string[] {
-		return (this.db.prepare("SELECT session FROM network_members WHERE computer=?").all(computer) as { session: string }[]).map(row => row.session.split("@")[0]!);
+		return (this.db.prepare("SELECT session FROM network_members WHERE computer=? AND json_extract(profile,'$.state')<>'offline'").all(computer) as { session: string }[])
+			.map(row => row.session.split("@")[0]!);
 	}
 	computerSupports(computer: string, operation: string): boolean {
 		const row = this.db.prepare("SELECT operations FROM network_computers WHERE computer=?").get(computer) as { operations: string | null } | undefined;
@@ -409,10 +436,10 @@ export class PartyStore {
 			if (old && old.owner !== owner && old.heartbeat > this.now() - LEASE_MS && old.state !== "restarting")
 				throw Error("This session is already connected from another Pi process.");
 			this.db.prepare(`INSERT INTO members
-				(session,room,epoch,label,owner,heartbeat,state,wakes,agent_epoch,cwd,description,kind,delivery)
-				VALUES (?,'',?,?,?,?, 'idle',0,?,?,'',?,0)
+				(session,room,epoch,label,owner,heartbeat,seen,state,wakes,agent_epoch,cwd,description,kind,delivery)
+				VALUES (?1,'',?2,?3,?4,?5,?5,'idle',0,?6,?7,'',?8,0)
 				ON CONFLICT(session) DO UPDATE SET label=excluded.label, owner=excluded.owner,
-				heartbeat=excluded.heartbeat,state=excluded.state,cwd=excluded.cwd,kind=excluded.kind,
+				heartbeat=excluded.heartbeat,seen=excluded.heartbeat,state=excluded.state,cwd=excluded.cwd,kind=excluded.kind,
 				delivery=CASE WHEN members.state='restarting' THEN members.delivery ELSE 0 END`)
 				.run(session, randomUUID(), label.slice(0, 120), owner, this.now(), randomUUID(), cwd, kind);
 			if (file) this.db.prepare("INSERT INTO session_files VALUES (?,?) ON CONFLICT(session) DO UPDATE SET file=excluded.file").run(session, file);
@@ -428,7 +455,7 @@ export class PartyStore {
 		const member = this.member(session);
 		if (!member || owner !== undefined && member.owner !== owner) return;
 		// Releasing the old process disarmed delivery; restore what it was so peers can still wake the agent.
-		this.db.prepare("UPDATE members SET state='restarting', heartbeat=?, delivery=COALESCE(?, delivery) WHERE session=? AND owner=?")
+		this.db.prepare("UPDATE members SET state='restarting', heartbeat=?1, seen=?1, delivery=COALESCE(?, delivery) WHERE session=? AND owner=?")
 			.run(this.now(), delivery === undefined ? null : delivery ? 1 : 0, session, member.owner);
 		return member.owner;
 	}
@@ -441,12 +468,12 @@ export class PartyStore {
 	}
 	discover(query = "", includeOffline = false, offset = 0): { agents: Member[]; nextOffset?: number } {
 		const rows = this.db.prepare(`SELECT * FROM party_agents
-			WHERE (? OR heartbeat>?) AND instr(lower(label || ' ' || cwd || ' ' || description),lower(?))>0
-			ORDER BY session LIMIT 51 OFFSET ?`).all(includeOffline ? 1 : 0, this.now() - LEASE_MS, query, offset) as unknown as Member[];
+			WHERE (?1 OR heartbeat>?2) AND instr(lower(label || ' ' || cwd || ' ' || description),lower(?3))>0
+			ORDER BY heartbeat>?2 DESC, seen DESC, session LIMIT 51 OFFSET ?4`).all(includeOffline ? 1 : 0, this.now() - LEASE_MS, query, offset) as unknown as Member[];
 		return { agents: rows.slice(0, 50), ...(rows.length > 50 ? { nextOffset: offset + 50 } : {}) };
 	}
 	touch(session: string, owner: string, state: string, label?: string): void {
-		const result = this.db.prepare("UPDATE members SET heartbeat=?,state=?,label=COALESCE(?,label) WHERE session=? AND owner=?")
+		const result = this.db.prepare("UPDATE members SET heartbeat=?1,seen=?1,state=?2,label=COALESCE(?3,label) WHERE session=?4 AND owner=?5")
 			.run(this.now(), state, label?.slice(0, 120) ?? null, session, owner);
 		if (result.changes !== 1) throw Error("Party ownership changed.");
 	}

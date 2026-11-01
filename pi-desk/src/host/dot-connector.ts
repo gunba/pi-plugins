@@ -41,7 +41,7 @@ const TOOLS = [
 	{ name: "resume_conversation", description: "Reopen a closed Pi conversation so it runs again (list_agents with include_offline shows closed ones). With a message, the message is delivered once it is running and starts it working. A running conversation is left as it is.",
 		inputSchema: { type: "object", required: ["agent"], properties: { agent: { type: "string", description: "Agent id from list_agents." },
 			message: { type: "string", description: "Optional message to deliver once it is running." } } } },
-	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle, closed or computer offline), computer, folder and description. Use the id to message an agent.",
+	{ name: "list_agents", description: "List Pi agents on Jordan's computers with their state (working, idle, closed or computer offline), computer, folder and description, at most 50, running ones first and then the most recently closed (each computer lists those closed in the last 30 days); a query narrows the list. Use the id to message an agent.",
 		inputSchema: { type: "object", properties: { query: { type: "string", description: "Filter by name, folder or description." },
 			include_offline: { type: "boolean", description: "Also list agents whose conversations are closed." },
 			include_children: { type: "boolean", description: "Also list child agents that conversations run themselves (usually unnecessary)." } } } },

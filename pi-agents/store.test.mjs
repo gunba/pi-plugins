@@ -196,18 +196,23 @@ test("discovery registers ungrouped agents, searches metadata, and excludes expi
 	assert.equal(next.nextOffset, undefined);
 });
 
-test("network discovery retains active agents beyond a large archived registry", t => {
-	const { a } = fixture(t);
+test("network discovery lists running agents and recently closed conversations that can be reopened", t => {
+	const { a, advance } = fixture(t);
 	for (let i = 0; i < 700; i++) {
 		const id = `00000000-0000-4000-a000-${i.toString(16).padStart(12, "0")}`;
 		a.register(id, "owner", "Archived"); a.release(id, "owner");
 	}
-	const live = "ffffffff-ffff-4fff-afff-ffffffffffff";
+	const closed = "eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee", live = "ffffffff-ffff-4fff-afff-ffffffffffff";
+	a.register(closed, "closed-owner", "Closed", "/repo", "session", "/sessions/closed.jsonl");
+	advance(1000); a.release(closed, "closed-owner");
 	a.register(live, "live-owner", "Active");
 	const directory = a.networkDirectory();
-	assert.equal(directory.length, 1, "released agents are not advertised to other computers");
-	assert.equal(directory.find(peer => peer.session === live)?.state, "idle");
+	assert.deepEqual(directory.map(peer => [peer.session, peer.state, peer.seen]), [[closed, "offline", a.member(closed).seen], [live, "idle", 0]],
+		"conversations without a session file cannot be reopened and are not listed");
+	assert.ok(a.member(closed).seen > 0);
 	assert.ok(directory.every(peer => !("owner" in peer) && !("heartbeat" in peer)));
+	advance(31 * 86_400_000); a.touch(live, "live-owner", "idle");
+	assert.deepEqual(a.networkDirectory().map(peer => peer.session), [live], "conversations closed over 30 days ago are not listed");
 });
 
 test("direct history is participant-only and exact IDs take precedence over prefixes", t => {
