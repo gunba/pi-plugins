@@ -69,6 +69,7 @@ import { registerGmailSendDraft } from "/path/to/pi-plugins/pi-desk/manage/gmail
 registerGmailSendDraft(server, gmailRequest, z);
 ```
 
+Packaged Desk also includes this adapter as `dist/manage/gmail-send.js`.
 It reuses the adapter's request and credential handling. It adds no token handling
 or refresh script. Sending checks the authenticated account, explicitly writes the required From header into the existing draft, and has no automatic retry: an uncertain result requires
 checking Sent and whether the draft still exists. The tool reports success only
@@ -107,6 +108,8 @@ After merge, stage into the standard runtime location without overwriting state:
 ```sh
 node pi-desk/manage/home-jobs.ts ~/.pi/agent/home/handover/steve-inventory.md
 ```
+
+Packaged Desk provides the same staging command as `dist/manage/home-jobs.js`.
 
 Then tell the real Home conversation to call `home_jobs`, read the job directory's
 README and arm each next absolute watch, with the job ID and instructions path in

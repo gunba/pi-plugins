@@ -3,8 +3,8 @@ export function draftWithSender(raw, from) {
 	if (typeof raw !== "string" || !raw || typeof from !== "string" || !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(from)) throw Error("Invalid draft or sender.");
 	const message = Buffer.from(raw, "base64url").toString("latin1"), boundary = /\r?\n\r?\n/.exec(message);
 	if (!boundary) throw Error("Draft has no MIME header boundary.");
-	const header = message.slice(0, boundary.index).replace(/^From:[^\r\n]*(?:\r?\n[ \t][^\r\n]*)*\r?\n?/gmi, "").replace(/\r?\n/g, "\r\n");
-	return Buffer.from(`From: ${from}\r\n${header}\r\n\r\n${message.slice(boundary.index + boundary[0].length)}`, "latin1").toString("base64url");
+	const header = message.slice(0, boundary.index).replace(/^From:[^\r\n]*(?:\r?\n[ \t][^\r\n]*)*\r?\n?/gmi, "").replace(/\r?\n/g, "\r\n").replace(/\r\n$/, "");
+	return Buffer.from(`From: ${from}${header ? "\r\n" + header : ""}\r\n\r\n${message.slice(boundary.index + boundary[0].length)}`, "latin1").toString("base64url");
 }
 
 /** Add sending to the existing Gmail MCP adapter, reusing its request/auth implementation and granted compose scope. */

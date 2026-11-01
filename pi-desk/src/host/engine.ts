@@ -57,6 +57,7 @@ import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { installHome } from "./home-extension.ts";
+import { HOME_MODEL } from "../shared/home.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
@@ -275,10 +276,15 @@ export class DeskEngine {
 			context = new NativeContext(sessionManager, services.resourceLoader, pin ? [pin.root] : []);
 			services.resourceLoader = context.resources;
 			const saved = sessionManager.buildSessionProjection();
-			const model = saved.model && services.modelRuntime.getModel(saved.model.provider, saved.model.modelId);
+			const model = options.homeDirectory ? services.modelRuntime.getModel(HOME_MODEL.provider, HOME_MODEL.id)
+				: saved.model && services.modelRuntime.getModel(saved.model.provider, saved.model.modelId);
+			// Restored watches may wake during session startup; Home must not briefly run the computer's default model.
+			if (options.homeDirectory && (!model || !services.modelRuntime.hasConfiguredAuth(model.provider)))
+				throw Error("Home needs openai-codex/gpt-6.1-terra in this computer's model store and a usable Codex login.");
 			const result = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
 				...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
-				...(sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
+				...(options.homeDirectory ? { thinkingLevel: "low" as const }
+					: sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
 			});
 			// Batch Desk steering at the native boundary without rewriting terminal preferences.
 			result.session.agent.steeringMode = "all";

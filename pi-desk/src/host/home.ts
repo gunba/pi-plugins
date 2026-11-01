@@ -135,8 +135,8 @@ export class Home {
 				catch (error) { this.store.settle(request.id, { error: error instanceof Error ? error.message : String(error) }); }
 			}
 			const facts = this.facts(), signature = JSON.stringify(facts);
-			this.store.set("state", { quests: Object.fromEntries([...(facts.quests?.quests ?? []), ...(facts.quests?.upcoming ?? [])].map(quest => [quest.id, quest])),
-				work: Object.fromEntries(facts.work.map(work => [`${work.computer ?? "local"}.${work.id}${work.view ? `.${work.view}` : ""}`, work])) });
+			this.store.set("state", { quests: Object.fromEntries([...(facts.quests?.quests ?? []), ...(facts.quests?.upcoming ?? [])].map(quest => [quest.id, { title: quest.title.slice(0, 100), state: quest.state, due: quest.due ?? null, scheduled: quest.scheduled ?? null }])),
+				work: Object.fromEntries(facts.work.map(work => [`${work.computer ?? "local"}.${work.id}${work.view ? `.${work.view}` : ""}`, { title: work.title.slice(0, 100), status: work.status }])) });
 			if (signature !== this.observed) { this.observed = signature; if (!this.changedAt) this.changedAt = Date.now(); }
 			if (signature === this.submitted) { this.changedAt = 0; return; }
 			if (!this.quests.view || !this.changedAt || Date.now() - this.changedAt < 3000) return;

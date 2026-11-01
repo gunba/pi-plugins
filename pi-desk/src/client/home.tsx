@@ -24,10 +24,11 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const online = host.computers ? !!server?.connected : connected;
 	const [snapshot, setSnapshot] = useState<HomeSnapshot>({ scene: emptyHomeScene(), messages: [], busy: false });
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false), [quest, setQuest] = useState<Quest>();
-	const [showSettings, setShowSettings] = useState(false);
+	const [showSettings, setShowSettings] = useState(false), [discardPending, setDiscardPending] = useState(false);
 	const [file, setFile] = useState<Extract<HomeItem["ref"], { kind: "file" }>>();
 	const storageKey = `pi-desk:home:${computer ?? "local"}`;
 	const [draft, setDraft] = useState(""), [pending, setPending] = useState<Pending>();
+	const [draftLoaded, setDraftLoaded] = useState(false);
 	const draftRef = useRef(draft); draftRef.current = draft;
 	const pendingRef = useRef(pending); pendingRef.current = pending;
 	const dictated = useRef(false), picker = useRef<HTMLInputElement>(null), editor = useRef<HTMLTextAreaElement>(null);
@@ -40,8 +41,14 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	useEffect(() => {
 		const generation = ++epoch.current;
 		setSnapshot({ scene: emptyHomeScene(), messages: [], busy: false }); setError(""); setBusy(false);
-		try { setDraft(localStorage.getItem(`${storageKey}:draft`) ?? ""); setPending(JSON.parse(localStorage.getItem(`${storageKey}:pending`) ?? "null") ?? undefined); }
-		catch { setError("Saved Home messages could not be read. Check this device's storage before sending."); }
+		setDraftLoaded(false); pendingRef.current = undefined; setPending(undefined);
+		try {
+			setDraft(localStorage.getItem(`${storageKey}:draft`) ?? "");
+			const restored = JSON.parse(localStorage.getItem(`${storageKey}:pending`) ?? "null") ?? undefined;
+			if (restored && (typeof restored.id !== "string" || typeof restored.text !== "string" || typeof restored.draft !== "string" || !Array.isArray(restored.files))) throw Error("Invalid Home outbox.");
+			pendingRef.current = restored; setPending(restored); setDraftLoaded(true);
+		}
+		catch { setDraft(""); setError("Saved Home messages could not be read. Check this device's storage before sending."); }
 		let timer: ReturnType<typeof setTimeout>;
 		const poll = async () => {
 			try { if (online) { const next = await api<HomeSnapshot>("/home", undefined, computer); if (epoch.current === generation) setSnapshot(next); } }
@@ -60,7 +67,9 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		seen(); window.addEventListener("focus", seen); document.addEventListener("visibilitychange", seen);
 		return () => { window.removeEventListener("focus", seen); document.removeEventListener("visibilitychange", seen); };
 	}, [key, session?.finished, session?.seen]);
-	const open = async () => { const next = await api<HomeSnapshot>("/home/open", {}, computer); setSnapshot(next); return next; };
+	const open = async () => { const generation = epoch.current, next = await api<HomeSnapshot>("/home/open", {}, computer);
+		if (generation !== epoch.current) throw Error("The workspace server changed. Open Home again.");
+		setSnapshot(next); return next; };
 	const deliver = async (input: Pending) => {
 		if (!online || posting.current) return;
 		posting.current = true; setBusy(true); const generation = epoch.current;
@@ -75,7 +84,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	};
 	useEffect(() => { if (online && pendingRef.current) void deliver(pendingRef.current); }, [online, storageKey]);
 	const send = async (text = draftRef.current) => {
-		if (busy || posting.current) return;
+		if (busy || posting.current || !draftLoaded) return;
 		if (pendingRef.current) { void deliver(pendingRef.current); return; }
 		if (!text.trim() && !attachments.files.length) return;
 		setBusy(true); const generation = epoch.current;
@@ -83,7 +92,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			if (!online && attachments.files.length) throw Error("Reconnect the workspace server to upload these files. They are saved on this device.");
 			let uploaded: string[] = [];
 			if (attachments.files.length) {
-				const current = snapshot.session ? snapshot : await open();
+				const current = await open();
 				const sessionId = referenceKey(computer, current.session!);
 				const state = await api<{ sessions: WorkspaceState["sessions"] }>("/state", undefined, computer);
 				const activation = state.sessions.find(item => item.key === current.session)?.activation;
@@ -108,16 +117,20 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		}
 	};
 	const move = async (id: string, x: number, y: number) => {
+		const generation = epoch.current;
 		setSnapshot(current => ({ ...current, scene: { ...current.scene, spec: { ...current.scene.spec, elements: { ...current.scene.spec.elements, [id]: { ...current.scene.spec.elements[id]!, props: { ...current.scene.spec.elements[id]!.props, x, y } } } } } }));
-		try { setSnapshot(await api<HomeSnapshot>("/home/drag", { id, x, y }, computer)); setError(""); }
-		catch (error) { setError(failure(error)); }
+		try { const next = await api<HomeSnapshot>("/home/drag", { id, x, y }, computer); if (epoch.current === generation) { setSnapshot(next); setError(""); } }
+		catch (error) { if (epoch.current === generation) setError(failure(error)); }
 	};
 	return <>
 		<header className="topbar home-topbar"><button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
 			<div className="conversation-heading"><strong>Home</strong><span>{snapshot.busy ? "Arranging and working…" : "Your work, in one place"}</span></div>
 			<div className="top-actions"><span className="home-run" title={snapshot.run ? `${snapshot.run.input} input · ${snapshot.run.output} output · ${snapshot.run.cacheRead} cached tokens` : undefined}>
 				{snapshot.run ? `$${snapshot.run.cost.toFixed(4)} last run` : "Terra 6.1"}</span>
-				<button className="subtle-button" disabled={!key} onClick={() => key && openConversation(key)}>History</button><button className="icon-button" aria-label="Home settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button></div>
+				<button className="subtle-button" disabled={!key} onClick={() => {
+					if (key && session) openConversation(key);
+					else void open().then(next => { if (next.session) openConversation(referenceKey(computer, next.session)); }).catch(error => setError(failure(error)));
+				}}>History</button><button className="icon-button" aria-label="Home settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button></div>
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
 		<HomeCanvas scene={snapshot.scene} state={snapshot.state} open={openItem} move={(id, x, y) => void move(id, x, y)} />
@@ -125,7 +138,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			{session?.inputs?.some(input => input.state === "failed" || input.state === "interrupted") && <button className="question-banner" onClick={() => key && openConversation(key)}>A Home message needs review. Open history →</button>}
 			{session?.ui?.interactions.length ? <button className="question-banner" onClick={() => key && openConversation(key)}><strong>Home needs your answer</strong><span>Open →</span></button> : null}
 			{latest && <div className="home-reply markdown" role="log" aria-live="polite"><Markdown remarkPlugins={[remarkGfm]}>{latest.text}</Markdown></div>}
-			{pending && <div className="home-pending" role="status">{online ? busy ? "Sending…" : "Delivery not confirmed" : "Queued · offline"}<button className="text-button" disabled={!online || busy} onClick={() => void deliver(pending)}>Check delivery</button></div>}
+			{pending && <div className="home-pending" role="status">{online ? busy ? "Sending…" : "Delivery not confirmed" : "Queued · offline"}<span><button className="text-button" disabled={!online || busy} onClick={() => void deliver(pending)}>Check delivery</button><button className="text-button" disabled={busy} onClick={() => setDiscardPending(true)}>Discard local attempt</button></span></div>}
 			<AttachmentList files={attachments.files} remove={id => attachments.remove(id)} disabled={busy || !!pending} />
 			<input type="file" multiple hidden ref={picker} onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
 			<form className="home-compose" onSubmit={event => { event.preventDefault(); void send(); }} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
@@ -134,14 +147,18 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 				<textarea ref={editor} rows={1} aria-label="Message Home" placeholder="Tell Desk what you need…" value={draft} maxLength={32_000} disabled={!!pending} onChange={event => saveDraft(event.target.value)}
 					onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); attachments.add(event.clipboardData.files); } }}
 					onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-				<DictationButton disabled={busy || !!pending} computer={dictationComputer(host.computers, computer)} report={setError} append={text => { dictated.current = true; saveDraft(withDictation(draftRef.current, text)); }}
+				<DictationButton disabled={!draftLoaded || busy || !!pending} computer={dictationComputer(host.computers, computer)} report={setError} append={text => { dictated.current = true; saveDraft(withDictation(draftRef.current, text)); }}
 					submit={text => { dictated.current = true; const next = withDictation(draftRef.current, text); saveDraft(next); void send(next); }} />
-				<button className="send-button" type="submit" aria-label="Send to Home" disabled={busy || (!draft.trim() && !attachments.files.length)}><Icon name="send" /></button>
+				<button className="send-button" type="submit" aria-label="Send to Home" disabled={!draftLoaded || busy || (!draft.trim() && !attachments.files.length)}><Icon name="send" /></button>
 			</form>
 		</section>
+		{discardPending && <Modal title="Discard local attempt" close={() => setDiscardPending(false)}><p>This does not cancel a message already accepted by Home. Check History before sending another copy.</p><div className="dialog-actions"><button onClick={() => setDiscardPending(false)}>Keep checking</button><button onClick={() => {
+			try { localStorage.removeItem(`${storageKey}:pending`); pendingRef.current = undefined; setPending(undefined); setDiscardPending(false); }
+			catch (error) { setError(failure(error)); }
+		}}>Discard local attempt</button></div></Modal>}
 		{showSettings && <Modal title="Home settings" close={() => setShowSettings(false)}><label><input type="checkbox" checked={snapshot.overlap ?? false} disabled={!online} onChange={event => {
-			const overlap = event.target.checked; setSnapshot(current => ({ ...current, overlap }));
-			void api<HomeSnapshot>("/home/settings", { overlap }, computer).then(setSnapshot).catch(error => { setSnapshot(current => ({ ...current, overlap: !overlap })); setError(failure(error)); });
+			const generation = epoch.current, overlap = event.target.checked; setSnapshot(current => ({ ...current, overlap }));
+			void api<HomeSnapshot>("/home/settings", { overlap }, computer).then(next => { if (epoch.current === generation) setSnapshot(next); }).catch(error => { if (epoch.current === generation) { setSnapshot(current => ({ ...current, overlap: !overlap })); setError(failure(error)); } });
 		}} /> Compare scheduled deliveries with Dot</label><p className="muted">Home prefixes scheduled email subjects and notification titles with “Home:”. Keep this on for the overlap day. Turn it off after every job has delivered correctly and Dot’s jobs have been stopped.</p></Modal>}
 		{quest && <Modal title={quest.title} close={() => setQuest(undefined)}><p>{quest.notes}</p><p className="muted">{quest.state}{quest.due ? ` · Due ${quest.due}` : ""}{quest.scheduled ? ` · ${quest.scheduled}` : ""}</p>
 			{quest.steps?.map((step, index) => <p key={index}>{step.done ? "✓" : "·"} {step.title}</p>)}<button onClick={() => { saveDraft(`About “${quest.title}”: `); setQuest(undefined); editor.current?.focus(); }}>Tell Home what to change</button></Modal>}

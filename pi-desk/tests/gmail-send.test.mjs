@@ -49,4 +49,6 @@ test("sender rewriting removes folded duplicate From headers without changing th
 	const raw = Buffer.from("From: Wrong\r\n <wrong@example.com>\r\n" + mime + "\r\n\xff", "latin1").toString("base64url");
 	assert.equal(Buffer.from(draftWithSender(raw, from), "base64url").toString("latin1"), `From: ${from}\r\n${mime}\r\n\xff`);
 	assert.throws(() => draftWithSender(raw, "owner@example.com\r\nBcc: other@example.com"), /Invalid draft or sender/);
+	const last = Buffer.from("To: owner@example.com\r\nFrom: wrong@example.com\r\n\r\nBody").toString("base64url");
+	assert.equal(Buffer.from(draftWithSender(last, from), "base64url").toString(), "From: owner@example.com\r\nTo: owner@example.com\r\n\r\nBody");
 });

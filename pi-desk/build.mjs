@@ -28,6 +28,16 @@ for (const output of Object.values(host.metafile.outputs)) for (const dependency
   if (!Object.hasOwn(manifest.dependencies, name)) undeclared.add(name);
 }
 if (undeclared.size) throw new Error(`Undeclared host runtime dependencies: ${[...undeclared].join(", ")}`);
+await build({
+  absWorkingDir: root,
+  entryPoints: { "home-jobs": "manage/home-jobs.ts", "gmail-send": "manage/gmail-send.mjs" },
+  outdir: "dist/manage",
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  bundle: true,
+  packages: "external",
+});
 // The relay can be copied to a plain Node server without installing Pi or npm dependencies.
 await build({
   absWorkingDir: root,
