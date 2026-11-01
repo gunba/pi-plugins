@@ -1,7 +1,7 @@
-import { Component, lazy, Suspense, useMemo, type ReactNode } from "react";
+import { Component, createContext, lazy, Suspense, useContext, useMemo, type ReactNode } from "react";
 import { createStateStore } from "@json-render/core";
 import { JSONUIProvider, Renderer, type ComponentRegistry, type ComponentRenderProps } from "@json-render/react";
-import { validateSpec, type AgentSpec } from "../../../../pi-ui/agent-ui.ts";
+import { validateJson, validateSpec, type AgentSpec } from "../../../../pi-ui/agent-ui.ts";
 import { catalogValidator, safeUiUrl, workCatalog, type CatalogDefinition } from "../../../../pi-ui/agent-catalog.ts";
 import "./style.css";
 export { workCatalog, catalogValidator } from "../../../../pi-ui/agent-catalog.ts";
@@ -12,9 +12,15 @@ const text = (value: unknown) => value == null ? "" : typeof value === "object" 
 const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const props = (value: ComponentRenderProps) => value.element.props as Record<string, unknown>;
 
+/** The containing surface resolves attachment indices; specs never receive arbitrary file URLs. */
+export const AgentFilesContext = createContext<((index: number, imageOnly: boolean, alt?: string) => ReactNode) | undefined>(undefined);
+function Attachment(value: ComponentRenderProps) {
+	const resolve = useContext(AgentFilesContext), p = props(value);
+	return resolve?.(Number(p.item), value.element.type === "Image", text(p.alt)) ?? <p>Attachment unavailable.</p>;
+}
 export const workComponents: ComponentRegistry = {
 	Column: ({ children }) => <div className="agent-column">{children}</div>,
-	Row: ({ children }) => <div className="agent-row">{children}</div>,
+	Row: ({ children }) => <div className="agent-ui-row">{children}</div>,
 	Part: value => <details className="agent-part" open={props(value).collapsed !== true}><summary>{text(props(value).title)}</summary>{value.children}</details>,
 	Text: value => <p className="agent-text">{text(props(value).text)}</p>,
 	Metric: value => <div className="agent-metric"><span>{text(props(value).label)}</span><strong>{text(props(value).value)}</strong>{props(value).detail != null && <small>{text(props(value).detail)}</small>}</div>,
@@ -30,7 +36,7 @@ export const workComponents: ComponentRegistry = {
 	},
 	List: value => <ul className="agent-list">{(Array.isArray(props(value).items) ? props(value).items as unknown[] : []).slice(0, 200).map((item, i) => <li key={i}>{text(item)}</li>)}</ul>,
 	Link: value => <a href={safeUiUrl(props(value).url)} target="_blank" rel="noopener noreferrer">{text(props(value).label) || text(props(value).url)} ↗</a>,
-	Image: value => safeUiUrl(props(value).url) ? <img className="agent-image" src={safeUiUrl(props(value).url)} alt={text(props(value).alt)} loading="lazy" referrerPolicy="no-referrer" /> : <p>Image unavailable.</p>,
+	Image: Attachment, File: Attachment,
 	Code: value => <pre className="agent-code"><code>{text(props(value).text)}</code></pre>,
 	Diff: value => <div className="agent-diff"><pre><del>{text(props(value).before)}</del></pre><pre><ins>{text(props(value).after)}</ins></pre></div>,
 	Chart: value => <Suspense fallback={<p className="muted">Loading chart…</p>}><Chart spec={props(value).spec} /></Suspense>,
@@ -47,11 +53,14 @@ class Boundary extends Component<{ children: ReactNode; spec: AgentSpec }, { err
 	componentDidUpdate(previous: { spec: AgentSpec }) { if (previous.spec !== this.props.spec && this.state.error) this.setState({ error: false }); }
 	render() { return this.state.error ? <p role="alert">This view could not be rendered. Ask the agent to update it.</p> : this.props.children; }
 }
+type SurfaceProps = { spec: AgentSpec; components?: ComponentRegistry; state?: Record<string, unknown> };
+/** Work and Home share the renderer; malformed content fails within its own surface. */
+export function AgentSurface(input: SurfaceProps) { return <Boundary spec={input.spec}><SurfaceContent {...input} /></Boundary>; }
 /** Render identity is trusted metadata, injected only after the persisted spec has been validated. */
-export function AgentSurface({ spec, components, state }: { spec: AgentSpec; components?: ComponentRegistry; state?: Record<string, unknown> }) {
+function SurfaceContent({ spec, components, state }: SurfaceProps) {
 	const checked = useMemo(() => validateSpec(spec), [spec]);
 	const renderSpec = useMemo(() => ({ ...checked, elements: Object.fromEntries(Object.entries(checked.elements).map(([id, element]) => [id, { ...element, props: { ...element.props, $id: id } }])) }), [checked]);
 	const registry = useMemo(() => ({ ...workComponents, ...components }), [components]);
-	const store = useMemo(() => createStateStore(state ?? checked.state ?? {}), [state, checked.state]);
-	return <Boundary spec={spec}><div className="agent-surface"><JSONUIProvider registry={registry} store={store}><Renderer spec={renderSpec} registry={registry} /></JSONUIProvider></div></Boundary>;
+	const store = useMemo(() => { const value = state ?? checked.state ?? {}; validateJson(value); return createStateStore(value); }, [state, checked.state]);
+	return <div className="agent-surface"><JSONUIProvider registry={registry} store={store}><Renderer spec={renderSpec} registry={registry} /></JSONUIProvider></div>;
 }

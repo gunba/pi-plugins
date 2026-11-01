@@ -1,6 +1,6 @@
 import { validateJson, type AgentElement, type AgentSpec } from "./agent-ui.ts";
 
-export type CatalogDefinition = { props: readonly string[]; required?: readonly string[]; children?: boolean; structured?: readonly string[] }; 
+export type CatalogDefinition = { props: readonly string[]; required?: readonly string[]; children?: boolean; structured?: readonly string[] };
 export const workCatalog: Record<string, CatalogDefinition> = {
 	Column: { props: [], children: true }, Row: { props: [], children: true },
 	Part: { props: ["title", "collapsed"], children: true },
@@ -10,7 +10,8 @@ export const workCatalog: Record<string, CatalogDefinition> = {
 	Table: { props: ["columns", "rows"], required: ["columns", "rows"] },
 	List: { props: ["items"], required: ["items"] },
 	Link: { props: ["label", "url"], required: ["url"] },
-	Image: { props: ["url", "alt"], required: ["url", "alt"] },
+	Image: { props: ["item", "alt"], required: ["item", "alt"] },
+	File: { props: ["item"], required: ["item"] },
 	Code: { props: ["text", "language"], required: ["text"] },
 	Diff: { props: ["before", "after"], required: ["before", "after"] },
 	Chart: { props: ["spec"], required: ["spec"] },
@@ -53,6 +54,7 @@ export function catalogValidator(definitions: Record<string, CatalogDefinition> 
 			if (["text", "label", "title", "detail", "alt", "language", "before", "after"].includes(key) && typeof value !== "string") throw new Error(`${key} must be text.`);
 			if (key === "collapsed" && typeof value !== "boolean") throw new Error("collapsed must be boolean.");
 		}
+		if (["File", "Image"].includes(element.type) && (typeof element.props.item !== "number" || !Number.isInteger(element.props.item) || element.props.item < 0 || element.props.item > 11)) throw new Error("File/Image item must index an attached item (0–11).");
 		if (element.type === "Chart") validateChart(element.props.spec);
 		if (element.type === "Table" && !bound(element.props.rows) && (!Array.isArray(element.props.rows) || element.props.rows.length > 500 || element.props.rows.some(row => !Array.isArray(row) || row.length > 24 || row.some(cell => cell !== null && !["string", "number", "boolean"].includes(typeof cell))))) throw new Error("Table rows must contain at most 500 rows of 24 scalar cells.");
 		if (element.type === "Table" && (!Array.isArray(element.props.columns) || element.props.columns.length > 24 || element.props.columns.some(column => typeof column !== "string"))) throw new Error("Table columns must be text.");
