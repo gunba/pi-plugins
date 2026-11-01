@@ -74,6 +74,8 @@ export const emptyHomeScene = (): HomeScene => ({ version: 1, revision: 0, spec:
 export function homeUrl(value: string): boolean {
 	try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
 }
+/** The smallest box a ready-made item's icon, title, subtitle and status fit in. */
+export const HOME_MIN_SIZE: Record<string, [number, number]> = { blob: [300, 170], pill: [220, 84], label: [180, 48] };
 export const homeItemType = (type: string): boolean => ["Blob", "Pill", "Label"].includes(type);
 /** Elements Jordan can open and drag: the ready-made items, and free drawing that refers to something. */
 export const homeMovable = (element: AgentElement | undefined): boolean =>
@@ -81,7 +83,12 @@ export const homeMovable = (element: AgentElement | undefined): boolean =>
 /** Geometry and references for interaction; the shared renderer resolves display-text bindings. */
 export function homeItems(scene: HomeScene): HomeItem[] {
 	return Object.entries(scene.spec.elements).filter(([, element]) => homeMovable(element))
-		.map(([id, element]) => ({ width: 0, height: 0, ...element.props, id, shape: homeItemType(element.type) ? element.type.toLowerCase() : "free" } as HomeItem));
+		.map(([id, element]) => {
+			const item = { width: 0, height: 0, ...element.props, id, shape: homeItemType(element.type) ? element.type.toLowerCase() : "free" } as HomeItem;
+			// Drawn no smaller than its words need, whatever size the agent gave it.
+			const [width, height] = HOME_MIN_SIZE[item.shape] ?? [0, 0];
+			return { ...item, width: Math.max(item.width, width), height: Math.max(item.height, height) };
+		});
 }
 export function validateHomeElement(element: AgentElement, id: string, spec: AgentSpec): void {
 	validateHomeCatalog(element, id, spec);
