@@ -27,6 +27,9 @@ export class ServiceUsage {
 				CREATE TABLE IF NOT EXISTS usage (day INTEGER NOT NULL, service TEXT NOT NULL, operation TEXT NOT NULL, firstAt INTEGER NOT NULL,
 				calls INTEGER NOT NULL, cost REAL NOT NULL, estimated INTEGER NOT NULL, unknown INTEGER NOT NULL, seconds REAL NOT NULL,
 				PRIMARY KEY(day,service,operation));`);
+			// TypeSafe calls were recorded at $0 before Desk priced them; they are unpriced, not free.
+			if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version < 1)
+				db.exec("UPDATE usage SET unknown=calls, estimated=0 WHERE service='typesafe' AND cost=0; PRAGMA user_version=1;");
 			return this.db = db;
 		} catch (error) { db.close(); throw error; }
 	}
