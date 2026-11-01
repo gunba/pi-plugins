@@ -1,6 +1,6 @@
 import { validateJson, type AgentElement, type AgentSpec } from "./agent-ui.ts";
 
-export type CatalogDefinition = { props: readonly string[]; required?: readonly string[]; children?: boolean };
+export type CatalogDefinition = { props: readonly string[]; required?: readonly string[]; children?: boolean; structured?: readonly string[] }; 
 export const workCatalog: Record<string, CatalogDefinition> = {
 	Column: { props: [], children: true }, Row: { props: [], children: true },
 	Part: { props: ["title", "collapsed"], children: true },
@@ -46,7 +46,7 @@ export function catalogValidator(definitions: Record<string, CatalogDefinition> 
 		if (definition.required?.some(key => !(key in element.props))) throw new Error(`Missing property on ${id}.`);
 		if (element.children?.length && !definition.children) throw new Error(`${element.type} cannot contain children.`);
 		for (const [key, value] of Object.entries(element.props)) {
-			if (value && typeof value === "object" && !["spec", "rows", "columns", "items"].includes(key) && !bound(value)) throw new Error(`Invalid binding on ${id}.${key}.`);
+			if (value && typeof value === "object" && !["spec", "rows", "columns", "items", ...definition.structured ?? []].includes(key) && !bound(value)) throw new Error(`Invalid binding on ${id}.${key}.`);
 			if (bound(value)) continue;
 			if (["url"].includes(key) && !safeUiUrl(value)) throw new Error("Expected a credential-free HTTP(S) URL.");
 			if (["done", "total", "rate", "eta"].includes(key) && (typeof value !== "number" || value < 0)) throw new Error(`${key} must be nonnegative.`);
