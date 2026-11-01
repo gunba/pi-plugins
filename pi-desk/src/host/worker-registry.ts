@@ -12,6 +12,14 @@ import { WorkerConnectionError } from "./worker-errors.ts";
 import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./stable-runtime.ts";
 import { atomicJson } from "../../manage/store.ts";
 
+/** The reason Node recorded for a worker that crashed while starting (--report-uncaught-exception), if any. */
+function launchFailure(directory: string): string {
+	try {
+		const report = JSON.parse(readFileSync(join(directory, "failure.json"), "utf8")) as { javascriptStack?: { message?: string } };
+		const message = report.javascriptStack?.message?.split("\n")[0]?.trim();
+		return message ? `: ${message.slice(0, 300)}` : "";
+	} catch { return ""; }
+}
 export interface WorkerBootstrap {
 	version: 1;
 	instance: string;
@@ -154,7 +162,7 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 		const until = Date.now() + (settings.timeout ?? 30_000);
 		while (Date.now() < until) {
 			if (spawnError) throw spawnError;
-			if (child.exitCode !== null) throw new WorkerConnectionError(`Worker stopped during launch (${child.exitCode}); no retry was made.`);
+			if (child.exitCode !== null) throw new WorkerConnectionError(`Worker stopped during launch (${child.exitCode})${launchFailure(directory)}; no retry was made.`);
 			const record = readWorkerRecord(directory);
 			if (record) {
 				if (record.instance !== bootstrap.instance || record.secret !== bootstrap.secret) throw new Error("Worker launch identity changed.");
