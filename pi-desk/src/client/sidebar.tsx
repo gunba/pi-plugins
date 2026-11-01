@@ -181,7 +181,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     </div>
     <div className="sidebar-bottom">
       {appUpdate && <button className="sidebar-update" title="It loads by itself when this tab has been out of sight for a few minutes."
-        onClick={() => location.reload()}><Icon name="refresh" /><span>New version of Desk: reload</span></button>}
+        onClick={() => location.reload()}><Icon name="update" /><span>New version of Desk: reload</span></button>}
       <button onClick={() => openSettings("general")}>
         <Icon name="settings" /><span>Settings</span>
       </button>

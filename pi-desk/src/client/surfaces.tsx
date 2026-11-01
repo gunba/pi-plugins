@@ -1,3 +1,4 @@
+import { dragPaneWidth } from "./pane-width.ts";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SurfaceHistory, type Surface } from "./surface-history.ts";
@@ -117,6 +118,13 @@ export function Inspector({ title, close, children, className = "", settings = f
 	title: string; close: () => void; children: ReactNode; className?: string; settings?: boolean;
 }) {
 	const modal = useMedia("(max-width: 1180px)");
-	return <SurfaceFrame label={title} className={`${settings ? "modal settings-modal" : "detail-panel"} ${className}`}
+	const frame = <SurfaceFrame label={title} className={`${settings ? "modal settings-modal" : "detail-panel"} ${className}`}
 		modal={settings || modal} close={close}>{children}</SurfaceFrame>;
+	// Beside the conversation, its left edge sets the width every side panel shares. The edge sits outside the panel,
+	// which scrolls.
+	return settings || modal ? frame : <>
+		<div className="pane-edge"><div className="pane-resize" aria-hidden="true"
+			onPointerDown={event => dragPaneWidth(event, event.currentTarget.parentElement?.nextElementSibling, "--side-panel")} /></div>
+		{frame}
+	</>;
 }

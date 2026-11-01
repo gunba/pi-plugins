@@ -13,6 +13,7 @@ import { SurfaceFrame } from "./surfaces.tsx";
 import { acquireAsset, api } from "./connection.ts";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
+import { dragPaneWidth } from "./pane-width.ts";
 import { BriefView, type Brief } from "./brief.tsx";
 import { markdownPlugins } from "./markdown-links.ts";
 import { shownUrl } from "../../../pi-show/extensions/links.ts";
@@ -407,19 +408,8 @@ export function WorkPane({ items, links, selected, select, expand, close, sessio
 }) {
 	const newest = [...items].reverse(), current = newest.find(item => item.id === selected) ?? newest[0];
 	const width = useRef<HTMLElement>(null);
-	const resize = (event: React.PointerEvent) => {
-		const pane = width.current; if (!pane) return;
-		const startX = event.clientX, startWidth = pane.getBoundingClientRect().width;
-		const move = (moved: PointerEvent) => {
-			const next = Math.min(Math.max(320, startWidth + startX - moved.clientX), window.innerWidth * 0.7);
-			document.documentElement.style.setProperty("--work-pane", `${Math.round(next)}px`);
-		};
-		const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up);
-			localStorage.setItem("pi-desk:work-pane-width", getComputedStyle(document.documentElement).getPropertyValue("--work-pane").trim()); };
-		addEventListener("pointermove", move); addEventListener("pointerup", up);
-	};
 	return <aside className="work-pane" aria-label="Changes and shown work" ref={width}>
-		<div className="work-pane-resize" onPointerDown={resize} aria-hidden="true" />
+		<div className="pane-resize" onPointerDown={event => dragPaneWidth(event, width.current, "--work-pane")} aria-hidden="true" />
 		<div className="work-pane-heading"><strong>Changes</strong><small>{items.length}</small>
 			<button type="button" className="icon-button" title="Hide" aria-label="Hide changes" onClick={close}><Icon name="close" /></button></div>
 		{current && <ReferenceContext value={{ message: current.message, source: current.source }}><section className="work-current">

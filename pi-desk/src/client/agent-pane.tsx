@@ -16,6 +16,7 @@ import { ActionMenu } from "./action-menu.tsx";
 import { Icon } from "./icons.tsx";
 import { activityLabel } from "./activity.ts";
 import { SettingControl } from "./settings-controls.tsx";
+import { useMedia } from "./surfaces.tsx";
 
 const data = (view: ViewSnapshot) => view.data as UiConversation;
 const empty: CachedMessage[] = [];
@@ -29,7 +30,10 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	renderMessage: (message: ChatMessage, source: string, results: Record<string, ChatMessage>, thinking?: ChatMessage[], traceContinues?: boolean) => ReactNode; answer: (id: string) => void;
 	openView: (id: string) => void;
 }) {
-	const [search, setSearch] = useState(""), [listing, setListing] = useState(historyInitiallyOpen || !focused);
+	// Beside the conversation the list stays in view; as an overlay on a narrow screen it folds away while writing.
+	const narrow = useMedia("(max-width: 1180px)");
+	const [search, setSearch] = useState(""), [folded, setFolded] = useState(!historyInitiallyOpen && !!focused);
+	const listing = !narrow || !folded;
 	const [historyOpen, setHistoryOpen] = useState(historyInitiallyOpen), [opening, setOpening] = useState("");
 	const requested = useRef(new Set<string>());
 	const confirmation = useConfirmation(`${session.key}:${session.activation}:${session.ui?.generation}:${connected}`);
@@ -48,7 +52,7 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 		catch (error) { reportDeskError(error); }
 	};
 	const open = async (row: AgentRow) => {
-		choose(row.id); setListing(false);
+		choose(row.id); setFolded(true);
 		if (row.view || !row.action || !historyView || !connected || !session.ui) return;
 		requested.current.add(row.id); setOpening(row.id);
 		try {
@@ -68,14 +72,15 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 	return <div className="agent-pane">
 		<p className="agent-parent">{context}</p>
 		<div className="agent-picker-heading">
-			<button type="button" aria-expanded={listing} onClick={() => setListing(!listing)}><Icon name="layers" />Browse agents <span>{total}</span><span aria-hidden="true">{listing ? "⌃" : "⌄"}</span></button>
+			{narrow ? <button type="button" aria-expanded={listing} onClick={() => setFolded(listing)}><Icon name="layers" />Agents <span>{total}</span><span aria-hidden="true">{listing ? "⌃" : "⌄"}</span></button>
+				: <strong>Agents <span>{total}</span></strong>}
 			<span className="muted">{connected ? slots ? `${slots} live slots` : `${current.length} current` : "Disconnected"}</span>
+			{listing && historyView && <WorkspaceActions view={historyView} disabled={!connected || !!historyView.working} invoke={action => void manage(action)} />}
 		</div>
-		{listing && historyView && <WorkspaceActions view={historyView} disabled={!connected || !!historyView.working} invoke={action => void manage(action)} />}
 		{listing && limitView && (limitView.data as UiDetails).controls?.map(control => <SettingControl key={control.action.id} control={control}
 			disabled={!connected || !!limitView.working} invoke={(action, value) => void manage(action, value, limitView)} />)}
 		{listing && <div className="agent-picker">
-			<div className="agent-filter"><input aria-label="Find an agent" placeholder="Find an agent" value={search} onChange={event => setSearch(event.target.value)} /></div>
+			{total > 8 && <div className="agent-filter"><input aria-label="Find an agent" placeholder="Find an agent" value={search} onChange={event => setSearch(event.target.value)} /></div>}
 			<AgentList rows={currentRows.filter(matches)} focused={focused} label="Current agents" empty="No active or queued agents." open={row => void open(row)} />
 			{previous.length > 0 && <details className="agent-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
 				<summary>Previous agents ({previous.length})</summary>
@@ -83,27 +88,29 @@ export function AgentPane({ session, context, views, history, historyInitiallyOp
 			</details>}
 		</div>}
 		{selected && session.ui ? <AgentConversation key={`${selected.id}:${session.ui.generation}`} session={session} context={context} view={selected}
-			connected={connected} epoch={epoch} messages={messages} onLatest={onLatest} renderMessage={renderMessage} answer={answer} onEditing={() => setListing(false)} openView={openView} />
+			connected={connected} epoch={epoch} messages={messages} onLatest={onLatest} renderMessage={renderMessage} answer={answer} onEditing={() => setFolded(true)} openView={openView} />
 			: <p className="muted">{opening ? "Opening saved history…" : focused ? "Choose an agent to open its saved history." : "Active agents appear here. Earlier work stays in Previous agents."}</p>}
 		{confirmation.dialog}
 	</div>;
 }
 
+const ROW = 32;
 function AgentList({ rows, focused, label, empty, open }: {
 	rows: AgentRow[]; focused: string; label: string; empty: string; open: (row: AgentRow) => void;
 }) {
 	const list = useRef<HTMLDivElement>(null);
-	const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => list.current, estimateSize: () => 54, overscan: 3,
+	const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => list.current, estimateSize: () => ROW, overscan: 3,
 		getItemKey: index => rows[index]!.id });
 	useEffect(() => { virtual.scrollToOffset(0); }, [rows.length]);
-	return <div className="agent-list" ref={list} aria-label={label} style={{ height: `min(${Math.min(170, Math.max(54, rows.length * 54))}px, 20dvh)` }}>
+	return <div className="agent-list" ref={list} aria-label={label} style={{ height: `min(${Math.min(6 * ROW, Math.max(ROW, rows.length * ROW))}px, 24dvh)` }}>
 		{!rows.length && <p className="muted">{empty}</p>}
 		<div style={{ height: virtual.getTotalSize(), position: "relative" }}>
 			{virtual.getVirtualItems().map(item => {
 				const row = rows[item.index]!;
 				return <button type="button" className={`agent-row${row.id === focused ? " selected" : ""}`} key={item.key}
 					aria-pressed={row.id === focused} style={{ position: "absolute", top: 0, width: "100%", height: item.size, transform: `translateY(${item.start}px)` }}
-					onClick={() => open(row)}><strong>{row.title}</strong><span className="agent-row-status"><span className={`status-dot ${row.status}`} />{activityLabel(row.status)}</span><small>{row.subtitle}</small></button>;
+					title={row.subtitle} onClick={() => open(row)}><span className={`status-dot ${row.status}`} /><strong>{row.title}</strong>
+					<small>{row.subtitle}</small><span>{activityLabel(row.status)}</span></button>;
 			})}
 		</div>
 	</div>;

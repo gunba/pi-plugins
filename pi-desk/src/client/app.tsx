@@ -1,3 +1,4 @@
+import { restorePaneWidths } from "./pane-width.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { isControl } from "../shared/controls.ts";
@@ -86,7 +87,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [workSelected, setWorkSelected] = useState<string>();
   const [workExtra, setWorkExtra] = useState<WorkItem>();
   const [workModal, setWorkModal] = useState<WorkItem>();
-  useEffect(() => { const width = localStorage.getItem("pi-desk:work-pane-width"); if (width) document.documentElement.style.setProperty("--work-pane", width); }, []);
+  useEffect(restorePaneWidths, []);
   const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
   const [focusedView, setFocusedView] = useState("");
   const [settingsSection, setSettingsSection] = useState("general");

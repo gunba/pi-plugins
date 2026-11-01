@@ -14,6 +14,13 @@ export interface PartyUiOperations {
 }
 export const MESSAGES_VIEW = "messages";
 
+/** A message's time: the time alone today, otherwise the day and time. */
+function when(created: number, now = new Date()): string {
+	const date = new Date(created);
+	return date.toDateString() === now.toDateString() ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+		: date.toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+}
+
 /** Views and form flow only. PartyStore and the owning extension still perform all operations. */
 export class PartyPresentation {
 	private active = true;
@@ -100,11 +107,13 @@ export class PartyPresentation {
 			if (message.offset + 12_000 < message.text.length) controls.push(action("next-text", "Next page", () => { message.offset += 12_000; }));
 		} else if (this.page === "history") {
 			const page = this.ops.history(this.historyQuery);
-			details.summary = "Messages · reading here does not deliver them to Pi";
+			// One line of context above the list; each message is a heading line and its text.
+			details.summary = `Delivery ${state.armed ? state.self.delivery : "waits for the next turn"}${state.self.deliveryReason ? ` (${state.self.deliveryReason})` : ""}. Reading here doesn't deliver messages to Pi.`;
+			details.fields = [];
 			details.items = page.messages.map(message => ({
 				id: message.id, title: `${message.sender_label} → ${message.recipient_label}`,
-				subtitle: new Date(message.created).toLocaleString(), body: message.text.slice(0, 8_000),
-				status: `${message.admitted ? "Delivered to Pi" : "Queued"} · ${message.wake ? "Reply requested" : "No wake requested"}`,
+				subtitle: `${when(message.created)} · ${message.admitted ? "delivered" : "queued"}${message.wake ? " · reply requested" : ""}`,
+				body: message.text.slice(0, 8_000),
 				actions: [
 					...(message.sender !== state.self.id ? [action(`reply:${message.id}`, "Reply", () => this.compose(message.sender))] : []),
 					...(message.text.length > 8_000 ? [action(`read:${message.id}`, "Read complete message", () => {

@@ -17,7 +17,7 @@ export function VersionTag({ session, computer }: { session: WorkspaceSession; c
 	const stale = staleVersion(session, computer);
 	// A mark, not the version number: the sidebar line is narrow, and the conversation's banner offers the restart.
 	const text = `Running Desk ${stale?.running}; this computer has ${stale?.current}.`;
-	return stale ? <span className="session-version" role="img" aria-label={text} title={text}><Icon name="refresh" /></span> : null;
+	return stale ? <span className="session-version" role="img" aria-label={text} title={text}><Icon name="update" /></span> : null;
 }
 
 export function VersionBanner({ session, computer, busy, report }: {
@@ -27,7 +27,7 @@ export function VersionBanner({ session, computer, busy, report }: {
 	const stale = staleVersion(session, computer);
 	if (!stale) return null;
 	return <div className="version-banner" role="status">
-		<Icon name="refresh" />
+		<Icon name="update" />
 		<span>This conversation runs Desk {stale.running}; {computer?.name ?? "this computer"} has {stale.current}.
 			{computer?.updates?.automatic?.conversations ? " It moves to the new version by itself once idle with its prompt cache expired, or restart it now." : " It keeps its tools and fixes until restarted."} History is kept.</span>
 		<button disabled={busy || restarting} title={busy ? "Restart when the conversation is idle." : undefined} onClick={() => {
