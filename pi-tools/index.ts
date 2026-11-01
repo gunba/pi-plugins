@@ -43,9 +43,9 @@ bash({command,timeout?}) -> {output,exit_code,truncated,full_output_path?,wall_t
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
 Common operations (more: describeTool):
-ask_user({question,options?,context?,done_when?}) -> {response,cancelled}; done_when: a command that exits 0 once it's done.
-web_search({goal,queries}), web_fetch({urls,goal?,full?}) -> {pages,failures}.
-watch({command?,every?,until?,wake_when?,stop?}): to wait for anything, end the program with a watch and be woken; don't loop calls to pass time.
+ask_user({question,options?,context?,done_when?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done.
+web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
+watch({command?,every?,until?,wake_when?,stop?}): to wait for a command, a time or a change, end the program with a watch and be woken; never loop calls to pass time.
 Other operations; await describeTool(name) gives one's full contract:
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
@@ -60,14 +60,27 @@ const signature = (name: string, parameters: unknown) => {
   const keys = Object.keys(schema.properties ?? {}).filter(key => key !== "description");
   return `${name}({${keys.map(key => required.has(key) ? key : `${key}?`).join(",")}})`;
 };
-/** The opening sentences of a tool's description, up to about two lines: what it is for and when to use it. */
-const summary = (description: string) => {
-  let text = "";
-  for (const sentence of description.replace(/\s+/g, " ").trim().split(/(?<=[.!?]) /)) {
-    if (text && text.length + sentence.length > 240) break;
-    text = text ? `${text} ${sentence}` : sentence;
-  }
-  return text.length > 280 ? `${text.slice(0, 279)}…` : text;
+/** What each operation is for, in at most 100 characters, worded so agents reach for it at the right moment. */
+const INTROS: Record<string, string> = {
+  show: "Show Jordan a finished result, work to review or a file you changed for him; not routine steps.",
+  create_plan: "Before multi-step work: state the objective and the steps. One plan per branch.",
+  update_plan: "As you work: mark steps done or change them; pause, resume, complete or block the plan.",
+  agent_start: "Only when Jordan asks: start a helper that reports back, or (primary) a new Desk conversation.",
+  agent_send: "Message any agent on Jordan's computers, or reply to one; its replies come back to you.",
+  agent_list: "Find agents and computers by name or folder, and check on your helpers.",
+  agent_stop: "Interrupt a helper's turn (it keeps its work) or close a primary agent you started.",
+  agent_move: "Only when Jordan asks: move this conversation to another of his computers.",
+  conversation_search: "Recall past conversations: an earlier decision, command, path or error.",
+  conversation_read: "Read the passages around a conversation_search result.",
+  home_scene: "Read Home's canvas, or change it with one JSON Patch; fix the layout problems it lists.",
+  home_jobs: "List the scheduled jobs, their files and next deadlines (Perth time). Arms nothing.",
+  home_notify: "Deliver a scheduled job's result to Home and Jordan's phone, only when worth telling.",
+};
+/** An operation's intro, or for one without, its first sentence cut to 100 characters at a word. */
+const intro = (name: string, description: string) => {
+  if (INTROS[name]) return INTROS[name];
+  const first = description.replace(/\s+/g, " ").trim().split(/(?<=[.!?]) /)[0]!;
+  return first.length <= 100 ? first : `${first.slice(0, 99).replace(/\s+\S*$/, "")}…`;
 };
 
 /** Chrome and MCP retain their own interfaces, including rejected calls. */
@@ -158,7 +171,7 @@ export function createStructuredToolExtension(): ExtensionFactory {
         const rules = [...new Set(loadout.declared.filter(tool => !["codemode", "read", "bash", "edit", "write"].includes(tool.name) && !external(tool.name))
           .flatMap(tool => loadout.getPromptGuidelines(tool.name).map(rule => rule.trim())).filter(Boolean))];
         return {
-          descriptions: { codemode: requestDescription(others.map(tool => `${signature(tool.name, tool.parameters)}: ${summary(tool.description)}`)) + (rules.length ? `\nRules:\n${rules.map(rule => `- ${rule}`).join("\n")}` : "") },
+          descriptions: { codemode: requestDescription(others.map(tool => `${signature(tool.name, tool.parameters)}: ${intro(tool.name, tool.description)}`)) + (rules.length ? `\nRules:\n${rules.map(rule => `- ${rule}`).join("\n")}` : "") },
           hiddenDeclarations: loadout.declared.filter(tool => tool.name !== "codemode" && !external(tool.name)).map(tool => tool.name),
         };
       },
