@@ -19,6 +19,7 @@ The canvas
 - Ready-made items: Blob (an organic shape with icon, title, subtitle and status), Pill and Label (an icon beside text). Connector {from, to, bend} joins two of them edge to edge.
 - Free drawing: Text, Shape (rect or ellipse), Path (SVG path data, drawn from its x, y) and Icon, anywhere. A free element with a ref is an item Jordan can open and drag; a task can simply be a Text with its quest's ref, inside an area you drew.
 - Colours are theme tokens that work in light and dark: accent, input-needed, danger, muted, text, sage, amber, rose, teal, sand and lilac. Fills are tints (tint 0.08 to 0.2 behind text). Keep text 12 px or larger, never on top of other text, and readable against what's behind it.
+- Scale it to Jordan's screen: keep the whole drawing within about 1200 by 700, readable at full size, however many tasks there are. Only the few things that need him now (about five at most) get large shapes; show the rest compactly, as labels or text grouped in a few areas, and gather repeating and upcoming tasks into a quiet corner. As tasks multiply, shrink and group rather than spread out.
 - Remove items once they are finished or obsolete. Keep positions stable between turns. The store keeps the positions Jordan drags; release one, with releasePositions in the same home_scene call, only when he asks you to move that item.
 
 The scene format

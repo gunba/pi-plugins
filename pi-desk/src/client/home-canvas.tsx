@@ -82,7 +82,7 @@ export function HomeCanvas({ scene, state, open, move }: { scene: HomeScene; sta
 		gesture.current = { camera: cameraRef.current, x: b ? (a.x + b.x) / 2 : a.x, y: b ? (a.y + b.y) / 2 : a.y,
 			distance: b ? Math.hypot(a.x - b.x, a.y - b.y) : 0, item: b ? undefined : item, moved: false };
 	};
-	return <HomeCanvasContext.Provider value={{ camera, items, open, move, suppressClick }}><div className={`home-canvas${dragged ? " dragging" : ""}`} ref={element} aria-label="Home canvas"
+	return <HomeCanvasContext.Provider value={{ camera, items, open, move, suppressClick }}><div className={`home-canvas${dragged ? " dragging" : ""}${camera.zoom < 0.65 ? " far" : ""}`} ref={element} aria-label="Home canvas"
 		onPointerDown={event => {
 			if (event.button !== 0 || (event.target as Element).closest(".home-zoom")) return;
 			pointers.current.set(event.pointerId, point(event)); event.currentTarget.setPointerCapture(event.pointerId);

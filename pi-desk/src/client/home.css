@@ -95,3 +95,6 @@
 .home-log .message-assistant > .message-body { padding-left:0; }
 .home-log .markdown p { margin:0 0 8px; }
 .home-log .markdown ul, .home-log .markdown ol { margin:0 0 8px; padding-left:18px; }
+/* Zoomed out, items keep their titles and drop the detail that would be too small to read. */
+.home-canvas.far .home-item-words > span, .home-canvas.far .home-item-words small { display:none; }
+.home-canvas.far .home-item-words strong { font-size:22px; }
