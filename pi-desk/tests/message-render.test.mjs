@@ -81,7 +81,7 @@ test("Home renders task text as an accessible canvas item, not a checkbox list",
 		icon: "preview", x: 20, y: 30, width: 320, height: 190, seed: 17, wobble: 0.15, color: "accent", outline: "dashed",
 	} } } } } }));
 	assert.match(html, /aria-label="Review changes\. Seven steps\. Waiting for review"/);
-	assert.match(html, /stroke-dasharray="6 7"/);
+	assert.match(html, /stroke-dasharray="5 6"/);
 	assert.match(html, /var\(--accent\)/);
 	assert.doesNotMatch(html, /type="checkbox"|quest-list|<table/);
 });
