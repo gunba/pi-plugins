@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +68,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	t.after(async () => {
 		await next?.close(); await first.close(); await worker.close();
 		if (actorPid) await waitProcessExit(actorPid);
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);
@@ -145,7 +146,7 @@ test("registered SDK subagent, queued follow-up and scoped question survive host
 		await next?.close(); await first.close(); await worker.close();
 		// Registry release precedes process exit; Windows retains the actor's working directory until exit.
 		if (actorPid) await waitProcessExit(actorPid);
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start();
 	assert.deepEqual(snapshot.extensions.filter(extension => extension.error), []);

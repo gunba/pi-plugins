@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +52,7 @@ test("host adoption preserves activation and recovers sent input without replay 
 	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: data, port: 0 });
 	t.after(async () => {
 		await host.close(); await waitFixtureExit(snapshot.pid);
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	await host.start();
 	const managed = await host.waitForSession(key);
@@ -117,7 +118,7 @@ test("public runtime activation replaces the host while a busy actor and its pro
 		await next?.close(); await first.close(); await worker.close();
 		// Releasing the registry is not process exit; Windows can still hold the actor's cwd.
 		await waitFixtureExit(actorPid);
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start();
 	const managed = { worker, initialized: true, initialGeneration: snapshot.ui.generation,
@@ -177,7 +178,7 @@ test("a lost host connection reattaches the same long-lived actor and reconciles
 		const cleanup = new SessionWorker({ cwd: root }, () => {}, { directory: data, key, adopt: worker.instance });
 		await cleanup.close();
 		await waitFixtureExit(actorPid);
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 	});
 	const snapshot = await worker.start(); actorPid = snapshot.pid;
 	const managed = { worker, initialized: true, initialGeneration: worker.initialGeneration,

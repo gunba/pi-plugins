@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -173,7 +174,7 @@ test("a real managed wrapper survives public host replacement with the same busy
 				assert.ok(Date.now() < until, `Fixture actor ${actorPid} did not exit`);
 				await delay(25);
 			}
-			rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+			await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 		}
 	});
 	const snapshot = await worker.start();
