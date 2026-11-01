@@ -1740,6 +1740,11 @@ details[open] > summary:before {
 .folder-field strong { font-weight:500; }
 .folder-field small { color:var(--muted); margin-top:3px; font-size:12px; }
 .folder-browse-label { flex:none; color:var(--accent); font-size:13px; }
+.folder-pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.folder-pills button { max-width:200px; height:28px; padding:0 11px; border:1px solid var(--border); border-radius:14px; background:transparent;
+  color:var(--muted); font-size:12px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.folder-pills button:hover:not(:disabled) { background:var(--hover); color:var(--text); }
+.folder-pills button[aria-pressed="true"] { border-color:var(--accent); color:var(--text); }
 .folder-modal { width:min(900px,calc(100vw - 24px)); max-width:none; height:min(740px,calc(100dvh - 24px)); overflow:hidden; }
 .folder-modal[open] { display:flex; flex-direction:column; }
 .folder-modal .panel-title { flex:none; margin-bottom:14px; }

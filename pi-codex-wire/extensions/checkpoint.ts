@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { calculateCost, type Api, type Context, type Model, type Usage } from "@earendil-works/pi-ai";
 import { buildSessionProjection, type AgentSession, type ProjectedSessionEntry, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { object, type JsonObject } from "./diagnostics.ts";
@@ -58,8 +58,10 @@ export function checkpointUsage(checkpoint: Checkpoint, model: Model<Api>): Usag
 }
 
 export function carrier(value: unknown, timestamp: number): Carrier {
-	// Validation occurs at the provider boundary: Pi catches context-hook errors.
-	return { role: "user", content: `codex-checkpoint:${randomUUID()}`, timestamp,
+	// Validation occurs at the provider boundary: Pi catches context-hook errors. The key is derived from the checkpoint, so
+	// the request Pi builds before replay is the same each time and does not read as a prompt change (pi-prompt-change).
+	const key = createHash("sha256").update(JSON.stringify(value) ?? "").update(`:${timestamp}`).digest("hex").slice(0, 32);
+	return { role: "user", content: `codex-checkpoint:${key}`, timestamp,
 		[CHECKPOINT]: structuredClone(value) as Checkpoint };
 }
 

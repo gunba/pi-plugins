@@ -15,6 +15,13 @@ export function FolderField({ value, onChange, computer, disabled = false }: {
 	value: string; onChange: (path: string) => void; computer?: string; disabled?: boolean;
 }) {
 	const [open, setOpen] = useState(false), label = useId();
+	// The computer's most recently used project folders, one click each; the browser covers everything else.
+	const [recent, setRecent] = useState<FolderLocation[]>([]);
+	useEffect(() => {
+		let alive = true;
+		void api<FolderPlaces>("/folders/places", undefined, computer).then(value => { if (alive) setRecent(value.projects.slice(0, 8)); }, () => {});
+		return () => { alive = false; };
+	}, [computer]);
 	return <div className="folder-field">
 		<span id={label}>Project folder</span>
 		<button type="button" aria-labelledby={label} disabled={disabled} onClick={() => setOpen(true)} title={value}>
@@ -22,6 +29,10 @@ export function FolderField({ value, onChange, computer, disabled = false }: {
 			<span><strong>{value ? nameFor(value) : "Choose a folder"}</strong>{value && <small>{value}</small>}</span>
 			<span className="folder-browse-label">Browse…</span>
 		</button>
+		{recent.length > 0 && <div className="folder-pills" role="group" aria-label="Recent project folders">
+			{recent.map(item => <button type="button" key={item.path} title={item.path} disabled={disabled}
+				aria-pressed={item.path === value} onClick={() => onChange(item.path)}>{item.name}</button>)}
+		</div>}
 		{open && <FolderBrowser key={computer ?? "local"} computer={computer} initial={value} online={!disabled}
 			close={() => setOpen(false)} selected={path => { onChange(path); setOpen(false); }} />}
 	</div>;

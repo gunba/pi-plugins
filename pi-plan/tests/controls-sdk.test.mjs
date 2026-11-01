@@ -103,7 +103,7 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	assert.equal(script.length, 0);
 	assert.ok(contexts.every(messages => messages.some(message => Object.hasOwn(message, CHECKPOINT))));
 	const carriers = contexts.map(messages => messages.find(message => Object.hasOwn(message, CHECKPOINT)).content);
-	assert.equal(new Set(carriers).size, contexts.length, "the native adapter generates fresh context carriers each time");
+	assert.equal(new Set(carriers).size, 1, "one checkpoint has the same carrier in every request");
 
 	await session.prompt("/plan clear");
 	let release, entered;
