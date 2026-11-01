@@ -8,7 +8,9 @@ import { ChangeTracker, READ_ONLY, type CallChanges } from "./changes.ts";
 import { encodeContent, filtered, readVersion } from "./content.ts";
 import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells, type OfficeDocument } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
-import type { DocumentChange, Shown, ShownItem } from "./types.ts";
+import { SHOWN_ENTRY, type DocumentChange, type Shown, type ShownItem } from "./types.ts";
+import { restoredParts, updatePart, type PartUpdate } from "./parts.ts";
+import { callDescription, VISIBLE_OPERATIONS } from "../../pi-ui/tool-descriptions.ts";
 import { shownUrl } from "./links.ts";
 
 export type { DocumentChange, Shown, ShownItem };
@@ -99,9 +101,14 @@ export function documentDiff(path: string, before: OfficeDocument | null, now: O
 	return changes && { path, kind, summary: changes.summary, changes };
 }
 
-// Declared in every request, so kept short.
 const SHOW_PARAMETERS = Type.Object({
-	title: Type.String(),
+	id: Type.Optional(Type.String({ description: "Stable part ID; reuse to update in place" })),
+	title: Type.Optional(Type.String()),
+	spec: Type.Optional(Type.Unknown({ description: "json-render {root,elements,state?}; see catalog below" })),
+	patch: Type.Optional(Type.Array(Type.Object({ op: Type.Union(["add", "remove", "replace", "move", "copy", "test"].map(value => Type.Literal(value))), path: Type.String(), value: Type.Optional(Type.Unknown()), from: Type.Optional(Type.String()) }))),
+	before: Type.Optional(Type.String({ description: "Place before this part ID within its pin group" })),
+	pinned: Type.Optional(Type.Boolean()), collapsed: Type.Optional(Type.Boolean()), remove: Type.Optional(Type.Boolean()),
+	source: Type.Optional(Type.Union([Type.Null(), Type.Object({ file: Type.String(), pattern: Type.Optional(Type.String()), format: Type.Optional(Type.Literal("jsonl")), fields: Type.Optional(Type.Object({ done: Type.String(), total: Type.String(), item: Type.Optional(Type.String()), rate: Type.Optional(Type.String()), eta: Type.Optional(Type.String()) })) })])),
 	note: Type.Optional(Type.String({ description: "Markdown" })),
 	items: Type.Optional(Type.Array(Type.Object({
 		file: Type.Optional(Type.String()),
@@ -147,10 +154,10 @@ export default function show(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (event.parentToolCallId) return;
 		const input = event.input as Record<string, unknown>, paths: string[] = [];
-		// Every call that may write is bracketed by snapshots of the folders the conversation works in.
-		if (!READ_ONLY.has(event.toolName)) {
+		// Root requests retain all changes; selected commands need their own snapshot for attribution.
+		// Nested edits and writes already identify the file to compare below.
+		if (!READ_ONLY.has(event.toolName) && (!event.parentToolCallId || event.toolName === "bash" && input.show === true)) {
 			const text = [input.command, input.code, input.path].filter(value => typeof value === "string").join("\n");
 			const workdir = typeof input.cwd === "string" ? input.cwd : undefined;
 			const started = tracker.start(event.toolCallId, text, ctx.cwd, ctx.sessionManager.getSessionId(), workdir).catch(() => undefined);
@@ -208,22 +215,32 @@ export default function show(pi: ExtensionAPI) {
 			try { const change = documentDiff(document.path, document.before, document.after); if (change) documentChanges.push(change); } catch { /* Left to the agent to describe. */ }
 		}
 		const files = changes?.files.filter(file => file.path !== written?.path) ?? [];
-		if (!documentChanges.length && !written && !files.length && !changes?.fromGit && !changes?.more) return;
+		const visible = VISIBLE_OPERATIONS.has(event.toolName) && event.input?.show === true;
+		if (!documentChanges.length && !written && !files.length && !changes?.fromGit && !changes?.more && !visible) return;
 		const details = event.details && typeof event.details === "object" ? event.details as Record<string, unknown> : {};
-		return { details: { ...details, ...(documentChanges.length ? { documentChanges } : {}),
+		const result = { ...details, ...(event.toolName === "edit" && typeof event.input?.path === "string" ? { path: resolve(ctx.cwd, expand(event.input.path)) } : {}), ...(documentChanges.length ? { documentChanges } : {}),
 			...(files.length ? { files } : {}), ...(changes?.fromGit ? { filesFromGit: changes.fromGit } : {}), ...(changes?.more ? { filesMore: changes.more.slice(0, 200) } : {}),
-			...(written ? { diff: written.diff.text, path: written.path, added: written.diff.added, removed: written.diff.removed, ...(written.created ? { created: true } : {}) } : {}) } };
+			...(written ? { diff: written.diff.text, path: written.path, added: written.diff.added, removed: written.diff.removed, ...(written.created ? { created: true } : {}) } : {}) };
+		if (visible) pi.appendEntry("pi-show:activity", { toolName: event.toolName, description: callDescription(event.input) ?? event.toolName,
+			content: event.content.filter(block => block.type === "text").map(block => ({ type: "text", text: (block as { text: string }).text.slice(0, 12_000) })).slice(0, 2),
+			details: result, isError: event.isError });
+		return { details: result };
 	});
 
 	pi.registerTool({
 		name: "show",
 		label: "Show",
-		description: "At key moments, not routine steps, show Jordan a result, work to review or a file of his you changed (Desk shows the diff). "
-			+ "For a table, chart or comparison, write a self-contained .html file in the temp folder and show that; it runs offline.",
+		description: "Show a result in Desk's Work pane. Reuse id to update; omit unchanged fields. pinned/collapsed/before/remove arrange parts independently of history. "
+			+ "Prefer a json-render spec {root:'root',elements:{root:{type:'Column',props:{},children:['m']},m:{type:'Metric',props:{label:'Done',value:12}}},state:{}}. "
+			+ "Catalog: Column/Row (children); Part(title,collapsed,children); Text(text); Metric(label,value,detail?); Progress(done,total,label?,item?,rate?,eta?); Table(columns:string[],rows:scalar[][]); List(items:string[]); Link(url,label?); Image(item,alt)/File(item) where item indexes items (0-based); Code(text,language?); Diff(before,after); Chart(spec: inline-data Vega-Lite, no URLs/expressions/transforms). Desk owns styling. "
+			+ "Bind props with {$state:'/done'}. patch accepts RFC6902 operations; tree must have one root, no cycles or unused elements. "
+			+ "Live jobs: source:{file:'/tmp/job.txt',pattern:'{done}/{total} {item}'}; any process appends '12/340 file.txt\\n'. Or source:{file:'job.jsonl',format:'jsonl',fields:{done:'processed',total:'count',item:'file',rate:'perSecond',eta:'secondsLeft'}}. Desk tails lines while bash runs; no model polling. Fields feed the spec's root state. source:null stops watching. "
+			+ "Existing files (HTML, images, spreadsheets, code/diffs) and links still use items. Max 64 parts, 256 elements/part, 128 patches/call, 16 sources. Full examples: pi-show/README.md.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const base = store(ctx), notes: string[] = [];
+			const parts = restoredParts(ctx.sessionManager.getBranch?.() ?? []);
 			const items = (params.items ?? []).slice(0, 12).map((item): ShownItem => {
 				const shown: ShownItem = {};
 				if (item.url !== undefined) {
@@ -273,9 +290,11 @@ export default function show(pi: ExtensionAPI) {
 				}
 				return shown;
 			});
-			if (!items.length && !params.note?.trim()) throw new Error("Provide a note, file, web link, or described changes to show.");
-			const result: Shown = { title: clip(params.title, 200), ...(params.note ? { note: clip(params.note, 20_000) } : {}), items };
-			return { content: [{ type: "text", text: [`Shown to Jordan in Desk: ${result.title}.`, ...notes].join("\n") }], details: { show: result }, structuredContent: JSON.parse(JSON.stringify(result)) };
+			const update = params as PartUpdate;
+			if (update.source) update.source = { ...update.source, file: resolve(ctx.cwd, expand(update.source.file)) };
+			const result = updatePart(parts, params.id ?? _toolCallId.replace(/[^\w.-]/g, "-").slice(0, 100), update, params.items !== undefined ? items : undefined);
+			pi.appendEntry(SHOWN_ENTRY, result);
+			return { content: [{ type: "text", text: [`Shown to Jordan in Desk: ${result.title}.`, ...notes].join("\n") }], details: { show: result }, structuredContent: { id: result.id!, title: result.title, removed: result.remove === true, items: result.items.map(item => ({ ...(item.path ? { file: item.path } : {}), ...(item.url ? { url: item.url } : {}), ...(item.missing ? { missing: true } : {}) })) } };
 		},
 	});
 }

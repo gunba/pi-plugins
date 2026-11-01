@@ -4,6 +4,7 @@
  * model's own calls keep it in the conversation; it is removed before the tool runs, so no tool ever sees it.
  */
 export const CALL_DESCRIPTION = "description";
+export const VISIBLE_OPERATIONS = new Set(["edit", "write", "bash"]);
 // Plain JSON Schema: Pi's validator accepts it inside TypeBox and JSON Schema parameters alike.
 // Codemode scripts call tools too, and the user sees those calls' descriptions under the script's row.
 const FIELD = { type: "string", description: "For the user: what this call does, in a short sentence. Always include it." };
@@ -15,9 +16,12 @@ export function describedTool<T extends Tool>(tool: T): T {
 	const schema = tool.parameters as { type?: unknown; properties?: Record<string, unknown> } | undefined;
 	// Only object parameters can take another field, and a tool's own "description" parameter is left alone.
 	if (!schema || schema.type !== "object" || !schema.properties || typeof schema.properties !== "object" || CALL_DESCRIPTION in schema.properties) return tool;
-	return { ...tool, [WRAPPED]: true, parameters: { ...schema, properties: { ...schema.properties, [CALL_DESCRIPTION]: FIELD } },
+	const visible = VISIBLE_OPERATIONS.has(tool.name) && !("show" in schema.properties);
+	return { ...tool, [WRAPPED]: true, parameters: { ...schema, properties: { ...schema.properties, [CALL_DESCRIPTION]: FIELD,
+		...(visible ? { show: { type: "boolean", description: "Show this result in Work? Include true or false." } } : {}) } },
 		execute: (id: string, params: never, ...rest: never[]) => {
 			const { [CALL_DESCRIPTION]: _description, ...input } = (params ?? {}) as Record<string, unknown>;
+			if (visible) delete input.show;
 			return tool.execute(id, input as never, ...rest);
 		} };
 }
