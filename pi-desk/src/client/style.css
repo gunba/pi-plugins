@@ -2474,6 +2474,8 @@ button.quest-source:hover { background:transparent; text-decoration:underline; }
 .work-list-item strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
 .work-list-item time { margin-left:auto; flex:none; color:var(--muted); font-size:10.5px; }
 .work-note { margin:6px 14px; }
+/* The complete-output link sits beside the note, inset like it; at the body's edge it ran over the pane's border. */
+.work-current-body > .full-output, .work-modal-body > .full-output, .work-current-body > .error-text, .work-modal-body > .error-text { margin-left:14px; margin-right:14px; }
 
 /* Highlighted diffs */
 .code-diff { display:table; min-width:100%; padding:4px 0; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
