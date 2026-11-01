@@ -374,7 +374,7 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 	</>;
 	return <>
 		{block.shown.source && <p className={`work-source-state work-source-${block.shown.sourceStatus?.state ?? "waiting"}`}>
-			{block.shown.sourceStatus?.state === "live" ? "Live" : block.shown.sourceStatus?.state === "stale" ? "No recent progress update" : block.shown.sourceStatus?.detail ?? "Waiting for progress"}
+			{block.shown.sourceStatus?.detail ?? (block.shown.sourceStatus?.state === "complete" ? "Complete" : block.shown.sourceStatus?.state === "live" ? "Live" : block.shown.sourceStatus?.state === "stale" ? "No recent progress update" : "Waiting for progress")}
 			{block.shown.sourceStatus?.at && <time> · {localTime(block.shown.sourceStatus.at, HOUR_MINUTE)}</time>}</p>}
 		{block.shown.spec && <AgentFilesContext value={(index, imageOnly, alt) => {
 			const entry = block.shown.items[index];

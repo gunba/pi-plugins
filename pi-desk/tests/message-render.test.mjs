@@ -42,6 +42,18 @@ test("note-only show results retain their body and safe links in the compact vie
 	}
 });
 
+test("progress surfaces distinguish completion from expired watching", () => {
+	const shown = { id: "job", title: "Job", items: [], note: "Results", source: { file: "progress", pattern: "{done}/{total}" }, sourceStatus: { state: "complete" } };
+	const item = { id: "part:job", message: "tool", at: 0, block: { type: "shown", files: [], shown } };
+	const complete = renderToStaticMarkup(createElement(WorkBody, { item, session: "fixture" }));
+	assert.match(complete, /Complete/);
+	assert.doesNotMatch(complete, />Live</);
+	shown.sourceStatus = { state: "stale", detail: "Progress watching stopped after 30 minutes without a file change." };
+	const expired = renderToStaticMarkup(createElement(WorkBody, { item, session: "fixture" }));
+	assert.match(expired, /watching stopped after 30 minutes/);
+	assert.doesNotMatch(expired, /No recent progress update/);
+});
+
 test("shown link items have direct controls in chat and viewers without embedding the page", () => {
 	const item = { id: "shown", message: "tool", at: 0, block: { type: "shown", files: [null], shown: {
 		title: "Pull request", items: [{ url: "https://github.com/gunba/pi-plugins/pull/20", label: "Review PR" }],

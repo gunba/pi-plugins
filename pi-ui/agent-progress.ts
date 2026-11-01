@@ -1,7 +1,14 @@
 export type ProgressField = "done" | "total" | "item" | "rate" | "eta";
 export type ProgressSource = { file: string; pattern?: string; format?: "jsonl"; fields?: Partial<Record<ProgressField, string>> };
 export type ProgressSample = { done: number; total: number; item?: string; rate?: number; eta?: number };
-export type ProgressStatus = { state: "waiting" | "live" | "stale" | "invalid" | "unavailable"; at?: number; detail?: string };
+export type ProgressStatus = { state: "waiting" | "live" | "complete" | "stale" | "invalid" | "unavailable"; at?: number; detail?: string };
+/** Only finite, nonnegative producer counts can finish a job, including an empty 0/0 job. */
+export function progressComplete(value: unknown): boolean {
+	if (!value || typeof value !== "object") return false;
+	const { done, total } = value as Record<string, unknown>;
+	return typeof done === "number" && Number.isFinite(done) && done >= 0
+		&& typeof total === "number" && Number.isFinite(total) && total >= 0 && done >= total;
+}
 const names: ProgressField[] = ["done", "total", "item", "rate", "eta"];
 const unsafe = new Set(["__proto__", "prototype", "constructor"]);
 

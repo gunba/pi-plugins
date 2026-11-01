@@ -267,14 +267,17 @@ test("a fresh single-tool conversation shows only selected edits and persists ne
   assert.equal(h.session.messages.some(message => message.role === 'toolResult'), true);
 });
 
-test("progress reaches Desk while a fresh conversation is blocked on its command", { timeout: 15000 }, async t => {
+test("progress reaches Desk while a fresh conversation is blocked and finishes without another turn", { timeout: 15000 }, async t => {
   const h = await harness(t, show), received = [];
   let release;
   const progressed = new Promise(resolve => { release = resolve; });
+  let finish;
+  const completed = new Promise(resolve => { finish = resolve; });
   const feed = new TranscriptFeed(new Transcript(), () => h.session.sessionManager.getBranch(), () => "test", event => {
     received.push(event);
     const shown = event.message?.blocks.find(block => block.type === 'shown')?.shown;
-    if (shown?.spec?.state?.done === 12) { release(); void writeFile(join(h.root, 'release'), 'done'); }
+    if (shown?.spec?.state?.done === 12) release();
+    if (shown?.sourceStatus?.state === 'complete') { finish(); void writeFile(join(h.root, 'release'), 'done'); }
   }, () => h.root);
   const unsubscribe = h.session.subscribe(event => feed.event(event));
   t.after(() => { unsubscribe(); feed.close(); });
@@ -285,6 +288,14 @@ test("progress reaches Desk while a fresh conversation is blocked on its command
     return await tools.bash({command:${JSON.stringify(command)},show:false,description:'Process files'});`);
   await progressed;
   assert.equal(h.events.some(event => event.type === 'tool_execution_end' && event.toolName === 'bash'), false, 'the process is still blocked when progress arrives');
-  await running;
   assert.equal(feed.history().messages.some(message => message.blocks.some(block => block.type === 'shown' && block.shown.spec?.state?.done === 12)), true);
+  const modelRequests = h.declarations.length;
+  await writeFile(join(h.root, 'progress.txt'), '340/340 finished\n', { flag: 'a' });
+  await completed;
+  assert.equal(h.declarations.length, modelRequests);
+  await running;
+  const finished = feed.history().messages.flatMap(message => message.blocks).find(block => block.type === 'shown' && block.shown.id === 'files');
+  assert.equal(finished.shown.spec.state.done, 340);
+  assert.equal(finished.shown.sourceStatus.state, 'complete');
+  assert.equal(h.declarations.length, 2);
 });

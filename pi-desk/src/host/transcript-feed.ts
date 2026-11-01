@@ -4,7 +4,7 @@ import type { ChatMessage, HistoryPage, TranscriptEvent, WorkerMessage } from ".
 import { Transcript, nestedBudget, nestedCall } from "./transcript.ts";
 import { MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS, type HistoryPosition } from "../shared/history.ts";
 import { SHOWN_ENTRY } from "../../../pi-show/extensions/types.ts";
-import type { ProgressSample } from "../../../pi-ui/agent-progress.ts";
+import { progressComplete, type ProgressSample } from "../../../pi-ui/agent-progress.ts";
 import { ProgressPipe } from "./progress-pipe.ts";
 const progressState = (state: Record<string, unknown> | undefined, sample: ProgressSample) => ({ ...Object.fromEntries(Object.entries(state ?? {}).filter(([key]) => !["done", "total", "item", "rate", "eta"].includes(key))), ...sample });
 
@@ -78,16 +78,25 @@ export class TranscriptFeed {
 		this.dirtyTools.add(root); this.soon();
 	}
 	private registerPart(message: ChatMessage): void {
-		const block = message.blocks.find(block => block.type === "shown");
+		let block = message.blocks.find(block => block.type === "shown");
 		if (block?.type !== "shown" || !block.shown.id) return;
 		const id = block.shown.id, previous = this.parts.get(id);
-		if (previous?.message.id === message.id) return;
+		if (previous?.message.id === message.id) {
+			if (!previous.pipe?.stopped) return;
+			// Replay preserves the last live sample, but may restart an expired incomplete source.
+			message = previous.message;
+			block = message.blocks.find(block => block.type === "shown")!;
+			if (block.type !== "shown") return;
+		}
 		const signature = block.shown.remove ? "" : JSON.stringify(block.shown.source ?? null);
-		const part = { message, signature, ...(previous?.signature === signature ? { pipe: previous.pipe, sample: previous.sample } : {}) };
-		if (previous?.signature !== signature) previous?.pipe?.close();
+		const complete = progressComplete(block.shown.spec?.state), reuse = previous?.signature === signature && !complete;
+		const part = { message, signature, pipe: reuse && !previous.pipe?.stopped ? previous.pipe : undefined,
+			sample: reuse && !progressComplete(previous.sample) ? previous.sample : undefined };
+		if (previous?.pipe !== part.pipe) previous?.pipe?.close();
 		this.parts.set(id, part);
 		if (part.sample && block.shown.spec) block.shown = { ...block.shown, spec: { ...block.shown.spec, state: progressState(block.shown.spec.state, part.sample) } };
-		if (block.shown.source && !block.shown.remove && !part.pipe) {
+		if (block.shown.source && complete) block.shown = { ...block.shown, sourceStatus: { ...block.shown.sourceStatus, state: "complete" } };
+		if (block.shown.source && !block.shown.remove && !complete && !part.pipe) {
 			try { part.pipe = new ProgressPipe(block.shown.source, (sample, sourceStatus) => {
 				const current = this.parts.get(id);
 				if (!current || current.signature !== signature || this.closed) return;

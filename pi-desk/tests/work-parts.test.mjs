@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { updatePart, restoredParts } from "../../pi-show/extensions/parts.ts";
 import { SHOWN_ENTRY } from "../../pi-show/extensions/types.ts";
 import { visibleWorkItems } from "../src/client/work-items.ts";
@@ -7,6 +10,7 @@ import { catalogValidator, validateChart } from "../../pi-ui/agent-catalog.ts";
 import { validateSpec } from "../../pi-ui/agent-ui.ts";
 import { Transcript } from "../src/host/transcript.ts";
 import { TranscriptFeed } from "../src/host/transcript-feed.ts";
+import { ProgressPipe } from "../src/host/progress-pipe.ts";
 
 const spec = () => ({ root: "m", elements: { m: { type: "Metric", props: { label: "Count", value: 1 } } } });
 const message = (id, order, shown) => ({ id, order, timestamp: order, role: "tool", blocks: [{ type: "shown", shown, files: [] }] });
@@ -67,4 +71,49 @@ test("current parts survive transcript pagination and selected bash keeps output
 	assert.equal(visibleWorkItems([activity]).length, 1);
 	assert.equal(activity.blocks[0].shown.items[0].path, "results.txt");
 	assert.equal(activity.blocks[0].shown.spec.elements.output.props.text, "All passed");
+});
+
+test("history does not start progress pipes for recorded complete samples", t => {
+	const poll = t.mock.method(ProgressPipe.prototype, "poll", async () => {});
+	const branch = [{ type: "custom", id: "complete", timestamp: new Date(1).toISOString(), customType: SHOWN_ENTRY, data: {
+		id: "job", title: "Job", items: [], source: { file: "unused", pattern: "{done}/{total}" }, spec: { ...spec(), state: { done: 3, total: 3 } },
+	} }];
+	const feed = new TranscriptFeed(new Transcript(), () => branch, () => "generation", () => {}, () => process.cwd());
+	t.after(() => feed.close());
+	feed.history(); feed.history();
+	assert.equal(poll.mock.callCount(), 0);
+});
+
+test("history restarts expired sources, retains completion, and a re-show can start a fresh run", async t => {
+	const root = await mkdtemp(join(tmpdir(), "desk-work-pipe-")), file = join(root, "progress"), events = [], polls = [];
+	await writeFile(file, "1/5 first\n");
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+	const original = ProgressPipe.prototype.poll;
+	t.mock.method(ProgressPipe.prototype, "poll", function () { const promise = original.call(this); polls.push(promise); return promise; });
+	const branch = [{ type: "custom", id: "part", timestamp: new Date().toISOString(), customType: SHOWN_ENTRY, data: {
+		id: "job", title: "Job", items: [], source: { file, pattern: "{done}/{total} {item}" }, spec: { ...spec(), state: { done: 0, total: 5 } },
+	} }];
+	const feed = new TranscriptFeed(new Transcript(), () => branch, () => "generation", event => events.push(event), () => root);
+	t.after(async () => { feed.close(); await rm(root, { recursive: true, force: true }); });
+	feed.history(); await polls.at(-1);
+	assert.equal(events.at(-1).message.blocks[0].shown.spec.state.done, 1);
+	t.mock.timers.tick(1_800_000); await polls.at(-1);
+	assert.match(events.at(-1).message.blocks[0].shown.sourceStatus.detail, /stopped after 30 minutes/);
+	const expiredCount = polls.length;
+	await writeFile(file, "2/5 resumed\n");
+	feed.history(); await polls.at(-1);
+	assert.equal(polls.length, expiredCount + 1);
+	assert.equal(events.at(-1).message.blocks[0].shown.spec.state.done, 2);
+	await appendFile(file, "5/5 completed\n");
+	t.mock.timers.tick(500); await polls.at(-1);
+	assert.equal(events.at(-1).message.blocks[0].shown.sourceStatus.state, "complete");
+	const completedCount = polls.length;
+	const history = feed.history(); feed.history();
+	assert.equal(polls.length, completedCount);
+	assert.equal(history.messages.find(message => message.id === "entry:part").blocks[0].shown.spec.state.done, 5);
+	await writeFile(file, "1/5 new run\n");
+	const entry = { ...branch[0], id: "reshow", timestamp: new Date().toISOString() };
+	branch.push(entry); feed.event({ type: "entry_appended", entry }); await polls.at(-1);
+	assert.equal(polls.length, completedCount + 1);
+	assert.deepEqual(events.at(-1).message.blocks[0].shown.spec.state, { done: 1, total: 5, item: "new run" });
 });
