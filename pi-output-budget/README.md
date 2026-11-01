@@ -1,13 +1,15 @@
 # Output budgets
 
-Tool results follow Pi's own output limits everywhere: 2,000 lines or 50 KB.
+A tool result over Pi's output limits (2,000 lines or 50 KB) reaches the model as a short excerpt: one line giving
+its length and the file holding all of it, then its last 40 lines for `bash` and PowerShell (a command's end holds
+its result and errors) or its first 40 for other tools, within 3,000 bytes. The model reads or greps the file for
+anything else. Sending 50 KB of a long output cost about 12,000 tokens, kept in every later request.
 
-- **Pi's tools** (`read`, `bash`, PowerShell, `grep`, `find`, `ls`, codemode, MCP tools) cut their own output; their
-  results are left as Pi made them. When Pi saves a command's complete output to a temporary file, a copy is kept in
-  the output store, so Desk can show it after Pi deletes the file.
-- **Other tools' text results** are cut the way Pi's `read` cuts a file: the first 2,000 lines or 50 KB. The complete
-  text is saved under `~/.pi/agent/tool-output/`, and the notice names the file, so the model reads the rest with
-  `read` and an offset, as it would any file.
+- **Pi's tools** cut their own output and save the whole of it to a temporary file; a copy is kept in the output
+  store, the excerpt is made from it, and Desk shows the complete output after Pi deletes the file. Images in a
+  result are kept.
+- **Other tools' text results** are saved whole under `~/.pi/agent/tool-output/` and excerpted the same way.
+- **`read`** pages through a file as Pi's read does: 2,000 lines or 50 KB at a time, then an offset to continue.
 - **Images** from `read` are shrunk to at most 1.5 MB each, within Pi's own limit of 2,000 pixels a side, because every
   request resends every image in the conversation. The file on disk is untouched.
 - **Missing paths** in a failed `read`, `grep`, `ls`, `find`, `edit` or `write` get a hint naming files with that name

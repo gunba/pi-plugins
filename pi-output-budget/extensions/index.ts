@@ -1,3 +1,4 @@
+import { open, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, getAgentDir, SettingsManager, truncateHead,
@@ -50,21 +51,50 @@ export function readTool() {
   } };
 }
 
+/** How much of a long output the model sees: the lines most likely to matter, and where the whole is. */
+const EXCERPT_LINES = 40, EXCERPT_BYTES = 3_000;
+
 /**
- * A long text result of a tool that does not cut its own, cut where Pi's read cuts (its first 2000 lines or 50 KB),
- * with the complete text saved where the model can read the rest with read. Undefined when it fits.
+ * A long output as the model reads it: a line saying how long it is and where the whole of it is, then its first or
+ * last lines (a command's end holds its result and errors). The model reads or greps the file for anything else;
+ * sending 50 KB of a long output cost about 12,000 tokens, kept in every later request.
  */
-export async function cutLikePi(text: string, store: ArtifactStore): Promise<{ text: string; artifact: string } | undefined> {
-  const cut = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-  if (!cut.truncated) return;
-  const artifact = await store.put(text), path = store.path(artifact);
-  if (cut.firstLineExceedsLimit) {
-    const start = Buffer.from(text, "utf8").subarray(0, DEFAULT_MAX_BYTES).toString("utf8").replace(/\uFFFD$/, "");
-    return { artifact, text: `${start}\n\n[Line 1 is ${formatSize(Buffer.byteLength(text.split("\n", 1)[0]!, "utf8"))}, over the ${formatSize(DEFAULT_MAX_BYTES)} limit; this is its start. Full output: ${path}]` };
-  }
-  const limit = cut.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : "";
-  return { artifact, text: `${cut.content}\n\n[Showing lines 1-${cut.outputLines} of ${cut.totalLines}${limit}. Full output: ${path}; read it with offset=${cut.outputLines + 1} to continue.]` };
+export function excerpt(text: string, path: string, from: "head" | "tail", size = Buffer.byteLength(text, "utf8"), complete = true): string {
+	const lines = text.split("\n");
+	let shown = from === "head" ? lines.slice(0, EXCERPT_LINES) : lines.slice(-EXCERPT_LINES);
+	while (shown.length > 1 && Buffer.byteLength(shown.join("\n"), "utf8") > EXCERPT_BYTES) shown = from === "head" ? shown.slice(0, -1) : shown.slice(1);
+	let body = shown.join("\n");
+	if (Buffer.byteLength(body, "utf8") > EXCERPT_BYTES) {
+		const bytes = Buffer.from(body, "utf8");
+		body = (from === "head" ? bytes.subarray(0, EXCERPT_BYTES) : bytes.subarray(bytes.length - EXCERPT_BYTES)).toString("utf8").replace(/^\uFFFD|\uFFFD$/g, "");
+	}
+	const length = complete ? `${lines.length.toLocaleString("en")} ${lines.length === 1 ? "line" : "lines"}, ${formatSize(size)}` : formatSize(size);
+	const which = from === "head" ? "first" : "last";
+	return `[Output: ${length}. Below: its ${which} ${shown.length === 1 ? "line" : `${shown.length} lines`}. The whole output: ${path} (read or grep it for more).]\n${body}`;
 }
+
+/** The start or end of a saved output, without reading a very large file whole. */
+async function excerptFile(path: string, from: "head" | "tail"): Promise<string> {
+	const { size } = await stat(path);
+	if (size <= 32 * 1024 * 1024) return excerpt(await readFile(path, "utf8"), path, from, size);
+	const handle = await open(path, "r");
+	try {
+		const buffer = Buffer.alloc(64 * 1024);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, from === "head" ? 0 : size - buffer.length);
+		const edge = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+		return excerpt((from === "head" ? edge.slice(0, -1) : edge.slice(1)).join("\n"), path, from, size, false);
+	} finally { await handle.close(); }
+}
+
+/** A text result over Pi's limits (2000 lines or 50 KB), saved whole and returned as an excerpt. Undefined when it fits. */
+export async function cutLikePi(text: string, store: ArtifactStore, from: "head" | "tail" = "head"): Promise<{ text: string; artifact: string } | undefined> {
+	if (!truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES }).truncated) return;
+	const artifact = await store.put(text);
+	return { artifact, text: excerpt(text, store.path(artifact), from) };
+}
+
+/** Commands end with their result; other tools put what matters first. */
+const tailFirst = (tool: string) => ["bash", "powershell"].includes(tool);
 
 /** Safe to install explicitly in SDK children; does not discover unrelated extensions. */
 export default function outputBudget(pi: ExtensionAPI): void {
@@ -100,8 +130,13 @@ export default function outputBudget(pi: ExtensionAPI): void {
       // Pi's own spill file is kept, so Desk can show the complete output after Pi deletes it; the result is Pi's.
       // Only that path is followed, never a path a tool or server put in its payload.
       if (typeof details?.fullOutputPath !== "string" || !details || Object.getPrototypeOf(details) !== Object.prototype) return;
-      try { return { details: { ...details, full_output_artifact: await store.putFile(details.fullOutputPath) } }; }
-      catch { return; }
+      let artifact: string;
+      try { artifact = await store.putFile(details.fullOutputPath); } catch { return; }
+      // Pi kept 50 KB of the output; the model gets an excerpt of the saved whole instead. Images stay as they are.
+      let text: string | undefined;
+      try { text = await excerptFile(store.path(artifact), tailFirst(event.toolName) ? "tail" : "head"); } catch { text = undefined; }
+      const content = text === undefined ? undefined : [{ type: "text" as const, text }, ...event.content.filter(block => block.type !== "text")];
+      return { ...(content ? { content } : {}), details: { ...details, full_output_artifact: artifact } };
     }
     if (!event.content.every(block => block.type === "text")) return;
     ctx.signal?.throwIfAborted();
