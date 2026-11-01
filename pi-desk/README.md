@@ -121,11 +121,10 @@ estimates, not a ChatGPT subscription balance.
 Home is Jordan's tasks and live work, drawn by an agent on one canvas. A
 persistent GPT-6.1 Terra conversation runs on the workspace server, keeps the
 tasks in a Markdown file (`~/.pi/agent/home/tasks.md`), answers the canvas
-composer and draws the canvas through the shared json-render component catalog
-and JSON Patch layer. Agents add work for Jordan by messaging it.
+composer and draws the canvas as one SVG document, checking a picture of each
+change. Agents add work for Jordan by messaging it.
 
-Items open their conversations, files or links. Dragging saves a
-position preference; phones support panning and pinch zoom. Compact replies sit
+Items open their conversations or links. Compact replies sit
 above the composer, with attachments and dictation; History opens the complete
 native Pi conversation and its approvals. The header shows the last run's cost.
 

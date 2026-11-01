@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { emptyHomeScene, homeUrl, type HomeItem, type HomeMessage, type HomeSnapshot } from "../shared/home.ts";
+import { emptyHomeScene, type HomeMessage, type HomeSnapshot, type HomeWork } from "../shared/home.ts";
 import type { ChatMessage } from "../shared/protocol.ts";
 import { MessageView } from "./message-view.tsx";
 import { api } from "./connection.ts";
@@ -9,7 +9,6 @@ import { sessionKey, type WorkspaceState } from "./workspace.ts";
 import { HomeCanvas } from "./home-canvas.tsx";
 import { Icon } from "./icons.tsx";
 import { Modal } from "./surfaces.tsx";
-import { FileViewer } from "./file-view.tsx";
 import { AttachmentList, useAttachments } from "./attachments.tsx";
 import { DictationButton, dictationComputer, withDictation } from "./dictation.tsx";
 import { withDictationNote } from "../shared/dictation-note.ts";
@@ -26,7 +25,6 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const [snapshot, setSnapshot] = useState<HomeSnapshot>({ scene: emptyHomeScene(), messages: [], busy: false });
 	const [error, setError] = useState(""), [busy, setBusy] = useState(false);
 	const [discardPending, setDiscardPending] = useState(false);
-	const [file, setFile] = useState<Extract<HomeItem["ref"], { kind: "file" }>>();
 	const storageKey = `pi-desk:home:${computer ?? "local"}`;
 	const [draft, setDraft] = useState(""), [pending, setPending] = useState<Pending>();
 	const [draftLoaded, setDraftLoaded] = useState(false);
@@ -112,18 +110,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		} catch (error) { if (epoch.current === generation) setError(failure(error)); }
 		finally { if (epoch.current === generation) setBusy(false); }
 	};
-	const openItem = (item: HomeItem) => {
-		const ref = item.ref;
-		if (ref.kind === "conversation") openConversation(referenceKey(ref.computer ?? computer, ref.id), ref.view);
-		else if (ref.kind === "url") { if (homeUrl(ref.url)) window.open(ref.url, "_blank", "noopener,noreferrer"); }
-		else setFile(ref);
-	};
-	const move = async (id: string, x: number, y: number) => {
-		const generation = epoch.current;
-		setSnapshot(current => ({ ...current, scene: { ...current.scene, spec: { ...current.scene.spec, elements: { ...current.scene.spec.elements, [id]: { ...current.scene.spec.elements[id]!, props: { ...current.scene.spec.elements[id]!.props, x, y } } } } } }));
-		try { const next = await api<HomeSnapshot>("/home/drag", { id, x, y }, computer); if (epoch.current === generation) { setSnapshot(next); setError(""); } }
-		catch (error) { if (epoch.current === generation) setError(failure(error)); }
-	};
+	const openWork = (work: HomeWork) => openConversation(referenceKey(work.computer ?? computer, work.id), work.view);
 	return <>
 		<header className="topbar home-topbar"><button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
 			<div className="conversation-heading"><strong>Home</strong><span>{snapshot.busy ? "Arranging and working…" : "Your work, in one place"}</span></div>
@@ -136,7 +123,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
 		<div className={`home-body${chatOpen ? " chat-open" : ""}`}>
-		<HomeCanvas scene={snapshot.scene} state={snapshot.state} open={openItem} move={(id, x, y) => void move(id, x, y)} />
+		<HomeCanvas svg={snapshot.scene.svg} work={snapshot.work ?? []} open={openWork} />
 		<section className="home-chat" aria-label="Talk to Home">
 			{chatOpen && <div className="home-log" ref={log} role="log" aria-live="polite">
 				{snapshot.messages.length ? snapshot.messages.map((message, index) => <MessageView key={message.id} message={chatMessage(message, index)} sessionKey={key ?? "home"} />)
@@ -165,7 +152,6 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			try { localStorage.removeItem(`${storageKey}:pending`); pendingRef.current = undefined; setPending(undefined); setDiscardPending(false); }
 			catch (error) { setError(failure(error)); }
 		}}>Discard local attempt</button></div></Modal>}
-		{file && <FileViewer session={referenceKey(file.computer ?? computer, file.session)} reference={{ id: file.id, name: file.name }} close={() => setFile(undefined)} />}
 	</>;
 }
 /** Home's messages in the main chat's own message view. */

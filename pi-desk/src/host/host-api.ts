@@ -127,7 +127,6 @@ export class HostApi {
 		if (url.pathname === "/api/home/open" && request.method === "POST") return reply(await home.open());
 		if (url.pathname === "/api/home/messages" && request.method === "POST") return reply(await home.message(
 			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 36)) : undefined));
-		if (url.pathname === "/api/home/drag" && request.method === "POST") return reply(home.drag(string(data.id, 200), Number(data.x), Number(data.y)));
 		return undefined;
 	}
 

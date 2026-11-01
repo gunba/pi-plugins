@@ -1,120 +1,33 @@
-import { useEffect, useRef, useState } from "react";
-import { homeItems, type HomeItem, type HomeScene } from "../shared/home.ts";
-import { Icon } from "./icons.tsx";
-import { AgentSurface } from "./agent-ui/index.tsx";
-import { HomeCanvasContext, homeComponents } from "./home-components.tsx";
+import { useEffect, useRef } from "react";
+import { homeUrl, homeWorkKey, type HomeWork } from "../shared/home.ts";
 
-const GAP = 18;
 /**
- * Pushes overlapping labels and pills apart for display, along whichever axis needs the smaller move, so text the
- * agent crowds still reads. The item Jordan is dragging stays under his pointer. The scene itself is not changed.
+ * Home's canvas: the SVG the agent wrote, shown as written and scaled to fit. It sits in a frame without scripts, so
+ * anything it contains only draws; Desk handles its clicks. An element with data-open opens that live work, and a link
+ * opens in a new tab.
  */
-function separate(items: HomeItem[], held?: string): HomeItem[] {
-	const placed = items.map(item => ({ ...item }));
-	for (let pass = 0; pass < 24; pass++) {
-		let moved = false;
-		for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
-			const a = placed[i]!, b = placed[j]!;
-			// Only text-bearing labels and pills are kept apart; blobs may hold them, and free drawing goes where it is put.
-			if (!["label", "pill"].includes(a.shape) || !["label", "pill"].includes(b.shape)) continue;
-			const overlapX = Math.min(a.x + a.width, b.x + b.width) + GAP - Math.max(a.x, b.x);
-			const overlapY = Math.min(a.y + a.height, b.y + b.height) + GAP - Math.max(a.y, b.y);
-			if (overlapX <= 0 || overlapY <= 0) continue;
-			moved = true;
-			const horizontal = overlapX < overlapY, amount = horizontal ? overlapX : overlapY;
-			const direction = horizontal ? Math.sign(b.x + b.width / 2 - a.x - a.width / 2) || 1 : Math.sign(b.y + b.height / 2 - a.y - a.height / 2) || 1;
-			const shareA = a.id === held ? 0 : b.id === held ? 1 : 0.5, axis = horizontal ? "x" : "y";
-			a[axis] -= direction * amount * shareA; b[axis] += direction * amount * (1 - shareA);
-		}
-		if (!moved) break;
-	}
-	return placed;
-}
-
-export function HomeCanvas({ scene, state, open, move }: { scene: HomeScene; state?: Record<string, unknown>; open: (item: HomeItem) => void; move: (id: string, x: number, y: number) => void }) {
-	const element = useRef<HTMLDivElement>(null);
-	const [size, setSize] = useState({ width: 0, height: 0 });
-	const [camera, setCamera] = useState({ x: 30, y: 20, zoom: 1 });
-	const cameraRef = useRef(camera); cameraRef.current = camera;
-	const [dragged, setDragged] = useState<{ id: string; x: number; y: number }>();
-	const pointers = useRef(new Map<number, { x: number; y: number }>());
-	const gesture = useRef<{ camera: typeof camera; x: number; y: number; distance: number; item?: HomeItem; moved: boolean } | undefined>(undefined);
-	const initialized = useRef(false), suppressClick = useRef(false);
-	const sourceItems = homeItems(scene);
-	const items = separate(sourceItems.map(item => dragged?.id === item.id ? { ...item, x: dragged.x, y: dragged.y } : item), dragged?.id);
-	const fit = () => {
-		// The drawn extent, free drawing included; the items' boxes stand in before the canvas has drawn.
-		const drawn = (element.current?.querySelector(".home-canvas svg > g") as SVGGElement | null)?.getBBox();
-		if (!drawn?.width && !sourceItems.length) return;
-		const left = (drawn?.width ? drawn.x : Math.min(...sourceItems.map(item => item.x))) - 35, top = (drawn?.width ? drawn.y : Math.min(...sourceItems.map(item => item.y))) - 35;
-		const right = (drawn?.width ? drawn.x + drawn.width : Math.max(...sourceItems.map(item => item.x + item.width))) + 35;
-		const bottom = (drawn?.height ? drawn.y + drawn.height : Math.max(...sourceItems.map(item => item.y + item.height))) + 35;
-		const zoom = Math.max(0.15, Math.min(1.25, size.width / (right - left), size.height / (bottom - top)));
-		setCamera({ x: (size.width - (right - left) * zoom) / 2 - left * zoom, y: (size.height - (bottom - top) * zoom) / 2 - top * zoom, zoom });
-	};
+export function HomeCanvas({ svg, work, open }: { svg: string; work: HomeWork[]; open: (work: HomeWork) => void }) {
+	const frame = useRef<HTMLIFrameElement>(null), current = useRef({ work, open });
+	current.current = { work, open };
 	useEffect(() => {
-		const node = element.current!;
-		const observer = new ResizeObserver(([entry]) => { if (entry) setSize({ width: entry.contentRect.width, height: entry.contentRect.height }); });
-		observer.observe(node); return () => observer.disconnect();
-	}, []);
-	useEffect(() => {
-		if (initialized.current || !sourceItems.length || !size.width) return;
-		initialized.current = true;
-		if (size.width > 600) fit();
-		else { const first = sourceItems[0]!; setCamera({ x: 20 - first.x * 0.85, y: 35 - first.y * 0.85, zoom: 0.85 }); }
-	}, [sourceItems.length, size]);
-	const zoomAt = (factor: number, x = size.width / 2, y = size.height / 2) => setCamera(current => {
-		const zoom = Math.max(0.15, Math.min(2.5, current.zoom * factor)), ratio = zoom / current.zoom;
-		return { x: x - (x - current.x) * ratio, y: y - (y - current.y) * ratio, zoom };
-	});
-	useEffect(() => {
-		const node = element.current!;
-		const wheel = (event: WheelEvent) => {
+		const element = frame.current;
+		if (!element) return;
+		const attach = () => element.contentDocument?.addEventListener("click", event => {
+			const target = (event.target as Element | null)?.closest?.("[data-open], a");
+			if (!target) return;
 			event.preventDefault();
-			if (event.ctrlKey || event.metaKey) { const box = node.getBoundingClientRect(); zoomAt(Math.exp(-event.deltaY * 0.008), event.clientX - box.left, event.clientY - box.top); }
-			else setCamera(current => ({ ...current, x: current.x - event.deltaX, y: current.y - event.deltaY }));
-		};
-		node.addEventListener("wheel", wheel, { passive: false }); return () => node.removeEventListener("wheel", wheel);
-	}, [size]);
-	const point = (event: { clientX: number; clientY: number }) => { const box = element.current!.getBoundingClientRect(); return { x: event.clientX - box.left, y: event.clientY - box.top }; };
-	const start = (item?: HomeItem) => {
-		const values = [...pointers.current.values()], a = values[0]!, b = values[1];
-		gesture.current = { camera: cameraRef.current, x: b ? (a.x + b.x) / 2 : a.x, y: b ? (a.y + b.y) / 2 : a.y,
-			distance: b ? Math.hypot(a.x - b.x, a.y - b.y) : 0, item: b ? undefined : item, moved: false };
-	};
-	return <HomeCanvasContext.Provider value={{ camera, items, open, move, suppressClick }}><div className={`home-canvas${dragged ? " dragging" : ""}${camera.zoom < 0.65 ? " far" : ""}`} ref={element} aria-label="Home canvas"
-		onPointerDown={event => {
-			if (event.button !== 0 || (event.target as Element).closest(".home-zoom")) return;
-			pointers.current.set(event.pointerId, point(event)); event.currentTarget.setPointerCapture(event.pointerId);
-			const id = (event.target as Element).closest("[data-home-item]")?.getAttribute("data-home-item");
-			if (pointers.current.size > 1) { setDragged(undefined); suppressClick.current = true; }
-			else suppressClick.current = false;
-			start(items.find(item => item.id === id));
-		}}
-		onPointerMove={event => {
-			if (!pointers.current.has(event.pointerId) || !gesture.current) return;
-			pointers.current.set(event.pointerId, point(event));
-			const values = [...pointers.current.values()], a = values[0]!, b = values[1], g = gesture.current;
-			const x = b ? (a.x + b.x) / 2 : a.x, y = b ? (a.y + b.y) / 2 : a.y, dx = x - g.x, dy = y - g.y;
-			if (Math.hypot(dx, dy) > 4 || b) { g.moved = true; suppressClick.current = true; }
-			if (!g.moved) return;
-			if (g.item && !b) setDragged({ id: g.item.id, x: Math.max(-4000, Math.min(4000, g.item.x + dx / g.camera.zoom)), y: Math.max(-4000, Math.min(4000, g.item.y + dy / g.camera.zoom)) });
-			else {
-				const zoom = b && g.distance ? Math.max(0.15, Math.min(2.5, g.camera.zoom * Math.hypot(a.x - b.x, a.y - b.y) / g.distance)) : g.camera.zoom;
-				setCamera({ x: x - (g.x - g.camera.x) * zoom / g.camera.zoom, y: y - (g.y - g.camera.y) * zoom / g.camera.zoom, zoom });
-			}
-		}}
-		onPointerUp={event => {
-			if (!pointers.current.has(event.pointerId)) return;
-			pointers.current.delete(event.pointerId);
-			const g = gesture.current;
-			if (g?.item && !g.moved && !suppressClick.current) { open(g.item); suppressClick.current = true; }
-			if (dragged && gesture.current?.item) { move(dragged.id, dragged.x, dragged.y); setDragged(undefined); }
-			if (pointers.current.size) start(); else gesture.current = undefined;
-		}}
-		onPointerCancel={event => { pointers.current.delete(event.pointerId); setDragged(undefined); gesture.current = undefined; suppressClick.current = true; }}>
-		<AgentSurface spec={scene.spec} components={homeComponents} state={state} />
-		{!items.length && <div className="home-empty"><Icon name="layers" /><h2>A place for everything on your mind.</h2><p>Tell Desk what you need. Home will arrange it here.</p></div>}
-		<div className="home-zoom"><button className="icon-button" aria-label="Zoom out" onClick={() => zoomAt(0.8)}>−</button><button className="text-button" onClick={fit} title="Fit canvas">{Math.round(camera.zoom * 100)}%</button><button className="icon-button" aria-label="Zoom in" onClick={() => zoomAt(1.25)}>+</button></div>
-	</div></HomeCanvasContext.Provider>;
+			const key = target.getAttribute("data-open"), href = target.getAttribute("href") ?? target.getAttribute("xlink:href") ?? "";
+			const found = key ? current.current.work.find(entry => homeWorkKey(entry) === key) : undefined;
+			if (found) current.current.open(found);
+			else if (homeUrl(href)) window.open(href, "_blank", "noopener,noreferrer");
+		});
+		element.addEventListener("load", attach);
+		if (element.contentDocument?.readyState === "complete") attach();
+		return () => element.removeEventListener("load", attach);
+	}, []);
+	const document = `<!doctype html><html><head><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+body>svg{display:block;width:100%;height:100%}[data-open],a{cursor:pointer}</style></head><body>${svg}</body></html>`;
+	return <div className="home-canvas">{svg
+		? <iframe ref={frame} className="home-frame" title="Home" sandbox="allow-same-origin" srcDoc={document} />
+		: <p className="home-empty muted">Home draws your tasks and live work here.</p>}</div>;
 }

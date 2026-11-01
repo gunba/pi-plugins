@@ -4,42 +4,9 @@
 .home-topbar .conversation-heading strong { font-size:17px; }
 .home-topbar .conversation-heading span { color:var(--muted); font-size:12px; }
 .home-run { color:var(--muted); font-size:11px; white-space:nowrap; }
-.home-canvas { flex:1; min-height:160px; position:relative; overflow:hidden; touch-action:none; user-select:none; background:var(--bg); }
-.home-canvas > .agent-surface { width:100%; height:100%; }
-.home-canvas svg { display:block; }
-.home-item { transition:transform .4s ease; }
-.home-canvas.dragging .home-item { transition:none; }
-.home-shape { fill:color-mix(in srgb,var(--home-color) 13%,var(--bg)); stroke:color-mix(in srgb,var(--home-color) 62%,var(--bg)); stroke-width:1.25; stroke-linecap:round; stroke-linejoin:round; transition:fill .3s,stroke .3s; }
-:root[data-theme="dark"] .home-shape { fill:color-mix(in srgb,var(--home-color) 15%,var(--bg)); stroke:color-mix(in srgb,var(--home-color) 55%,var(--bg)); }
-.home-item:focus-within .home-shape, .home-item:hover .home-shape { fill:color-mix(in srgb,var(--home-color) 19%,var(--bg)); }
-.home-link { pointer-events:none; color:color-mix(in srgb,var(--home-color) 55%,var(--bg)); }
-.home-link path { fill:none; stroke:currentColor; stroke-width:1.3; stroke-linecap:round; }
-.home-link circle { fill:currentColor; }
-.home-item-content { display:flex; align-items:center; justify-content:center; gap:16px; width:100%; height:100%; padding:26px 46px; border:0; border-radius:45%; color:var(--text); background:transparent; text-align:left; cursor:grab; white-space:normal; }
-.home-item-content:hover { background:transparent; }
-.home-item-content:active { cursor:grabbing; }
-.home-item-content:focus-visible { outline:2px solid var(--accent); outline-offset:-8px; }
-.home-item-icon { display:grid; place-items:center; width:40px; height:40px; flex:none; border-radius:50%; color:var(--home-color); background:color-mix(in srgb,var(--home-color) 18%,var(--bg)); }
-.home-item-icon .ui-icon { width:20px; height:20px; }
-.home-item-words { display:flex; flex-direction:column; gap:4px; min-width:0; }
-.home-item-words strong { font-size:19px; font-weight:450; letter-spacing:-.01em; line-height:1.25; overflow-wrap:anywhere; }
-.home-item-words > span { color:var(--muted); font-size:13px; line-height:1.4; overflow-wrap:anywhere; }
-.home-item-words small { color:var(--muted); font-size:12.5px; line-height:1.3; margin-top:8px; }
-.home-item-words small::before { content:""; display:inline-block; width:7px; height:7px; margin-right:7px; border-radius:50%; background:var(--home-color); vertical-align:1px; }
-.home-pill .home-item-content { padding:14px 27px; border-radius:999px; }
-.home-label .home-item-content { padding:5px 8px; justify-content:flex-start; border-radius:8px; gap:10px; }
-.home-label .home-item-words { gap:3px; }
-.home-label .home-item-words strong { font-size:14.5px; font-weight:450; }
-.home-label .home-item-words small { margin-top:0; }
-.home-label .home-item-icon { width:32px; height:32px; }
-.home-label .home-item-words small { margin-top:2px; }
-.home-empty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; pointer-events:none; padding:25px; text-align:center; color:var(--muted); }
-.home-empty > .ui-icon { width:30px; height:30px; color:var(--accent); margin-bottom:12px; }
-.home-empty h2 { font-size:17px; font-weight:500; color:var(--text); margin:0 0 7px; }
-.home-empty p { font-size:13px; margin:0; }
-.home-zoom { position:absolute; bottom:8px; left:14px; display:flex; align-items:center; gap:2px; background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:2px; }
-.home-zoom .icon-button { width:28px; height:28px; }
-.home-zoom .text-button { color:var(--muted); font-size:11px; min-width:40px; }
+.home-canvas { flex:1; min-height:160px; position:relative; overflow:hidden; background:var(--bg); }
+.home-frame { display:block; width:100%; height:100%; border:0; }
+.home-empty { position:absolute; inset:0; display:grid; place-items:center; margin:0; font-size:13px; }
 .home-body { flex:1; min-height:0; display:flex; flex-direction:column; position:relative; }
 .home-chat { flex:none; width:min(760px,100%); margin:0 auto; padding:8px 22px 18px; }
 /* Open, the conversation is a pane beside the canvas, the box at its foot. */
@@ -73,20 +40,8 @@
  .home-chat { padding:7px 10px max(10px,env(safe-area-inset-bottom)); }
  .home-compose textarea { font-size:16px; }
  .home-reply { max-height:100px; font-size:12px; }
- .home-zoom { left:10px; bottom:5px; }
  .home-body.chat-open .home-chat { position:absolute; inset:0; width:auto; border-left:0; z-index:2; }
 }
-@media(prefers-reduced-motion:reduce) { .home-item, .home-shape { transition:none; } }
-/* Hues Home adds to Desk's tokens, tuned for each theme. */
-.home-canvas { --home-text:var(--text); --home-sage:#5f8f6b; --home-amber:#b07a1f; --home-rose:#b55a6a; --home-teal:#2f8a87; --home-sand:#9a7d5a; --home-lilac:#8a6fc4; }
-:root[data-theme="dark"] .home-canvas { --home-sage:#8dbb97; --home-amber:#d9a54a; --home-rose:#e08a98; --home-teal:#62bdb7; --home-sand:#c9a97f; --home-lilac:#b59cf0; }
-.home-text { fill:currentColor; }
-.home-text-box { overflow:visible; }
-.home-text-box > div { color:currentColor; line-height:1.3; white-space:pre-wrap; overflow-wrap:anywhere; }
-.home-icon-box { overflow:visible; }
-.home-icon-box .ui-icon { width:100%; height:100%; }
-.home-free-item { cursor:grab; outline:none; }
-.home-free-item:focus-visible { filter:drop-shadow(0 0 2px var(--accent)); }
 /* Home's conversation: Terra's replies as plain text, Jordan's in a quiet bubble on the right; no headings or copy rows. */
 .home-log .message { margin-bottom:14px; font-size:13.5px; line-height:1.55; }
 .home-log .message-heading, .home-log .message-actions { display:none; }
@@ -95,6 +50,3 @@
 .home-log .message-assistant > .message-body { padding-left:0; }
 .home-log .markdown p { margin:0 0 8px; }
 .home-log .markdown ul, .home-log .markdown ol { margin:0 0 8px; padding-left:18px; }
-/* Zoomed out, items keep their titles and drop the detail that would be too small to read. */
-.home-canvas.far .home-item-words > span, .home-canvas.far .home-item-words small { display:none; }
-.home-canvas.far .home-item-words strong { font-size:22px; }

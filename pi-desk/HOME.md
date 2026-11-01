@@ -16,35 +16,23 @@ brings the Today section up to date.
 
 ## Canvas and conversation
 
-Home uses the same `AgentSpec`, RFC 6902 patch transaction and json-render React
-surface as Work. Its catalog adds ready-made items (`Blob`, `Pill`, `Label`,
-`Connector`) and free drawing (`Text`, `Shape`, `Path`, `Icon`) on a `Canvas`.
-The agent draws the whole tasks file and the live work (questions, approvals,
-working agents, blocked plans) as one connected structure; nothing is hidden
-behind a click. Display text supports `$state` bindings to live-work status, so
-a status can update without a model turn.
+The canvas is one SVG document the agent writes whole: its drawing of the tasks file
+and the live work (questions, approvals, working agents, blocked plans), designed
+as it sees fit. `home_scene` reads it, or replaces it given the revision that was
+read; a write must give every live work item an element with `data-open="<key>"`.
+Desk shows the SVG as written, in a frame without scripts, scaled to the pane; a
+click on a `data-open` element opens that conversation, and a link opens in a new tab.
 
-`home_scene` returns a picture of the canvas with every read and patch, drawn on the
-host from the scene (`home-picture.ts`, SVG rendered with resvg), so the agent sees
-what Jordan sees and refines it. It also reports layout problems: words overlapping
-other words or items, lines running through words, outlines running into each other,
-and a drawing larger than about 1200 by 700. The instructions require fixing them before a turn ends, so
-faults left by earlier turns do not accumulate.
+Every read and write returns a picture of the canvas, drawn on the host from the SVG
+with resvg's WebAssembly build and a system font (`home-picture.ts`), so the agent
+sees what Jordan sees and refines it until it looks right.
 
-The host debounces live-work and drag changes into turns in the Home conversation.
-Token deltas and usage changes do not trigger layout requests. Every scene patch
-compares its revision with the current revision inside a SQLite transaction. Drags
-persist as position preferences and survive later arrangements; an explicit request
-to move a pinned item can release that preference.
-
-Clicking an item opens its conversation, published file or HTTP(S) link. Other
-changes go through the composer, which supports files, dictation and a saved
-delivery receipt, using normal Desk uploads and input admission. **History** opens
-the complete native conversation, including questions, approvals, tool activity
-and recovery controls. The last turn's cost is shown in the header.
-
-The canvas supports pointer dragging, keyboard movement, panning and pinch zoom.
-Colours come from Desk's light and dark theme tokens.
+The host debounces live-work changes into turns in the Home conversation. Token
+deltas and usage changes do not trigger them. The composer supports files,
+dictation and a saved delivery receipt, using normal Desk uploads and input
+admission. **History** opens the complete native conversation, including
+questions, approvals, tool activity and recovery controls. The last turn's cost
+is shown in the header.
 
 Home is a normal Desk worker, not a side model call. Watches, approvals, native
 queueing, model credentials, MCP, agent messaging, compaction and host-update

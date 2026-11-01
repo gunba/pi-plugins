@@ -1,13 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Value } from "typebox/value";
-import { emptyHomeScene, homeItems, homeMovable, validateHomeElement, HomePatchSchema, patchHome, type HomeMessage, type HomeReference, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
-import { validateSpec } from "../../../pi-ui/agent-ui.ts";
+import { emptyHomeScene, homeWorkKey, HOME_SVG_LIMIT, type HomeMessage, type HomeRun, type HomeScene, type HomeWork } from "../shared/home.ts";
 
-const referenceKey = (ref: HomeReference): string | undefined => ref.kind === "conversation" ? JSON.stringify([ref.kind, ref.computer ?? "", ref.id, ref.view ?? ""]) : undefined;
-
-/** Shared by the host and its Home worker. SQLite serializes scene patches and user drags across processes. */
+/** Shared by the host and its Home worker. SQLite serializes scene writes across processes. */
 export type HomeRequest = { action: "notify"; title: string; text: string };
 export class HomeStore {
 	private db: DatabaseSync;
@@ -26,47 +22,27 @@ export class HomeStore {
 	set(key: string, value: unknown): void { this.db.prepare("INSERT OR REPLACE INTO home_values VALUES (?,?)").run(key, JSON.stringify(value)); }
 	scene(): HomeScene {
 		const scene = this.get<HomeScene>("scene");
-		if (!scene) return emptyHomeScene();
-		if (scene.version !== 1 || !Number.isSafeInteger(scene.revision) || scene.revision < 0 || !scene.preferences || typeof scene.preferences !== "object" || Array.isArray(scene.preferences))
-			throw Error("Home's saved scene has an unsupported format. Restore it before arranging more work.");
-		// Scenes from before quests were removed refer to them; Home draws again from Jordan's tasks file.
-		if (JSON.stringify(scene.spec).includes('"kind":"quest"')) return { ...emptyHomeScene(), revision: scene.revision };
-		validateSpec(scene.spec, validateHomeElement);
-		for (const position of Object.values(scene.preferences)) if (!position || ![position.x, position.y].every(value => Number.isFinite(value) && Math.abs(value) <= 4000))
-			throw Error("Home's saved position preference is invalid.");
+		// Scenes from before the canvas was SVG start blank; the agent draws them again.
+		if (!scene || scene.version !== 2) return { ...emptyHomeScene(), revision: scene?.revision ?? 0 };
 		return scene;
 	}
-	private change(update: (scene: HomeScene) => HomeScene): HomeScene {
+	/** Live work the canvas must show, each opened by an element with data-open="<key>". */
+	required(): { key: string; title: string; status: string }[] {
+		return (this.get<HomeWork[]>("work") ?? []).map(work => ({ key: homeWorkKey(work), title: work.title, status: work.status }));
+	}
+	/** Replace the canvas, if it is still the revision the agent read and shows every live work item. */
+	write(revision: number, svg: string): HomeScene {
+		if (typeof svg !== "string" || !/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/.test(svg)) throw Error("The canvas is one SVG document, starting with <svg.");
+		if (svg.length > HOME_SVG_LIMIT) throw Error(`The SVG is ${svg.length} characters; keep it under ${HOME_SVG_LIMIT}.`);
+		const missing = this.required().filter(item => !svg.includes(`data-open="${item.key}"`));
+		if (missing.length) throw Error(`Give each live work item an element with data-open="<key>". Missing: ${JSON.stringify(missing)}.`);
 		this.db.exec("BEGIN IMMEDIATE");
-		try { const scene = update(this.scene()); this.set("scene", scene); this.db.exec("COMMIT"); return scene; }
-		catch (error) { this.db.exec("ROLLBACK"); throw error; }
-	}
-	/** Live work the canvas must show: questions, approvals, blocked plans and working agents. */
-	required(): { ref: HomeReference; title: string }[] {
-		return (this.get<HomeWork[]>("work") ?? []).map(work => ({ ref: { kind: "conversation", id: work.id, ...(work.computer ? { computer: work.computer } : {}), ...(work.view ? { view: work.view } : {}) } as HomeReference, title: work.title }));
-	}
-	private checkCoverage(scene: HomeScene): void {
-		const present = new Set(homeItems(scene).map(item => referenceKey(item.ref))), missing = this.required().filter(item => !present.has(referenceKey(item.ref)));
-		if (missing.length) throw Error(`Include every live work item in the same patch. Missing: ${JSON.stringify(missing)}.`);
-	}
-	patch(raw: unknown, releasePositions: string[] = []): HomeScene {
-		if (!Value.Check(HomePatchSchema, raw)) throw Error("Invalid Home patch: " + [...Value.Errors(HomePatchSchema, raw)].slice(0, 3).map(error => error.message).join("; "));
-		return this.change(scene => {
-			for (const id of releasePositions) delete scene.preferences[id];
-			const next = patchHome(scene, raw);
-			this.checkCoverage(next);
-			return next;
-		});
-	}
-	drag(id: string, x: number, y: number): HomeScene {
-		if (![x, y].every(value => Number.isFinite(value) && Math.abs(value) <= 4000)) throw Error("Position is outside Home's canvas.");
-		return this.change(scene => {
-			const item = scene.spec.elements[id];
-			if (!homeMovable(item)) throw Error("That item is no longer on Home.");
-			item.props.x = x; item.props.y = y;
-			Object.defineProperty(scene.preferences, id, { value: { x, y }, enumerable: true, configurable: true, writable: true });
-			scene.revision++; return scene;
-		});
+		try {
+			const current = this.scene();
+			if (revision !== current.revision) throw Error("Home changed. Read the current scene and write again.");
+			const scene: HomeScene = { version: 2, revision: current.revision + 1, svg };
+			this.set("scene", scene); this.db.exec("COMMIT"); return scene;
+		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	message(message: HomeMessage): void { this.db.prepare("INSERT OR IGNORE INTO home_messages VALUES (?,?,?)").run(message.id, JSON.stringify(message), message.at); }
 	messages(): HomeMessage[] { return (this.db.prepare("SELECT value FROM home_messages ORDER BY at DESC, rowid DESC LIMIT 80").all() as { value: string }[]).reverse().map(row => JSON.parse(row.value)); }

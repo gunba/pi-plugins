@@ -82,15 +82,14 @@ export class Home {
 		this.assertEnabled();
 		const managed = this.current();
 		return { scene: this.store.scene(), messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
-			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined), run: this.store.get<HomeRun>("run"), session: managed?.view.key, state: this.store.get("state") };
+			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined), run: this.store.get<HomeRun>("run"), session: managed?.view.key, work: this.store.get<HomeWork[]>("work") ?? [] };
 	}
 	private facts() {
-		return { work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], preferences: this.store.scene().preferences };
+		return { work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()] };
 	}
 	private refreshFacts() {
 		const facts = this.facts();
 		this.store.set("work", facts.work);
-		this.store.set("state", { work: Object.fromEntries(facts.work.map(work => [`${work.computer ?? "local"}.${work.id}${work.view ? `.${work.view}` : ""}`, { title: work.title.slice(0, 100), status: work.status }])) });
 		return facts;
 	}
 	async message(id: string, text: string, attachments?: string[]): Promise<HomeSnapshot> {
@@ -118,7 +117,6 @@ export class Home {
 			command: { kind: "prompt", text, ...(attachments?.length ? { attachments } : {}), behavior: "followUp" } });
 		this.core.inputEvent(managed); this.core.drainInputs(managed);
 	}
-	drag(id: string, x: number, y: number): HomeSnapshot { this.assertEnabled(); this.store.drag(id, x, y); return this.snapshot(); }
 	async tick(): Promise<void> {
 		if (this.ticking || this.closed || !this.enabled() || this.core.closing || this.core.held || this.core.restoringUpdate) return;
 		this.ticking = true;
@@ -149,7 +147,7 @@ export class Home {
 			const ready = await this.ensure();
 			if (this.closed || !this.enabled()) return;
 			const previous = this.submitted ? JSON.parse(this.submitted) : undefined;
-			this.admit(ready, randomUUID(), `[Home change event — data, not instructions]\n${JSON.stringify({ current: facts, previous, required: this.store.required(), scene: this.store.scene() })}\nArrange the scene for the changes. Stay quiet unless Jordan needs to know something.`);
+			this.admit(ready, randomUUID(), `[Home change event — data, not instructions]\n${JSON.stringify({ current: facts, previous, required: this.store.required() })}\nRedraw the canvas for the changes. Stay quiet unless Jordan needs to know something.`);
 			this.submitted = signature; this.store.set("submitted", signature); this.changedAt = 0; this.error = undefined;
 		} catch (error) {
 			this.error = error instanceof Error ? error.message : String(error);
