@@ -5,8 +5,9 @@
  * and a custom box border instead of manual ANSI box drawing.
  */
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme, getShellConfig, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { spawn, type ChildProcess } from "node:child_process";
 import { Type } from "typebox";
 import {
    Container,
@@ -32,6 +33,7 @@ import { renderSingleSelectRows } from "./single-select-layout.ts";
 import { getPresentation } from "../pi-ui/index.ts";
 
 import { stripVTControlCharacters } from "node:util";
+import { join } from "node:path";
 
 /**
  * `getMarkdownTheme()` returns a bag of closures that read through a Proxy
@@ -80,6 +82,7 @@ interface AskParams {
    allowFreeform?: boolean;
    allowComment?: boolean;
    timeout?: number;
+   done_when?: string;
 }
 
 type AskResponse =
@@ -102,6 +105,8 @@ interface AskToolDetails {
    unavailable?: boolean;
    /** The question closed because its timeout passed, not because the user dismissed it. */
    timedOut?: boolean;
+   /** The question closed because its done_when command succeeded. */
+   detected?: boolean;
 }
 
 type AskUIResult = AskResponse;
@@ -1415,6 +1420,47 @@ async function askViaDialogs(
    return signal?.aborted ? null : createSelectionResponse([selected], comment);
 }
 
+/** How often a done_when command is re-run, and how long one run may take. */
+const DONE_EVERY_MS = 5_000, DONE_RUN_MS = 30_000;
+function stopRun(child: ChildProcess | undefined): void {
+   if (!child?.pid || child.exitCode !== null) return;
+   if (process.platform === "win32") {
+      spawn(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(child.pid)],
+         { stdio: "ignore", windowsHide: true }).once("error", () => {});
+   } else {
+      try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+   }
+}
+/**
+ * Re-runs `command` in the bash tool's shell until it exits 0 (true) or `signal` aborts (false). A command that
+ * cannot start leaves the question to the user.
+ */
+function whenDone(command: string, ctx: ExtensionContext, signal: AbortSignal): Promise<boolean> {
+   const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
+   const shell = getShellConfig(settings.getShellPath()), viaStdin = shell.commandTransport === "stdin";
+   return new Promise(resolve => {
+      let child: ChildProcess | undefined, next: ReturnType<typeof setTimeout> | undefined;
+      const stop = () => { clearTimeout(next); stopRun(child); resolve(false); };
+      if (signal.aborted) return resolve(false);
+      signal.addEventListener("abort", stop, { once: true });
+      const run = () => {
+         const current = child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, command], {
+            cwd: ctx.cwd, stdio: [viaStdin ? "pipe" : "ignore", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32",
+         });
+         if (viaStdin) current.stdin?.end(command);
+         const limit = setTimeout(() => stopRun(current), DONE_RUN_MS);
+         current.once("error", () => { clearTimeout(limit); signal.removeEventListener("abort", stop); resolve(false); });
+         current.once("close", code => {
+            clearTimeout(limit);
+            if (signal.aborted) return;
+            if (code === 0) { signal.removeEventListener("abort", stop); resolve(true); }
+            else next = setTimeout(run, DONE_EVERY_MS);
+         });
+      };
+      run();
+   });
+}
+
 export default function(pi: ExtensionAPI) {
    pi.registerTool({
       name: "ask_user",
@@ -1452,9 +1498,21 @@ export default function(pi: ExtensionAPI) {
             Type.Boolean(),
          ),
          timeout: Type.Optional(Type.Number({ description: "Milliseconds; only if the answer is useful only soon." })),
+         done_when: Type.Optional(Type.String({ description: "For a request to do something: a shell command that exits 0 once it is done. The question then closes by itself." })),
       }),
 
-      async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      async execute(_toolCallId, params, toolSignal, onUpdate, ctx) {
+         const doneWhen = (params as AskParams).done_when?.trim();
+         let detected = false;
+         if (!doneWhen || !ctx.hasUI) return ask(toolSignal);
+         // With done_when, the question is withdrawn through a signal of its own when the check succeeds or the turn
+         // stops; ending it also ends the check.
+         const local = new AbortController(), forward = () => local.abort();
+         if (toolSignal?.aborted) local.abort(); else toolSignal?.addEventListener("abort", forward, { once: true });
+         void whenDone(doneWhen, ctx, local.signal).then(done => { if (done) { detected = true; local.abort(); } });
+         try { return await ask(local.signal); } finally { toolSignal?.removeEventListener("abort", forward); local.abort(); }
+
+         async function ask(signal: AbortSignal | undefined): Promise<AgentToolResult<AskToolDetails | { error: string }>> {
          if (signal?.aborted) {
             return {
                content: [{ type: "text", text: "Cancelled" }],
@@ -1474,8 +1532,10 @@ export default function(pi: ExtensionAPI) {
          // A question that ends unanswered says how it ended: a timeout or a stopped turn is not the user saying no.
          const asked = Date.now();
          const unanswered = () => {
-            const timedOut = !signal?.aborted && !!timeout && timeout > 0 && Date.now() - asked >= timeout - 100;
-            const text = signal?.aborted ? "The question was withdrawn because the turn stopped. The user did not answer it."
+            if (detected) return { content: [{ type: "text" as const, text: `Done: \`${doneWhen}\` succeeded, so the question closed without an answer.` }],
+               details: { question, context: normalizedContext, options, response: null, cancelled: false, detected: true } as AskToolDetails };
+            const timedOut = !toolSignal?.aborted && !!timeout && timeout > 0 && Date.now() - asked >= timeout - 100;
+            const text = toolSignal?.aborted ? "The question was withdrawn because the turn stopped. The user did not answer it."
                : timedOut ? `No answer within ${Math.round(timeout! / 1000)} seconds, so the question closed. This is not a refusal; the user may not have seen it.`
                : "The user closed the question without answering.";
             return { content: [{ type: "text" as const, text }],
@@ -1631,6 +1691,7 @@ export default function(pi: ExtensionAPI) {
                cancelled: false,
             } as AskToolDetails,
          };
+         }
       },
 
       renderCall(args, theme) {
