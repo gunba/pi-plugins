@@ -24,23 +24,21 @@ function scriptTool<T extends { name: string; outputSchema?: TSchema }>(tool: T)
     ...tool, outputSchema: Type.Union([tool.outputSchema ?? OUTPUTS[tool.name] ?? Type.String(), ERROR]),
   };
 }
-export const REQUEST_DESCRIPTION = `Execute a JavaScript request in QuickJS: top-level await, return, loops and conditions; no Node, filesystem, network or timers except through operations. Send raw source when supported, otherwise {code: "..."}.
-Shared conventions:
-- Use valid JavaScript: object fields need key:value pairs. No process, require, Buffer or imports; run Node/shell code through tools.bash.
-- await tools.NAME(args) returns data or {error:string}; check errors before dependent effects. Await effects in order; Promise.all is for independent work. Pending calls are cancelled at return; completed effects are not rolled back.
-- Return only needed fields: const r=await tools.bash({command:"git status --short",description:"Inspect changes"}); return r.error?r:{output:r.output};
-- Every operation accepts description?:string: one short sentence for the user about what and why. It is omitted from the signatures below.
-- Paths are relative to the working directory. Use read for contents, bash for file operations, edit for targeted replacements, write for new files or complete rewrites. Multiline template literals work; escape literal backticks and \${, or use quoted strings.
-Core signatures (all return {error:string} on failure):
-read({path:string,offset?:number,limit?:number}) -> string | image block. Lines are 1-based; continue with offset for long files.
-bash({command:string,timeout?:number}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds}. Timeout is in seconds.
-edit({path:string,edits:{oldText:string,newText:string}[]}) -> string. Each oldText must match once in the ORIGINAL file; replacements must not overlap.
-write({path:string,content:string}) -> string. Creates parent directories; overwrites the file.
-Discovery: await searchTools(query,{limit?,namespace?}) returns declarations. await describeTool(name) or describeNamespace(name) gives full contracts; ALL_TOOLS lists them. tools.tool_search({query,limit?}) activates matches and returns {loaded:string[]}. Use discovery for other operations before calling them; it leaves this definition unchanged.
-Other operations: create_plan, update_plan; agent_start, agent_send, agent_list, agent_stop, agent_move; quest_add, quest_list, quest_update; watch; ask_user; show; web_search, web_fetch; conversation_search, conversation_read; list_mcp_resources, list_mcp_resource_templates, read_mcp_resource.
-Globals: text(value), image(block), console.log and return emit output; exit() ends the request. store(key,value)/load(key) persist small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
+export const REQUEST_DESCRIPTION = `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await, return, loops and conditions work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
+- await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for an error before a step that depends on it.
+- Await side effects in order; use Promise.all only for independent steps. Calls still pending at return are cancelled; finished ones are not undone.
+- Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
+- Every operation takes description: one short sentence for the user on what the call does. The signatures below leave it out.
+- Paths are relative to the working directory. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
+Core operations:
+read({path,offset?,limit?}) -> text or an image. Lines count from 1; page through long files with offset.
+bash({command,timeout?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds}. Timeout in seconds. Use it for file operations and anything that needs Node.
+edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
+write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
+Other operations: create_plan, update_plan; agent_start, agent_send, agent_list, agent_stop, agent_move; quest_add, quest_list, quest_update; watch; ask_user; show; web_search, web_fetch; conversation_search, conversation_read; list_mcp_resources, list_mcp_resource_templates, read_mcp_resource. Read an operation's contract before its first call: await describeTool(name). searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
+Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
-Chrome and MCP operations retain their native result/error contracts. Images must be shown with image(), not serialized as text.`;
+Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
 
 /** Chrome and MCP retain their own interfaces, including rejected calls. */
 const external = (name: string) => name.startsWith("chrome_devtools_") || name.startsWith("mcp__");
@@ -93,7 +91,7 @@ export function createStructuredToolExtension(): ExtensionFactory {
       ...definition,
       defaultActive: true,
       description: REQUEST_DESCRIPTION,
-      promptGuidelines: ["Use codemode for all operations. Return only needed fields; check operation.error before dependent effects."],
+      promptGuidelines: ["Do everything through codemode: one program can make many calls and return only what you need."],
       outputSchema: Type.Unknown(),
       reachesTools: input => /\btool_search\b/.test(String(input.code)) ? "all" : definition.reachesTools?.(input) ?? "all",
       prepareLoadout(loadout) {
