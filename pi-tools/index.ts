@@ -30,11 +30,16 @@ export const REQUEST_DESCRIPTION = `Run a JavaScript program (QuickJS) that call
 - Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
 - Every operation takes description: one short sentence for the user on what the call does. The signatures below leave it out.
 - Paths are relative to the working directory. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
+- Before repeating a change over many files, make it once and check it.
 Core operations:
 read({path,offset?,limit?}) -> text or an image. Lines count from 1; page through long files with offset.
 bash({command,timeout?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds}. Timeout in seconds. Use it for file operations and anything that needs Node.
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
+Common operations (more: describeTool):
+ask_user({question,options?,context?,done_when?}) -> {response,cancelled}; done_when: a command that exits 0 once it's done.
+web_search({goal,queries}), web_fetch({urls,goal?,full?}) -> {pages,failures}.
+watch({command?,every?,until?,wake_when?,stop?}): wait without spending turns.
 Other operations: create_plan, update_plan; agent_start, agent_send, agent_list, agent_stop, agent_move; quest_add, quest_list, quest_update; watch; ask_user; show; web_search, web_fetch; conversation_search, conversation_read; list_mcp_resources, list_mcp_resource_templates, read_mcp_resource. Read an operation's contract before its first call: await describeTool(name). searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
 Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
@@ -66,6 +71,32 @@ function script(code: string): string {
   }}));`;
 }
 
+type Schema = { type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; enum?: unknown[];
+  anyOf?: Schema[]; const?: unknown };
+/** A schema as a short TypeScript-like type: enough to correct a call, without the descriptions. */
+function shape(schema: Schema | undefined, depth = 0): string {
+  if (!schema) return "unknown";
+  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  if (schema.enum) return schema.enum.map(value => JSON.stringify(value)).join("|");
+  if (schema.anyOf) return schema.anyOf.map(option => shape(option, depth)).join("|");
+  if (schema.type === "array") { const item = shape(schema.items, depth); return item.includes("|") ? `(${item})[]` : `${item}[]`; }
+  if (schema.properties) {
+    if (depth > 2) return "{…}";
+    const required = new Set(schema.required ?? []);
+    return `{${Object.entries(schema.properties).filter(([key]) => key !== "description" || depth > 0)
+      .map(([key, value]) => `${key}${required.has(key) ? "" : "?"}:${shape(value, depth + 1)}`).join(",")}}`;
+  }
+  return Array.isArray(schema.type) ? schema.type.join("|") : schema.type ?? "unknown";
+}
+/**
+ * Arguments that don't match an operation get its current parameters back, so a call written from a stale or skipped
+ * contract is corrected in one step. Pi's echo of the arguments is dropped: the program already has them.
+ */
+function invalidCall(text: string, tool: { name: string; parameters?: unknown } | undefined): string | undefined {
+  if (!tool || !text.startsWith(`Validation failed for tool "${tool.name}"`)) return;
+  return `${text.split("\n\nReceived arguments:")[0]}\nCurrent parameters: ${tool.name}(${shape(tool.parameters as Schema)})`;
+}
+
 /** All nested operations still pass through Pi's validation, guards, approvals and Desk events. */
 function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToolContext {
   return Object.create(ctx, {
@@ -76,7 +107,7 @@ function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToo
       if (external(args[0])) return outcome;
       const result = outcome.result;
       const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
-      const value = outcome.isError ? { error: text || `Operation ${args[0]} failed` }
+      const value = outcome.isError ? { error: invalidCall(text, ctx.tools.find(tool => tool.name === args[0])) || text || `Operation ${args[0]} failed` }
         : result.structuredContent ?? (["ask_user", "tool_search"].includes(args[0]) ? result.details : text);
       // The script unwraps this private envelope; a handoff must end it before another side effect.
       return { ...outcome, result: { ...result, structuredContent: [value, result.terminate === true] } };
