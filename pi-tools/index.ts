@@ -10,7 +10,6 @@ const OUTPUTS: Record<string, TSchema> = {
   agent_start: OBJECT, agent_send: OBJECT, agent_list: OBJECT, agent_stop: OBJECT, agent_move: OBJECT,
   create_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
   update_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
-  quest_add: OBJECT, quest_list: OBJECT, quest_update: OBJECT,
   ask_user: Type.Object({ response: Type.Unknown(), cancelled: Type.Boolean() }),
   show: OBJECT, watch: Type.Object({ text: Type.String(), watches: Type.Array(OBJECT) }),
   web_search: Type.Object({ pages: Type.Array(OBJECT), failures: Type.Array(OBJECT) }),
@@ -46,11 +45,19 @@ write({path,content}) -> text. Creates folders and replaces the file: for new fi
 Common operations (more: describeTool):
 ask_user({question,options?,context?,done_when?}) -> {response,cancelled}; done_when: a command that exits 0 once it's done.
 web_search({goal,queries}), web_fetch({urls,goal?,full?}) -> {pages,failures}.
-watch({command?,every?,until?,wake_when?,stop?}): wait without spending turns.
-Other operations: ${others.join(", ")}. Read an operation's contract before its first call: await describeTool(name). searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
+watch({command?,every?,until?,wake_when?,stop?}): to wait for anything, end the program with a watch and be woken; don't loop calls to pass time.
+Other operations; read one's contract before its first call with await describeTool(name):
+${others.join("\n")}
+searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
 Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
+
+/** A tool's first sentence, which says what it is for. */
+const summary = (description: string) => {
+  const first = description.split(/(?<=[.!?])\s|\n/)[0]!.trim();
+  return first.length > 160 ? `${first.slice(0, 159)}…` : first;
+};
 
 /** Chrome and MCP retain their own interfaces, including rejected calls. */
 const external = (name: string) => name.startsWith("chrome_devtools_") || name.startsWith("mcp__");
@@ -135,8 +142,12 @@ export function createStructuredToolExtension(): ExtensionFactory {
       reachesTools: input => /\btool_search\b/.test(String(input.code)) ? "all" : definition.reachesTools?.(input) ?? "all",
       prepareLoadout(loadout) {
         const others = loadout.declared.filter(tool => !CORE.has(tool.name) && !external(tool.name) && loadout.getExposure(tool.name) !== "deferred");
+        // Hidden tools' rules leave the system prompt with their declarations, so the program tool carries them; the
+        // file operations' rules are already in their signatures above.
+        const rules = [...new Set(loadout.declared.filter(tool => !["codemode", "read", "bash", "edit", "write"].includes(tool.name) && !external(tool.name))
+          .flatMap(tool => loadout.getPromptGuidelines(tool.name).map(rule => rule.trim())).filter(Boolean))];
         return {
-          descriptions: { codemode: requestDescription(others.map(tool => tool.name)) },
+          descriptions: { codemode: requestDescription(others.map(tool => `${tool.name}: ${summary(tool.description)}`)) + (rules.length ? `\nRules:\n${rules.map(rule => `- ${rule}`).join("\n")}` : "") },
           hiddenDeclarations: loadout.declared.filter(tool => tool.name !== "codemode" && !external(tool.name)).map(tool => tool.name),
         };
       },
