@@ -16,7 +16,7 @@ import { shownUrl } from "./links.ts";
 export type { DocumentChange, Shown, ShownItem };
 
 
-const IMAGE = /\.(png|jpe?g|gif|webp)$/i, HTML = /\.html?$/i;
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i, HTML = /\.(html?|svg)$/i;
 const TEXT_LIMIT = 2 * 1024 * 1024, OFFICE_LIMIT = 64 * 1024 * 1024;
 const COMMAND_TOOLS = new Set(["bash", "powershell", "codemode"]);
 const EXTENSION = String.raw`\.(?:xlsx|xlsm|docx|docm|pptx|pptm)`;
@@ -241,7 +241,7 @@ export default function show(pi: ExtensionAPI) {
 			+ "Live progress costs no model calls: give source {file, pattern:'{done}/{total} {item}'} and have the job append lines such as '12/340 a.txt' to that file. "
 			+ "For JSON lines, give {file, format:'jsonl', fields:{done:'processed', total:'count'}}, naming the job's own fields (item, rate and eta too if it has them). "
 			+ "While the command runs, Desk reads each new line into the spec's state as done, total, item, rate and eta. source:null stops reading.\n"
-			+ "To show a file (HTML, image, spreadsheet, code) or a link, use items. Limits: 64 parts, 256 elements a part, 128 patch operations a call, 16 sources. More examples: pi-show/README.md.",
+			+ "To show a file (HTML or SVG, image, spreadsheet, code) or a link, use items. Limits: 64 parts, 256 elements a part, 128 patch operations a call, 16 sources. More examples: pi-show/README.md.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

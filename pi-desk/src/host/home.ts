@@ -8,21 +8,26 @@ import { HOME_MODEL, type HomeSnapshot, type HomeWork, type HomeRun } from "../s
 import type { HostCore, ManagedSession } from "./host-core.ts";
 import { HomeStore } from "./home-store.ts";
 
-/** Live work Home shows: questions, approvals, blocked plans and working agents, without token or usage churn. */
+/**
+ * The conversations Home lists: every open one, and closed ones a watch will reopen, each with what it is doing and
+ * when a watch next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
+ */
 export function homeWork(sessions: SessionView[]): HomeWork[] {
-	return sessions.filter(session => !session.home && session.state !== "closed").flatMap(session => {
+	return sessions.filter(session => !session.home && (session.state !== "closed" || !!session.wakes)).flatMap(session => {
 		const questions = session.ui?.interactions?.filter(item => !item.settings) ?? [];
 		const plans = (session.ui?.views ?? []).filter(view => view.kind === "details" && (view.id === "plan" || view.id.endsWith("/plan")));
 		const blocked = plans.find(view => (view.data as { fields?: { label: string; value: string }[] }).fields?.some(field => field.label === "State" && field.value === "blocked"));
-		const status = questions.length ? "Waiting on you" : blocked ? "Blocked" : session.snapshot?.activity === "running" ? "Working" : session.state === "failed" ? "Failed" : undefined;
+		const status = questions.length ? "Waiting on you" : blocked ? "Blocked" : session.snapshot?.activity === "running" ? "Working"
+			: session.state === "failed" ? "Failed" : session.watching ? "Watching" : session.state === "closed" ? "Closed" : "Idle";
 		const children = (session.ui?.views ?? []).filter(view => view.kind === "conversation").flatMap(view => {
 			const data = view.data as UiConversation;
 			return data.active || ["running", "working", "waiting", "blocked"].includes(data.status) ? [{
 				id: session.key, title: view.title, status: data.status, detail: (data.activity ?? data.subtitle ?? "").slice(0, 1000), view: view.id,
 			}] : [];
 		});
-		return [...(status ? [{ id: session.key, title: session.name ?? session.title ?? "Conversation", status,
-			detail: questions.map(item => item.form.title).join(" · ").slice(0, 1000) || (blocked ? JSON.stringify(blocked.data).slice(0, 1500) : ""), ...(blocked ? { view: blocked.id } : {}) }] : []), ...children];
+		return [{ id: session.key, title: session.name ?? session.title ?? "Conversation", status,
+			detail: questions.map(item => item.form.title).join(" · ").slice(0, 1000) || (blocked ? JSON.stringify(blocked.data).slice(0, 1500) : ""),
+			...(blocked ? { view: blocked.id } : {}), ...(session.wakes ? { wakes: session.wakes } : {}) }, ...children];
 	}).slice(0, 200);
 }
 

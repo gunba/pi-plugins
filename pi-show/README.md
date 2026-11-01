@@ -98,7 +98,7 @@ source: {file: "progress.jsonl", format: "jsonl",
 
 `items` holds up to 12 entries: a `file`, or a `url` with an optional `label`, with an optional `focus` (a sheet range such as `Sheet1!A1:C9`, lines such as `40-80`, or text to start at) or described `changes`.
 
-- Images show inline, Office files as their contents and text files as excerpts or diffs. HTML opens in a sandbox with no network and no access to Desk; use it for existing HTML deliverables, not for dashboards.
+- Images show inline, Office files as their contents and text files as excerpts or diffs. HTML and SVG open in a sandbox with no network and no access to Desk; use it for existing HTML or SVG deliverables, not for dashboards.
 - A file changed during the conversation is compared with its first version seen: spreadsheets cell by cell, documents paragraph by paragraph, slide decks slide by slide. Described spreadsheet changes are checked for cells they don't mention. No Office or Python is needed. First versions are kept for 30 days in `~/.pi/agent/show/<session>/`.
 - Links open in their own tab and can be pinned. `show` never fetches them.
 

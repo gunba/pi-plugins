@@ -1,5 +1,6 @@
 import Markdown from "react-markdown";
 import type { HomeWork } from "../shared/home.ts";
+import { wakeLabel } from "./activity.ts";
 import { markdownPlugins, markdownUrl } from "./markdown-links.ts";
 
 /** The page split at its ## headings: what comes before the first spans the page, and each section is a column. */
@@ -16,7 +17,11 @@ function sections(page: string): { lead: string; columns: { title: string; body:
 	}
 	return { lead: lead.join("\n").replace(/^#\s+.*$/m, "").trim(), columns };
 }
-const tone = (status: string) => /waiting|approv|question/i.test(status) ? "waiting" : /block|fail/i.test(status) ? "blocked" : "working";
+const tone = (status: string) => /waiting|approv|question/i.test(status) ? "waiting" : /block|fail/i.test(status) ? "blocked"
+	: /^(idle|closed|watching|offline)/i.test(status) ? "quiet" : "working";
+/** Chips in the order they need Jordan: questions first, then problems, work under way, and conversations at rest. */
+const RANK = { waiting: 0, blocked: 1, working: 2, quiet: 3 };
+const wakeTime = (at: number) => wakeLabel(at).replace(/^Wakes /, "");
 function Text({ children }: { children: string }) {
 	return <div className="markdown"><Markdown remarkPlugins={markdownPlugins()} urlTransform={url => markdownUrl(undefined, url)}
 		components={{ a: ({ children: label, href }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{label}</a> : <span>{label}</span> }}>{children}</Markdown></div>;
@@ -28,10 +33,15 @@ function Text({ children }: { children: string }) {
  */
 export function HomePage({ page, work, open }: { page: string; work: HomeWork[]; open: (work: HomeWork) => void }) {
 	const { lead, columns } = sections(page);
+	const now = Date.now(), chips = [...work].sort((a, b) => RANK[tone(a.status)] - RANK[tone(b.status)]);
+	const wakes = work.filter(item => item.wakes && item.wakes > now - 60_000).sort((a, b) => a.wakes! - b.wakes!).slice(0, 12);
 	return <div className="home-canvas"><div className="home-page">
-		{work.length > 0 && <div className="home-live" aria-label="Live work">{work.map(item =>
+		{chips.length > 0 && <div className="home-live" aria-label="Conversations">{chips.map(item =>
 			<button key={`${item.computer ?? ""}:${item.id}:${item.view ?? ""}`} className={`home-live-item ${tone(item.status)}`} title={item.detail || undefined} onClick={() => open(item)}>
 				<span className="home-live-dot" /><strong>{item.title}</strong><span>{item.status}</span></button>)}</div>}
+		{wakes.length > 0 && <section className="home-wakes" aria-labelledby="home-wakes-title"><h3 id="home-wakes-title">Next wakes</h3>
+			<ol>{wakes.map(item => <li key={`${item.computer ?? ""}:${item.id}`}><button title={`A watch wakes ${item.title}`} onClick={() => open(item)}>
+				<time>{wakeTime(item.wakes!)}</time><span>{item.title}</span></button></li>)}</ol></section>}
 		{lead && <div className="home-lead"><Text>{lead}</Text></div>}
 		{columns.length ? <div className="home-columns">{columns.map((column, index) =>
 			<section key={index} className="home-column"><h2>{column.title}</h2><Text>{column.body}</Text></section>)}</div>

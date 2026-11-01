@@ -125,7 +125,8 @@ export class PartyNetwork {
 			const work = packet.work.map(value => {
 				const item = record(value);
 				for (const field of ["id", "title", "status", "detail"]) if (typeof item[field] !== "string" || (item[field] as string).length > 2000) throw Error("Invalid Home work item.");
-				return { id: item.id as string, title: item.title as string, status: item.status as string, detail: item.detail as string, ...(typeof item.view === "string" ? { view: item.view.slice(0, 200) } : {}) };
+				return { id: item.id as string, title: item.title as string, status: item.status as string, detail: item.detail as string, ...(typeof item.view === "string" ? { view: item.view.slice(0, 200) } : {}),
+					...(Number.isFinite(item.wakes) ? { wakes: item.wakes as number } : {}) };
 			});
 			this.work.set(id, work); this.changed(); return;
 		}
