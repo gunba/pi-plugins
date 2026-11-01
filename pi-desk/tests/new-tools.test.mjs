@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { activateNewTools } from "../src/host/new-tools.ts";
+import { REQUEST_PREFIX } from "../../pi-tools/index.ts";
 
 // Each system message lists the tools it added and removed.
 const session = (messages, tools, active, defaults) => {
@@ -36,4 +37,17 @@ test("Pi's optional tools go off unless the user chose them, in context settings
 		["read", "powershell", "grep", "find", "ls"], ["+codemode", "+grep"]);
 	assert.deepEqual(activateNewTools(resumed, { ls: true }), []);
 	assert.deepEqual(resumed.selected(), ["read", "grep", "ls"]);
+});
+
+test("a resumed conversation with the single codemode tool gets back the tools its programs call", () => {
+	// Hidden behind codemode, Pi's bash, edit and write counted as dropped, and conversations resumed without them.
+	const tools = [{ name: "codemode", description: `${REQUEST_PREFIX} …` }, { name: "read", source: "builtin" }, { name: "bash", source: "builtin" },
+		{ name: "edit", source: "builtin" }, { name: "write", source: "builtin" }, { name: "grep", source: "builtin" }, { name: "web_search" },
+		{ name: "switched_off" }, { name: "later", exposure: "deferred" }, { name: "mcp__server__tool" }];
+	const resumed = session([{ added: ["bash", "edit", "write", "web_search", "codemode"], removed: ["bash", "edit", "write", "web_search"] }],
+		tools, ["codemode", "read"], ["+codemode"]);
+	assert.deepEqual(activateNewTools(resumed, { switched_off: false }), ["bash", "edit", "write", "web_search"]);
+	assert.deepEqual(resumed.selected(), ["codemode", "read", "bash", "edit", "write", "web_search"]);
+	const chosen = session([{ added: ["codemode"] }], tools, ["codemode"], ["read", "grep"]);
+	assert.deepEqual(activateNewTools(chosen, { switched_off: false }), ["read", "grep", "web_search"], "defaultTools that name tools replace Pi's own list");
 });
