@@ -102,7 +102,8 @@ test("human and peer messages remain queued while agent creation awaits user app
 	assert.match(JSON.stringify(f.contexts[1]), /HUMAN COMMENT WHILE WAITING/);
 	assert.match(JSON.stringify(f.contexts[1]), /PEER COMMENT WHILE WAITING/);
 	const result = f.contexts[1].find(message => message.role === "toolResult" && message.toolCallId === "create");
-	assert.deepEqual(JSON.parse(result.content[0].text), { approved: false });
+	assert.deepEqual(result.details, { approved: false });
+	assert.equal(result.content[0].text, "Jordan did not approve it; nothing was started.");
 	assert.deepEqual(f.errors, []);
 });
 

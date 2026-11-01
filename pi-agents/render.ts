@@ -28,9 +28,12 @@ export function renderPartyResult(kind: PartyTool, result: RenderResult, options
 	const raw = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
 	if (context.isError) return options.expanded ? new Text(theme.fg("error", safeWorkText(raw, true)), 0, 0) : rows([theme.fg("error", preview(raw) || "Agent message failed")]);
 	if (options.isPartial) return rows([theme.fg("muted", kind === "send" ? "Sending…" : "Reading…")]);
-	let value;
-	try { value = JSON.parse(raw); }
-	catch { return new Text(safeWorkText(raw, true), 0, 0); }
+	// The structured result is in details; the text is a summary for the model.
+	let value = (result as { details?: unknown }).details as any;
+	if (value === undefined || value === null || typeof value === "object" && !Object.keys(value).length) {
+		try { value = JSON.parse(raw); }
+		catch { return new Text(safeWorkText(raw, true), 0, 0); }
+	}
 	let lines: string[];
 	if (kind === "send" && Array.isArray(value?.queued)) {
 		const wake = (context.args as { wake?: boolean })?.wake !== false ? "reply requested" : "FYI · no wake";

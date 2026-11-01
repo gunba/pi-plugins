@@ -88,8 +88,41 @@ export function taskName(name: string): string {
 
 type ToolJson = NonNullable<Awaited<ReturnType<ToolDefinition["execute"]>>["structuredContent"]>;
 
-function response<T extends ToolJson>(value: T) {
-	return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value, structuredContent: value };
+/** The model reads `text`, a line or a short list; interfaces read the structured value. */
+function response<T extends ToolJson>(value: T, text = JSON.stringify(value)) {
+	return { content: [{ type: "text" as const, text }], details: value, structuredContent: value };
+}
+
+type Receipt = { to?: string; wakeRequested?: boolean; note?: string; files?: unknown[]; recipient?: { label?: string } };
+/** One line per message sent: who it went to, and when it is read if not now. */
+export function sentText(value: { queued?: Receipt[] }): string {
+	return (value.queued ?? []).map(item => `Sent to ${item.recipient?.label ?? item.to}${item.files?.length ? ` with ${item.files.length} files` : ""}.`
+		+ (item.note ? ` ${item.note}` : item.wakeRequested === false ? " It reads it on its next turn." : "")).join("\n") || "Nothing was sent.";
+}
+
+type Listed = { id: string; label: string; state: string; computer: string | null; cwd: string; description?: string; kind: string; self?: boolean;
+	delivery?: string; wakeable?: boolean; resumable?: boolean };
+/**
+ * Agents as lines: a secondary agent by its path and status; a primary one by its ID (needed to message it), name,
+ * state, computer and folder, and the start of its description. Delivery details appear only when they are unusual.
+ */
+export function listText(value: { secondary: { agent_name: string; agent_status: string }[];
+	primary?: { agents: Listed[]; nextOffset: number | null; computers: { id: string; name?: string; state: string }[] } }): string {
+	const lines: string[] = [];
+	const secondary = value.secondary.filter(agent => agent.agent_name !== "/root");
+	if (secondary.length) lines.push("Secondary agents:", ...secondary.map(agent => `${agent.agent_name} · ${agent.agent_status}`));
+	if (value.primary) {
+		const names = new Map(value.primary.computers.map(computer => [computer.id, computer.name ?? computer.id.slice(0, 8)]));
+		const agents = value.primary.agents.filter(agent => !agent.self);
+		lines.push(agents.length ? "Primary agents:" : "No other primary agents found.", ...agents.map(agent => {
+			const state = agent.state === "offline" ? agent.resumable ? "closed, reopens on wake" : "closed" : agent.state;
+			const description = agent.description ? ` — ${agent.description.length > 140 ? `${agent.description.slice(0, 139)}…` : agent.description}` : "";
+			return `${agent.id} · ${agent.label}${agent.kind === "child" ? " (child)" : ""} · ${state} · ${names.get(agent.computer ?? "local") ?? agent.computer} · ${agent.cwd}${description}`;
+		}));
+		if (value.primary.nextOffset !== null) lines.push(`More: offset ${value.primary.nextOffset}.`);
+		lines.push(`Computers: ${value.primary.computers.map(computer => `${computer.name ?? computer.id} (${computer.id === "local" ? "this one" : computer.id}, ${computer.state})`).join("; ")}`);
+	}
+	return lines.join("\n") || "No agents.";
 }
 
 /** A target among this runtime's secondary agents, or why it isn't one. */
@@ -126,8 +159,12 @@ export function createSubagentToolDefinitions(
 						throw Error("A primary agent starts fresh or as a copy of this conversation.");
 					const agents = primaries(ctx);
 					if (!agents) throw Error("Only a conversation in Pi Desk or Pi's terminal can start primary agents; a secondary agent can't.");
-					return response(await agents.start({ name: params.name, task: params.task, copy: params.context === "copy", computer: params.computer,
-						cwd: params.cwd, model: params.model, reasoning: params.reasoning }, toolCallId, signal, ctx) as ToolJson);
+					const started = await agents.start({ name: params.name, task: params.task, copy: params.context === "copy", computer: params.computer,
+						cwd: params.cwd, model: params.model, reasoning: params.reasoning }, toolCallId, signal, ctx) as ToolJson & { approved?: false; agent?: string;
+						result?: { model?: string; reasoning?: string }; warning?: string };
+					const setup = [started.result?.model, started.result?.reasoning].filter(Boolean).join(", ");
+					return response(started, started.approved === false ? "Jordan did not approve it; nothing was started."
+						: `Started ${params.name}: agent ${started.agent}${setup ? ` (${setup})` : ""}.${started.warning ? ` ${started.warning}` : ""}`);
 				}
 				if (params.computer !== undefined || params.cwd !== undefined)
 					throw Error("computer and cwd are for primary agents; a secondary agent works here, in this conversation's folder.");
@@ -147,7 +184,8 @@ export function createSubagentToolDefinitions(
 					signal,
 				});
 				if (result.kind !== "continuable") throw Error("Agent creation did not return a durable identity");
-				return response({ agent: owner.agentPath(result.subagentId), id: result.subagentId, kind: "secondary" });
+				const path = owner.agentPath(result.subagentId);
+				return response({ agent: path, id: result.subagentId, kind: "secondary" }, `Started ${path}.`);
 			},
 		}),
 		defineTool({
@@ -166,11 +204,13 @@ export function createSubagentToolDefinitions(
 					const ancestor = owner.agentPath(caller.sessionId).startsWith(`${owner.agentPath(target.id)}/`);
 					const wake = params.wake !== false && !ancestor && target.id !== caller.sessionId;
 					const id = wake ? owner.followupTask(caller, target.id, message) : owner.sendMessage(caller, target.id, message);
-					return response({ queued: [{ id, to: owner.agentPath(target.id), wakeRequested: wake }] });
+					const value = { queued: [{ id, to: owner.agentPath(target.id), wakeRequested: wake }] };
+					return response(value, sentText(value));
 				}
 				const agents = primaries(ctx);
 				if (!agents) throw target.error;
-				return response(await agents.send({ to: params.to, message: params.message, wake: params.wake !== false, files: params.files }, signal, ctx) as ToolJson);
+				const sent = await agents.send({ to: params.to, message: params.message, wake: params.wake !== false, files: params.files }, signal, ctx) as ToolJson;
+				return response(sent, sentText(sent as { queued?: Receipt[] }));
 			},
 		}),
 		defineTool({
@@ -182,7 +222,8 @@ export function createSubagentToolDefinitions(
 				const owner = resolveRuntime(runtime);
 				const secondaryAgents = owner.listNamedAgents(binding.getAuthority());
 				const primary = primaries(ctx)?.list({ query: params.query, offline: params.offline, offset: params.offset });
-				return response({ secondary: secondaryAgents, ...(primary ? { primary } : {}) } as ToolJson);
+				const value = { secondary: secondaryAgents, ...(primary ? { primary } : {}) };
+				return response(value as ToolJson, listText(value as Parameters<typeof listText>[0]));
 			},
 		}),
 		defineTool({
@@ -196,11 +237,12 @@ export function createSubagentToolDefinitions(
 				if ("id" in target) {
 					const previous = owner.agentStatus(target.id);
 					owner.interrupt(caller, target.id);
-					return response({ stopped: owner.agentPath(target.id), previous_status: previous });
+					const path = owner.agentPath(target.id);
+					return response({ stopped: path, previous_status: previous }, `Stopped ${path} (it was ${previous}).`);
 				}
 				const agents = primaries(ctx);
 				if (!agents) throw target.error;
-				return response(await agents.close({ agent: params.agent, note: params.note }, signal) as ToolJson);
+				return response(await agents.close({ agent: params.agent, note: params.note }, signal) as ToolJson, `Closed ${params.agent}.`);
 			},
 		}),
 	];

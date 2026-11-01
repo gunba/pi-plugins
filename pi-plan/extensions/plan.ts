@@ -39,8 +39,20 @@ function lastShownPlan(branch: readonly SessionEntry[]): string {
 }
 const result = (plan?: PlanView) => {
 	const value = { plan: plan ?? null };
-	return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
+	return { content: [{ type: "text" as const, text: planText(plan) }], details: value };
 };
+/**
+ * The plan as the model reads it: what it can act on, without identifiers, timestamps or settings left at their
+ * defaults. Desk and the seen-plan check use the result's details.
+ */
+export function planText(plan: PlanView | undefined): string {
+	if (!plan) return "No current plan.";
+	const state = plan.phase === "blocked" ? `blocked: ${plan.blockedReason.message}` : plan.phase;
+	const rounds = plan.autoContinue ? `; auto-continue, round ${plan.roundsStarted} of ${plan.maxRounds}` : "";
+	const mark = { completed: "x", in_progress: ">", pending: " " } as Record<string, string>;
+	return [`Plan (${state}${rounds}): ${plan.objective}`,
+		...plan.steps.map(step => `[${mark[step.status] ?? step.status}] ${step.content}`)].join("\n");
+}
 function stopReason(messages: readonly unknown[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i] as { role?: string; stopReason?: string } | null;
@@ -176,7 +188,7 @@ class PlanController {
 		if (!current) throw new Error("There is no current plan; create one with create_plan.");
 		if ((params.objective !== undefined || params.steps !== undefined) && this.modelSeen !== seenKey(current)) {
 			this.modelSeen = seenKey(current);
-			throw new Error(`The plan changed since you last saw it, so nothing was applied. It is now: ${JSON.stringify(current)}. `
+			throw new Error(`The plan changed since you last saw it, so nothing was applied. It is now:\n${planText(current)}\n`
 				+ "Send the update again if it still applies.");
 		}
 		// A revision this call makes is the model's own, even when a later part of the call fails (complete with steps

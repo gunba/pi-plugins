@@ -2001,7 +2001,7 @@ export class SubagentRuntime {
 				workId: record.workId,
 				childId: record.descriptor.childSessionId,
 				content: truncateForParent(
-					`${record.descriptor.mode === "one-shot" ? "Resumed foreground" : "Background"} subagent ${record.descriptor.childSessionId} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
+					`${record.descriptor.mode === "one-shot" ? "Resumed foreground" : "Background"} subagent ${this.agentPath(record.descriptor.childSessionId)} settled with ${outcome.stopReason}.${errorDetail}${detail}`,
 				),
 			};
 			record.manager.appendCustomEntry(SETTLEMENT_ENTRY, {

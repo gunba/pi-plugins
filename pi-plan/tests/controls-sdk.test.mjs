@@ -81,7 +81,9 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	const readPlan = context => {
 		const message = result(context);
 		assert.equal(message.isError, false, JSON.stringify(message.content));
-		return JSON.parse(message.content[0].text).plan;
+		// The model reads the plan as text: its first line is "Plan (phase…): objective".
+		const [, phase, objective] = /^Plan \(([a-z]+)[^)]*\): (.*)$/m.exec(message.content[0].text);
+		return { phase, objective };
 	};
 	const finish = () => [{ type: "text", text: "Fixture finished." }];
 	const terminal = context => {
@@ -96,7 +98,7 @@ test("native Pi permits plan controls after checkpoint projection, steering, and
 	script.push(edit, context => {
 		const refusal = result(context);
 		assert.equal(refusal.isError, true);
-		assert.match(refusal.content[0].text, /changed since you last saw it[\s\S]*"objective":"Prior objective"[\s\S]*"phase":"active"[\s\S]*"activation":"disarmed"/);
+		assert.match(refusal.content[0].text, /changed since you last saw it[\s\S]*Plan \(active[^)]*\): Prior objective/);
 		return edit();
 	}, context => { assert.equal(readPlan(context).objective, "Reviewed objective"); return terminal(context); }, expectComplete);
 	await session.prompt("Update the plan to the reviewed objective.");

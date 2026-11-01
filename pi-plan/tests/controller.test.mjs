@@ -137,9 +137,9 @@ test("an edit that changes nothing, or a resume of a running plan, returns the p
 	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
 	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }] });
 	const before = await read(h);
-	const shown = JSON.parse((await update(h, { action: "edit" })).content[0].text);
+	const shown = (await update(h, { action: "edit" })).details;
 	assert.equal(shown.plan.revision, before.revision);
-	assert.equal(JSON.parse((await update(h, { action: "resume" })).content[0].text).plan.revision, before.revision);
+	assert.equal((await update(h, { action: "resume" })).details.plan.revision, before.revision);
 	assert.equal((await read(h)).revision, before.revision);
 	await h.emit("session_shutdown");
 });

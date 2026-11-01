@@ -116,6 +116,16 @@ export function interval(seconds: number): string {
 	return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
+/**
+ * A watch as its agent reads it in results and events: its label, or the start of its command. The agent wrote the
+ * command and the wake condition, so they are not repeated in full (commands run to hundreds of characters).
+ */
+export function briefWatch(spec: WatchSpec): string {
+	if (spec.mode === "time") return spec.label ?? `at ${when(spec.at!)}`;
+	const command = spec.command!.length > 80 ? `${spec.command!.slice(0, 79)}…` : spec.command!;
+	return spec.label ?? `\`${command}\``;
+}
+
 export function describeWatch(spec: WatchSpec): string {
 	const what = spec.mode === "time" ? `at ${when(spec.at!)}` : spec.mode === "change" ? `\`${spec.command}\` every ${interval(spec.every!)}` : `\`${spec.command}\``;
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
@@ -159,7 +169,7 @@ async function classifier(ctx: ExtensionContext) {
 }
 
 function message(spec: WatchSpec, note: string, output?: string): string {
-	return [`Watch ${spec.id} (${describeWatch(spec)}) ${note}`, output?.trim() ? "```\n" + clip(output.trim()) + "\n```" : "",
+	return [`Watch ${spec.id} (${briefWatch(spec)}) ${note}`, output?.trim() ? "```\n" + clip(output.trim()) + "\n```" : "",
 		spec.log ? `Full output: ${spec.log}` : ""].filter(Boolean).join("\n");
 }
 
@@ -332,16 +342,16 @@ class Watches {
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
 		this.arm(spec, undefined, false);
 		this.publish();
-		const ending = spec.expires ? `It ends ${when(spec.expires)}.` : "It runs until it ends or you stop it.", stop = `watch({stop: "${spec.id}"}) stops it.`;
-		const text = spec.mode === "time" ? `Watching as ${spec.id}: you'll be woken ${describeWatch(spec)}.`
-			: spec.mode === "change" ? `Watching as ${spec.id}: ${describeWatch(spec)}. You'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}; the watch then ends. ${ending} ${stop}`
-			: `Watching as ${spec.id}: ${describeWatch(spec)}, output in ${spec.log}. You'll be woken ${wakeWhen ? "when its output shows that" : "with its new output"}, and when it ends. ${ending} ${stop}`;
+		const ending = spec.expires ? ` It ends ${when(spec.expires)}.` : "";
+		const text = spec.mode === "time" ? `Watching as ${spec.id}: you'll be woken at ${when(spec.at!)}.`
+			: spec.mode === "change" ? `Watching as ${spec.id}, every ${interval(spec.every!)}: you'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}; the watch then ends.${ending}`
+			: `Watching as ${spec.id}: you'll be woken ${wakeWhen ? "when its output shows that" : "with its new output"}, and when it ends.${ending} Output: ${spec.log}`;
 		return `${text} End your turn now unless you have other work.`;
 	}
 
 	private list(): string {
 		if (!this.active.size) return "No active watches.";
-		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${describeWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}`).join("\n")}`;
+		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}`).join("\n")}`;
 	}
 
 	private nextId(): string {
