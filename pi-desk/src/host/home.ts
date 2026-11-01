@@ -9,8 +9,8 @@ import type { HostCore, ManagedSession } from "./host-core.ts";
 import { HomeStore } from "./home-store.ts";
 
 /**
- * The conversations Home lists: every open one, and closed ones a watch will reopen, each with what it is doing and
- * when a watch next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
+ * The conversations Home lists: every open one, and closed ones a watch will reopen (status Closed, shown only on the
+ * timeline of wakes), each with what it is doing and when a watch next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
  */
 export function homeWork(sessions: SessionView[]): HomeWork[] {
 	return sessions.filter(session => !session.home && (session.state !== "closed" || !!session.wakes)).flatMap(session => {

@@ -55,7 +55,7 @@ export class PartyNetwork {
 				operations: announced?.operations ?? [] };
 		});
 	}
-	homeWork(): HomeWork[] { return [...this.work].flatMap(([computer, work]) => work.map(item => ({ ...item, computer, ...(!this.peers.has(computer) ? { status: "Offline · last known" } : {}) }))); }
+	homeWork(): HomeWork[] { return [...this.work].flatMap(([computer, work]) => work.map(item => ({ ...item, computer, ...(!this.peers.has(computer) && item.status !== "Closed" ? { status: "Offline · last known" } : {}) }))); }
 	connected(id: string, send: Send, close: () => void): () => void {
 		if (this.closed) throw Error("Party network is closed.");
 		this.search?.disconnected(id);

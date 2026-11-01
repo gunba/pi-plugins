@@ -38,7 +38,8 @@ export function HomePage({ page, work, open }: { page: string; work: HomeWork[];
 	// Secondary agents follow the conversation that started them.
 	const now = Date.now(), sameConversation = (a: HomeWork, b: HomeWork) => a.id === b.id && (a.computer ?? "") === (b.computer ?? "");
 	// A conversation can run dozens of agents: the first few show, then a count that opens the conversation.
-	const chips = work.filter(item => !item.parent).sort((a, b) => RANK[tone(a.status)] - RANK[tone(b.status)]).flatMap(top => {
+	// A closed conversation a watch will reopen is only on the timeline.
+	const chips = work.filter(item => !item.parent && item.status !== "Closed").sort((a, b) => RANK[tone(a.status)] - RANK[tone(b.status)]).flatMap(top => {
 		const agents = work.filter(item => item.parent && sameConversation(item, top));
 		return [top, ...agents.length > AGENTS + 1 ? [...agents.slice(0, AGENTS), { ...top, title: `${agents.length - AGENTS} more agents`,
 			status: "", detail: agents.slice(AGENTS).map(item => `${item.title}: ${item.status}`).join("\n"), parent: top.title, view: undefined }] : agents];
