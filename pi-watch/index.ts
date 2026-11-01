@@ -326,7 +326,7 @@ class Watches {
 			return this.list();
 		}
 		if (params.command !== undefined && params.until !== undefined) throw new Error("Give command or until, not both; hours sets how long a command watch lasts.");
-		if (params.until !== undefined && given.length > 1) throw new Error("until takes no other parameters.");
+		if (params.until !== undefined && given.length > 1) throw new Error("until wakes you at a time (HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
 		const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
 		if (params.command !== undefined && !command) throw new Error("command is empty.");
 		if (this.active.size >= MAX_ACTIVE) throw new Error(`At most ${MAX_ACTIVE} watches can run at once. ${this.list()}`);
