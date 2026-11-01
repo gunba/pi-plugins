@@ -37,7 +37,17 @@
 .home-zoom { position:absolute; bottom:8px; left:14px; display:flex; align-items:center; gap:2px; background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:2px; }
 .home-zoom .icon-button { width:28px; height:28px; }
 .home-zoom .text-button { color:var(--muted); font-size:11px; min-width:40px; }
+.home-body { flex:1; min-height:0; display:flex; flex-direction:column; position:relative; }
 .home-chat { flex:none; width:min(760px,100%); margin:0 auto; padding:8px 22px 18px; }
+/* Open, the conversation is a pane beside the canvas, the box at its foot. */
+.home-body.chat-open { flex-direction:row; }
+.home-body.chat-open .home-canvas { flex:1; min-width:0; }
+.home-body.chat-open .home-chat { width:clamp(320px,30vw,480px); margin:0; padding:0 0 14px; display:flex; flex-direction:column; border-left:1px solid var(--border); background:var(--bg); }
+.home-log { flex:1; min-height:0; overflow:auto; padding:12px 16px 4px; scrollbar-width:thin; }
+.home-log .message { margin-bottom:12px; }
+.home-log .message-assistant > .message-body { padding-left:0; }
+.home-log-empty, .home-log-busy { color:var(--muted); font-size:13px; }
+.home-body.chat-open .home-compose, .home-body.chat-open .home-pending, .home-body.chat-open .attachment-list { margin:0 12px; }
 .home-reply { max-height:118px; overflow:auto; font-size:13px; line-height:1.5; padding:0 12px 10px; color:var(--text); scrollbar-width:thin; }
 .home-reply > :first-child { margin-top:0; }
 .home-reply > :last-child { margin-bottom:0; }
@@ -61,6 +71,7 @@
  .home-compose textarea { font-size:16px; }
  .home-reply { max-height:100px; font-size:12px; }
  .home-zoom { left:10px; bottom:5px; }
+ .home-body.chat-open .home-chat { position:absolute; inset:0; width:auto; border-left:0; z-index:2; }
 }
 @media(prefers-reduced-motion:reduce) { .home-item, .home-shape { transition:none; } }
 /* Hues Home adds to Desk's tokens, tuned for each theme. */

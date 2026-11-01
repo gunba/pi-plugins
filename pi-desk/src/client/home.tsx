@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { emptyHomeScene, homeUrl, type HomeItem, type HomeSnapshot } from "../shared/home.ts";
+import { emptyHomeScene, homeUrl, type HomeItem, type HomeMessage, type HomeSnapshot } from "../shared/home.ts";
+import type { ChatMessage } from "../shared/protocol.ts";
+import { MessageView } from "./message-view.tsx";
 import type { Quest } from "../shared/quests.ts";
 import { api } from "./connection.ts";
 import { sessionKey, type WorkspaceState } from "./workspace.ts";
@@ -37,6 +39,11 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const key = snapshot.session ? referenceKey(computer, snapshot.session) : undefined;
 	const session = host.sessions.find(item => item.key === key);
 	const latest = snapshot.messages.filter(message => message.role === "assistant").at(-1);
+	// The conversation with Home sits beside the canvas; closed, only its latest reply shows above the box.
+	const [chatOpen, setChatOpen] = useState(() => { try { return (localStorage.getItem("pi-desk:home:chat") ?? (innerWidth > 760 ? "open" : "closed")) === "open"; } catch { return true; } });
+	const toggleChat = () => setChatOpen(open => { try { localStorage.setItem("pi-desk:home:chat", open ? "closed" : "open"); } catch { /* Kept for this visit. */ } return !open; });
+	const log = useRef<HTMLDivElement>(null);
+	useEffect(() => { if (chatOpen) log.current?.scrollTo({ top: log.current.scrollHeight }); }, [chatOpen, snapshot.messages.length]);
 	const saveDraft = (text: string) => { setDraft(text); draftRef.current = text; try { localStorage.setItem(`${storageKey}:draft`, text); } catch { setError("Your draft could not be saved on this device."); } };
 	useEffect(() => {
 		const generation = ++epoch.current;
@@ -130,14 +137,20 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 				<button className="subtle-button" disabled={!key} onClick={() => {
 					if (key && session) openConversation(key);
 					else void open().then(next => { if (next.session) openConversation(referenceKey(computer, next.session)); }).catch(error => setError(failure(error)));
-				}}>History</button><button className="icon-button" aria-label="Home settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button></div>
+				}}>History</button><button className={`icon-button${chatOpen ? " selected" : ""}`} aria-label={chatOpen ? "Hide the conversation" : "Show the conversation"} aria-pressed={chatOpen} onClick={toggleChat}><Icon name="chat" /></button><button className="icon-button" aria-label="Home settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button></div>
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
+		<div className={`home-body${chatOpen ? " chat-open" : ""}`}>
 		<HomeCanvas scene={snapshot.scene} state={snapshot.state} open={openItem} move={(id, x, y) => void move(id, x, y)} />
 		<section className="home-chat" aria-label="Talk to Home">
+			{chatOpen && <div className="home-log" ref={log} role="log" aria-live="polite">
+				{snapshot.messages.length ? snapshot.messages.map((message, index) => <MessageView key={message.id} message={chatMessage(message, index)} sessionKey={key ?? "home"} />)
+					: <p className="home-log-empty">Ask Home to add, change or rearrange anything.</p>}
+				{snapshot.busy && <p className="home-log-busy">Working…</p>}
+			</div>}
 			{session?.inputs?.some(input => input.state === "failed" || input.state === "interrupted") && <button className="question-banner" onClick={() => key && openConversation(key)}>A Home message needs review. Open history →</button>}
 			{session?.ui?.interactions.length ? <button className="question-banner" onClick={() => key && openConversation(key)}><strong>Home needs your answer</strong><span>Open →</span></button> : null}
-			{latest && <div className="home-reply markdown" role="log" aria-live="polite"><Markdown remarkPlugins={[remarkGfm]}>{latest.text}</Markdown></div>}
+			{!chatOpen && latest && <div className="home-reply markdown" role="log" aria-live="polite"><Markdown remarkPlugins={[remarkGfm]}>{latest.text}</Markdown></div>}
 			{pending && <div className="home-pending" role="status">{online ? busy ? "Sending…" : "Delivery not confirmed" : "Queued · offline"}<span><button className="text-button" disabled={!online || busy} onClick={() => void deliver(pending)}>Check delivery</button><button className="text-button" disabled={busy} onClick={() => setDiscardPending(true)}>Discard local attempt</button></span></div>}
 			<AttachmentList files={attachments.files} remove={id => attachments.remove(id)} disabled={busy || !!pending} />
 			<input type="file" multiple hidden ref={picker} onChange={event => { if (event.target.files) attachments.add(event.target.files); event.target.value = ""; }} />
@@ -152,6 +165,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 				<button className="send-button" type="submit" aria-label="Send to Home" disabled={!draftLoaded || busy || (!draft.trim() && !attachments.files.length)}><Icon name="send" /></button>
 			</form>
 		</section>
+		</div>
 		{discardPending && <Modal title="Discard local attempt" close={() => setDiscardPending(false)}><p>This does not cancel a message already accepted by Home. Check History before sending another copy.</p><div className="dialog-actions"><button onClick={() => setDiscardPending(false)}>Keep checking</button><button onClick={() => {
 			try { localStorage.removeItem(`${storageKey}:pending`); pendingRef.current = undefined; setPending(undefined); setDiscardPending(false); }
 			catch (error) { setError(failure(error)); }
@@ -164,4 +178,8 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			{quest.steps?.map((step, index) => <p key={index}>{step.done ? "✓" : "·"} {step.title}</p>)}<button onClick={() => { saveDraft(`About “${quest.title}”: `); setQuest(undefined); editor.current?.focus(); }}>Tell Home what to change</button></Modal>}
 		{file && <FileViewer session={referenceKey(file.computer ?? computer, file.session)} reference={{ id: file.id, name: file.name }} close={() => setFile(undefined)} />}
 	</>;
+}
+/** Home's messages in the main chat's own message view. */
+function chatMessage(message: HomeMessage, order: number): ChatMessage {
+	return { id: message.id, order, revision: 0, role: message.role, blocks: [{ type: "text", text: message.text }], timestamp: message.at };
 }
