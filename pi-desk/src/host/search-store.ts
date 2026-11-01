@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import { SEARCH_ORIGIN, type SearchCoverage, type SearchFilters, type SearchHit, type SearchPassage, type SearchRequest, type SearchResponse, type SearchSource } from "../shared/conversation-search.ts";
 import { SEARCH_EMBEDDING_DIMENSIONS, SEARCH_EMBEDDING_MODEL } from "./search-embedder.ts";
+import { VectorIndex } from "./search-vectors.ts";
 
 export const LOCAL_SEARCH_SCOPE = "local";
 const LOCAL = "local";
@@ -19,7 +20,10 @@ export interface QueryScope { remote?: string; local: boolean; localComputer?: s
 export class SearchStore {
 	private readonly db: DatabaseSync;
 	private statements = new Map<string, StatementSync>();
-	private vectors = new Map<number, Float32Array>();
+	/** Loaded by the first semantic search, then kept current as vectors are stored and chunks removed. */
+	private index?: VectorIndex;
+	/** Counting every passage takes about a second on the workspace server; searches reuse a recent count. */
+	private counted?: { key: string; at: number; value: SearchCoverage };
 	readonly epoch: string;
 	constructor(file: string) {
 		mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -75,7 +79,9 @@ export class SearchStore {
 		if (!statement) { if (this.statements.size >= 256) this.statements.clear(); this.statements.set(text, statement = this.db.prepare(text)); }
 		return statement;
 	}
-	private transaction<T>(run: () => T): T {
+	/** A write to the passages leaves the cached coverage count out of date; storing vectors does not (`counts` false). */
+	private transaction<T>(run: () => T, counts = true): T {
+		if (counts) this.counted = undefined;
 		this.db.exec("BEGIN IMMEDIATE");
 		try { const result = run(); this.db.exec("COMMIT"); return result; }
 		catch (error) { this.db.exec("ROLLBACK"); throw error; }
@@ -262,7 +268,7 @@ export class SearchStore {
 	private collect(): void {
 		const removed = this.sql("SELECT id FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM passages p WHERE p.chunk=c.id)").all() as { id: number }[];
 		this.transaction(() => { for (const { id } of removed) { this.sql("DELETE FROM chunks WHERE id=?").run(id); this.sql("DELETE FROM embed_queue WHERE chunk=?").run(id); } });
-		for (const { id } of removed) this.vectors.delete(id);
+		for (const { id } of removed) this.index?.delete(id);
 		this.db.exec("PRAGMA incremental_vacuum(4096)");
 	}
 	/** Enforce known expiries offline. Empty source metadata prevents expired inventory members appearing as unfinished imports. */
@@ -278,10 +284,6 @@ export class SearchStore {
 		if (removed) this.collect();
 	}
 	maintenance(): void { this.expire(); this.db.exec("PRAGMA incremental_vacuum(4096); PRAGMA wal_checkpoint(PASSIVE)"); }
-	private cache(id: number, vector: Float32Array): void {
-		if (!this.vectors.has(id) && this.vectors.size >= 65_536) this.vectors.delete(this.vectors.keys().next().value!);
-		this.vectors.set(id, vector);
-	}
 	hasSemanticText(scope: QueryScope): boolean {
 		const where = this.filter(scope, undefined, "conversation");
 		return !!this.sql(`SELECT 1 ${this.join} WHERE ${where.sql} LIMIT 1`).get(...where.parameters);
@@ -302,9 +304,9 @@ export class SearchStore {
 				const saved = this.sql(`UPDATE chunks SET vector=?,model=? WHERE id=? AND hash=? AND EXISTS(SELECT 1 FROM passages p JOIN sources s
 					ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.chunk=chunks.id AND (s.expires IS NULL OR s.expires>?))`)
 					.run(Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength), SEARCH_EMBEDDING_MODEL, id, hash, Date.now());
-				if (saved.changes) { this.cache(id, vector); this.sql("DELETE FROM embed_queue WHERE chunk=?").run(id); }
+				if (saved.changes) { this.index?.set(id, vector); this.sql("DELETE FROM embed_queue WHERE chunk=?").run(id); }
 			}
-		});
+		}, false);
 	}
 	/** The oldest completed scan among the computers in scope; undefined before any. */
 	lastScan(scope: QueryScope): number | undefined {
@@ -312,6 +314,13 @@ export class SearchStore {
 		return scanned.length ? Math.min(...scanned) : undefined;
 	}
 	coverage(scope: QueryScope, semantic: SearchCoverage["semantic"], error?: string): SearchCoverage {
+		const key = JSON.stringify([scope, semantic, error ?? ""]), now = Date.now();
+		if (this.counted?.key === key && now - this.counted.at < 30_000) return structuredClone(this.counted.value);
+		const value = this.count(scope, semantic, error);
+		this.counted = { key, at: now, value };
+		return structuredClone(value);
+	}
+	private count(scope: QueryScope, semantic: SearchCoverage["semantic"], error?: string): SearchCoverage {
 		const where = this.scopeWhere(scope), filter = this.filter(scope, undefined, "conversation");
 		const sources = this.sql(`SELECT count(*) AS sources,coalesce(sum(cursor),0) AS passages,coalesce(sum(complete=0),0) AS pending_sources,
 			coalesce(sum(warning IS NOT NULL),0) AS warnings FROM sources s WHERE ${where.sql}`).get(...where.parameters)!;
@@ -334,23 +343,29 @@ export class SearchStore {
 			WHERE p.chunk=chunks_fts.rowid AND ${where.sql}) ORDER BY rank LIMIT 50`).all(match, ...where.parameters) as { id: number }[]).map(row => row.id);
 	}
 	private semantic(query: Float32Array, scope: QueryScope, filters: SearchFilters): { id: number; score: number }[] {
-		const where = this.filter(scope, filters, "conversation"), best: { id: number; score: number }[] = [];
-		const rows = this.sql(`SELECT c.id FROM chunks c WHERE c.model=? AND c.vector IS NOT NULL AND c.id IN (${this.eligible(where.sql)})`)
-			.iterate(SEARCH_EMBEDDING_MODEL, ...where.parameters);
-		for (const row of rows) {
-			const id = Number(row.id); let vector = this.vectors.get(id);
-			if (!vector) {
-				const bytes = this.sql("SELECT vector FROM chunks WHERE id=?").get(id)!.vector as Uint8Array;
-				if (bytes.byteLength !== SEARCH_EMBEDDING_DIMENSIONS * 4) continue;
-				vector = new Float32Array(bytes.slice().buffer); this.cache(id, vector);
-			}
-			let score = 0;
-			for (let d = 0; d < query.length; d++) score += query[d]! * vector[d]!;
-			if (!Number.isFinite(score) || score < 0.1 || best.length === 50 && score <= best[best.length - 1]!.score) continue;
-			let at = best.findIndex(item => item.score < score); if (at < 0) at = best.length;
-			best.splice(at, 0, { id, score }); if (best.length > 50) best.pop();
+		const index = this.vectorIndex(), where = this.filter(scope, filters, "conversation");
+		// A search within one conversation, project or period scores only its own passages.
+		if (filters.session || filters.project || filters.agent || filters.after !== undefined || filters.before !== undefined) {
+			const eligible = this.sql(`SELECT c.id FROM chunks c WHERE c.model=? AND c.vector IS NOT NULL AND c.id IN (${this.eligible(where.sql)})`)
+				.all(SEARCH_EMBEDDING_MODEL, ...where.parameters) as { id: number }[];
+			return index.top(query, 50, 0.1, new Set(eligible.map(row => Number(row.id))));
 		}
-		return best;
+		// Otherwise nearly every vector is eligible: take the best overall, then drop those outside the scope or expired.
+		const check = this.sql(`SELECT 1 FROM chunks c WHERE c.id=? AND c.model=? AND c.vector IS NOT NULL AND EXISTS
+			(SELECT 1 FROM passages p INDEXED BY passages_chunk JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source
+			WHERE p.chunk=c.id AND ${where.sql})`);
+		return index.top(query, 400, 0.1).filter(item => check.get(item.id, SEARCH_EMBEDDING_MODEL, ...where.parameters)).slice(0, 50);
+	}
+	/** Loading takes several seconds on the workspace server, so the worker does it when it starts, not in a search. */
+	vectorIndex(): VectorIndex {
+		if (this.index) return this.index;
+		const index = new VectorIndex(SEARCH_EMBEDDING_DIMENSIONS);
+		for (const row of this.sql("SELECT id,vector FROM chunks WHERE model=? AND vector IS NOT NULL").iterate(SEARCH_EMBEDDING_MODEL)) {
+			const bytes = row.vector as Uint8Array;
+			if (bytes.byteLength !== SEARCH_EMBEDDING_DIMENSIONS * 4) continue;
+			index.set(Number(row.id), bytes.byteOffset % 4 ? new Float32Array(bytes.slice().buffer) : new Float32Array(bytes.buffer, bytes.byteOffset, SEARCH_EMBEDDING_DIMENSIONS));
+		}
+		return this.index = index;
 	}
 	private hit(row: PassageRow & { session: string; title: string; project: string; kind: SearchSource["kind"] }, scope: QueryScope): SearchHit {
 		return { reference: row.ref, session: row.session, conversation: row.title.slice(0, 160), project: row.project.slice(-240), computer: row.computer === LOCAL ? scope.localComputer ?? LOCAL : row.computer,
@@ -435,6 +450,6 @@ export class SearchStore {
 		return (this.sql(`SELECT title,warning FROM sources s WHERE warning IS NOT NULL AND ${where.sql} LIMIT 10`).all(...where.parameters) as { title: string; warning: string }[])
 			.map(row => `${row.title || "Untitled conversation"}: ${row.warning}`.slice(0, 500));
 	}
-	dropVectorCache(): void { this.vectors.clear(); }
-	close(): void { this.statements.clear(); this.vectors.clear(); this.db.close(); }
+	dropVectorCache(): void { this.index = undefined; this.counted = undefined; }
+	close(): void { this.statements.clear(); this.index = undefined; this.db.close(); }
 }

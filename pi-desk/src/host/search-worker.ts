@@ -89,6 +89,7 @@ async function handle(command: SearchWorkerCommand): Promise<unknown> {
 			if (!config.capture && previous.capture) { await scanner.close(); scanner = new SearchScanner(store, config.scanner, () => changed(true)); }
 			scanner.configure(config.scanner, config.capture);
 			if (config.capture) scanner.start();
+			if (config.semantic) setImmediate(() => { if (!closing) try { store.vectorIndex(); } catch (error) { backgroundError = error instanceof Error ? error.message : String(error); changed(); } });
 			changed(true); kick(); return;
 		}
 		case "scan": await scanner.scan(); return;
