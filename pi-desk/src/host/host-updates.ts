@@ -188,7 +188,8 @@ export class HostUpdates {
 					if (only && key !== only) continue;
 					// An explicit request retries a restart that failed earlier.
 					if (blockers.length || !force && this.restartAttempts.get(key) === RELEASE.version) continue;
-					if (!force && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
+					// Home's turns are mostly its own change events, so it is seldom quiet for long; it moves once idle.
+					if (!force && !managed.view.home && now - (this.quietSince.get(key) ?? now) < QUIET_MS) continue;
 					// The new version's prompt and tools cost the conversation its prompt cache, so an automatic move waits for
 					// the cache to expire. Codex declares no cache lifetime; it moves after the quiet period alone.
 					const cache = managed.view.snapshot?.cache;
