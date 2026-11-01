@@ -227,6 +227,10 @@ class PiSdkChildDriver implements ChildDriver {
 		});
 		let outcome: RunOutcome | undefined;
 		try {
+			// The child may be in a turn this queue didn't start, such as one its own watch woke; prompting then would fail
+			// with "Agent is already processing", and the message would be reported as the child settling with an error.
+			if (!this.session.isIdle) await Promise.race([this.session.waitForIdle(), new Promise(resolve => abort.signal.addEventListener("abort", resolve, { once: true }))]);
+			if (abort.signal.aborted) throw new Error("Interrupted before the message was delivered.");
 			await this.session.prompt(message, { expandPromptTemplates: false, source: "extension" });
 			outcome = collectOutcome();
 			if (this.extensionErrors.length) {

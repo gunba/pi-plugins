@@ -506,3 +506,15 @@ test("reports from agents started with wake all wait until the last of them sett
 	assert.equal(held(), false, "the last of them wakes the parent");
 	assert.equal(h.runtime.holdsReports(h.host.rootSessionId, [{ ...h.notices[0], priority: "urgent" }]), false);
 });
+
+test("a message to a child in a turn of its own waits for that turn instead of failing", async t => {
+	// Seen in Gunba WoW Addons: agent_send to a child its own watch had woken settled with "Agent is already processing".
+	let calls = 0;
+	const { driver } = await sdkDriver(t, { respond: () => ++calls === 1 ? toolCall("bash", { command: "sleep 1" }) : assistant(calls === 2 ? "watch done" : "message done") });
+	const own = driver.session.prompt("Your watch woke you.", { expandPromptTemplates: false, source: "extension" });
+	await waitUntil(() => driver.session.isStreaming);
+	const outcome = await driver.prompt("From your parent.");
+	await own;
+	assert.equal(outcome.stopReason, "completed");
+	assert.equal(outcome.output, "message done");
+});

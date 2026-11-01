@@ -1138,7 +1138,7 @@ details[open] > summary:before {
 .agent-current-status > span:last-child:not(.status-dot) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-conversation .child-transcript { border-top:1px solid var(--border); padding-top:12px; }
 .agent-conversation > .child-transcript { flex: 1; min-height: 80px; }
-.agent-conversation .transcript-scroll { height: auto; flex: 1; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.agent-conversation .transcript-scroll { height: auto; flex: 1; min-height: 0; padding-right: 12px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .agent-facts { flex-shrink: 0; font-size: 11px; color: var(--muted); max-height: 20dvh; overflow: auto; margin: 8px 0; }
 .agent-facts summary { cursor: pointer; }
 .agent-conversation > .error-text { font-size: 12px; max-height: 15dvh; overflow: auto; flex-shrink: 0; overflow-wrap: anywhere; }
