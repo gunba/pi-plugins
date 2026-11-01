@@ -9,6 +9,15 @@ The quest log remains authoritative. Home's `home_quest` tool can manage the who
 log for the user; existing agents' `quest_*` tools and the temporary Dot connector
 continue to use it. Completing an agent's quest still notifies that agent.
 
+A real installation starts with an empty scene, not a demo or seed dataset. Its
+first arrangement receives the existing quest log's computed view, including
+open dailies, reopened repeats and upcoming tasks, plus current live work. Scene
+patches must cover every required reference and cannot introduce quest IDs absent
+from that log. Task completion refreshes those requirements before its receipt is
+returned. There is no task import at cutover: keep the existing `party/party.sqlite`
+and let Home arrange it. Never copy a test scene or validation database into the
+real Home data directory.
+
 ## Canvas and conversation
 
 Home uses the same `AgentSpec`, RFC 6902 patch transaction and json-render React

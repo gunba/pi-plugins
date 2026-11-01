@@ -9,6 +9,7 @@ import { HomeStore } from "../src/host/home-store.ts";
 import { Home, homeWork } from "../src/host/home.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 import { HostQuests } from "../src/host/host-quests.ts";
+import { QuestStore } from "../../pi-agents/quests.ts";
 import { HOME_MODEL, homeBlob, homeItems } from "../src/shared/home.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
 
@@ -19,9 +20,47 @@ const add = item => [{ op: "add", path: `/elements/${item.id}`, value: element(i
 const fixture = t => {
 	const directory = mkdtempSync(join(tmpdir(), "desk-home-"));
 	const store = new HomeStore(directory);
+	store.set("quests", { quests: [{ id: "quest-1", title: "Review changes", state: "open" }], upcoming: [] });
 	t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { directory, store };
 };
+
+test("first Home scene includes every real open quest, reopened daily, upcoming repeat and live-work reference", t => {
+	let now = Date.parse("2026-10-31T12:00:00+08:00"); t.mock.method(Date, "now", () => now);
+	const directory = mkdtempSync(join(tmpdir(), "home-current-quests-"));
+	const store = new HomeStore(join(directory, "home")), log = new QuestStore(join(directory, "party"), "Australia/Perth");
+	t.after(() => { store.close(); log.close(); rmSync(directory, { recursive: true, force: true }); });
+	assert.deepEqual(store.scene().spec, { root: "canvas", elements: { canvas: { type: "Canvas", props: {}, children: [] } } });
+	assert.throws(() => store.patch({ revision: 0, operations: add(item()) }), /real quest log has not loaded/);
+	const main = log.apply({ kind: "you" }, { action: "add", title: "Existing current task" });
+	const daily = log.apply({ kind: "you" }, { action: "add", title: "Existing repeating daily", repeat: { unit: "day", from: "2026-10-31" } });
+	log.apply({ kind: "you" }, { action: "complete", id: daily.id });
+	const future = log.apply({ kind: "you" }, { action: "add", title: "Existing future repeat", repeat: { unit: "day", from: "2026-11-02" } });
+	now = Date.parse("2026-11-01T12:00:00+08:00");
+	assert.equal(log.get(daily.id).state, "done", "stored state alone would miss today's reopened daily");
+	const view = log.view();
+	assert.equal(view.quests.find(quest => quest.id === daily.id).state, "open");
+	store.set("quests", view);
+	store.set("work", [
+		{ id: "asking", title: "Approval waiting", status: "Waiting on you", detail: "Approve?" },
+		{ id: "working", computer: "laptop", view: "subagent-1", title: "Active agent", status: "Working", detail: "" },
+		{ id: "blocked", view: "plan", title: "Blocked plan", status: "Blocked", detail: "Need access" },
+	]);
+	const required = store.required();
+	assert.deepEqual(new Set(required.map(value => value.ref)), new Set([
+		{ kind: "quest", id: main.id }, { kind: "quest", id: daily.id }, { kind: "quest", id: future.id },
+		{ kind: "conversation", id: "asking" }, { kind: "conversation", id: "working", computer: "laptop", view: "subagent-1" }, { kind: "conversation", id: "blocked", view: "plan" },
+	]));
+	assert.throws(() => store.patch({ revision: 0, operations: add(item()) }), /quest references absent from the real log/);
+	assert.throws(() => store.patch({ revision: 0, operations: add({ ...item(), ref: { kind: "quest", id: main.id } }) }), /Include every open\/upcoming quest and live work item/);
+	assert.equal(store.scene().revision, 0);
+	const entries = required.map((value, index) => [`task-${index}`, element({ ...item(`task-${index}`), ...value })]);
+	const elements = { canvas: { type: "Canvas", props: {}, children: entries.map(([id]) => id) }, ...Object.fromEntries(entries) };
+	const scene = store.patch({ revision: 0, operations: [{ op: "replace", path: "/elements", value: elements }] });
+	assert.deepEqual(homeItems(scene).map(value => value.ref), required.map(value => value.ref));
+	assert.throws(() => store.patch({ revision: 1, operations: [{ op: "remove", path: "/elements/task-0" }, { op: "remove", path: "/elements/canvas/children/0" }] }), /Missing/);
+	assert.deepEqual(store.scene(), scene);
+});
 
 test("scene patches are atomic, schema checked, and cannot erase a drag", t => {
 	const { directory, store } = fixture(t), other = new HomeStore(directory); t.after(() => other.close());
@@ -128,6 +167,7 @@ test("changes coalesce into one persistent conversation turn, and Home can finis
 	await home.tick();
 	assert.equal((await quests.log().get(quest.id)).state, "done");
 	assert.equal(home.store.result(request).value.state, "done");
+	assert.deepEqual(home.store.required(), [], "the scene can remove a finished quest as soon as its tool receipt is available");
 });
 
 test("overlap labelling is persistent and scheduled Home alerts use an explicit phone delivery path", async t => {
