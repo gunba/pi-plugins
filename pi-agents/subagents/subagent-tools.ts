@@ -185,7 +185,8 @@ export function createSubagentToolDefinitions(
 				});
 				if (result.kind !== "continuable") throw Error("Agent creation did not return a durable identity");
 				const path = owner.agentPath(result.subagentId);
-				return response({ agent: path, id: result.subagentId, kind: "secondary" }, `Started ${path}.`);
+				// The ID too: tools such as the arenas find an agent's session file by it.
+				return response({ agent: path, id: result.subagentId, kind: "secondary" }, `Started ${path} (session ${result.subagentId}).`);
 			},
 		}),
 		defineTool({
