@@ -290,6 +290,8 @@ class Watches {
 		return next;
 	}
 
+	data() { return [...this.active.values()].map(({ spec }) => ({ ...spec })); }
+
 	async call(input: Params, ctx: ExtensionContext, label?: string): Promise<string> {
 		const { close, ...params } = input;
 		if (close) {
@@ -686,7 +688,8 @@ export default function watch(pi: ExtensionAPI): void {
 			labels.delete(id);
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Watches are not ready in this conversation.");
 			const text = await watches.call(params, ctx, label);
-			return { content: [{ type: "text", text }], details: {} };
+			return { content: [{ type: "text", text }], details: {},
+				structuredContent: JSON.parse(JSON.stringify({ text, watches: watches.data() })) };
 		},
 	});
 }

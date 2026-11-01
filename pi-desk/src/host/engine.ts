@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { createStructuredToolExtension, createStructuredSearchExtension } from "../../../pi-tools/index.ts";
 import { describeAgentTools, describeSessionTools } from "../../../pi-ui/tool-descriptions.ts";
 import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
@@ -10,9 +11,7 @@ import {
 	createAgentSessionServices,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
-	createCodemodeExtension,
 	createMcpExtension,
-	createToolSearchExtension,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
@@ -242,8 +241,8 @@ export class DeskEngine {
 				cwd, agentDir, settingsManager: resourceSettings(settingsManager, cwd, agentDir, pin, packageCopies(join(operatorDirectory, "packages"))),
 				resourceLoaderOptions: {
 					extensionFactories: [
-						{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
-						{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
+						{ name: "codemode", builtin: true, replaceable: true, factory: createStructuredToolExtension() },
+						{ name: "tool-search", builtin: true, replaceable: true, factory: createStructuredSearchExtension() },
 						{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension({ createTransport: await lazyMcpTransports() }) },
 						{ name: "pi-desk", factory: pi => {
 						this.presentation.install(pi, () => context ? resourceInventory(context.resources, pin ? [pin.root] : []) : []);

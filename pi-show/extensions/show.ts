@@ -275,7 +275,7 @@ export default function show(pi: ExtensionAPI) {
 			});
 			if (!items.length && !params.note?.trim()) throw new Error("Provide a note, file, web link, or described changes to show.");
 			const result: Shown = { title: clip(params.title, 200), ...(params.note ? { note: clip(params.note, 20_000) } : {}), items };
-			return { content: [{ type: "text", text: [`Shown to Jordan in Desk: ${result.title}.`, ...notes].join("\n") }], details: { show: result } };
+			return { content: [{ type: "text", text: [`Shown to Jordan in Desk: ${result.title}.`, ...notes].join("\n") }], details: { show: result }, structuredContent: JSON.parse(JSON.stringify(result)) };
 		},
 	});
 }
