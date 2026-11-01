@@ -31,7 +31,9 @@
 .home-column .markdown ul ul { margin:3px 0 4px; padding-left:20px; }
 .home-column .markdown li { margin:3px 0; }
 .home-column .markdown li::marker { content:""; }
-.home-column .markdown li.task-list-item { list-style:none; }
+.home-column .markdown li.task-list-item { list-style:none; padding-left:21px; text-indent:-21px; }
+.home-column .markdown li:not(.task-list-item) { padding-left:14px; text-indent:-14px; }
+.home-column .markdown li ul { text-indent:0; }
 .home-column .markdown li:not(.task-list-item)::before { content:"·"; display:inline-block; width:14px; color:var(--home-hue); font-weight:700; }
 .home-column .markdown input[type=checkbox] { appearance:none; flex:none; width:13px; height:13px; min-width:0; min-height:0; padding:0; margin:0 8px 0 0; box-shadow:none; vertical-align:-1px; border:1.5px solid color-mix(in srgb,var(--home-hue) 75%,var(--bg)); border-radius:4px; background:transparent; }
 .home-column .markdown input[type=checkbox]:checked { background:color-mix(in srgb,var(--home-hue) 45%,var(--bg)); border-color:transparent; }
