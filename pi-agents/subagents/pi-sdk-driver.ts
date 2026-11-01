@@ -1,10 +1,11 @@
 import { join } from "node:path";
+import { createStructuredToolExtension, createStructuredSearchExtension, REQUEST_DESCRIPTION } from "../../pi-tools/index.ts";
 import { describeAgentTools, describeSessionTools } from "../../pi-ui/tool-descriptions.ts";
 import {
 	createAgentSession,
 	createCodemodeExtension,
-	createMcpExtension,
 	createToolSearchExtension,
+	createMcpExtension,
 	DefaultResourceLoader,
 	ExtensionRunner,
 	ModelRegistry,
@@ -341,6 +342,7 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			}
 		};
 		const presentation = this.host.createPresentation?.(input.descriptor);
+		const structured = toolInfo?.some(tool => tool.name === "codemode" && tool.description === REQUEST_DESCRIPTION);
 		const followups = new FollowupDelivery(input.sessionManager, input.onFollowupDelivered);
 		const loader = new DefaultResourceLoader({
 			cwd: input.descriptor.cwd,
@@ -351,8 +353,8 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 				.map(tool => tool.sourceInfo?.path)
 				.filter((path): path is string => !!path && ["builtin:codemode", "builtin:tool-search", "builtin:mcp"].includes(path)))],
 			extensionFactories: [
-				{ name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
-				{ name: "tool-search", builtin: true, replaceable: true, factory: createToolSearchExtension() },
+				{ name: "codemode", builtin: true, replaceable: true, factory: structured ? createStructuredToolExtension() : createCodemodeExtension() },
+				{ name: "tool-search", builtin: true, replaceable: true, factory: structured ? createStructuredSearchExtension() : createToolSearchExtension() },
 				{ name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension({ createTransport: await lazyMcpTransports() }) },
 				...(presentation ? [{ name: "child-presentation", factory: (pi: ExtensionAPI) => presentation.install(pi) }] : []),
 				{ name: "work-coordination", factory: (pi) => ensureWorkCoordination(pi, { child: true }) },
