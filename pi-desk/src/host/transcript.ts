@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { callDescription } from "../../../pi-ui/tool-descriptions.ts";
+import { SHOWN_ENTRY, type Shown } from "../../../pi-show/extensions/types.ts";
 import { FEEDBACK_ENTRY } from "../shared/feedback.ts";
 import { LEARN_NOTE } from "../shared/learn.ts";
 import { COMPACTION_FAILURE_ENTRY } from "../../../pi-context-window/compaction-state.ts";
@@ -154,7 +155,7 @@ export class Transcript {
 		}
 		if (message.toolName === "show" && details.show && typeof details.show === "object") {
 			const shown = bounded(record(details.show)) as Extract<ChatBlock, { type: "shown" }>["shown"];
-			if (typeof shown.title === "string" && Array.isArray(shown.items))
+			if (!shown.persisted && typeof shown.title === "string" && Array.isArray(shown.items))
 				blocks.push({ type: "shown", shown, files: shown.items.map(item => item.path && cwd ? this.files.observePath(item.path, cwd) ?? null : null) });
 		}
 		for (const [id, label] of [[details.outputArtifact, "Complete captured output"], [details.full_output_artifact, "Complete output"],
@@ -264,6 +265,22 @@ export class Transcript {
 	}
 
 	entry(entry: SessionEntry, order = 0, cwd?: string): ChatMessage | undefined {
+		if (entry.type === "custom" && entry.customType === SHOWN_ENTRY) {
+			const shown = entry.data as Shown;
+			return this.message({ role: "toolResult", toolName: "show", timestamp: Date.parse(entry.timestamp), content: [], details: { show: { ...shown, persisted: false } } }, entry.id, undefined, order, cwd);
+		}
+		if (entry.type === "custom" && entry.customType === "pi-show:activity") {
+			const data = record(entry.data), message = this.message({ ...data, role: "toolResult", timestamp: Date.parse(entry.timestamp) }, entry.id, undefined, order, cwd)!;
+			message.work = { description: String(data.description ?? data.toolName).slice(0, 300) };
+			if (message.toolName === "bash" || !message.blocks.some(block => block.type === "diff" || block.type === "document")) {
+				const output = message.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").slice(0, 16_000);
+				const changed = message.blocks.filter((block): block is Extract<ChatBlock, { type: "diff" | "document" }> => block.type === "diff" || block.type === "document");
+				const items: Shown["items"] = changed.map(block => block.type === "diff" ? { path: block.path, diff: { text: block.text, added: block.added ?? 0, removed: block.removed ?? 0, truncated: block.truncated } }
+					: { path: block.change.path, changes: block.change.changes, preview: block.change.preview });
+				message.blocks = [{ type: "shown", files: changed.map(block => block.file ?? null), shown: { title: message.work.description, items, spec: { root: "output", elements: { output: { type: "Code", props: { text: output || (message.isError ? "Operation failed." : "Operation completed.") } } } } } }];
+			}
+			return message;
+		}
 		if (entry.type === "message") return this.message(entry.message, entry.id, undefined, order, cwd);
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			const message = this.message({ role: "custom", content: entry.summary, timestamp: Date.parse(entry.timestamp) }, entry.id, undefined, order, cwd);
@@ -320,7 +337,7 @@ export class Transcript {
 		const visible = (entry: SessionEntry) => entry.type === "message" && entry.message.role !== "system"
 			&& !(entry.message.role === "custom" && entry.message.display === false)
 			|| entry.type === "custom_message" && entry.display
-			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY, COMPACTION_FAILURE_ENTRY, LEARN_NOTE].includes(entry.customType)
+			|| entry.type === "custom" && [LEDGER_ENTRY, FEEDBACK_ENTRY, COMPACTION_FAILURE_ENTRY, LEARN_NOTE, SHOWN_ENTRY, "pi-show:activity"].includes(entry.customType)
 			|| entry.type === "compaction" || entry.type === "branch_summary";
 		const anchor = position.before ?? position.after ?? position.from;
 		const index = anchor ? branch.findIndex(entry => entry.id === anchor) : branch.length;

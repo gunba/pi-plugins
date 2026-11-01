@@ -85,6 +85,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   const [workSelected, setWorkSelected] = useState<string>();
   const [workExtra, setWorkExtra] = useState<WorkItem>();
   const [workModal, setWorkModal] = useState<WorkItem>();
+  const [mobileWorkOpen, setMobileWorkOpen] = useState(false);
   useEffect(restorePaneWidths, []);
   const [resumeOpen, setResumeOpen] = useState<boolean | "switch">(false);
   const [focusedView, setFocusedView] = useState("");
@@ -293,18 +294,20 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) { setError(errorText(error)); }
   }
   const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItems];
-  const newestWork = loadedWork.at(-1);
-  const workSeen = useRef<{ session: string; newest?: string }>({ session: "" });
+  const workSeen = useRef<{ session: string; ids: Set<string> }>({ session: "", ids: new Set() });
   useEffect(() => {
-    // Each conversation opens on its newest item; a newly shown result reopens a hidden pane.
+    // Updating or rearranging an existing part does not reopen Work or steal selection.
     const seen = workSeen.current;
-    if (seen.session !== selected) { workSeen.current = { session: selected, newest: newestWork?.id }; setWorkSelected(undefined); setWorkExtra(undefined); return; }
-    if (newestWork && newestWork.id !== seen.newest) {
-      seen.newest = newestWork.id; setWorkSelected(newestWork.id);
-      if (newestWork.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
+    if (seen.session !== selected) { workSeen.current = { session: selected, ids: new Set(loadedWork.map(item => item.id)) }; setWorkSelected(undefined); setWorkExtra(undefined); setMobileWorkOpen(false); return; }
+    const added = loadedWork.filter(item => !seen.ids.has(item.id));
+    for (const item of loadedWork) seen.ids.add(item.id);
+    const newest = added.at(-1);
+    if (newest) {
+      setWorkSelected(newest.id);
+      if (newest.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
     }
-  }, [selected, newestWork]);
-  const showWorkPane = !homeSelected && wideWorkspace && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
+  }, [selected, loadedWork]);
+  const showWorkPane = !homeSelected && (wideWorkspace || mobileWorkOpen) && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
   useEffect(() => {
     if (panel === "view" && focusedView === "subagents") setPanel("agents");
     if (panel === "view" && agentViews.some(view => view.id === focusedView)) { chooseAgent(focusedView); setPanel("agents"); }
@@ -317,7 +320,11 @@ export function App({ account }: { account?: BrowserAccount }) {
         && matchMedia("(min-width:1181px)").matches) setPanel("agents");
     }
   }, [panel, focusedView, activeAgents, selected, session?.activation, ui, showWorkPane]);
+  useEffect(() => {
+    if (workModal?.id.startsWith("part:") && !loadedWork.some(item => item.id === workModal.id)) setWorkModal(undefined);
+  }, [loadedWork, workModal]);
   const openWork = (item: WorkItem) => {
+    if (item.id.startsWith("part:") && !loadedWork.some(known => known.id === item.id)) { setWorkModal({ ...item, id: `history:${item.message}` }); return; }
     if (wideWorkspace && !homeSelected) {
       // A brief is listed from its own state, which a copy here would leave behind.
       if (item.block.type !== "brief" && !loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
@@ -537,9 +544,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               aria-label={`Messages: ${(messagesView.data as UiDetails).items!.length}`}
               title={(messagesView.data as UiDetails).summary ?? "Agent messages"} onClick={() => { setFocusedView("messages"); setPanel(panel === "view" && focusedView === "messages" ? undefined : "view"); }}>
               <Icon name="party" />{!phone && "Messages "}<b>{(messagesView.data as UiDetails).items!.length}</b></button>}
-            {wideWorkspace && paneItems.length + loadedLinks.length > 0 && !homeSelected && <button type="button" className="icon-button"
-              title={showWorkPane ? "Hide changes" : `Show changes and links (${paneItems.length + loadedLinks.length})`} aria-label="Changes" aria-pressed={showWorkPane}
-              onClick={() => { const hidden = showWorkPane; setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
+            {paneItems.length + loadedLinks.length > 0 && !homeSelected && <button type="button" className="icon-button"
+              title={showWorkPane ? "Hide Work" : "Show Work"} aria-label="Work" aria-pressed={showWorkPane}
+              onClick={() => { const hidden = showWorkPane; setMobileWorkOpen(!hidden); setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
               <Icon name="panel-right" /></button>}
             <button type="button" className="icon-button" title="Conversation settings" aria-label="Conversation settings" aria-pressed={settings}
               onClick={() => {
@@ -680,7 +687,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       </main>
 
       {showWorkPane && <WorkPane items={paneItems} links={loadedLinks} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
-        close={() => { setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
+        close={() => { setMobileWorkOpen(false); setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
       {panel && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)}>
@@ -743,7 +750,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       </Modal>}
       {newConversation.dialog}
       {confirmation.dialog}
-      {workModal && <WorkModal item={workModal} session={selected} close={() => setWorkModal(undefined)} />}
+      {workModal && <WorkModal item={paneItems.find(item => item.id === workModal.id) ?? workModal} session={selected} close={() => setWorkModal(undefined)} />}
       {question && !inlineQuestion && `${selected}/${question.id}` !== dismissedQuestion && (
         <InteractionForm
           key={`${selected}/${question.id}`}

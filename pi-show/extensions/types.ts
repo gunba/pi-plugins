@@ -14,4 +14,12 @@ export type ShownItem = {
 	/** Changed cells the agent's own list did not mention. */
 	unlisted?: { count: number; examples: string[] };
 };
-export type Shown = { title: string; note?: string; items: ShownItem[] };
+export const SHOWN_ENTRY = "pi-show:part";
+export type Shown = { title: string; note?: string; items: ShownItem[];
+	id?: string; before?: string; pinned?: boolean; collapsed?: boolean; remove?: boolean;
+	spec?: import("../../pi-ui/agent-ui.ts").AgentSpec;
+	source?: import("../../pi-ui/agent-progress.ts").ProgressSource;
+	sourceStatus?: import("../../pi-ui/agent-progress.ts").ProgressStatus;
+	/** Named parts are persisted independently of nested tool result retention. */
+	persisted?: boolean;
+};

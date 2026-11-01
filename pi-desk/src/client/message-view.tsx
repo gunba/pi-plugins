@@ -154,7 +154,7 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	const fileMessage = resultFile ? result!.id : owner.id;
 	// What the call changed, and what an agent chose to show, stay visible instead of inside the collapsed call.
 	const items = (result?.blocks ?? []).flatMap((block, index): WorkItem[] => block?.type === "diff" || block?.type === "document" || block?.type === "shown"
-		? [{ id: `${result!.id}:${index}`, at: result!.timestamp, message: result!.id, source, block }] : []);
+		? [{ id: block.type === "shown" && block.shown.id ? `part:${source ? `${source}:` : ""}${block.shown.id}` : `${result!.id}:${index}`, at: result!.timestamp, message: result!.id, source, block }] : []);
 	const shown = items.find(item => item.block.type === "shown");
 	if (shown) return <ReferenceContext value={{ message: result!.id, source }}><ShownSummary item={shown as WorkItem & { block: Extract<ChatBlock, { type: "shown" }> }} time={<Time timestamp={owner.timestamp} />} /></ReferenceContext>;
 	const changes = items.map(item => item.block);
@@ -245,7 +245,7 @@ function MessageBody({ message, sessionKey, source, results, omitFile, omitChang
 			if (block.type === "file") return block.file.id === omitFile ? null : <FileLink key={index} session={sessionKey} file={block.file} />;
 			if (block.type === "artifact") return <ArtifactLink key={index} session={sessionKey} id={block.id} label={block.label} />;
 			if (block.type === "diff" || block.type === "document" || block.type === "shown")
-				return omitChanges ? null : <WorkChip key={index} item={{ id: `${message.id}:${index}`, at: message.timestamp, message: message.id, source, block }} />;
+				return omitChanges ? null : <WorkChip key={index} item={{ id: block.type === "shown" && block.shown.id ? `part:${source ? `${source}:` : ""}${block.shown.id}` : `${message.id}:${index}`, at: message.timestamp, message: message.id, source, block }} />;
 			if (block.type === "text" && message.tool?.state === "running") return <LiveOutput key={index} text={block.text} />;
 			if (block.type === "ledger") return <LedgerCard key={index} ledger={block.ledger} />;
 			if (block.type === "image") return <AssetImage key={index} session={sessionKey} asset={block.asset} />;

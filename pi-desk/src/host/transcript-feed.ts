@@ -3,6 +3,10 @@ import type { AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-
 import type { ChatMessage, HistoryPage, TranscriptEvent, WorkerMessage } from "../shared/protocol.ts";
 import { Transcript, nestedBudget, nestedCall } from "./transcript.ts";
 import { MESSAGE_TEXT_CHARACTERS, THINKING_CHARACTERS, type HistoryPosition } from "../shared/history.ts";
+import { SHOWN_ENTRY } from "../../../pi-show/extensions/types.ts";
+import { progressComplete, type ProgressSample } from "../../../pi-ui/agent-progress.ts";
+import { ProgressPipe } from "./progress-pipe.ts";
+const progressState = (state: Record<string, unknown> | undefined, sample: ProgressSample) => ({ ...Object.fromEntries(Object.entries(state ?? {}).filter(([key]) => !["done", "total", "item", "rate", "eta"].includes(key))), ...sample });
 
 /** Native message identity, persistence boundaries and bounded deltas for every conversation. */
 export class TranscriptFeed {
@@ -23,6 +27,7 @@ export class TranscriptFeed {
 	private nested = new Map<string, { calls: Map<string, Record<string, unknown>> }>();
 	private timer?: ReturnType<typeof setTimeout>;
 	private toolSequence = 0;
+	private parts = new Map<string, { message: ChatMessage; signature: string; pipe?: ProgressPipe; sample?: ProgressSample }>();
 	private readonly transcript: Transcript;
 	private readonly branch: () => readonly SessionEntry[];
 	private readonly generation: () => string;
@@ -38,6 +43,8 @@ export class TranscriptFeed {
 	}
 	reset(): void {
 		this.epoch++; this.live = undefined; this.liveId = undefined;
+		for (const part of this.parts.values()) part.pipe?.close();
+		this.parts.clear();
 		clearTimeout(this.timer); this.timer = undefined;
 		this.tools.clear(); this.dirtyTools.clear(); this.dirtyArguments.clear();
 		this.results.clear(); this.aliases.clear();
@@ -69,6 +76,37 @@ export class TranscriptFeed {
 		}
 		this.tools.set(root, { ...parent, nested: this.nestedView(root) });
 		this.dirtyTools.add(root); this.soon();
+	}
+	private registerPart(message: ChatMessage): void {
+		let block = message.blocks.find(block => block.type === "shown");
+		if (block?.type !== "shown" || !block.shown.id) return;
+		const id = block.shown.id, previous = this.parts.get(id);
+		if (previous?.message.id === message.id) {
+			if (!previous.pipe?.stopped) return;
+			// Replay preserves the last live sample, but may restart an expired incomplete source.
+			message = previous.message;
+			block = message.blocks.find(block => block.type === "shown")!;
+			if (block.type !== "shown") return;
+		}
+		const signature = block.shown.remove ? "" : JSON.stringify(block.shown.source ?? null);
+		const complete = progressComplete(block.shown.spec?.state), reuse = previous?.signature === signature && !complete;
+		const part = { message, signature, pipe: reuse && !previous.pipe?.stopped ? previous.pipe : undefined,
+			sample: reuse && !progressComplete(previous.sample) ? previous.sample : undefined };
+		if (previous?.pipe !== part.pipe) previous?.pipe?.close();
+		this.parts.set(id, part);
+		if (part.sample && block.shown.spec) block.shown = { ...block.shown, spec: { ...block.shown.spec, state: progressState(block.shown.spec.state, part.sample) } };
+		if (block.shown.source && complete) block.shown = { ...block.shown, sourceStatus: { ...block.shown.sourceStatus, state: "complete" } };
+		if (block.shown.source && !block.shown.remove && !complete && !part.pipe) {
+			try { part.pipe = new ProgressPipe(block.shown.source, (sample, sourceStatus) => {
+				const current = this.parts.get(id);
+				if (!current || current.signature !== signature || this.closed) return;
+				current.sample = sample;
+				current.message = { ...current.message, revision: ++this.revision, blocks: current.message.blocks.map(block => block.type !== "shown" ? block : {
+					...block, shown: { ...block.shown, sourceStatus, ...(sample && block.shown.spec ? { spec: { ...block.shown.spec, state: progressState(block.shown.spec.state, sample) } } : {}) },
+				}) };
+				this.emit({ type: "chat", generation: this.generation(), message: current.message });
+			}); } catch { /* Invalid historical sources cannot start a watcher. */ }
+		}
 	}
 	close(): void { this.closed = true; this.reset(); }
 	private emit(event: TranscriptEvent): void {
@@ -151,6 +189,7 @@ export class TranscriptFeed {
 			const branch = this.branch(), order = branch.findIndex(entry => entry.id === event.entry.id);
 			const message = order >= 0 ? this.transcript.entry(event.entry, order, this.cwd()) : undefined;
 			if (message) {
+				if (event.entry.type === "custom" && event.entry.customType === SHOWN_ENTRY) this.registerPart(message);
 				if (message.toolCallId) {
 					this.replace(this.toolId(message.toolCallId), message.entryId);
 					this.tools.delete(message.toolCallId); this.results.delete(message.toolCallId); this.dirtyTools.delete(message.toolCallId);
@@ -232,8 +271,18 @@ export class TranscriptFeed {
 	}
 	history(position: HistoryPosition = {}): HistoryPage {
 		if (this.closed) throw new Error("This transcript has closed.");
-		const page = this.transcript.history(this.branch(), position, this.live, this.liveId, this.cwd(), this.full);
-		if (!position.before && !page.after) page.messages.push(...this.tools.values());
+		const branch = this.branch(), latest = new Map<string, { entry: SessionEntry; order: number }>();
+		branch.forEach((entry, order) => {
+			if (entry.type === "custom" && entry.customType === SHOWN_ENTRY && typeof (entry.data as { id?: unknown })?.id === "string") latest.set((entry.data as { id: string }).id, { entry, order });
+		});
+		for (const { entry, order } of latest.values()) { const message = this.transcript.entry(this.full(entry), order, this.cwd()); if (message) this.registerPart(message); }
+		const page = this.transcript.history(branch, position, this.live, this.liveId, this.cwd(), this.full);
+		if (!position.before && !page.after) {
+			page.messages.push(...this.tools.values());
+			const current = new Map([...this.parts.values()].map(part => [part.message.id, part.message]));
+			page.messages = page.messages.map(message => { const latest = current.get(message.id); current.delete(message.id); return latest ?? message; });
+			page.messages.push(...current.values());
+		}
 		return { ...page, generation: this.generation(), revision: this.revision,
 			messages: page.messages.map(message => ({ ...message, revision: this.revision })) };
 	}
