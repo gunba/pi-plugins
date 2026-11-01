@@ -18,7 +18,7 @@ export function describedTool<T extends Tool>(tool: T): T {
 	if (!schema || schema.type !== "object" || !schema.properties || typeof schema.properties !== "object" || CALL_DESCRIPTION in schema.properties) return tool;
 	const visible = VISIBLE_OPERATIONS.has(tool.name) && !("show" in schema.properties);
 	return { ...tool, [WRAPPED]: true, parameters: { ...schema, properties: { ...schema.properties, [CALL_DESCRIPTION]: FIELD,
-		...(visible ? { show: { type: "boolean", description: "Show this result in Work? Include true or false." } } : {}) } },
+		...(visible ? { show: { type: "boolean", description: "true to show this call to Jordan in Work, titled with description; false otherwise." } } : {}) } },
 		execute: (id: string, params: never, ...rest: never[]) => {
 			const { [CALL_DESCRIPTION]: _description, ...input } = (params ?? {}) as Record<string, unknown>;
 			if (visible) delete input.show;

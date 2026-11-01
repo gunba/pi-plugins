@@ -102,19 +102,19 @@ export function documentDiff(path: string, before: OfficeDocument | null, now: O
 }
 
 const SHOW_PARAMETERS = Type.Object({
-	id: Type.Optional(Type.String({ description: "Stable part ID; reuse to update in place" })),
+	id: Type.Optional(Type.String({ description: "Keeps the part in place: show this id again to update it." })),
 	title: Type.Optional(Type.String()),
-	spec: Type.Optional(Type.Unknown({ description: "json-render {root,elements,state?}; see catalog below" })),
+	spec: Type.Optional(Type.Unknown({ description: "{root, elements, state?}, as described above." })),
 	patch: Type.Optional(Type.Array(Type.Object({ op: Type.Union(["add", "remove", "replace", "move", "copy", "test"].map(value => Type.Literal(value))), path: Type.String(), value: Type.Optional(Type.Unknown()), from: Type.Optional(Type.String()) }))),
-	before: Type.Optional(Type.String({ description: "Place before this part ID within its pin group" })),
+	before: Type.Optional(Type.String({ description: "Put this part before the part with this id." })),
 	pinned: Type.Optional(Type.Boolean()), collapsed: Type.Optional(Type.Boolean()), remove: Type.Optional(Type.Boolean()),
 	source: Type.Optional(Type.Union([Type.Null(), Type.Object({ file: Type.String(), pattern: Type.Optional(Type.String()), format: Type.Optional(Type.Literal("jsonl")), fields: Type.Optional(Type.Object({ done: Type.String(), total: Type.String(), item: Type.Optional(Type.String()), rate: Type.Optional(Type.String()), eta: Type.Optional(Type.String()) })) })])),
 	note: Type.Optional(Type.String({ description: "Markdown" })),
 	items: Type.Optional(Type.Array(Type.Object({
 		file: Type.Optional(Type.String()),
-		url: Type.Optional(Type.String({ maxLength: 8000, description: "Web link, instead of file" })),
-		label: Type.Optional(Type.String({ maxLength: 200, description: "Link label" })),
-		focus: Type.Optional(Type.String({ description: "Sheet!range, text to start at, or lines 40-80" })),
+		url: Type.Optional(Type.String({ maxLength: 8000, description: "A web link, instead of file." })),
+		label: Type.Optional(Type.String({ maxLength: 200, description: "The link's text." })),
+		focus: Type.Optional(Type.String({ description: "Where to open it: Sheet!A1:C9, text to start at, or lines 40-80." })),
 		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }))),
 	}))),
 });
@@ -230,12 +230,18 @@ export default function show(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "show",
 		label: "Show",
-		description: "Show a result in Desk's Work pane. Reuse id to update; omit unchanged fields. pinned/collapsed/before/remove arrange parts independently of history. "
-			+ "Prefer a json-render spec {root:'root',elements:{root:{type:'Column',props:{},children:['m']},m:{type:'Metric',props:{label:'Done',value:12}}},state:{}}. "
-			+ "Catalog: Column/Row (children); Part(title,collapsed,children); Text(text); Metric(label,value,detail?); Progress(done,total,label?,item?,rate?,eta?); Table(columns:string[],rows:scalar[][]); List(items:string[]); Link(url,label?); Image(item,alt)/File(item) where item indexes items (0-based); Code(text,language?); Diff(before,after); Chart(spec: inline-data Vega-Lite, no URLs/expressions/transforms). Desk owns styling. "
-			+ "Bind props with {$state:'/done'}. patch accepts RFC6902 operations; tree must have one root, no cycles or unused elements. "
-			+ "Live jobs: source:{file:'/tmp/job.txt',pattern:'{done}/{total} {item}'}; any process appends '12/340 file.txt\\n'. Or source:{file:'job.jsonl',format:'jsonl',fields:{done:'processed',total:'count',item:'file',rate:'perSecond',eta:'secondsLeft'}}. Desk tails lines while bash runs; no model polling. Fields feed the spec's root state. source:null stops watching. "
-			+ "Existing files (HTML, images, spreadsheets, code/diffs) and links still use items. Max 64 parts, 256 elements/part, 128 patches/call, 16 sources. Full examples: pi-show/README.md.",
+		description: "Show Jordan something in the Work pane beside the conversation: a result, progress, a dashboard, or a file or link. Do it when it matters, not for routine steps.\n"
+			+ "A part with an id stays in place. Show the same id again to change it, sending only what changed: a new spec, a patch, or pinned, collapsed, before or remove to arrange it.\n"
+			+ "spec is {root, elements, state?}. Each element is {type, props, children?}, and children name other elements: "
+			+ "{root:'r',elements:{r:{type:'Column',props:{},children:['m']},m:{type:'Metric',props:{label:'Done',value:12}}}}. Desk draws everything in its own style. Types: "
+			+ "Column and Row (children); Part (title, collapsed, children); Text (text); Metric (label, value, detail?); Progress (done, total, label?, item?, rate?, eta?); "
+			+ "Table (columns, rows of plain values); List (items); Link (url, label?); Image (item, alt) and File (item), where item is an index into items; Code (text, language?); "
+			+ "Diff (before, after); Chart (spec: Vega-Lite with inline data, without URLs, expressions or transforms). "
+			+ "A prop can read state: {$state:'/done'}. patch is a list of JSON Patch (RFC 6902) operations on the spec.\n"
+			+ "Live progress costs no model calls: give source {file, pattern:'{done}/{total} {item}'} and have the job append lines such as '12/340 a.txt' to that file. "
+			+ "For JSON lines, give {file, format:'jsonl', fields:{done:'processed', total:'count'}}, naming the job's own fields (item, rate and eta too if it has them). "
+			+ "While the command runs, Desk reads each new line into the spec's state as done, total, item, rate and eta. source:null stops reading.\n"
+			+ "To show a file (HTML, image, spreadsheet, code) or a link, use items. Limits: 64 parts, 256 elements a part, 128 patch operations a call, 16 sources. More examples: pi-show/README.md.",
 		promptSnippet: "Show Jordan results and changes",
 		parameters: SHOW_PARAMETERS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
