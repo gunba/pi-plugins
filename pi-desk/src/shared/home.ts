@@ -121,21 +121,18 @@ function seeded(seed: number): () => number {
 	return () => { state ^= state << 13; state >>>= 0; state ^= state >>> 17; state ^= state << 5; state >>>= 0; return state / 4294967296; };
 }
 /**
- * An organic closed outline inside the item's box. The base is a superellipse, roomier than an ellipse for text; a
- * few seeded low-frequency waves pull it inward by at most `wobble` of the radius, so it never leaves its box.
+ * A pebble: a smooth closed curve through a few points around the item's box, each pulled inward by a seeded amount
+ * of up to `wobble` and nudged along the outline, so no two items share a shape. It never leaves its box.
  */
 export function homeBlob(item: Pick<HomeItem, "width" | "height" | "seed" | "wobble">): string {
 	const { width: w, height: h, seed, wobble } = item;
-	const random = seeded(seed), exponent = 2.6, count = 14;
-	const waves = [2, 3, 5].map((frequency, index) => ({ frequency, phase: random() * Math.PI * 2, amount: wobble * [0.55, 0.3, 0.15][index]! * (0.7 + 0.6 * random()) }));
+	const random = seeded(seed), count = 8 + seed % 2, turn = random() * Math.PI * 2;
+	// Catmull-Rom curves bulge past their points, so the points sit a little inside the box.
 	const points = Array.from({ length: count }, (_, i) => {
-		const angle = i / count * Math.PI * 2, cos = Math.cos(angle), sin = Math.sin(angle);
-		const inward = waves.reduce((sum, wave) => sum + wave.amount * (1 + Math.sin(wave.frequency * angle + wave.phase)) / 2, 0);
-		const radius = 1 - inward;
-		return [w / 2 + Math.sign(cos) * Math.abs(cos) ** (2 / exponent) * w / 2 * radius, h / 2 + Math.sign(sin) * Math.abs(sin) ** (2 / exponent) * h / 2 * radius];
+		const angle = turn + (i + (random() - 0.5) * 0.35) / count * Math.PI * 2, radius = 0.95 - wobble * random();
+		return [w / 2 + Math.cos(angle) * w / 2 * radius, h / 2 + Math.sin(angle) * h / 2 * radius];
 	});
-	// A closed Catmull-Rom spline through the points, written as cubic Béziers.
-	const at = (i: number) => points[(i + count) % count]!, f = (n: number) => n.toFixed(1);
+	const at = (i: number) => points[(i + count) % count]!, f = (n: number) => Math.max(0, n).toFixed(1);
 	let path = `M ${f(at(0)[0]!)} ${f(at(0)[1]!)}`;
 	for (let i = 0; i < count; i++) {
 		const [p0, p1, p2, p3] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
