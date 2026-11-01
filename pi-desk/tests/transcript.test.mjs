@@ -57,7 +57,7 @@ import { mergeMessages } from "../src/client/state.ts";
 import { transcriptRows } from "../src/client/transcript-rows.ts";
 import { HISTORY_COUNT } from "../src/shared/history.ts";
 import { planRoundNotice } from "../src/client/plan-round.ts";
-import { renderPlanRoundPrompt } from "../../pi-plan/src/prompt.ts";
+import { renderPlanRoundPrompt, renderPlanRoundPromptV1 } from "../../pi-plan/src/prompt.ts";
 import { PLAN_ROUND_MESSAGE } from "../../pi-plan/src/constants.ts";
 
 test("a file tool call and its result form one display row without a separate source-file block", () => {
@@ -181,8 +181,9 @@ test("live and saved plan rounds have a readable notice without changing the nat
 	const transcript = new Transcript();
 	const plan = { id: "plan-test", revision: 3, objective: 'Check the "calendar"\nlayout', maxRounds: 128,
 		steps: [{ content: "Check keyboard navigation", status: "in_progress" }] };
-	for (const steps of [plan.steps, []]) {
-		const content = renderPlanRoundPrompt({ ...plan, steps }, 4);
+	// Rounds recorded before November 2026 used an earlier format.
+	for (const render of [renderPlanRoundPrompt, renderPlanRoundPromptV1]) for (const steps of [plan.steps, []]) {
+		const content = render({ ...plan, steps }, 4);
 		const live = transcript.message({ role: "custom", customType: PLAN_ROUND_MESSAGE, content, display: true });
 		const saved = transcript.entry({ type: "custom_message", id: "round", timestamp: new Date(1000).toISOString(),
 			customType: PLAN_ROUND_MESSAGE, content, display: true });
@@ -200,8 +201,8 @@ test("plan display leaves ordinary markup, incomplete previews and malformed env
 	for (const text of [
 		`Example: ${content}`, `\`\`\`\n${content}\n\`\`\``, `${content}\nAnother note`,
 		content.replace("</plan_round>", ""), content.replace('"Calendar"', "not-json"),
-		content.replace("2/8", "2/0"), content.replace("2/8", "9/8"),
-		content.replace("2/8", "9007199254740992/9007199254740993"),
+		content.replace("2 of 8", "2 of 0"), content.replace("2 of 8", "9 of 8"),
+		content.replace("2 of 8", "9007199254740992 of 9007199254740993"),
 	]) assert.equal(planRoundNotice({ ...note, blocks: [{ type: "text", text }] }), undefined);
 	assert.equal(planRoundNotice({ ...note, blocks: [{ ...note.blocks[0], truncated: true }] }), undefined);
 	assert.equal(planRoundNotice({ ...note, blocks: [{ ...note.blocks[0], full: "asset" }] }), undefined);

@@ -4,7 +4,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { PlanStore, PlanStateError } from "../src/store.ts";
 import { PLAN_CHANGE_ENTRY, PLAN_IMPORT_ENTRY, PLAN_ROUND_ADMISSION_ENTRY } from "../src/constants.ts";
 import { replayPlanBranch } from "../src/replay.ts";
-import { renderPlanRoundPrompt } from "../src/prompt.ts";
+import { renderPlanRoundPrompt, renderPlanRoundPromptV1 } from "../src/prompt.ts";
 import { planSteps } from "../src/steps.ts";
 
 const steps = [{ content: "Inspect source", status: "in_progress" }, { content: "Verify", status: "pending" }];
@@ -196,6 +196,12 @@ test("manual or duplicate/forged automatic admissions cannot consume rounds", ()
 	assert.throws(() => replayPlanBranch(branch), /next admitted round/);
 });
 
+test("rounds recorded in the earlier message format still replay", () => {
+	const h = harness(), plan = h.store.create({ objective: "Check", autoContinue: true, maxRounds: 2, steps });
+	h.store.admitRound({ planId: plan.id, revision: plan.revision, round: 1 }, renderPlanRoundPromptV1(plan, 1));
+	assert.equal(replayPlanBranch(h.branch()).state.roundsStarted, 1);
+	assert.notEqual(renderPlanRoundPrompt(plan, 1), renderPlanRoundPromptV1(plan, 1));
+});
 test("a failed native append leaves the prior plan intact; clear retains revision and identity history", () => {
 	const h = harness(), plan = h.store.create({ objective: "Check" });
 	const stored = h.branch().at(-1);

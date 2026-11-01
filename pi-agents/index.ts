@@ -448,6 +448,14 @@ export default function party(pi: ExtensionAPI): void {
 		...(quest.repeat ? { repeat: quest.repeat, repeats: repeatLabel(quest.repeat), ...(quest.next ? { next_due: quest.next } : {}) } : {}),
 		...(quest.steps ? { steps: quest.steps.map(step => `${step.done ? "[x]" : "[ ]"} ${step.title}`) } : {}),
 		from: quest.source.kind === "agent" ? quest.source.id === session ? "you" : quest.source.label : quest.source.kind === "dot" ? "his Dot" : "Jordan" });
+	/** A quest as a line, and its steps beneath, for the model; the structured form stays in details. */
+	const questLine = (quest: Quest, note = "") => {
+		const item = questJson(quest) as ReturnType<typeof questJson> & { repeats?: string; next_due?: string; steps?: string[] };
+		const facts = [item.kind, item.state !== "open" && item.state, item.due && `due ${item.due}`, item.scheduled && `on ${item.scheduled}`,
+			item.repeats && `${item.repeats}${item.next_due ? `, next ${item.next_due}` : ""}`, item.from !== "Jordan" && `from ${item.from}`, note].filter(Boolean).join(", ");
+		return [`${item.id} · ${item.title} (${facts})`, ...(item.steps ?? []).map(step => `  ${step}`)].join("\n");
+	};
+	const questResult = (value: unknown, text: string) => ({ content: [{ type: "text" as const, text }], details: value });
 	pi.registerTool({
 		name: "quest_add", label: "Add to Jordan's quest log", ...QUESTS,
 		description: "Add something Jordan must do himself, such as a review, decision or test you are waiting on, to his quest log. Short actionable title; context in notes. You are messaged when he finishes or drops it. Not for your own work.",
@@ -460,7 +468,7 @@ export default function party(pi: ExtensionAPI): void {
 			notify: Type.Optional(Type.Boolean({ description: "Default true." })) }),
 		async execute(_id, params) {
 			const quest = await quests().apply({ kind: "agent", id: session, label: label() }, { action: "add", ...params }, { notify: params.notify });
-			return result({ added: questJson(quest!) });
+			return questResult({ added: questJson(quest!) }, `Added ${questLine(quest!)}`);
 		},
 	});
 	pi.registerTool({
@@ -471,8 +479,11 @@ export default function party(pi: ExtensionAPI): void {
 			const view = await quests().view();
 			const mine = (quest: Quest) => !params.mine || quest.source.kind === "agent" && quest.source.id === session;
 			const open = view.quests.filter(quest => (quest.state === "open" || isReady(quest)) && mine(quest));
-			return result({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
-				upcoming: (view.upcoming ?? []).filter(mine).map(quest => ({ ...questJson(quest), state: `${quest.repeat ? "not due" : "scheduled"} until ${quest.next}` })) });
+			const upcoming = (view.upcoming ?? []).filter(mine);
+			return questResult({ today: view.today, quests: open.map(quest => ({ ...questJson(quest), today: isToday(quest, view.today) })),
+				upcoming: upcoming.map(quest => ({ ...questJson(quest), state: `${quest.repeat ? "not due" : "scheduled"} until ${quest.next}` })) },
+				[`Today is ${view.today}.`, ...(open.length ? open.map(quest => questLine(quest, isToday(quest, view.today) ? "today" : "")) : ["No open quests."]),
+					...(upcoming.length ? ["Upcoming:", ...upcoming.map(quest => questLine(quest))] : [])].join("\n"));
 		},
 	});
 	pi.registerTool({
@@ -489,7 +500,7 @@ export default function party(pi: ExtensionAPI): void {
 			let quest = Object.keys(fields).length ? await log.apply(by, { action: "update", id, ...fields }) : await log.get(id);
 			if (state) quest = await log.apply(by, { action: state === "done" ? "complete" : state === "abandoned" ? "abandon" : "reopen", id });
 			if (!quest) throw Error(`No quest has the id ${id}.`);
-			return result({ quest: questJson(quest) });
+			return questResult({ quest: questJson(quest) }, questLine(quest));
 		},
 	});
 	pi.registerMessageRenderer(PARTY_MESSAGE, renderPartyNotice);

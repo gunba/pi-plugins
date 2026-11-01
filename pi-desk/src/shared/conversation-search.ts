@@ -133,7 +133,7 @@ function date(value: unknown, name: string): number | undefined {
 export function searchRequest(value: unknown): SearchRequest {
 	const data = object(value), action = data.action ?? (data.reference === undefined ? data.query === undefined ? "status" : "search" : "read");
 	if (action === "status") return { action };
-	const max_chars = searchInteger(data.max_chars ?? 12_000, 2000, 24_000, "response character budget");
+	const max_chars = searchInteger(data.max_chars ?? 8000, 2000, 24_000, "response character budget");
 	if (action === "read") return { action, reference: searchId(data.reference, "source reference"),
 		before: searchInteger(data.before ?? 2, 0, 10, "preceding entry count"), after: searchInteger(data.after ?? 3, 0, 10, "following entry count"), max_chars };
 	if (action !== "search") throw Error("Unknown conversation search action.");
@@ -148,7 +148,7 @@ export function searchRequest(value: unknown): SearchRequest {
 		filters.exclude = { session: searchText(exclude.session, 200, "excluded session"), entry: searchText(exclude.entry, 200, "excluded entry") };
 	}
 	return { action, query: searchText(data.query, 2000, "search query").trim(), filters,
-		limit: searchInteger(data.limit ?? 12, 1, 30, "result limit"), max_chars };
+		limit: searchInteger(data.limit ?? 8, 1, 30, "result limit"), max_chars };
 }
 export function searchSource(value: unknown): SearchSource {
 	const item = object(value);

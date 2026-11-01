@@ -3,7 +3,7 @@ import { applyPlanChange, applyPlanRound, decodePlanChange, decodePlanSnapshot, 
 	type PlanFoldState, type PlanRoundIdentity } from "./domain.ts";
 import { PLAN_CHANGE_ENTRY, PLAN_IMPORT_ENTRY, PLAN_ROUND_ADMISSION_ENTRY } from "./constants.ts";
 import { LEGACY_ENTRIES, legacyPlan } from "./legacy.ts";
-import { renderPlanRoundPrompt } from "./prompt.ts";
+import { renderPlanRoundPrompt, renderPlanRoundPromptV1 } from "./prompt.ts";
 
 export interface PlanRoundDetails extends PlanRoundIdentity { version: 1 }
 export interface PlanRoundAdmission extends PlanRoundIdentity {
@@ -27,7 +27,7 @@ export function createPlanRoundAdmission(identity: PlanRoundIdentity, content: s
 		planId: identity.planId, revision: identity.revision, round: identity.round, content });
 }
 export function applyPlanRoundAdmission(state: PlanFoldState, admission: PlanRoundAdmission): void {
-	if (!state.plan || admission.content !== renderPlanRoundPrompt(state.plan, admission.round))
+	if (!state.plan || admission.content !== renderPlanRoundPrompt(state.plan, admission.round) && admission.content !== renderPlanRoundPromptV1(state.plan, admission.round))
 		throw new Error("plan round content does not match its durable snapshot");
 	applyPlanRound(state, admission);
 }

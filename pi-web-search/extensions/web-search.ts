@@ -17,8 +17,8 @@ export { exaKey } from "./settings.ts";
 export const ENDPOINT = "https://search.parallel.ai/mcp";
 const EXA = "https://api.exa.ai";
 const TIMEOUT_MS = 90_000;
-/** Excerpts kept per search result. */
-const RESULT_CHARS = 1_500;
+/** Excerpts kept per search result, and results kept per search: a week of searches averaged 12,000 characters each. */
+const RESULT_CHARS = 1_200, RESULTS = 8;
 /** Text kept per fetched page. */
 const PAGE_CHARS = 12_000;
 
@@ -181,10 +181,10 @@ async function exaSearch(params: SearchParams, key: string, signal: AbortSignal)
 	const replies = await Promise.all(params.queries.map(query => exa("/search", { query, type: "auto", numResults: 5, objective: params.goal,
 		...(location ? { userLocation: location } : {}), contents: { highlights: { maxCharacters: RESULT_CHARS } } }, key, signal)));
 	const lists = replies.map(reply => (reply.results ?? []) as ExaPage[]), pages: Page[] = [], seen = new Set<string>();
-	for (let rank = 0; pages.length < 10 && lists.some(list => rank < list.length); rank++)
+	for (let rank = 0; pages.length < RESULTS && lists.some(list => rank < list.length); rank++)
 		for (const list of lists) {
 			const page = list[rank];
-			if (page && !seen.has(page.url) && pages.length < 10) { seen.add(page.url); pages.push(exaPage(page)); }
+			if (page && !seen.has(page.url) && pages.length < RESULTS) { seen.add(page.url); pages.push(exaPage(page)); }
 		}
 	return { pages, failures: [] };
 }
@@ -202,7 +202,7 @@ export async function search(params: SearchParams, signal: AbortSignal | undefin
 	const key = exaKey();
 	if (key) return searchText(await exaSearch(params, key, timed(signal)));
 	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
-	return searchText({ pages: payload.results ?? [], failures: failures(payload) });
+	return searchText({ pages: (payload.results ?? []).slice(0, RESULTS), failures: failures(payload) });
 }
 
 export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {

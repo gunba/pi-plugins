@@ -17,8 +17,23 @@ export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} with update_plan.`;
 }
 
-/** Part of the v1 round ledger; format changes require a replay-version migration. */
+/**
+ * The message that starts an automatic round. Round admissions record it, and replay checks a recorded one against
+ * this or the earlier format (renderPlanRoundPromptV1).
+ */
 export function renderPlanRoundPrompt(plan: PlanSnapshot, round: number): string {
+	const active = plan.steps.filter(step => step.status === "in_progress");
+	const current = active.length ? active : plan.steps.filter(step => step.status === "pending").slice(0, 1);
+	// The objective and steps are JSON strings, so that line breaks in them cannot be taken for the message's own.
+	return [
+		`<plan_round>Round ${round} of ${plan.maxRounds}. Objective: ${JSON.stringify(plan.objective)}`,
+		...(current.length ? [`Current: ${JSON.stringify(current.slice(0, 3).map(step => step.content.slice(0, 400)))}`] : []),
+		"Continue: make concrete, verified progress. The workspace and tool results are authoritative. Complete the plan only when its whole objective is met; otherwise leave it active.</plan_round>",
+	].join("\n");
+}
+
+/** The round message before November 2026, still accepted in recorded admissions. */
+export function renderPlanRoundPromptV1(plan: PlanSnapshot, round: number): string {
 	const active = plan.steps.filter(step => step.status === "in_progress");
 	const current = active.length ? active : plan.steps.filter(step => step.status === "pending").slice(0, 1);
 	return [

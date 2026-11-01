@@ -17,6 +17,12 @@ export interface IndexedEntry { id: string; parent?: string; ordinal: number; pa
 export interface QueryScope { remote?: string; local: boolean; localComputer?: string }
 
 /** One search worker owns this connection. Transactions never suspend or invoke callbacks. */
+/** The range of references a prefix covers; references are lowercase hex, so "g" sorts after every one that starts with it. */
+function refRange(prefix: string): [string, string] {
+	const value = prefix.toLowerCase();
+	if (!/^[0-9a-f]{12,64}$/.test(value)) throw Error("Invalid source reference.");
+	return [value, `${value}g`];
+}
 export class SearchStore {
 	private readonly db: DatabaseSync;
 	private statements = new Map<string, StatementSync>();
@@ -418,8 +424,9 @@ export class SearchStore {
 	read(request: Extract<SearchRequest, { action: "read" }>, scope: QueryScope, coverage: SearchCoverage): SearchResponse {
 		const where = this.scopeWhere(scope);
 		const focus = this.sql(`SELECT p.*,c.text,c.hash,s.session,s.title,s.project,s.kind FROM passages p INDEXED BY passages_ref JOIN chunks c ON c.id=p.chunk
-			JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.ref=? AND ${where.sql} ORDER BY s.updated DESC,p.id DESC LIMIT 1`)
-			.get(request.reference, ...where.parameters) as unknown as Parameters<SearchStore["hit"]>[0] | undefined;
+			JOIN sources s ON s.scope=p.scope AND s.computer=p.computer AND s.id=p.source WHERE p.ref>=? AND p.ref<? AND ${where.sql} ORDER BY s.updated DESC,p.id DESC LIMIT 1`)
+			// Search shows the first 16 hex digits of a reference; any prefix of 12 or more is accepted, as is the whole.
+			.get(...refRange(request.reference), ...where.parameters) as unknown as Parameters<SearchStore["hit"]>[0] | undefined;
 		if (!focus) throw Error("That passage is no longer retained or is outside this search workspace.");
 		const entries = [focus.entry]; let parent = focus.parent, split = false;
 		for (let i = 0; parent && i < request.before; i++) {
