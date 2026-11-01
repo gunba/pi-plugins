@@ -46,17 +46,28 @@ Common operations (more: describeTool):
 ask_user({question,options?,context?,done_when?}) -> {response,cancelled}; done_when: a command that exits 0 once it's done.
 web_search({goal,queries}), web_fetch({urls,goal?,full?}) -> {pages,failures}.
 watch({command?,every?,until?,wake_when?,stop?}): to wait for anything, end the program with a watch and be woken; don't loop calls to pass time.
-Other operations; read one's contract before its first call with await describeTool(name):
+Other operations; await describeTool(name) gives one's full contract:
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
 Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
 
-/** A tool's first sentence, which says what it is for. */
+/** name({a,b?}) from a tool's parameter schema, leaving out the description every operation takes. */
+const signature = (name: string, parameters: unknown) => {
+  const schema = parameters as { properties?: Record<string, unknown>; required?: string[] };
+  const required = new Set(schema.required ?? []);
+  const keys = Object.keys(schema.properties ?? {}).filter(key => key !== "description");
+  return `${name}({${keys.map(key => required.has(key) ? key : `${key}?`).join(",")}})`;
+};
+/** The opening sentences of a tool's description, up to about two lines: what it is for and when to use it. */
 const summary = (description: string) => {
-  const first = description.split(/(?<=[.!?])\s|\n/)[0]!.trim();
-  return first.length > 160 ? `${first.slice(0, 159)}…` : first;
+  let text = "";
+  for (const sentence of description.replace(/\s+/g, " ").trim().split(/(?<=[.!?]) /)) {
+    if (text && text.length + sentence.length > 240) break;
+    text = text ? `${text} ${sentence}` : sentence;
+  }
+  return text.length > 280 ? `${text.slice(0, 279)}…` : text;
 };
 
 /** Chrome and MCP retain their own interfaces, including rejected calls. */
@@ -147,7 +158,7 @@ export function createStructuredToolExtension(): ExtensionFactory {
         const rules = [...new Set(loadout.declared.filter(tool => !["codemode", "read", "bash", "edit", "write"].includes(tool.name) && !external(tool.name))
           .flatMap(tool => loadout.getPromptGuidelines(tool.name).map(rule => rule.trim())).filter(Boolean))];
         return {
-          descriptions: { codemode: requestDescription(others.map(tool => `${tool.name}: ${summary(tool.description)}`)) + (rules.length ? `\nRules:\n${rules.map(rule => `- ${rule}`).join("\n")}` : "") },
+          descriptions: { codemode: requestDescription(others.map(tool => `${signature(tool.name, tool.parameters)}: ${summary(tool.description)}`)) + (rules.length ? `\nRules:\n${rules.map(rule => `- ${rule}`).join("\n")}` : "") },
           hiddenDeclarations: loadout.declared.filter(tool => tool.name !== "codemode" && !external(tool.name)).map(tool => tool.name),
         };
       },
