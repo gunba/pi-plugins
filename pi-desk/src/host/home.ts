@@ -45,6 +45,8 @@ export class Home {
 	private enabled: () => boolean;
 	private remote: () => HomeWork[];
 	private notify?: (notice: { title: string; body: string; tag: string; session: string }) => Promise<unknown>;
+	/** Whether Home may start its conversation unasked: on the workspace server. Elsewhere opening Home starts it. */
+	startsAlone: () => boolean = () => false;
 	constructor(core: HostCore, quests: HostQuests, enabled: () => boolean, remote: () => HomeWork[], notify?: Home["notify"]) {
 		this.notify = notify;
 		this.core = core; this.quests = quests; this.enabled = enabled; this.remote = remote;
@@ -153,6 +155,7 @@ export class Home {
 			const managed = this.current();
 			if (!managed && !facts.quests?.quests.length && !facts.quests?.upcoming?.length && !facts.work.length) return;
 			if (managed?.view.snapshot?.activity === "running" || managed?.view.ui?.interactions.length || managed?.view.inputs?.length) return;
+			if (!managed && !this.store.get("session") && !this.startsAlone()) return;
 			const ready = await this.ensure();
 			if (this.closed || !this.enabled()) return;
 			const previous = this.submitted ? JSON.parse(this.submitted) : undefined;

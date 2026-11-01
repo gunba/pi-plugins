@@ -135,7 +135,7 @@ function controller(t, notify) {
 	const quests = new HostQuests({ closing: () => false, changed() {}, parties: () => undefined, computer: () => undefined });
 	quests.open(directory); quests.refresh();
 	let enabled = true;
-	const home = new Home(core, quests, () => enabled, () => [], notify);
+	const home = new Home(core, quests, () => enabled, () => [], notify); home.startsAlone = () => true;
 	t.after(() => { home.close(); quests.close(); inputs.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { home, core, quests, admitted, disable: () => { enabled = false; } };
 }

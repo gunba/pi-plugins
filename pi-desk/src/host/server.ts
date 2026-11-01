@@ -260,6 +260,7 @@ export class DeskHost {
 					if (!result.sent) throw Error("The update is saved in Home, but no phone accepted the notification. Enable phone notifications before marking this job verified.");
 					return result;
 				});
+			this.home.startsAlone = () => !!this.teleport?.settings.hold;
 			this.dotConnector = new DotConnector(directory, this.parties.store, hostname());
 			this.dotConnector.quests = () => this.quests.log();
 			this.dotConnector.notices = { ready: () => !!this.dot?.canNotify, post: text => !!this.dot?.notify(text) };
